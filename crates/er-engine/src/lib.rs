@@ -19,6 +19,7 @@ pub mod github;
 pub mod highlight;
 pub mod paths;
 pub mod review_queue;
+pub mod sidecar_summary;
 pub mod storage;
 pub mod sync;
 #[cfg(feature = "watch")]

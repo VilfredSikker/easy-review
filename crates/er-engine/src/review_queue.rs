@@ -43,6 +43,13 @@ pub struct QueuePr {
     /// True when the current user was explicitly requested as a reviewer.
     #[serde(default)]
     pub review_requested_of_me: bool,
+    /// Current user's latest review state on this PR, if any
+    /// (`APPROVED` / `CHANGES_REQUESTED` / `COMMENTED` / `DISMISSED` / …).
+    #[serde(default)]
+    pub my_latest_review_state: Option<String>,
+    /// Optional CI signal when enriched: `failing` | `passing` | `pending` | `unknown`.
+    #[serde(default)]
+    pub checks_state: Option<String>,
 }
 
 /// Why a PR sits where it does in the queue.
@@ -296,6 +303,242 @@ pub fn filter_by_status(prs: &[QueuePr], status: ReviewStatus) -> Vec<RankedPr> 
         .collect()
 }
 
+fn is_open_non_draft(pr: &QueuePr) -> bool {
+    pr.state.eq_ignore_ascii_case("OPEN") && !pr.is_draft
+}
+
+/// True when the authenticated user still owes a review on this PR.
+pub fn is_review_debt(pr: &QueuePr) -> bool {
+    if !is_open_non_draft(pr) {
+        return false;
+    }
+    match pr
+        .my_latest_review_state
+        .as_deref()
+        .map(|s| s.to_ascii_uppercase())
+        .as_deref()
+    {
+        Some("APPROVED") | Some("CHANGES_REQUESTED") | Some("DISMISSED") => false,
+        _ => pr.review_requested_of_me,
+    }
+}
+
+/// PRs where you were requested and have not finished a review decision.
+pub fn filter_review_debt(prs: &[QueuePr], limit: usize) -> Vec<RankedPr> {
+    let mut ranked: Vec<_> = prs
+        .iter()
+        .filter(|p| is_review_debt(p))
+        .map(score_pr)
+        .collect();
+    ranked.sort_by(|a, b| {
+        b.priority_score
+            .cmp(&a.priority_score)
+            .then_with(|| a.total_lines.cmp(&b.total_lines))
+    });
+    ranked.truncate(limit);
+    ranked
+}
+
+/// Parse a GitHub `updatedAt` ISO-8601 timestamp into epoch seconds.
+pub fn parse_github_updated_at(updated_at: &str) -> Option<i64> {
+    // Accept `2026-07-01T00:00:00Z` and `2026-07-01T00:00:00+00:00`.
+    let s = updated_at.trim();
+    if s.is_empty() {
+        return None;
+    }
+    // Prefer chrono-free parsing: take YYYY-MM-DDTHH:MM:SS prefix.
+    let (date, rest) = s.split_once('T')?;
+    let mut dp = date.split('-');
+    let year: i64 = dp.next()?.parse().ok()?;
+    let month: i64 = dp.next()?.parse().ok()?;
+    let day: i64 = dp.next()?.parse().ok()?;
+    let time = rest.trim_end_matches('Z');
+    let time = time.split(['+', '-']).next().unwrap_or(time);
+    let mut tp = time.split(':');
+    let hour: i64 = tp.next()?.parse().ok()?;
+    let minute: i64 = tp.next()?.parse().ok()?;
+    let second: i64 = tp
+        .next()
+        .and_then(|x| x.split('.').next())
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(0);
+    // Days from civil date → Unix (algorithm from Howard Hinnant).
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if month > 2 { month - 3 } else { month + 9 };
+    let doy = (153 * mp + 2) / 5 + day - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146097 + doe - 719468;
+    Some(days * 86_400 + hour * 3600 + minute * 60 + second)
+}
+
+/// Age of a PR's `updated_at` in whole days, relative to `now_epoch_secs`.
+pub fn age_days(pr: &QueuePr, now_epoch_secs: i64) -> Option<u64> {
+    let updated = parse_github_updated_at(&pr.updated_at)?;
+    let age = now_epoch_secs.saturating_sub(updated);
+    if age < 0 {
+        Some(0)
+    } else {
+        Some((age as u64) / 86_400)
+    }
+}
+
+/// True when the PR has had no GitHub activity for at least `days`.
+pub fn is_stale(pr: &QueuePr, days: u64, now_epoch_secs: i64) -> bool {
+    is_open_non_draft(pr) && age_days(pr, now_epoch_secs).is_some_and(|age| age >= days)
+}
+
+pub fn filter_stale(
+    prs: &[QueuePr],
+    days: u64,
+    now_epoch_secs: i64,
+    limit: usize,
+) -> Vec<RankedPr> {
+    let mut ranked: Vec<_> = prs
+        .iter()
+        .filter(|p| is_stale(p, days, now_epoch_secs))
+        .map(score_pr)
+        .collect();
+    ranked.sort_by(|a, b| {
+        // Oldest first.
+        let age_a = age_days(&a.pr, now_epoch_secs).unwrap_or(0);
+        let age_b = age_days(&b.pr, now_epoch_secs).unwrap_or(0);
+        age_b
+            .cmp(&age_a)
+            .then_with(|| a.pr.number.cmp(&b.pr.number))
+    });
+    ranked.truncate(limit);
+    ranked
+}
+
+/// Merge conflicts or dirty merge state.
+pub fn has_merge_conflicts(pr: &QueuePr) -> bool {
+    let mergeable = pr.mergeable.as_deref().unwrap_or("").to_ascii_uppercase();
+    let mss = pr
+        .merge_state_status
+        .as_deref()
+        .unwrap_or("")
+        .to_ascii_uppercase();
+    mergeable == "CONFLICTING" || mss == "DIRTY"
+}
+
+/// GitHub reports merge state blocked (often CI / review gates).
+pub fn is_merge_state_blocked(pr: &QueuePr) -> bool {
+    pr.merge_state_status
+        .as_deref()
+        .unwrap_or("")
+        .eq_ignore_ascii_case("BLOCKED")
+}
+
+/// Conflicts, failing CI (when known), or mergeStateStatus=BLOCKED.
+pub fn is_blocked(pr: &QueuePr) -> bool {
+    if !is_open_non_draft(pr) {
+        return false;
+    }
+    if has_merge_conflicts(pr) || is_merge_state_blocked(pr) {
+        return true;
+    }
+    matches!(
+        pr.checks_state
+            .as_deref()
+            .map(|s| s.to_ascii_lowercase())
+            .as_deref(),
+        Some("failing") | Some("fail")
+    )
+}
+
+pub fn filter_blocked(prs: &[QueuePr], limit: usize) -> Vec<RankedPr> {
+    let mut ranked: Vec<_> = prs.iter().filter(|p| is_blocked(p)).map(score_pr).collect();
+    ranked.sort_by_key(|b| std::cmp::Reverse(b.priority_score));
+    ranked.truncate(limit);
+    ranked
+}
+
+pub fn filter_failing_ci(prs: &[QueuePr], limit: usize) -> Vec<RankedPr> {
+    let mut ranked: Vec<_> = prs
+        .iter()
+        .filter(|p| {
+            is_open_non_draft(p)
+                && matches!(
+                    p.checks_state
+                        .as_deref()
+                        .map(|s| s.to_ascii_lowercase())
+                        .as_deref(),
+                    Some("failing") | Some("fail")
+                )
+        })
+        .map(score_pr)
+        .collect();
+    ranked.sort_by_key(|a| a.pr.number);
+    ranked.truncate(limit);
+    ranked
+}
+
+/// Summary of review-thread addressing for "already fixed" detection.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ThreadAddressingSummary {
+    pub thread_count: usize,
+    pub resolved: usize,
+    pub outdated: usize,
+    pub open: usize,
+    /// True when there is at least one thread and every thread is resolved or outdated.
+    pub all_addressed: bool,
+}
+
+impl ThreadAddressingSummary {
+    pub fn from_thread_flags(threads: &[(bool, bool)]) -> Self {
+        // (resolved, outdated)
+        let thread_count = threads.len();
+        let mut resolved = 0;
+        let mut outdated = 0;
+        let mut open = 0;
+        for &(is_resolved, is_outdated) in threads {
+            if is_resolved {
+                resolved += 1;
+            } else if is_outdated {
+                outdated += 1;
+            } else {
+                open += 1;
+            }
+        }
+        Self {
+            thread_count,
+            resolved,
+            outdated,
+            open,
+            all_addressed: thread_count > 0 && open == 0,
+        }
+    }
+}
+
+/// How to open a PR in Easy Review (no OS deep-link yet — instructions + URLs).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenInEasyReview {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub github_url: String,
+    pub desktop_hint: String,
+    pub tui_command: String,
+    pub note: String,
+}
+
+pub fn open_in_easy_review(owner: &str, repo: &str, number: u64) -> OpenInEasyReview {
+    OpenInEasyReview {
+        owner: owner.to_string(),
+        repo: repo.to_string(),
+        number,
+        github_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
+        desktop_hint: format!(
+            "In Easy Review Desktop: open project for {owner}/{repo}, then open PR #{number} from the sidebar (or paste the GitHub URL)."
+        ),
+        tui_command: format!("er --pr {number}   # run inside a clone of {owner}/{repo}"),
+        note: "No er:// deep-link handler exists yet; use the desktop open-PR flow or the TUI --pr flag."
+            .into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,6 +564,8 @@ mod tests {
             base_ref: "main".into(),
             production_lines: None,
             review_requested_of_me: false,
+            my_latest_review_state: None,
+            checks_state: None,
         }
     }
 
@@ -328,9 +573,8 @@ mod tests {
     fn tiny_ready_pr_outranks_huge_one() {
         let small = pr(1, 5, 2);
         let mut huge = pr(2, 900, 400);
-        huge.review_requested_of_me = true; // still shouldn't beat tiny ready PR by much... actually +50
+        huge.review_requested_of_me = true;
         let ranked = rank_priority(&[huge.clone(), small.clone()], 2);
-        // Small ready (+40+45) = 85; huge requested (+40-40+50)=50 → small first
         assert_eq!(ranked[0].pr.number, 1);
     }
 
@@ -368,5 +612,48 @@ mod tests {
         let ranked = score_pr(&p);
         assert_eq!(ranked.total_lines, 12);
         assert_eq!(ranked.size_bucket, SizeBucket::Xsmall);
+    }
+
+    #[test]
+    fn review_debt_requires_outstanding_request() {
+        let mut p = pr(1, 10, 0);
+        p.review_requested_of_me = true;
+        assert!(is_review_debt(&p));
+        p.my_latest_review_state = Some("APPROVED".into());
+        assert!(!is_review_debt(&p));
+    }
+
+    #[test]
+    fn stale_uses_updated_at_age() {
+        let p = pr(1, 10, 0);
+        // 2026-07-01T00:00:00Z → epoch
+        let updated = parse_github_updated_at("2026-07-01T00:00:00Z").unwrap();
+        let now = updated + 10 * 86_400;
+        assert!(is_stale(&p, 7, now));
+        assert!(!is_stale(&p, 14, now));
+    }
+
+    #[test]
+    fn thread_addressing_requires_threads() {
+        assert!(!ThreadAddressingSummary::from_thread_flags(&[]).all_addressed);
+        let s = ThreadAddressingSummary::from_thread_flags(&[(true, false), (false, true)]);
+        assert!(s.all_addressed);
+        assert_eq!(s.open, 0);
+        let s2 = ThreadAddressingSummary::from_thread_flags(&[(false, false)]);
+        assert!(!s2.all_addressed);
+        assert_eq!(s2.open, 1);
+    }
+
+    #[test]
+    fn blocked_detects_conflicts_and_failing_ci() {
+        let mut p = pr(1, 10, 0);
+        p.mergeable = Some("CONFLICTING".into());
+        assert!(is_blocked(&p));
+        let mut p2 = pr(2, 10, 0);
+        p2.checks_state = Some("failing".into());
+        assert!(is_blocked(&p2));
+        let mut p3 = pr(3, 10, 0);
+        p3.merge_state_status = Some("BLOCKED".into());
+        assert!(is_blocked(&p3));
     }
 }

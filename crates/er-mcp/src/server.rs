@@ -1,10 +1,18 @@
 //! MCP tool surface for Easy Review PR triage.
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use er_engine::git::ProdDiffStats;
-use er_engine::github::{gh_pr_list_queue, gh_pr_prod_diff_stats};
-use er_engine::review_queue::{
-    filter_by_status, rank_low_hanging, rank_priority, score_pr, QueuePr, ReviewStatus,
+use er_engine::github::{
+    gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
+    gh_pr_thread_addressing_remote,
 };
+use er_engine::review_queue::{
+    filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
+    open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
+    ReviewStatus,
+};
+use er_engine::sidecar_summary::summarize_pr_sidecars;
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -43,12 +51,25 @@ pub struct LimitRepoArgs {
     /// Max PRs to return (default 5, max 50).
     #[serde(default)]
     pub limit: Option<u32>,
-    /// When true, enrich top candidates with production-only line counts (slower: fetches diffs).
+    /// When true, enrich candidates with production-only line counts (slower: fetches diffs).
     #[serde(default)]
     pub production_lines: Option<bool>,
     /// Include draft PRs (default false for low-hanging fruit).
     #[serde(default)]
     pub include_drafts: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct StaleArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Days without GitHub activity (default 14).
+    #[serde(default)]
+    pub days: Option<u32>,
+    #[serde(default)]
+    pub limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -76,8 +97,69 @@ pub struct StatusFilterArgs {
     pub limit: Option<u32>,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrNumberArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub number: u64,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct HotspotsArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub number: u64,
+    /// Max production files to return (default 10).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CompareProdArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// PR numbers to compare.
+    pub numbers: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct CrossRepoArgs {
+    /// Max PRs to return across all projects (default 10).
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Enrich with production-only lines (slower).
+    #[serde(default)]
+    pub production_lines: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ScanLimitArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    /// Max open PRs to scan for expensive enrichments (default 20, max 40).
+    #[serde(default)]
+    pub scan_limit: Option<u32>,
+}
+
 fn clamp_limit(limit: Option<u32>, default: u32) -> usize {
     limit.unwrap_or(default).clamp(1, 50) as usize
+}
+
+fn now_epoch_secs() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn text_json(value: &impl Serialize) -> Result<CallToolResult, McpError> {
@@ -125,6 +207,30 @@ async fn enrich_production_lines(owner: &str, repo: &str, prs: &mut [QueuePr], m
     }
 }
 
+async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usize) {
+    for pr in prs.iter_mut().take(max_enrich) {
+        let owner = owner.to_string();
+        let repo = repo.to_string();
+        let number = pr.number;
+        let state = tokio::task::spawn_blocking(move || {
+            gh_pr_checks_state_remote(&owner, &repo, number).unwrap_or("unknown")
+        })
+        .await
+        .ok();
+        if let Some(state) = state {
+            pr.checks_state = Some(state.to_string());
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct TaggedRankedPr<'a> {
+    project: Option<&'a str>,
+    repo: String,
+    #[serde(flatten)]
+    ranked: RankedPr,
+}
+
 #[tool_router]
 impl ErMcp {
     pub fn new() -> Self {
@@ -168,7 +274,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Top priority PRs to review next. Scores by review request, readiness, size, labels, and blocked/outdated penalties. Ask: 'give me top 5 priority PRs to review'."
+        description = "Top priority PRs to review next. Scores by review request, readiness, size, labels, and blocked/outdated penalties."
     )]
     async fn priority_prs(
         &self,
@@ -194,7 +300,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Smallest / low-hanging-fruit open PRs (by changed lines). Optionally enrich with production-only line counts (excludes test, storybook, generated, docs)."
+        description = "Smallest / low-hanging-fruit open PRs. Defaults to production-only line enrichment (excludes test, storybook, generated, docs)."
     )]
     async fn low_hanging_fruit(
         &self,
@@ -225,7 +331,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Diff line stats for one PR, split into production vs test / storybook / generated / docs. Use when you want production-code churn only."
+        description = "Diff line stats for one PR, split into production vs test / storybook / generated / docs."
     )]
     async fn pr_diff_stats(
         &self,
@@ -263,7 +369,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "List open PRs filtered by review status: ready_to_review, draft, outdated (needs rebase), blocked_conflicts, waiting_on_author, approved, merge_ready."
+        description = "List open PRs filtered by review status: ready_to_review, draft, outdated, blocked_conflicts, waiting_on_author, approved, merge_ready."
     )]
     async fn prs_by_status(
         &self,
@@ -285,19 +391,339 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Ideas for additional Easy Review MCP tools (outdated, already-fixed, blocked, CI, review debt, etc.)."
+        description = "PRs blocked by merge conflicts, mergeStateStatus=BLOCKED, or failing CI (fetches checks). Use for 'what is blocked?'."
     )]
+    async fn prs_blocked(
+        &self,
+        Parameters(args): Parameters<ScanLimitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit, 20);
+        let scan = clamp_limit(args.scan_limit, 20).min(40);
+        let (owner, name, project_name, mut prs) =
+            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+        let n = prs.len().min(scan);
+        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
+        let ranked = filter_blocked(&prs, limit);
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "count": ranked.len(),
+            "prs": ranked,
+        }))
+    }
+
+    #[tool(
+        description = "Open PRs with failing CI checks. Fetches `gh pr checks` for a scan window."
+    )]
+    async fn prs_failing_ci(
+        &self,
+        Parameters(args): Parameters<ScanLimitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit, 20);
+        let scan = clamp_limit(args.scan_limit, 20).min(40);
+        let (owner, name, project_name, mut prs) =
+            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+        let n = prs.len().min(scan);
+        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
+        let ranked = filter_failing_ci(&prs, limit);
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "count": ranked.len(),
+            "prs": ranked,
+        }))
+    }
+
+    #[tool(
+        description = "PRs where review was requested of you and you have not approved / requested changes yet (your review debt)."
+    )]
+    async fn my_review_debt(
+        &self,
+        Parameters(args): Parameters<LimitRepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit, 20);
+        let (owner, name, project_name, prs) =
+            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+        let ranked = filter_review_debt(&prs, limit);
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "count": ranked.len(),
+            "prs": ranked,
+        }))
+    }
+
+    #[tool(
+        description = "Stale open PRs with no GitHub activity for N days (default 14). Uses PR updatedAt."
+    )]
+    async fn prs_stale(
+        &self,
+        Parameters(args): Parameters<StaleArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let days = args.days.unwrap_or(14).clamp(1, 365) as u64;
+        let limit = clamp_limit(args.limit, 20);
+        let (owner, name, project_name, prs) =
+            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+        let ranked = filter_stale(&prs, days, now_epoch_secs(), limit);
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "days": days,
+            "count": ranked.len(),
+            "prs": ranked,
+        }))
+    }
+
+    #[tool(
+        description = "PRs where all review threads are resolved or outdated (feedback already addressed / fixed). Scans open PRs via GraphQL."
+    )]
+    async fn prs_already_addressed(
+        &self,
+        Parameters(args): Parameters<ScanLimitArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit, 20);
+        let scan = clamp_limit(args.scan_limit, 15).min(30);
+        let (owner, name, project_name, prs) =
+            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+
+        let mut out = Vec::new();
+        for pr in prs
+            .iter()
+            .filter(|p| p.state.eq_ignore_ascii_case("OPEN"))
+            .take(scan)
+        {
+            let owner_c = owner.clone();
+            let name_c = name.clone();
+            let number = pr.number;
+            let summary = tokio::task::spawn_blocking(move || {
+                gh_pr_thread_addressing_remote(&owner_c, &name_c, number).unwrap_or_default()
+            })
+            .await
+            .unwrap_or_default();
+            if summary.all_addressed {
+                let mut ranked = score_pr(pr);
+                ranked.reasons.push(format!(
+                    "threads addressed: {} resolved, {} outdated, {} open",
+                    summary.resolved, summary.outdated, summary.open
+                ));
+                out.push(json!({
+                    "ranked": ranked,
+                    "threads": summary,
+                }));
+            }
+            if out.len() >= limit {
+                break;
+            }
+        }
+
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "scanned": scan.min(prs.len()),
+            "count": out.len(),
+            "prs": out,
+        }))
+    }
+
+    #[tool(
+        description = "Priority PRs across ALL configured Easy Review projects (cross-repo review queue)."
+    )]
+    async fn cross_repo_queue(
+        &self,
+        Parameters(args): Parameters<CrossRepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let limit = clamp_limit(args.limit, 10);
+        let file = projects::load_projects();
+        let mut tagged: Vec<TaggedRankedPr<'_>> = Vec::new();
+        // Collect owned strings first so we can borrow project names.
+        let mut batches: Vec<(String, String, String, Vec<QueuePr>)> = Vec::new();
+
+        for project in &file.projects {
+            let Some(remote) = project.remote.as_deref() else {
+                continue;
+            };
+            let Ok((owner, name)) = projects::parse_repo_slug(remote) else {
+                continue;
+            };
+            let prs = tokio::task::spawn_blocking({
+                let owner = owner.clone();
+                let name = name.clone();
+                move || gh_pr_list_queue(&owner, &name, "open", 50)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+            batches.push((project.name.clone(), owner, name, prs));
+        }
+
+        if args.production_lines.unwrap_or(false) {
+            for (_, owner, name, prs) in &mut batches {
+                let window = prs.len().min(10);
+                enrich_production_lines(owner, name, &mut prs[..window], window).await;
+            }
+        }
+
+        for (project_name, owner, name, prs) in &batches {
+            for pr in prs {
+                tagged.push(TaggedRankedPr {
+                    project: Some(project_name.as_str()),
+                    repo: format!("{owner}/{name}"),
+                    ranked: score_pr(pr),
+                });
+            }
+        }
+        tagged.sort_by(|a, b| {
+            b.ranked
+                .priority_score
+                .cmp(&a.ranked.priority_score)
+                .then_with(|| a.ranked.total_lines.cmp(&b.ranked.total_lines))
+        });
+        tagged.truncate(limit);
+
+        text_json(&json!({
+            "projects_scanned": batches.len(),
+            "limit": limit,
+            "prs": tagged,
+        }))
+    }
+
+    #[tool(
+        name = "open_in_easy_review",
+        description = "How to open a PR in Easy Review (GitHub URL + desktop/TUI instructions). No OS deep-link yet."
+    )]
+    async fn open_in_easy_review_tool(
+        &self,
+        Parameters(args): Parameters<PrNumberArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let hint = open_in_easy_review(&owner, &name, args.number);
+        text_json(&json!({
+            "project": project_name,
+            "open": hint,
+        }))
+    }
+
+    #[tool(
+        description = "Summarize managed Easy Review triage.json / review.json sidecars for a PR (local app data), if present."
+    )]
+    async fn summarize_triage(
+        &self,
+        Parameters(args): Parameters<PrNumberArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let summary =
+            tokio::task::spawn_blocking(move || summarize_pr_sidecars(&owner, &name, number))
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        text_json(&json!({
+            "project": project_name,
+            "summary": summary,
+        }))
+    }
+
+    #[tool(
+        description = "Top production-code files by churn in a PR (excludes test/storybook/generated/docs)."
+    )]
+    async fn diff_hotspots(
+        &self,
+        Parameters(args): Parameters<HotspotsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let limit = clamp_limit(args.limit, 10);
+        let stats: ProdDiffStats = tokio::task::spawn_blocking({
+            let owner = owner.clone();
+            let name = name.clone();
+            move || gh_pr_prod_diff_stats(&owner, &name, number)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+        let hotspots = stats.production_hotspots(limit);
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "number": number,
+            "production_lines": stats.production.lines_changed(),
+            "hotspots": hotspots,
+        }))
+    }
+
+    #[tool(
+        description = "Compare production-only changed lines for a list of PR numbers and rank smallest → largest."
+    )]
+    async fn compare_prod_size(
+        &self,
+        Parameters(args): Parameters<CompareProdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        if args.numbers.is_empty() {
+            return Err(tool_err("numbers must be a non-empty array of PR numbers"));
+        }
+        if args.numbers.len() > 25 {
+            return Err(tool_err("compare at most 25 PRs at a time"));
+        }
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+
+        let mut rows = Vec::new();
+        for number in args.numbers {
+            let owner_c = owner.clone();
+            let name_c = name.clone();
+            let stats = tokio::task::spawn_blocking(move || {
+                gh_pr_prod_diff_stats(&owner_c, &name_c, number)
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok());
+            let Some(stats) = stats else {
+                rows.push(json!({
+                    "number": number,
+                    "error": "failed to fetch diff",
+                }));
+                continue;
+            };
+            rows.push(json!({
+                "number": number,
+                "production_lines": stats.production.lines_changed(),
+                "total_lines": stats.total.lines_changed(),
+                "production_files": stats.production.files,
+                "test_lines": stats.test.lines_changed(),
+                "generated_lines": stats.generated.lines_changed(),
+            }));
+        }
+        rows.sort_by(|a, b| {
+            let la = a
+                .get("production_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(u64::MAX);
+            let lb = b
+                .get("production_lines")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(u64::MAX);
+            la.cmp(&lb)
+        });
+
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project": project_name,
+            "prs": rows,
+        }))
+    }
+
+    #[tool(description = "Catalog of Easy Review MCP tools (shipped + future ideas).")]
     async fn tool_ideas(&self) -> Result<CallToolResult, McpError> {
         text_json(&json!({
-            "shipped": [
-                "list_projects",
-                "list_prs",
-                "priority_prs",
-                "low_hanging_fruit",
-                "pr_diff_stats",
-                "prs_by_status",
-            ],
-            "ideas": TOOL_IDEAS,
+            "shipped": SHIPPED_TOOLS,
+            "ideas": FUTURE_IDEAS,
         }))
     }
 }
@@ -307,30 +733,42 @@ fn parse_status(s: &str) -> Result<ReviewStatus, McpError> {
         "ready_to_review" | "ready" => Ok(ReviewStatus::ReadyToReview),
         "draft" => Ok(ReviewStatus::Draft),
         "outdated" | "behind" => Ok(ReviewStatus::Outdated),
-        "blocked_conflicts" | "conflicts" | "blocked" => Ok(ReviewStatus::BlockedConflicts),
+        "blocked_conflicts" | "conflicts" => Ok(ReviewStatus::BlockedConflicts),
         "waiting_on_author" | "changes_requested" => Ok(ReviewStatus::WaitingOnAuthor),
         "approved" => Ok(ReviewStatus::Approved),
         "merge_ready" | "ready_to_merge" => Ok(ReviewStatus::MergeReady),
         "inactive" | "closed" | "merged" => Ok(ReviewStatus::Inactive),
         other => Err(tool_err(format!(
-            "unknown status '{other}'; expected ready_to_review|draft|outdated|blocked_conflicts|waiting_on_author|approved|merge_ready"
+            "unknown status '{other}'; expected ready_to_review|draft|outdated|blocked_conflicts|waiting_on_author|approved|merge_ready (for CI/conflicts combo use prs_blocked)"
         ))),
     }
 }
 
-const TOOL_IDEAS: &[&str] = &[
-    "prs_outdated — PRs whose head is behind base (rebase needed); already available via prs_by_status status=outdated",
-    "prs_blocked — conflicts, failing required checks, or missing approvals; combine merge state + CI rollup",
-    "prs_waiting_on_author — CHANGES_REQUESTED or unanswered reviewer questions",
-    "prs_already_addressed — all review threads resolved / outdated after new commits (\"already fixed\")",
-    "prs_stale — open PRs with no push/comment activity for N days",
-    "prs_failing_ci — open PRs with failing required status checks",
-    "my_review_debt — PRs where I was requested and have not reviewed yet",
-    "compare_prod_size — rank a batch of PR numbers by production-only lines",
-    "open_in_easy_review — deep-link / instruct desktop to open owner/repo#N",
-    "summarize_triage — read managed triage.json / review.json sidecars for a PR if present",
-    "diff_hotspots — files in a PR with highest production churn",
-    "cross_repo_queue — priority_prs across all configured Easy Review projects",
+const SHIPPED_TOOLS: &[&str] = &[
+    "list_projects",
+    "list_prs",
+    "priority_prs",
+    "low_hanging_fruit",
+    "pr_diff_stats",
+    "prs_by_status",
+    "prs_blocked",
+    "prs_failing_ci",
+    "my_review_debt",
+    "prs_stale",
+    "prs_already_addressed",
+    "cross_repo_queue",
+    "open_in_easy_review",
+    "summarize_triage",
+    "diff_hotspots",
+    "compare_prod_size",
+    "tool_ideas",
+];
+
+const FUTURE_IDEAS: &[&str] = &[
+    "er:// deep-link / single-instance desktop open from MCP",
+    "required-checks-only CI filter (GitHub branch protection)",
+    "push-only staleness (ignore comment bumps)",
+    "auto-open next priority PR in Easy Review Desktop",
 ];
 
 #[tool_handler]
@@ -339,12 +777,11 @@ impl ServerHandler for ErMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Easy Review MCP helps prioritize PR review. \
-             Use priority_prs for 'top N to review', low_hanging_fruit for smallest/production-light PRs, \
-             pr_diff_stats for production vs test/storybook/generated line counts, \
-             and prs_by_status for outdated/blocked/waiting_on_author. \
-             Pass repo=owner/repo or rely on the active Easy Review project remote. \
-             Call tool_ideas for more suggested tools.",
+                "Easy Review MCP for PR triage. \
+             priority_prs / low_hanging_fruit / my_review_debt / cross_repo_queue for queues; \
+             pr_diff_stats / diff_hotspots / compare_prod_size for production-line sizing; \
+             prs_by_status / prs_stale / prs_blocked / prs_failing_ci / prs_already_addressed for workflow filters; \
+             summarize_triage for local AI sidecars; open_in_easy_review_tool for open instructions.",
             )
     }
 

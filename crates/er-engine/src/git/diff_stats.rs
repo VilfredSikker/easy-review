@@ -102,6 +102,23 @@ impl ProdDiffStats {
             ("docs", self.docs.clone()),
         ])
     }
+
+    /// Top production files by changed lines (adds+dels), descending.
+    pub fn production_hotspots(&self, limit: usize) -> Vec<FileDiffStat> {
+        let mut files: Vec<_> = self
+            .files
+            .iter()
+            .filter(|f| f.kind == FileKind::Production)
+            .cloned()
+            .collect();
+        files.sort_by(|a, b| {
+            let la = a.additions.saturating_add(a.deletions);
+            let lb = b.additions.saturating_add(b.deletions);
+            lb.cmp(&la).then_with(|| a.path.cmp(&b.path))
+        });
+        files.truncate(limit.max(1));
+        files
+    }
 }
 
 #[cfg(test)]
@@ -149,5 +166,8 @@ diff --git a/README.md b/README.md
         assert_eq!(stats.docs.additions, 1);
         assert_eq!(stats.total.additions, 8);
         assert_eq!(stats.files.len(), 5);
+        let hot = stats.production_hotspots(3);
+        assert_eq!(hot.len(), 1);
+        assert_eq!(hot[0].path, "src/main.rs");
     }
 }

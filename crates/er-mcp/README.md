@@ -6,7 +6,9 @@ Ask an MCP client things like:
 - “Give me the top 5 priority PRs to review”
 - “Show me the smallest / low-hanging-fruit PRs”
 - “How many production lines changed in PR #42?” (excludes tests, Storybook, generated, docs)
-- “Which open PRs are outdated or blocked?”
+- “Which open PRs are outdated, blocked, failing CI, or waiting on the author?”
+- “What’s my review debt?” / “Any stale PRs?” / “Already addressed feedback?”
+- “Priority across all my Easy Review projects”
 
 Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally reads
 `~/.config/er/projects.json` so you can omit `repo=` when a project is configured.
@@ -17,11 +19,21 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 |------|---------|
 | `list_projects` | Easy Review projects (id, name, remote) |
 | `list_prs` | Open PRs with size, review decision, merge state |
-| `priority_prs` | Ranked “review next” queue (`limit`, optional `production_lines`) |
+| `priority_prs` | Ranked “review next” queue |
 | `low_hanging_fruit` | Smallest open PRs (defaults to production-only line enrichment) |
-| `pr_diff_stats` | Per-PR adds/dels split by `production` / `test` / `storybook` / `generated` / `docs` |
-| `prs_by_status` | Filter: `ready_to_review`, `outdated`, `blocked_conflicts`, `waiting_on_author`, `approved`, `merge_ready`, `draft` |
-| `tool_ideas` | Backlog of additional MCP tools worth adding |
+| `cross_repo_queue` | Priority queue across all configured projects |
+| `my_review_debt` | Requested of you; you have not approved / requested changes |
+| `pr_diff_stats` | Adds/dels split by production / test / storybook / generated / docs |
+| `diff_hotspots` | Top production files by churn in a PR |
+| `compare_prod_size` | Rank a list of PR numbers by production-only lines |
+| `prs_by_status` | Filter: `ready_to_review`, `outdated`, `blocked_conflicts`, `waiting_on_author`, … |
+| `prs_stale` | No GitHub activity for N days (default 14) |
+| `prs_blocked` | Conflicts, `mergeStateStatus=BLOCKED`, or failing CI |
+| `prs_failing_ci` | Failing `gh pr checks` |
+| `prs_already_addressed` | All review threads resolved or outdated |
+| `summarize_triage` | Local managed `triage.json` / `review.json` summary |
+| `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
+| `tool_ideas` | Catalog of shipped + future tools |
 
 ## Build / run
 
@@ -44,40 +56,30 @@ Requires `gh auth login`.
 }
 ```
 
-Or during development:
-
-```json
-{
-  "mcpServers": {
-    "easy-review": {
-      "command": "cargo",
-      "args": ["run", "-q", "-p", "er-mcp"],
-      "cwd": "/absolute/path/to/easy-review"
-    }
-  }
-}
-```
-
 ## Example calls
 
 ```text
-priority_prs            → { "limit": 5, "repo": "acme/widgets" }
-low_hanging_fruit       → { "limit": 5, "production_lines": true }
-pr_diff_stats           → { "number": 42, "include_files": false }
-prs_by_status           → { "status": "outdated" }
+priority_prs              → { "limit": 5, "repo": "acme/widgets" }
+low_hanging_fruit         → { "limit": 5 }
+my_review_debt            → {}
+prs_stale                 → { "days": 14 }
+prs_blocked               → { "scan_limit": 20 }
+prs_already_addressed     → { "scan_limit": 15 }
+cross_repo_queue          → { "limit": 10 }
+pr_diff_stats             → { "number": 42 }
+diff_hotspots             → { "number": 42, "limit": 10 }
+compare_prod_size         → { "numbers": [12, 15, 18] }
+summarize_triage          → { "number": 42 }
+open_in_easy_review       → { "number": 42 }
 ```
 
 ## Architecture
 
-- Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`) so they stay unit-testable without MCP.
+- Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
 - `er-mcp` is a thin `rmcp` stdio wrapper that shells out via `er-engine::github`.
 
-## Future tools (see also `tool_ideas`)
+## Notes
 
-- **Already fixed / addressed** — review threads resolved or outdated after new commits
-- **Failing CI** — required checks red
-- **My review debt** — requested of me, no review yet
-- **Stale PRs** — no activity for N days
-- **Cross-repo queue** — rank across all configured projects
-- **Open in Easy Review** — deep-link into the desktop app
-- **Triage sidecar summary** — read managed `triage.json` / `review.json` when present
+- `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` to bound cost.
+- `open_in_easy_review` returns instructions; there is no `er://` deep-link handler yet.
+- Production line counts exclude paths classified as test, Storybook, generated/lock, or docs.
