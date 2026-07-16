@@ -7,6 +7,9 @@ use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
     gh_pr_thread_addressing_remote,
 };
+use er_engine::headless_jobs::{
+    cancel_job, job_status, list_jobs, start_job, HeadlessJobKind, HeadlessJobRequest,
+};
 use er_engine::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
@@ -126,6 +129,28 @@ pub struct CompareProdArgs {
     pub project_id: Option<String>,
     /// PR numbers to compare.
     pub numbers: Vec<u64>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct RunReviewArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// PR number to review.
+    pub number: u64,
+    /// Optional AI provider id from `~/.config/er/config.toml`.
+    #[serde(default)]
+    pub provider_id: Option<String>,
+    /// Optional model id.
+    #[serde(default)]
+    pub model_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct JobIdArgs {
+    /// Job id returned by run_triage / run_review / run_tour.
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -719,6 +744,62 @@ impl ErMcp {
         }))
     }
 
+    #[tool(
+        description = "Start Easy Review triage for a PR. Writes triage.json into shared managed storage (Desktop/TUI will see it). Returns a job id — poll with review_job_status."
+    )]
+    async fn run_triage(
+        &self,
+        Parameters(args): Parameters<RunReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        spawn_review_job(HeadlessJobKind::Triage, args).await
+    }
+
+    #[tool(
+        description = "Start a general Easy Review AI review for a PR. Writes review.json (and related sidecars) into shared managed storage. Returns a job id."
+    )]
+    async fn run_review(
+        &self,
+        Parameters(args): Parameters<RunReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        spawn_review_job(HeadlessJobKind::Review, args).await
+    }
+
+    #[tool(
+        description = "Generate an Easy Review guided tour (tour.json) for a PR into shared managed storage. Returns a job id."
+    )]
+    async fn run_tour(
+        &self,
+        Parameters(args): Parameters<RunReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        spawn_review_job(HeadlessJobKind::Tour, args).await
+    }
+
+    #[tool(description = "List headless review jobs started by this MCP process.")]
+    async fn list_review_jobs(&self) -> Result<CallToolResult, McpError> {
+        text_json(&json!({ "jobs": list_jobs() }))
+    }
+
+    #[tool(description = "Get status for a headless review job (queued/running/done/failed).")]
+    async fn review_job_status(
+        &self,
+        Parameters(args): Parameters<JobIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let info =
+            job_status(&args.id).ok_or_else(|| tool_err(format!("unknown job id: {}", args.id)))?;
+        text_json(&json!({ "job": info }))
+    }
+
+    #[tool(
+        description = "Cancel a queued headless review job (running jobs cannot be cancelled yet)."
+    )]
+    async fn cancel_review_job(
+        &self,
+        Parameters(args): Parameters<JobIdArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let info = cancel_job(&args.id).map_err(|e| tool_err(e.to_string()))?;
+        text_json(&json!({ "job": info }))
+    }
+
     #[tool(description = "Catalog of Easy Review MCP tools (shipped + future ideas).")]
     async fn tool_ideas(&self) -> Result<CallToolResult, McpError> {
         text_json(&json!({
@@ -726,6 +807,42 @@ impl ErMcp {
             "ideas": FUTURE_IDEAS,
         }))
     }
+}
+
+async fn spawn_review_job(
+    kind: HeadlessJobKind,
+    args: RunReviewArgs,
+) -> Result<CallToolResult, McpError> {
+    let (owner, name, project_name) =
+        resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+            .map_err(|e| tool_err(e.to_string()))?;
+    let number = args.number;
+    let provider_id = args.provider_id;
+    let model_id = args.model_id;
+
+    let info = tokio::task::spawn_blocking(move || {
+        start_job(HeadlessJobRequest {
+            kind,
+            owner: owner.clone(),
+            repo: name.clone(),
+            pr: number,
+            base_ref: None,
+            head_ref: None,
+            ignore_globs: vec![],
+            provider_id,
+            model_id,
+            dry_run: false,
+        })
+    })
+    .await
+    .map_err(|e| McpError::internal_error(e.to_string(), None))?
+    .map_err(|e| tool_err(e.to_string()))?;
+
+    text_json(&json!({
+        "project": project_name,
+        "note": "Job writes into shared Easy Review managed storage; open the PR in Desktop/TUI or call summarize_triage when done.",
+        "job": info,
+    }))
 }
 
 fn parse_status(s: &str) -> Result<ReviewStatus, McpError> {
@@ -761,14 +878,22 @@ const SHIPPED_TOOLS: &[&str] = &[
     "summarize_triage",
     "diff_hotspots",
     "compare_prod_size",
+    "run_triage",
+    "run_review",
+    "run_tour",
+    "list_review_jobs",
+    "review_job_status",
+    "cancel_review_job",
     "tool_ideas",
 ];
 
 const FUTURE_IDEAS: &[&str] = &[
+    "run_expert / run_professor / run_arena via the same headless job runner",
     "er:// deep-link / single-instance desktop open from MCP",
+    "cancel mid-run (kill agent PID)",
+    "shared agent_slots lock file with Desktop process",
     "required-checks-only CI filter (GitHub branch protection)",
-    "push-only staleness (ignore comment bumps)",
-    "auto-open next priority PR in Easy Review Desktop",
+    "inbox_digest / export_review_brief / missing_tests",
 ];
 
 #[tool_handler]
@@ -777,11 +902,12 @@ impl ServerHandler for ErMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Easy Review MCP for PR triage. \
-             priority_prs / low_hanging_fruit / my_review_debt / cross_repo_queue for queues; \
-             pr_diff_stats / diff_hotspots / compare_prod_size for production-line sizing; \
-             prs_by_status / prs_stale / prs_blocked / prs_failing_ci / prs_already_addressed for workflow filters; \
-             summarize_triage for local AI sidecars; open_in_easy_review_tool for open instructions.",
+                "Easy Review MCP for PR triage and headless AI reviews. \
+             Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
+             Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
+             Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
+             Run AI into shared storage: run_triage, run_review, run_tour (then review_job_status / summarize_triage). \
+             Open: open_in_easy_review.",
             )
     }
 

@@ -11,10 +11,12 @@ pub use config::{
     apply_config_field, config_hub_items_for_scope, desktop_settings_snapshot, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
 };
+pub mod agent_runtime;
 pub mod dev_log;
 pub mod env_path;
 pub mod git;
 pub mod github;
+pub mod headless_jobs;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod paths;

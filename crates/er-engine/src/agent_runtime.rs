@@ -253,7 +253,12 @@ pub fn resolve_invocation(
                 .with_context(|| format!("unknown model {model_id} for provider {provider_id}"))?;
             let mut args = provider.args.clone();
             args.extend(model.args.clone());
-            (provider.command.clone(), args, Some(provider_id.to_string()), Some(model_id.to_string()))
+            (
+                provider.command.clone(),
+                args,
+                Some(provider_id.to_string()),
+                Some(model_id.to_string()),
+            )
         }
     };
 
@@ -263,11 +268,7 @@ pub fn resolve_invocation(
     }
     // Only grant managed-storage --add-dir when the task needs artifact I/O.
     // ReadOnly must not receive a Codex-writable extra root.
-    crate::config::inject_agent_storage_access(
-        &command,
-        &mut args,
-        request.access.output_dir(),
-    );
+    crate::config::inject_agent_storage_access(&command, &mut args, request.access.output_dir());
     if family == CliFamily::Codex {
         if let Some(output_dir) = request.access.output_dir() {
             inject_codex_writable_dir(&mut args, output_dir);
@@ -782,7 +783,13 @@ mod tests {
 
     #[test]
     fn codex_invocation_skips_effort_for_unsupported_model() {
-        let config = codex_config();
+        let mut config = codex_config();
+        // Catalog models may advertise effort; force an empty list for this case.
+        if let Some(provider) = config.ai_hub.providers.get_mut("codex") {
+            if let Some(model) = provider.models.iter_mut().find(|m| m.id == "gpt-5.4") {
+                model.effort_levels.clear();
+            }
+        }
         let task = AgentTaskKind::Review;
         let invocation = resolve_invocation(
             &config,
@@ -803,7 +810,8 @@ mod tests {
         assert!(!invocation
             .args
             .iter()
-            .any(|arg| arg.starts_with("model_reasoning_effort=")));
+            .any(|arg| arg.starts_with("model_reasoning_effort=")
+                || arg.contains("model_reasoning_effort=")));
     }
 
     #[test]
@@ -967,11 +975,7 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(has_option_value(
-            &invocation.args,
-            "--model",
-            "gpt-5.4"
-        ));
+        assert!(has_option_value(&invocation.args, "--model", "gpt-5.4"));
         assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
     }
 
