@@ -34,24 +34,30 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 | `run_triage` | Start triage → shared `triage.json` (async job) |
 | `run_review` | Start general AI review → shared `review.json` |
 | `run_tour` | Generate guided tour → shared `tour.json` |
+| `run_ai_suite` | Start triage + review + tour together (three jobs) |
 | `list_review_jobs` / `review_job_status` / `cancel_review_job` | Headless job lifecycle |
-| `summarize_triage` | Local managed `triage.json` / `review.json` summary |
+| `summarize_triage` | Local managed `triage.json` / `review.json` / `tour.json` summary |
 | `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
 | `tool_ideas` | Catalog of shipped + future tools |
 
 ## Headless reviews (shared storage)
 
-`run_triage` / `run_review` / `run_tour` fetch the PR diff via `gh`, write `diff-tmp` into the same managed PR bucket Desktop uses (`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`), and spawn the configured agent from `~/.config/er/config.toml`.
+`run_triage` / `run_review` / `run_tour` (or `run_ai_suite` for all three) fetch the PR diff via `gh`, write `diff-tmp` into the same managed PR bucket Desktop uses (`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`), and spawn the configured agent from `~/.config/er/config.toml`.
 
-Poll with `review_job_status`, then `summarize_triage` or open the PR in Easy Review Desktop/TUI — sidecars are shared.
+Poll with `review_job_status`, then `summarize_triage` (includes tour pillars when `tour.json` exists) or open the PR in Easy Review Desktop/TUI — sidecars are shared.
 
 Requires agent CLIs on `PATH` (e.g. `claude`, `codex`, `agent`) and `gh auth login`.
 
 ```text
-run_triage            → { "number": 42 }
+run_ai_suite          → { "number": 42 }
 review_job_status     → { "id": "hj-1" }
-run_tour              → { "number": 42 }
 summarize_triage      → { "number": 42 }
+```
+
+Or run pieces separately:
+
+```text
+run_triage / run_review / run_tour → { "number": 42 }
 ```
 
 ## Build / run
@@ -92,6 +98,7 @@ summarize_triage          → { "number": 42 }
 run_triage                → { "number": 42 }
 run_review                → { "number": 42 }
 run_tour                  → { "number": 42 }
+run_ai_suite              → { "number": 42 }
 review_job_status         → { "id": "hj-1" }
 open_in_easy_review       → { "number": 42 }
 ```

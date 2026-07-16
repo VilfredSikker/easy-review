@@ -632,7 +632,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Summarize managed Easy Review triage.json / review.json sidecars for a PR (local app data), if present."
+        description = "Summarize managed Easy Review triage.json / review.json / tour.json sidecars for a PR (local app data), if present."
     )]
     async fn summarize_triage(
         &self,
@@ -774,6 +774,55 @@ impl ErMcp {
         spawn_review_job(HeadlessJobKind::Tour, args).await
     }
 
+    #[tool(
+        description = "Start triage, general review, and guided tour for a PR (three async jobs into shared storage). Prefer this when you want the full Easy Review AI pass including tour.json."
+    )]
+    async fn run_ai_suite(
+        &self,
+        Parameters(args): Parameters<RunReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let provider_id = args.provider_id;
+        let model_id = args.model_id;
+
+        let jobs = tokio::task::spawn_blocking(move || {
+            let kinds = [
+                HeadlessJobKind::Triage,
+                HeadlessJobKind::Review,
+                HeadlessJobKind::Tour,
+            ];
+            let mut out = Vec::with_capacity(kinds.len());
+            for kind in kinds {
+                let info = start_job(HeadlessJobRequest {
+                    kind,
+                    owner: owner.clone(),
+                    repo: name.clone(),
+                    pr: number,
+                    base_ref: None,
+                    head_ref: None,
+                    ignore_globs: vec![],
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                    dry_run: false,
+                })?;
+                out.push(info);
+            }
+            Ok::<_, anyhow::Error>(out)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        text_json(&json!({
+            "project": project_name,
+            "note": "Started triage + review + tour into shared managed storage. Poll each job with review_job_status, then summarize_triage.",
+            "jobs": jobs,
+        }))
+    }
+
     #[tool(description = "List headless review jobs started by this MCP process.")]
     async fn list_review_jobs(&self) -> Result<CallToolResult, McpError> {
         text_json(&json!({ "jobs": list_jobs() }))
@@ -840,7 +889,7 @@ async fn spawn_review_job(
 
     text_json(&json!({
         "project": project_name,
-        "note": "Job writes into shared Easy Review managed storage; open the PR in Desktop/TUI or call summarize_triage when done.",
+        "note": "Job writes into shared Easy Review managed storage (triage.json / review.json / tour.json). Open the PR in Desktop/TUI or call summarize_triage when done.",
         "job": info,
     }))
 }
@@ -881,6 +930,7 @@ const SHIPPED_TOOLS: &[&str] = &[
     "run_triage",
     "run_review",
     "run_tour",
+    "run_ai_suite",
     "list_review_jobs",
     "review_job_status",
     "cancel_review_job",
@@ -906,7 +956,8 @@ impl ServerHandler for ErMcp {
              Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
              Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
              Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
-             Run AI into shared storage: run_triage, run_review, run_tour (then review_job_status / summarize_triage). \
+             Run AI into shared storage: run_triage, run_review, run_tour, or run_ai_suite (all three). \
+             Poll with review_job_status; read sidecars via summarize_triage (includes tour). \
              Open: open_in_easy_review.",
             )
     }

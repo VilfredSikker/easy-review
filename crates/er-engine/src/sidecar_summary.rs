@@ -1,6 +1,6 @@
-//! Compact summaries of managed triage / review sidecars for MCP tooling.
+//! Compact summaries of managed triage / review / tour sidecars for MCP tooling.
 
-use crate::ai::{load_triage_review, ErReview, RiskLevel, TriageReview};
+use crate::ai::{load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview};
 use crate::github::owner_repo_storage_slug;
 use crate::storage::pr_bucket_dir;
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ pub struct PrSidecarSummary {
     pub bucket_path: String,
     pub triage: Option<TriageSummary>,
     pub review: Option<ReviewSummary>,
+    pub tour: Option<TourSummary>,
     pub missing: Vec<String>,
 }
 
@@ -38,6 +39,17 @@ pub struct ReviewSummary {
     pub findings: usize,
     pub by_risk: BTreeMap<String, usize>,
     pub high_risk_files: Vec<String>,
+    pub diff_hash: String,
+    pub created_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TourSummary {
+    pub title: String,
+    pub overview: String,
+    pub pillars: usize,
+    pub files: usize,
+    pub pillar_titles: Vec<String>,
     pub diff_hash: String,
     pub created_at: String,
 }
@@ -97,6 +109,24 @@ fn summarize_review(r: &ErReview) -> ReviewSummary {
     }
 }
 
+fn summarize_tour(t: &ErTour) -> TourSummary {
+    let pillars = t.ordered_pillars();
+    let files = pillars
+        .iter()
+        .map(|p| p.all_file_paths().count())
+        .sum::<usize>();
+    let pillar_titles = pillars.iter().map(|p| p.title.clone()).collect();
+    TourSummary {
+        title: t.title.clone(),
+        overview: t.overview.clone(),
+        pillars: pillars.len(),
+        files,
+        pillar_titles,
+        diff_hash: t.diff_hash.clone(),
+        created_at: t.created_at.clone(),
+    }
+}
+
 /// Read managed PR-bucket sidecars for `owner/repo` PR `#number`.
 pub fn summarize_pr_sidecars(owner: &str, repo: &str, number: u64) -> PrSidecarSummary {
     let slug = owner_repo_storage_slug(owner, repo);
@@ -128,6 +158,13 @@ pub fn summarize_pr_bucket(
         None
     };
 
+    let tour = if bucket.join("tour.json").exists() {
+        load_tour_sidecar(&path_str, "tour.json").map(|t| summarize_tour(&t))
+    } else {
+        missing.push("tour.json".into());
+        None
+    };
+
     PrSidecarSummary {
         owner: owner.to_string(),
         repo: repo.to_string(),
@@ -135,6 +172,7 @@ pub fn summarize_pr_bucket(
         bucket_path: path_str,
         triage,
         review,
+        tour,
         missing,
     }
 }
@@ -151,11 +189,13 @@ mod tests {
         let summary = summarize_pr_bucket("acme", "widgets", 9, dir.path());
         assert!(summary.triage.is_none());
         assert!(summary.review.is_none());
+        assert!(summary.tour.is_none());
         assert!(summary.missing.contains(&"triage.json".into()));
+        assert!(summary.missing.contains(&"tour.json".into()));
     }
 
     #[test]
-    fn summarize_reads_triage_and_review() {
+    fn summarize_reads_triage_review_and_tour() {
         let dir = tempfile::tempdir().unwrap();
         let bucket = dir.path();
 
@@ -213,6 +253,33 @@ mod tests {
         )
         .unwrap();
 
+        let tour = ErTour {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            title: "Tour: widgets".into(),
+            overview: "Start with core".into(),
+            pillars: vec![crate::ai::TourPillar {
+                id: "p1".into(),
+                title: "Core".into(),
+                description: "main path".into(),
+                order: 0,
+                importance: 90,
+                foundation: true,
+                files: vec![crate::ai::TourFile {
+                    path: "src/a.rs".into(),
+                    reason: "entry".into(),
+                    finding_ids: vec![],
+                    related: vec![],
+                }],
+            }],
+        };
+        std::fs::write(
+            bucket.join("tour.json"),
+            serde_json::to_string(&tour).unwrap(),
+        )
+        .unwrap();
+
         let summary = summarize_pr_bucket("acme", "widgets", 3, bucket);
         assert_eq!(
             summary.triage.as_ref().unwrap().first_impression,
@@ -223,5 +290,11 @@ mod tests {
             summary.review.as_ref().unwrap().high_risk_files,
             vec!["src/a.rs".to_string()]
         );
+        let tour_sum = summary.tour.as_ref().unwrap();
+        assert_eq!(tour_sum.title, "Tour: widgets");
+        assert_eq!(tour_sum.pillars, 1);
+        assert_eq!(tour_sum.files, 1);
+        assert_eq!(tour_sum.pillar_titles, vec!["Core".to_string()]);
+        assert!(summary.missing.is_empty());
     }
 }
