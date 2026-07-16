@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop"]
+members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp"]
 
 [workspace.package]
 version = "0.4.3"

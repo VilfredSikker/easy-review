@@ -48,6 +48,14 @@ cd easy-review
 
 See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for full details.
 
+## MCP server (`er-mcp`)
+
+A stdio [MCP](https://modelcontextprotocol.io) server for PR triage from Cursor/Claude — top priority PRs, low-hanging fruit, production-only diff line counts, outdated/blocked filters. See [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
+
+```bash
+cargo install --path crates/er-mcp
+```
+
 ## Documentation
 
 📚 The full guide is at **[vilfredsikker.github.io/easy-review/guide](https://vilfredsikker.github.io/easy-review/guide/)** — [installation](https://vilfredsikker.github.io/easy-review/guide/installation.html), [quick start](https://vilfredsikker.github.io/easy-review/guide/quick-start.html), core concepts, keybindings, the AI review workflow, configuration, storage, GitHub sync, and troubleshooting for both the terminal UI and the desktop app.

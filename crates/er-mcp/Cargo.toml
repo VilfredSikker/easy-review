@@ -1,0 +1,26 @@
+[package]
+name = "er-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Model Context Protocol server for easy-review PR triage"
+readme = "README.md"
+
+[[bin]]
+name = "er-mcp"
+path = "src/main.rs"
+
+[dependencies]
+er-engine = { path = "../er-engine", default-features = false }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+dirs.workspace = true
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "io-std", "sync"] }
+rmcp = { version = "2.2.0", features = ["server", "transport-io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+schemars = "1"
+
+[dev-dependencies]
+tempfile = "3"

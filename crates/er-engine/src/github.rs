@@ -2227,6 +2227,163 @@ pub fn gh_pr_reply_comment_remote(
     Ok(resp.id)
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Review-queue listing (MCP / headless). Includes size + merge-state fields that
+// the desktop PR list intentionally omits for latency.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Login of the authenticated `gh` user, if available.
+pub fn gh_current_login() -> Option<String> {
+    let output = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if login.is_empty() {
+        None
+    } else {
+        Some(login)
+    }
+}
+
+/// List PRs for a repo with fields needed by [`crate::review_queue`].
+///
+/// `state` is passed to `gh pr list --state` (`open`, `closed`, `merged`, `all`).
+pub fn gh_pr_list_queue(
+    owner: &str,
+    repo: &str,
+    state: &str,
+    limit: usize,
+) -> Result<Vec<crate::review_queue::QueuePr>> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let limit = limit.clamp(1, 100);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            &repo_slug,
+            "--state",
+            state,
+            "--limit",
+            &limit.to_string(),
+            "--json",
+            "number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url",
+        ])
+        .output()
+        .context("Failed to run gh pr list")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr list failed: {}", stderr.trim());
+    }
+    let me = gh_current_login();
+    parse_pr_list_queue(&String::from_utf8_lossy(&output.stdout), me.as_deref())
+}
+
+/// Pure parser for `gh pr list --json …` review-queue payloads.
+pub fn parse_pr_list_queue(
+    json: &str,
+    current_login: Option<&str>,
+) -> Result<Vec<crate::review_queue::QueuePr>> {
+    #[derive(Deserialize)]
+    struct Raw {
+        number: u64,
+        title: String,
+        #[serde(default, rename = "headRefName")]
+        head_ref_name: String,
+        #[serde(default, rename = "baseRefName")]
+        base_ref_name: String,
+        state: String,
+        #[serde(rename = "isDraft")]
+        is_draft: bool,
+        author: RawAuthor,
+        #[serde(default, rename = "reviewRequests")]
+        review_requests: Vec<RawReviewRequest>,
+        #[serde(default, rename = "reviewDecision")]
+        review_decision: Option<String>,
+        #[serde(default)]
+        mergeable: Option<String>,
+        #[serde(default, rename = "mergeStateStatus")]
+        merge_state_status: Option<String>,
+        #[serde(default)]
+        additions: u64,
+        #[serde(default)]
+        deletions: u64,
+        #[serde(default, rename = "changedFiles")]
+        changed_files: u64,
+        #[serde(default, rename = "updatedAt")]
+        updated_at: String,
+        #[serde(default)]
+        labels: Vec<RawLabel>,
+        #[serde(default)]
+        url: String,
+    }
+    #[derive(Deserialize)]
+    struct RawAuthor {
+        login: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawReviewRequest {
+        #[serde(default)]
+        login: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawLabel {
+        name: String,
+    }
+
+    let raw: Vec<Raw> = serde_json::from_str(json).context("invalid gh pr list JSON")?;
+    let me = current_login.map(|s| s.to_ascii_lowercase());
+    Ok(raw
+        .into_iter()
+        .map(|r| {
+            let reviewers: Vec<String> = r
+                .review_requests
+                .into_iter()
+                .filter_map(|rr| rr.login)
+                .collect();
+            let review_requested_of_me = me
+                .as_ref()
+                .map(|m| reviewers.iter().any(|r| r.eq_ignore_ascii_case(m)))
+                .unwrap_or(false);
+            crate::review_queue::QueuePr {
+                number: r.number,
+                title: r.title,
+                author: r.author.login.unwrap_or_default(),
+                is_draft: r.is_draft,
+                state: r.state,
+                review_decision: r.review_decision.filter(|s| !s.is_empty()),
+                mergeable: r.mergeable.filter(|s| !s.is_empty()),
+                merge_state_status: r.merge_state_status.filter(|s| !s.is_empty()),
+                additions: r.additions,
+                deletions: r.deletions,
+                changed_files: r.changed_files,
+                updated_at: r.updated_at,
+                labels: r.labels.into_iter().map(|l| l.name).collect(),
+                reviewers,
+                url: r.url,
+                head_ref: r.head_ref_name,
+                base_ref: r.base_ref_name,
+                production_lines: None,
+                review_requested_of_me,
+            }
+        })
+        .collect())
+}
+
+/// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`).
+pub fn gh_pr_prod_diff_stats(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<crate::git::ProdDiffStats> {
+    let raw = gh_pr_diff_remote(owner, repo, number)?;
+    Ok(crate::git::ProdDiffStats::from_raw_diff(&raw))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2887,5 +3044,38 @@ mod tests {
         assert_eq!(checks[0].conclusion, Some("pass".to_string()));
         assert_eq!(checks[1].conclusion, Some("fail".to_string()));
         assert!(checks[2].conclusion.is_none()); // pending — no bucket yet
+    }
+
+    #[test]
+    fn parse_pr_list_queue_marks_review_requested_of_me() {
+        let json = r#"[
+          {
+            "number": 7,
+            "title": "Tiny fix",
+            "headRefName": "fix",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "isDraft": false,
+            "author": {"login": "alice"},
+            "reviewRequests": [{"login": "bob"}],
+            "reviewDecision": "REVIEW_REQUIRED",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "additions": 4,
+            "deletions": 1,
+            "changedFiles": 1,
+            "updatedAt": "2026-07-01T00:00:00Z",
+            "labels": [{"name": "bug"}],
+            "url": "https://github.com/o/r/pull/7"
+          }
+        ]"#;
+        let prs = parse_pr_list_queue(json, Some("bob")).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert!(prs[0].review_requested_of_me);
+        assert_eq!(prs[0].additions, 4);
+        assert_eq!(prs[0].labels, vec!["bug".to_string()]);
+
+        let prs2 = parse_pr_list_queue(json, Some("carol")).unwrap();
+        assert!(!prs2[0].review_requested_of_me);
     }
 }

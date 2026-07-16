@@ -18,6 +18,7 @@ pub mod github;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod paths;
+pub mod review_queue;
 pub mod storage;
 pub mod sync;
 #[cfg(feature = "watch")]
