@@ -66,6 +66,8 @@ pub fn plan_card_ai_invocation(
         resolved_model_id.as_deref(),
         effort.as_deref(),
     );
+    // Card AI returns text on stdout; the host persists replies. No managed
+    // storage --add-dir is required (and would be overly broad for Codex).
 
     CardAiInvocation {
         command,
@@ -105,34 +107,41 @@ fn inject_read_only_tools(args: &mut Vec<String>) {
     }
 }
 
-/// Build argv: system context via `--append-system-prompt`, user text via `{prompt}` or trailing arg.
+/// Build argv: Claude uses `--append-system-prompt`; other CLIs (e.g. Codex) fold
+/// system context into the `{prompt}` placeholder or trailing prompt arg.
 pub fn build_card_ai_argv(inv: &CardAiInvocation, system: &str, user: &str) -> Vec<String> {
     let mut args = inv.args.clone();
     let has_placeholder = args.iter().any(|a| a.contains("{prompt}"));
+    let combined_prompt = if inv.is_claude_compatible || system.is_empty() {
+        user.to_string()
+    } else {
+        format!("{system}\n\nUser request:\n{user}")
+    };
+
     for a in args.iter_mut() {
         if a.contains("{prompt}") {
-            *a = a.replace("{prompt}", user);
+            *a = a.replace("{prompt}", &combined_prompt);
         }
     }
 
-    if args.iter().any(|a| a == "--append-system-prompt") {
-        if let Some(i) = args.iter().position(|a| a == "--append-system-prompt") {
-            if i + 1 < args.len() {
-                args[i + 1] = system.to_string();
-            } else {
-                args.push(system.to_string());
+    if inv.is_claude_compatible {
+        if args.iter().any(|a| a == "--append-system-prompt") {
+            if let Some(i) = args.iter().position(|a| a == "--append-system-prompt") {
+                if i + 1 < args.len() {
+                    args[i + 1] = system.to_string();
+                } else {
+                    args.push(system.to_string());
+                }
+            }
+        } else {
+            args.push("--append-system-prompt".to_string());
+            args.push(system.to_string());
+            if !has_placeholder {
+                args.push(user.to_string());
             }
         }
-    } else if has_placeholder {
-        // User prompt already substituted; prepend system as append-system-prompt.
-        args.push("--append-system-prompt".to_string());
-        args.push(system.to_string());
-    } else if inv.is_claude_compatible {
-        args.push("--append-system-prompt".to_string());
-        args.push(system.to_string());
-        args.push(user.to_string());
-    } else {
-        args.push(user.to_string());
+    } else if !has_placeholder {
+        args.push(combined_prompt);
     }
 
     args
@@ -253,6 +262,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn build_card_ai_argv_codex_combines_system_without_claude_flag() {
+        let inv = CardAiInvocation {
+            command: "codex".into(),
+            args: vec!["exec".into(), "{prompt}".into()],
+            work_dir: "/repo".into(),
+            is_claude_compatible: false,
+            uses_stream_json: false,
+        };
+        let args = build_card_ai_argv(&inv, "system context", "how does this work?");
+        assert!(!args.iter().any(|a| a == "--append-system-prompt"));
+        assert!(args.iter().any(|a| {
+            a.contains("system context") && a.contains("User request:\nhow does this work?")
+        }));
+    }
+
+    #[test]
+    fn build_card_ai_argv_claude_uses_append_system_prompt() {
+        let inv = CardAiInvocation {
+            command: "claude".into(),
+            args: vec!["--print".into(), "-p".into(), "{prompt}".into()],
+            work_dir: "/repo".into(),
+            is_claude_compatible: true,
+            uses_stream_json: false,
+        };
+        let args = build_card_ai_argv(&inv, "system context", "how does this work?");
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair[0] == "--append-system-prompt" && pair[1] == "system context" }));
+        assert!(args.iter().any(|a| a == "how does this work?"));
+        assert!(!args.iter().any(|a| a.contains("User request:")));
+    }
+
+    #[test]
     fn extract_stream_json_result_field() {
         let stdout = concat!(
             r#"{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}"#,
@@ -278,6 +320,7 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
+        assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
     }
 
     #[test]
@@ -312,5 +355,41 @@ mod tests {
             .args
             .windows(2)
             .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
+        assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
+    }
+
+    #[test]
+    fn plan_card_ai_uses_the_shared_default_model() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_provider = Some("codex".into());
+        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                models: vec![
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        args: vec!["--model".into(), "gpt-5.6-luna".into()],
+                        ..Default::default()
+                    },
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.3-codex-spark".into(),
+                        args: vec!["--model".into(), "gpt-5.3-codex-spark".into()],
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+
+        let inv = plan_card_ai_invocation(&config, Some("codex"), None, None, "/repo".into());
+        assert!(inv
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.6-luna"));
+        assert!(!inv
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.3-codex-spark"));
     }
 }

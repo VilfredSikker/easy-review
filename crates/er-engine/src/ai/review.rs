@@ -662,6 +662,13 @@ impl AiState {
         self.review.as_ref()?.files.get(path)
     }
 
+    /// Active (non-resolved, non-dropped) findings for a file path.
+    pub fn file_active_findings(&self, path: &str) -> Vec<&Finding> {
+        self.file_review(path)
+            .map(|fr| fr.findings.iter().filter(|f| f.is_active()).collect())
+            .unwrap_or_default()
+    }
+
     /// Get file-level findings (no hunk or line anchor) for a file path.
     #[cfg(test)]
     pub fn findings_for_file_level(&self, path: &str) -> Vec<&Finding> {
@@ -1767,6 +1774,32 @@ mod tests {
             ("b.rs", RiskLevel::Low, vec![]),
         ]));
         assert_eq!(state.total_findings(), 0);
+    }
+
+    // ── AiState::file_active_findings ──
+
+    #[test]
+    fn file_active_findings_excludes_resolved_and_dropped() {
+        let active = make_finding("a", Some(0), RiskLevel::High);
+        let mut resolved = make_finding("b", Some(0), RiskLevel::Medium);
+        resolved.resolved = true;
+        let mut dropped = make_finding("c", Some(0), RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+
+        let mut state = AiState::default();
+        state.review = Some(make_review_with_files(vec![(
+            "a.rs",
+            RiskLevel::High,
+            vec![active, resolved, dropped],
+        )]));
+
+        let ids: Vec<&str> = state
+            .file_active_findings("a.rs")
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["a"]);
+        assert!(state.file_active_findings("missing.rs").is_empty());
     }
 
     // ── AiState::findings_for_hunk ──

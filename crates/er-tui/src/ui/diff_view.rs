@@ -339,10 +339,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 RiskLevel::Info => "INFO",
             };
             header_spans.push(Span::styled("  ", ratatui::style::Style::default()));
-            header_spans.push(Span::styled(
-                format!("{} {}", fr.risk.symbol(), risk_label),
-                risk_style,
-            ));
+            header_spans.push(Span::styled(format!("Risk {risk_label}"), risk_style));
             if !fr.risk_reason.is_empty() {
                 header_spans.push(Span::styled(
                     format!(" — {}", fr.risk_reason),

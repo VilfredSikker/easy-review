@@ -3588,6 +3588,7 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_config_from_active_tab();
     let hub = &app.config.ai_hub;
+    // Palette / session highlight: use live current_* (not persisted defaults).
     let current_provider = app.current_ai_provider.as_deref();
     let current_model = app.current_ai_model.as_deref();
     let resolved_provider = hub.resolve_provider_id(current_provider);
@@ -3596,7 +3597,11 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
         .providers
         .iter()
         .map(|(id, cfg)| {
-            let resolved_model = hub.resolve_model_id(id, current_model);
+            let resolved_model = if resolved_provider.as_deref() == Some(id.as_str()) {
+                hub.resolve_model_id(id, current_model)
+            } else {
+                None
+            };
             AiProviderInfo {
                 id: id.clone(),
                 label: cfg.display_name(id),
@@ -3626,32 +3631,37 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
 pub fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
+    persist: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let persist = persist.unwrap_or(false);
+    let agent = app.config.agent.clone();
 
-    let hub = &app.config.ai_hub;
-    if !hub.providers.contains_key(&provider_id) {
-        return Err(format!("Unknown provider: {provider_id}"));
-    }
-    if let Some(ref mid) = model_id {
-        let provider = hub.providers.get(&provider_id).unwrap();
-        if !provider.models.is_empty() && !provider.models.iter().any(|m| &m.id == mid) {
-            return Err(format!(
-                "Unknown model '{mid}' for provider '{provider_id}'"
-            ));
-        }
-    }
-
-    let normalized_effort = er_engine::config::normalize_effort(
-        &app.config.ai_hub,
-        Some(&provider_id),
-        model_id.as_deref(),
-        app.current_ai_effort.as_deref(),
-    );
-    app.current_ai_provider = Some(provider_id);
-    app.current_ai_model = model_id;
-    app.current_ai_effort = normalized_effort;
+    let selection = if persist {
+        let selection = app
+            .config
+            .ai_hub
+            .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+            .map_err(|e| e.to_string())?;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+        selection
+    } else {
+        // Session-only: keep current effort when the new model still supports it.
+        let runtime_effort = app.current_ai_effort.clone();
+        app.config
+            .ai_hub
+            .resolve_selection(
+                &provider_id,
+                model_id.as_deref(),
+                &agent,
+                runtime_effort.as_deref(),
+            )
+            .map_err(|e| e.to_string())?
+    };
+    app.current_ai_provider = selection.provider_id;
+    app.current_ai_model = selection.model_id;
+    app.current_ai_effort = selection.effort;
 
     state
         .desktop_revision
@@ -3662,18 +3672,28 @@ pub fn set_ai_selection(
 #[tauri::command]
 pub fn set_ai_effort(
     effort: Option<String>,
+    persist: Option<bool>,
     state: State<AppState>,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let provider_id = app
+    let persist = persist.unwrap_or(false);
+    let default_selection = app
         .config
         .ai_hub
-        .resolve_provider_id(app.current_ai_provider.as_deref());
-    let model_id = provider_id.as_deref().and_then(|provider| {
-        app.config
-            .ai_hub
-            .resolve_model_id(provider, app.current_ai_model.as_deref())
-    });
+        .resolve_default_selection(&app.config.agent);
+
+    let (provider_id, model_id) = if persist {
+        // Settings: normalize against persisted defaults, not a session palette pick.
+        (default_selection.provider_id, default_selection.model_id)
+    } else {
+        (
+            app.current_ai_provider
+                .clone()
+                .or(default_selection.provider_id),
+            app.current_ai_model.clone().or(default_selection.model_id),
+        )
+    };
+
     let normalized = er_engine::config::normalize_effort(
         &app.config.ai_hub,
         provider_id.as_deref(),
@@ -3683,9 +3703,17 @@ pub fn set_ai_effort(
     if effort.is_some() && normalized.is_none() {
         return Err("Effort is unsupported for the selected model".into());
     }
-    app.current_ai_effort = normalized.clone();
-    app.config.ai_hub.default_effort = normalized;
-    er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+
+    if persist {
+        app.config.ai_hub.default_effort = normalized.clone();
+        // Keep session aligned with the defaults being edited in Settings.
+        app.current_ai_provider = provider_id;
+        app.current_ai_model = model_id;
+        app.current_ai_effort = normalized;
+        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+    } else {
+        app.current_ai_effort = normalized;
+    }
 
     state
         .desktop_revision

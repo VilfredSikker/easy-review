@@ -156,12 +156,10 @@ pub struct AiHubConfig {
     pub default_provider: Option<String>,
     #[serde(default)]
     pub default_model: Option<String>,
-    /// Default Claude Code `--effort` for spawns (overridden per arena run).
+    /// Default reasoning/effort override for ordinary AI Hub spawns.
+    /// Arena reviewer and arbiter selections remain exact per-run values.
     #[serde(default)]
     pub default_effort: Option<String>,
-    /// Per-reviewer model overrides (e.g. `triage = "haiku-4.5"`).
-    #[serde(default)]
-    pub reviewer_models: BTreeMap<String, String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
     /// Max agent processes running at once (background reviews + arena
@@ -173,6 +171,17 @@ pub struct AiHubConfig {
 
 /// Default cap on concurrently running agent processes.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+/// A validated provider/model/effort choice used by ordinary AI actions.
+///
+/// Arena reviewers intentionally do not use this type: their `ReviewerRef`
+/// values are exact per-run selections.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AiSelection {
+    pub provider_id: Option<String>,
+    pub model_id: Option<String>,
+    pub effort: Option<String>,
+}
 
 impl AiHubConfig {
     /// Effective concurrency cap — configured value, or the default when unset.
@@ -393,64 +402,106 @@ impl AiHubConfig {
             .or_else(|| provider.models.first().map(|m| m.id.clone()))
     }
 
+    /// Resolve the persisted default into a provider/model/effort tuple that
+    /// is valid against the current catalog. This is the single fallback
+    /// path shared by Settings, Desktop, TUI, and ordinary AI spawns.
+    pub fn resolve_default_selection(&self, agent: &AgentConfig) -> AiSelection {
+        let provider_id = self.resolve_provider_id(self.default_provider.as_deref());
+        let model_id = provider_id
+            .as_deref()
+            .and_then(|id| self.resolve_model_id(id, self.default_model.as_deref()));
+        let effort = resolve_effort_for_model(
+            self,
+            agent,
+            provider_id.as_deref(),
+            model_id.as_deref(),
+            self.default_effort.as_deref(),
+            None,
+        );
+        AiSelection {
+            provider_id,
+            model_id,
+            effort,
+        }
+    }
+
+    /// Validate a provider/model choice and normalize effort without mutating
+    /// persisted defaults. Used for session-only (palette) selection.
+    pub fn resolve_selection(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        agent: &AgentConfig,
+        runtime_effort: Option<&str>,
+    ) -> Result<AiSelection> {
+        let provider = self
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {provider_id}"))?;
+        if let Some(model_id) = model_id {
+            if !provider.models.iter().any(|model| model.id == model_id) {
+                return Err(anyhow::anyhow!(
+                    "Unknown model '{model_id}' for provider '{provider_id}'"
+                ));
+            }
+        }
+
+        let resolved_model = self.resolve_model_id(provider_id, model_id);
+        let effort = resolve_effort_for_model(
+            self,
+            agent,
+            Some(provider_id),
+            resolved_model.as_deref(),
+            runtime_effort,
+            None,
+        );
+        Ok(AiSelection {
+            provider_id: Some(provider_id.to_string()),
+            model_id: resolved_model,
+            effort,
+        })
+    }
+
+    /// Validate and persist a new global provider/model selection. A missing
+    /// model means the provider's first valid model (or no model for a
+    /// command-only provider). Existing effort is retained only when the
+    /// selected model still supports it.
+    pub fn set_default_selection(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        agent: &AgentConfig,
+    ) -> Result<AiSelection> {
+        let provider = self
+            .providers
+            .get(provider_id)
+            .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {provider_id}"))?;
+        if let Some(model_id) = model_id {
+            if !provider.models.iter().any(|model| model.id == model_id) {
+                return Err(anyhow::anyhow!(
+                    "Unknown model '{model_id}' for provider '{provider_id}'"
+                ));
+            }
+        }
+
+        let resolved_model = self.resolve_model_id(provider_id, model_id);
+        self.default_provider = Some(provider_id.to_string());
+        self.default_model = resolved_model;
+        self.default_effort = normalize_effort(
+            self,
+            Some(provider_id),
+            self.default_model.as_deref(),
+            self.default_effort.as_deref(),
+        );
+
+        Ok(self.resolve_default_selection(agent))
+    }
+
     /// Whether any configured provider exposes this model id.
     pub fn hub_model_exists(&self, model_id: &str) -> bool {
         self.providers
             .values()
             .any(|provider| provider.models.iter().any(|model| model.id == model_id))
-    }
-
-    /// Explicit triage model override, if configured.
-    pub fn triage_model_id(&self) -> Option<&str> {
-        self.reviewer_models.get("triage").map(String::as_str)
-    }
-
-    /// Model id for a reviewer kind when spawning (e.g. triage → haiku).
-    pub fn resolve_reviewer_model(&self, reviewer_kind: &str, provider_id: &str) -> Option<String> {
-        let provider = self.providers.get(provider_id)?;
-        if let Some(configured) = self.reviewer_models.get(reviewer_kind) {
-            if provider.models.iter().any(|m| &m.id == configured) {
-                return Some(configured.clone());
-            }
-        }
-        if reviewer_kind == "triage" {
-            return provider
-                .models
-                .iter()
-                .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
-                .map(|m| m.id.clone());
-        }
-        if reviewer_kind == "tour" {
-            // Tour generation is clustering + short descriptions — Opus is
-            // overkill. Default to a Sonnet-class model (good quality, far
-            // cheaper/faster); fall back to the fastest model when none exists.
-            if let Some(m) = provider
-                .models
-                .iter()
-                .find(|m| m.id.to_lowercase().contains("sonnet"))
-            {
-                return Some(m.id.clone());
-            }
-            return provider
-                .models
-                .iter()
-                .min_by_key(|m| m.avg_latency_ms.unwrap_or(u32::MAX))
-                .map(|m| m.id.clone());
-        }
-        None
-    }
-
-    /// Resolve model for spawn: reviewer override when configured, else user selection.
-    pub fn resolve_spawn_model_id(
-        &self,
-        provider_id: &str,
-        user_model: Option<&str>,
-        task_kind: &str,
-    ) -> Option<String> {
-        if let Some(id) = self.resolve_reviewer_model(task_kind, provider_id) {
-            return Some(id);
-        }
-        self.resolve_model_id(provider_id, user_model)
     }
 }
 
@@ -485,8 +536,6 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
             .models
             .retain(|model| !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model.id.as_str()));
     }
-    hub.reviewer_models
-        .retain(|_, model_id| !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model_id.as_str()));
     if deprecated_default {
         hub.default_model = catalog.default_model.clone();
     }
@@ -537,6 +586,82 @@ pub fn agent_command_is_claude(command: &str) -> bool {
 /// True when the provider command is the Codex CLI (supports `-c model_reasoning_effort=...`).
 pub fn agent_command_is_codex(command: &str) -> bool {
     command == "codex" || command.ends_with("/codex")
+}
+
+/// True when the provider command is Cursor Agent (supports `--add-dir`).
+pub fn agent_command_is_cursor(command: &str) -> bool {
+    command == "agent" || command.ends_with("/agent")
+}
+
+/// Allow built-in agent CLIs to access a specific Easy Review storage directory.
+///
+/// Managed sidecars normally live outside the repository, so a child CLI with
+/// a workspace sandbox cannot reach them through its current working directory.
+/// Callers must pass the active review bucket (`er_dir`), never the global
+/// storage root — Codex `--add-dir` under `workspace-write` makes that path
+/// writable. Pass `None` for read-only invocations or when artifacts already
+/// live inside the worktree. Unknown/custom provider commands are left
+/// unchanged because their command line contracts are not known to us.
+pub fn inject_agent_storage_access(
+    command: &str,
+    args: &mut Vec<String>,
+    storage_dir: Option<&str>,
+) {
+    if !(agent_command_is_claude(command)
+        || agent_command_is_codex(command)
+        || agent_command_is_cursor(command))
+    {
+        return;
+    }
+
+    let Some(directory) = storage_dir.map(str::trim).filter(|dir| !dir.is_empty()) else {
+        return;
+    };
+
+    let insert_at = if agent_command_is_codex(command) {
+        args.iter()
+            .position(|arg| arg == "exec")
+            .map(|index| index + 1)
+            .or_else(|| args.iter().position(|arg| arg.contains("{prompt}")))
+            .unwrap_or(args.len())
+    } else {
+        // Insert before the first dashed option so a bare `{prompt}` token is
+        // never treated as another `--add-dir` value. Prefer the `=` form for
+        // Claude/Cursor so multi-value `--add-dir` cannot swallow the next arg.
+        args.iter()
+            .position(|arg| arg.starts_with('-'))
+            .unwrap_or(0)
+    };
+
+    if agent_command_is_codex(command) {
+        inject_additional_dir(args, directory, insert_at, false);
+    } else {
+        inject_additional_dir(args, directory, insert_at, true);
+    }
+}
+
+fn inject_additional_dir(
+    args: &mut Vec<String>,
+    directory: &str,
+    insert_at: usize,
+    equals_form: bool,
+) {
+    if args
+        .windows(2)
+        .any(|pair| pair[0] == "--add-dir" && pair[1] == directory)
+        || args
+            .iter()
+            .any(|arg| arg == &format!("--add-dir={directory}"))
+    {
+        return;
+    }
+
+    if equals_form {
+        args.insert(insert_at, format!("--add-dir={directory}"));
+    } else {
+        args.insert(insert_at, directory.to_string());
+        args.insert(insert_at, "--add-dir".to_string());
+    }
 }
 
 /// App-launched Codex runs should be hermetic from user plugins/MCP hooks.
@@ -1044,16 +1169,17 @@ fn hub_provider_options(config: &ErConfig) -> Vec<String> {
 fn hub_provider_value(config: &ErConfig) -> String {
     config
         .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+        .resolve_default_selection(&config.agent)
+        .provider_id
         .unwrap_or_else(|| "Auto".into())
 }
 
 fn hub_model_options(config: &ErConfig) -> Vec<String> {
-    let Some(provider) = config
-        .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
-        .and_then(|id| config.ai_hub.providers.get(&id))
-    else {
+    let selection = config.ai_hub.resolve_default_selection(&config.agent);
+    let Some(provider_id) = selection.provider_id else {
+        return vec!["Auto".into()];
+    };
+    let Some(provider) = config.ai_hub.providers.get(&provider_id) else {
         return vec!["Auto".into()];
     };
     provider
@@ -1066,29 +1192,22 @@ fn hub_model_options(config: &ErConfig) -> Vec<String> {
 fn hub_model_value(config: &ErConfig) -> String {
     config
         .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
-        .and_then(|provider| {
-            config
-                .ai_hub
-                .resolve_model_id(&provider, config.ai_hub.default_model.as_deref())
-        })
+        .resolve_default_selection(&config.agent)
+        .model_id
         .unwrap_or_else(|| "Auto".into())
 }
 
 fn hub_effort_options(config: &ErConfig) -> Vec<String> {
-    let provider = config
-        .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref());
-    let model = provider.as_deref().and_then(|id| {
-        config
-            .ai_hub
-            .resolve_model_id(id, config.ai_hub.default_model.as_deref())
-    });
+    let selection = config.ai_hub.resolve_default_selection(&config.agent);
     let mut options = vec![AUTO_EFFORT.into()];
     options.extend(
-        effort_levels_for_hub_model(&config.ai_hub, provider.as_deref(), model.as_deref())
-            .iter()
-            .cloned(),
+        effort_levels_for_hub_model(
+            &config.ai_hub,
+            selection.provider_id.as_deref(),
+            selection.model_id.as_deref(),
+        )
+        .iter()
+        .cloned(),
     );
     options
 }
@@ -1096,63 +1215,36 @@ fn hub_effort_options(config: &ErConfig) -> Vec<String> {
 fn hub_effort_value(config: &ErConfig) -> String {
     config
         .ai_hub
-        .default_effort
-        .clone()
+        .resolve_default_selection(&config.agent)
+        .effort
         .unwrap_or_else(|| AUTO_EFFORT.into())
 }
 
 fn set_hub_provider(config: &mut ErConfig, provider: String) {
-    if !config.ai_hub.providers.contains_key(&provider) {
-        return;
-    }
-    config.ai_hub.default_provider = Some(provider.clone());
-    config.ai_hub.default_model = config.ai_hub.resolve_model_id(&provider, None);
-    config.ai_hub.default_effort = normalize_effort(
-        &config.ai_hub,
-        Some(&provider),
-        config.ai_hub.default_model.as_deref(),
-        config.ai_hub.default_effort.as_deref(),
-    );
+    let agent = config.agent.clone();
+    let _ = config.ai_hub.set_default_selection(&provider, None, &agent);
 }
 
 fn set_hub_model(config: &mut ErConfig, model: String) {
     let Some(provider) = config
         .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref())
+        .resolve_default_selection(&config.agent)
+        .provider_id
     else {
         return;
     };
-    if !config
+    let agent = config.agent.clone();
+    let _ = config
         .ai_hub
-        .providers
-        .get(&provider)
-        .is_some_and(|p| p.models.iter().any(|m| m.id == model))
-    {
-        return;
-    }
-    config.ai_hub.default_provider = Some(provider.clone());
-    config.ai_hub.default_model = Some(model.clone());
-    config.ai_hub.default_effort = normalize_effort(
-        &config.ai_hub,
-        Some(&provider),
-        Some(&model),
-        config.ai_hub.default_effort.as_deref(),
-    );
+        .set_default_selection(&provider, Some(&model), &agent);
 }
 
 fn set_hub_effort(config: &mut ErConfig, effort: String) {
-    let provider = config
-        .ai_hub
-        .resolve_provider_id(config.ai_hub.default_provider.as_deref());
-    let model = provider.as_deref().and_then(|id| {
-        config
-            .ai_hub
-            .resolve_model_id(id, config.ai_hub.default_model.as_deref())
-    });
+    let selection = config.ai_hub.resolve_default_selection(&config.agent);
     config.ai_hub.default_effort = normalize_effort(
         &config.ai_hub,
-        provider.as_deref(),
-        model.as_deref(),
+        selection.provider_id.as_deref(),
+        selection.model_id.as_deref(),
         Some(&effort),
     );
 }
@@ -1270,12 +1362,12 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
         ConfigItem::SectionHeader("AI".into()),
         ConfigItem::Action {
             label: "Copy review.json".into(),
-            description: "Copy .er/review.json to clipboard".into(),
+            description: "Copy review.json to clipboard".into(),
             action_id: "copy_review_json",
         },
         ConfigItem::Action {
             label: "Copy questions.json".into(),
-            description: "Copy .er/questions.json to clipboard".into(),
+            description: "Copy questions.json to clipboard".into(),
             action_id: "copy_questions_json",
         },
     ]
@@ -1840,6 +1932,85 @@ mod tests {
     }
 
     #[test]
+    fn supported_agent_commands_receive_managed_storage_access_once() {
+        const DIR: &str = "/managed/repos/demo/branches/main/view-buckets/branch";
+
+        for command in ["claude", "codex", "agent"] {
+            let mut args = match command {
+                "codex" => vec![
+                    "exec".to_string(),
+                    "--sandbox".to_string(),
+                    "workspace-write".to_string(),
+                    "{prompt}".to_string(),
+                ],
+                _ => vec![
+                    "--print".to_string(),
+                    "-p".to_string(),
+                    "{prompt}".to_string(),
+                ],
+            };
+            inject_agent_storage_access(command, &mut args, Some(DIR));
+            inject_agent_storage_access(command, &mut args, Some(DIR));
+
+            let add_dir_flag = format!("--add-dir={DIR}");
+            let add_dir_count = args
+                .windows(2)
+                .filter(|pair| pair[0] == "--add-dir" && pair[1] == DIR)
+                .count()
+                + args.iter().filter(|arg| **arg == add_dir_flag).count();
+            assert_eq!(
+                add_dir_count, 1,
+                "managed storage should be added once for {command}"
+            );
+            if command == "codex" {
+                let add_dir_index = args.iter().position(|arg| arg == "--add-dir").unwrap();
+                assert_eq!(add_dir_index, 1);
+                assert!(add_dir_index < args.iter().position(|arg| arg == "{prompt}").unwrap());
+            } else {
+                assert_eq!(args[0], format!("--add-dir={DIR}"));
+                assert!(args.iter().any(|arg| arg == "{prompt}"));
+            }
+        }
+    }
+
+    #[test]
+    fn storage_access_skipped_without_directory() {
+        let mut args = vec![
+            "exec".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+            "{prompt}".to_string(),
+        ];
+        inject_agent_storage_access("codex", &mut args, None);
+        inject_agent_storage_access("codex", &mut args, Some(""));
+        assert!(!args.iter().any(|arg| arg.contains("--add-dir")));
+    }
+
+    #[test]
+    fn claude_add_dir_does_not_swallow_bare_prompt() {
+        let mut args = vec!["{prompt}".to_string()];
+        inject_agent_storage_access(
+            "claude",
+            &mut args,
+            Some("/managed/repos/demo/view-buckets/branch"),
+        );
+        assert_eq!(
+            args,
+            vec![
+                "--add-dir=/managed/repos/demo/view-buckets/branch".to_string(),
+                "{prompt}".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_agent_commands_do_not_receive_unknown_flags() {
+        let mut args = vec!["{prompt}".to_string()];
+        inject_agent_storage_access("my-custom-provider", &mut args, Some("/managed/repos/demo"));
+        assert_eq!(args, vec!["{prompt}".to_string()]);
+    }
+
+    #[test]
     fn supplement_ai_hub_adds_missing_catalog_models() {
         let mut hub = AiHubConfig {
             providers: BTreeMap::from([(
@@ -1989,27 +2160,6 @@ mod tests {
     }
 
     #[test]
-    fn triage_model_override_must_exist_in_hub() {
-        let mut hub = AiHubConfig::default();
-        hub.providers.insert(
-            "claude".into(),
-            AiProviderConfig {
-                models: vec![AiModelConfig {
-                    id: "haiku-4.5".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-        assert!(hub.hub_model_exists("haiku-4.5"));
-        assert!(!hub.hub_model_exists("missing-model"));
-        assert_eq!(hub.triage_model_id(), None);
-        hub.reviewer_models
-            .insert("triage".into(), "haiku-4.5".into());
-        assert_eq!(hub.triage_model_id(), Some("haiku-4.5"));
-    }
-
-    #[test]
     fn resolve_effort_precedence() {
         let hub = AiHubConfig {
             default_effort: Some("medium".into()),
@@ -2039,76 +2189,126 @@ mod tests {
     }
 
     #[test]
-    fn resolve_reviewer_model_prefers_configured_triage() {
-        let mut hub = AiHubConfig::default();
-        hub.reviewer_models
-            .insert("triage".into(), "haiku-4.5".into());
+    fn default_selection_uses_the_configured_model_for_every_action() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("codex".into()),
+            default_model: Some("gpt-5.6-luna".into()),
+            default_effort: Some("high".into()),
+            ..Default::default()
+        };
         hub.providers.insert(
-            "claude".into(),
+            "codex".into(),
             AiProviderConfig {
                 models: vec![
                     AiModelConfig {
-                        id: "sonnet-4.6".into(),
-                        avg_latency_ms: Some(12_000),
+                        id: "gpt-5.6-luna".into(),
+                        effort_levels: vec!["high".into()],
                         ..Default::default()
                     },
                     AiModelConfig {
-                        id: "haiku-4.5".into(),
-                        avg_latency_ms: Some(5_000),
+                        id: "gpt-5.3-codex-spark".into(),
+                        avg_latency_ms: Some(1),
                         ..Default::default()
                     },
                 ],
                 ..Default::default()
             },
         );
+
+        let selection = hub.resolve_default_selection(&AgentConfig::default());
+        assert_eq!(selection.provider_id.as_deref(), Some("codex"));
+        assert_eq!(selection.model_id.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(selection.effort.as_deref(), Some("high"));
         assert_eq!(
-            hub.resolve_reviewer_model("triage", "claude").as_deref(),
-            Some("haiku-4.5")
+            hub.resolve_model_id("codex", None).as_deref(),
+            Some("gpt-5.6-luna")
         );
     }
 
     #[test]
-    fn resolve_reviewer_model_tour_defaults_to_sonnet() {
-        let mut hub = AiHubConfig::default();
-        hub.providers.insert(
-            "claude".into(),
+    fn legacy_reviewer_models_are_ignored_when_loading_config() {
+        let config: ErConfig = toml::from_str(
+            r#"
+            [ai_hub.reviewer_models]
+            triage = "gpt-5.3-codex-spark"
+            "#,
+        )
+        .unwrap();
+        assert!(config.ai_hub.providers.is_empty());
+    }
+
+    #[test]
+    fn set_default_selection_validates_and_normalizes_the_shared_choice() {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "codex".into(),
             AiProviderConfig {
-                models: vec![
-                    AiModelConfig {
-                        id: "claude-opus-4-8".into(),
-                        avg_latency_ms: Some(20_000),
-                        ..Default::default()
-                    },
-                    AiModelConfig {
-                        id: "claude-sonnet-4-6".into(),
-                        avg_latency_ms: Some(12_000),
-                        ..Default::default()
-                    },
-                    AiModelConfig {
-                        id: "claude-haiku-4-5".into(),
-                        avg_latency_ms: Some(5_000),
-                        ..Default::default()
-                    },
-                ],
+                models: vec![AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    effort_levels: vec!["high".into()],
+                    ..Default::default()
+                }],
                 ..Default::default()
             },
         );
-        // No override → defaults to the Sonnet-class model (not Opus, not Haiku).
+        config.ai_hub.default_effort = Some("high".into());
+
+        let selected = config
+            .ai_hub
+            .set_default_selection("codex", Some("gpt-5.6-luna"), &config.agent)
+            .unwrap();
+        assert_eq!(config.ai_hub.default_provider.as_deref(), Some("codex"));
+        assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(selected.model_id.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(
-            hub.resolve_reviewer_model("tour", "claude").as_deref(),
-            Some("claude-sonnet-4-6")
+            config
+                .ai_hub
+                .set_default_selection("codex", Some("missing"), &config.agent)
+                .unwrap_err()
+                .to_string(),
+            "Unknown model 'missing' for provider 'codex'"
         );
-        assert_eq!(
-            hub.resolve_spawn_model_id("claude", Some("claude-opus-4-8"), "tour")
-                .as_deref(),
-            Some("claude-sonnet-4-6")
-        );
-        // Explicit override is honored.
-        hub.reviewer_models
-            .insert("tour".into(), "claude-haiku-4-5".into());
-        assert_eq!(
-            hub.resolve_reviewer_model("tour", "claude").as_deref(),
-            Some("claude-haiku-4-5")
-        );
+    }
+
+    #[test]
+    fn resolve_selection_keeps_runtime_effort_without_mutating_defaults() {
+        let config = ErConfig {
+            ai_hub: AiHubConfig {
+                default_provider: Some("codex".into()),
+                default_model: Some("gpt-5.6-luna".into()),
+                default_effort: Some("medium".into()),
+                providers: [(
+                    "codex".into(),
+                    AiProviderConfig {
+                        models: vec![
+                            AiModelConfig {
+                                id: "gpt-5.6-luna".into(),
+                                effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                                ..Default::default()
+                            },
+                            AiModelConfig {
+                                id: "gpt-5.5".into(),
+                                effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                )]
+                .into_iter()
+                .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let selected = config
+            .ai_hub
+            .resolve_selection("codex", Some("gpt-5.5"), &config.agent, Some("high"))
+            .unwrap();
+        assert_eq!(selected.model_id.as_deref(), Some("gpt-5.5"));
+        assert_eq!(selected.effort.as_deref(), Some("high"));
+        assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("medium"));
     }
 }

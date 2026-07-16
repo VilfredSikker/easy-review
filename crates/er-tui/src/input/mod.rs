@@ -223,11 +223,13 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 if provider.models.len() > 1 {
                     app.open_ai_model_picker(provider_id, action);
                 } else {
-                    app.current_ai_provider = Some(provider_id.clone());
-                    app.current_ai_model = provider.models.first().map(|m| m.id.clone());
+                    let model_id = provider.models.first().map(|m| m.id.clone());
                     if let Some(action) = action {
-                        execute_ai_action(app, action)?;
+                        let selection =
+                            app.resolve_ai_selection_override(&provider_id, model_id.as_deref())?;
+                        execute_ai_action_with_selection(app, action, selection)?;
                     } else {
+                        app.set_ai_default_selection(&provider_id, model_id.as_deref())?;
                         app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
                     }
                 }
@@ -240,11 +242,11 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             provider_id,
             model_id,
         } => {
-            app.current_ai_provider = Some(provider_id);
-            app.current_ai_model = Some(model_id);
             if let Some(action) = action {
-                execute_ai_action(app, action)?;
+                let selection = app.resolve_ai_selection_override(&provider_id, Some(&model_id))?;
+                execute_ai_action_with_selection(app, action, selection)?;
             } else {
+                app.set_ai_default_selection(&provider_id, Some(&model_id))?;
                 app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
@@ -425,6 +427,26 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn execute_ai_action_with_selection(
+    app: &mut App,
+    action: AiActionKind,
+    selection: er_engine::config::AiSelection,
+) -> Result<()> {
+    app.set_ai_selection_override(selection);
+    let result = execute_ai_action(app, action);
+    let waiting_for_confirmation = matches!(
+        app.input_mode,
+        er_engine::app::InputMode::Confirm(
+            er_engine::app::ConfirmAction::RunAgentReview { .. }
+                | er_engine::app::ConfirmAction::RunAgentQuestions { .. }
+        )
+    );
+    if !waiting_for_confirmation {
+        app.clear_ai_selection_override();
+    }
+    result
 }
 
 pub fn handle_search_input(app: &mut App, key: KeyEvent) {
@@ -609,6 +631,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_review_prompt(app) {
                     app.spawn_agent_prompt("review", &prompt)?;
                 }
+                app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
                 // User said "yes" to clearing previous answers — clear answers, then run
                 app.input_mode = InputMode::Normal;
@@ -618,6 +641,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_questions_prompt(app) {
                     app.spawn_agent_prompt("questions", &prompt)?;
                 }
+                app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
@@ -651,6 +675,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_review_prompt(app) {
                     app.spawn_agent_prompt("review", &prompt)?;
                 }
+                app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
                 &app.input_mode
             {
@@ -658,6 +683,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 if let Some(prompt) = build_agent_questions_prompt(app) {
                     app.spawn_agent_prompt("questions", &prompt)?;
                 }
+                app.clear_ai_selection_override();
             }
         }
         KeyCode::Esc => {
@@ -1809,5 +1835,41 @@ mod tests {
 
         let expert = build_agent_expert_prompt(&mut app, "security").expect("expert prompt");
         assert_managed_prompt(&expert, output_dir, "experts/security.json");
+    }
+
+    #[test]
+    fn action_bound_model_selection_does_not_change_the_next_default_action() {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.default_provider = Some("codex".into());
+        app.config.ai_hub.default_model = Some("gpt-5.6-luna".into());
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            er_engine::config::AiProviderConfig {
+                models: vec![
+                    er_engine::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        ..Default::default()
+                    },
+                    er_engine::config::AiModelConfig {
+                        id: "gpt-5.3-codex-spark".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        app.sync_ai_selection_from_defaults();
+
+        let selected_for_run = app
+            .resolve_ai_selection_override("codex", Some("gpt-5.3-codex-spark"))
+            .unwrap();
+        execute_ai_action_with_selection(&mut app, AiActionKind::Validate, selected_for_run)
+            .unwrap();
+
+        assert_eq!(app.current_ai_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(
+            app.config.ai_hub.default_model.as_deref(),
+            Some("gpt-5.6-luna")
+        );
     }
 }

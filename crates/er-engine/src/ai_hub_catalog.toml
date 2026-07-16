@@ -3,9 +3,6 @@
 default_provider = "claude"
 default_model = "sonnet-5"
 
-[ai_hub.reviewer_models]
-triage = "haiku-4.5"
-
 [ai_hub.providers.claude]
 label = "Claude"
 command = "claude"

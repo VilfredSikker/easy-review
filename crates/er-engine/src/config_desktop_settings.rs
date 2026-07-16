@@ -233,19 +233,6 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.ai_hub.max_concurrent_reviews = n;
             }
         }
-        "ai_hub.reviewer_models.triage" => {
-            if let ConfigFieldValue::String(v) = value {
-                let model_id = v.trim();
-                if model_id.is_empty() {
-                    config.ai_hub.reviewer_models.remove("triage");
-                } else if config.ai_hub.hub_model_exists(model_id) {
-                    config
-                        .ai_hub
-                        .reviewer_models
-                        .insert("triage".into(), model_id.to_string());
-                }
-            }
-        }
         "watched.diff_mode" => {
             if let ConfigFieldValue::String(v) = value {
                 if v == "content" || v == "snapshot" {
@@ -331,56 +318,6 @@ mod tests {
             ConfigFieldValue::String("high".into()),
         );
         assert_eq!(config.agent.effort.as_deref(), Some("high"));
-    }
-
-    #[test]
-    fn apply_config_field_updates_triage_model_only_when_known() {
-        let mut config = ErConfig::default();
-        config.ai_hub.providers.insert(
-            "claude".into(),
-            crate::config::AiProviderConfig {
-                models: vec![crate::config::AiModelConfig {
-                    id: "haiku-4.5".into(),
-                    ..Default::default()
-                }],
-                ..Default::default()
-            },
-        );
-
-        apply_config_field(
-            &mut config,
-            "ai_hub.reviewer_models.triage",
-            ConfigFieldValue::String("haiku-4.5".into()),
-        );
-        assert_eq!(
-            config
-                .ai_hub
-                .reviewer_models
-                .get("triage")
-                .map(String::as_str),
-            Some("haiku-4.5")
-        );
-
-        apply_config_field(
-            &mut config,
-            "ai_hub.reviewer_models.triage",
-            ConfigFieldValue::String("unknown".into()),
-        );
-        assert_eq!(
-            config
-                .ai_hub
-                .reviewer_models
-                .get("triage")
-                .map(String::as_str),
-            Some("haiku-4.5")
-        );
-
-        apply_config_field(
-            &mut config,
-            "ai_hub.reviewer_models.triage",
-            ConfigFieldValue::String(String::new()),
-        );
-        assert!(!config.ai_hub.reviewer_models.contains_key("triage"));
     }
 
     #[test]

@@ -36,7 +36,6 @@
   let generalFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
-  let triageModelId = $state("");
   let selectedEffort = $state("Auto");
   let repoRoot = $state("");
   let addPattern = $state("");
@@ -52,13 +51,6 @@
   const selectedModels = $derived(selectedProvider?.models ?? []);
   const selectedModel = $derived(selectedModels.find((model) => model.is_selected) ?? null);
   const effortOptions = $derived(["Auto", ...(selectedModel?.effort_levels ?? [])]);
-  const hasInactiveTriageModel = $derived(
-    triageModelId !== "" && !selectedModels.some((model) => model.id === triageModelId),
-  );
-  const triageProviderGroups = $derived(
-    selectedProvider && selectedProvider.models.length > 0 ? [selectedProvider] : [],
-  );
-
   interface FieldSection {
     title: string | null;
     fields: ConfigHubField[];
@@ -90,7 +82,6 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
-    triageModelId = res.triageModelId ?? "";
     selectedEffort = res.activeEffort ?? "Auto";
     if (!effortOptions.includes(selectedEffort)) selectedEffort = "Auto";
     repoRoot = res.settings.repoRoot;
@@ -123,42 +114,34 @@
     const p = providers.find((x) => x.id === providerId);
     if (!p) return;
     if (p.models.length === 0) {
-      await invoke("set_ai_selection", { providerId, modelId: null });
+      await invoke("set_ai_selection", { providerId, modelId: null, persist: true });
       await reload();
       return;
     }
     const model = p.models.find((m) => m.is_selected) ?? p.models[0];
-    await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null });
+    await invoke("set_ai_selection", { providerId, modelId: model?.id ?? null, persist: true });
     await reload();
   }
 
   async function selectModel(modelId: string) {
     const p = selectedProvider;
     if (!p) return;
-    await invoke("set_ai_selection", { providerId: p.id, modelId });
+    await invoke("set_ai_selection", { providerId: p.id, modelId, persist: true });
     const model = p.models.find((item) => item.id === modelId);
     if (!model?.effort_levels.includes(selectedEffort)) selectedEffort = "Auto";
     await reload();
   }
 
-  function selectTriageModel(modelId: string) {
-    void patch("ai_hub.reviewer_models.triage", modelId);
-  }
-
-  async function saveDefaults() {
-    const p = selectedProvider;
-    if (!p) return;
-    const model = p.models.find((m) => m.is_selected);
+  async function selectEffort(level: string) {
+    selectedEffort = level;
     try {
-      const res = await invoke<GetConfigHubResponse>("set_ai_hub_defaults", {
-        providerId: p.id,
-        modelId: model?.id ?? null,
-        effort: selectedEffort === "Auto" ? null : selectedEffort,
+      await invoke("set_ai_effort", {
+        effort: level === "Auto" ? null : level,
+        persist: true,
       });
-      applySettings(res);
-      app.showToast("success", "Saved AI defaults to config");
+      await reload();
     } catch (e) {
-      app.showToast("error", `set_ai_hub_defaults: ${e}`);
+      app.showToast("error", `set_ai_effort: ${e}`);
     }
   }
 
@@ -353,7 +336,9 @@
           {#if providers.length > 0}
             <div class="bg-card border border-hairline rounded-xl px-4 py-3">
               <p class="text-xs text-muted mb-3">
-                Session selection. “Save as default” writes to config TOML.
+                The default provider, model, and reasoning effort for all AI Hub actions. Changes
+                save to config immediately. Mid-session picks in the AI action palette stay
+                session-only.
               </p>
               <div class="py-1">
                 <div class="text-sm text-fg mb-1.5">Provider</div>
@@ -398,7 +383,7 @@
                       class="px-2.5 py-1 text-xs rounded-md border transition-colors {selectedEffort === level
                         ? 'bg-accent-soft text-accent border-accent-border font-medium'
                         : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                      onclick={() => (selectedEffort = level)}
+                      onclick={() => void selectEffort(level)}
                     >
                       {level === 'xhigh' ? 'XHigh' : level}
                     </button>
@@ -406,57 +391,6 @@
                 </div>
                 <p class="text-[11px] text-muted mt-1.5">Auto uses the provider default.</p>
               </div>
-              <div class="mt-2 pt-2 border-t border-hairline/60">
-                <Button onclick={() => void saveDefaults()}>Save as default</Button>
-              </div>
-            </div>
-            <div class="bg-card border border-hairline rounded-xl px-4 py-3 mt-3">
-              <div class="mb-3">
-                <p class="text-sm text-fg">Triage model</p>
-                <p class="text-xs text-muted mt-0.5">
-                  Override the model used for fast triage reviews on the active provider.
-                </p>
-              </div>
-              {#if hasInactiveTriageModel}
-                <div
-                  class="mb-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning"
-                  role="status"
-                >
-                  Saved triage model <code class="font-mono">{triageModelId}</code> is unavailable on
-                  {selectedProvider?.label ?? "the active provider"}. Triage will use the fastest
-                  available model. Choose a model below to replace this inactive override, or “Use fastest
-                  available” to clear it.
-                </div>
-              {/if}
-              <button
-                type="button"
-                class="px-2.5 py-1 text-xs rounded-md border transition-colors {triageModelId === ''
-                  ? 'bg-accent-soft text-accent border-accent-border font-medium'
-                  : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                onclick={() => selectTriageModel("")}
-              >
-                Use fastest available
-              </button>
-              {#each triageProviderGroups as provider (provider.id)}
-                <div class="mt-3">
-                  <p class="text-[10px] uppercase tracking-wider text-muted font-semibold mb-1.5">
-                    {provider.label}
-                  </p>
-                  <div class="flex flex-wrap gap-1.5">
-                    {#each provider.models as model (model.id)}
-                      <button
-                        type="button"
-                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {triageModelId === model.id
-                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
-                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                        onclick={() => selectTriageModel(model.id)}
-                      >
-                        {model.label}
-                      </button>
-                    {/each}
-                  </div>
-                </div>
-              {/each}
             </div>
           {:else}
             <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">

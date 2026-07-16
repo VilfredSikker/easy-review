@@ -60,7 +60,7 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. The selected provider, model, and effort can be saved globally from Desktop Settings or the TUI General settings.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. Desktop Settings persists the selected default immediately; the AI action palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
 
 ```toml
 [ai_hub]
@@ -68,9 +68,6 @@ default_provider = "claude"
 default_model = "sonnet-5"
 # Optional; omit or use Auto in the UI for the provider default.
 # default_effort = "high"
-
-[ai_hub.reviewer_models]
-triage = "haiku-4.5"
 
 [ai_hub.providers.claude]
 label = "Claude"
@@ -168,10 +165,10 @@ Rules:
 - Provider `args` are the shared base arguments for that CLI.
 - Model `args` are appended after provider args.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
-- On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; user-defined legacy entries are preserved.
-- The selected provider/model applies to AI Hub actions such as review, triage, experts, professor, questions, and summary.
-- `[ai_hub.reviewer_models]` overrides the hub model for specific reviewer kinds. Triage uses `triage = "haiku-4.5"` by default in the example config; when unset, triage falls back to the fastest model in the active provider list.
+- On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; unknown legacy reviewer-model entries are ignored and disappear the next time the config is saved.
+- The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Triage still forces low effort. An explicit model selected for a single review run overrides it only for that run.
 - Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>` only for supported levels.
+- Built-in Claude, Codex, and Cursor Agent launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
 
 ### `[watched]`
 
@@ -218,24 +215,26 @@ diff_mode = "snapshot"
 
 Result: `view_conflicts = false` and `wrap_lines = true` from global, `tab_width = 4` and extra watched paths from local.
 
-## `.er/` AI artifacts
+## Review sidecar files (managed storage)
+
+TUI and Desktop share the same sidecar directory per repo/branch/view bucket under managed app data (default: `~/.local/share/easy-review/repos/<repo>/branches/<branch>/view-buckets/<bucket>/`). Set `ER_REPO_LOCAL=1` to use repo-local `.er/` instead (debug only).
 
 General review (AI Hub **Run review**) writes:
 
 | File | Purpose |
 |------|---------|
-| `.er/review.json` | Per-file risk, summaries, findings |
-| `.er/order.json` | Suggested review order |
-| `.er/checklist.json` | Manual verification items |
-| `.er/summary.md` | Overall summary |
+| `review.json` | Per-file risk, summaries, findings |
+| `order.json` | Suggested review order |
+| `checklist.json` | Manual verification items |
+| `summary.md` | Overall summary |
 
-**Specialized expert reviews** (AI Hub **Specialized review**) write findings only to `.er/experts/<id>.json` (e.g. `security`, `patterns`). They do not overwrite general artifacts.
+**Specialized expert reviews** (AI Hub **Specialized review**) write findings only to `experts/<id>.json` (e.g. `security`, `patterns`). They do not overwrite general artifacts.
 
 At load time, `er` merges fresh expert sidecars (matching `diff_hash`) into the in-memory review so expert findings appear as **additional inline banners** labeled by expert (e.g. "Security finding"). Order/checklist/summary panels still require a general review run.
 
 Expert ids (v1): `security`, `performance`, `reliability`, `testing`, `api`, `patterns`, `simplifying`, `mentorship`.
 
-**Professor** (AI Hub **Professor**) writes teaching insights to `.er/professor.json` (merged inline at load; labeled with agent pill **Professor**). Not a code review — see `skills/PROFESSOR_PHILOSOPHY.md`.
+**Professor** (AI Hub **Professor**) writes teaching insights to `professor.json` (merged inline at load; labeled with agent pill **Professor**). Not a code review — see `skills/PROFESSOR_PHILOSOPHY.md`.
 
 **Multi-reviewer runs** (AI Hub **Run reviewers…** or **Review select files** → choose reviewers): spawn General + any experts + Professor concurrently. Each finding shows an agent pill (`General`, `Security`, …).
 
