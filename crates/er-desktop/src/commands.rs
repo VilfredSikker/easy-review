@@ -3690,9 +3690,7 @@ pub fn set_ai_effort(
             app.current_ai_provider
                 .clone()
                 .or(default_selection.provider_id),
-            app.current_ai_model
-                .clone()
-                .or(default_selection.model_id),
+            app.current_ai_model.clone().or(default_selection.model_id),
         )
     };
 

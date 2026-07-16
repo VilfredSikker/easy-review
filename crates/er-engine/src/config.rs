@@ -1952,14 +1952,12 @@ mod tests {
             inject_agent_storage_access(command, &mut args, Some(DIR));
             inject_agent_storage_access(command, &mut args, Some(DIR));
 
+            let add_dir_flag = format!("--add-dir={DIR}");
             let add_dir_count = args
                 .windows(2)
                 .filter(|pair| pair[0] == "--add-dir" && pair[1] == DIR)
                 .count()
-                + args
-                    .iter()
-                    .filter(|arg| arg.as_str() == &format!("--add-dir={DIR}"))
-                    .count();
+                + args.iter().filter(|arg| **arg == add_dir_flag).count();
             assert_eq!(
                 add_dir_count, 1,
                 "managed storage should be added once for {command}"
@@ -2008,11 +2006,7 @@ mod tests {
     #[test]
     fn custom_agent_commands_do_not_receive_unknown_flags() {
         let mut args = vec!["{prompt}".to_string()];
-        inject_agent_storage_access(
-            "my-custom-provider",
-            &mut args,
-            Some("/managed/repos/demo"),
-        );
+        inject_agent_storage_access("my-custom-provider", &mut args, Some("/managed/repos/demo"));
         assert_eq!(args, vec!["{prompt}".to_string()]);
     }
 
@@ -2187,10 +2181,12 @@ mod tests {
 
     #[test]
     fn default_selection_uses_the_configured_model_for_every_action() {
-        let mut hub = AiHubConfig::default();
-        hub.default_provider = Some("codex".into());
-        hub.default_model = Some("gpt-5.6-luna".into());
-        hub.default_effort = Some("high".into());
+        let mut hub = AiHubConfig {
+            default_provider: Some("codex".into()),
+            default_model: Some("gpt-5.6-luna".into()),
+            default_effort: Some("high".into()),
+            ..Default::default()
+        };
         hub.providers.insert(
             "codex".into(),
             AiProviderConfig {
@@ -2267,28 +2263,35 @@ mod tests {
 
     #[test]
     fn resolve_selection_keeps_runtime_effort_without_mutating_defaults() {
-        let mut config = ErConfig::default();
-        config.ai_hub.default_provider = Some("codex".into());
-        config.ai_hub.default_model = Some("gpt-5.6-luna".into());
-        config.ai_hub.default_effort = Some("medium".into());
-        config.ai_hub.providers.insert(
-            "codex".into(),
-            AiProviderConfig {
-                models: vec![
-                    AiModelConfig {
-                        id: "gpt-5.6-luna".into(),
-                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+        let config = ErConfig {
+            ai_hub: AiHubConfig {
+                default_provider: Some("codex".into()),
+                default_model: Some("gpt-5.6-luna".into()),
+                default_effort: Some("medium".into()),
+                providers: [(
+                    "codex".into(),
+                    AiProviderConfig {
+                        models: vec![
+                            AiModelConfig {
+                                id: "gpt-5.6-luna".into(),
+                                effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                                ..Default::default()
+                            },
+                            AiModelConfig {
+                                id: "gpt-5.5".into(),
+                                effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                                ..Default::default()
+                            },
+                        ],
                         ..Default::default()
                     },
-                    AiModelConfig {
-                        id: "gpt-5.5".into(),
-                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
-                        ..Default::default()
-                    },
-                ],
+                )]
+                .into_iter()
+                .collect(),
                 ..Default::default()
             },
-        );
+            ..Default::default()
+        };
 
         let selected = config
             .ai_hub

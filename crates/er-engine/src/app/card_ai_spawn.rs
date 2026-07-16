@@ -1,8 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{
-    agent_command_uses_stream_json, inject_provider_effort, ErConfig,
-};
+use crate::config::{agent_command_uses_stream_json, inject_provider_effort, ErConfig};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -114,9 +112,7 @@ fn inject_read_only_tools(args: &mut Vec<String>) {
 pub fn build_card_ai_argv(inv: &CardAiInvocation, system: &str, user: &str) -> Vec<String> {
     let mut args = inv.args.clone();
     let has_placeholder = args.iter().any(|a| a.contains("{prompt}"));
-    let combined_prompt = if inv.is_claude_compatible {
-        user.to_string()
-    } else if system.is_empty() {
+    let combined_prompt = if inv.is_claude_compatible || system.is_empty() {
         user.to_string()
     } else {
         format!("{system}\n\nUser request:\n{user}")
@@ -291,9 +287,9 @@ mod tests {
             uses_stream_json: false,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
-        assert!(args.windows(2).any(|pair| {
-            pair[0] == "--append-system-prompt" && pair[1] == "system context"
-        }));
+        assert!(args
+            .windows(2)
+            .any(|pair| { pair[0] == "--append-system-prompt" && pair[1] == "system context" }));
         assert!(args.iter().any(|a| a == "how does this work?"));
         assert!(!args.iter().any(|a| a.contains("User request:")));
     }

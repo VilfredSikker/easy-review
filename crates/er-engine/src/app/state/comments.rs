@@ -2608,22 +2608,25 @@ impl App {
             );
         }
 
-        let pending = PendingBackgroundTask {
-            task: BackgroundTask::new(kind, target),
-            command_name: command_name.to_string(),
-            prompt,
-            prepared_diff,
-            // Snapshot at enqueue so a mid-queue palette change cannot retarget
-            // an already-queued job.
-            ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(|| {
-                self.sync_ai_selection();
-                crate::config::AiSelection {
-                    provider_id: self.current_ai_provider.clone(),
-                    model_id: self.current_ai_model.clone(),
-                    effort: self.current_ai_effort.clone(),
-                }
-            })),
-        };
+        let pending =
+            PendingBackgroundTask {
+                task: BackgroundTask::new(kind, target),
+                command_name: command_name.to_string(),
+                prompt,
+                prepared_diff,
+                // Snapshot at enqueue so a mid-queue palette change cannot retarget
+                // an already-queued job.
+                ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(
+                    || {
+                        self.sync_ai_selection();
+                        crate::config::AiSelection {
+                            provider_id: self.current_ai_provider.clone(),
+                            model_id: self.current_ai_model.clone(),
+                            effort: self.current_ai_effort.clone(),
+                        }
+                    },
+                )),
+            };
 
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
         if self.running_background_task_count() >= cap {
