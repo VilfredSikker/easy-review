@@ -74,7 +74,7 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
         .iter()
         .map(|(id, cfg)| {
             let resolved_model = (selection.provider_id.as_deref() == Some(id.as_str()))
-                .then(|| selection.model_id.as_deref())
+                .then_some(selection.model_id.as_deref())
                 .flatten();
             AiProviderInfo {
                 id: id.clone(),
@@ -86,7 +86,7 @@ fn list_providers_inner(app: &er_engine::app::App) -> Vec<AiProviderInfo> {
                     .map(|m| AiModelInfo {
                         id: m.id.clone(),
                         label: m.display_name(),
-                        is_selected: resolved_model.as_deref() == Some(m.id.as_str()),
+                        is_selected: resolved_model == Some(m.id.as_str()),
                         description: m.description.clone(),
                         cost_per_1k_in: m.cost_per_1k_in,
                         cost_per_1k_out: m.cost_per_1k_out,
