@@ -89,16 +89,22 @@ pr_diff_stats             → { "number": 42 }
 diff_hotspots             → { "number": 42, "limit": 10 }
 compare_prod_size         → { "numbers": [12, 15, 18] }
 summarize_triage          → { "number": 42 }
+run_triage                → { "number": 42 }
+run_review                → { "number": 42 }
+run_tour                  → { "number": 42 }
+review_job_status         → { "id": "hj-1" }
 open_in_easy_review       → { "number": 42 }
 ```
 
 ## Architecture
 
 - Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
-- `er-mcp` is a thin `rmcp` stdio wrapper that shells out via `er-engine::github`.
+- Headless AI runs live in `er-engine::headless_jobs` (shared managed PR buckets + `agent_runtime`).
+- `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
 
 ## Notes
 
 - `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` to bound cost.
+- `run_*` jobs need agent CLIs on PATH; they share storage with Desktop but not the Desktop process `agent_slots` pool.
 - `open_in_easy_review` returns instructions; there is no `er://` deep-link handler yet.
 - Production line counts exclude paths classified as test, Storybook, generated/lock, or docs.
