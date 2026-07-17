@@ -186,6 +186,52 @@ fn should_render_inline_line_comment(
     diff_line.old_num == Some(line_num)
 }
 
+/// Line-anchored findings to render inline for a given diff mode.
+///
+/// `Branch` matches by `hunk_index` (the review was generated against this exact
+/// branch diff, so hunk indices align). Every other diff that a review can be
+/// viewed against — a working-tree diff (`Unstaged`/`Staged`) or a PR head-vs-base
+/// diff (`PrDiff`, incl. remote `gh pr diff`) — may not share the review's hunk
+/// indexing, so those match by line only. This mirrors the desktop's
+/// `findingMatchesHunk` rule (`mode !== "branch"` → line-only). Routing all four
+/// render sites through this one dispatch keeps them from drifting apart.
+fn line_findings_for_mode<'a>(
+    ai: &'a er_engine::ai::AiState,
+    mode: DiffMode,
+    path: &str,
+    hunk_idx: usize,
+    new_line_num: usize,
+) -> Vec<&'a Finding> {
+    match mode {
+        DiffMode::Branch => ai.findings_for_line(path, hunk_idx, new_line_num),
+        DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
+            ai.findings_for_line_by_range(path, new_line_num)
+        }
+        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour => vec![],
+    }
+}
+
+/// Hunk-level findings (no line anchor) to render after a hunk, for a given diff
+/// mode. Same `Branch`-exact vs everything-else-by-range dispatch as
+/// [`line_findings_for_mode`].
+fn hunk_findings_for_mode<'a>(
+    ai: &'a er_engine::ai::AiState,
+    mode: DiffMode,
+    path: &str,
+    new_start: usize,
+    new_count: usize,
+    hunk_idx: usize,
+    total_hunks: usize,
+) -> Vec<&'a Finding> {
+    match mode {
+        DiffMode::Branch => ai.findings_for_hunk(path, hunk_idx, total_hunks),
+        DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
+            ai.findings_for_hunk_by_line_range(path, new_start, new_count, hunk_idx, total_hunks)
+        }
+        DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour => vec![],
+    }
+}
+
 /// Number of terminal rows this cell will occupy given wrapping settings.
 /// Uses the same pipeline as rendering: `expand_tabs` then `word_wrap`.
 fn cell_wrap_height(
@@ -641,19 +687,13 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
             // ── Inline line-level findings (rendered after comments for the target line) ──
             if in_overlay {
                 if let Some(new_line_num) = diff_line.new_num {
-                    let line_findings = match tab.mode {
-                        DiffMode::Branch => {
-                            tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num)
-                        }
-                        DiffMode::Unstaged | DiffMode::Staged => {
-                            tab.ai.findings_for_line_by_range(&file.path, new_line_num)
-                        }
-                        DiffMode::History
-                        | DiffMode::Conflicts
-                        | DiffMode::Hidden
-                        | DiffMode::PrDiff
-                        | DiffMode::Tour => vec![],
-                    };
+                    let line_findings = line_findings_for_mode(
+                        &tab.ai,
+                        tab.mode,
+                        &file.path,
+                        hunk_idx,
+                        new_line_num,
+                    );
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
                         let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -693,23 +733,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
         // ── AI finding banners after each hunk (hunk-level only, overlay mode) ──
         if in_overlay {
             let total_hunks = file.hunks.len();
-            let findings = match tab.mode {
-                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx, total_hunks),
-                DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_hunk_by_line_range(
-                    &file.path,
-                    hunk.new_start,
-                    hunk.new_count,
-                    hunk_idx,
-                    total_hunks,
-                ),
-                DiffMode::History
-                | DiffMode::Conflicts
-                | DiffMode::Hidden
-                | DiffMode::PrDiff
-                | DiffMode::Tour => {
-                    vec![]
-                } // AI findings not shown in these modes
-            };
+            let findings = hunk_findings_for_mode(
+                &tab.ai,
+                tab.mode,
+                &file.path,
+                hunk.new_start,
+                hunk.new_count,
+                hunk_idx,
+                total_hunks,
+            );
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
                 let pre_len = lines.len();
@@ -1500,19 +1532,13 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
             let finding_new_num = row.right.as_ref().and_then(|c| c.line.new_num);
             if let Some(new_line_num) = finding_new_num {
                 if tab.layers.show_ai_findings {
-                    let line_findings = match tab.mode {
-                        DiffMode::Branch => {
-                            tab.ai.findings_for_line(&file.path, hunk_idx, new_line_num)
-                        }
-                        DiffMode::Unstaged | DiffMode::Staged => {
-                            tab.ai.findings_for_line_by_range(&file.path, new_line_num)
-                        }
-                        DiffMode::History
-                        | DiffMode::Conflicts
-                        | DiffMode::Hidden
-                        | DiffMode::PrDiff
-                        | DiffMode::Tour => vec![],
-                    };
+                    let line_findings = line_findings_for_mode(
+                        &tab.ai,
+                        tab.mode,
+                        &file.path,
+                        hunk_idx,
+                        new_line_num,
+                    );
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
                         if side == SplitSide::New {
@@ -1561,23 +1587,15 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
         if tab.layers.show_ai_findings {
             let file_stale = tab.ai.is_file_stale(&file.path);
             let total_hunks = file.hunks.len();
-            let findings = match tab.mode {
-                DiffMode::Branch => tab.ai.findings_for_hunk(&file.path, hunk_idx, total_hunks),
-                DiffMode::Unstaged | DiffMode::Staged => tab.ai.findings_for_hunk_by_line_range(
-                    &file.path,
-                    hunk.new_start,
-                    hunk.new_count,
-                    hunk_idx,
-                    total_hunks,
-                ),
-                DiffMode::History
-                | DiffMode::Conflicts
-                | DiffMode::Hidden
-                | DiffMode::PrDiff
-                | DiffMode::Tour => {
-                    vec![]
-                }
-            };
+            let findings = hunk_findings_for_mode(
+                &tab.ai,
+                tab.mode,
+                &file.path,
+                hunk.new_start,
+                hunk.new_count,
+                hunk_idx,
+                total_hunks,
+            );
             for finding in &findings {
                 if side == SplitSide::New {
                     let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -3250,6 +3268,86 @@ fn format_size(size: u64) -> String {
         format!("{:.1} KB", size as f64 / 1024.0)
     } else {
         format!("{:.1} MB", size as f64 / (1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod finding_dispatch_tests {
+    use super::*;
+    use er_engine::ai::AiState;
+
+    // One file review with a line-anchored finding (line 30, hunk 1) and a
+    // hunk-level finding (no line anchor, hunk 2).
+    fn ai_with_findings() -> AiState {
+        let json = r#"{
+            "version": 1,
+            "diff_hash": "h",
+            "files": {
+                "src/a.rs": {
+                    "risk": "medium",
+                    "findings": [
+                        {"id":"f-line","severity":"medium","title":"line finding","hunk_index":1,"line_start":30},
+                        {"id":"f-hunk","severity":"low","title":"hunk finding","hunk_index":2}
+                    ]
+                }
+            }
+        }"#;
+        let mut ai = AiState::default();
+        ai.review = Some(serde_json::from_str(json).expect("fixture parses"));
+        ai
+    }
+
+    fn ids(findings: &[&Finding]) -> Vec<String> {
+        findings.iter().map(|f| f.id.clone()).collect()
+    }
+
+    // Regression: before the fix, PrDiff returned `vec![]` for every finding, so
+    // PR-review findings never rendered inline in the TUI (local `--pr` or remote
+    // `--remote`) even though the file-tree count showed them. PrDiff must surface
+    // line-anchored findings by line — ignoring hunk_index, since a PR / remote
+    // `gh pr diff` may not share the review's hunk indexing.
+    #[test]
+    fn prdiff_surfaces_line_finding_ignoring_hunk_index() {
+        let ai = ai_with_findings();
+        // Query the WRONG hunk (0) for the finding anchored to hunk 1.
+        let found = line_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 0, 30);
+        assert_eq!(ids(&found), vec!["f-line".to_string()]);
+    }
+
+    // Branch mode keeps exact hunk matching — the review was generated against
+    // this same branch diff, so hunk indices align. A mismatched hunk must NOT
+    // surface the finding; this is what makes the PrDiff branch a real difference.
+    #[test]
+    fn branch_requires_matching_hunk_for_line_finding() {
+        let ai = ai_with_findings();
+        let wrong_hunk = line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 0, 30);
+        assert!(wrong_hunk.is_empty(), "branch must not match across hunks");
+        let right_hunk = line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 1, 30);
+        assert_eq!(ids(&right_hunk), vec!["f-line".to_string()]);
+    }
+
+    // Hunk-level (non-line-anchored) findings surface in PrDiff too.
+    #[test]
+    fn prdiff_surfaces_hunk_level_finding() {
+        let ai = ai_with_findings();
+        let found = hunk_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 100, 5, 2, 3);
+        assert_eq!(ids(&found), vec!["f-hunk".to_string()]);
+    }
+
+    // Modes that view a different diff than any review (History/Conflicts/Hidden/
+    // Tour) still show no inline findings.
+    #[test]
+    fn non_review_modes_hide_findings() {
+        let ai = ai_with_findings();
+        for mode in [
+            DiffMode::History,
+            DiffMode::Conflicts,
+            DiffMode::Hidden,
+            DiffMode::Tour,
+        ] {
+            assert!(line_findings_for_mode(&ai, mode, "src/a.rs", 1, 30).is_empty());
+            assert!(hunk_findings_for_mode(&ai, mode, "src/a.rs", 100, 5, 2, 3).is_empty());
+        }
     }
 }
 
