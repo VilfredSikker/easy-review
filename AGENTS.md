@@ -18,7 +18,7 @@ scripts/aliases below, so either form works.
 | Run TUI | `er` (from any git repo) or `cargo tui-run` |
 | Test TUI/engine | `./scripts/er-tui.sh test -p er-engine -p er-tui` or `cargo tui-test` |
 | Test desktop backend | `cargo test -p er-desktop` |
-| Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; see `crates/er-mcp/README.md`) |
+| Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; setup: `docs/guide/mcp.html`) |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release | `./scripts/tauri-build.sh` or `cargo desktop-release` |
 | Frontend checks | `cd desktop-ui && bun run check && bun test src` |

@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MCP server setup — easy-review docs</title>
+  <meta name="description" content="Install and configure the Easy Review MCP server (er-mcp) in Claude Code, Cursor, and Codex. mcp.json examples and one-line add commands.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Getting Started</p>
+    <h1>MCP server setup</h1>
+    <p class="lead">
+      <code>er-mcp</code> is a local stdio <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a>
+      server. Ask Claude Code, Cursor, or Codex for priority PRs, production-only diff size, blocked/stale filters,
+      and to prepare/upload AI review sidecars into the same managed storage Desktop/TUI use.
+    </p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><strong>git</strong> and <strong>gh</strong> on <code>PATH</code> (<code>gh auth login</code>)</li>
+      <li>Optional: Easy Review projects at <code>~/.config/er/projects.json</code> (Desktop writes this) so you can omit <code>repo=</code></li>
+      <li>A built <code>er-mcp</code> binary (next section)</li>
+    </ul>
+
+    <h2>Install the binary</h2>
+    <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
+cd easy-review
+cargo install --path crates/er-mcp
+<span class="cmt"># → ~/.cargo/bin/er-mcp  (ensure ~/.cargo/bin is on PATH)</span>
+
+which er-mcp
+er-mcp --help</code></pre>
+    <p>From a clone without installing globally:</p>
+    <pre><code>cargo build -p er-mcp --release
+<span class="cmt"># binary: target/release/er-mcp</span></code></pre>
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div><p>Below, replace <code>$ER_MCP</code> with the absolute path to the binary
+      (e.g. <code>$HOME/.cargo/bin/er-mcp</code> or
+      <code>$HOME/src/easy-review/target/release/er-mcp</code>).</p></div>
+    </div>
+
+    <h2>Fast add (one command)</h2>
+
+    <h3>Claude Code</h3>
+    <pre><code><span class="cmt"># User scope — available in every project</span>
+claude mcp add --scope user easy-review -- "$ER_MCP"
+
+<span class="cmt"># Project scope — writes .mcp.json for the team (commit it)</span>
+claude mcp add --scope project easy-review -- "$ER_MCP"
+
+claude mcp list
+claude mcp get easy-review</code></pre>
+    <p>Flags go <em>before</em> the server name; everything after <code>--</code> is the stdio command.
+    There is no <code>--command</code> flag.</p>
+
+    <h3>Codex</h3>
+    <pre><code>codex mcp add easy-review -- "$ER_MCP"
+codex mcp list
+codex mcp get easy-review</code></pre>
+    <p>Config is stored in <code>~/.codex/config.toml</code> (or project <code>.codex/config.toml</code> for trusted projects).</p>
+
+    <h3>Cursor</h3>
+    <p>Cursor uses <code>mcp.json</code> (no first-party <code>cursor mcp add</code> equivalent for custom stdio servers).
+    Fastest path: paste the JSON below, or add via <strong>Cursor Settings → Tools &amp; MCP → New MCP Server</strong>.</p>
+    <pre><code><span class="cmt"># Global (all workspaces)</span>
+mkdir -p ~/.cursor
+<span class="cmt"># then edit ~/.cursor/mcp.json — see structure below</span>
+
+<span class="cmt"># Or project-local (share with the team)</span>
+mkdir -p .cursor
+<span class="cmt"># then edit .cursor/mcp.json</span></code></pre>
+
+    <h2><code>mcp.json</code> structure</h2>
+    <p>Same shape for Cursor global (<code>~/.cursor/mcp.json</code>), Cursor project (<code>.cursor/mcp.json</code>),
+    and Claude project scope (<code>.mcp.json</code> at the repo root).</p>
+
+    <h3>Minimal (recommended)</h3>
+    <pre><code>{
+  "mcpServers": {
+    "easy-review": {
+      "command": "/absolute/path/to/er-mcp"
+    }
+  }
+}</code></pre>
+
+    <h3>With args / env (optional)</h3>
+    <pre><code>{
+  "mcpServers": {
+    "easy-review": {
+      "command": "/absolute/path/to/er-mcp",
+      "args": [],
+      "env": {
+        "ER_STORAGE_ROOT": "/custom/easy-review-data"
+      }
+    }
+  }
+}</code></pre>
+
+    <h3>Where each client reads it</h3>
+    <table>
+      <thead><tr><th>Client</th><th>Config location</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Cursor</strong></td>
+          <td><code>~/.cursor/mcp.json</code> (global)<br><code>.cursor/mcp.json</code> (project)</td>
+          <td>Project wins on name clash. Restart or toggle the server in Settings if it does not appear.</td>
+        </tr>
+        <tr>
+          <td><strong>Claude Code</strong></td>
+          <td><code>claude mcp add</code> → user/local in <code>~/.claude.json</code>; project → <code>.mcp.json</code></td>
+          <td>Prefer <code>claude mcp add</code> over hand-editing. In-session: <code>/mcp</code>.</td>
+        </tr>
+        <tr>
+          <td><strong>Codex</strong></td>
+          <td><code>~/.codex/config.toml</code> (<code>[mcp_servers.easy-review]</code>)</td>
+          <td>Prefer <code>codex mcp add</code>. CLI / IDE / ChatGPT desktop share this host config.</td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h3>Codex TOML equivalent</h3>
+    <pre><code><span class="cmt"># ~/.codex/config.toml</span>
+[mcp_servers.easy-review]
+command = "/absolute/path/to/er-mcp"</code></pre>
+
+    <h2>Verify</h2>
+    <ol>
+      <li>Restart the client (or reload MCP tools).</li>
+      <li>Ask: <em>“List Easy Review projects”</em> or <em>“Top 5 priority PRs”</em>.</li>
+      <li>You should see tools like <code>priority_prs</code>, <code>prepare_review</code>, <code>upload_artifacts</code>.</li>
+    </ol>
+
+    <h2>What you can do</h2>
+    <table>
+      <thead><tr><th>Ask for…</th><th>Tool</th></tr></thead>
+      <tbody>
+        <tr><td>Priority / small PRs</td><td><code>priority_prs</code>, <code>low_hanging_fruit</code>, <code>cross_repo_queue</code></td></tr>
+        <tr><td>Production-only size</td><td><code>pr_diff_stats</code>, <code>diff_hotspots</code>, <code>compare_prod_size</code></td></tr>
+        <tr><td>Blocked / stale / debt</td><td><code>prs_blocked</code>, <code>prs_stale</code>, <code>my_review_debt</code></td></tr>
+        <tr><td>AI sidecars (shared with Desktop)</td><td><code>get_artifact_specs</code> → <code>prepare_review</code> → <code>upload_artifacts</code></td></tr>
+      </tbody>
+    </table>
+    <p>Full tool list and AI upload flow:
+      <a href="https://github.com/VilfredSikker/easy-review/blob/main/crates/er-mcp/README.md" target="_blank" rel="noopener"><code>crates/er-mcp/README.md</code></a>.</p>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li><strong>Server not listed</strong> — absolute path to <code>er-mcp</code>, restart client, check <code>which er-mcp</code>.</li>
+      <li><strong>Tools fail on GitHub</strong> — run <code>gh auth status</code>; MCP shells out to <code>gh</code> like Desktop.</li>
+      <li><strong>No projects</strong> — pass <code>repo=owner/name</code>, or open the repo in Easy Review Desktop once so <code>projects.json</code> exists.</li>
+      <li><strong>Claude “unknown option --command”</strong> — use <code>claude mcp add easy-review -- "$ER_MCP"</code> (options before name, command after <code>--</code>).</li>
+    </ul>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

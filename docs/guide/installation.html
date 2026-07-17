@@ -106,6 +106,14 @@ cd easy-review
     <p>Delete the <code>er</code> binary from your install directory (e.g. <code>rm ~/.local/bin/er</code>). Review
     data lives separately in managed storage — see <a href="storage.html">Review Storage</a> for those paths if you
     want to remove it too.</p>
+
+    <h2 id="mcp-server">MCP server (<code>er-mcp</code>)</h2>
+    <p>
+      Optional local MCP server for Claude Code, Cursor, and Codex — PR triage queues and AI sidecar upload into
+      shared managed storage. Full setup (one-line <code>claude mcp add</code> / <code>codex mcp add</code>, plus
+      <code>mcp.json</code> for Cursor): <a href="mcp.html">MCP Server Setup</a>.
+    </p>
+    <pre><code>cargo install --path crates/er-mcp</code></pre>
   </main>
   <script src="assets/docs.js"></script>
 </body>

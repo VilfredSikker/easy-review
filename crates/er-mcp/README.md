@@ -72,11 +72,32 @@ authoring contract.
 ```bash
 cargo build -p er-mcp --release
 # binary: target/release/er-mcp
+
+cargo install --path crates/er-mcp
+# → ~/.cargo/bin/er-mcp
 ```
 
 Requires `gh auth login`.
 
-### Cursor MCP config
+## Client setup (Claude / Cursor / Codex)
+
+Full guide with **`mcp.json`**, **`claude mcp add`**, and **`codex mcp add`**:
+[docs/guide/mcp.html](../../docs/guide/mcp.html)
+([published](https://vilfredsikker.github.io/easy-review/guide/mcp.html)).
+
+Quick add (replace the path with your `er-mcp` binary):
+
+```bash
+export ER_MCP="$HOME/.cargo/bin/er-mcp"
+
+# Claude Code (user scope)
+claude mcp add --scope user easy-review -- "$ER_MCP"
+
+# Codex
+codex mcp add easy-review -- "$ER_MCP"
+```
+
+Cursor — put this in `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 
 ```json
 {
