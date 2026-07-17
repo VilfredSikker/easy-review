@@ -487,13 +487,8 @@ mod tests {
         assert!(!numbers.contains(&1));
         assert!(!numbers.contains(&30));
 
-        let tours_only = list_repo_pr_artifacts_in_dir(
-            "acme",
-            "widgets",
-            prs,
-            Some(&[SidecarKind::Tour]),
-            50,
-        );
+        let tours_only =
+            list_repo_pr_artifacts_in_dir("acme", "widgets", prs, Some(&[SidecarKind::Tour]), 50);
         assert_eq!(tours_only.len(), 1);
         assert_eq!(tours_only[0].summary.number, 20);
         assert_eq!(tours_only[0].kinds, vec!["tour".to_string()]);

@@ -97,8 +97,7 @@ fn load_value(path: &Path) -> Result<Value> {
 
 fn save_value(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
     let bytes = serde_json::to_vec_pretty(value).context("serialize projects.json")?;
     let tmp = path.with_extension("json.tmp");
@@ -195,11 +194,7 @@ pub fn ensure_project_for_remote(owner: &str, repo: &str) -> Result<(String, Str
     ensure_project_for_remote_at(&projects_path(), owner, repo)
 }
 
-fn ensure_project_for_remote_at(
-    path: &Path,
-    owner: &str,
-    repo: &str,
-) -> Result<(String, String)> {
+fn ensure_project_for_remote_at(path: &Path, owner: &str, repo: &str) -> Result<(String, String)> {
     if let Some(found) = find_project_for_remote_at(path, owner, repo)? {
         return Ok(found);
     }

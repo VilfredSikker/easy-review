@@ -14,9 +14,7 @@ use er_engine::review_queue::{
     ReviewStatus,
 };
 use er_engine::sidecar_specs::{artifact_specs, artifact_specs_for_dir};
-use er_engine::sidecar_summary::{
-    list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars,
-};
+use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
@@ -267,7 +265,10 @@ fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
         .map(|s| s.to_string())
 }
 
-fn pinned_sidecar_json(entry: &PinnedPr, summary: &er_engine::sidecar_summary::PrSidecarSummary) -> serde_json::Value {
+fn pinned_sidecar_json(
+    entry: &PinnedPr,
+    summary: &er_engine::sidecar_summary::PrSidecarSummary,
+) -> serde_json::Value {
     json!({
         "number": entry.number,
         "title": entry.title,
@@ -967,11 +968,8 @@ impl ErMcp {
         let project_id_arg = args.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let (project_id, project_name) = projects_pins::resolve_project_for_pin(
-                project_id_arg.as_deref(),
-                &owner,
-                &name,
-            )?;
+            let (project_id, project_name) =
+                projects_pins::resolve_project_for_pin(project_id_arg.as_deref(), &owner, &name)?;
             let title = title_arg
                 .filter(|t| !t.trim().is_empty())
                 .or_else(|| fetch_pr_title(&owner, &name, number))
@@ -994,9 +992,7 @@ impl ErMcp {
         }))
     }
 
-    #[tool(
-        description = "Remove a PR from Desktop Saved PRs (unpin)."
-    )]
+    #[tool(description = "Remove a PR from Desktop Saved PRs (unpin).")]
     async fn unpin_pr(
         &self,
         Parameters(args): Parameters<PrNumberArgs>,
@@ -1007,11 +1003,8 @@ impl ErMcp {
         let project_id_arg = args.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let Some((project_id, project_name)) = projects_pins::resolve_project_for_list(
-                project_id_arg.as_deref(),
-                &owner,
-                &name,
-            )?
+            let Some((project_id, project_name)) =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
             else {
                 return Ok((None, None, owner, name, false));
             };
@@ -1044,19 +1037,10 @@ impl ErMcp {
         let project_id_arg = args.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let Some((project_id, project_name)) = projects_pins::resolve_project_for_list(
-                project_id_arg.as_deref(),
-                &owner,
-                &name,
-            )?
+            let Some((project_id, project_name)) =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
             else {
-                return Ok((
-                    None,
-                    None,
-                    owner,
-                    name,
-                    Vec::<serde_json::Value>::new(),
-                ));
+                return Ok((None, None, owner, name, Vec::<serde_json::Value>::new()));
             };
             let pinned = projects_pins::list_pinned(&project_id)?;
             let rows: Vec<_> = pinned
@@ -1066,13 +1050,7 @@ impl ErMcp {
                     pinned_sidecar_json(entry, &summary)
                 })
                 .collect();
-            Ok::<_, anyhow::Error>((
-                Some(project_id),
-                Some(project_name),
-                owner,
-                name,
-                rows,
-            ))
+            Ok::<_, anyhow::Error>((Some(project_id), Some(project_name), owner, name, rows))
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1111,11 +1089,8 @@ impl ErMcp {
         let project_id_arg = args.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
-            let project = projects_pins::resolve_project_for_list(
-                project_id_arg.as_deref(),
-                &owner,
-                &name,
-            )?;
+            let project =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?;
             let (project_id, project_name, pinned_set) = match project {
                 Some((id, pname)) => {
                     let set = projects_pins::pinned_numbers(&id);
