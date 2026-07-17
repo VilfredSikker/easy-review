@@ -127,6 +127,11 @@ build-mcp:
 install-mcp:
     cargo install --path crates/er-mcp
 
+# Install the er-review agent skill (requires `er` on PATH).
+[group('prod/mcp')]
+install-skills *ARGS:
+    er install-skills {{ARGS}}
+
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:

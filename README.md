@@ -58,9 +58,13 @@ low-hanging fruit, production-only diff line counts, and client-owned AI sidecar
 
 ```bash
 cargo install --path crates/er-mcp
+cargo install --path crates/er-tui   # er binary
+er install-skills                   # "ER review" agent skill (cursor/claude/codex)
 ```
 
 Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
+Skill: [`skills/er-review/SKILL.md`](skills/er-review/SKILL.md).
+
 ## Documentation
 
 📚 The full guide is at **[vilfredsikker.github.io/easy-review/guide](https://vilfredsikker.github.io/easy-review/guide/)** — [installation](https://vilfredsikker.github.io/easy-review/guide/installation.html), [quick start](https://vilfredsikker.github.io/easy-review/guide/quick-start.html), core concepts, keybindings, the AI review workflow, configuration, storage, GitHub sync, and troubleshooting for both the terminal UI and the desktop app.

@@ -19,6 +19,7 @@ scripts/aliases below, so either form works.
 | Test TUI/engine | `./scripts/er-tui.sh test -p er-engine -p er-tui` or `cargo tui-test` |
 | Test desktop backend | `cargo test -p er-desktop` |
 | Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; setup: `docs/guide/mcp.html`) |
+| Install ER agent skill | `er install-skills` (or `gh skill install … er-review`) — see `skills/er-review/` |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release | `./scripts/tauri-build.sh` or `cargo desktop-release` |
 | Frontend checks | `cd desktop-ui && bun run check && bun test src` |

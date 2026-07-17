@@ -109,6 +109,23 @@ Cursor — put this in `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 }
 ```
 
+### Agent skill (“ER review”)
+
+Install the companion skill so agents know to call `prepare_review` → author →
+`upload_artifacts` when you say **“ER review”**:
+
+```bash
+# After: cargo install --path crates/er-tui
+er install-skills                  # cursor + claude-code + codex, user scope
+er install-skills --agent cursor --force
+er install-skills --scope project  # → .agents/skills/er-review (or .claude/skills)
+
+# Same placement model as gh-stack:
+gh skill install VilfredSikker/easy-review er-review --agent cursor --scope user
+```
+
+Skill source: [`skills/er-review/SKILL.md`](../../skills/er-review/SKILL.md).
+
 ## Example calls
 
 ```text
