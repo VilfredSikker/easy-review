@@ -12,6 +12,7 @@ use er_engine::review_queue::{
     open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
     ReviewStatus,
 };
+use er_engine::sidecar_specs::{artifact_specs, artifact_specs_for_dir};
 use er_engine::sidecar_summary::summarize_pr_sidecars;
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
@@ -158,6 +159,14 @@ pub struct UploadArtifactsArgs {
     /// Re-fetch PR diff before validating (default false — reuse prepare_review's diff-tmp).
     #[serde(default)]
     pub refresh_diff: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ArtifactSpecsArgs {
+    /// Artifact kinds to return. Default: triage, review, tour.
+    /// Allowed: triage, review, tour.
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -771,9 +780,33 @@ impl ErMcp {
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
         .map_err(|e| tool_err(e.to_string()))?;
 
+        let specs = artifact_specs_for_dir(
+            &kinds,
+            &kit.er_dir,
+            &kit.base_ref,
+            &kit.head_ref,
+        );
+
         text_json(&json!({
             "project": project_name,
             "kit": kit,
+            "artifact_specs": specs,
+            "note": "Author files using artifact_specs schemas/examples; embed kit.diff_hash; then upload_artifacts.",
+        }))
+    }
+
+    #[tool(
+        description = "Return JSON Schema, examples, and prepared-diff prompts for triage/review/tour sidecars so you can author upload_artifacts payloads precisely. No network / no PR required."
+    )]
+    async fn get_artifact_specs(
+        &self,
+        Parameters(args): Parameters<ArtifactSpecsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let kinds = parse_kinds(args.kinds).map_err(tool_err)?;
+        let specs = artifact_specs(&kinds);
+        text_json(&json!({
+            "flow": "get_artifact_specs → prepare_review → author files per schema → upload_artifacts → summarize_triage",
+            "specs": specs,
         }))
     }
 
@@ -879,6 +912,7 @@ const SHIPPED_TOOLS: &[&str] = &[
     "diff_hotspots",
     "compare_prod_size",
     "prepare_review",
+    "get_artifact_specs",
     "upload_artifacts",
     "tool_ideas",
 ];
@@ -900,7 +934,7 @@ impl ServerHandler for ErMcp {
              Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
              Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
              Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
-             AI sidecars: prepare_review → you write the JSON → upload_artifacts → summarize_triage. \
+             AI sidecars: get_artifact_specs (schemas+prompts) → prepare_review → upload_artifacts → summarize_triage. \
              Open: open_in_easy_review.",
             )
     }

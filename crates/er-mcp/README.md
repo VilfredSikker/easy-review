@@ -33,6 +33,7 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 | `prs_failing_ci` | Failing `gh pr checks` |
 | `prs_already_addressed` | All review threads resolved or outdated |
 | `prepare_review` | Write shared `diff-tmp`, return `diff_hash` + prompts |
+| `get_artifact_specs` | JSON Schema + examples + prompts for triage/review/tour (no PR needed) |
 | `upload_artifacts` | Validate + write `triage` / `review` / `tour` JSON you produced |
 | `summarize_triage` | Local managed `triage.json` / `review.json` / `tour.json` summary |
 | `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
@@ -43,18 +44,20 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 The MCP client agent **is** the reviewer. Easy Review prepares storage and
 validates uploads — it does not spawn agent CLIs.
 
-1. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
+1. `get_artifact_specs` — JSON Schema, examples, and Desktop prepared-diff prompts
+   (optional but recommended before authoring).
+2. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
    managed PR bucket (`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`),
-   returns `diff_hash` and the same prepared-diff prompts Desktop uses.
-2. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
-3. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
-4. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
+   returns `diff_hash` and prompts with the real output path.
+3. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
+4. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
+5. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
 
 ```text
+get_artifact_specs → { "kinds": ["tour"] }
 prepare_review     → { "number": 42, "kinds": ["triage", "tour"] }
-# …you write the JSON…
+# …you write the JSON per schema…
 upload_artifacts   → { "number": 42, "kind": "tour", "files": { "tour.json": "..." } }
-upload_artifacts   → { "number": 42, "kind": "triage", "files": { "triage.json": "..." } }
 summarize_triage   → { "number": 42 }
 ```
 
@@ -95,6 +98,7 @@ pr_diff_stats             → { "number": 42 }
 diff_hotspots             → { "number": 42, "limit": 10 }
 compare_prod_size         → { "numbers": [12, 15, 18] }
 prepare_review            → { "number": 42, "kinds": ["tour"] }
+get_artifact_specs        → { "kinds": ["tour", "triage"] }
 upload_artifacts          → { "number": 42, "kind": "tour", "files": { "tour.json": "{...}" } }
 summarize_triage          → { "number": 42 }
 open_in_easy_review       → { "number": 42 }
@@ -104,6 +108,7 @@ open_in_easy_review       → { "number": 42 }
 
 - Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
 - Client-owned uploads live in `er-engine::sidecar_upload` (prepare kit + validated write).
+- JSON Schema + prompt contracts live in `er-engine::sidecar_specs` (`get_artifact_specs`).
 - `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
 
 ## Notes
