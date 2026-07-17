@@ -1,3 +1,20 @@
+# Easy Review (Unreleased)
+
+## In plain terms
+
+- **What changed.** After an agent uploads triage/review/tour sidecars via MCP, there was no way to bookmark that PR or list what was already reviewed. New tools pin into Desktop Saved PRs and scan managed storage for uploaded artifacts.
+- **Why it matters.** You can find agent-reviewed PRs again from MCP (`list_pinned_prs` / `list_artifacts`) and see the same pins in the Desktop sidebar.
+- **TL;DR.** MCP `pin_pr` / `list_pinned_prs` / `list_artifacts` for reviewed sidecars.
+
+## What's Changed
+
+### Features
+- MCP `pin_pr` / `unpin_pr` / `list_pinned_prs` write Desktop Saved PRs (`projects.json` `saved_prs`) with Value-preserving updates (`er-engine::projects_pins`).
+- MCP `list_artifacts` scans managed `prs/pr-*` buckets for uploaded triage/review/tour and marks whether each is pinned.
+- `er-review` skill documents pin + find-reviewed-work flow.
+
+---
+
 # Easy Review v0.4.4
 
 ## In plain terms

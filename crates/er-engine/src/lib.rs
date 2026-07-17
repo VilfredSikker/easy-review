@@ -19,6 +19,7 @@ pub mod github;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod paths;
+pub mod projects_pins;
 pub mod review_queue;
 pub mod sidecar_specs;
 pub mod sidecar_summary;

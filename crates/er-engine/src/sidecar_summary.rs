@@ -2,10 +2,12 @@
 
 use crate::ai::{load_tour_sidecar, load_triage_review, ErReview, ErTour, RiskLevel, TriageReview};
 use crate::github::owner_repo_storage_slug;
-use crate::storage::pr_bucket_dir;
+use crate::sidecar_upload::SidecarKind;
+use crate::storage::{pr_bucket_dir, storage_root};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::UNIX_EPOCH;
 
 /// Slim view of what Easy Review already knows about a PR from local sidecars.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +127,130 @@ fn summarize_tour(t: &ErTour) -> TourSummary {
         diff_hash: t.diff_hash.clone(),
         created_at: t.created_at.clone(),
     }
+}
+
+/// Kind labels present in a PR bucket (`triage` / `review` / `tour`).
+pub fn present_kinds(summary: &PrSidecarSummary) -> Vec<&'static str> {
+    let mut kinds = Vec::new();
+    if summary.triage.is_some() {
+        kinds.push("triage");
+    }
+    if summary.review.is_some() {
+        kinds.push("review");
+    }
+    if summary.tour.is_some() {
+        kinds.push("tour");
+    }
+    kinds
+}
+
+fn kind_matches_filter(kinds: &[&str], filter: Option<&[SidecarKind]>) -> bool {
+    let Some(filter) = filter else {
+        return !kinds.is_empty();
+    };
+    if filter.is_empty() {
+        return !kinds.is_empty();
+    }
+    filter.iter().any(|k| match k {
+        SidecarKind::Triage => kinds.contains(&"triage"),
+        SidecarKind::Review => kinds.contains(&"review"),
+        SidecarKind::Tour => kinds.contains(&"tour"),
+    })
+}
+
+fn file_mtime_secs(path: &Path) -> Option<u64> {
+    let meta = std::fs::metadata(path).ok()?;
+    let modified = meta.modified().ok()?;
+    Some(
+        modified
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0),
+    )
+}
+
+fn bucket_sidecar_mtime_secs(bucket: &Path) -> u64 {
+    ["triage.json", "review.json", "tour.json"]
+        .iter()
+        .filter_map(|name| file_mtime_secs(&bucket.join(name)))
+        .max()
+        .unwrap_or(0)
+}
+
+/// One PR bucket that has at least one triage/review/tour sidecar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ListedPrArtifacts {
+    #[serde(flatten)]
+    pub summary: PrSidecarSummary,
+    /// Present kinds: `triage`, `review`, `tour`.
+    pub kinds: Vec<String>,
+    /// Max mtime (unix seconds) among present sidecar files.
+    pub mtime_secs: u64,
+}
+
+/// Scan managed `prs/pr-*` buckets for uploaded triage/review/tour sidecars.
+///
+/// Newest sidecar mtime first. `kinds_filter` keeps PRs that have *any* of the
+/// requested kinds. `limit` caps the result (callers should clamp).
+pub fn list_repo_pr_artifacts(
+    owner: &str,
+    repo: &str,
+    kinds_filter: Option<&[SidecarKind]>,
+    limit: usize,
+) -> Vec<ListedPrArtifacts> {
+    let slug = owner_repo_storage_slug(owner, repo);
+    let prs_dir = storage_root().join("repos").join(&slug).join("prs");
+    list_repo_pr_artifacts_in_dir(owner, repo, &prs_dir, kinds_filter, limit)
+}
+
+/// Test / custom-root variant of [`list_repo_pr_artifacts`].
+pub fn list_repo_pr_artifacts_in_dir(
+    owner: &str,
+    repo: &str,
+    prs_dir: &Path,
+    kinds_filter: Option<&[SidecarKind]>,
+    limit: usize,
+) -> Vec<ListedPrArtifacts> {
+    let Ok(entries) = std::fs::read_dir(prs_dir) else {
+        return Vec::new();
+    };
+
+    let mut listed = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(number_str) = name.strip_prefix("pr-") else {
+            continue;
+        };
+        let Ok(number) = number_str.parse::<u64>() else {
+            continue;
+        };
+
+        let summary = summarize_pr_bucket(owner, repo, number, &path);
+        let kinds = present_kinds(&summary);
+        if !kind_matches_filter(&kinds, kinds_filter) {
+            continue;
+        }
+        let mtime_secs = bucket_sidecar_mtime_secs(&path);
+        listed.push(ListedPrArtifacts {
+            summary,
+            kinds: kinds.into_iter().map(str::to_string).collect(),
+            mtime_secs,
+        });
+    }
+
+    listed.sort_by(|a, b| {
+        b.mtime_secs
+            .cmp(&a.mtime_secs)
+            .then_with(|| b.summary.number.cmp(&a.summary.number))
+    });
+    listed.truncate(limit);
+    listed
 }
 
 /// Read managed PR-bucket sidecars for `owner/repo` PR `#number`.
@@ -296,5 +422,80 @@ mod tests {
         assert_eq!(tour_sum.files, 1);
         assert_eq!(tour_sum.pillar_titles, vec!["Core".to_string()]);
         assert!(summary.missing.is_empty());
+    }
+
+    #[test]
+    fn list_repo_pr_artifacts_finds_triage_and_tour_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let prs = dir.path();
+
+        let empty = prs.join("pr-1");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let with_triage = prs.join("pr-10");
+        std::fs::create_dir_all(&with_triage).unwrap();
+        let triage = TriageReview {
+            version: 1,
+            diff_hash: "h1".into(),
+            diff_scope: "pr".into(),
+            created_at: "2026-01-01T00:00:00Z".into(),
+            first_impression: "ok".into(),
+            diff_stats: TriageDiffStats {
+                files_changed: 1,
+                approx_risk: "low".into(),
+                domains: vec![],
+            },
+            verdict: TriageVerdict {
+                primary: TriageVerdictPrimary::General,
+                experts: vec![],
+                rationale: "r".into(),
+                confidence: "high".into(),
+            },
+            priority_files: vec![],
+        };
+        std::fs::write(
+            with_triage.join("triage.json"),
+            serde_json::to_string(&triage).unwrap(),
+        )
+        .unwrap();
+
+        let with_tour = prs.join("pr-20");
+        std::fs::create_dir_all(&with_tour).unwrap();
+        let tour = ErTour {
+            version: 1,
+            diff_hash: "h2".into(),
+            created_at: "2026-01-02T00:00:00Z".into(),
+            title: "Tour only".into(),
+            overview: "o".into(),
+            pillars: vec![],
+        };
+        std::fs::write(
+            with_tour.join("tour.json"),
+            serde_json::to_string(&tour).unwrap(),
+        )
+        .unwrap();
+
+        // Questions-only bucket should not appear.
+        let questions_only = prs.join("pr-30");
+        std::fs::create_dir_all(&questions_only).unwrap();
+        std::fs::write(questions_only.join("questions.json"), "[]").unwrap();
+
+        let all = list_repo_pr_artifacts_in_dir("acme", "widgets", prs, None, 50);
+        let numbers: Vec<u64> = all.iter().map(|e| e.summary.number).collect();
+        assert!(numbers.contains(&10));
+        assert!(numbers.contains(&20));
+        assert!(!numbers.contains(&1));
+        assert!(!numbers.contains(&30));
+
+        let tours_only = list_repo_pr_artifacts_in_dir(
+            "acme",
+            "widgets",
+            prs,
+            Some(&[SidecarKind::Tour]),
+            50,
+        );
+        assert_eq!(tours_only.len(), 1);
+        assert_eq!(tours_only[0].summary.number, 20);
+        assert_eq!(tours_only[0].kinds, vec!["tour".to_string()]);
     }
 }
