@@ -817,12 +817,8 @@ impl ErMcp {
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
         .map_err(|e| tool_err(e.to_string()))?;
 
-        let specs = artifact_specs_for_dir(
-            &kinds_for_specs,
-            &kit.er_dir,
-            &kit.base_ref,
-            &kit.head_ref,
-        );
+        let specs =
+            artifact_specs_for_dir(&kinds_for_specs, &kit.er_dir, &kit.base_ref, &kit.head_ref);
 
         // Drop duplicate prompts from kit.artifacts — use artifact_specs[].prompt only.
         let mut kit = kit;

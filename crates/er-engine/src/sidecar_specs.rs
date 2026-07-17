@@ -243,7 +243,8 @@ fn summary_md_schema() -> Value {
 
 fn tour_schema() -> Value {
     // Parsed from a string to avoid json! macro recursion limits on deep nests.
-    serde_json::from_str(r#"{
+    serde_json::from_str(
+        r#"{
       "$schema": "http://json-schema.org/draft-07/schema#",
       "title": "tour.json",
       "type": "object",
@@ -298,7 +299,8 @@ fn tour_schema() -> Value {
           }
         }
       }
-    }"#)
+    }"#,
+    )
     .expect("tour schema JSON")
 }
 
@@ -437,12 +439,7 @@ fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> Arti
         },
         SidecarKind::Review => ArtifactSpec {
             kind,
-            required_files: vec![
-                "review.json",
-                "order.json",
-                "checklist.json",
-                "summary.md",
-            ],
+            required_files: vec!["review.json", "order.json", "checklist.json", "summary.md"],
             schemas: json!({
                 "review.json": review_schema(),
                 "order.json": order_schema(),
@@ -508,11 +505,7 @@ mod tests {
 
     #[test]
     fn all_kinds_have_schemas_and_prompts() {
-        let resp = artifact_specs(&[
-            SidecarKind::Triage,
-            SidecarKind::Review,
-            SidecarKind::Tour,
-        ]);
+        let resp = artifact_specs(&[SidecarKind::Triage, SidecarKind::Review, SidecarKind::Tour]);
         assert_eq!(resp.specs.len(), 3);
         for spec in &resp.specs {
             assert!(!spec.required_files.is_empty());

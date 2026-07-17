@@ -87,12 +87,7 @@ fn relative_files(kind: SidecarKind) -> Vec<&'static str> {
         SidecarKind::Triage => vec!["triage.json"],
         SidecarKind::Tour => vec!["tour.json"],
         SidecarKind::Review => {
-            vec![
-                "review.json",
-                "order.json",
-                "checklist.json",
-                "summary.md",
-            ]
+            vec!["review.json", "order.json", "checklist.json", "summary.md"]
         }
     }
 }
@@ -111,8 +106,7 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
 
 fn write_atomic(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .with_context(|| format!("mkdir {}", parent.display()))?;
+        std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
     }
     let name = path
         .file_name()
@@ -127,8 +121,7 @@ fn write_atomic(path: &Path, content: &str) -> Result<()> {
         .parent()
         .unwrap_or_else(|| Path::new("."))
         .join(tmp_name);
-    std::fs::write(&tmp_path, content)
-        .with_context(|| format!("write {}", tmp_path.display()))?;
+    std::fs::write(&tmp_path, content).with_context(|| format!("write {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("rename {} → {}", tmp_path.display(), path.display()))?;
     Ok(())
@@ -152,14 +145,12 @@ fn validate_contents_before_write(
     match kind {
         SidecarKind::Triage => {
             let raw = files.get("triage.json").expect("checked");
-            let parsed: TriageReview = serde_json::from_str(raw)
-                .context("invalid triage.json")?;
+            let parsed: TriageReview = serde_json::from_str(raw).context("invalid triage.json")?;
             check_diff_hash("triage.json", &parsed.diff_hash, expected_hash)?;
         }
         SidecarKind::Tour => {
             let raw = files.get("tour.json").expect("checked");
-            let parsed: ErTour =
-                serde_json::from_str(raw).context("invalid tour.json")?;
+            let parsed: ErTour = serde_json::from_str(raw).context("invalid tour.json")?;
             check_diff_hash("tour.json", &parsed.diff_hash, expected_hash)?;
         }
         SidecarKind::Review => {
@@ -442,12 +433,7 @@ mod tests {
     fn relative_files_for_review_include_all_four() {
         assert_eq!(
             relative_files(SidecarKind::Review),
-            vec![
-                "review.json",
-                "order.json",
-                "checklist.json",
-                "summary.md"
-            ]
+            vec!["review.json", "order.json", "checklist.json", "summary.md"]
         );
     }
 
@@ -491,7 +477,10 @@ mod tests {
             };
 
             let mut files = BTreeMap::new();
-            files.insert("review.json".into(), serde_json::to_string(&review).unwrap());
+            files.insert(
+                "review.json".into(),
+                serde_json::to_string(&review).unwrap(),
+            );
             files.insert("order.json".into(), serde_json::to_string(&order).unwrap());
             files.insert(
                 "checklist.json".into(),
@@ -520,7 +509,10 @@ mod tests {
                 priority_files: vec![],
             };
             let mut files = BTreeMap::new();
-            files.insert("triage.json".into(), serde_json::to_string(&triage).unwrap());
+            files.insert(
+                "triage.json".into(),
+                serde_json::to_string(&triage).unwrap(),
+            );
             upload_artifacts_to_dir(&er_dir, SidecarKind::Triage, &files).unwrap();
         });
     }
