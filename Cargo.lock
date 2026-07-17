@@ -1403,6 +1403,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "dirs",
  "er-engine",
  "ratatui",
  "serde",
