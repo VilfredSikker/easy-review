@@ -233,33 +233,59 @@ async fn load_queue(
 }
 
 async fn enrich_production_lines(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usize) {
+    let jobs: Vec<_> = prs
+        .iter()
+        .take(max_enrich)
+        .map(|pr| {
+            let owner = owner.to_string();
+            let repo = repo.to_string();
+            let number = pr.number;
+            (
+                number,
+                tokio::task::spawn_blocking(move || gh_pr_prod_diff_stats(&owner, &repo, number)),
+            )
+        })
+        .collect();
+
+    let mut by_number = std::collections::HashMap::new();
+    for (number, handle) in jobs {
+        if let Ok(Ok(stats)) = handle.await {
+            by_number.insert(number, stats.production.lines_changed() as u64);
+        }
+    }
     for pr in prs.iter_mut().take(max_enrich) {
-        let owner = owner.to_string();
-        let repo = repo.to_string();
-        let number = pr.number;
-        let stats =
-            tokio::task::spawn_blocking(move || gh_pr_prod_diff_stats(&owner, &repo, number))
-                .await
-                .ok()
-                .and_then(|r| r.ok());
-        if let Some(stats) = stats {
-            pr.production_lines = Some(stats.production.lines_changed() as u64);
+        if let Some(lines) = by_number.get(&pr.number) {
+            pr.production_lines = Some(*lines);
         }
     }
 }
 
 async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usize) {
-    for pr in prs.iter_mut().take(max_enrich) {
-        let owner = owner.to_string();
-        let repo = repo.to_string();
-        let number = pr.number;
-        let state = tokio::task::spawn_blocking(move || {
-            gh_pr_checks_state_remote(&owner, &repo, number).unwrap_or("unknown")
+    let jobs: Vec<_> = prs
+        .iter()
+        .take(max_enrich)
+        .map(|pr| {
+            let owner = owner.to_string();
+            let repo = repo.to_string();
+            let number = pr.number;
+            (
+                number,
+                tokio::task::spawn_blocking(move || {
+                    gh_pr_checks_state_remote(&owner, &repo, number).unwrap_or("unknown")
+                }),
+            )
         })
-        .await
-        .ok();
-        if let Some(state) = state {
-            pr.checks_state = Some(state.to_string());
+        .collect();
+
+    let mut by_number = std::collections::HashMap::new();
+    for (number, handle) in jobs {
+        if let Ok(state) = handle.await {
+            by_number.insert(number, state);
+        }
+    }
+    for pr in prs.iter_mut().take(max_enrich) {
+        if let Some(state) = by_number.get(&pr.number) {
+            pr.checks_state = Some((*state).to_string());
         }
     }
 }
@@ -439,7 +465,7 @@ impl ErMcp {
         Parameters(args): Parameters<ScanLimitArgs>,
     ) -> Result<CallToolResult, McpError> {
         let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 20).min(40);
+        let scan = clamp_limit(args.scan_limit, 15).min(20);
         let (owner, name, project_name, mut prs) =
             load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
         let n = prs.len().min(scan);
@@ -461,7 +487,7 @@ impl ErMcp {
         Parameters(args): Parameters<ScanLimitArgs>,
     ) -> Result<CallToolResult, McpError> {
         let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 20).min(40);
+        let scan = clamp_limit(args.scan_limit, 15).min(20);
         let (owner, name, project_name, mut prs) =
             load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
         let n = prs.len().min(scan);
@@ -523,7 +549,7 @@ impl ErMcp {
         Parameters(args): Parameters<ScanLimitArgs>,
     ) -> Result<CallToolResult, McpError> {
         let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 15).min(30);
+        let scan = clamp_limit(args.scan_limit, 15).min(20);
         let (owner, name, project_name, prs) =
             load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
 
@@ -579,6 +605,7 @@ impl ErMcp {
         // Collect owned strings first so we can borrow project names.
         let mut batches: Vec<(String, String, String, Vec<QueuePr>)> = Vec::new();
 
+        let mut list_jobs = Vec::new();
         for project in &file.projects {
             let Some(remote) = project.remote.as_deref() else {
                 continue;
@@ -586,16 +613,17 @@ impl ErMcp {
             let Ok((owner, name)) = projects::parse_repo_slug(remote) else {
                 continue;
             };
-            let prs = tokio::task::spawn_blocking({
-                let owner = owner.clone();
-                let name = name.clone();
-                move || gh_pr_list_queue(&owner, &name, "open", 50)
-            })
-            .await
-            .ok()
-            .and_then(|r| r.ok())
-            .unwrap_or_default();
-            batches.push((project.name.clone(), owner, name, prs));
+            let project_name = project.name.clone();
+            list_jobs.push((
+                project_name,
+                owner.clone(),
+                name.clone(),
+                tokio::task::spawn_blocking(move || gh_pr_list_queue(&owner, &name, "open", 50)),
+            ));
+        }
+        for (project_name, owner, name, handle) in list_jobs {
+            let prs = handle.await.ok().and_then(|r| r.ok()).unwrap_or_default();
+            batches.push((project_name, owner, name, prs));
         }
 
         if args.production_lines.unwrap_or(false) {
@@ -708,23 +736,31 @@ impl ErMcp {
         if args.numbers.is_empty() {
             return Err(tool_err("numbers must be a non-empty array of PR numbers"));
         }
-        if args.numbers.len() > 25 {
-            return Err(tool_err("compare at most 25 PRs at a time"));
+        if args.numbers.len() > 12 {
+            return Err(tool_err("compare at most 12 PRs at a time"));
         }
         let (owner, name, project_name) =
             resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
                 .map_err(|e| tool_err(e.to_string()))?;
 
-        let mut rows = Vec::new();
-        for number in args.numbers {
-            let owner_c = owner.clone();
-            let name_c = name.clone();
-            let stats = tokio::task::spawn_blocking(move || {
-                gh_pr_prod_diff_stats(&owner_c, &name_c, number)
+        let jobs: Vec<_> = args
+            .numbers
+            .into_iter()
+            .map(|number| {
+                let owner_c = owner.clone();
+                let name_c = name.clone();
+                (
+                    number,
+                    tokio::task::spawn_blocking(move || {
+                        gh_pr_prod_diff_stats(&owner_c, &name_c, number)
+                    }),
+                )
             })
-            .await
-            .ok()
-            .and_then(|r| r.ok());
+            .collect();
+
+        let mut rows = Vec::new();
+        for (number, handle) in jobs {
+            let stats = handle.await.ok().and_then(|r| r.ok());
             let Some(stats) = stats else {
                 rows.push(json!({
                     "number": number,
@@ -788,11 +824,17 @@ impl ErMcp {
             &kit.head_ref,
         );
 
+        // Drop duplicate prompts from kit.artifacts — use artifact_specs[].prompt only.
+        let mut kit = kit;
+        for artifact in &mut kit.artifacts {
+            artifact.prompt.clear();
+        }
+
         text_json(&json!({
             "project": project_name,
             "kit": kit,
             "artifact_specs": specs,
-            "note": "Author files using artifact_specs schemas/examples; embed kit.diff_hash; then upload_artifacts.",
+            "note": "Author files using artifact_specs schemas/examples/prompts; embed kit.diff_hash; then upload_artifacts. Upload validates serde shape + diff_hash (not full JSON Schema).",
         }))
     }
 
@@ -812,7 +854,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON shape + diff_hash against prepare_review's diff-tmp."
+        description = "Upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON deserialize + diff_hash in memory before writing (does not enforce full JSON Schema from get_artifact_specs)."
     )]
     async fn upload_artifacts(
         &self,

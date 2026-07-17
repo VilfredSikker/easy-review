@@ -484,10 +484,18 @@ pub struct ThreadAddressingSummary {
     pub open: usize,
     /// True when there is at least one thread and every thread is resolved or outdated.
     pub all_addressed: bool,
+    /// True when the GraphQL fetch hit a page cap and more threads may exist.
+    /// When set, [`Self::all_addressed`] is forced false (conservative).
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl ThreadAddressingSummary {
     pub fn from_thread_flags(threads: &[(bool, bool)]) -> Self {
+        Self::from_thread_flags_truncated(threads, false)
+    }
+
+    pub fn from_thread_flags_truncated(threads: &[(bool, bool)], truncated: bool) -> Self {
         // (resolved, outdated)
         let thread_count = threads.len();
         let mut resolved = 0;
@@ -502,12 +510,14 @@ impl ThreadAddressingSummary {
                 open += 1;
             }
         }
+        let all_addressed = !truncated && thread_count > 0 && open == 0;
         Self {
             thread_count,
             resolved,
             outdated,
             open,
-            all_addressed: thread_count > 0 && open == 0,
+            all_addressed,
+            truncated,
         }
     }
 }
@@ -642,6 +652,13 @@ mod tests {
         let s2 = ThreadAddressingSummary::from_thread_flags(&[(false, false)]);
         assert!(!s2.all_addressed);
         assert_eq!(s2.open, 1);
+    }
+
+    #[test]
+    fn thread_addressing_truncated_forces_not_all_addressed() {
+        let s = ThreadAddressingSummary::from_thread_flags_truncated(&[(true, false)], true);
+        assert!(s.truncated);
+        assert!(!s.all_addressed);
     }
 
     #[test]

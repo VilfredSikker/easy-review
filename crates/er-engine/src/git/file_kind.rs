@@ -78,11 +78,17 @@ fn is_generated(path: &str, filename: &str) -> bool {
         || filename.ends_with(".g.dart")
         || filename.ends_with(".snap")
         || filename.ends_with(".snap.json")
-        || path.contains("/generated/")
-        || path.contains("/__generated__/")
-        || path.contains("/.turbo/")
-        || path.contains("/dist/")
+        || path_segment(path, "generated")
+        || path_segment(path, "__generated__")
+        || path_segment(path, ".turbo")
+        || path_segment(path, "dist")
         || path.contains("/build/generated/")
+        || path.starts_with("build/generated/")
+}
+
+/// True when `segment` is a path component (`seg/...` or `.../seg/...`).
+fn path_segment(path: &str, segment: &str) -> bool {
+    path.starts_with(&format!("{segment}/")) || path.contains(&format!("/{segment}/"))
 }
 
 fn is_storybook(path: &str, filename: &str) -> bool {
@@ -122,7 +128,8 @@ fn is_test(path: &str, filename: &str) -> bool {
         || filename.ends_with(".spec.tsx")
         || filename.ends_with(".spec.js")
         || filename.ends_with(".spec.jsx")
-        || filename.starts_with("test_")
+        // Python pytest convention only — avoid `test_helpers.rs` etc.
+        || (filename.starts_with("test_") && filename.ends_with(".py"))
         || filename == "conftest.py"
 }
 
@@ -182,6 +189,15 @@ mod tests {
             classify_path("src/__snapshots__/a.snap"),
             FileKind::Generated
         );
+        assert_eq!(classify_path("dist/bundle.js"), FileKind::Generated);
+        assert_eq!(classify_path("generated/api.ts"), FileKind::Generated);
+        assert_eq!(classify_path("pkg/dist/out.js"), FileKind::Generated);
+    }
+
+    #[test]
+    fn test_prefix_is_python_only() {
+        assert_eq!(classify_path("tests/test_foo.py"), FileKind::Test);
+        assert_eq!(classify_path("src/test_helpers.rs"), FileKind::Production);
     }
 
     #[test]

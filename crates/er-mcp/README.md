@@ -63,6 +63,10 @@ summarize_triage   → { "number": 42 }
 
 **Review uploads** need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
 
+`upload_artifacts` validates serde deserialization + matching `diff_hash` **before** writing.
+It does **not** enforce the full JSON Schema from `get_artifact_specs` — use the schemas as the
+authoring contract.
+
 ## Build / run
 
 ```bash
@@ -113,7 +117,8 @@ open_in_easy_review       → { "number": 42 }
 
 ## Notes
 
-- `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` to bound cost.
+- `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` (capped at 20) to bound cost; enrichments run in parallel.
+- `compare_prod_size` caps at 12 PRs and fetches diffs in parallel.
 - `prepare_review` + `upload_artifacts` share storage with Desktop without touching `agent_slots`.
 - `open_in_easy_review` returns instructions; there is no `er://` deep-link handler yet.
 - Production line counts exclude paths classified as test, Storybook, generated/lock, or docs.

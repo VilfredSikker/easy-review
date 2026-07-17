@@ -1436,6 +1436,18 @@ struct ReviewThreadsPr {
 #[derive(Debug, Deserialize)]
 struct ReviewThreadsConnection {
     nodes: Vec<ReviewThread>,
+    #[serde(default)]
+    #[serde(rename = "pageInfo")]
+    page_info: Option<GraphQlPageInfo>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPageInfo {
+    #[serde(default)]
+    has_next_page: bool,
+    #[serde(default)]
+    end_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1976,9 +1988,17 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
             let state = c["state"].as_str().unwrap_or("").to_string();
             let bucket = c["bucket"].as_str().unwrap_or("").to_string();
             // Map `gh pr checks` semantics into status/conclusion:
-            //   state ~ PENDING|SUCCESS|FAILURE|...
+            //   state ~ PENDING|IN_PROGRESS|QUEUED|SUCCESS|FAILURE|...
             //   bucket ~ pass|fail|pending|cancel|skipping
-            let (status, conclusion) = if state == "PENDING" || bucket == "pending" {
+            let state_l = state.to_ascii_lowercase();
+            let (status, conclusion) = if state_l == "pending"
+                || state_l == "in_progress"
+                || state_l == "queued"
+                || state_l == "waiting"
+                || state_l == "requested"
+                || state_l == "expected"
+                || bucket.eq_ignore_ascii_case("pending")
+            {
                 ("PENDING".to_string(), "".to_string())
             } else {
                 ("COMPLETED".to_string(), state.clone())
@@ -2428,12 +2448,19 @@ pub fn summarize_checks_state(checks: &[CheckRun]) -> &'static str {
     if checks.iter().any(check_run_is_failing) {
         return "failing";
     }
-    if checks.iter().any(|c| {
-        c.status.eq_ignore_ascii_case("PENDING") || c.conclusion.eq_ignore_ascii_case("pending")
-    }) {
+    if checks.iter().any(check_run_is_pending) {
         return "pending";
     }
     "passing"
+}
+
+fn check_run_is_pending(c: &CheckRun) -> bool {
+    let status = c.status.to_ascii_lowercase();
+    let conclusion = c.conclusion.to_ascii_lowercase();
+    matches!(
+        status.as_str(),
+        "pending" | "in_progress" | "queued" | "waiting" | "requested" | "expected"
+    ) || matches!(conclusion.as_str(), "pending" | "in_progress" | "queued")
 }
 
 /// Fetch checks and return rollup state for a remote PR.
@@ -2462,25 +2489,73 @@ pub fn summarize_thread_addressing_from_graphql(
 }
 
 /// Fetch review threads and summarize whether feedback is already addressed.
+///
+/// Paginates GraphQL `reviewThreads` (100/page, up to 10 pages). If more threads
+/// remain after the cap, `truncated` is set and `all_addressed` is forced false.
 pub fn gh_pr_thread_addressing_remote(
     owner: &str,
     repo: &str,
     pr: u64,
 ) -> Result<crate::review_queue::ThreadAddressingSummary> {
-    let query = format!(
-        r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: 100) {{ nodes {{ isResolved isOutdated comments(first: 1) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
-        owner, repo, pr
-    );
-    let output = Command::new("gh")
-        .args(["api", "graphql", "-f", &format!("query={}", query)])
-        .output()
-        .context("Failed to fetch review threads")?;
-    if !output.status.success() {
-        return Ok(crate::review_queue::ThreadAddressingSummary::default());
+    const PAGE_SIZE: u32 = 100;
+    const MAX_PAGES: u32 = 10;
+
+    let mut flags: Vec<(bool, bool)> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut truncated = false;
+
+    for page in 0..MAX_PAGES {
+        let after_arg = match &cursor {
+            Some(c) => format!(r#", after: "{}""#, c.replace('"', "")),
+            None => String::new(),
+        };
+        let query = format!(
+            r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ isResolved isOutdated comments(first: 1) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+            owner, repo, pr, PAGE_SIZE, after_arg
+        );
+        let output = Command::new("gh")
+            .args(["api", "graphql", "-f", &format!("query={}", query)])
+            .output()
+            .context("Failed to fetch review threads")?;
+        if !output.status.success() {
+            if page == 0 {
+                return Ok(crate::review_queue::ThreadAddressingSummary::default());
+            }
+            truncated = true;
+            break;
+        }
+        let json = String::from_utf8_lossy(&output.stdout);
+        let Ok(response) = serde_json::from_str::<ReviewThreadsResponse>(&json) else {
+            if page == 0 {
+                return Ok(crate::review_queue::ThreadAddressingSummary::default());
+            }
+            truncated = true;
+            break;
+        };
+        let conn = response.data.repository.pull_request.review_threads;
+        for t in &conn.nodes {
+            flags.push((t.is_resolved, t.is_outdated));
+        }
+        let page_info = conn.page_info.unwrap_or_default();
+        if !page_info.has_next_page {
+            break;
+        }
+        if page + 1 >= MAX_PAGES {
+            truncated = true;
+            break;
+        }
+        cursor = page_info.end_cursor;
+        if cursor.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            truncated = true;
+            break;
+        }
     }
-    Ok(summarize_thread_addressing_from_graphql(
-        &String::from_utf8_lossy(&output.stdout),
-    ))
+
+    Ok(
+        crate::review_queue::ThreadAddressingSummary::from_thread_flags_truncated(
+            &flags, truncated,
+        ),
+    )
 }
 
 /// Owner/repo slug used for managed PR buckets (`owner-repo`).
@@ -3203,6 +3278,24 @@ mod tests {
             },
         ];
         assert_eq!(summarize_checks_state(&checks), "failing");
+    }
+
+    #[test]
+    fn summarize_checks_state_treats_in_progress_as_pending() {
+        let checks = vec![CheckRun {
+            name: "build".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+            url: None,
+        }];
+        assert_eq!(summarize_checks_state(&checks), "pending");
+        let queued = vec![CheckRun {
+            name: "build".into(),
+            status: "QUEUED".into(),
+            conclusion: "".into(),
+            url: None,
+        }];
+        assert_eq!(summarize_checks_state(&queued), "pending");
     }
 
     #[test]

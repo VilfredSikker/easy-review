@@ -4,14 +4,13 @@
 //! agent produces artifacts; [`upload_pr_artifacts`] validates and stores them.
 //! No agent CLI spawn — avoids competing for [`crate::agent_slots`].
 
-use crate::agent_runtime::{ArtifactBaseline, ArtifactContract};
 use crate::ai::compute_diff_hash;
 use crate::github::{gh_pr_diff_remote, gh_pr_metadata_remote, owner_repo_storage_slug};
 use crate::storage::resolve_managed_root_for_pr_bucket;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// Which Easy Review sidecar set to prepare or upload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,6 +40,8 @@ pub struct PreparedArtifactSpec {
     /// Relative names inside the PR bucket.
     pub required_relative: Vec<String>,
     /// Full Easy Review prompt for this kind (same as Desktop prepared-diff).
+    /// Cleared in `prepare_review` MCP responses when `artifact_specs` carries prompts.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub prompt: String,
 }
 
@@ -108,26 +109,76 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
     }
 }
 
-fn artifact_contract(kind: SidecarKind) -> ArtifactContract {
-    match kind {
-        SidecarKind::Triage => ArtifactContract::Triage,
-        SidecarKind::Review => ArtifactContract::Review,
-        SidecarKind::Tour => ArtifactContract::Tour {
-            filename: "tour.json".into(),
-        },
-    }
-}
-
 fn write_atomic(path: &Path, content: &str) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("mkdir {}", parent.display()))?;
     }
-    let tmp_path = PathBuf::from(format!("{}.tmp", path.to_string_lossy()));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("artifact");
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let tmp_name = format!(".{name}.{}.{nanos}.tmp", std::process::id());
+    let tmp_path = path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(tmp_name);
     std::fs::write(&tmp_path, content)
         .with_context(|| format!("write {}", tmp_path.display()))?;
     std::fs::rename(&tmp_path, path)
         .with_context(|| format!("rename {} → {}", tmp_path.display(), path.display()))?;
+    Ok(())
+}
+
+fn check_diff_hash(label: &str, actual: &str, expected: &str) -> Result<()> {
+    if actual != expected {
+        bail!("stale {label} (expected diff_hash {expected}, got {actual})");
+    }
+    Ok(())
+}
+
+/// Parse + hash-check in memory so failed uploads never touch the destination files.
+fn validate_contents_before_write(
+    kind: SidecarKind,
+    files: &BTreeMap<String, String>,
+    expected_hash: &str,
+) -> Result<()> {
+    use crate::ai::{ErChecklist, ErOrder, ErReview, ErTour, TriageReview};
+
+    match kind {
+        SidecarKind::Triage => {
+            let raw = files.get("triage.json").expect("checked");
+            let parsed: TriageReview = serde_json::from_str(raw)
+                .context("invalid triage.json")?;
+            check_diff_hash("triage.json", &parsed.diff_hash, expected_hash)?;
+        }
+        SidecarKind::Tour => {
+            let raw = files.get("tour.json").expect("checked");
+            let parsed: ErTour =
+                serde_json::from_str(raw).context("invalid tour.json")?;
+            check_diff_hash("tour.json", &parsed.diff_hash, expected_hash)?;
+        }
+        SidecarKind::Review => {
+            let review: ErReview = serde_json::from_str(files.get("review.json").expect("checked"))
+                .context("invalid review.json")?;
+            check_diff_hash("review.json", &review.diff_hash, expected_hash)?;
+            let order: ErOrder = serde_json::from_str(files.get("order.json").expect("checked"))
+                .context("invalid order.json")?;
+            check_diff_hash("order.json", &order.diff_hash, expected_hash)?;
+            let checklist: ErChecklist =
+                serde_json::from_str(files.get("checklist.json").expect("checked"))
+                    .context("invalid checklist.json")?;
+            check_diff_hash("checklist.json", &checklist.diff_hash, expected_hash)?;
+            let summary = files.get("summary.md").expect("checked");
+            if summary.trim().is_empty() {
+                bail!("summary.md must be non-empty markdown");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -258,8 +309,13 @@ pub fn upload_artifacts_to_dir(
         .with_context(|| format!("read {}", diff_path.display()))?;
     let expected_hash = compute_diff_hash(&diff);
 
-    let contract = artifact_contract(kind);
-    let baseline = ArtifactBaseline::capture(contract, er_dir)?;
+    // Fail closed before mutating managed storage.
+    validate_contents_before_write(kind, files, &expected_hash).with_context(|| {
+        format!(
+            "{} upload rejected (expected diff_hash={expected_hash})",
+            kind.as_str()
+        )
+    })?;
 
     let mut written = Vec::new();
     for name in &required {
@@ -268,13 +324,6 @@ pub fn upload_artifacts_to_dir(
         write_atomic(&path, content)?;
         written.push(path.to_string_lossy().into_owned());
     }
-
-    baseline.validate(er_dir).with_context(|| {
-        format!(
-            "uploaded {} artifacts failed validation (expected diff_hash={expected_hash})",
-            kind.as_str()
-        )
-    })?;
 
     Ok(UploadArtifactsResult {
         er_dir: er_dir.to_string(),
@@ -294,10 +343,6 @@ pub fn upload_pr_artifacts(req: UploadArtifactsRequest) -> Result<UploadArtifact
         if !diff_path.exists() {
             prepare_pr_diff_tmp(&req.owner, &req.repo, req.pr, &[])?.0
         } else {
-            if er_dir.is_empty() {
-                bail!("failed to resolve managed PR storage");
-            }
-            std::fs::create_dir_all(&er_dir).ok();
             er_dir
         }
     };
@@ -386,6 +431,10 @@ mod tests {
             let mut files = BTreeMap::new();
             files.insert("tour.json".into(), serde_json::to_string(&tour).unwrap());
             assert!(upload_artifacts_to_dir(&er_dir, SidecarKind::Tour, &files).is_err());
+            assert!(
+                !Path::new(&er_dir).join("tour.json").exists(),
+                "failed upload must not leave tour.json on disk"
+            );
         });
     }
 
