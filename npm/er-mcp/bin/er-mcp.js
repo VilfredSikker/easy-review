@@ -47,8 +47,9 @@ async function main() {
     return;
   }
 
-  // Interactive terminal with no MCP client — don't hang silently.
-  if (process.stdin.isTTY) {
+  // Interactive terminal (both ends are TTYs) — don't hang silently.
+  // MCP clients use pipes for stdin/stdout, so this stays false for them.
+  if (process.stdin.isTTY && process.stdout.isTTY) {
     printTtyUsage();
     return;
   }

@@ -188,7 +188,14 @@ npx skills add VilfredSikker/easy-review -s er-review --all
 
     <h2>Troubleshooting</h2>
     <ul>
-      <li><strong>Server not listed</strong> — try <code>npx -y easy-review-mcp</code> in a terminal; or check the absolute path / restart client.</li>
+      <li><strong>Claude stuck on “connecting…”</strong> — first run downloads a binary; on macOS Gatekeeper may block it. Clear quarantine and reconnect:
+        <pre><code>xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
+<span class="cmt"># then in Claude: /mcp → easy-review → Reconnect</span></code></pre>
+        Or skip npx and point at a local binary:
+        <pre><code>cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"</code></pre>
+      </li>
+      <li><strong>Server not listed</strong> — try <code>npx -y easy-review-mcp</code> in a terminal (should print a setup hint); or check the absolute path / restart client.</li>
       <li><strong>Tools fail on GitHub</strong> — run <code>gh auth status</code>; MCP shells out to <code>gh</code> like Desktop.</li>
       <li><strong>No projects</strong> — pass <code>repo=owner/name</code>, or open the repo in Easy Review Desktop once so <code>projects.json</code> exists.</li>
       <li><strong>Claude “unknown option --command”</strong> — use <code>claude mcp add easy-review -- "$ER_MCP"</code> (options before name, command after <code>--</code>).</li>

@@ -50,8 +50,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Interactive terminal with no MCP client attached — explain instead of hanging.
-    if std::io::stdin().is_terminal() {
+    // Interactive terminal (stdin+stdout TTYs) — explain instead of hanging.
+    // MCP clients attach pipes, so this stays false for Claude/Cursor/Codex.
+    if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         print_tty_usage();
         return Ok(());
     }
