@@ -50,20 +50,26 @@ er-mcp --help</code></pre>
     <h2>Add to a client</h2>
 
     <h3>Claude Code</h3>
-    <pre><code><span class="cmt"># npm launcher</span>
-claude mcp add --scope user easy-review -- npx -y easy-review-mcp
+    <p>
+      Prefer an absolute path to the <code>er-mcp</code> binary. Wrapping with <code>npx</code>
+      often leaves Claude stuck on <em>connecting…</em> (npx can write to stdout or delay the handshake).
+    </p>
+    <pre><code><span class="cmt"># 1) Install / locate the binary</span>
+cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
+<span class="cmt"># or use the npm-downloaded cache after one local run:</span>
+<span class="cmt">#   ~/Library/Caches/easy-review/er-mcp/v*/er-mcp   (macOS)</span>
+<span class="cmt">#   ~/.cache/easy-review/er-mcp/v*/er-mcp           (Linux)</span>
 
-<span class="cmt"># or a source-built binary</span>
-export ER_MCP="$HOME/.cargo/bin/er-mcp"
-claude mcp add --scope user easy-review -- "$ER_MCP"
-
-<span class="cmt"># Project scope — writes .mcp.json for the team (commit it)</span>
-claude mcp add --scope project easy-review -- npx -y easy-review-mcp
+<span class="cmt"># 2) Point Claude at it (no npx)</span>
+claude mcp remove easy-review 2>/dev/null || true
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
 
 claude mcp list
 claude mcp get easy-review</code></pre>
     <p>Flags go <em>before</em> the server name; everything after <code>--</code> is the stdio command.
     There is no <code>--command</code> flag.</p>
+    <p>Project scope (writes <code>.mcp.json</code>):</p>
+    <pre><code>claude mcp add --scope project easy-review -- "$(command -v er-mcp)"</code></pre>
 
     <h3>Codex</h3>
     <pre><code>codex mcp add easy-review -- npx -y easy-review-mcp
@@ -188,12 +194,16 @@ npx skills add VilfredSikker/easy-review -s er-review --all
 
     <h2>Troubleshooting</h2>
     <ul>
-      <li><strong>Claude stuck on “connecting…”</strong> — first run downloads a binary; on macOS Gatekeeper may block it. Clear quarantine and reconnect:
-        <pre><code>xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
-<span class="cmt"># then in Claude: /mcp → easy-review → Reconnect</span></code></pre>
-        Or skip npx and point at a local binary:
-        <pre><code>cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
-claude mcp add --scope user easy-review -- "$(command -v er-mcp)"</code></pre>
+      <li><strong>Claude stuck on “connecting…”</strong> — do not use <code>npx</code> as the MCP command.
+        Remove the server and re-add with an absolute binary path:
+        <pre><code>xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp 2>/dev/null || true
+cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
+claude mcp remove easy-review
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
+<span class="cmt"># then /mcp → Reconnect (or restart Claude Code)</span></code></pre>
+        Verify the binary answers MCP initialize:
+        <pre><code>printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"t","version":"0"}}}' \
+  | "$(command -v er-mcp)" 2>/dev/null | head -c 200</code></pre>
       </li>
       <li><strong>Server not listed</strong> — try <code>npx -y easy-review-mcp</code> in a terminal (should print a setup hint); or check the absolute path / restart client.</li>
       <li><strong>Tools fail on GitHub</strong> — run <code>gh auth status</code>; MCP shells out to <code>gh</code> like Desktop.</li>

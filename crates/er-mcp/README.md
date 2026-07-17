@@ -92,10 +92,11 @@ Full guide with **`mcp.json`**, **`claude mcp add`**, and **`codex mcp add`**:
 npm launcher (package: [`npm/er-mcp`](../../npm/er-mcp)):
 
 ```bash
-# Claude Code
-claude mcp add --scope user easy-review -- npx -y easy-review-mcp
+# Claude Code — use an absolute er-mcp path (npx often sticks on "connecting…")
+cargo install --path crates/er-mcp   # or: cargo install --git … --locked er-mcp
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
 
-# Codex
+# Codex / Cursor can use npx:
 codex mcp add easy-review -- npx -y easy-review-mcp
 ```
 
@@ -112,7 +113,7 @@ Cursor — `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 }
 ```
 
-Or point `command` at a source-built `/absolute/path/to/er-mcp`.
+Or point `command` at a source-built `/absolute/path/to/er-mcp` (recommended for Claude Code).
 
 ### Agent skill (“ER review”)
 
