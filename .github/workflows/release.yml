@@ -7,6 +7,8 @@ on:
 
 permissions:
   contents: write
+  # npm publish uses OIDC trusted publishing when configured; token fallback via secrets.
+  id-token: write
 
 jobs:
   build:
@@ -30,20 +32,26 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Build
+      - name: Build er (TUI)
         run: cargo build --release --target ${{ matrix.target }} -p er-tui
+
+      - name: Build er-mcp
+        run: cargo build --release --target ${{ matrix.target }} -p er-mcp
 
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf ../../../er-${{ matrix.target }}.tar.gz er
+          tar -czf ../../../er-mcp-${{ matrix.target }}.tar.gz er-mcp
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: er-${{ matrix.target }}
-          path: er-${{ matrix.target }}.tar.gz
+          name: bins-${{ matrix.target }}
+          path: |
+            er-${{ matrix.target }}.tar.gz
+            er-mcp-${{ matrix.target }}.tar.gz
 
   release:
     name: Create Release
@@ -61,4 +69,37 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
-          files: er-*.tar.gz
+          files: |
+            er-*.tar.gz
+            er-mcp-*.tar.gz
+
+  npm:
+    name: Publish easy-review-mcp to npm
+    needs: release
+    runs-on: ubuntu-latest
+    # Opt-in: set repo variable PUBLISH_NPM=true and configure NPM_TOKEN (or trusted publishing).
+    if: ${{ vars.PUBLISH_NPM == 'true' }}
+    defaults:
+      run:
+        working-directory: npm/er-mcp
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Verify package version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "Tag v$TAG does not match npm/er-mcp version $PKG"
+            exit 1
+          fi
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

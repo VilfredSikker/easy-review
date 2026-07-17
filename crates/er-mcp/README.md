@@ -70,6 +70,10 @@ authoring contract.
 ## Build / run
 
 ```bash
+# npm launcher (downloads the release binary on first run)
+npx -y easy-review-mcp
+
+# From source
 cargo build -p er-mcp --release
 # binary: target/release/er-mcp
 
@@ -85,29 +89,30 @@ Full guide with **`mcp.json`**, **`claude mcp add`**, and **`codex mcp add`**:
 [docs/guide/mcp.html](../../docs/guide/mcp.html)
 ([published](https://vilfredsikker.github.io/easy-review/guide/mcp.html)).
 
-Quick add (replace the path with your `er-mcp` binary):
+npm launcher (package: [`npm/er-mcp`](../../npm/er-mcp)):
 
 ```bash
-export ER_MCP="$HOME/.cargo/bin/er-mcp"
-
-# Claude Code (user scope)
-claude mcp add --scope user easy-review -- "$ER_MCP"
+# Claude Code
+claude mcp add --scope user easy-review -- npx -y easy-review-mcp
 
 # Codex
-codex mcp add easy-review -- "$ER_MCP"
+codex mcp add easy-review -- npx -y easy-review-mcp
 ```
 
-Cursor — put this in `~/.cursor/mcp.json` or `.cursor/mcp.json`:
+Cursor — `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 
 ```json
 {
   "mcpServers": {
     "easy-review": {
-      "command": "/absolute/path/to/er-mcp"
+      "command": "npx",
+      "args": ["-y", "easy-review-mcp"]
     }
   }
 }
 ```
+
+Or point `command` at a source-built `/absolute/path/to/er-mcp`.
 
 ### Agent skill (“ER review”)
 

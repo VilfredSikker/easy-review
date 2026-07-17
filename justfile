@@ -127,6 +127,11 @@ build-mcp:
 install-mcp:
     cargo install --path crates/er-mcp
 
+# Test the npm launcher (Node 18+).
+[group('test')]
+test-mcp-npm:
+    cd npm/er-mcp && npm test
+
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:
