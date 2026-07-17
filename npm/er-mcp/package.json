@@ -1,0 +1,42 @@
+{
+  "name": "easy-review-mcp",
+  "version": "0.4.3",
+  "description": "npx launcher for the Easy Review MCP server (er-mcp). Downloads the platform binary from GitHub Releases on first run.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VilfredSikker/easy-review.git",
+    "directory": "npm/er-mcp"
+  },
+  "homepage": "https://vilfredsikker.github.io/easy-review/guide/mcp.html",
+  "bugs": {
+    "url": "https://github.com/VilfredSikker/easy-review/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "easy-review",
+    "code-review",
+    "github",
+    "pull-request"
+  ],
+  "bin": {
+    "easy-review-mcp": "./bin/er-mcp.js",
+    "er-mcp": "./bin/er-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --test lib/*.test.js",
+    "start": "node ./bin/er-mcp.js"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

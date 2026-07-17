@@ -24,7 +24,34 @@
       <li>A built <code>er-mcp</code> binary (next section)</li>
     </ul>
 
-    <h2>Install the binary</h2>
+    <h2>Install (recommended: npx)</h2>
+    <p>
+      No Rust toolchain needed. The <code>easy-review-mcp</code> npm package downloads the
+      matching <code>er-mcp</code> binary from GitHub Releases on first run.
+    </p>
+    <pre><code><span class="cmt"># Smoke-test</span>
+npx -y easy-review-mcp
+
+<span class="cmt"># Cursor — ~/.cursor/mcp.json (or .cursor/mcp.json)</span>
+{
+  "mcpServers": {
+    "easy-review": {
+      "command": "npx",
+      "args": ["-y", "easy-review-mcp"]
+    }
+  }
+}
+
+<span class="cmt"># Claude Code</span>
+claude mcp add --scope user easy-review -- npx -y easy-review-mcp
+
+<span class="cmt"># Codex</span>
+codex mcp add easy-review -- npx -y easy-review-mcp
+</code></pre>
+    <p>Requires Node 18+. Supported hosts: macOS arm64/x64, Linux x64.
+    Override with <code>ER_MCP_PATH=/path/to/er-mcp</code> if you already built from source.</p>
+
+    <h2>Install from source (optional)</h2>
     <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
 cd easy-review
 cargo install --path crates/er-mcp
@@ -37,12 +64,12 @@ er-mcp --help</code></pre>
 <span class="cmt"># binary: target/release/er-mcp</span></code></pre>
     <div class="callout note">
       <span class="ico">◆</span>
-      <div><p>Below, replace <code>$ER_MCP</code> with the absolute path to the binary
-      (e.g. <code>$HOME/.cargo/bin/er-mcp</code> or
-      <code>$HOME/src/easy-review/target/release/er-mcp</code>).</p></div>
+      <div><p>When using a source-built binary, set <code>$ER_MCP</code> to its absolute path
+      (e.g. <code>$HOME/.cargo/bin/er-mcp</code>) in the client commands below.
+      Prefer the npx form above when you can.</p></div>
     </div>
 
-    <h2>Fast add (one command)</h2>
+    <h2>Fast add (source binary)</h2>
 
     <h3>Claude Code</h3>
     <pre><code><span class="cmt"># User scope — available in every project</span>
@@ -77,7 +104,17 @@ mkdir -p .cursor
     <p>Same shape for Cursor global (<code>~/.cursor/mcp.json</code>), Cursor project (<code>.cursor/mcp.json</code>),
     and Claude project scope (<code>.mcp.json</code> at the repo root).</p>
 
-    <h3>Minimal (recommended)</h3>
+    <h3>Minimal (recommended — npx)</h3>
+    <pre><code>{
+  "mcpServers": {
+    "easy-review": {
+      "command": "npx",
+      "args": ["-y", "easy-review-mcp"]
+    }
+  }
+}</code></pre>
+
+    <h3>Source-built binary</h3>
     <pre><code>{
   "mcpServers": {
     "easy-review": {
@@ -124,7 +161,8 @@ mkdir -p .cursor
     <h3>Codex TOML equivalent</h3>
     <pre><code><span class="cmt"># ~/.codex/config.toml</span>
 [mcp_servers.easy-review]
-command = "/absolute/path/to/er-mcp"</code></pre>
+command = "npx"
+args = ["-y", "easy-review-mcp"]</code></pre>
 
     <h2>Install the agent skill</h2>
     <p>
@@ -167,7 +205,7 @@ npx skills add VilfredSikker/easy-review -s er-review --all
 
     <h2>Troubleshooting</h2>
     <ul>
-      <li><strong>Server not listed</strong> — absolute path to <code>er-mcp</code>, restart client, check <code>which er-mcp</code>.</li>
+      <li><strong>Server not listed</strong> — try <code>npx -y easy-review-mcp</code> in a terminal; or check the absolute path / restart client.</li>
       <li><strong>Tools fail on GitHub</strong> — run <code>gh auth status</code>; MCP shells out to <code>gh</code> like Desktop.</li>
       <li><strong>No projects</strong> — pass <code>repo=owner/name</code>, or open the repo in Easy Review Desktop once so <code>projects.json</code> exists.</li>
       <li><strong>Claude “unknown option --command”</strong> — use <code>claude mcp add easy-review -- "$ER_MCP"</code> (options before name, command after <code>--</code>).</li>
