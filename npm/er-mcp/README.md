@@ -33,8 +33,12 @@ Running that in a bare terminal prints a short setup hint and exits.
 
 ### Claude Code
 
+Prefer an absolute `er-mcp` path — `npx` often leaves Claude on **connecting…**:
+
 ```bash
-claude mcp add --scope user easy-review -- npx -y easy-review-mcp
+cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
+claude mcp remove easy-review 2>/dev/null || true
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
 ```
 
 ### Codex
@@ -50,17 +54,20 @@ codex mcp add easy-review -- npx -y easy-review-mcp
 | `ER_MCP_PATH` / `ER_MCP_BINARY` | Use this binary instead of downloading |
 | `XDG_CACHE_HOME` | Cache root (Linux/default) |
 
-If Claude Code stays on **connecting…**, clear macOS quarantine on the cached binary and reconnect:
+If Claude Code stays on **connecting…**, stop using `npx` for the MCP command. Point at the binary:
 
 ```bash
-xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
+xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp 2>/dev/null || true
+cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
+claude mcp remove easy-review
+claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
 ```
 
-Or point Claude at a source-built binary:
+Or use the npm cache binary after a local download:
 
 ```bash
-cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
-claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
+# macOS
+claude mcp add --scope user easy-review -- "$HOME/Library/Caches/easy-review/er-mcp/v0.4.4/er-mcp"
 ```
 
 If no release asset exists yet, install from source:
