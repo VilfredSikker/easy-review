@@ -25,4 +25,3 @@ tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["cr
 serde.workspace = true
 serde_json.workspace = true
 anyhow.workspace = true
-dirs.workspace = true

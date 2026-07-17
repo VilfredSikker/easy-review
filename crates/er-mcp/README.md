@@ -112,20 +112,12 @@ Cursor — put this in `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 ### Agent skill (“ER review”)
 
 Install the companion skill so agents know to call `prepare_review` → author →
-`upload_artifacts` when you say **“ER review”**:
+`upload_artifacts` when you say **“ER review”** (same as `npx skills add github/gh-stack`):
 
 ```bash
-# NPX (same ecosystem as: npx skills add github/gh-stack)
-npx skills add VilfredSikker/easy-review -s er-review -g -y   # user/global
-npx skills add VilfredSikker/easy-review -s er-review -y      # project
-
-# Or via the er binary (after: cargo install --path crates/er-tui)
-er install-skills                  # cursor + claude-code + codex, user scope
-er install-skills --agent cursor --force
-er install-skills --scope project  # → .agents/skills/er-review (or .claude/skills)
-
-# Or GitHub CLI skills
-gh skill install VilfredSikker/easy-review er-review --agent cursor --scope user
+npx skills add VilfredSikker/easy-review -s er-review -g   # global; prompts for agents
+npx skills add VilfredSikker/easy-review -s er-review      # project
+npx skills add VilfredSikker/easy-review -s er-review -g -a cursor -y
 ```
 
 Skill source: [`skills/er-review/SKILL.md`](../../skills/er-review/SKILL.md).

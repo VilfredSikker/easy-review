@@ -130,29 +130,26 @@ command = "/absolute/path/to/er-mcp"</code></pre>
     <p>
       MCP exposes the tools; the <code>er-review</code> skill teaches agents to run
       <strong>prepare → author → upload</strong> when you say <em>“ER review”</em>.
-      Same idea as installing <code>github/gh-stack</code> via <code>npx skills</code> or <code>gh skill</code>.
+      Same install path as <code>github/gh-stack</code>:
     </p>
-    <pre><code><span class="cmt"># NPX (no er binary required) — mirrors: npx skills add github/gh-stack</span>
-npx skills add VilfredSikker/easy-review -s er-review -g -y
-<span class="cmt"># Project scope (omit -g): copies into .agents/skills/er-review</span>
-npx skills add VilfredSikker/easy-review -s er-review -y
+    <pre><code><span class="cmt"># Global (user) — prompts for which agents to install into</span>
+npx skills add VilfredSikker/easy-review -s er-review -g
 
-<span class="cmt"># Or via the er binary (embeds the same skill)</span>
-er install-skills
-<span class="cmt"># → ~/.cursor/skills/er-review, ~/.claude/skills/er-review, ~/.codex/skills/er-review</span>
-er install-skills --agent cursor --scope user --force
+<span class="cmt"># Project scope (omit -g)</span>
+npx skills add VilfredSikker/easy-review -s er-review
 
-<span class="cmt"># Or GitHub CLI skills</span>
-gh skill install VilfredSikker/easy-review er-review --agent cursor --scope user
+<span class="cmt"># Non-interactive examples</span>
+npx skills add VilfredSikker/easy-review -s er-review -g -a cursor -y
+npx skills add VilfredSikker/easy-review -s er-review --all
 </code></pre>
-    <p>Skill source: <code>skills/er-review/SKILL.md</code> in the repo (also embedded in <code>er</code>).</p>
+    <p>Skill source: <code>skills/er-review/SKILL.md</code> in the repo.</p>
 
     <h2>Verify</h2>
     <ol>
       <li>Restart the client (or reload MCP tools).</li>
       <li>Ask: <em>“List Easy Review projects”</em> or <em>“Top 5 priority PRs”</em>.</li>
       <li>You should see tools like <code>priority_prs</code>, <code>prepare_review</code>, <code>upload_artifacts</code>.</li>
-      <li>After <code>er install-skills</code>, try: <em>“ER review”</em> on a PR number.</li>
+      <li>After <code>npx skills add …</code>, try: <em>“ER review”</em> on a PR number.</li>
     </ol>
 
     <h2>What you can do</h2>

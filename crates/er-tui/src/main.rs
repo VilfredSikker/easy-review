@@ -1,9 +1,8 @@
 mod input;
-mod install_skills;
 mod ui;
 
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::Parser;
 use crossterm::{
     event::{self, Event},
     execute,
@@ -17,7 +16,6 @@ use input::{
 };
 use ratatui::prelude::*;
 use std::io;
-use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
@@ -26,9 +24,6 @@ use watch::{FileWatcher, WatchEvent};
 #[derive(Parser)]
 #[command(name = "er", version, about)]
 struct Cli {
-    #[command(subcommand)]
-    command: Option<Commands>,
-
     /// Repository paths to open (defaults to current directory)
     paths: Vec<String>,
 
@@ -49,39 +44,6 @@ struct Cli {
     target: Option<String>,
 }
 
-#[derive(Subcommand)]
-enum Commands {
-    /// Install Easy Review agent skills (MCP companion for "ER review")
-    ///
-    /// Also installable via: npx skills add VilfredSikker/easy-review -s er-review -g -y
-    #[command(name = "install-skills")]
-    InstallSkills {
-        /// Target agents (comma-separated). Default: cursor,claude-code,codex
-        #[arg(
-            long,
-            value_delimiter = ',',
-            default_value = "cursor,claude-code,codex"
-        )]
-        agent: Vec<String>,
-
-        /// Installation scope: user (home) or project (cwd)
-        #[arg(long, default_value = "user")]
-        scope: String,
-
-        /// Overwrite an existing er-review skill directory
-        #[arg(short, long)]
-        force: bool,
-
-        /// Install into a custom skills directory (overrides --agent / --scope)
-        #[arg(long)]
-        dir: Option<PathBuf>,
-
-        /// Skip `gh skill install` and copy the embedded skill directly
-        #[arg(long)]
-        direct: bool,
-    },
-}
-
 /// Restore the terminal before the default panic handler runs, so a panic
 /// inside the event loop doesn't leave the shell in raw mode with no cursor.
 fn install_panic_hook() {
@@ -97,23 +59,6 @@ fn main() -> Result<()> {
     er_engine::env_path::init_cli_path();
     install_panic_hook();
     let cli = Cli::parse();
-
-    if let Some(Commands::InstallSkills {
-        agent,
-        scope,
-        force,
-        dir,
-        direct,
-    }) = cli.command
-    {
-        return install_skills::run(install_skills::InstallSkillsOpts {
-            agents: agent,
-            scope: install_skills::Scope::parse(&scope)?,
-            force,
-            dir,
-            prefer_gh: !direct,
-        });
-    }
 
     // Reject conflicting --pr and PR URL arguments
     if cli.pr.is_some() && cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
