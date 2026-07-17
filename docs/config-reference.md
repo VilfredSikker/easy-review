@@ -153,7 +153,7 @@ args = ["--print", "--trust", "--force", "--output-format", "stream-json", "-p",
 [[ai_hub.providers.cursor.models]]
 id = "grok-4.5"
 label = "Grok 4.5"
-args = ["--model", "grok-4.5"]
+args = ["--model", "cursor-grok-4.5-high"]
 
 [[ai_hub.providers.cursor.models]]
 id = "composer-2.5"

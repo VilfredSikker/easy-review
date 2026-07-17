@@ -556,6 +556,21 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
             }
         }
     }
+
+    for provider in hub.providers.values_mut() {
+        for model in &mut provider.models {
+            if model.id == "grok-4.5"
+                && model.args.len() == 2
+                && model.args[0] == "--model"
+                && model.args[1] == "grok-4.5"
+            {
+                model.args = vec![
+                    "--model".into(),
+                    "cursor-grok-4.5-high".into(),
+                ];
+            }
+        }
+    }
 }
 
 impl AiProviderConfig {
@@ -2097,14 +2112,48 @@ mod tests {
             "catalog should include opus-4.8"
         );
         let cursor = hub.providers.get("cursor").unwrap();
-        assert!(
-            cursor.models.iter().any(|m| m.id == "grok-4.5"),
-            "catalog should include grok-4.5"
+        let grok = cursor
+            .models
+            .iter()
+            .find(|m| m.id == "grok-4.5")
+            .expect("catalog should include grok-4.5");
+        assert_eq!(
+            grok.args,
+            vec!["--model".to_string(), "cursor-grok-4.5-high".to_string()]
         );
         assert!(
             cursor.models.iter().any(|m| m.id == "composer-2.5"),
             "catalog should include composer-2.5"
         );
+    }
+
+    #[test]
+    fn supplement_ai_hub_repairs_stale_cursor_grok_slug() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "cursor".into(),
+            AiProviderConfig {
+                command: "agent".into(),
+                models: vec![AiModelConfig {
+                    id: "grok-4.5".into(),
+                    args: vec!["--model".into(), "grok-4.5".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        supplement_ai_hub(&mut hub);
+
+        let grok = hub
+            .providers
+            .get("cursor")
+            .unwrap()
+            .models
+            .iter()
+            .find(|m| m.id == "grok-4.5")
+            .unwrap();
+        assert_eq!(grok.args, vec!["--model", "cursor-grok-4.5-high"]);
     }
 
     #[test]
