@@ -16,6 +16,9 @@ use er_engine::review_queue::{
     ReviewStatus,
 };
 use er_engine::sidecar_summary::summarize_pr_sidecars;
+use er_engine::sidecar_upload::{
+    prepare_review_kit, upload_pr_artifacts, UploadArtifactsRequest,
+};
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -145,6 +148,35 @@ pub struct RunReviewArgs {
     /// Optional model id.
     #[serde(default)]
     pub model_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrepareReviewArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub number: u64,
+    /// Artifact kinds to prepare prompts for. Default: triage, review, tour.
+    /// Allowed: triage, review, tour.
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct UploadArtifactsArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub number: u64,
+    /// One of: triage, review, tour.
+    pub kind: String,
+    /// Map of relative filename → file contents (e.g. `{"tour.json": "{...}"}`).
+    pub files: std::collections::BTreeMap<String, String>,
+    /// Re-fetch PR diff before validating (default false — reuse prepare_review's diff-tmp).
+    #[serde(default)]
+    pub refresh_diff: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -745,7 +777,69 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Start Easy Review triage for a PR. Writes triage.json into shared managed storage (Desktop/TUI will see it). Returns a job id — poll with review_job_status."
+        description = "PREFERRED: prepare a PR review kit (writes shared diff-tmp, returns diff_hash + prompts). You (the MCP client agent) do the review yourself, then call upload_artifacts. Does NOT spawn agent CLIs or use the agent slot pool."
+    )]
+    async fn prepare_review(
+        &self,
+        Parameters(args): Parameters<PrepareReviewArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let kinds = parse_kinds(args.kinds).map_err(tool_err)?;
+
+        let kit = tokio::task::spawn_blocking(move || {
+            prepare_review_kit(&owner, &name, number, &kinds, &[])
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        text_json(&json!({
+            "project": project_name,
+            "kit": kit,
+        }))
+    }
+
+    #[tool(
+        description = "PREFERRED: upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON shape + diff_hash against prepare_review's diff-tmp. No agent spawn / no slot pool."
+    )]
+    async fn upload_artifacts(
+        &self,
+        Parameters(args): Parameters<UploadArtifactsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, project_name) =
+            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+                .map_err(|e| tool_err(e.to_string()))?;
+        let kind = parse_kind(&args.kind).map_err(tool_err)?;
+        let number = args.number;
+        let files = args.files;
+        let refresh_diff = args.refresh_diff.unwrap_or(false);
+
+        let result = tokio::task::spawn_blocking(move || {
+            upload_pr_artifacts(UploadArtifactsRequest {
+                owner,
+                repo: name,
+                pr: number,
+                kind,
+                files,
+                refresh_diff,
+            })
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        text_json(&json!({
+            "project": project_name,
+            "uploaded": result,
+            "note": "Sidecars are in shared managed storage — open the PR in Desktop/TUI or call summarize_triage.",
+        }))
+    }
+
+    #[tool(
+        description = "OPTIONAL/legacy: spawn a local agent CLI for triage (uses agent slot pool — prefer prepare_review + upload_artifacts)."
     )]
     async fn run_triage(
         &self,
@@ -755,7 +849,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Start a general Easy Review AI review for a PR. Writes review.json (and related sidecars) into shared managed storage. Returns a job id."
+        description = "OPTIONAL/legacy: spawn a local agent CLI for general review (uses agent slot pool — prefer prepare_review + upload_artifacts)."
     )]
     async fn run_review(
         &self,
@@ -765,7 +859,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Generate an Easy Review guided tour (tour.json) for a PR into shared managed storage. Returns a job id."
+        description = "OPTIONAL/legacy: spawn a local agent CLI for guided tour (uses agent slot pool — prefer prepare_review + upload_artifacts)."
     )]
     async fn run_tour(
         &self,
@@ -775,7 +869,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Start triage, general review, and guided tour for a PR (three async jobs into shared storage). Prefer this when you want the full Easy Review AI pass including tour.json."
+        description = "OPTIONAL/legacy: spawn triage+review+tour agent CLIs (uses agent slot pool — prefer prepare_review with all kinds, then upload_artifacts per kind)."
     )]
     async fn run_ai_suite(
         &self,
@@ -818,17 +912,17 @@ impl ErMcp {
 
         text_json(&json!({
             "project": project_name,
-            "note": "Started triage + review + tour into shared managed storage. Poll each job with review_job_status, then summarize_triage.",
+            "note": "Started triage + review + tour agent jobs (slot pool). Prefer prepare_review + upload_artifacts to avoid pool contention.",
             "jobs": jobs,
         }))
     }
 
-    #[tool(description = "List headless review jobs started by this MCP process.")]
+    #[tool(description = "List headless review jobs started by this MCP process (run_* only).")]
     async fn list_review_jobs(&self) -> Result<CallToolResult, McpError> {
         text_json(&json!({ "jobs": list_jobs() }))
     }
 
-    #[tool(description = "Get status for a headless review job (queued/running/done/failed).")]
+    #[tool(description = "Get status for a headless review job from run_* (queued/running/done/failed).")]
     async fn review_job_status(
         &self,
         Parameters(args): Parameters<JobIdArgs>,
@@ -839,7 +933,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "Cancel a queued headless review job (running jobs cannot be cancelled yet)."
+        description = "Cancel a queued headless review job from run_* (running jobs cannot be cancelled yet)."
     )]
     async fn cancel_review_job(
         &self,
@@ -889,9 +983,32 @@ async fn spawn_review_job(
 
     text_json(&json!({
         "project": project_name,
-        "note": "Job writes into shared Easy Review managed storage (triage.json / review.json / tour.json). Open the PR in Desktop/TUI or call summarize_triage when done.",
+        "note": "Spawned a local agent CLI into the shared slot pool. Prefer prepare_review + upload_artifacts to avoid pool contention.",
         "job": info,
     }))
+}
+
+fn parse_kind(s: &str) -> Result<HeadlessJobKind, String> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "triage" => Ok(HeadlessJobKind::Triage),
+        "review" => Ok(HeadlessJobKind::Review),
+        "tour" => Ok(HeadlessJobKind::Tour),
+        other => Err(format!(
+            "unknown kind '{other}'; expected triage|review|tour"
+        )),
+    }
+}
+
+fn parse_kinds(kinds: Option<Vec<String>>) -> Result<Vec<HeadlessJobKind>, String> {
+    match kinds {
+        None => Ok(vec![
+            HeadlessJobKind::Triage,
+            HeadlessJobKind::Review,
+            HeadlessJobKind::Tour,
+        ]),
+        Some(list) if list.is_empty() => Err("kinds must not be empty".into()),
+        Some(list) => list.iter().map(|s| parse_kind(s)).collect(),
+    }
 }
 
 fn parse_status(s: &str) -> Result<ReviewStatus, McpError> {
@@ -927,6 +1044,8 @@ const SHIPPED_TOOLS: &[&str] = &[
     "summarize_triage",
     "diff_hotspots",
     "compare_prod_size",
+    "prepare_review",
+    "upload_artifacts",
     "run_triage",
     "run_review",
     "run_tour",
@@ -938,10 +1057,9 @@ const SHIPPED_TOOLS: &[&str] = &[
 ];
 
 const FUTURE_IDEAS: &[&str] = &[
-    "run_expert / run_professor / run_arena via the same headless job runner",
+    "prepare/upload for expert / professor / arena artifacts",
     "er:// deep-link / single-instance desktop open from MCP",
-    "cancel mid-run (kill agent PID)",
-    "shared agent_slots lock file with Desktop process",
+    "cancel mid-run for legacy run_* jobs (kill agent PID)",
     "required-checks-only CI filter (GitHub branch protection)",
     "inbox_digest / export_review_brief / missing_tests",
 ];
@@ -952,12 +1070,12 @@ impl ServerHandler for ErMcp {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Easy Review MCP for PR triage and headless AI reviews. \
+                "Easy Review MCP for PR triage and client-owned AI reviews. \
              Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
              Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
              Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
-             Run AI into shared storage: run_triage, run_review, run_tour, or run_ai_suite (all three). \
-             Poll with review_job_status; read sidecars via summarize_triage (includes tour). \
+             Preferred AI path (no agent slot pool): prepare_review → you write the sidecars → upload_artifacts → summarize_triage. \
+             Legacy spawn path (uses slot pool): run_triage / run_review / run_tour / run_ai_suite. \
              Open: open_in_easy_review.",
             )
     }
