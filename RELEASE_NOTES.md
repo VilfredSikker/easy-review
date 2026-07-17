@@ -1,8 +1,37 @@
-# Unreleased
+# Easy Review v0.4.4
 
-- **Easy Review MCP (`er-mcp`)** — stdio MCP server for PR queues and client-owned sidecar upload (`prepare_review` → author → `upload_artifacts`).
-- **`easy-review-mcp` npm package** — `npx -y easy-review-mcp` downloads the platform binary from GitHub Releases (`npm/er-mcp`). Release CI also ships `er-mcp-<triple>.tar.gz` assets.
-- **`er-review` agent skill** — `npx skills add VilfredSikker/easy-review -s er-review` so agents can run “ER review” end-to-end. Source: `skills/er-review/SKILL.md`.
+## In plain terms
+
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** v0.4.4 ships Easy Review MCP (`er-mcp`) with an `npx` launcher and an `er-review` agent skill so external agents can triage/review PRs and upload sidecars into the same storage Desktop/TUI already read. It also fixes AI agent access to managed review storage, Codex card AI prompts, and the Cursor Grok model slug.
+- **Why it matters.** Agents can run “ER review” end-to-end without a custom integration, and AI Hub actions against managed storage and Cursor Grok behave reliably.
+- **TL;DR.** MCP server + npm launcher + review skill, plus agent storage and Grok model fixes.
+
+## Highlights
+
+- **Easy Review MCP (`er-mcp`).** Stdio MCP server for PR queues and client-owned sidecar upload (`prepare_review` → author → `upload_artifacts`). Release CI ships `er-mcp-<triple>.tar.gz` assets alongside the TUI binary. (#143)
+- **`easy-review-mcp` npm package.** `npx -y easy-review-mcp` downloads the platform binary from GitHub Releases on first run (`npm/er-mcp`). (#144)
+- **`er-review` agent skill.** `npx skills add VilfredSikker/easy-review -s er-review` so agents can run “ER review” end-to-end. Source: `skills/er-review/SKILL.md`.
+- **Safer AI agent managed storage.** Agents get `--add-dir` scoped to the active review/arena bucket instead of the global managed root; Codex Elaborate/Validate no longer receive Claude-only flags; session AI picks stay session-only. (#141)
+- **Cursor Grok model slug.** Catalog and persisted configs that still used `grok-4.5` are repaired to `cursor-grok-4.5-high`. (#142)
+
+## What's Changed
+
+### Features
+- Easy Review MCP stdio server for PR prepare/upload workflows (#143)
+- `easy-review-mcp` npm launcher (`npx`) and release assets for `er-mcp` (#144)
+- `er-review` agent skill for end-to-end MCP reviews
+- Add Cursor Grok 4.5 to the AI Hub catalog (#142)
+
+### Fixes
+- Allow AI agents to use managed storage with scoped `--add-dir`; fix Codex card AI prompts and session AI selection (#141)
+- Repair stale Cursor Grok `--model` slug to `cursor-grok-4.5-high`
+
+## Contributors
+
+- @VilfredSikker
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.3...v0.4.4
 
 # Easy Review v0.4.3
 

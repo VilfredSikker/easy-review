@@ -1,6 +1,6 @@
 {
   "name": "easy-review-mcp",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "npx launcher for the Easy Review MCP server (er-mcp). Downloads the platform binary from GitHub Releases on first run.",
   "license": "MIT",
   "repository": {
