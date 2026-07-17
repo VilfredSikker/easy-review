@@ -16,7 +16,6 @@ pub mod dev_log;
 pub mod env_path;
 pub mod git;
 pub mod github;
-pub mod headless_jobs;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod paths;

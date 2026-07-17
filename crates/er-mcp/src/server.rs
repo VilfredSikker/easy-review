@@ -7,9 +7,6 @@ use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
     gh_pr_thread_addressing_remote,
 };
-use er_engine::headless_jobs::{
-    cancel_job, job_status, list_jobs, start_job, HeadlessJobKind, HeadlessJobRequest,
-};
 use er_engine::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
@@ -17,7 +14,7 @@ use er_engine::review_queue::{
 };
 use er_engine::sidecar_summary::summarize_pr_sidecars;
 use er_engine::sidecar_upload::{
-    prepare_review_kit, upload_pr_artifacts, UploadArtifactsRequest,
+    prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
@@ -135,22 +132,6 @@ pub struct CompareProdArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct RunReviewArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// PR number to review.
-    pub number: u64,
-    /// Optional AI provider id from `~/.config/er/config.toml`.
-    #[serde(default)]
-    pub provider_id: Option<String>,
-    /// Optional model id.
-    #[serde(default)]
-    pub model_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PrepareReviewArgs {
     #[serde(default)]
     pub repo: Option<String>,
@@ -177,12 +158,6 @@ pub struct UploadArtifactsArgs {
     /// Re-fetch PR diff before validating (default false — reuse prepare_review's diff-tmp).
     #[serde(default)]
     pub refresh_diff: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct JobIdArgs {
-    /// Job id returned by run_triage / run_review / run_tour.
-    pub id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -777,7 +752,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "PREFERRED: prepare a PR review kit (writes shared diff-tmp, returns diff_hash + prompts). You (the MCP client agent) do the review yourself, then call upload_artifacts. Does NOT spawn agent CLIs or use the agent slot pool."
+        description = "Prepare a PR review kit (writes shared diff-tmp, returns diff_hash + prompts). You (the MCP client agent) do the review yourself, then call upload_artifacts. Does not spawn agent CLIs."
     )]
     async fn prepare_review(
         &self,
@@ -803,7 +778,7 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "PREFERRED: upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON shape + diff_hash against prepare_review's diff-tmp. No agent spawn / no slot pool."
+        description = "Upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON shape + diff_hash against prepare_review's diff-tmp."
     )]
     async fn upload_artifacts(
         &self,
@@ -838,111 +813,6 @@ impl ErMcp {
         }))
     }
 
-    #[tool(
-        description = "OPTIONAL/legacy: spawn a local agent CLI for triage (uses agent slot pool — prefer prepare_review + upload_artifacts)."
-    )]
-    async fn run_triage(
-        &self,
-        Parameters(args): Parameters<RunReviewArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        spawn_review_job(HeadlessJobKind::Triage, args).await
-    }
-
-    #[tool(
-        description = "OPTIONAL/legacy: spawn a local agent CLI for general review (uses agent slot pool — prefer prepare_review + upload_artifacts)."
-    )]
-    async fn run_review(
-        &self,
-        Parameters(args): Parameters<RunReviewArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        spawn_review_job(HeadlessJobKind::Review, args).await
-    }
-
-    #[tool(
-        description = "OPTIONAL/legacy: spawn a local agent CLI for guided tour (uses agent slot pool — prefer prepare_review + upload_artifacts)."
-    )]
-    async fn run_tour(
-        &self,
-        Parameters(args): Parameters<RunReviewArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        spawn_review_job(HeadlessJobKind::Tour, args).await
-    }
-
-    #[tool(
-        description = "OPTIONAL/legacy: spawn triage+review+tour agent CLIs (uses agent slot pool — prefer prepare_review with all kinds, then upload_artifacts per kind)."
-    )]
-    async fn run_ai_suite(
-        &self,
-        Parameters(args): Parameters<RunReviewArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
-        let provider_id = args.provider_id;
-        let model_id = args.model_id;
-
-        let jobs = tokio::task::spawn_blocking(move || {
-            let kinds = [
-                HeadlessJobKind::Triage,
-                HeadlessJobKind::Review,
-                HeadlessJobKind::Tour,
-            ];
-            let mut out = Vec::with_capacity(kinds.len());
-            for kind in kinds {
-                let info = start_job(HeadlessJobRequest {
-                    kind,
-                    owner: owner.clone(),
-                    repo: name.clone(),
-                    pr: number,
-                    base_ref: None,
-                    head_ref: None,
-                    ignore_globs: vec![],
-                    provider_id: provider_id.clone(),
-                    model_id: model_id.clone(),
-                    dry_run: false,
-                })?;
-                out.push(info);
-            }
-            Ok::<_, anyhow::Error>(out)
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?
-        .map_err(|e| tool_err(e.to_string()))?;
-
-        text_json(&json!({
-            "project": project_name,
-            "note": "Started triage + review + tour agent jobs (slot pool). Prefer prepare_review + upload_artifacts to avoid pool contention.",
-            "jobs": jobs,
-        }))
-    }
-
-    #[tool(description = "List headless review jobs started by this MCP process (run_* only).")]
-    async fn list_review_jobs(&self) -> Result<CallToolResult, McpError> {
-        text_json(&json!({ "jobs": list_jobs() }))
-    }
-
-    #[tool(description = "Get status for a headless review job from run_* (queued/running/done/failed).")]
-    async fn review_job_status(
-        &self,
-        Parameters(args): Parameters<JobIdArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let info =
-            job_status(&args.id).ok_or_else(|| tool_err(format!("unknown job id: {}", args.id)))?;
-        text_json(&json!({ "job": info }))
-    }
-
-    #[tool(
-        description = "Cancel a queued headless review job from run_* (running jobs cannot be cancelled yet)."
-    )]
-    async fn cancel_review_job(
-        &self,
-        Parameters(args): Parameters<JobIdArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let info = cancel_job(&args.id).map_err(|e| tool_err(e.to_string()))?;
-        text_json(&json!({ "job": info }))
-    }
-
     #[tool(description = "Catalog of Easy Review MCP tools (shipped + future ideas).")]
     async fn tool_ideas(&self) -> Result<CallToolResult, McpError> {
         text_json(&json!({
@@ -952,59 +822,23 @@ impl ErMcp {
     }
 }
 
-async fn spawn_review_job(
-    kind: HeadlessJobKind,
-    args: RunReviewArgs,
-) -> Result<CallToolResult, McpError> {
-    let (owner, name, project_name) =
-        resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-            .map_err(|e| tool_err(e.to_string()))?;
-    let number = args.number;
-    let provider_id = args.provider_id;
-    let model_id = args.model_id;
-
-    let info = tokio::task::spawn_blocking(move || {
-        start_job(HeadlessJobRequest {
-            kind,
-            owner: owner.clone(),
-            repo: name.clone(),
-            pr: number,
-            base_ref: None,
-            head_ref: None,
-            ignore_globs: vec![],
-            provider_id,
-            model_id,
-            dry_run: false,
-        })
-    })
-    .await
-    .map_err(|e| McpError::internal_error(e.to_string(), None))?
-    .map_err(|e| tool_err(e.to_string()))?;
-
-    text_json(&json!({
-        "project": project_name,
-        "note": "Spawned a local agent CLI into the shared slot pool. Prefer prepare_review + upload_artifacts to avoid pool contention.",
-        "job": info,
-    }))
-}
-
-fn parse_kind(s: &str) -> Result<HeadlessJobKind, String> {
+fn parse_kind(s: &str) -> Result<SidecarKind, String> {
     match s.trim().to_ascii_lowercase().as_str() {
-        "triage" => Ok(HeadlessJobKind::Triage),
-        "review" => Ok(HeadlessJobKind::Review),
-        "tour" => Ok(HeadlessJobKind::Tour),
+        "triage" => Ok(SidecarKind::Triage),
+        "review" => Ok(SidecarKind::Review),
+        "tour" => Ok(SidecarKind::Tour),
         other => Err(format!(
             "unknown kind '{other}'; expected triage|review|tour"
         )),
     }
 }
 
-fn parse_kinds(kinds: Option<Vec<String>>) -> Result<Vec<HeadlessJobKind>, String> {
+fn parse_kinds(kinds: Option<Vec<String>>) -> Result<Vec<SidecarKind>, String> {
     match kinds {
         None => Ok(vec![
-            HeadlessJobKind::Triage,
-            HeadlessJobKind::Review,
-            HeadlessJobKind::Tour,
+            SidecarKind::Triage,
+            SidecarKind::Review,
+            SidecarKind::Tour,
         ]),
         Some(list) if list.is_empty() => Err("kinds must not be empty".into()),
         Some(list) => list.iter().map(|s| parse_kind(s)).collect(),
@@ -1046,20 +880,12 @@ const SHIPPED_TOOLS: &[&str] = &[
     "compare_prod_size",
     "prepare_review",
     "upload_artifacts",
-    "run_triage",
-    "run_review",
-    "run_tour",
-    "run_ai_suite",
-    "list_review_jobs",
-    "review_job_status",
-    "cancel_review_job",
     "tool_ideas",
 ];
 
 const FUTURE_IDEAS: &[&str] = &[
     "prepare/upload for expert / professor / arena artifacts",
     "er:// deep-link / single-instance desktop open from MCP",
-    "cancel mid-run for legacy run_* jobs (kill agent PID)",
     "required-checks-only CI filter (GitHub branch protection)",
     "inbox_digest / export_review_brief / missing_tests",
 ];
@@ -1074,8 +900,7 @@ impl ServerHandler for ErMcp {
              Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
              Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
              Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
-             Preferred AI path (no agent slot pool): prepare_review → you write the sidecars → upload_artifacts → summarize_triage. \
-             Legacy spawn path (uses slot pool): run_triage / run_review / run_tour / run_ai_suite. \
+             AI sidecars: prepare_review → you write the JSON → upload_artifacts → summarize_triage. \
              Open: open_in_easy_review.",
             )
     }

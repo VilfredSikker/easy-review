@@ -32,19 +32,16 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 | `prs_blocked` | Conflicts, `mergeStateStatus=BLOCKED`, or failing CI |
 | `prs_failing_ci` | Failing `gh pr checks` |
 | `prs_already_addressed` | All review threads resolved or outdated |
-| **`prepare_review`** | **Preferred:** write shared `diff-tmp`, return `diff_hash` + prompts (no agent spawn) |
-| **`upload_artifacts`** | **Preferred:** validate + write `triage` / `review` / `tour` JSON you produced |
-| `run_triage` / `run_review` / `run_tour` / `run_ai_suite` | Optional legacy: spawn local agent CLIs (uses agent slot pool) |
-| `list_review_jobs` / `review_job_status` / `cancel_review_job` | Lifecycle for legacy `run_*` jobs |
+| `prepare_review` | Write shared `diff-tmp`, return `diff_hash` + prompts |
+| `upload_artifacts` | Validate + write `triage` / `review` / `tour` JSON you produced |
 | `summarize_triage` | Local managed `triage.json` / `review.json` / `tour.json` summary |
 | `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
 | `tool_ideas` | Catalog of shipped + future tools |
 
-## Preferred AI path (no slot pool)
+## AI sidecars (client-owned)
 
-The MCP client agent **is** the reviewer. Easy Review only prepares storage and
-validates uploads — it does **not** spawn `claude`/`codex`/`agent`, so it never
-competes with Desktop/TUI for `agent_slots`.
+The MCP client agent **is** the reviewer. Easy Review prepares storage and
+validates uploads — it does not spawn agent CLIs.
 
 1. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
    managed PR bucket (`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`),
@@ -62,12 +59,6 @@ summarize_triage   → { "number": 42 }
 ```
 
 **Review uploads** need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
-
-## Legacy spawn path (uses slot pool)
-
-`run_triage` / `run_review` / `run_tour` / `run_ai_suite` still spawn agent CLIs
-from `~/.config/er/config.toml`. Prefer `prepare_review` + `upload_artifacts`
-unless you explicitly want a separate CLI subprocess.
 
 ## Build / run
 
@@ -113,13 +104,11 @@ open_in_easy_review       → { "number": 42 }
 
 - Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
 - Client-owned uploads live in `er-engine::sidecar_upload` (prepare kit + validated write).
-- Legacy headless agent runs live in `er-engine::headless_jobs` (optional).
 - `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
 
 ## Notes
 
 - `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` to bound cost.
 - `prepare_review` + `upload_artifacts` share storage with Desktop without touching `agent_slots`.
-- `run_*` jobs need agent CLIs on PATH and share neither process nor slot pool with Desktop (documented follow-up if you keep using them).
 - `open_in_easy_review` returns instructions; there is no `er://` deep-link handler yet.
 - Production line counts exclude paths classified as test, Storybook, generated/lock, or docs.

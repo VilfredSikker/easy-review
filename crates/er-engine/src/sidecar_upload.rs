@@ -1,23 +1,41 @@
-//! Prepare PR review kits and upload sidecar JSON without spawning agents.
+//! Prepare PR review kits and upload sidecar JSON for MCP / non-UI callers.
 //!
-//! Preferred MCP flow: the client agent reads `diff-tmp`, produces artifacts,
-//! then calls [`upload_pr_artifacts`]. That avoids competing for
-//! [`crate::agent_slots`] with Desktop/TUI.
+//! Flow: [`prepare_review_kit`] writes shared `diff-tmp` + prompts; the client
+//! agent produces artifacts; [`upload_pr_artifacts`] validates and stores them.
+//! No agent CLI spawn — avoids competing for [`crate::agent_slots`].
 
 use crate::agent_runtime::{ArtifactBaseline, ArtifactContract};
 use crate::ai::compute_diff_hash;
-use crate::github::{gh_pr_metadata_remote, owner_repo_storage_slug};
-use crate::headless_jobs::{prepare_pr_diff_tmp, HeadlessJobKind};
+use crate::github::{gh_pr_diff_remote, gh_pr_metadata_remote, owner_repo_storage_slug};
 use crate::storage::resolve_managed_root_for_pr_bucket;
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
+/// Which Easy Review sidecar set to prepare or upload.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SidecarKind {
+    Triage,
+    Review,
+    Tour,
+}
+
+impl SidecarKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Triage => "triage",
+            Self::Review => "review",
+            Self::Tour => "tour",
+        }
+    }
+}
+
 /// One artifact kind ready for a client agent to produce.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PreparedArtifactSpec {
-    pub kind: HeadlessJobKind,
+    pub kind: SidecarKind,
     /// Absolute paths the client must produce (then pass to upload).
     pub required_files: Vec<String>,
     /// Relative names inside the PR bucket.
@@ -49,7 +67,7 @@ pub struct UploadArtifactsRequest {
     pub owner: String,
     pub repo: String,
     pub pr: u64,
-    pub kind: HeadlessJobKind,
+    pub kind: SidecarKind,
     pub files: BTreeMap<String, String>,
     /// When true, re-fetch the PR diff before validating (default: reuse existing `diff-tmp`).
     pub refresh_diff: bool,
@@ -58,41 +76,43 @@ pub struct UploadArtifactsRequest {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UploadArtifactsResult {
     pub er_dir: String,
-    pub kind: HeadlessJobKind,
+    pub kind: SidecarKind,
     pub written: Vec<String>,
     pub diff_hash: String,
 }
 
-fn relative_files(kind: HeadlessJobKind) -> Vec<&'static str> {
+fn relative_files(kind: SidecarKind) -> Vec<&'static str> {
     match kind {
-        HeadlessJobKind::Triage => vec!["triage.json"],
-        HeadlessJobKind::Tour => vec!["tour.json"],
-        HeadlessJobKind::Review => vec![
-            "review.json",
-            "order.json",
-            "checklist.json",
-            "summary.md",
-        ],
+        SidecarKind::Triage => vec!["triage.json"],
+        SidecarKind::Tour => vec!["tour.json"],
+        SidecarKind::Review => {
+            vec![
+                "review.json",
+                "order.json",
+                "checklist.json",
+                "summary.md",
+            ]
+        }
     }
 }
 
-fn build_prompt(kind: HeadlessJobKind, er_dir: &str, base: &str, head: &str) -> String {
+fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> String {
     use crate::ai::prompts::{
         build_review_prompt_prepared_diff, build_tour_prompt_prepared_diff,
         build_triage_review_prompt_prepared_diff,
     };
     match kind {
-        HeadlessJobKind::Triage => build_triage_review_prompt_prepared_diff("branch", er_dir),
-        HeadlessJobKind::Review => build_review_prompt_prepared_diff("branch", er_dir, base, head),
-        HeadlessJobKind::Tour => build_tour_prompt_prepared_diff("PR diff", er_dir, "tour.json"),
+        SidecarKind::Triage => build_triage_review_prompt_prepared_diff("branch", er_dir),
+        SidecarKind::Review => build_review_prompt_prepared_diff("branch", er_dir, base, head),
+        SidecarKind::Tour => build_tour_prompt_prepared_diff("PR diff", er_dir, "tour.json"),
     }
 }
 
-fn artifact_contract(kind: HeadlessJobKind) -> ArtifactContract {
+fn artifact_contract(kind: SidecarKind) -> ArtifactContract {
     match kind {
-        HeadlessJobKind::Triage => ArtifactContract::Triage,
-        HeadlessJobKind::Review => ArtifactContract::Review,
-        HeadlessJobKind::Tour => ArtifactContract::Tour {
+        SidecarKind::Triage => ArtifactContract::Triage,
+        SidecarKind::Review => ArtifactContract::Review,
+        SidecarKind::Tour => ArtifactContract::Tour {
             filename: "tour.json".into(),
         },
     }
@@ -116,12 +136,38 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
     resolve_managed_root_for_pr_bucket(&slug, pr).er_dir()
 }
 
+/// Resolve managed PR bucket and write `diff-tmp` for a remote PR.
+pub fn prepare_pr_diff_tmp(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    ignore_globs: &[String],
+) -> Result<(String, String)> {
+    let mut raw = gh_pr_diff_remote(owner, repo, pr)?;
+    if !ignore_globs.is_empty() {
+        raw = crate::git::filter_raw_diff_exclude_globs(&raw, ignore_globs);
+    }
+    if raw.trim().is_empty() {
+        bail!("PR #{pr} has an empty diff after filters");
+    }
+
+    let slug = owner_repo_storage_slug(owner, repo);
+    let er_dir = resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
+    if er_dir.is_empty() {
+        bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
+    }
+    std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
+    let diff_path = format!("{er_dir}/diff-tmp");
+    std::fs::write(&diff_path, &raw).with_context(|| format!("write {diff_path}"))?;
+    Ok((er_dir, diff_path))
+}
+
 /// Fetch PR diff into managed storage and return prompts for the client agent.
 pub fn prepare_review_kit(
     owner: &str,
     repo: &str,
     pr: u64,
-    kinds: &[HeadlessJobKind],
+    kinds: &[SidecarKind],
     ignore_globs: &[String],
 ) -> Result<PreparedReviewKit> {
     if kinds.is_empty() {
@@ -179,7 +225,7 @@ pub fn prepare_review_kit(
 /// Validate and atomically write sidecars into an existing PR bucket.
 pub fn upload_artifacts_to_dir(
     er_dir: &str,
-    kind: HeadlessJobKind,
+    kind: SidecarKind,
     files: &BTreeMap<String, String>,
 ) -> Result<UploadArtifactsResult> {
     let required = relative_files(kind);
@@ -317,7 +363,7 @@ mod tests {
                 "tour.json".into(),
                 serde_json::to_string_pretty(&tour).unwrap(),
             );
-            let result = upload_artifacts_to_dir(&er_dir, HeadlessJobKind::Tour, &files).unwrap();
+            let result = upload_artifacts_to_dir(&er_dir, SidecarKind::Tour, &files).unwrap();
             assert_eq!(result.written.len(), 1);
             assert!(Path::new(&er_dir).join("tour.json").exists());
         });
@@ -339,14 +385,14 @@ mod tests {
             };
             let mut files = BTreeMap::new();
             files.insert("tour.json".into(), serde_json::to_string(&tour).unwrap());
-            assert!(upload_artifacts_to_dir(&er_dir, HeadlessJobKind::Tour, &files).is_err());
+            assert!(upload_artifacts_to_dir(&er_dir, SidecarKind::Tour, &files).is_err());
         });
     }
 
     #[test]
     fn relative_files_for_review_include_all_four() {
         assert_eq!(
-            relative_files(HeadlessJobKind::Review),
+            relative_files(SidecarKind::Review),
             vec![
                 "review.json",
                 "order.json",
@@ -403,7 +449,7 @@ mod tests {
                 serde_json::to_string(&checklist).unwrap(),
             );
             files.insert("summary.md".into(), "# Summary\n".into());
-            upload_artifacts_to_dir(&er_dir, HeadlessJobKind::Review, &files).unwrap();
+            upload_artifacts_to_dir(&er_dir, SidecarKind::Review, &files).unwrap();
         });
     }
 
@@ -426,7 +472,7 @@ mod tests {
             };
             let mut files = BTreeMap::new();
             files.insert("triage.json".into(), serde_json::to_string(&triage).unwrap());
-            upload_artifacts_to_dir(&er_dir, HeadlessJobKind::Triage, &files).unwrap();
+            upload_artifacts_to_dir(&er_dir, SidecarKind::Triage, &files).unwrap();
         });
     }
 
@@ -440,7 +486,7 @@ mod tests {
                 "tour.json".into(),
                 r#"{"version":1,"diff_hash":"x"}"#.into(),
             );
-            let err = upload_artifacts_to_dir(&er_dir, HeadlessJobKind::Tour, &files)
+            let err = upload_artifacts_to_dir(&er_dir, SidecarKind::Tour, &files)
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("diff-tmp"), "{err}");
