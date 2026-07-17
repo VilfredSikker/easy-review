@@ -53,6 +53,13 @@ jobs:
             er-${{ matrix.target }}.tar.gz
             er-mcp-${{ matrix.target }}.tar.gz
 
+      - name: Upload er-mcp binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ermcp-bin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/er-mcp
+          if-no-files-found: error
+
   release:
     name: Create Release
     needs: build
@@ -63,6 +70,7 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
+          pattern: bins-*
           merge-multiple: true
 
       - name: Create Release
@@ -79,9 +87,6 @@ jobs:
     runs-on: ubuntu-latest
     # Opt-in: set repo variable PUBLISH_NPM=true and configure NPM_TOKEN (or trusted publishing).
     if: ${{ vars.PUBLISH_NPM == 'true' }}
-    defaults:
-      run:
-        working-directory: npm/er-mcp
     steps:
       - uses: actions/checkout@v4
 
@@ -90,16 +95,61 @@ jobs:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Verify package version matches tag
-        run: |
-          TAG="${GITHUB_REF_NAME#v}"
-          PKG=$(node -p "require('./package.json').version")
-          if [ "$TAG" != "$PKG" ]; then
-            echo "Tag v$TAG does not match npm/er-mcp version $PKG"
-            exit 1
-          fi
+      - name: Download binary artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ermcp-bin-*
+          path: artifacts
 
-      - name: Publish
-        run: npm publish --access public
+      - name: Stage platform binaries
+        run: |
+          set -euo pipefail
+          declare -A MAP=(
+            [aarch64-apple-darwin]=darwin-arm64
+            [x86_64-apple-darwin]=darwin-x64
+            [x86_64-unknown-linux-gnu]=linux-x64
+          )
+          for tgt in "${!MAP[@]}"; do
+            key="${MAP[$tgt]}"
+            src="artifacts/ermcp-bin-$tgt/er-mcp"
+            dst="npm/platforms/$key/er-mcp"
+            cp "$src" "$dst"
+            chmod +x "$dst"
+            echo "staged $tgt -> $dst"
+          done
+
+      - name: Verify versions match tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          for dir in npm/er-mcp npm/platforms/darwin-arm64 npm/platforms/darwin-x64 npm/platforms/linux-x64; do
+            PKG=$(node -p "require('./$dir/package.json').version")
+            if [ "$TAG" != "$PKG" ]; then
+              echo "Version mismatch in $dir: $PKG != tag $TAG"
+              exit 1
+            fi
+          done
+          # The launcher's optionalDependencies pins must also match the tag, or
+          # npm silently skips the (nonexistent) platform version and every user
+          # falls back to the GitHub download this change exists to avoid.
+          for pkg in easy-review-mcp-darwin-arm64 easy-review-mcp-darwin-x64 easy-review-mcp-linux-x64; do
+            PIN=$(node -p "require('./npm/er-mcp/package.json').optionalDependencies['$pkg']")
+            if [ "$TAG" != "$PIN" ]; then
+              echo "optionalDependencies pin mismatch: $pkg=$PIN != tag $TAG"
+              exit 1
+            fi
+          done
+
+      - name: Publish platform packages
+        run: |
+          set -euo pipefail
+          for key in darwin-arm64 darwin-x64 linux-x64; do
+            ( cd "npm/platforms/$key" && npm publish --access public )
+          done
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish launcher
+        run: cd npm/er-mcp && npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

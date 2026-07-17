@@ -3,8 +3,9 @@
 ## In plain terms
 
 - **What changed.** After an agent uploads triage/review/tour sidecars via MCP, there was no way to bookmark that PR or list what was already reviewed. New tools pin into Desktop Saved PRs and scan managed storage for uploaded artifacts. Separately, building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` — the scripts now preflight the toolchain and the README lists prerequisites.
-- **Why it matters.** You can find agent-reviewed PRs again from MCP (`list_pinned_prs` / `list_artifacts`) and see the same pins in the Desktop sidebar; new contributors get an actionable desktop setup path instead of a dead end.
-- **TL;DR.** MCP pin/list reviewed artifacts, plus desktop build-from-source preflight.
+- **`easy-review-mcp` connects reliably.** `npx -y easy-review-mcp` often failed with "Failed to connect" — the launcher fetched the `er-mcp` binary from GitHub Releases with Node's `fetch()`, which stalled on the release redirect (curl pulled the same file in ~3s while `fetch()` hung 60–90s), blew Claude Code's 30s connection timeout, and left a broken half-cache (the tarball, but no extracted binary) that made every retry fail too. The binary now ships as a platform-specific npm package installed alongside the launcher, so it comes down through npm's robust, cached client instead of the flaky redirect fetch.
+- **Why it matters.** You can find agent-reviewed PRs again from MCP (`list_pinned_prs` / `list_artifacts`) and see the same pins in the Desktop sidebar; new contributors get an actionable desktop setup path instead of a dead end; and the MCP connects reliably — instantly on repeat runs — instead of hanging.
+- **TL;DR.** MCP pin/list reviewed artifacts, desktop build-from-source preflight, and a reliable `easy-review-mcp` install.
 
 ## What's Changed
 
@@ -14,8 +15,7 @@
 - `er-review` skill documents pin + find-reviewed-work flow.
 
 ### Fixes
-- Desktop dev/build scripts preflight-check for the Rust toolchain, Tauri CLI, and bun, printing an actionable install command instead of failing cryptically; frontend deps `bun install` on first run (`scripts/preflight-desktop.sh`). (#148)
-- README documents desktop build-from-source prerequisites (Rust 1.85+, `tauri-cli`, bun, Linux WebKitGTK deps). (#148)
+- **`easy-review-mcp` connects reliably.** The npx launcher now resolves the prebuilt `er-mcp` binary from a platform-specific optional dependency (`easy-review-mcp-<os>-<arch>`) that npm installs from the registry, replacing the on-serve Node `fetch()` from GitHub Releases that stalled on the redirect and left a broken half-cache. The binary download moves onto npm's robust, cached client, and once installed the serve path does no network I/O at all. A hardened GitHub-download fallback (curl-first, with retries + a hard timeout) remains for hosts with no matching optional dependency. Bumps workspace + npm packages to 0.4.5.
 
 ---
 
