@@ -57,13 +57,13 @@ low-hanging fruit, production-only diff line counts, and client-owned AI sidecar
 (also in-repo: [`docs/guide/mcp.html`](docs/guide/mcp.html)) — `claude mcp add` / `codex mcp add` and `mcp.json`.
 
 ```bash
-# MCP (no Rust required once a release ships er-mcp assets)
+# MCP via npm
 npx -y easy-review-mcp
 
 # Agent skill ("ER review") — same as: npx skills add github/gh-stack
 npx skills add VilfredSikker/easy-review -s er-review -g
 
-# Or build from source
+# Or build MCP from source
 cargo install --path crates/er-mcp
 ```
 

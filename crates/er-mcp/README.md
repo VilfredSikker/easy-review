@@ -70,10 +70,10 @@ authoring contract.
 ## Build / run
 
 ```bash
-# Recommended for agents — no Rust required once a release exists:
+# npm launcher (downloads the release binary on first run)
 npx -y easy-review-mcp
 
-# From source:
+# From source
 cargo build -p er-mcp --release
 # binary: target/release/er-mcp
 
@@ -112,7 +112,7 @@ Cursor — `~/.cursor/mcp.json` or `.cursor/mcp.json`:
 }
 ```
 
-Source-built binary alternative: point `command` at `/absolute/path/to/er-mcp`.
+Or point `command` at a source-built `/absolute/path/to/er-mcp`.
 
 ### Agent skill (“ER review”)
 
