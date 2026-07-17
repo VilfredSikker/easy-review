@@ -2,6 +2,8 @@
 # Release desktop bundle (.app install by default; DMG/open are opt-in).
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/preflight-desktop.sh"
+preflight_desktop "$ROOT"
 export CARGO_TARGET_DIR="$ROOT/target/desktop"
 CONF="$ROOT/crates/er-desktop/tauri.conf.json"
 BUNDLE_ROOT="$CARGO_TARGET_DIR/release/bundle"
