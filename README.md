@@ -37,7 +37,9 @@ A graphical front end for the same review engine — split diffs, an embedded te
 
 As of **v0.4.0**, prebuilt Apple Silicon `.dmg` bundles are published on the [Releases page](https://github.com/VilfredSikker/easy-review/releases). Download it, open it, and drag **Easy Review** into Applications (right-click → **Open** the first time to bypass Gatekeeper, since the bundle isn't code-signed yet).
 
-Intel Macs, Linux, and Windows aren't packaged yet — build from source instead:
+Intel Macs, Linux, and Windows aren't packaged yet — build from source instead.
+
+**Prerequisites:** [Rust 1.85+](https://rustup.rs), the Tauri CLI (`cargo install tauri-cli --locked`), and [bun](https://bun.sh) for the frontend. On Linux you'll also need the [WebKitGTK build dependencies](https://v2.tauri.app/start/prerequisites/#linux). The scripts below check for these and `bun install` the frontend on first run.
 
 ```bash
 git clone https://github.com/VilfredSikker/easy-review.git

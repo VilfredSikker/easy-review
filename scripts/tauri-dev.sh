@@ -3,6 +3,8 @@
 # Equivalent: ER_LOG=arena cargo tauri dev  (from crates/er-desktop)
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+source "$ROOT/scripts/preflight-desktop.sh"
+preflight_desktop "$ROOT"
 LOGS=""
 ARGS=()
 while [[ $# -gt 0 ]]; do

@@ -1,3 +1,19 @@
+# Easy Review (Unreleased)
+
+## In plain terms
+
+- **What changed.** Building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` (and, later, missing frontend deps), because the setup steps weren't documented and the scripts didn't check for them. Now `tauri-dev.sh` / `tauri-build.sh` verify the toolchain up front and print exactly what to install, and the README lists the prerequisites.
+- **Why it matters.** New contributors get an actionable message instead of a dead end, and the frontend deps install themselves on first run.
+- **TL;DR.** Desktop build-from-source onboarding: preflight checks + documented prerequisites.
+
+## What's Changed
+
+### Fixes
+- Desktop dev/build scripts preflight-check for the Rust toolchain, Tauri CLI, and bun, printing an actionable install command instead of failing cryptically; frontend deps `bun install` on first run (`scripts/preflight-desktop.sh`).
+- README documents desktop build-from-source prerequisites (Rust 1.85+, `tauri-cli`, bun, Linux WebKitGTK deps).
+
+---
+
 # Easy Review v0.4.4
 
 ## In plain terms
