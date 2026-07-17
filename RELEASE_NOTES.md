@@ -1,23 +1,38 @@
-# Easy Review (Unreleased)
+# Easy Review v0.4.5
 
 ## In plain terms
 
-- **What changed.** After an agent uploads triage/review/tour sidecars via MCP, there was no way to bookmark that PR or list what was already reviewed. New tools pin into Desktop Saved PRs and scan managed storage for uploaded artifacts. Separately, building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` — the scripts now preflight the toolchain and the README lists prerequisites.
-- **`easy-review-mcp` connects reliably.** `npx -y easy-review-mcp` often failed with "Failed to connect" — the launcher fetched the `er-mcp` binary from GitHub Releases with Node's `fetch()`, which stalled on the release redirect (curl pulled the same file in ~3s while `fetch()` hung 60–90s), blew Claude Code's 30s connection timeout, and left a broken half-cache (the tarball, but no extracted binary) that made every retry fail too. The binary now ships as a platform-specific npm package installed alongside the launcher, so it comes down through npm's robust, cached client instead of the flaky redirect fetch.
-- **Why it matters.** You can find agent-reviewed PRs again from MCP (`list_pinned_prs` / `list_artifacts`) and see the same pins in the Desktop sidebar; new contributors get an actionable desktop setup path instead of a dead end; and the MCP connects reliably — instantly on repeat runs — instead of hanging.
-- **TL;DR.** MCP pin/list reviewed artifacts, desktop build-from-source preflight, and a reliable `easy-review-mcp` install.
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** After an agent uploads triage/review/tour sidecars via MCP, you can now bookmark that PR and list what was already reviewed. Separately, building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` — the scripts now preflight the toolchain and the README lists prerequisites. `npx -y easy-review-mcp` often failed with "Failed to connect" because the launcher fetched the binary from GitHub Releases with Node's `fetch()`, which stalled on the release redirect; the binary now ships as a platform-specific npm package. The TUI also shows AI findings again on remote PR diffs, and running `er-mcp` in a terminal prints setup wiring instead of hanging silently.
+- **Why it matters.** You can find agent-reviewed PRs again from MCP and see the same pins in the Desktop sidebar; new contributors get an actionable desktop setup path; MCP connects reliably; and TUI remote reviews show the findings you expect.
+- **TL;DR.** MCP pin/list reviewed artifacts, reliable `easy-review-mcp` install, desktop build preflight, TUI remote findings fix, and MCP TTY setup hint.
+
+## Highlights
+
+- **MCP pin + list reviewed artifacts.** `pin_pr` / `unpin_pr` / `list_pinned_prs` write Desktop Saved PRs; `list_artifacts` scans managed `prs/pr-*` buckets for uploaded triage/review/tour and marks whether each is pinned. (#147)
+- **Reliable `easy-review-mcp` install.** The npx launcher resolves the prebuilt `er-mcp` binary from a platform-specific optional dependency (`easy-review-mcp-<os>-<arch>`) instead of a flaky GitHub Releases `fetch()`. A hardened curl-first fallback remains when no matching optional dep is available. (#150)
+- **Desktop build-from-source preflight.** Scripts check for the Tauri CLI / toolchain before failing with a cryptic error; README documents prerequisites. (#148)
+- **TUI remote PR findings.** AI findings render again in the TUI when reviewing a remote PR diff. (#149)
+- **MCP TTY setup hint.** Running `er-mcp` / `easy-review-mcp` interactively prints Cursor/Claude/Codex wiring instead of hanging on stdio. (#145)
 
 ## What's Changed
 
 ### Features
-- MCP `pin_pr` / `unpin_pr` / `list_pinned_prs` write Desktop Saved PRs (`projects.json` `saved_prs`) with Value-preserving updates (`er-engine::projects_pins`).
-- MCP `list_artifacts` scans managed `prs/pr-*` buckets for uploaded triage/review/tour and marks whether each is pinned.
+- MCP `pin_pr` / `unpin_pr` / `list_pinned_prs` write Desktop Saved PRs (`projects.json` `saved_prs`) with Value-preserving updates (`er-engine::projects_pins`). (#147)
+- MCP `list_artifacts` scans managed `prs/pr-*` buckets for uploaded triage/review/tour and marks whether each is pinned. (#147)
 - `er-review` skill documents pin + find-reviewed-work flow.
 
 ### Fixes
-- **`easy-review-mcp` connects reliably.** The npx launcher now resolves the prebuilt `er-mcp` binary from a platform-specific optional dependency (`easy-review-mcp-<os>-<arch>`) that npm installs from the registry, replacing the on-serve Node `fetch()` from GitHub Releases that stalled on the redirect and left a broken half-cache. The binary download moves onto npm's robust, cached client, and once installed the serve path does no network I/O at all. A hardened GitHub-download fallback (curl-first, with retries + a hard timeout) remains for hosts with no matching optional dependency. Bumps workspace + npm packages to 0.4.5.
+- **`easy-review-mcp` connects reliably.** The npx launcher now resolves the prebuilt `er-mcp` binary from a platform-specific optional dependency (`easy-review-mcp-<os>-<arch>`) that npm installs from the registry, replacing the on-serve Node `fetch()` from GitHub Releases that stalled on the redirect and left a broken half-cache. A hardened GitHub-download fallback (curl-first, with retries + a hard timeout) remains for hosts with no matching optional dependency. (#150)
+- Preflight desktop build scripts for missing toolchain (`error: no such command: tauri`). (#148)
+- Show AI findings in the TUI on remote PR diffs. (#149)
+- Print MCP setup hint when run on a TTY instead of hanging silently; clear macOS quarantine on downloaded binaries. (#145)
 
----
+## Contributors
+
+- @VilfredSikker
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.4...v0.4.5
 
 # Easy Review v0.4.4
 
