@@ -31,6 +31,7 @@ Treat these as requests to run this skill end-to-end (not just list tools):
 - "triage this PR" / "run triage"
 - "guided tour" / "generate tour" (when they mean Easy Review tour.json)
 - "upload the review" / "push artifacts to Easy Review"
+- "pin this PR" / "show pinned reviews" / "what have I reviewed"
 
 ## Resolve the PR
 
@@ -61,9 +62,17 @@ Treat these as requests to run this skill end-to-end (not just list tools):
    - Triage: `{ "kind": "triage", "files": { "triage.json": "..." } }`
    - Tour: `{ "kind": "tour", "files": { "tour.json": "..." } }`
    - Review: all four — `review.json`, `order.json`, `checklist.json`, `summary.md`
-6. **`summarize_triage`** (optional) and/or **`open_in_easy_review`** so the user can open Desktop/TUI.
+6. **`pin_pr`** (optional but recommended) so the PR lands in Desktop Saved and is easy to find later via `list_pinned_prs`.
+7. **`summarize_triage`** (optional) and/or **`open_in_easy_review`** so the user can open Desktop/TUI.
 
 Do **not** write files under the managed path yourself — always go through `upload_artifacts`.
+Do **not** auto-pin — only call `pin_pr` when the user wants it bookmarked, or after a successful review when they asked to save/pin.
+
+## Finding reviewed work
+
+- **`list_pinned_prs`** — Desktop Saved PRs (explicit pins), with sidecar presence.
+- **`list_artifacts`** — scan managed storage for any uploaded triage/review/tour (pinned or not).
+- **`unpin_pr`** — remove from Desktop Saved.
 
 ## Validation rules
 

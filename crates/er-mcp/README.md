@@ -35,6 +35,10 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 | `prepare_review` | Write shared `diff-tmp`, return `diff_hash` + prompts |
 | `get_artifact_specs` | JSON Schema + examples + prompts for triage/review/tour (no PR needed) |
 | `upload_artifacts` | Validate + write `triage` / `review` / `tour` JSON you produced |
+| `pin_pr` | Pin a PR into Desktop Saved PRs (`projects.json`) |
+| `unpin_pr` | Remove a PR from Desktop Saved |
+| `list_pinned_prs` | List Saved PRs + which sidecars exist |
+| `list_artifacts` | Scan managed storage for uploaded triage/review/tour (marks `pinned`) |
 | `summarize_triage` | Local managed `triage.json` / `review.json` / `tour.json` summary |
 | `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
 | `tool_ideas` | Catalog of shipped + future tools |
@@ -52,12 +56,15 @@ validates uploads — it does not spawn agent CLIs.
 3. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
 4. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
 5. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
+6. Optionally `pin_pr` so the PR appears in Desktop Saved and `list_pinned_prs`.
 
 ```text
 get_artifact_specs → { "kinds": ["tour"] }
 prepare_review     → { "number": 42, "kinds": ["triage", "tour"] }
 # …you write the JSON per schema…
 upload_artifacts   → { "number": 42, "kind": "tour", "files": { "tour.json": "..." } }
+pin_pr             → { "number": 42 }
+list_artifacts     → { "kinds": ["tour"] }   # discover uploaded sidecars
 summarize_triage   → { "number": 42 }
 ```
 
@@ -143,6 +150,9 @@ compare_prod_size         → { "numbers": [12, 15, 18] }
 prepare_review            → { "number": 42, "kinds": ["tour"] }
 get_artifact_specs        → { "kinds": ["tour", "triage"] }
 upload_artifacts          → { "number": 42, "kind": "tour", "files": { "tour.json": "{...}" } }
+pin_pr                    → { "number": 42 }
+list_pinned_prs           → {}
+list_artifacts            → { "kinds": ["triage", "tour"], "limit": 20 }
 summarize_triage          → { "number": 42 }
 open_in_easy_review       → { "number": 42 }
 ```
@@ -152,6 +162,7 @@ open_in_easy_review       → { "number": 42 }
 - Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
 - Client-owned uploads live in `er-engine::sidecar_upload` (prepare kit + validated write).
 - JSON Schema + prompt contracts live in `er-engine::sidecar_specs` (`get_artifact_specs`).
+- Desktop Saved pins live in `er-engine::projects_pins` (Value-preserving `projects.json` writes).
 - `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
 
 ## Notes

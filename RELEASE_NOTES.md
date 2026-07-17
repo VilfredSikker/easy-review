@@ -2,15 +2,20 @@
 
 ## In plain terms
 
-- **What changed.** Building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` (and, later, missing frontend deps), because the setup steps weren't documented and the scripts didn't check for them. Now `tauri-dev.sh` / `tauri-build.sh` verify the toolchain up front and print exactly what to install, and the README lists the prerequisites.
-- **Why it matters.** New contributors get an actionable message instead of a dead end, and the frontend deps install themselves on first run.
-- **TL;DR.** Desktop build-from-source onboarding: preflight checks + documented prerequisites.
+- **What changed.** After an agent uploads triage/review/tour sidecars via MCP, there was no way to bookmark that PR or list what was already reviewed. New tools pin into Desktop Saved PRs and scan managed storage for uploaded artifacts. Separately, building the desktop app from a fresh clone used to fail with a cryptic `error: no such command: tauri` — the scripts now preflight the toolchain and the README lists prerequisites.
+- **Why it matters.** You can find agent-reviewed PRs again from MCP (`list_pinned_prs` / `list_artifacts`) and see the same pins in the Desktop sidebar; new contributors get an actionable desktop setup path instead of a dead end.
+- **TL;DR.** MCP pin/list reviewed artifacts, plus desktop build-from-source preflight.
 
 ## What's Changed
 
+### Features
+- MCP `pin_pr` / `unpin_pr` / `list_pinned_prs` write Desktop Saved PRs (`projects.json` `saved_prs`) with Value-preserving updates (`er-engine::projects_pins`).
+- MCP `list_artifacts` scans managed `prs/pr-*` buckets for uploaded triage/review/tour and marks whether each is pinned.
+- `er-review` skill documents pin + find-reviewed-work flow.
+
 ### Fixes
-- Desktop dev/build scripts preflight-check for the Rust toolchain, Tauri CLI, and bun, printing an actionable install command instead of failing cryptically; frontend deps `bun install` on first run (`scripts/preflight-desktop.sh`).
-- README documents desktop build-from-source prerequisites (Rust 1.85+, `tauri-cli`, bun, Linux WebKitGTK deps).
+- Desktop dev/build scripts preflight-check for the Rust toolchain, Tauri CLI, and bun, printing an actionable install command instead of failing cryptically; frontend deps `bun install` on first run (`scripts/preflight-desktop.sh`). (#148)
+- README documents desktop build-from-source prerequisites (Rust 1.85+, `tauri-cli`, bun, Linux WebKitGTK deps). (#148)
 
 ---
 

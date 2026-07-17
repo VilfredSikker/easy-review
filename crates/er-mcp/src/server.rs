@@ -7,13 +7,14 @@ use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
     gh_pr_thread_addressing_remote,
 };
+use er_engine::projects_pins::{self, PinnedPr};
 use er_engine::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
     open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
     ReviewStatus,
 };
 use er_engine::sidecar_specs::{artifact_specs, artifact_specs_for_dir};
-use er_engine::sidecar_summary::summarize_pr_sidecars;
+use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
@@ -170,6 +171,33 @@ pub struct ArtifactSpecsArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PinPrArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// PR number to pin into Desktop Saved PRs.
+    pub number: u64,
+    /// Optional title (fetched via `gh` when omitted).
+    #[serde(default)]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct ListArtifactsArgs {
+    #[serde(default)]
+    pub repo: Option<String>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    /// Optional kind filter (any-of): triage, review, tour.
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
+    /// Max PRs to return (default 50, max 50).
+    #[serde(default)]
+    pub limit: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct CrossRepoArgs {
     /// Max PRs to return across all projects (default 10).
     #[serde(default)]
@@ -211,6 +239,47 @@ fn text_json(value: &impl Serialize) -> Result<CallToolResult, McpError> {
 
 fn tool_err(msg: impl Into<String>) -> McpError {
     McpError::invalid_params(msg.into(), None)
+}
+
+/// Best-effort PR title via `gh pr view --json title`.
+fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
+    let output = std::process::Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &format!("{owner}/{repo}"),
+            "--json",
+            "title",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
+fn pinned_sidecar_json(
+    entry: &PinnedPr,
+    summary: &er_engine::sidecar_summary::PrSidecarSummary,
+) -> serde_json::Value {
+    json!({
+        "number": entry.number,
+        "title": entry.title,
+        "saved_at_ms": entry.saved_at_ms,
+        "kinds": present_kinds(summary),
+        "bucket_path": summary.bucket_path,
+        "triage": summary.triage,
+        "review": summary.review,
+        "tour": summary.tour,
+        "missing": summary.missing,
+    })
 }
 
 async fn load_queue(
@@ -881,7 +950,186 @@ impl ErMcp {
         text_json(&json!({
             "project": project_name,
             "uploaded": result,
-            "note": "Sidecars are in shared managed storage — open the PR in Desktop/TUI or call summarize_triage.",
+            "note": "Sidecars are in shared managed storage — open the PR in Desktop/TUI, call summarize_triage, or pin_pr to bookmark in Desktop Saved.",
+        }))
+    }
+
+    #[tool(
+        description = "Pin a PR into Desktop Saved PRs (projects.json saved_prs) so you can find agent-reviewed work later. Does not auto-pin on upload — call explicitly after review."
+    )]
+    async fn pin_pr(
+        &self,
+        Parameters(args): Parameters<PinPrArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+            .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let title_arg = args.title.clone();
+        let project_id_arg = args.project_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let (project_id, project_name) =
+                projects_pins::resolve_project_for_pin(project_id_arg.as_deref(), &owner, &name)?;
+            let title = title_arg
+                .filter(|t| !t.trim().is_empty())
+                .or_else(|| fetch_pr_title(&owner, &name, number))
+                .unwrap_or_default();
+            let pinned = projects_pins::pin_pr(&project_id, number, &title)?;
+            let summary = summarize_pr_sidecars(&owner, &name, number);
+            Ok::<_, anyhow::Error>((project_id, project_name, owner, name, pinned, summary))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        let (project_id, project_name, owner, name, pinned, summary) = result;
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project_id": project_id,
+            "project": project_name,
+            "pinned": pinned_sidecar_json(&pinned, &summary),
+            "note": "Also visible in Desktop sidebar Saved PRs.",
+        }))
+    }
+
+    #[tool(description = "Remove a PR from Desktop Saved PRs (unpin).")]
+    async fn unpin_pr(
+        &self,
+        Parameters(args): Parameters<PrNumberArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+            .map_err(|e| tool_err(e.to_string()))?;
+        let number = args.number;
+        let project_id_arg = args.project_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let Some((project_id, project_name)) =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
+            else {
+                return Ok((None, None, owner, name, false));
+            };
+            let removed = projects_pins::unpin_pr(&project_id, number)?;
+            Ok::<_, anyhow::Error>((Some(project_id), Some(project_name), owner, name, removed))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        let (project_id, project_name, owner, name, removed) = result;
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project_id": project_id,
+            "project": project_name,
+            "number": number,
+            "removed": removed,
+        }))
+    }
+
+    #[tool(
+        description = "List Desktop Saved (pinned) PRs for a repo/project, enriched with which triage/review/tour sidecars exist in managed storage."
+    )]
+    async fn list_pinned_prs(
+        &self,
+        Parameters(args): Parameters<RepoArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+            .map_err(|e| tool_err(e.to_string()))?;
+        let project_id_arg = args.project_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let Some((project_id, project_name)) =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
+            else {
+                return Ok((None, None, owner, name, Vec::<serde_json::Value>::new()));
+            };
+            let pinned = projects_pins::list_pinned(&project_id)?;
+            let rows: Vec<_> = pinned
+                .iter()
+                .map(|entry| {
+                    let summary = summarize_pr_sidecars(&owner, &name, entry.number);
+                    pinned_sidecar_json(entry, &summary)
+                })
+                .collect();
+            Ok::<_, anyhow::Error>((Some(project_id), Some(project_name), owner, name, rows))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        let (project_id, project_name, owner, name, prs) = result;
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project_id": project_id,
+            "project": project_name,
+            "count": prs.len(),
+            "prs": prs,
+        }))
+    }
+
+    #[tool(
+        description = "List PRs in managed storage that have uploaded triage/review/tour artifacts (whether pinned or not). Optional kinds filter. Marks pinned:true when in Desktop Saved."
+    )]
+    async fn list_artifacts(
+        &self,
+        Parameters(args): Parameters<ListArtifactsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
+            .map_err(|e| tool_err(e.to_string()))?;
+        let kinds = match args.kinds {
+            None => None,
+            Some(list) if list.is_empty() => None,
+            Some(list) => Some(
+                list.iter()
+                    .map(|s| parse_kind(s))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(tool_err)?,
+            ),
+        };
+        let limit = clamp_limit(args.limit, 50);
+        let project_id_arg = args.project_id.clone();
+
+        let result = tokio::task::spawn_blocking(move || {
+            let project =
+                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?;
+            let (project_id, project_name, pinned_set) = match project {
+                Some((id, pname)) => {
+                    let set = projects_pins::pinned_numbers(&id);
+                    (Some(id), Some(pname), set)
+                }
+                None => (None, None, std::collections::HashSet::new()),
+            };
+            let filter = kinds.as_deref();
+            let listed = list_repo_pr_artifacts(&owner, &name, filter, limit);
+            let artifacts: Vec<_> = listed
+                .into_iter()
+                .map(|entry| {
+                    let number = entry.summary.number;
+                    json!({
+                        "number": number,
+                        "kinds": entry.kinds,
+                        "pinned": pinned_set.contains(&number),
+                        "mtime_secs": entry.mtime_secs,
+                        "bucket_path": entry.summary.bucket_path,
+                        "triage": entry.summary.triage,
+                        "review": entry.summary.review,
+                        "tour": entry.summary.tour,
+                        "missing": entry.summary.missing,
+                    })
+                })
+                .collect();
+            Ok::<_, anyhow::Error>((project_id, project_name, owner, name, artifacts))
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        let (project_id, project_name, owner, name, artifacts) = result;
+        text_json(&json!({
+            "repo": format!("{owner}/{name}"),
+            "project_id": project_id,
+            "project": project_name,
+            "count": artifacts.len(),
+            "artifacts": artifacts,
         }))
     }
 
@@ -953,6 +1201,10 @@ const SHIPPED_TOOLS: &[&str] = &[
     "prepare_review",
     "get_artifact_specs",
     "upload_artifacts",
+    "pin_pr",
+    "unpin_pr",
+    "list_pinned_prs",
+    "list_artifacts",
     "tool_ideas",
 ];
 
@@ -974,6 +1226,7 @@ impl ServerHandler for ErMcp {
              Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
              Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
              AI sidecars: get_artifact_specs (schemas+prompts) → prepare_review → upload_artifacts → summarize_triage. \
+             Find reviewed work: pin_pr (Desktop Saved) / list_pinned_prs / list_artifacts (scan managed storage). \
              Open: open_in_easy_review.",
             )
     }
