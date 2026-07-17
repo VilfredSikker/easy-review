@@ -8,7 +8,12 @@ const { execFile } = require("node:child_process");
 const { promisify } = require("node:util");
 const { pipeline } = require("node:stream/promises");
 const { createWriteStream } = require("node:fs");
-const { downloadUrl, rustTarget, releaseTag } = require("./platform.js");
+const {
+  downloadUrl,
+  rustTarget,
+  releaseTag,
+  platformPackage,
+} = require("./platform.js");
 
 const execFileAsync = promisify(execFile);
 
@@ -52,13 +57,31 @@ async function pathLooksExecutable(file) {
 }
 
 /**
+ * Locate the binary shipped by the platform-specific optional dependency
+ * (installed by npm at install time via os/cpu filtering). Resolving the
+ * package.json is robust across Node's `exports` rules.
+ */
+function platformPackageBinary() {
+  const pkg = platformPackage();
+  if (!pkg) return null;
+  try {
+    // eslint-disable-next-line import/no-dynamic-require, global-require
+    const pkgJson = require.resolve(`${pkg}/package.json`);
+    return path.join(path.dirname(pkgJson), "er-mcp");
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Resolve the native er-mcp binary.
  *
  * Order:
  * 1. ER_MCP_PATH / ER_MCP_BINARY env
- * 2. Cached download for this package version
- * 3. `er-mcp` on PATH
- * 4. Download from GitHub Releases (v<package.version>)
+ * 2. Platform optional-dependency package (no download — installed by npm)
+ * 3. Cached download for this package version
+ * 4. `er-mcp` on PATH
+ * 5. Download from GitHub Releases (v<package.version>) — hardened fallback
  */
 async function ensureBinary() {
   const envPath = process.env.ER_MCP_PATH || process.env.ER_MCP_BINARY;
@@ -67,6 +90,19 @@ async function ensureBinary() {
       throw new Error(`ER_MCP_PATH is set but not executable: ${envPath}`);
     }
     return envPath;
+  }
+
+  const fromPkg = platformPackageBinary();
+  if (fromPkg) {
+    // npm may not preserve the exec bit in every install path; set it defensively.
+    try {
+      await fsp.chmod(fromPkg, 0o755);
+    } catch {
+      // already correct, or read-only store — ignore.
+    }
+    if (await pathLooksExecutable(fromPkg)) {
+      return fromPkg;
+    }
   }
 
   const version = packageVersion();
@@ -94,31 +130,7 @@ async function downloadBinary(version = packageVersion()) {
   const destBinary = path.join(dir, "er-mcp");
 
   process.stderr.write(`easy-review-mcp: downloading ${url}\n`);
-
-  let res;
-  try {
-    res = await fetch(url, {
-      redirect: "follow",
-      headers: { "User-Agent": "easy-review-mcp-npm" },
-    });
-  } catch (err) {
-    throw new Error(
-      `failed to download ${url}: ${err.message}. ` +
-        `Install from source: cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp`,
-    );
-  }
-
-  if (!res.ok) {
-    throw new Error(
-      `download failed (${res.status}) for ${url}. ` +
-        `A GitHub Release ${releaseTag(version)} with er-mcp-${target}.tar.gz is required. ` +
-        `Or: cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp`,
-    );
-  }
-
-  const tmp = `${archivePath}.partial`;
-  await pipeline(res.body, createWriteStream(tmp));
-  await fsp.rename(tmp, archivePath);
+  await downloadToFile(url, archivePath);
 
   try {
     await execFileAsync("tar", ["-xzf", archivePath, "-C", dir]);
@@ -147,6 +159,71 @@ async function downloadBinary(version = packageVersion()) {
 
   process.stderr.write(`easy-review-mcp: installed ${destBinary}\n`);
   return destBinary;
+}
+
+/**
+ * Download a URL to a file. Prefers curl (reliable redirect handling, retries,
+ * and a hard timeout — node's fetch() can stall indefinitely on the GitHub
+ * release redirect); falls back to fetch() with an abort-based timeout when
+ * curl is unavailable.
+ */
+async function downloadToFile(url, destPath) {
+  const tmp = `${destPath}.partial`;
+
+  try {
+    await execFileAsync(
+      "curl",
+      [
+        "-fSL",
+        "--retry",
+        "3",
+        "--retry-delay",
+        "1",
+        "--max-time",
+        "120",
+        "-A",
+        "easy-review-mcp-npm",
+        "-o",
+        tmp,
+        url,
+      ],
+      { maxBuffer: 1024 * 1024 },
+    );
+    await fsp.rename(tmp, destPath);
+    return;
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      // curl exists but failed (network/HTTP) — clean up and fall through to fetch.
+      await fsp.unlink(tmp).catch(() => {});
+    }
+  }
+
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 120000);
+  try {
+    const res = await fetch(url, {
+      redirect: "follow",
+      signal: ac.signal,
+      headers: { "User-Agent": "easy-review-mcp-npm" },
+    });
+    if (!res.ok) {
+      throw new Error(
+        `download failed (${res.status}) for ${url}. ` +
+          `A GitHub Release with the er-mcp asset is required. ` +
+          `Or: cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp`,
+      );
+    }
+    await pipeline(res.body, createWriteStream(tmp));
+    await fsp.rename(tmp, destPath);
+  } catch (err) {
+    await fsp.unlink(tmp).catch(() => {});
+    throw new Error(
+      `failed to download ${url}: ${err.message}. ` +
+        `Install from source: cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp`,
+    );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /** Gatekeeper blocks unsigned GitHub-downloaded binaries until quarantine is cleared. */

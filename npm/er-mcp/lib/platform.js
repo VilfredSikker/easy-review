@@ -41,10 +41,25 @@ function downloadUrl(version, owner = "VilfredSikker", repo = "easy-review") {
   return `https://github.com/${owner}/${repo}/releases/download/${tag}/${asset}`;
 }
 
+// npm optional-dependency package that carries the prebuilt binary for each host.
+// Keys match `${process.platform}-${process.arch}`; the launcher resolves the
+// matching package (installed by npm via os/cpu filtering) before any download.
+const PLATFORM_PACKAGES = {
+  "darwin-arm64": "easy-review-mcp-darwin-arm64",
+  "darwin-x64": "easy-review-mcp-darwin-x64",
+  "linux-x64": "easy-review-mcp-linux-x64",
+};
+
+function platformPackage(platform = process.platform, arch = process.arch) {
+  return PLATFORM_PACKAGES[`${platform}-${arch}`] || null;
+}
+
 module.exports = {
   TARGETS,
   rustTarget,
   assetName,
   releaseTag,
   downloadUrl,
+  PLATFORM_PACKAGES,
+  platformPackage,
 };
