@@ -117,6 +117,16 @@ test:
 test-desktop:
     cargo test -p er-desktop
 
+# Build the Easy Review MCP server (stdio).
+[group('dev/mcp')]
+build-mcp:
+    cargo build -p er-mcp
+
+# Install `er-mcp` to ~/.cargo/bin.
+[group('prod/mcp')]
+install-mcp:
+    cargo install --path crates/er-mcp
+
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:

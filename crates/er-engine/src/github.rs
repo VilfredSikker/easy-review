@@ -1436,6 +1436,18 @@ struct ReviewThreadsPr {
 #[derive(Debug, Deserialize)]
 struct ReviewThreadsConnection {
     nodes: Vec<ReviewThread>,
+    #[serde(default)]
+    #[serde(rename = "pageInfo")]
+    page_info: Option<GraphQlPageInfo>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GraphQlPageInfo {
+    #[serde(default)]
+    has_next_page: bool,
+    #[serde(default)]
+    end_cursor: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1976,9 +1988,17 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
             let state = c["state"].as_str().unwrap_or("").to_string();
             let bucket = c["bucket"].as_str().unwrap_or("").to_string();
             // Map `gh pr checks` semantics into status/conclusion:
-            //   state ~ PENDING|SUCCESS|FAILURE|...
+            //   state ~ PENDING|IN_PROGRESS|QUEUED|SUCCESS|FAILURE|...
             //   bucket ~ pass|fail|pending|cancel|skipping
-            let (status, conclusion) = if state == "PENDING" || bucket == "pending" {
+            let state_l = state.to_ascii_lowercase();
+            let (status, conclusion) = if state_l == "pending"
+                || state_l == "in_progress"
+                || state_l == "queued"
+                || state_l == "waiting"
+                || state_l == "requested"
+                || state_l == "expected"
+                || bucket.eq_ignore_ascii_case("pending")
+            {
                 ("PENDING".to_string(), "".to_string())
             } else {
                 ("COMPLETED".to_string(), state.clone())
@@ -2225,6 +2245,322 @@ pub fn gh_pr_reply_comment_remote(
         serde_json::from_str(&stdout).context("Failed to parse reply response")?;
 
     Ok(resp.id)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Review-queue listing (MCP / headless). Includes size + merge-state fields that
+// the desktop PR list intentionally omits for latency.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Login of the authenticated `gh` user, if available.
+pub fn gh_current_login() -> Option<String> {
+    let output = Command::new("gh")
+        .args(["api", "user", "--jq", ".login"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if login.is_empty() {
+        None
+    } else {
+        Some(login)
+    }
+}
+
+/// List PRs for a repo with fields needed by [`crate::review_queue`].
+///
+/// `state` is passed to `gh pr list --state` (`open`, `closed`, `merged`, `all`).
+pub fn gh_pr_list_queue(
+    owner: &str,
+    repo: &str,
+    state: &str,
+    limit: usize,
+) -> Result<Vec<crate::review_queue::QueuePr>> {
+    let repo_slug = format!("{}/{}", owner, repo);
+    let limit = limit.clamp(1, 100);
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            &repo_slug,
+            "--state",
+            state,
+            "--limit",
+            &limit.to_string(),
+            "--json",
+            "number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews",
+        ])
+        .output()
+        .context("Failed to run gh pr list")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr list failed: {}", stderr.trim());
+    }
+    let me = gh_current_login();
+    parse_pr_list_queue(&String::from_utf8_lossy(&output.stdout), me.as_deref())
+}
+
+/// Pure parser for `gh pr list --json …` review-queue payloads.
+pub fn parse_pr_list_queue(
+    json: &str,
+    current_login: Option<&str>,
+) -> Result<Vec<crate::review_queue::QueuePr>> {
+    #[derive(Deserialize)]
+    struct Raw {
+        number: u64,
+        title: String,
+        #[serde(default, rename = "headRefName")]
+        head_ref_name: String,
+        #[serde(default, rename = "baseRefName")]
+        base_ref_name: String,
+        state: String,
+        #[serde(rename = "isDraft")]
+        is_draft: bool,
+        author: RawAuthor,
+        #[serde(default, rename = "reviewRequests")]
+        review_requests: Vec<RawReviewRequest>,
+        #[serde(default, rename = "reviewDecision")]
+        review_decision: Option<String>,
+        #[serde(default)]
+        mergeable: Option<String>,
+        #[serde(default, rename = "mergeStateStatus")]
+        merge_state_status: Option<String>,
+        #[serde(default)]
+        additions: u64,
+        #[serde(default)]
+        deletions: u64,
+        #[serde(default, rename = "changedFiles")]
+        changed_files: u64,
+        #[serde(default, rename = "updatedAt")]
+        updated_at: String,
+        #[serde(default)]
+        labels: Vec<RawLabel>,
+        #[serde(default)]
+        url: String,
+        #[serde(default, rename = "latestReviews")]
+        latest_reviews: Vec<RawReview>,
+    }
+    #[derive(Deserialize)]
+    struct RawAuthor {
+        login: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawReviewRequest {
+        #[serde(default)]
+        login: Option<String>,
+    }
+    #[derive(Deserialize)]
+    struct RawLabel {
+        name: String,
+    }
+    #[derive(Deserialize)]
+    struct RawReview {
+        author: RawAuthor,
+        state: String,
+    }
+
+    let raw: Vec<Raw> = serde_json::from_str(json).context("invalid gh pr list JSON")?;
+    let me = current_login.map(|s| s.to_ascii_lowercase());
+    Ok(raw
+        .into_iter()
+        .map(|r| {
+            let reviewers: Vec<String> = r
+                .review_requests
+                .into_iter()
+                .filter_map(|rr| rr.login)
+                .collect();
+            let review_requested_of_me = me
+                .as_ref()
+                .map(|m| reviewers.iter().any(|r| r.eq_ignore_ascii_case(m)))
+                .unwrap_or(false);
+            let my_latest_review_state = me.as_ref().and_then(|m| {
+                r.latest_reviews
+                    .iter()
+                    .find(|rv| {
+                        rv.author
+                            .login
+                            .as_deref()
+                            .is_some_and(|l| l.eq_ignore_ascii_case(m))
+                    })
+                    .map(|rv| rv.state.clone())
+            });
+            crate::review_queue::QueuePr {
+                number: r.number,
+                title: r.title,
+                author: r.author.login.unwrap_or_default(),
+                is_draft: r.is_draft,
+                state: r.state,
+                review_decision: r.review_decision.filter(|s| !s.is_empty()),
+                mergeable: r.mergeable.filter(|s| !s.is_empty()),
+                merge_state_status: r.merge_state_status.filter(|s| !s.is_empty()),
+                additions: r.additions,
+                deletions: r.deletions,
+                changed_files: r.changed_files,
+                updated_at: r.updated_at,
+                labels: r.labels.into_iter().map(|l| l.name).collect(),
+                reviewers,
+                url: r.url,
+                head_ref: r.head_ref_name,
+                base_ref: r.base_ref_name,
+                production_lines: None,
+                review_requested_of_me,
+                my_latest_review_state,
+                checks_state: None,
+            }
+        })
+        .collect())
+}
+
+/// Production-vs-noise line stats for a remote PR (fetches `gh pr diff`).
+pub fn gh_pr_prod_diff_stats(
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> Result<crate::git::ProdDiffStats> {
+    let raw = gh_pr_diff_remote(owner, repo, number)?;
+    Ok(crate::git::ProdDiffStats::from_raw_diff(&raw))
+}
+
+/// Whether a CI check run counts as failing.
+pub fn check_run_is_failing(check: &CheckRun) -> bool {
+    let conclusion = check.conclusion.to_ascii_lowercase();
+    matches!(
+        conclusion.as_str(),
+        "failure"
+            | "fail"
+            | "cancelled"
+            | "canceled"
+            | "timed_out"
+            | "timeout"
+            | "error"
+            | "action_required"
+    )
+}
+
+/// Aggregate CI state for a PR from `gh pr checks` results.
+pub fn summarize_checks_state(checks: &[CheckRun]) -> &'static str {
+    if checks.is_empty() {
+        return "unknown";
+    }
+    if checks.iter().any(check_run_is_failing) {
+        return "failing";
+    }
+    if checks.iter().any(check_run_is_pending) {
+        return "pending";
+    }
+    "passing"
+}
+
+fn check_run_is_pending(c: &CheckRun) -> bool {
+    let status = c.status.to_ascii_lowercase();
+    let conclusion = c.conclusion.to_ascii_lowercase();
+    matches!(
+        status.as_str(),
+        "pending" | "in_progress" | "queued" | "waiting" | "requested" | "expected"
+    ) || matches!(conclusion.as_str(), "pending" | "in_progress" | "queued")
+}
+
+/// Fetch checks and return rollup state for a remote PR.
+pub fn gh_pr_checks_state_remote(owner: &str, repo: &str, number: u64) -> Result<&'static str> {
+    let checks = gh_pr_checks_remote(owner, repo, number)?;
+    Ok(summarize_checks_state(&checks))
+}
+
+/// Thread-level addressing summary (resolved / outdated / open).
+pub fn summarize_thread_addressing_from_graphql(
+    json: &str,
+) -> crate::review_queue::ThreadAddressingSummary {
+    let Ok(response) = serde_json::from_str::<ReviewThreadsResponse>(json) else {
+        return crate::review_queue::ThreadAddressingSummary::default();
+    };
+    let flags: Vec<(bool, bool)> = response
+        .data
+        .repository
+        .pull_request
+        .review_threads
+        .nodes
+        .iter()
+        .map(|t| (t.is_resolved, t.is_outdated))
+        .collect();
+    crate::review_queue::ThreadAddressingSummary::from_thread_flags(&flags)
+}
+
+/// Fetch review threads and summarize whether feedback is already addressed.
+///
+/// Paginates GraphQL `reviewThreads` (100/page, up to 10 pages). If more threads
+/// remain after the cap, `truncated` is set and `all_addressed` is forced false.
+pub fn gh_pr_thread_addressing_remote(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+) -> Result<crate::review_queue::ThreadAddressingSummary> {
+    const PAGE_SIZE: u32 = 100;
+    const MAX_PAGES: u32 = 10;
+
+    let mut flags: Vec<(bool, bool)> = Vec::new();
+    let mut cursor: Option<String> = None;
+    let mut truncated = false;
+
+    for page in 0..MAX_PAGES {
+        let after_arg = match &cursor {
+            Some(c) => format!(r#", after: "{}""#, c.replace('"', "")),
+            None => String::new(),
+        };
+        let query = format!(
+            r#"query {{ repository(owner: "{}", name: "{}") {{ pullRequest(number: {}) {{ reviewThreads(first: {}{}) {{ pageInfo {{ hasNextPage endCursor }} nodes {{ isResolved isOutdated comments(first: 1) {{ nodes {{ databaseId }} }} }} }} }} }} }}"#,
+            owner, repo, pr, PAGE_SIZE, after_arg
+        );
+        let output = Command::new("gh")
+            .args(["api", "graphql", "-f", &format!("query={}", query)])
+            .output()
+            .context("Failed to fetch review threads")?;
+        if !output.status.success() {
+            if page == 0 {
+                return Ok(crate::review_queue::ThreadAddressingSummary::default());
+            }
+            truncated = true;
+            break;
+        }
+        let json = String::from_utf8_lossy(&output.stdout);
+        let Ok(response) = serde_json::from_str::<ReviewThreadsResponse>(&json) else {
+            if page == 0 {
+                return Ok(crate::review_queue::ThreadAddressingSummary::default());
+            }
+            truncated = true;
+            break;
+        };
+        let conn = response.data.repository.pull_request.review_threads;
+        for t in &conn.nodes {
+            flags.push((t.is_resolved, t.is_outdated));
+        }
+        let page_info = conn.page_info.unwrap_or_default();
+        if !page_info.has_next_page {
+            break;
+        }
+        if page + 1 >= MAX_PAGES {
+            truncated = true;
+            break;
+        }
+        cursor = page_info.end_cursor;
+        if cursor.as_ref().map(|s| s.is_empty()).unwrap_or(true) {
+            truncated = true;
+            break;
+        }
+    }
+
+    Ok(
+        crate::review_queue::ThreadAddressingSummary::from_thread_flags_truncated(
+            &flags, truncated,
+        ),
+    )
+}
+
+/// Owner/repo slug used for managed PR buckets (`owner-repo`).
+pub fn owner_repo_storage_slug(owner: &str, repo: &str) -> String {
+    crate::storage::slug_branch(&format!("{}/{}", owner, repo).to_lowercase())
 }
 
 #[cfg(test)]
@@ -2887,5 +3223,99 @@ mod tests {
         assert_eq!(checks[0].conclusion, Some("pass".to_string()));
         assert_eq!(checks[1].conclusion, Some("fail".to_string()));
         assert!(checks[2].conclusion.is_none()); // pending — no bucket yet
+    }
+
+    #[test]
+    fn parse_pr_list_queue_marks_review_requested_of_me() {
+        let json = r#"[
+          {
+            "number": 7,
+            "title": "Tiny fix",
+            "headRefName": "fix",
+            "baseRefName": "main",
+            "state": "OPEN",
+            "isDraft": false,
+            "author": {"login": "alice"},
+            "reviewRequests": [{"login": "bob"}],
+            "reviewDecision": "REVIEW_REQUIRED",
+            "mergeable": "MERGEABLE",
+            "mergeStateStatus": "CLEAN",
+            "additions": 4,
+            "deletions": 1,
+            "changedFiles": 1,
+            "updatedAt": "2026-07-01T00:00:00Z",
+            "labels": [{"name": "bug"}],
+            "url": "https://github.com/o/r/pull/7",
+            "latestReviews": [{"author": {"login": "carol"}, "state": "COMMENTED"}]
+          }
+        ]"#;
+        let prs = parse_pr_list_queue(json, Some("bob")).unwrap();
+        assert_eq!(prs.len(), 1);
+        assert!(prs[0].review_requested_of_me);
+        assert_eq!(prs[0].additions, 4);
+        assert_eq!(prs[0].labels, vec!["bug".to_string()]);
+        assert!(prs[0].my_latest_review_state.is_none());
+
+        let prs2 = parse_pr_list_queue(json, Some("carol")).unwrap();
+        assert!(!prs2[0].review_requested_of_me);
+        assert_eq!(prs2[0].my_latest_review_state.as_deref(), Some("COMMENTED"));
+    }
+
+    #[test]
+    fn summarize_checks_state_detects_failures() {
+        let checks = vec![
+            CheckRun {
+                name: "lint".into(),
+                status: "COMPLETED".into(),
+                conclusion: "SUCCESS".into(),
+                url: None,
+            },
+            CheckRun {
+                name: "test".into(),
+                status: "COMPLETED".into(),
+                conclusion: "FAILURE".into(),
+                url: None,
+            },
+        ];
+        assert_eq!(summarize_checks_state(&checks), "failing");
+    }
+
+    #[test]
+    fn summarize_checks_state_treats_in_progress_as_pending() {
+        let checks = vec![CheckRun {
+            name: "build".into(),
+            status: "IN_PROGRESS".into(),
+            conclusion: "".into(),
+            url: None,
+        }];
+        assert_eq!(summarize_checks_state(&checks), "pending");
+        let queued = vec![CheckRun {
+            name: "build".into(),
+            status: "QUEUED".into(),
+            conclusion: "".into(),
+            url: None,
+        }];
+        assert_eq!(summarize_checks_state(&queued), "pending");
+    }
+
+    #[test]
+    fn thread_addressing_summary_from_graphql() {
+        let json = r#"{
+          "data": {
+            "repository": {
+              "pullRequest": {
+                "reviewThreads": {
+                  "nodes": [
+                    {"isResolved": true, "isOutdated": false, "comments": {"nodes": [{"databaseId": 1}]}},
+                    {"isResolved": false, "isOutdated": true, "comments": {"nodes": [{"databaseId": 2}]}}
+                  ]
+                }
+              }
+            }
+          }
+        }"#;
+        let s = summarize_thread_addressing_from_graphql(json);
+        assert!(s.all_addressed);
+        assert_eq!(s.thread_count, 2);
     }
 }

@@ -48,6 +48,24 @@ cd easy-review
 
 See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for full details.
 
+## MCP server (`er-mcp`)
+
+A stdio [MCP](https://modelcontextprotocol.io) server for PR triage from Cursor/Claude/Codex — top priority PRs,
+low-hanging fruit, production-only diff line counts, and client-owned AI sidecar upload.
+
+**Setup guide:** [MCP Server Setup](https://vilfredsikker.github.io/easy-review/guide/mcp.html)
+(also in-repo: [`docs/guide/mcp.html`](docs/guide/mcp.html)) — `claude mcp add` / `codex mcp add` and `mcp.json`.
+
+```bash
+cargo install --path crates/er-mcp
+
+# Agent skill ("ER review") — same as: npx skills add github/gh-stack
+npx skills add VilfredSikker/easy-review -s er-review -g
+```
+
+Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
+Skill: [`skills/er-review/SKILL.md`](skills/er-review/SKILL.md).
+
 ## Documentation
 
 📚 The full guide is at **[vilfredsikker.github.io/easy-review/guide](https://vilfredsikker.github.io/easy-review/guide/)** — [installation](https://vilfredsikker.github.io/easy-review/guide/installation.html), [quick start](https://vilfredsikker.github.io/easy-review/guide/quick-start.html), core concepts, keybindings, the AI review workflow, configuration, storage, GitHub sync, and troubleshooting for both the terminal UI and the desktop app.

@@ -13,7 +13,8 @@
     { section: 'Getting Started', pages: [
       { file: 'index.html', title: 'Introduction' },
       { file: 'installation.html', title: 'Installation' },
-      { file: 'quick-start.html', title: 'Quick Start' }
+      { file: 'quick-start.html', title: 'Quick Start' },
+      { file: 'mcp.html', title: 'MCP Server Setup' }
     ]},
     { section: 'Core Concepts', pages: [
       { file: 'concepts.html', title: 'How er Works' },

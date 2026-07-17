@@ -1,3 +1,8 @@
+# Unreleased
+
+- **Easy Review MCP (`er-mcp`)** — stdio MCP server for PR queues and client-owned sidecar upload (`prepare_review` → author → `upload_artifacts`).
+- **`er-review` agent skill** — `npx skills add VilfredSikker/easy-review -s er-review` so agents can run “ER review” end-to-end. Source: `skills/er-review/SKILL.md`.
+
 # Easy Review v0.4.3
 
 ## In plain terms

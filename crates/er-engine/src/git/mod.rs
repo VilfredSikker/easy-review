@@ -1,4 +1,6 @@
 mod diff;
+mod diff_stats;
+mod file_kind;
 mod status;
 
 /// Default `--unified=N` context lines for every `git diff` invocation and
@@ -28,6 +30,8 @@ pub use diff::{
     parse_diff_headers, parse_file_at_offset, refetch_file_with_context, CompactionConfig,
     DiffFile, DiffFileHeader, DiffHunk, DiffLine, LineType,
 };
+pub use diff_stats::{DiffKindStats, FileDiffStat, ProdDiffStats};
+pub use file_kind::{classify_path, FileKind};
 pub use status::{
     detect_base_branch_in, diff_shortstat, diff_watched_file_snapshot, discover_watched_files,
     get_current_branch_in, get_repo_root, get_repo_root_in, git_commit, git_diff_against_branch,
