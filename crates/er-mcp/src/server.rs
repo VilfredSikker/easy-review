@@ -772,6 +772,7 @@ impl ErMcp {
                 .map_err(|e| tool_err(e.to_string()))?;
         let number = args.number;
         let kinds = parse_kinds(args.kinds).map_err(tool_err)?;
+        let kinds_for_specs = kinds.clone();
 
         let kit = tokio::task::spawn_blocking(move || {
             prepare_review_kit(&owner, &name, number, &kinds, &[])
@@ -781,7 +782,7 @@ impl ErMcp {
         .map_err(|e| tool_err(e.to_string()))?;
 
         let specs = artifact_specs_for_dir(
-            &kinds,
+            &kinds_for_specs,
             &kit.er_dir,
             &kit.base_ref,
             &kit.head_ref,
