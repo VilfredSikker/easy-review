@@ -564,10 +564,7 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
                 && model.args[0] == "--model"
                 && model.args[1] == "grok-4.5"
             {
-                model.args = vec![
-                    "--model".into(),
-                    "cursor-grok-4.5-high".into(),
-                ];
+                model.args = vec!["--model".into(), "cursor-grok-4.5-high".into()];
             }
         }
     }
