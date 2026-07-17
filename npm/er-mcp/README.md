@@ -9,9 +9,14 @@ with inherited stdio.
 
 ## Quick start
 
+Wire into an MCP client (do not expect a useful interactive CLI — the server
+speaks JSON-RPC on stdin/stdout and waits for a client):
+
 ```bash
 npx -y easy-review-mcp
 ```
+
+Running that in a bare terminal prints a short setup hint and exits.
 
 ### Cursor (`~/.cursor/mcp.json`)
 
