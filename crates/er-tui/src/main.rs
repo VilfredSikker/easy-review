@@ -52,6 +52,8 @@ struct Cli {
 #[derive(Subcommand)]
 enum Commands {
     /// Install Easy Review agent skills (MCP companion for "ER review")
+    ///
+    /// Also installable via: npx skills add VilfredSikker/easy-review -s er-review -g -y
     #[command(name = "install-skills")]
     InstallSkills {
         /// Target agents (comma-separated). Default: cursor,claude-code,codex
