@@ -72,6 +72,7 @@ async function ensureBinary() {
   const version = packageVersion();
   const cached = cachedBinaryPath(version);
   if (await pathLooksExecutable(cached)) {
+    await clearMacQuarantine(cached);
     return cached;
   }
 
@@ -138,11 +139,50 @@ async function downloadBinary(version = packageVersion()) {
   }
 
   await fsp.chmod(destBinary, 0o755);
+  await clearMacQuarantine(destBinary);
+  await assertBinaryRuns(destBinary);
+
   // Best-effort cleanup of the archive to save disk.
   await fsp.unlink(archivePath).catch(() => {});
 
   process.stderr.write(`easy-review-mcp: installed ${destBinary}\n`);
   return destBinary;
+}
+
+/** Gatekeeper blocks unsigned GitHub-downloaded binaries until quarantine is cleared. */
+async function clearMacQuarantine(file) {
+  if (process.platform !== "darwin") return;
+  try {
+    await execFileAsync("xattr", ["-dr", "com.apple.quarantine", file]);
+  } catch {
+    // Not quarantined, or xattr unavailable — ignore.
+  }
+}
+
+async function assertBinaryRuns(file) {
+  try {
+    // Empty stdin → server exits after initialize wait fails; we only care it execs.
+    await execFileAsync(file, [], {
+      timeout: 3000,
+      input: "",
+      maxBuffer: 1024,
+    });
+  } catch (err) {
+    const msg = err && (err.message || String(err));
+    const code = err && err.code;
+    if (code === "ETIMEDOUT") {
+      // Still running = binary executed; fine for smoke check.
+      return;
+    }
+    // ConnectionClosed / non-zero exit after stdin EOF is expected.
+    if (err && typeof err.status === "number") {
+      return;
+    }
+    throw new Error(
+      `downloaded binary failed to run (${code || "error"}): ${msg}. ` +
+        `On macOS try: xattr -dr com.apple.quarantine ${file}`,
+    );
+  }
 }
 
 module.exports = {

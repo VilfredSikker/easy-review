@@ -10,9 +10,52 @@
 const { spawn } = require("node:child_process");
 const { ensureBinary } = require("../lib/ensure-binary.js");
 
+function printTtyUsage() {
+  console.error(`easy-review MCP server (stdio JSON-RPC).
+
+It waits for an MCP client on stdin — running it alone in a terminal looks idle.
+Point your client at it instead, for example:
+
+  Cursor  (~/.cursor/mcp.json):
+    {
+      "mcpServers": {
+        "easy-review": {
+          "command": "npx",
+          "args": ["-y", "easy-review-mcp"]
+        }
+      }
+    }
+
+  Claude Code:
+    claude mcp add --scope user easy-review -- npx -y easy-review-mcp
+
+  Codex:
+    codex mcp add easy-review -- npx -y easy-review-mcp
+
+Docs: https://vilfredsikker.github.io/easy-review/guide/mcp.html`);
+}
+
 async function main() {
+  const args = process.argv.slice(2);
+  if (args.includes("--help") || args.includes("-h")) {
+    printTtyUsage();
+    return;
+  }
+  if (args.includes("--version") || args.includes("-V")) {
+    // eslint-disable-next-line global-require
+    console.error(`easy-review-mcp ${require("../package.json").version}`);
+    return;
+  }
+
+  // Interactive terminal (both ends are TTYs) — don't hang silently.
+  // MCP clients use pipes for stdin/stdout, so this stays false for them.
+  if (process.stdin.isTTY && process.stdout.isTTY) {
+    printTtyUsage();
+    return;
+  }
+
   const binary = await ensureBinary();
-  const child = spawn(binary, process.argv.slice(2), {
+  const child = spawn(binary, args, {
     stdio: "inherit",
     env: process.env,
   });
