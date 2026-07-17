@@ -84,6 +84,9 @@ pub fn run(opts: InstallSkillsOpts) -> Result<()> {
     println!(
         "\nSay \"ER review\" in your agent (with easy-review MCP connected) to run prepare → author → upload."
     );
+    println!(
+        "Tip: you can also install with: npx skills add VilfredSikker/easy-review -s er-review -g -y"
+    );
     Ok(())
 }
 

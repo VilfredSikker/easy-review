@@ -60,6 +60,9 @@ low-hanging fruit, production-only diff line counts, and client-owned AI sidecar
 cargo install --path crates/er-mcp
 cargo install --path crates/er-tui   # er binary
 er install-skills                   # "ER review" agent skill (cursor/claude/codex)
+
+# Or without the er binary (same as: npx skills add github/gh-stack):
+npx skills add VilfredSikker/easy-review -s er-review -g -y
 ```
 
 Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).

@@ -115,12 +115,16 @@ Install the companion skill so agents know to call `prepare_review` → author �
 `upload_artifacts` when you say **“ER review”**:
 
 ```bash
-# After: cargo install --path crates/er-tui
+# NPX (same ecosystem as: npx skills add github/gh-stack)
+npx skills add VilfredSikker/easy-review -s er-review -g -y   # user/global
+npx skills add VilfredSikker/easy-review -s er-review -y      # project
+
+# Or via the er binary (after: cargo install --path crates/er-tui)
 er install-skills                  # cursor + claude-code + codex, user scope
 er install-skills --agent cursor --force
 er install-skills --scope project  # → .agents/skills/er-review (or .claude/skills)
 
-# Same placement model as gh-stack:
+# Or GitHub CLI skills
 gh skill install VilfredSikker/easy-review er-review --agent cursor --scope user
 ```
 

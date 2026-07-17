@@ -130,17 +130,19 @@ command = "/absolute/path/to/er-mcp"</code></pre>
     <p>
       MCP exposes the tools; the <code>er-review</code> skill teaches agents to run
       <strong>prepare → author → upload</strong> when you say <em>“ER review”</em>.
-      Same idea as <code>gh skill install github/gh-stack</code>.
+      Same idea as installing <code>github/gh-stack</code> via <code>npx skills</code> or <code>gh skill</code>.
     </p>
-    <pre><code><span class="cmt"># Requires the er binary (cargo install --path crates/er-tui)</span>
+    <pre><code><span class="cmt"># NPX (no er binary required) — mirrors: npx skills add github/gh-stack</span>
+npx skills add VilfredSikker/easy-review -s er-review -g -y
+<span class="cmt"># Project scope (omit -g): copies into .agents/skills/er-review</span>
+npx skills add VilfredSikker/easy-review -s er-review -y
+
+<span class="cmt"># Or via the er binary (embeds the same skill)</span>
 er install-skills
 <span class="cmt"># → ~/.cursor/skills/er-review, ~/.claude/skills/er-review, ~/.codex/skills/er-review</span>
-
-<span class="cmt"># Or pick agent / scope</span>
 er install-skills --agent cursor --scope user --force
-er install-skills --agent claude-code --scope project
 
-<span class="cmt"># Equivalent via GitHub CLI skills (from a clone or the published repo)</span>
+<span class="cmt"># Or GitHub CLI skills</span>
 gh skill install VilfredSikker/easy-review er-review --agent cursor --scope user
 </code></pre>
     <p>Skill source: <code>skills/er-review/SKILL.md</code> in the repo (also embedded in <code>er</code>).</p>
