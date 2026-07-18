@@ -7,8 +7,9 @@
 #   cargo tui-test        → scripts/er-tui.sh test -p er-engine -p er-tui
 #   cargo tui-run         → scripts/er-tui.sh run -p er-tui
 #   cargo tui …           → scripts/er-tui.sh …
-#   cargo er-dev          → scripts/tauri-dev.sh
-#   cargo desktop-release → scripts/tauri-build.sh
+#   cargo er-dev                 → scripts/tauri-dev.sh
+#   cargo desktop-release        → scripts/tauri-build.sh
+#   cargo desktop-sign-release   → scripts/tauri-sign-release.sh (Developer ID + notarize)
 #
 # Extra args append: cargo tui-build --release, cargo er-dev --logs arena
 
@@ -26,3 +27,4 @@ tui-test = "er tui-test"
 tui-run = "er tui-run"
 er-dev = "er dev"
 desktop-release = "er desktop-release"
+desktop-sign-release = "er desktop-sign-release"

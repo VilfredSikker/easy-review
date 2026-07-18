@@ -14,9 +14,10 @@
 #
 # Recipes are grouped DEVELOPMENT (dev/tui, dev/desktop) and
 # PRODUCTION (prod/tui, prod/desktop). For shipping the desktop app:
-#   just build-desktop      bundle the release .app only
-#   just install-desktop    bundle + copy to /Applications
-#   just release-desktop    bundle + install + DMG
+#   just build-desktop           bundle the release .app only (ad-hoc)
+#   just install-desktop         bundle + copy to /Applications
+#   just release-desktop         bundle + install + DMG (ad-hoc)
+#   just sign-release-desktop    Developer ID signed + notarized .app/.dmg
 
 set shell := ["bash", "-eu", "-o", "pipefail", "-c"]
 
@@ -104,6 +105,12 @@ install-desktop *ARGS:
 [group('prod/desktop')]
 release-desktop *ARGS:
     ER_SKIP_DMG=0 ./scripts/tauri-build.sh {{ARGS}}
+
+# Developer ID signed + notarized .app + .dmg (for GitHub Releases / direct download).
+# Credentials: repo-root `.env.signing` (see `.env.signing.example`) or APPLE_* env vars.
+[group('prod/desktop')]
+sign-release-desktop *ARGS:
+    ./scripts/tauri-sign-release.sh {{ARGS}}
 
 # ──────────────────────────────────── test ───────────────────────────────────────
 

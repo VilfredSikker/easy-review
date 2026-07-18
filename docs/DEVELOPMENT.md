@@ -26,7 +26,8 @@ Defined in [`.cargo/config.toml`](../.cargo/config.toml). Each alias runs [`carg
 | `cargo tui-run` | `scripts/er-tui.sh run -p er-tui` | Run TUI from repo root |
 | `cargo tui …` | `scripts/er-tui.sh …` | Passthrough to scoped cargo |
 | `cargo er-dev` | `scripts/tauri-dev.sh` | Desktop dev (`target/desktop/`) |
-| `cargo desktop-release` | `scripts/tauri-build.sh` | Desktop `.app` + `.dmg` bundle |
+| `cargo desktop-release` | `scripts/tauri-build.sh` | Desktop `.app` + `.dmg` bundle (ad-hoc) |
+| `cargo desktop-sign-release` | `scripts/tauri-sign-release.sh` | Developer ID signed + notarized `.app` / `.dmg` |
 
 Extra args append: `cargo tui-build --release`, `cargo er-dev --logs arena`.
 
@@ -36,7 +37,8 @@ Extra args append: `cargo tui-build --release`, `cargo er-dev --logs arena`.
 |--------|-------------------|---------|
 | [`scripts/er-tui.sh`](../scripts/er-tui.sh) | `target/tui` | TUI / engine builds and tests |
 | [`scripts/tauri-dev.sh`](../scripts/tauri-dev.sh) | `target/desktop` | Tauri dev server |
-| [`scripts/tauri-build.sh`](../scripts/tauri-build.sh) | `target/desktop` | Desktop release bundle (`.app` + `.dmg`) |
+| [`scripts/tauri-build.sh`](../scripts/tauri-build.sh) | `target/desktop` | Desktop release bundle (`.app` + `.dmg`, ad-hoc) |
+| [`scripts/tauri-sign-release.sh`](../scripts/tauri-sign-release.sh) | `target/desktop` | Signed + notarized release (Developer ID) |
 | [`scripts/cargo-gc.sh`](../scripts/cargo-gc.sh) | — | Prune bloated `target/debug` (auto-run from dev scripts) |
 
 ```bash
@@ -139,12 +141,102 @@ cargo desktop-release
 
 # macOS output (after build):
 #   target/.../bundle/macos/Easy Review.app
-#   target/.../bundle/dmg/Easy Review_*.dmg
-# The DMG opens in Finder with Easy Review.app beside an Applications shortcut — drag to install.
-# Set ER_SKIP_OPEN_DMG=1 to skip auto-open (CI). Not installed automatically.
+#   target/.../bundle/dmg/Easy Review_*.dmg  (when ER_SKIP_DMG=0)
 ```
 
-Requires `cargo-tauri` and platform deps (WebKit/GTK on Linux). Not part of the published GitHub Release today — only the `er` TUI binary is released.
+Requires `cargo-tauri` and platform deps (WebKit/GTK on Linux). `tauri-build.sh` is for **local** builds (ad-hoc sign). For a Gatekeeper-clean downloadable `.dmg`, use the signed release flow below.
+
+## macOS signed release (Developer ID + notarization)
+
+Use this when shipping a desktop `.dmg` others can open without right-click → Open.
+
+### One-time setup
+
+1. Apple Developer Program membership.
+2. Create a **Developer ID Application** certificate (G2 Sub-CA) at
+   [Certificates](https://developer.apple.com/account/resources/certificates/list) — not Apple Development,
+   not App Store Distribution, nothing under Services.
+3. Install the `.cer` into your login keychain. Confirm:
+
+   ```bash
+   security find-identity -v -p codesigning
+   # expect: "Developer ID Application: … (TEAMID)"
+   ```
+
+4. Create an [app-specific password](https://appleid.apple.com) for notarization.
+5. Credentials file (gitignored — never commit):
+
+   ```bash
+   cp .env.signing.example .env.signing
+   # edit: APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+   ```
+
+   `APPLE_SIGNING_IDENTITY` is optional if only one Developer ID Application identity exists.
+
+### Build a signed + notarized release
+
+```bash
+./scripts/tauri-sign-release.sh
+# or: cargo desktop-sign-release
+# or: just sign-release-desktop
+```
+
+Output:
+
+- `target/desktop/release/bundle/macos/Easy Review.app`
+- `target/desktop/release/bundle/dmg/Easy Review_<version>_aarch64.dmg` (or `_x64`)
+
+Do **not** use `./scripts/tauri-build.sh` for distribution — it ad-hoc re-signs and would wipe Developer ID.
+
+### Verify
+
+```bash
+codesign -dv --verbose=4 "target/desktop/release/bundle/macos/Easy Review.app"
+spctl -a -vv "target/desktop/release/bundle/macos/Easy Review.app"
+```
+
+### Notarization stuck on “In Progress”
+
+First submissions (especially on a new Developer ID) can sit in Apple’s queue for **hours to a few days**. That is normal.
+
+1. Ctrl+C if the script is waiting forever — the signed `.app` is already on disk.
+2. Check status (do **not** start another upload while one is In Progress):
+
+   ```bash
+   set -a && source .env.signing && set +a
+   xcrun notarytool history --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+   xcrun notarytool info <submission-id> \
+     --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+   ```
+
+3. When status is **Accepted**:
+
+   ```bash
+   xcrun stapler staple "target/desktop/release/bundle/macos/Easy Review.app"
+   # then re-run ./scripts/tauri-sign-release.sh to pack/notarize the DMG,
+   # or wait until a DMG-only mode exists
+   ```
+
+4. If **Invalid**, fetch the log:
+
+   ```bash
+   xcrun notarytool log <submission-id> \
+     --apple-id "$APPLE_ID" --password "$APPLE_PASSWORD" --team-id "$APPLE_TEAM_ID"
+   ```
+
+5. Still In Progress after ~7 days → Apple Developer Forums (Notarization) with the submission id.
+
+### Env knobs
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `ER_SKIP_DMG` | `0` | Set `1` to skip DMG |
+| `ER_SKIP_INSTALL` | `1` | Set `0` to also copy into `/Applications` (keeps Developer ID; no ad-hoc re-sign) |
+| `ER_SKIP_OPEN_DMG` | `1` | Set `0` to open the DMG in Finder |
+| `ER_SKIP_NOTARIZE` | `0` | Set `1` to sign only (Gatekeeper will still warn) |
+| `ER_SIGNING_ENV` | `.env.signing` | Alternate credentials file path |
+
+Reference: [Tauri macOS signing](https://v2.tauri.app/distribute/sign/macos/).
 
 ### `desktop-ui` → static assets
 

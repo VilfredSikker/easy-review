@@ -3,7 +3,8 @@
 # Verifies the toolchain a fresh clone needs (tauri-cli + bun) and installs the
 # frontend deps on first run, so a missing prerequisite prints an actionable fix
 # up front instead of failing cryptically inside `cargo tauri` / Vite later.
-# Sourced by tauri-dev.sh and tauri-build.sh; returns non-zero on the first
+# Sourced by tauri-dev.sh, tauri-build.sh, and tauri-sign-release.sh; returns
+# non-zero on the first
 # missing prerequisite (callers run under `set -e`, so that aborts the script).
 
 preflight_desktop() {

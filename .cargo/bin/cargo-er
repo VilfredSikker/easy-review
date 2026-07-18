@@ -34,9 +34,12 @@ case "$TASK" in
   desktop-release)
     exec "$ROOT/scripts/tauri-build.sh" "$@"
     ;;
+  desktop-sign-release)
+    exec "$ROOT/scripts/tauri-sign-release.sh" "$@"
+    ;;
   *)
     echo "cargo er: unknown task '$TASK'" >&2
-    echo "Tasks: tui, tui-build, tui-release, tui-install, tui-test, tui-run, dev, desktop-release" >&2
+    echo "Tasks: tui, tui-build, tui-release, tui-install, tui-test, tui-run, dev, desktop-release, desktop-sign-release" >&2
     exit 1
     ;;
 esac
