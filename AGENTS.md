@@ -23,7 +23,7 @@ scripts/aliases below, so either form works.
 | Install ER agent skill | `npx skills add VilfredSikker/easy-review -s er-review -g` — see `skills/er-review/` |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release (local/ad-hoc) | `./scripts/tauri-build.sh` or `cargo desktop-release` |
-| Desktop signed release | `./scripts/tauri-sign-release.sh` or `cargo desktop-sign-release` — guide: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) (`.env.signing`) |
+| Desktop signed release | `just sign` (or `just sign-release-desktop`) — guide: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) (`.env.signing`) |
 | Frontend checks | `cd desktop-ui && bun run check && bun test src` |
 | Test full workspace | `cargo test --workspace` (slow — builds Tauri) |
 | Reclaim `target/` disk | `./scripts/cargo-gc.sh` (also runs from dev scripts) |

@@ -27,6 +27,7 @@ alias b := build
 alias t := test
 alias f := fmt
 alias l := lint
+alias sign := sign-release-desktop
 
 # Bare `just` lists every recipe. The `_` prefix hides this entry from the list itself.
 _default:
@@ -106,8 +107,7 @@ install-desktop *ARGS:
 release-desktop *ARGS:
     ER_SKIP_DMG=0 ./scripts/tauri-build.sh {{ARGS}}
 
-# Developer ID signed + notarized .app + .dmg (for GitHub Releases / direct download).
-# Credentials: repo-root `.env.signing` (see `.env.signing.example`) or APPLE_* env vars.
+# Developer ID signed + notarized .app/.dmg (needs `.env.signing`).
 [group('prod/desktop')]
 sign-release-desktop *ARGS:
     ./scripts/tauri-sign-release.sh {{ARGS}}
