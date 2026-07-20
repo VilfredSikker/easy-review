@@ -605,6 +605,67 @@ pub fn agent_command_is_cursor(command: &str) -> bool {
     command == "agent" || command.ends_with("/agent")
 }
 
+/// True when the provider command is OpenCode (`opencode run`).
+pub fn agent_command_is_opencode(command: &str) -> bool {
+    command == "opencode" || command.ends_with("/opencode")
+}
+
+/// Merge model args onto provider args.
+///
+/// OpenCode treats the prompt as a trailing positional (`opencode run [message..]`),
+/// so model flags must land *before* `{prompt}` or they become part of the message.
+pub fn extend_provider_model_args(command: &str, args: &mut Vec<String>, model_args: &[String]) {
+    if model_args.is_empty() {
+        return;
+    }
+    if agent_command_is_opencode(command) {
+        let insert_at = args
+            .iter()
+            .position(|arg| arg.contains("{prompt}"))
+            .unwrap_or(args.len());
+        for (offset, arg) in model_args.iter().enumerate() {
+            args.insert(insert_at + offset, arg.clone());
+        }
+    } else {
+        args.extend(model_args.iter().cloned());
+    }
+}
+
+/// Ensure OpenCode non-interactive runs include `--auto` (auto-approve asks).
+pub fn ensure_opencode_auto(args: &mut Vec<String>) {
+    if args.iter().any(|arg| arg == "--auto") {
+        return;
+    }
+    let insert_at = args
+        .iter()
+        .position(|arg| arg == "run")
+        .map(|index| index + 1)
+        .or_else(|| args.iter().position(|arg| arg.contains("{prompt}")))
+        .unwrap_or(0);
+    args.insert(insert_at, "--auto".to_string());
+}
+
+/// Env var granting OpenCode write access to a managed review bucket outside cwd.
+///
+/// OpenCode has no `--add-dir`; `external_directory` defaults to ask and can be
+/// auto-rejected in non-interactive mode without `--auto` / an explicit allow.
+///
+/// `OPENCODE_PERMISSION` is the bare permission object (not a full config with a
+/// nested `permission` key), e.g. `{"external_directory":{"/path/**":"allow"}}`.
+pub fn opencode_storage_permission_env(storage_dir: Option<&str>) -> Option<(String, String)> {
+    let directory = storage_dir.map(str::trim).filter(|dir| !dir.is_empty())?;
+    // OpenCode path globs use `/`; normalize Windows `\` so patterns match.
+    let normalized = directory.replace('\\', "/").trim_end_matches('/').to_string();
+    let pattern = format!("{normalized}/**");
+    let value = serde_json::json!({
+        "external_directory": {
+            pattern: "allow"
+        }
+    })
+    .to_string();
+    Some(("OPENCODE_PERMISSION".to_string(), value))
+}
+
 /// Allow built-in agent CLIs to access a specific Easy Review storage directory.
 ///
 /// Managed sidecars normally live outside the repository, so a child CLI with
@@ -789,6 +850,22 @@ pub fn inject_codex_effort(args: &mut Vec<String>, effort: Option<&str>) {
     args.push(format!("model_reasoning_effort={level}"));
 }
 
+/// Append OpenCode `--variant <level>` before `{prompt}` when not already present.
+pub fn inject_opencode_effort(args: &mut Vec<String>, effort: Option<&str>) {
+    let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if args.iter().any(|arg| arg == "--variant") {
+        return;
+    }
+    let insert_at = args
+        .iter()
+        .position(|arg| arg.contains("{prompt}"))
+        .unwrap_or(args.len());
+    args.insert(insert_at, "--variant".to_string());
+    args.insert(insert_at + 1, level.to_string());
+}
+
 /// Inject the configured effort using the target provider CLI's argument format.
 ///
 /// Codex only supports this override for models with advertised effort levels.
@@ -802,6 +879,8 @@ pub fn inject_provider_effort(
         inject_claude_effort(args, effort);
     } else if agent_command_is_codex(command) && model_id.is_some() {
         inject_codex_effort(args, effort);
+    } else if agent_command_is_opencode(command) {
+        inject_opencode_effort(args, effort);
     }
 }
 
@@ -2103,6 +2182,7 @@ mod tests {
         assert!(hub.providers.contains_key("claude"));
         assert!(hub.providers.contains_key("codex"));
         assert!(hub.providers.contains_key("cursor"));
+        assert!(hub.providers.contains_key("opencode"));
         let claude = hub.providers.get("claude").unwrap();
         assert!(
             claude.models.iter().any(|m| m.id == "opus-4.8"),
@@ -2121,6 +2201,18 @@ mod tests {
         assert!(
             cursor.models.iter().any(|m| m.id == "composer-2.5"),
             "catalog should include composer-2.5"
+        );
+        let opencode = hub.providers.get("opencode").unwrap();
+        assert_eq!(opencode.command, "opencode");
+        assert!(opencode.args.iter().any(|a| a == "--auto"));
+        assert!(opencode.args.iter().any(|a| a.contains("{prompt}")));
+        assert!(
+            opencode.models.iter().any(|m| m.id == "default"),
+            "catalog should include opencode default model"
+        );
+        assert!(
+            opencode.models.iter().any(|m| m.id == "claude-sonnet-4-5"),
+            "catalog should include opencode claude-sonnet-4-5"
         );
     }
 
@@ -2174,6 +2266,95 @@ mod tests {
         let len = args.len();
         inject_codex_effort(&mut args, Some("low"));
         assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn opencode_model_args_insert_before_prompt() {
+        let mut args = vec![
+            "run".to_string(),
+            "--auto".to_string(),
+            "{prompt}".to_string(),
+        ];
+        extend_provider_model_args(
+            "opencode",
+            &mut args,
+            &["--model".into(), "anthropic/claude-sonnet-4-5".into()],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "run",
+                "--auto",
+                "--model",
+                "anthropic/claude-sonnet-4-5",
+                "{prompt}",
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_opencode_effort_before_prompt_idempotent() {
+        let mut args = vec![
+            "run".to_string(),
+            "--auto".to_string(),
+            "{prompt}".to_string(),
+        ];
+        inject_opencode_effort(&mut args, Some("high"));
+        assert_eq!(
+            args,
+            vec!["run", "--auto", "--variant", "high", "{prompt}"]
+        );
+        let len = args.len();
+        inject_opencode_effort(&mut args, Some("low"));
+        assert_eq!(args.len(), len);
+        inject_provider_effort("opencode", &mut args, Some("default"), Some("max"));
+        assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn ensure_opencode_auto_inserts_once_after_run() {
+        let mut args = vec!["run".to_string(), "{prompt}".to_string()];
+        ensure_opencode_auto(&mut args);
+        ensure_opencode_auto(&mut args);
+        assert_eq!(args, vec!["run", "--auto", "{prompt}"]);
+    }
+
+    #[test]
+    fn opencode_storage_permission_env_allows_bucket() {
+        let (key, value) =
+            opencode_storage_permission_env(Some("/managed/repos/demo/view-buckets/branch"))
+                .expect("env should be set");
+        assert_eq!(key, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
+        // Bare permission object — not wrapped in {"permission": ...}.
+        assert!(parsed.get("permission").is_none());
+        assert_eq!(
+            parsed["external_directory"]["/managed/repos/demo/view-buckets/branch/**"],
+            "allow"
+        );
+        assert!(opencode_storage_permission_env(None).is_none());
+        assert!(opencode_storage_permission_env(Some("")).is_none());
+    }
+
+    #[test]
+    fn opencode_storage_permission_env_normalizes_windows_separators() {
+        let (_, value) = opencode_storage_permission_env(Some(
+            r"C:\Users\demo\AppData\Local\easy-review\repos\x\branches\main\view-buckets\branch\",
+        ))
+        .expect("env should be set");
+        let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(
+            parsed["external_directory"]
+                ["C:/Users/demo/AppData/Local/easy-review/repos/x/branches/main/view-buckets/branch/**"],
+            "allow"
+        );
+    }
+
+    #[test]
+    fn agent_command_is_opencode_detects_basename() {
+        assert!(agent_command_is_opencode("opencode"));
+        assert!(agent_command_is_opencode("/opt/homebrew/bin/opencode"));
+        assert!(!agent_command_is_opencode("claude"));
     }
 
     #[test]

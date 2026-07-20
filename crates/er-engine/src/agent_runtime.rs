@@ -17,6 +17,7 @@ pub enum CliFamily {
     Claude,
     Codex,
     Cursor,
+    OpenCode,
     Other,
 }
 
@@ -30,6 +31,7 @@ impl CliFamily {
             "claude" => Self::Claude,
             "codex" => Self::Codex,
             "agent" => Self::Cursor,
+            "opencode" => Self::OpenCode,
             _ => Self::Other,
         }
     }
@@ -180,6 +182,8 @@ pub struct AgentInvocation {
     pub work_dir: String,
     pub family: CliFamily,
     pub output_protocol: OutputProtocol,
+    /// Extra process environment (e.g. OpenCode managed-storage permissions).
+    pub env: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -224,7 +228,11 @@ pub fn resolve_invocation(
                 let resolved_model = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(model_id) = &resolved_model {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                        args.extend(model.args.clone());
+                        crate::config::extend_provider_model_args(
+                            &provider.command,
+                            &mut args,
+                            &model.args,
+                        );
                     }
                 }
                 (provider.command.clone(), args, Some(pid), resolved_model)
@@ -252,7 +260,7 @@ pub fn resolve_invocation(
                 .find(|m| m.id == model_id)
                 .with_context(|| format!("unknown model {model_id} for provider {provider_id}"))?;
             let mut args = provider.args.clone();
-            args.extend(model.args.clone());
+            crate::config::extend_provider_model_args(&provider.command, &mut args, &model.args);
             (
                 provider.command.clone(),
                 args,
@@ -266,6 +274,9 @@ pub fn resolve_invocation(
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
+    if family == CliFamily::OpenCode {
+        crate::config::ensure_opencode_auto(&mut args);
+    }
     // Only grant managed-storage --add-dir when the task needs artifact I/O.
     // ReadOnly must not receive a Codex-writable extra root.
     crate::config::inject_agent_storage_access(&command, &mut args, request.access.output_dir());
@@ -274,7 +285,10 @@ pub fn resolve_invocation(
             inject_codex_writable_dir(&mut args, output_dir);
         }
     }
-    if matches!(family, CliFamily::Claude | CliFamily::Codex) {
+    if matches!(
+        family,
+        CliFamily::Claude | CliFamily::Codex | CliFamily::OpenCode
+    ) {
         let effort = crate::config::resolve_effort_for_model(
             &config.ai_hub,
             &config.agent,
@@ -300,12 +314,22 @@ pub fn resolve_invocation(
         OutputProtocol::Plain
     };
 
+    let mut env = Vec::new();
+    if family == CliFamily::OpenCode {
+        if let Some(pair) =
+            crate::config::opencode_storage_permission_env(request.access.output_dir())
+        {
+            env.push(pair);
+        }
+    }
+
     Ok(AgentInvocation {
         command,
         args,
         work_dir: request.work_dir,
         family,
         output_protocol,
+        env,
     })
 }
 
@@ -986,7 +1010,96 @@ mod tests {
             CliFamily::detect("/opt/homebrew/bin/codex"),
             CliFamily::Codex
         );
+        assert_eq!(CliFamily::detect("opencode"), CliFamily::OpenCode);
+        assert_eq!(
+            CliFamily::detect("/opt/homebrew/bin/opencode"),
+            CliFamily::OpenCode
+        );
         assert_eq!(CliFamily::detect("/custom/provider"), CliFamily::Other);
+    }
+
+    fn opencode_config() -> ErConfig {
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        config.ai_hub.default_provider = Some("opencode".into());
+        config.ai_hub.default_model = Some("claude-sonnet-4-5".into());
+        config
+    }
+
+    #[test]
+    fn opencode_invocation_orders_model_and_variant_before_prompt() {
+        let config = opencode_config();
+        let task = AgentTaskKind::Review;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Exact {
+                    provider_id: "opencode",
+                    model_id: "claude-sonnet-4-5",
+                },
+                task: &task,
+                effort: Some("high"),
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::LocalArtifacts {
+                    output_dir: "/managed/review".into(),
+                },
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(invocation.family, CliFamily::OpenCode);
+        assert_eq!(invocation.output_protocol, OutputProtocol::Plain);
+        let prompt_idx = invocation
+            .args
+            .iter()
+            .position(|a| a.contains("{prompt}"))
+            .unwrap();
+        let model_idx = invocation
+            .args
+            .windows(2)
+            .position(|pair| pair[0] == "--model" && pair[1] == "anthropic/claude-sonnet-4-5")
+            .unwrap();
+        let variant_idx = invocation
+            .args
+            .windows(2)
+            .position(|pair| pair[0] == "--variant" && pair[1] == "high")
+            .unwrap();
+        assert!(model_idx < prompt_idx);
+        assert!(variant_idx < prompt_idx);
+        assert!(invocation.args.iter().any(|a| a == "--auto"));
+        assert_eq!(invocation.env.len(), 1);
+        assert_eq!(invocation.env[0].0, "OPENCODE_PERMISSION");
+        assert!(invocation.env[0].1.contains("/managed/review/**"));
+        assert!(
+            !invocation.env[0].1.contains("\"permission\""),
+            "OPENCODE_PERMISSION must be the bare permission object"
+        );
+        assert!(invocation.env[0].1.contains("\"external_directory\""));
+    }
+
+    #[test]
+    fn opencode_readonly_skips_storage_permission_env() {
+        let config = opencode_config();
+        let task = AgentTaskKind::CardReply;
+        let invocation = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Runtime {
+                    provider_id: Some("opencode"),
+                    model_id: Some("default"),
+                },
+                task: &task,
+                effort: None,
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: true,
+            },
+        )
+        .unwrap();
+        assert!(invocation.env.is_empty());
+        assert!(!invocation.args.iter().any(|a| a == "stream-json"));
     }
 
     #[test]

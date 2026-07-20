@@ -34,6 +34,18 @@ Point your client at it instead, for example:
   Codex:
     codex mcp add easy-review -- npx -y easy-review-mcp
 
+  OpenCode (~/.config/opencode/opencode.json):
+    {{
+      \"$schema\": \"https://opencode.ai/config.json\",
+      \"mcp\": {{
+        \"easy-review\": {{
+          \"type\": \"local\",
+          \"command\": [\"npx\", \"-y\", \"easy-review-mcp\"],
+          \"enabled\": true
+        }}
+      }}
+    }}
+
 Docs: https://vilfredsikker.github.io/easy-review/guide/mcp.html"
     );
 }
@@ -51,7 +63,7 @@ async fn main() -> Result<()> {
     }
 
     // Interactive terminal (stdin+stdout TTYs) — explain instead of hanging.
-    // MCP clients attach pipes, so this stays false for Claude/Cursor/Codex.
+    // MCP clients attach pipes, so this stays false for Claude/Cursor/Codex/OpenCode.
     if std::io::stdin().is_terminal() && std::io::stdout().is_terminal() {
         print_tty_usage();
         return Ok(());

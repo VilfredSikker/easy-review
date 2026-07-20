@@ -153,3 +153,60 @@ args = ["--model", "composer-2.5"]
 cost_per_1k_in = 0.0005
 cost_per_1k_out = 0.0025
 avg_latency_ms = 12000
+
+[ai_hub.providers.opencode]
+label = "OpenCode"
+command = "opencode"
+# `{prompt}` must stay last: OpenCode treats the message as a positional arg.
+# Model/effort flags are inserted before `{prompt}` by extend_provider_model_args.
+args = ["run", "--auto", "{prompt}"]
+
+[[ai_hub.providers.opencode.models]]
+id = "default"
+label = "Default"
+description = "Use OpenCode’s configured default model"
+args = []
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
+cost_per_1k_in = 0.002
+cost_per_1k_out = 0.010
+avg_latency_ms = 14000
+
+[[ai_hub.providers.opencode.models]]
+id = "claude-sonnet-4-5"
+label = "Claude Sonnet 4.5"
+description = "Strong coding + tool use via Anthropic"
+args = ["--model", "anthropic/claude-sonnet-4-5"]
+effort_levels = ["high", "max"]
+cost_per_1k_in = 0.003
+cost_per_1k_out = 0.015
+avg_latency_ms = 14000
+
+[[ai_hub.providers.opencode.models]]
+id = "claude-opus-4-5"
+label = "Claude Opus 4.5"
+description = "Frontier reasoning via Anthropic"
+args = ["--model", "anthropic/claude-opus-4-5"]
+effort_levels = ["high", "max"]
+cost_per_1k_in = 0.005
+cost_per_1k_out = 0.025
+avg_latency_ms = 22000
+
+[[ai_hub.providers.opencode.models]]
+id = "gpt-5.2"
+label = "GPT-5.2"
+description = "Strong general coding via OpenAI"
+args = ["--model", "openai/gpt-5.2"]
+effort_levels = ["low", "medium", "high", "xhigh"]
+cost_per_1k_in = 0.0025
+cost_per_1k_out = 0.015
+avg_latency_ms = 14000
+
+[[ai_hub.providers.opencode.models]]
+id = "gemini-3-pro"
+label = "Gemini 3 Pro"
+description = "Google Gemini via OpenCode"
+args = ["--model", "google/gemini-3-pro"]
+effort_levels = ["low", "high"]
+cost_per_1k_in = 0.002
+cost_per_1k_out = 0.012
+avg_latency_ms = 16000

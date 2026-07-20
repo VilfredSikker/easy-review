@@ -23,6 +23,7 @@ pub struct ProviderCommand {
     pub command: String,
     pub args: Vec<String>,
     pub stream_json: bool,
+    pub env: Vec<(String, String)>,
 }
 
 pub fn resolve_provider_command(
@@ -38,7 +39,7 @@ pub fn resolve_provider_command(
         .with_context(|| format!("unknown provider: {provider_id}"))?;
     let mut args = provider.args.clone();
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-        args.extend(model.args.clone());
+        crate::config::extend_provider_model_args(&provider.command, &mut args, &model.args);
     }
     let effort = crate::config::normalize_effort(hub, Some(provider_id), Some(model_id), effort);
     inject_provider_effort(
@@ -50,11 +51,21 @@ pub fn resolve_provider_command(
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
+    if crate::config::agent_command_is_opencode(&provider.command) {
+        crate::config::ensure_opencode_auto(&mut args);
+    }
     inject_agent_storage_access(&provider.command, &mut args, storage_dir);
+    let mut env = Vec::new();
+    if crate::config::agent_command_is_opencode(&provider.command) {
+        if let Some(pair) = crate::config::opencode_storage_permission_env(storage_dir) {
+            env.push(pair);
+        }
+    }
     Ok(ProviderCommand {
         command: provider.command.clone(),
         args,
         stream_json: provider.uses_stream_json_log(),
+        env,
     })
 }
 
@@ -113,11 +124,16 @@ fn run_once(
         .map(|a| a.replace("{prompt}", prompt))
         .collect();
 
-    let mut child = Command::new(&cmd.command)
+    let mut child = Command::new(&cmd.command);
+    child
         .args(&agent_args)
         .current_dir(work_dir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in &cmd.env {
+        child.env(key, value);
+    }
+    let mut child = child
         .spawn()
         .with_context(|| format!("spawn {}", cmd.command))?;
 
@@ -372,6 +388,90 @@ mod tests {
     }
 
     #[test]
+    fn opencode_provider_command_orders_flags_and_sets_permission_env() {
+        const DIR: &str = "/managed/repos/demo/branches/main/view-buckets/branch";
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "opencode".to_string(),
+            crate::config::AiProviderConfig {
+                command: "opencode".to_string(),
+                args: vec!["run".to_string(), "{prompt}".to_string()],
+                models: vec![crate::config::AiModelConfig {
+                    id: "claude-sonnet-4-5".to_string(),
+                    args: vec![
+                        "--model".to_string(),
+                        "anthropic/claude-sonnet-4-5".to_string(),
+                    ],
+                    effort_levels: vec!["high".into(), "max".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let cmd =
+            resolve_provider_command(&hub, "opencode", "claude-sonnet-4-5", Some("high"), Some(DIR))
+                .unwrap();
+
+        let prompt_idx = cmd
+            .args
+            .iter()
+            .position(|a| a.contains("{prompt}"))
+            .unwrap();
+        assert!(cmd.args.iter().any(|a| a == "--auto"));
+        assert!(cmd
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--model" && pair[1] == "anthropic/claude-sonnet-4-5"));
+        assert!(cmd
+            .args
+            .windows(2)
+            .any(|pair| pair[0] == "--variant" && pair[1] == "high"));
+        let model_idx = cmd
+            .args
+            .windows(2)
+            .position(|pair| pair[0] == "--model")
+            .unwrap();
+        let variant_idx = cmd
+            .args
+            .windows(2)
+            .position(|pair| pair[0] == "--variant")
+            .unwrap();
+        assert!(model_idx < prompt_idx);
+        assert!(variant_idx < prompt_idx);
+
+        assert_eq!(cmd.env.len(), 1);
+        assert_eq!(cmd.env[0].0, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&cmd.env[0].1).unwrap();
+        assert!(parsed.get("permission").is_none());
+        assert_eq!(
+            parsed["external_directory"][format!("{DIR}/**")],
+            "allow"
+        );
+    }
+
+    #[test]
+    fn opencode_provider_command_skips_permission_env_without_dir() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "opencode".to_string(),
+            crate::config::AiProviderConfig {
+                command: "opencode".to_string(),
+                args: vec!["run".to_string(), "--auto".to_string(), "{prompt}".to_string()],
+                models: vec![crate::config::AiModelConfig {
+                    id: "default".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+
+        let cmd = resolve_provider_command(&hub, "opencode", "default", None, None).unwrap();
+        assert!(cmd.env.is_empty());
+        assert!(cmd.args.iter().any(|a| a == "--auto"));
+    }
+
+    #[test]
     fn fake_arena_dir_round_robin() {
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -383,6 +483,7 @@ mod tests {
                 command: "true".into(),
                 args: vec![],
                 stream_json: false,
+                env: vec![],
             },
             "",
             ".",

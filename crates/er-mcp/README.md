@@ -90,9 +90,10 @@ cargo install --path crates/er-mcp
 
 Requires `gh auth login`.
 
-## Client setup (Claude / Cursor / Codex)
+## Client setup (Claude / Cursor / Codex / OpenCode)
 
-Full guide with **`mcp.json`**, **`claude mcp add`**, and **`codex mcp add`**:
+Full guide with **`mcp.json`**, **`claude mcp add`**, **`codex mcp add`**, and OpenCode
+**`opencode.json`**:
 [docs/guide/mcp.html](../../docs/guide/mcp.html)
 ([published](https://vilfredsikker.github.io/easy-review/guide/mcp.html)).
 
@@ -114,6 +115,21 @@ Cursor — `~/.cursor/mcp.json` or `.cursor/mcp.json`:
     "easy-review": {
       "command": "npx",
       "args": ["-y", "easy-review-mcp"]
+    }
+  }
+}
+```
+
+OpenCode — `~/.config/opencode/opencode.json` or project `opencode.json`:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "easy-review": {
+      "type": "local",
+      "command": ["npx", "-y", "easy-review-mcp"],
+      "enabled": true
     }
   }
 }

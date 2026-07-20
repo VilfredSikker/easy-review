@@ -28,7 +28,11 @@ pub fn plan_card_ai_invocation(
             let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
             if let Some(mid) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                    args.extend(model.args.clone());
+                    crate::config::extend_provider_model_args(
+                        &provider.command,
+                        &mut args,
+                        &model.args,
+                    );
                 }
             }
             let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
@@ -45,6 +49,11 @@ pub fn plan_card_ai_invocation(
     } else {
         fallback_agent(config)
     };
+
+    // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode.
+    if crate::config::agent_command_is_opencode(&command) {
+        crate::config::ensure_opencode_auto(&mut args);
+    }
 
     let uses_stream_json =
         agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
@@ -320,6 +329,34 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert!(inv.args.iter().any(|a| a == "Read"));
         assert!(inv.args.iter().any(|a| a.contains("grep")));
+        assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
+    }
+
+    #[test]
+    fn plan_ensures_opencode_auto_for_legacy_agent_fallback() {
+        let mut config = ErConfig::default();
+        config.agent.command = "opencode".into();
+        config.agent.args = vec!["run".into(), "{prompt}".into()];
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
+        assert_eq!(inv.command, "opencode");
+        assert!(inv.args.iter().any(|a| a == "--auto"));
+        let prompt_idx = inv.args.iter().position(|a| a.contains("{prompt}")).unwrap();
+        let auto_idx = inv.args.iter().position(|a| a == "--auto").unwrap();
+        assert!(auto_idx < prompt_idx);
+    }
+
+    #[test]
+    fn plan_ensures_opencode_auto_for_hub_provider() {
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let inv = plan_card_ai_invocation(
+            &config,
+            Some("opencode"),
+            Some("default"),
+            None,
+            "/repo".into(),
+        );
+        assert!(inv.args.iter().any(|a| a == "--auto"));
         assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
     }
 

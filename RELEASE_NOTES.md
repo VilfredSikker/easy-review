@@ -1,3 +1,28 @@
+# Easy Review — unreleased (release/opencode-support)
+
+## In plain terms
+
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** OpenCode (`opencode` CLI) is now a first-class AI Hub provider alongside Claude, Codex, and Cursor — pick it in the TUI Config Hub or Desktop AI Action Palette for reviews, tours, arena, and card AI.
+- **Why it matters.** If you already use OpenCode as your coding agent, Easy Review can spawn the same CLI to write review sidecars without a custom TOML provider.
+- **TL;DR.** Built-in OpenCode provider with curated models, `--variant` effort, managed-storage permissions, and MCP setup docs.
+
+## Highlights
+
+- **OpenCode AI Hub provider.** Catalog presets (`Default`, Claude Sonnet/Opus 4.5, GPT-5.2, Gemini 3 Pro) invoke `opencode run --auto` with model args inserted before the positional prompt.
+- **Managed storage for OpenCode.** Artifact-writing spawns set `OPENCODE_PERMISSION` (bare permission JSON) so the active review bucket is allowed as an `external_directory` (OpenCode has no `--add-dir`).
+- **Effort via `--variant`.** Effort levels from model metadata map to OpenCode’s `--variant` flag.
+- **MCP docs.** `docs/guide/mcp.html` documents OpenCode local MCP config for `easy-review-mcp`.
+
+## What's Changed
+
+### Features
+- Add built-in `opencode` provider to `ai_hub_catalog.toml` with curated `provider/model` presets.
+- Detect `CliFamily::OpenCode`; inject `--auto`, `--variant`, and storage permission env on TUI/Desktop/arena spawns.
+- Document OpenCode in config reference, configuration guide, installation, and MCP setup.
+
+---
+
 # Easy Review v0.4.5
 
 ## In plain terms

@@ -60,7 +60,7 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, and Cursor. Desktop Settings persists the selected default immediately; the AI action palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, Cursor, and OpenCode. Desktop Settings persists the selected default immediately; the AI action palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
 
 ```toml
 [ai_hub]
@@ -159,15 +159,51 @@ args = ["--model", "cursor-grok-4.5-high"]
 id = "composer-2.5"
 label = "Composer 2.5"
 args = ["--model", "composer-2.5"]
+
+[ai_hub.providers.opencode]
+label = "OpenCode"
+command = "opencode"
+args = ["run", "--auto", "{prompt}"]
+
+[[ai_hub.providers.opencode.models]]
+id = "default"
+label = "Default"
+args = []
+effort_levels = ["low", "medium", "high", "xhigh", "max"]
+
+[[ai_hub.providers.opencode.models]]
+id = "claude-sonnet-4-5"
+label = "Claude Sonnet 4.5"
+args = ["--model", "anthropic/claude-sonnet-4-5"]
+effort_levels = ["high", "max"]
+
+[[ai_hub.providers.opencode.models]]
+id = "claude-opus-4-5"
+label = "Claude Opus 4.5"
+args = ["--model", "anthropic/claude-opus-4-5"]
+effort_levels = ["high", "max"]
+
+[[ai_hub.providers.opencode.models]]
+id = "gpt-5.2"
+label = "GPT-5.2"
+args = ["--model", "openai/gpt-5.2"]
+effort_levels = ["low", "medium", "high", "xhigh"]
+
+[[ai_hub.providers.opencode.models]]
+id = "gemini-3-pro"
+label = "Gemini 3 Pro"
+args = ["--model", "google/gemini-3-pro"]
+effort_levels = ["low", "high"]
 ```
 
 Rules:
 - Provider `args` are the shared base arguments for that CLI.
-- Model `args` are appended after provider args.
+- Model `args` are normally appended after provider args. For OpenCode, model/effort flags are inserted **before** `{prompt}` because the message is a trailing positional argument.
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
 - On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; unknown legacy reviewer-model entries are ignored and disappear the next time the config is saved.
 - The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Triage still forces low effort. An explicit model selected for a single review run overrides it only for that run.
-- Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>` and Codex receives `-c model_reasoning_effort=<level>` only for supported levels.
+- Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. OpenCode uses `opencode run --auto` plus an `OPENCODE_PERMISSION` allow for the active review bucket (bare permission JSON like `{"external_directory":{"…/**":"allow"}}`, no `--add-dir`).
+- Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>`, Codex receives `-c model_reasoning_effort=<level>`, and OpenCode receives `--variant <level>` only for supported levels.
 - Built-in Claude, Codex, and Cursor Agent launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
 
 ### `[watched]`

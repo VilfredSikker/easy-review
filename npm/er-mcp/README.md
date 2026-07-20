@@ -43,6 +43,23 @@ claude mcp add --scope user easy-review -- npx -y easy-review-mcp
 codex mcp add easy-review -- npx -y easy-review-mcp
 ```
 
+### OpenCode
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "easy-review": {
+      "type": "local",
+      "command": ["npx", "-y", "easy-review-mcp"],
+      "enabled": true
+    }
+  }
+}
+```
+
+Write that to `~/.config/opencode/opencode.json` (or project `opencode.json`).
+
 ## Overrides
 
 | Env | Meaning |
