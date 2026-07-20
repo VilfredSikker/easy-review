@@ -169,3 +169,19 @@ Historical feature timeline for the early TUI-only era (v1–v1.4). This version
 3. Contrast creates hierarchy (bright/normal/dim + accents)
 4. Theme-ready architecture (semantic tokens, not hardcoded hex)
 5. Speed is a feature (never trade performance for aesthetics)
+
+## Agent skills
+
+Skill pack lives in `.agents/skills/` (from `mattpocock/skills`, project-scoped for Cursor + cloud). Update with `npx skills update`.
+
+### Issue tracker
+
+Issues and specs live as markdown files under `.scratch/<feature-slug>/`. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default five-role vocabulary (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`), recorded as a `Status:` line in each issue file. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context — root `CONTEXT.md` + `docs/adr/`. See `docs/agents/domain.md`.
