@@ -13,21 +13,57 @@ usage() {
     echo "Options:"
     echo "  --version VERSION   Install a specific version (e.g., v0.1.0)"
     echo "  --dir DIR           Install directory (default: ~/.local/bin)"
+    echo "  --uninstall         Remove er binary, config, and review data"
+    echo "  --yes               Skip uninstall confirmation"
     echo "  --help              Show this help"
     echo ""
     echo "Examples:"
     echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash"
     echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --version v0.1.0"
+    echo "  curl -fsSL https://raw.githubusercontent.com/$REPO/main/install.sh | bash -s -- --uninstall"
 }
+
+UNINSTALL=0
+YES=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --version) VERSION="$2"; shift 2 ;;
         --dir) INSTALL_DIR="$2"; shift 2 ;;
+        --uninstall) UNINSTALL=1; shift ;;
+        --yes|-y) YES=1; shift ;;
         --help) usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac
 done
+
+if [[ "$UNINSTALL" -eq 1 ]]; then
+    if command -v er >/dev/null 2>&1; then
+        if [[ "$YES" -eq 1 ]]; then
+            exec er uninstall --yes
+        else
+            exec er uninstall
+        fi
+    fi
+    echo "er is not on PATH — removing common locations manually…"
+    rm -f "${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er" 2>/dev/null || true
+    rm -rf "$HOME/.config/er" 2>/dev/null || true
+    if [[ "$(uname -s)" == "Darwin" ]]; then
+        rm -rf "$HOME/Library/Application Support/er" \
+               "$HOME/Library/Application Support/easy-review" \
+               "$HOME/Library/Application Support/com.reshape.easy-review" \
+               "$HOME/Library/Application Support/Easy Review" \
+               "$HOME/Library/Caches/com.reshape.easy-review" \
+               "$HOME/Library/Caches/Easy Review" 2>/dev/null || true
+    fi
+    rm -rf "$HOME/.local/share/easy-review" \
+           "$HOME/.local/share/com.reshape.easy-review" \
+           "$HOME/.cache/er" \
+           "/Applications/Easy Review.app" \
+           "$HOME/Applications/Easy Review.app" 2>/dev/null || true
+    echo "Done."
+    exit 0
+fi
 
 # Detect OS and architecture
 OS="$(uname -s)"

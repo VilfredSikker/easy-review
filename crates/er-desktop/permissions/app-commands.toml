@@ -68,6 +68,8 @@ commands.allow = [
   "get_config_hub",
   "apply_config_patch",
   "save_config_global_cmd",
+  "preview_uninstall",
+  "run_uninstall",
   "set_ai_effort",
   "promote_to_comment",
   "promote_to_note",
