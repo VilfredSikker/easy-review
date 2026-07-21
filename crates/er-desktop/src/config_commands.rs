@@ -159,3 +159,137 @@ pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, Str
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(snap_from(&app, &state))
 }
+
+// ── Uninstall ───────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallTargetDto {
+    pub kind: String,
+    pub path: String,
+    pub exists: bool,
+    pub description: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallPreview {
+    pub targets: Vec<UninstallTargetDto>,
+    pub existing_count: usize,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UninstallResult {
+    pub removed: Vec<String>,
+    pub deferred: Vec<String>,
+    pub missing: Vec<String>,
+    pub failed: Vec<String>,
+    /// Frontend should quit the app after a successful uninstall.
+    pub should_quit: bool,
+}
+
+#[tauri::command]
+pub async fn preview_uninstall(
+    request: Option<er_engine::uninstall::UninstallOptions>,
+) -> Result<UninstallPreview, String> {
+    crate::commands::run_blocking(move || {
+        let opts = request.unwrap_or_default();
+        let targets = er_engine::uninstall::plan(&opts);
+        let existing_count = targets.iter().filter(|t| t.exists).count();
+        Ok(UninstallPreview {
+            targets: targets
+                .into_iter()
+                .map(|t| UninstallTargetDto {
+                    kind: t.kind.label().to_string(),
+                    path: t.path.display().to_string(),
+                    exists: t.exists,
+                    description: t.description(),
+                })
+                .collect(),
+            existing_count,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn run_uninstall(
+    app_handle: tauri::AppHandle,
+    request: Option<er_engine::uninstall::UninstallOptions>,
+) -> Result<UninstallResult, String> {
+    let result = crate::commands::run_blocking(move || {
+        let opts = request.unwrap_or_default();
+        let existing = er_engine::uninstall::existing_targets(&opts);
+        if existing.is_empty() {
+            return Ok(UninstallResult {
+                removed: vec![],
+                deferred: vec![],
+                missing: vec![],
+                failed: vec![],
+                should_quit: false,
+            });
+        }
+
+        let report = er_engine::uninstall::execute(&existing);
+        if !report.deferred.is_empty() {
+            if let Err(e) = er_engine::uninstall::schedule_deferred_removal(&report.deferred) {
+                let msg = format!("Could not schedule removal of in-use paths: {e}");
+                log::error!("run_uninstall: {msg}");
+                return Err(msg);
+            }
+        }
+
+        Ok(UninstallResult {
+            removed: report
+                .removed
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            deferred: report
+                .deferred
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            missing: report
+                .missing
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            failed: report
+                .failed
+                .iter()
+                .map(|(p, e)| format!("{}: {e}", p.display()))
+                .collect(),
+            // Must quit whenever deferred deletes were scheduled — otherwise the
+            // waiter never sees this PID exit.
+            should_quit: report.is_success() || !report.deferred.is_empty(),
+        })
+    })
+    .await?;
+
+    if !result.failed.is_empty() && !result.should_quit {
+        let msg = format!("Uninstall failed:\n{}", result.failed.join("\n"));
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
+    }
+
+    if result.should_quit {
+        let handle = app_handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(400));
+            handle.exit(0);
+        });
+    }
+
+    if !result.failed.is_empty() {
+        let msg = format!(
+            "Uninstall partially failed (quitting so in-use paths can be removed):\n{}",
+            result.failed.join("\n")
+        );
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
+    }
+
+    Ok(result)
+}

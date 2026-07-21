@@ -26,6 +26,7 @@ pub mod sidecar_summary;
 pub mod sidecar_upload;
 pub mod storage;
 pub mod sync;
+pub mod uninstall;
 #[cfg(feature = "watch")]
 pub mod watch;
 

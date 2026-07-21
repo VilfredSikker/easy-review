@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import type {
@@ -40,6 +41,16 @@
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
+
+  let uninstallPreview = $state<{
+    targets: { kind: string; path: string; exists: boolean; description: string }[];
+    existingCount: number;
+  } | null>(null);
+  let uninstallLoading = $state(false);
+  let uninstallConfirm = $state(false);
+  let uninstallTyped = $state("");
+  let uninstallBusy = $state(false);
+  let focusUninstall = $state(false);
 
   const fields = $derived(activeTab === "general" ? generalFields : terminalFields);
 
@@ -170,8 +181,69 @@
     }
   }
 
+  const fullUninstallRequest = {
+    removeConfig: true,
+    removeData: true,
+    removeCache: true,
+    removeBinaries: true,
+    removeDesktopApp: true,
+  };
+
+  async function loadUninstallPreview() {
+    uninstallLoading = true;
+    try {
+      const res = await invoke<{
+        targets: { kind: string; path: string; exists: boolean; description: string }[];
+        existingCount: number;
+      }>("preview_uninstall", { request: fullUninstallRequest });
+      uninstallPreview = res;
+    } catch (e) {
+      app.showToast("error", `preview_uninstall: ${e}`);
+    } finally {
+      uninstallLoading = false;
+    }
+  }
+
+  async function confirmUninstall() {
+    if (uninstallTyped.trim() !== "uninstall") return;
+    uninstallBusy = true;
+    try {
+      await invoke("run_uninstall", { request: fullUninstallRequest });
+      app.showToast("success", "Easy Review removed — quitting…");
+    } catch (e) {
+      app.showToast("error", String(e));
+      uninstallBusy = false;
+      await loadUninstallPreview();
+    }
+  }
+
   $effect(() => {
     void reload();
+  });
+
+  onMount(() => {
+    try {
+      if (localStorage.getItem("er.focusUninstall") === "1") {
+        localStorage.removeItem("er.focusUninstall");
+        activeTab = "general";
+        focusUninstall = true;
+      }
+    } catch {
+      /* ignore */
+    }
+  });
+
+  // Scroll + preview after settings finish loading (section missing while loading).
+  $effect(() => {
+    if (!focusUninstall || loading || activeTab !== "general") return;
+    focusUninstall = false;
+    void loadUninstallPreview().then(() => {
+      queueMicrotask(() => {
+        document
+          .getElementById("settings-uninstall")
+          ?.scrollIntoView({ behavior: "smooth", block: "start" });
+      });
+    });
   });
 </script>
 
@@ -400,6 +472,78 @@
               </p>
             </div>
           {/if}
+
+          <h2
+            id="settings-uninstall"
+            class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5 scroll-mt-4"
+          >
+            <span class="w-1 h-3 rounded-full bg-risk-high/70" aria-hidden="true"></span>
+            Uninstall
+          </h2>
+          <div class="bg-card border border-hairline rounded-xl px-4 py-4 space-y-3">
+            <p class="text-sm text-fg-3">
+              Remove Easy Review from this machine: config, review data, legacy cache, and installed
+              apps. Diff review of your repos is unaffected — only Easy Review’s own files are deleted.
+            </p>
+            {#if uninstallPreview}
+              <ul class="space-y-1.5 text-xs font-mono text-fg-3 max-h-40 overflow-y-auto">
+                {#each uninstallPreview.targets as t (t.path)}
+                  <li class="flex gap-2">
+                    <span class={t.exists ? "text-fg-2" : "text-muted"}>{t.exists ? "•" : "·"}</span>
+                    <span class="min-w-0 break-all">{t.description}{t.exists ? "" : " (not present)"}</span>
+                  </li>
+                {/each}
+              </ul>
+            {:else if uninstallLoading}
+              <p class="text-xs text-muted">Scanning install locations…</p>
+            {/if}
+            {#if !uninstallConfirm}
+              <div class="flex flex-wrap gap-2 pt-1">
+                <Button variant="ghost" onclick={() => void loadUninstallPreview()}>
+                  {uninstallPreview ? "Refresh list" : "Show what will be removed"}
+                </Button>
+                <Button
+                  variant="danger"
+                  disabled={!uninstallPreview || uninstallPreview.existingCount === 0 || uninstallBusy}
+                  onclick={() => (uninstallConfirm = true)}
+                >
+                  Uninstall…
+                </Button>
+              </div>
+            {:else}
+              <div class="rounded-lg border border-risk-high/40 bg-risk-high/5 px-3 py-3 space-y-2">
+                <p class="text-sm text-fg-1">
+                  Type <span class="font-mono text-risk-high">uninstall</span> to confirm. The app will quit afterward.
+                </p>
+                <input
+                  type="text"
+                  class="w-full bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none focus:border-risk-high/60"
+                  placeholder="uninstall"
+                  bind:value={uninstallTyped}
+                  disabled={uninstallBusy}
+                />
+                <div class="flex gap-2">
+                  <Button
+                    variant="danger"
+                    disabled={uninstallTyped.trim() !== "uninstall" || uninstallBusy}
+                    onclick={() => void confirmUninstall()}
+                  >
+                    {uninstallBusy ? "Removing…" : "Remove everything"}
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    disabled={uninstallBusy}
+                    onclick={() => {
+                      uninstallConfirm = false;
+                      uninstallTyped = "";
+                    }}
+                  >
+                    Cancel
+                  </Button>
+                </div>
+              </div>
+            {/if}
+          </div>
         {/if}
       </div>
     </div>

@@ -103,9 +103,34 @@ cd easy-review
     </ul>
 
     <h2>Uninstalling</h2>
-    <p>Delete the <code>er</code> binary from your install directory (e.g. <code>rm ~/.local/bin/er</code>). Review
-    data lives separately in managed storage — see <a href="storage.html">Review Storage</a> for those paths if you
-    want to remove it too.</p>
+    <p>
+      Remove config, managed review storage, legacy cache, and installed apps from either surface:
+    </p>
+    <h3>Terminal</h3>
+    <pre><code>er uninstall              <span class="cmt"># interactive confirm</span>
+er uninstall --yes        <span class="cmt"># no prompt</span>
+er uninstall --dry-run    <span class="cmt"># list paths only</span>
+er uninstall --keep-data  <span class="cmt"># leave review storage</span>
+er uninstall --keep-config <span class="cmt"># leave ~/.config/er</span>
+er uninstall --keep-apps  <span class="cmt"># leave binaries / .app</span></code></pre>
+    <p>
+      Or re-run the install script with <code>--uninstall</code> (same keep/dry-run flags are forwarded):
+    </p>
+    <pre><code>curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --uninstall</code></pre>
+
+    <h3>Desktop</h3>
+    <p>
+      Open <strong>Settings → General → Uninstall</strong> (also linked from the welcome screen). Confirm by typing
+      <code>uninstall</code>; the app quits after removal. Paths in use by the running process are deleted after it exits.
+    </p>
+
+    <p>What gets removed by default:</p>
+    <ul>
+      <li><code>~/.config/er/</code> (and the platform config dir) — config, projects, tabs, caches</li>
+      <li>Managed review storage under <code>…/easy-review/</code> (see <a href="storage.html">Review Storage</a>), plus Tauri bundle data dirs when present</li>
+      <li>Legacy <code>~/.cache/er/</code></li>
+      <li>The <code>er</code> binary (common install locations) and <code>Easy Review.app</code> when found</li>
+    </ul>
 
     <h2 id="mcp-server">MCP server (<code>er-mcp</code>)</h2>
     <p>
