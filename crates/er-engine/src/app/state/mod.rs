@@ -228,9 +228,10 @@ pub struct TourPillarView {
     pub foundation: bool,
 }
 
-/// State for Tour mode — pillars (left) + the branch diff reordered/grouped by
-/// pillar (right). Parallels `HistoryState`. The Tour shares the Branch review
-/// bucket, so `reviewed` is the branch's reviewed set.
+/// State for Tour mode — pillars (left) + the branch/PR diff reordered/grouped by
+/// pillar (right). Parallels `HistoryState`. The Tour shares the review bucket of
+/// the view it was entered from (`tour_is_pr` → PR bucket, else Branch), so
+/// `reviewed` / `review.json` stay aligned with that context.
 pub struct TourState {
     /// Pillars in display order (foundation first, then importance).
     pub pillars: Vec<TourPillarView>,
@@ -1775,12 +1776,22 @@ impl TabState {
 
     /// Which review bucket this tab belongs to.
     /// Remote tabs (`remote_repo.is_some()`) always map to `Pr` regardless of `mode`.
+    /// Tour mode follows the originating view via `tour_is_pr` so Guide stays on the
+    /// same `review.json` as PR Diff / Local Branch (does not swap onto a stale
+    /// branch-bucket review when opened from PR Diff).
     pub fn review_bucket(&self) -> ReviewBucket {
         if self.remote_repo.is_some() {
             return ReviewBucket::Pr;
         }
         match self.mode {
             DiffMode::PrDiff => ReviewBucket::Pr,
+            DiffMode::Tour => {
+                if self.tour_is_pr {
+                    ReviewBucket::Pr
+                } else {
+                    ReviewBucket::Branch
+                }
+            }
             DiffMode::Unstaged => ReviewBucket::Unstaged,
             DiffMode::Staged => ReviewBucket::Staged,
             DiffMode::History => ReviewBucket::History,
@@ -10591,6 +10602,86 @@ mod tests {
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
+    /// Tour mode's review.json bucket follows `tour_is_pr`, matching the tour
+    /// context — so Guide opened from PR Diff does not swap onto a stale
+    /// branch-bucket review.
+    #[test]
+    fn tour_review_bucket_follows_tour_is_pr() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
+
+        tab.tour_is_pr = false;
+        assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
+    }
+
+    /// Entering Guide from PR Diff keeps `er_dir` on the PR bucket (same
+    /// review.json). Entering from Local Branch stays on the branch view-bucket.
+    #[test]
+    fn set_mode_tour_keeps_origin_review_storage() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = local_pr_tab_with_remote(repo.path(), 42);
+
+        // PR Diff → managed PR bucket.
+        tab.mode = DiffMode::PrDiff;
+        tab.apply_managed_root();
+        let pr_dir = tab.er_dir();
+        assert!(
+            pr_dir.contains("prs/pr-42"),
+            "PR Diff must use PR bucket: {pr_dir}"
+        );
+
+        // Entering Tour from PR Diff: tour_is_pr + mode change must not move storage.
+        let prev_bucket = tab.review_bucket();
+        tab.tour_is_pr = true;
+        tab.mode = DiffMode::Tour;
+        assert_eq!(
+            tab.review_bucket(),
+            prev_bucket,
+            "Tour from PR Diff must keep ReviewBucket::Pr"
+        );
+        assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
+        tab.apply_managed_root();
+        assert_eq!(
+            tab.er_dir(),
+            pr_dir,
+            "Tour from PR Diff must keep the same PR er_dir"
+        );
+
+        // Local Branch → branch view-bucket.
+        tab.mode = DiffMode::Branch;
+        tab.tour_is_pr = false;
+        tab.apply_managed_root();
+        let branch_dir = tab.er_dir();
+        assert!(
+            branch_dir.contains("view-buckets/branch") && !branch_dir.contains("prs/pr-42"),
+            "Branch mode must use branch view-bucket: {branch_dir}"
+        );
+
+        // Entering Tour from Local Branch stays on the branch bucket.
+        let prev_bucket = tab.review_bucket();
+        tab.tour_is_pr = false;
+        tab.mode = DiffMode::Tour;
+        assert_eq!(tab.review_bucket(), prev_bucket);
+        assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
+        tab.apply_managed_root();
+        assert_eq!(
+            tab.er_dir(),
+            branch_dir,
+            "Tour from Local Branch must keep the branch er_dir"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
     /// Branch-scoped tour freshness must baseline against `branch_diff_hash`,
     /// never the active view's `diff_hash` — otherwise a fresh branch guide
     /// reads as stale in Unstaged/Staged/History (where `diff_hash` is a
@@ -10648,14 +10739,16 @@ mod tests {
     fn set_mode_tour_records_origin_view() {
         let mut tab = make_test_tab(vec![]);
 
-        // From PR Diff → Tour is PR-scoped.
+        // From PR Diff → Tour is PR-scoped (and uses the PR review bucket).
         tab.mode = DiffMode::PrDiff;
+        tab.pr_number = Some(1);
         tab.tour_is_pr = false;
         tab.set_mode(DiffMode::Tour);
         assert!(
             tab.tour_is_pr,
             "Tour entered from PR Diff must be PR-scoped"
         );
+        assert_eq!(tab.review_bucket(), ReviewBucket::Pr);
 
         // From the local branch → Tour is branch-scoped.
         tab.mode = DiffMode::Branch;
@@ -10664,6 +10757,7 @@ mod tests {
             !tab.tour_is_pr,
             "Tour entered from the local branch must be branch-scoped"
         );
+        assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
     }
 
     /// pr_refs_fetched starts false on all non-remote constructors and on test tabs.
