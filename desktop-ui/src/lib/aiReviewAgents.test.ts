@@ -221,7 +221,7 @@ describe("resolveAgentSummary", () => {
     expect(r.text).toBe("No line findings. 1 file assessed.");
   });
 
-  it("keeps inspect-folder message only when truly empty", () => {
+  it("keeps generic empty message only when truly empty", () => {
     const r = resolveAgentSummary(
       { summary_markdown: null, agent_summaries: {} },
       ALL_REVIEWERS,
@@ -231,7 +231,8 @@ describe("resolveAgentSummary", () => {
       0,
     );
     expect(r.text).toContain("No findings written");
-    expect(r.text).toContain(".er/");
+    expect(r.text).toContain("Reveal review files");
+    expect(r.text).not.toContain(".er/");
   });
 });
 

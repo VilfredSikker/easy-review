@@ -67,7 +67,7 @@ fn annotate_diff_command(input: &str, output: &str) -> String {
 /// Canonical review rules block (aligned with `skills/REVIEW_RULES.md`).
 ///
 /// When `prepared_diff` is false, pass `git_diff_capture` as the full step-1 shell command
-/// (e.g. `git diff main --unified=20 ... > .er/diff-tmp && shasum ...`).
+/// (e.g. `git diff main --unified=20 ... > {output_dir}/diff-tmp && shasum ...`).
 pub fn review_rules_preamble(
     output_dir: &str,
     prepared_diff: bool,
@@ -85,9 +85,10 @@ pub fn review_rules_preamble(
             "1. Run: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`\n   - Save the SHA-256 hash as `diff_hash` (do **not** run `git diff` — the diff is already prepared)"
         )
     } else {
-        let capture = git_diff_capture.unwrap_or(
-            "git diff <base> --unified=20 --no-color --no-ext-diff > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)",
+        let default_capture = format!(
+            "git diff <base> --unified=20 --no-color --no-ext-diff > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
         );
+        let capture = git_diff_capture.unwrap_or(default_capture.as_str());
         format!(
             "1. Run: `{capture}`\n   - Use a **two-dot** diff (`git diff <base>`), never three-dot (`main...HEAD`)\n   - Always `--unified=20 --no-color --no-ext-diff`\n   - Save the SHA-256 hash as `diff_hash`"
         )
@@ -1775,7 +1776,7 @@ mod tests {
 
     #[test]
     fn review_rules_preamble_no_style_category() {
-        let preamble = review_rules_preamble(".er", false, FindingCaps::general(), None);
+        let preamble = review_rules_preamble("/tmp/managed", false, FindingCaps::general(), None);
         assert!(!preamble.contains(
             "Categories: security, logic, performance, correctness, error-handling, style, testing"
         ));
@@ -1785,9 +1786,17 @@ mod tests {
     }
 
     #[test]
+    fn review_rules_preamble_default_capture_uses_output_dir_not_repo_er() {
+        let preamble = review_rules_preamble("/tmp/managed-er", false, FindingCaps::general(), None);
+        assert!(preamble.contains("'/tmp/managed-er'/diff-tmp"));
+        assert!(!preamble.contains("> .er/diff-tmp"));
+        assert!(!preamble.contains("sha256sum .er/diff-tmp"));
+    }
+
+    #[test]
     fn review_rules_preamble_expert_caps_stricter() {
-        let expert = review_rules_preamble(".er", true, FindingCaps::expert(), None);
-        let general = review_rules_preamble(".er", true, FindingCaps::general(), None);
+        let expert = review_rules_preamble("/tmp/managed", true, FindingCaps::expert(), None);
+        let general = review_rules_preamble("/tmp/managed", true, FindingCaps::general(), None);
         assert!(expert.contains("Max 2 findings per file, max 10 total"));
         assert!(general.contains("Max 4 findings per file, max 15 total"));
     }

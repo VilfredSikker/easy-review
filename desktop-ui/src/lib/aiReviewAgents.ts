@@ -160,7 +160,7 @@ export function resolveAgentSummary(
   }
 
   return {
-    text: "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill.",
+    text: "No findings written. Use Reveal review files to inspect raw output, or re-run the review.",
     markdown: false,
   };
 }
