@@ -122,11 +122,6 @@ pub fn config_dirs() -> Vec<PathBuf> {
     out
 }
 
-/// Managed review storage root (`…/easy-review`).
-pub fn data_dir() -> PathBuf {
-    storage::storage_root()
-}
-
 /// Extra app-data dirs Tauri may create under the bundle identifier.
 pub fn bundle_data_dirs() -> Vec<PathBuf> {
     let mut out = Vec::new();
@@ -163,7 +158,7 @@ pub fn plan(opts: &UninstallOptions) -> Vec<UninstallTarget> {
         }
     }
     if opts.remove_data {
-        push_unique(&mut targets, UninstallKind::Data, data_dir());
+        push_unique(&mut targets, UninstallKind::Data, storage::storage_root());
         for dir in bundle_data_dirs() {
             push_unique(&mut targets, UninstallKind::Data, dir);
         }

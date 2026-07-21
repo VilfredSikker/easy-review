@@ -61,27 +61,71 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     fi
 
     echo "er is not on PATH — removing common locations manually…"
-    echo "(best-effort path list; prefer installing er and re-running for the canonical plan)"
+    echo "(best-effort path list aligned with er-engine::uninstall categories; prefer re-running with er on PATH)"
+
+    # Mirror dirs::{ / XDG resolution used by er-engine (config / data / cache).
+    config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
+    data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
+    cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+    os="$(uname -s)"
+
+    # Collect paths in the same categories as er-engine::uninstall::plan.
+    paths=()
+    if [[ "$KEEP_CONFIG" -eq 0 ]]; then
+        paths+=("$config_home/er")
+        # Platform config dir when it differs from XDG (macOS Application Support).
+        if [[ "$os" == "Darwin" ]]; then
+            paths+=("$HOME/Library/Application Support/er")
+        fi
+    fi
+    if [[ "$KEEP_DATA" -eq 0 ]]; then
+        paths+=("$data_home/easy-review")
+        paths+=("$data_home/com.reshape.easy-review")
+        paths+=("$data_home/Easy Review")
+        paths+=("$cache_home/com.reshape.easy-review")
+        paths+=("$cache_home/Easy Review")
+        paths+=("$cache_home/er")
+        if [[ "$os" == "Darwin" ]]; then
+            paths+=("$HOME/Library/Application Support/easy-review")
+            paths+=("$HOME/Library/Application Support/com.reshape.easy-review")
+            paths+=("$HOME/Library/Application Support/Easy Review")
+            paths+=("$HOME/Library/Caches/com.reshape.easy-review")
+            paths+=("$HOME/Library/Caches/Easy Review")
+            paths+=("$HOME/Library/Caches/er")
+        fi
+    fi
+    # Engine always removes legacy ~/.cache/er (remove_cache stays true with --keep-data).
+    paths+=("$HOME/.cache/er")
+    if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
+        paths+=("$XDG_CACHE_HOME/er")
+    fi
+    if [[ "$KEEP_APPS" -eq 0 ]]; then
+        paths+=("${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er")
+        paths+=("/usr/local/bin/er" "/opt/homebrew/bin/er")
+        if [[ "$os" == "Darwin" ]]; then
+            paths+=("/Applications/Easy Review.app" "$HOME/Applications/Easy Review.app")
+        elif [[ "$os" == "Linux" ]]; then
+            paths+=("$HOME/.local/share/applications/easy-review.desktop")
+            paths+=("$HOME/.local/bin/easy-review" "/usr/local/bin/easy-review")
+        fi
+    fi
+
+    # Deduplicate while preserving order.
+    deduped=()
+    for p in "${paths[@]}"; do
+        skip=0
+        for d in "${deduped[@]+"${deduped[@]}"}"; do
+            [[ "$d" == "$p" ]] && skip=1 && break
+        done
+        [[ "$skip" -eq 0 ]] && deduped+=("$p")
+    done
+    paths=("${deduped[@]}")
+
     if [[ "$DRY_RUN" -eq 1 ]]; then
         echo "(dry-run) would remove:"
-        [[ "$KEEP_APPS" -eq 0 ]] && echo "  ${INSTALL_DIR}/er" && echo "  $HOME/.local/bin/er" && echo "  $HOME/.cargo/bin/er"
-        [[ "$KEEP_CONFIG" -eq 0 ]] && echo "  $HOME/.config/er"
-        if [[ "$KEEP_DATA" -eq 0 ]]; then
-            if [[ "$(uname -s)" == "Darwin" ]]; then
-                echo "  $HOME/Library/Application Support/easy-review"
-                echo "  $HOME/Library/Application Support/com.reshape.easy-review"
-                echo "  $HOME/Library/Application Support/Easy Review"
-                echo "  $HOME/Library/Caches/com.reshape.easy-review"
-                echo "  $HOME/Library/Caches/Easy Review"
-            fi
-            echo "  $HOME/.local/share/easy-review"
-            echo "  $HOME/.local/share/com.reshape.easy-review"
-            echo "  $HOME/.cache/er"
-        fi
-        if [[ "$KEEP_APPS" -eq 0 ]]; then
-            echo "  /Applications/Easy Review.app"
-            echo "  $HOME/Applications/Easy Review.app"
-        fi
+        for p in "${paths[@]}"; do
+            echo "  $p"
+        done
         exit 0
     fi
 
@@ -94,29 +138,11 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
         fi
     fi
 
-    if [[ "$KEEP_APPS" -eq 0 ]]; then
-        rm -f "${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er" 2>/dev/null || true
-    fi
-    if [[ "$KEEP_CONFIG" -eq 0 ]]; then
-        rm -rf "$HOME/.config/er" 2>/dev/null || true
-    fi
-    if [[ "$KEEP_DATA" -eq 0 ]]; then
-        if [[ "$(uname -s)" == "Darwin" ]]; then
-            rm -rf "$HOME/Library/Application Support/er" \
-                   "$HOME/Library/Application Support/easy-review" \
-                   "$HOME/Library/Application Support/com.reshape.easy-review" \
-                   "$HOME/Library/Application Support/Easy Review" \
-                   "$HOME/Library/Caches/com.reshape.easy-review" \
-                   "$HOME/Library/Caches/Easy Review" 2>/dev/null || true
+    for p in "${paths[@]}"; do
+        if [[ -e "$p" || -L "$p" ]]; then
+            rm -rf "$p" 2>/dev/null || true
         fi
-        rm -rf "$HOME/.local/share/easy-review" \
-               "$HOME/.local/share/com.reshape.easy-review" \
-               "$HOME/.cache/er" 2>/dev/null || true
-    fi
-    if [[ "$KEEP_APPS" -eq 0 ]]; then
-        rm -rf "/Applications/Easy Review.app" \
-               "$HOME/Applications/Easy Review.app" 2>/dev/null || true
-    fi
+    done
     echo "Done."
     exit 0
 fi

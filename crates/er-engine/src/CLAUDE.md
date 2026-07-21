@@ -17,6 +17,7 @@ to the consuming crates.
 | `sync.rs` | Pure sync core (no `App` dependency): comment merge + anchor resolution, remote diff fetch | — |
 | `config.rs` | `ErConfig`, feature flags, settings items, TOML load/save | — |
 | `storage.rs` | Managed review storage paths (repo/branch/view-bucket slugs) | — |
+| `uninstall.rs` | Plan/execute uninstall of config, managed data, cache, binaries, apps | — |
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
 | `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
 | `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |

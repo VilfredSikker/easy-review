@@ -83,7 +83,7 @@ fn install_panic_hook() {
 
 fn run_uninstall(yes: bool, dry_run: bool, opts: uninstall::UninstallOptions) -> Result<()> {
     let plan = uninstall::plan(&opts);
-    let existing: Vec<_> = plan.iter().filter(|t| t.exists).cloned().collect();
+    let existing = uninstall::existing_targets(&opts);
 
     println!("Easy Review uninstall");
     println!();

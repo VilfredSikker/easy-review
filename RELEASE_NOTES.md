@@ -9,7 +9,7 @@
 
 ## Highlights
 
-- **Uninstall.** Shared `er-engine::uninstall` plans and removes config, managed review storage, legacy cache, `er` binaries, and `Easy Review.app` (symlink-safe; defers in-use binary/.app removal with PID + start-time checks).
+- **Uninstall.** Shared `er-engine::uninstall` plans and removes config, managed review storage (including Tauri bundle data dirs), legacy cache, `er` binaries, and `Easy Review.app` (symlink-safe; defers in-use binary/.app removal with PID + start-time checks).
 - **TUI.** `er uninstall [--yes|--dry-run|--keep-data|--keep-config|--keep-apps]`.
 - **Desktop.** Settings → General → Uninstall (preview + type-to-confirm); welcome empty state can jump to uninstall.
 - **install.sh.** `install.sh --uninstall` forwards the same keep/dry-run/yes flags to `er uninstall`.
