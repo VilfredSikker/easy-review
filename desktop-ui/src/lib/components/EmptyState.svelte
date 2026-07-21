@@ -147,7 +147,7 @@
               </div>
               <div class="font-medium">Open a local repo</div>
             </div>
-            <p class="text-sm text-fg-3">Pick any git repo. Reviews are stored in <span class="mono text-fg-2">.er/</span> alongside your code.</p>
+            <p class="text-sm text-fg-3">Pick any git repo. Reviews are stored in shared Easy Review storage, not in the repo.</p>
             <div class="mt-3 text-[11px] text-muted mono">⌘O</div>
           </button>
 

@@ -126,30 +126,41 @@ export function resolveAgentSummary(
   counts: { high: number; med: number; low: number },
   fileCount: number,
   isEmpty: boolean,
+  fileRiskCount = 0,
 ): ResolvedSummary {
-  if (isEmpty) {
-    return {
-      text: "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill.",
-      markdown: false,
-    };
-  }
-
   if (useAgentScopedSummary(agentFilter)) {
     const scoped = ai.agent_summaries?.[agentFilter]?.trim();
     if (scoped) return { text: scoped, markdown: true };
-    return {
-      text: agentScopedSummaryLine(agentFilter, counts),
-      markdown: false,
-    };
+    if (!isEmpty) {
+      return {
+        text: agentScopedSummaryLine(agentFilter, counts),
+        markdown: false,
+      };
+    }
   }
 
   if (ai.summary_markdown?.trim()) {
     return { text: ai.summary_markdown.trim(), markdown: true };
   }
 
-  const total = counts.high + counts.med + counts.low;
+  if (!isEmpty) {
+    const total = counts.high + counts.med + counts.low;
+    return {
+      text: `${total} findings across ${fileCount} files.`,
+      markdown: false,
+    };
+  }
+
+  if (fileRiskCount > 0) {
+    const plural = fileRiskCount === 1 ? "file" : "files";
+    return {
+      text: `No line findings. ${fileRiskCount} ${plural} assessed.`,
+      markdown: false,
+    };
+  }
+
   return {
-    text: `${total} findings across ${fileCount} files.`,
+    text: "No findings written. Use Reveal review files to inspect raw output, or re-run the review.",
     markdown: false,
   };
 }

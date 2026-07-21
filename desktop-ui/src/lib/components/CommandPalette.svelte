@@ -79,7 +79,7 @@
       {
         id: "export-review-file",
         label: "Export review to file",
-        description: "Write markdown to .er/export.md",
+        description: "Write markdown export of the current review",
         group: "Actions",
         run: () => { close(); app.cmd("export_to_agent"); },
       },

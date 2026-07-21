@@ -179,6 +179,61 @@ describe("resolveAgentSummary", () => {
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("1 finding from Security");
   });
+
+  it("prefers summary_markdown when findings are empty", () => {
+    const r = resolveAgentSummary(
+      {
+        summary_markdown: "No correctness issues on changed lines.",
+        agent_summaries: {},
+      },
+      ALL_REVIEWERS,
+      { high: 0, med: 0, low: 0 },
+      0,
+      true,
+      15,
+    );
+    expect(r.markdown).toBe(true);
+    expect(r.text).toBe("No correctness issues on changed lines.");
+  });
+
+  it("mentions file assessments when empty findings and no summary", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      { high: 0, med: 0, low: 0 },
+      0,
+      true,
+      15,
+    );
+    expect(r.markdown).toBe(false);
+    expect(r.text).toBe("No line findings. 15 files assessed.");
+  });
+
+  it("uses singular file wording for one assessment", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      { high: 0, med: 0, low: 0 },
+      0,
+      true,
+      1,
+    );
+    expect(r.text).toBe("No line findings. 1 file assessed.");
+  });
+
+  it("keeps generic empty message only when truly empty", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      { high: 0, med: 0, low: 0 },
+      0,
+      true,
+      0,
+    );
+    expect(r.text).toContain("No findings written");
+    expect(r.text).toContain("Reveal review files");
+    expect(r.text).not.toContain(".er/");
+  });
 });
 
 describe("agentScopedSummaryLine", () => {

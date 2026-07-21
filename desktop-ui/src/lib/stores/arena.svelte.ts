@@ -239,7 +239,7 @@ class ArenaStore {
     }
   }
 
-  /** Import a completed single review into `.er/review.json` and focus the Review tab filter. */
+  /** Import a completed single review into managed review.json and focus the Review tab filter. */
   private async importSingleReviewToTab(runId: string, snap: ArenaRunSnapshot) {
     const label = agentLabelFromSnapshot(snap);
     try {
