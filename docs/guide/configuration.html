@@ -92,7 +92,7 @@ args    = [<span class="tok-str">"--print"</span>, <span class="tok-str">"--outp
     <p>
       The optional <code>[ai_hub]</code> block defines <strong>presets</strong> — multiple providers and their models —
       so you can switch at runtime without editing config. Provider <code>args</code> are the shared base; each model's
-      <code>args</code> are appended after them.
+      <code>args</code> are appended after them (OpenCode inserts model/effort flags before <code>{prompt}</code>).
     </p>
     <pre><code>[ai_hub]
 default_provider = <span class="tok-str">"claude"</span>
@@ -110,15 +110,26 @@ id    = <span class="tok-str">"sonnet-5"</span>
 label = <span class="tok-str">"Sonnet 5"</span>
 args  = [<span class="tok-str">"--model"</span>, <span class="tok-str">"claude-sonnet-5"</span>]
 effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medium"</span>, <span class="tok-str">"high"</span>, <span class="tok-str">"xhigh"</span>, <span class="tok-str">"max"</span>]
-<span class="cmt"># empty effort_levels means Auto only; support comes from metadata, not model IDs</span></code></pre>
+<span class="cmt"># empty effort_levels means Auto only; support comes from metadata, not model IDs</span>
+
+[ai_hub.providers.opencode]
+label   = <span class="tok-str">"OpenCode"</span>
+command = <span class="tok-str">"opencode"</span>
+args    = [<span class="tok-str">"run"</span>, <span class="tok-str">"--auto"</span>, <span class="tok-str">"{prompt}"</span>]
+
+[[ai_hub.providers.opencode.models]]
+id    = <span class="tok-str">"default"</span>
+label = <span class="tok-str">"Default"</span>
+args  = []
+effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medium"</span>, <span class="tok-str">"high"</span>, <span class="tok-str">"xhigh"</span>, <span class="tok-str">"max"</span>]</code></pre>
     <ul>
       <li>If <code>[ai_hub]</code> is absent, <code>er</code> falls back to the single <code>[agent]</code> config.</li>
       <li>Selection can be changed at runtime and saved globally from Desktop Settings or the TUI General settings.</li>
       <li>On load, <code>er</code> merges any missing built-in catalog models into your config <em>in memory</em> — it does
       not rewrite your file.</li>
-      <li>The current built-in catalog includes Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, and GPT-5.3 Codex Spark.</li>
+      <li>The current built-in catalog includes Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.3 Codex Spark, Cursor Grok 4.5 / Composer 2.5, and OpenCode (Default plus Anthropic / OpenAI / Google presets).</li>
       <li>The selected default provider/model applies to every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Explicit review-run selections apply only to that run.</li>
-      <li>Built-in Claude, Codex, and Cursor Agent launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/</code>; custom provider commands are left unchanged.</li>
+      <li>Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/</code>; OpenCode uses <code>--auto</code> plus an <code>OPENCODE_PERMISSION</code> object that denies other external paths and allows only the active review bucket. Card AI keeps <code>--auto</code> with a read-only permission object. Custom provider commands are left unchanged.</li>
     </ul>
 
     <h2><code>[summary]</code> — diff summaries</h2>

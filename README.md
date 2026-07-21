@@ -53,11 +53,11 @@ See [Installation](https://vilfredsikker.github.io/easy-review/guide/installatio
 
 ## MCP server (`er-mcp`)
 
-A stdio [MCP](https://modelcontextprotocol.io) server for PR triage from Cursor/Claude/Codex — top priority PRs,
+A stdio [MCP](https://modelcontextprotocol.io) server for PR triage from Cursor/Claude/Codex/OpenCode — top priority PRs,
 low-hanging fruit, production-only diff line counts, and client-owned AI sidecar upload.
 
 **Setup guide:** [MCP Server Setup](https://vilfredsikker.github.io/easy-review/guide/mcp.html)
-(also in-repo: [`docs/guide/mcp.html`](docs/guide/mcp.html)) — `claude mcp add` / `codex mcp add` and `mcp.json`.
+(also in-repo: [`docs/guide/mcp.html`](docs/guide/mcp.html)) — `claude mcp add` / `codex mcp add`, Cursor `mcp.json`, and OpenCode `opencode.json`.
 
 ```bash
 # MCP via npm

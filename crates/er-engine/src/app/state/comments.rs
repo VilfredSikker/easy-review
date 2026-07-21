@@ -2259,10 +2259,14 @@ impl App {
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    args.extend(model.args.clone());
+                    crate::config::extend_provider_model_args(
+                        &provider.command,
+                        &mut args,
+                        &model.args,
+                    );
                 }
             }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&provider.command);
             let is_codex = crate::config::agent_command_is_codex(&provider.command);
             (
                 provider.command.clone(),
@@ -2275,7 +2279,7 @@ impl App {
             )
         } else {
             let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             (
                 cmd.clone(),
@@ -2306,6 +2310,11 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_agent_storage_access(
+            &agent_cmd,
+            &mut config_args,
+            Some(er_dir_path.as_str()),
+        );
+        let opencode_env = crate::config::apply_opencode_spawn(
             &agent_cmd,
             &mut config_args,
             Some(er_dir_path.as_str()),
@@ -2381,11 +2390,15 @@ impl App {
                 // In remote mode, run from the cache dir so relative paths resolve there.
                 // The agent fetches the diff via `gh` — no local repo access needed.
                 let work_dir = if is_remote { &er_dir_path } else { &repo_root };
-                let mut child = std::process::Command::new(&agent_cmd)
-                    .args(&agent_args)
+                let mut cmd = std::process::Command::new(&agent_cmd);
+                cmd.args(&agent_args)
                     .current_dir(work_dir)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                if let Some((key, value)) = &opencode_env {
+                    cmd.env(key, value);
+                }
+                let mut child = cmd
                     .spawn()
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
 
@@ -2593,6 +2606,10 @@ impl App {
     ) -> Result<()> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
+        if target.repo_root.is_empty() && target.remote_repo.is_none() {
+            anyhow::bail!("Open a repository or PR first — nothing to review yet");
+        }
+
         let already_active = self.background_tasks.values().any(|h| {
             h.task.kind == kind
                 && h.task.target == target
@@ -2697,10 +2714,14 @@ impl App {
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    args.extend(model.args.clone());
+                    crate::config::extend_provider_model_args(
+                        &provider.command,
+                        &mut args,
+                        &model.args,
+                    );
                 }
             }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&provider.command);
             let is_codex = crate::config::agent_command_is_codex(&provider.command);
             (
                 provider.command.clone(),
@@ -2713,7 +2734,7 @@ impl App {
             )
         } else {
             let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             (
                 cmd.clone(),
@@ -2725,6 +2746,7 @@ impl App {
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
             )
         };
+
         let effort_override = if task.kind == "triage" {
             Some("low")
         } else {
@@ -2748,6 +2770,11 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_agent_storage_access(
+            &agent_cmd,
+            &mut config_args,
+            Some(target.er_dir.as_str()),
+        );
+        let opencode_env = crate::config::apply_opencode_spawn(
             &agent_cmd,
             &mut config_args,
             Some(target.er_dir.as_str()),
@@ -2846,11 +2873,15 @@ impl App {
                 } else {
                     &er_dir
                 };
-                let mut child = std::process::Command::new(&agent_cmd)
-                    .args(&agent_args)
+                let mut cmd = std::process::Command::new(&agent_cmd);
+                cmd.args(&agent_args)
                     .current_dir(work_dir)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped());
+                if let Some((key, value)) = &opencode_env {
+                    cmd.env(key, value);
+                }
+                let mut child = cmd
                     .spawn()
                     .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
 
@@ -2919,10 +2950,44 @@ impl App {
                 let _ = std::fs::write(&debug_path, &debug_content);
 
                 if !status.success() {
-                    anyhow::bail!(
-                        "{command_name_fail} failed (see {}/debug-agent.log)",
-                        er_dir
-                    );
+                    let stderr_snip = {
+                        let joined = stderr_lines.join("\n");
+                        let trimmed = joined.trim();
+                        if trimmed.is_empty() {
+                            String::new()
+                        } else {
+                            // Char-safe: agent stderr often includes multi-byte text.
+                            let max_chars = 280usize;
+                            if trimmed.chars().count() <= max_chars {
+                                trimmed.to_string()
+                            } else {
+                                let boundary = trimmed
+                                    .char_indices()
+                                    .nth(max_chars)
+                                    .map(|(i, _)| i)
+                                    .unwrap_or(trimmed.len());
+                                format!("{}…", &trimmed[..boundary])
+                            }
+                        }
+                    };
+                    if stderr_snip.to_lowercase().contains("not logged in")
+                        || stderr_snip.to_lowercase().contains("authentication")
+                        || stderr_snip.to_lowercase().contains("unauthorized")
+                        || stderr_snip.to_lowercase().contains("not authenticated")
+                    {
+                        anyhow::bail!(
+                            "{command_name_fail}: `{agent_cmd}` needs authentication. \
+                             Run `{agent_cmd}` in a terminal to sign in, then retry. {stderr_snip}"
+                        );
+                    }
+                    if stderr_snip.is_empty() {
+                        anyhow::bail!(
+                            "{command_name_fail} failed (exit {:?}). See Settings → AI Hub if the \
+                             provider CLI is missing or not signed in.",
+                            status.code()
+                        );
+                    }
+                    anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
                 Ok(())
             })();

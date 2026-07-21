@@ -32,6 +32,18 @@ Point your client at it instead, for example:
   Codex:
     codex mcp add easy-review -- npx -y easy-review-mcp
 
+  OpenCode (~/.config/opencode/opencode.json):
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "mcp": {
+        "easy-review": {
+          "type": "local",
+          "command": ["npx", "-y", "easy-review-mcp"],
+          "enabled": true
+        }
+      }
+    }
+
 Docs: https://vilfredsikker.github.io/easy-review/guide/mcp.html`);
 }
 

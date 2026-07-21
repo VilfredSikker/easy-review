@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>MCP server setup — easy-review docs</title>
-  <meta name="description" content="Install and configure the Easy Review MCP server (er-mcp) in Claude Code, Cursor, and Codex. mcp.json examples and one-line add commands.">
+  <meta name="description" content="Install and configure the Easy Review MCP server (er-mcp) in Claude Code, Cursor, Codex, and OpenCode. mcp.json examples and one-line add commands.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
@@ -13,7 +13,7 @@
     <h1>MCP server setup</h1>
     <p class="lead">
       <code>er-mcp</code> is a local stdio <a href="https://modelcontextprotocol.io" target="_blank" rel="noopener">MCP</a>
-      server. Ask Claude Code, Cursor, or Codex for priority PRs, production-only diff size, blocked/stale filters,
+      server. Ask Claude Code, Cursor, Codex, or OpenCode for priority PRs, production-only diff size, blocked/stale filters,
       and to prepare/upload AI review sidecars into the same managed storage Desktop/TUI use.
     </p>
 
@@ -83,6 +83,35 @@ mkdir -p ~/.cursor
 mkdir -p .cursor
 <span class="cmt"># then edit .cursor/mcp.json</span></code></pre>
 
+    <h3>OpenCode</h3>
+    <p>
+      OpenCode configures MCP servers in <code>opencode.json</code>
+      (<code>~/.config/opencode/opencode.json</code> globally, or project-local).
+      You can also run <code>opencode mcp add</code> and follow the prompts.
+    </p>
+    <pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "easy-review": {
+      "type": "local",
+      "command": ["npx", "-y", "easy-review-mcp"],
+      "enabled": true
+    }
+  }
+}</code></pre>
+    <p>Source-built binary variant:</p>
+    <pre><code>{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "easy-review": {
+      "type": "local",
+      "command": ["/absolute/path/to/er-mcp"],
+      "enabled": true
+    }
+  }
+}</code></pre>
+    <p>List configured servers with <code>opencode mcp list</code>.</p>
+
     <h2><code>mcp.json</code> structure</h2>
     <p>Same shape for Cursor global (<code>~/.cursor/mcp.json</code>), Cursor project (<code>.cursor/mcp.json</code>),
     and Claude project scope (<code>.mcp.json</code> at the repo root).</p>
@@ -137,6 +166,11 @@ mkdir -p .cursor
           <td><strong>Codex</strong></td>
           <td><code>~/.codex/config.toml</code> (<code>[mcp_servers.easy-review]</code>)</td>
           <td>Prefer <code>codex mcp add</code>. CLI / IDE / ChatGPT desktop share this host config.</td>
+        </tr>
+        <tr>
+          <td><strong>OpenCode</strong></td>
+          <td><code>~/.config/opencode/opencode.json</code> (global)<br>project <code>opencode.json</code></td>
+          <td>Local MCP under <code>mcp.&lt;name&gt;</code> with <code>type: "local"</code> and a <code>command</code> array. <code>opencode mcp list</code>.</td>
         </tr>
       </tbody>
     </table>
