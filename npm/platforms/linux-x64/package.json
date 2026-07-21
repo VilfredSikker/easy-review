@@ -1,6 +1,6 @@
 {
   "name": "easy-review-mcp-linux-x64",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "Prebuilt er-mcp binary for linux-x64. Installed automatically as an optional dependency of easy-review-mcp.",
   "license": "MIT",
   "repository": {

@@ -1,6 +1,6 @@
 {
   "name": "easy-review-mcp",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "description": "npx launcher for the Easy Review MCP server (er-mcp). Installs the prebuilt binary via platform-specific optional dependencies; falls back to GitHub Releases.",
   "license": "MIT",
   "repository": {
@@ -33,9 +33,9 @@
     "node": ">=18"
   },
   "optionalDependencies": {
-    "easy-review-mcp-darwin-arm64": "0.4.5",
-    "easy-review-mcp-darwin-x64": "0.4.5",
-    "easy-review-mcp-linux-x64": "0.4.5"
+    "easy-review-mcp-darwin-arm64": "0.4.6",
+    "easy-review-mcp-darwin-x64": "0.4.6",
+    "easy-review-mcp-linux-x64": "0.4.6"
   },
   "scripts": {
     "test": "node --test lib/*.test.js",
