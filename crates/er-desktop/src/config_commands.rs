@@ -162,25 +162,6 @@ pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, Str
 
 // ── Uninstall ───────────────────────────────────────────────────────────────
 
-#[derive(serde::Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
-pub struct UninstallRequest {
-    #[serde(default = "default_true")]
-    pub remove_config: bool,
-    #[serde(default = "default_true")]
-    pub remove_data: bool,
-    #[serde(default = "default_true")]
-    pub remove_cache: bool,
-    #[serde(default = "default_true")]
-    pub remove_binaries: bool,
-    #[serde(default = "default_true")]
-    pub remove_desktop_app: bool,
-}
-
-fn default_true() -> bool {
-    true
-}
-
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallTargetDto {
@@ -208,91 +189,89 @@ pub struct UninstallResult {
     pub should_quit: bool,
 }
 
-fn options_from_request(req: &UninstallRequest) -> er_engine::uninstall::UninstallOptions {
-    er_engine::uninstall::UninstallOptions {
-        remove_config: req.remove_config,
-        remove_data: req.remove_data,
-        remove_cache: req.remove_cache,
-        remove_binaries: req.remove_binaries,
-        remove_desktop_app: req.remove_desktop_app,
-    }
-}
-
 #[tauri::command]
-pub fn preview_uninstall(request: Option<UninstallRequest>) -> Result<UninstallPreview, String> {
-    let req = request.unwrap_or_default();
-    let opts = options_from_request(&req);
-    let targets = er_engine::uninstall::plan(&opts);
-    let existing_count = targets.iter().filter(|t| t.exists).count();
-    Ok(UninstallPreview {
-        targets: targets
-            .into_iter()
-            .map(|t| UninstallTargetDto {
-                kind: t.kind.label().to_string(),
-                path: t.path.display().to_string(),
-                exists: t.exists,
-                description: t.description(),
-            })
-            .collect(),
-        existing_count,
+pub async fn preview_uninstall(
+    request: Option<er_engine::uninstall::UninstallOptions>,
+) -> Result<UninstallPreview, String> {
+    crate::commands::run_blocking(move || {
+        let opts = request.unwrap_or_default();
+        let targets = er_engine::uninstall::plan(&opts);
+        let existing_count = targets.iter().filter(|t| t.exists).count();
+        Ok(UninstallPreview {
+            targets: targets
+                .into_iter()
+                .map(|t| UninstallTargetDto {
+                    kind: t.kind.label().to_string(),
+                    path: t.path.display().to_string(),
+                    exists: t.exists,
+                    description: t.description(),
+                })
+                .collect(),
+            existing_count,
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn run_uninstall(
+pub async fn run_uninstall(
     app_handle: tauri::AppHandle,
-    request: Option<UninstallRequest>,
+    request: Option<er_engine::uninstall::UninstallOptions>,
 ) -> Result<UninstallResult, String> {
-    let req = request.unwrap_or_default();
-    let opts = options_from_request(&req);
-    let existing = er_engine::uninstall::existing_targets(&opts);
-    if existing.is_empty() {
-        return Ok(UninstallResult {
-            removed: vec![],
-            deferred: vec![],
-            missing: vec![],
-            failed: vec![],
-            should_quit: false,
-        });
-    }
+    let result = crate::commands::run_blocking(move || {
+        let opts = request.unwrap_or_default();
+        let existing = er_engine::uninstall::existing_targets(&opts);
+        if existing.is_empty() {
+            return Ok(UninstallResult {
+                removed: vec![],
+                deferred: vec![],
+                missing: vec![],
+                failed: vec![],
+                should_quit: false,
+            });
+        }
 
-    let report = er_engine::uninstall::execute(&existing);
-    if !report.deferred.is_empty() {
-        er_engine::uninstall::schedule_deferred_removal(&report.deferred)
-            .map_err(|e| format!("Could not schedule removal of in-use paths: {e}"))?;
-    }
+        let report = er_engine::uninstall::execute(&existing);
+        if !report.deferred.is_empty() {
+            if let Err(e) = er_engine::uninstall::schedule_deferred_removal(&report.deferred) {
+                let msg = format!("Could not schedule removal of in-use paths: {e}");
+                log::error!("run_uninstall: {msg}");
+                return Err(msg);
+            }
+        }
 
-    let result = UninstallResult {
-        removed: report
-            .removed
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
-        deferred: report
-            .deferred
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
-        missing: report
-            .missing
-            .iter()
-            .map(|p| p.display().to_string())
-            .collect(),
-        failed: report
-            .failed
-            .iter()
-            .map(|(p, e)| format!("{}: {e}", p.display()))
-            .collect(),
-        // Must quit whenever deferred deletes were scheduled — otherwise the
-        // waiter never sees this PID exit.
-        should_quit: report.is_success() || !report.deferred.is_empty(),
-    };
+        Ok(UninstallResult {
+            removed: report
+                .removed
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            deferred: report
+                .deferred
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            missing: report
+                .missing
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
+            failed: report
+                .failed
+                .iter()
+                .map(|(p, e)| format!("{}: {e}", p.display()))
+                .collect(),
+            // Must quit whenever deferred deletes were scheduled — otherwise the
+            // waiter never sees this PID exit.
+            should_quit: report.is_success() || !report.deferred.is_empty(),
+        })
+    })
+    .await?;
 
-    if !report.is_success() && !result.should_quit {
-        return Err(format!(
-            "Uninstall failed:\n{}",
-            result.failed.join("\n")
-        ));
+    if !result.failed.is_empty() && !result.should_quit {
+        let msg = format!("Uninstall failed:\n{}", result.failed.join("\n"));
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
     }
 
     if result.should_quit {
@@ -303,11 +282,13 @@ pub fn run_uninstall(
         });
     }
 
-    if !report.is_success() {
-        return Err(format!(
+    if !result.failed.is_empty() {
+        let msg = format!(
             "Uninstall partially failed (quitting so in-use paths can be removed):\n{}",
             result.failed.join("\n")
-        ));
+        );
+        log::error!("run_uninstall: {msg}");
+        return Err(msg);
     }
 
     Ok(result)

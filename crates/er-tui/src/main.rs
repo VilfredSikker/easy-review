@@ -81,21 +81,7 @@ fn install_panic_hook() {
     }));
 }
 
-fn run_uninstall(
-    yes: bool,
-    dry_run: bool,
-    keep_data: bool,
-    keep_config: bool,
-    keep_apps: bool,
-) -> Result<()> {
-    let opts = uninstall::UninstallOptions {
-        remove_config: !keep_config,
-        remove_data: !keep_data,
-        remove_cache: true,
-        remove_binaries: !keep_apps,
-        remove_desktop_app: !keep_apps,
-    };
-
+fn run_uninstall(yes: bool, dry_run: bool, opts: uninstall::UninstallOptions) -> Result<()> {
     let plan = uninstall::plan(&opts);
     let existing: Vec<_> = plan.iter().filter(|t| t.exists).cloned().collect();
 
@@ -170,7 +156,14 @@ fn main() -> Result<()> {
         keep_apps,
     }) = cli.command
     {
-        return run_uninstall(yes, dry_run, keep_data, keep_config, keep_apps);
+        let opts = uninstall::UninstallOptions {
+            remove_config: !keep_config,
+            remove_data: !keep_data,
+            remove_cache: true,
+            remove_binaries: !keep_apps,
+            remove_desktop_app: !keep_apps,
+        };
+        return run_uninstall(yes, dry_run, opts);
     }
 
     // Reject conflicting --pr and PR URL arguments

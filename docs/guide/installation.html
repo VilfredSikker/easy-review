@@ -111,9 +111,10 @@ cd easy-review
 er uninstall --yes        <span class="cmt"># no prompt</span>
 er uninstall --dry-run    <span class="cmt"># list paths only</span>
 er uninstall --keep-data  <span class="cmt"># leave review storage</span>
+er uninstall --keep-config <span class="cmt"># leave ~/.config/er</span>
 er uninstall --keep-apps  <span class="cmt"># leave binaries / .app</span></code></pre>
     <p>
-      Or re-run the install script with <code>--uninstall</code>:
+      Or re-run the install script with <code>--uninstall</code> (same keep/dry-run flags are forwarded):
     </p>
     <pre><code>curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --uninstall</code></pre>
 
@@ -133,9 +134,9 @@ er uninstall --keep-apps  <span class="cmt"># leave binaries / .app</span></code
 
     <h2 id="mcp-server">MCP server (<code>er-mcp</code>)</h2>
     <p>
-      Optional local MCP server for Claude Code, Cursor, Codex, and OpenCode — PR triage queues and AI sidecar upload into
+      Optional local MCP server for Claude Code, Cursor, and Codex — PR triage queues and AI sidecar upload into
       shared managed storage. Full setup (one-line <code>claude mcp add</code> / <code>codex mcp add</code>, plus
-      <code>mcp.json</code> for Cursor and <code>opencode.json</code> for OpenCode): <a href="mcp.html">MCP Server Setup</a>.
+      <code>mcp.json</code> for Cursor): <a href="mcp.html">MCP Server Setup</a>.
     </p>
     <pre><code>cargo install --path crates/er-mcp</code></pre>
   </main>

@@ -45,7 +45,8 @@ impl UninstallTarget {
 }
 
 /// Options controlling which uninstall categories are included.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
 pub struct UninstallOptions {
     pub remove_config: bool,
     pub remove_data: bool,
@@ -105,26 +106,17 @@ impl UninstallReport {
     }
 }
 
-/// Global config directory (`~/.config/er` or platform equivalent).
-pub fn config_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("er"));
-        }
-    }
-    dirs::config_dir().map(|d| d.join("er"))
-}
-
-/// All known config directory locations (platform dir + legacy `~/.config/er`).
+/// All known config directory locations (shared resolver + platform config dir).
 pub fn config_dirs() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    if let Some(dir) = config_dir() {
+    if let Some(dir) = crate::config::global_config_dir() {
         out.push(dir);
     }
-    if let Some(home) = dirs::home_dir() {
-        let legacy = home.join(".config").join("er");
-        if !out.iter().any(|d| paths_same(d, &legacy)) {
-            out.push(legacy);
+    // Also cover the platform config dir when it differs from XDG/HOME resolution
+    // (e.g. macOS `~/Library/Application Support/er`).
+    if let Some(platform) = dirs::config_dir().map(|d| d.join("er")) {
+        if !out.iter().any(|d| paths_same(d, &platform)) {
+            out.push(platform);
         }
     }
     out
@@ -358,10 +350,10 @@ fn paths_same(a: &Path, b: &Path) -> bool {
 }
 
 /// Remove the given targets. Paths that are the currently running executable or its
-/// enclosing `.app` are scheduled for deferred deletion after this process exits.
+/// enclosing `.app` are returned in [`UninstallReport::deferred`] — callers must
+/// [`schedule_deferred_removal`] then exit so the waiter can finish.
 pub fn execute(targets: &[UninstallTarget]) -> UninstallReport {
     let mut report = UninstallReport::default();
-    let mut deferred = Vec::new();
 
     let current_exe = std::env::current_exe().ok().map(|p| canonicalize_best_effort(&p));
     let current_app = current_exe
@@ -383,26 +375,13 @@ pub fn execute(targets: &[UninstallTarget]) -> UninstallReport {
             .is_some_and(|app| paths_same(app, path));
 
         if is_self_binary || is_self_app {
-            deferred.push(path.clone());
+            report.deferred.push(path.clone());
             continue;
         }
 
         match remove_path(path) {
             Ok(()) => report.removed.push(path.clone()),
             Err(e) => report.failed.push((path.clone(), e.to_string())),
-        }
-    }
-
-    if !deferred.is_empty() {
-        match schedule_deferred_removal(&deferred) {
-            Ok(()) => report.deferred.extend(deferred),
-            Err(e) => {
-                for path in deferred {
-                    report
-                        .failed
-                        .push((path, format!("could not schedule removal: {e}")));
-                }
-            }
         }
     }
 
@@ -427,8 +406,12 @@ fn remove_path(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Schedule path removals after this process exits (PID wait), so a quick relaunch
-/// does not race a fixed-delay `rm`.
+/// Schedule path removals after this process exits.
+///
+/// Waits until our PID is gone **or** the process start-time no longer matches
+/// the token captured at schedule time (PID reuse), then `rm -rf`. A timeout
+/// without either condition skips deletion so an unrelated process that reused
+/// the PID is never waited out into a blind delete.
 pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
     if paths.is_empty() {
         return Ok(());
@@ -438,17 +421,26 @@ pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
 
     #[cfg(unix)]
     {
+        let start = process_start_token_unix(pid).unwrap_or_default();
+        let start_q = shell_single_quote(&start);
         let quoted: Vec<String> = paths
             .iter()
             .map(|p| shell_single_quote(&p.to_string_lossy()))
             .collect();
         let joined = quoted.join(" ");
-        // Wait until our PID is gone (or 60s), then remove. Avoids deleting a
-        // freshly relaunched app that reused the same bundle path.
+        // Exit the wait loop when: PID gone, start-time mismatch (reuse), or
+        // timeout. Only delete when PID is gone or start-time mismatched —
+        // never after a blind timeout while the original-looking PID still runs.
         let script = format!(
-            "pid={pid}; i=0; while kill -0 \"$pid\" 2>/dev/null; do \
+            "pid={pid}; start={start_q}; i=0; do_rm=0; \
+             while kill -0 \"$pid\" 2>/dev/null; do \
+               cur=$(ps -p \"$pid\" -o lstart= 2>/dev/null || true); \
+               if [ -n \"$start\" ] && [ \"$cur\" != \"$start\" ]; then do_rm=1; break; fi; \
                i=$((i+1)); [ \"$i\" -gt 120 ] && break; sleep 0.5; \
-             done; rm -rf {joined}"
+             done; \
+             if [ \"$do_rm\" -eq 1 ] || ! kill -0 \"$pid\" 2>/dev/null; then \
+               rm -rf {joined}; \
+             fi"
         );
         Command::new("sh")
             .arg("-c")
@@ -465,15 +457,41 @@ pub fn schedule_deferred_removal(paths: &[PathBuf]) -> std::io::Result<()> {
             .collect();
         let joined = list.join(",");
         let script = format!(
-            "$pid={pid}; for ($i=0; $i -lt 120; $i++) {{ \
-               try {{ Get-Process -Id $pid -ErrorAction Stop | Out-Null; Start-Sleep -Milliseconds 500 }} \
-               catch {{ break }} \
-             }}; @({joined}) | ForEach-Object {{ if (Test-Path $_) {{ Remove-Item -LiteralPath $_ -Recurse -Force }} }}"
+            "$pid={pid}; \
+             $proc = Get-Process -Id $pid -ErrorAction SilentlyContinue; \
+             $start = if ($proc) {{ $proc.StartTime }} else {{ $null }}; \
+             $doRm = $false; \
+             for ($i=0; $i -lt 120; $i++) {{ \
+               $p = Get-Process -Id $pid -ErrorAction SilentlyContinue; \
+               if (-not $p) {{ $doRm = $true; break }}; \
+               if ($start -and $p.StartTime -ne $start) {{ $doRm = $true; break }}; \
+               Start-Sleep -Milliseconds 500 \
+             }}; \
+             if ($doRm) {{ \
+               @({joined}) | ForEach-Object {{ if (Test-Path $_) {{ Remove-Item -LiteralPath $_ -Recurse -Force }} }} \
+             }}"
         );
         Command::new("powershell")
             .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
             .spawn()?;
         Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn process_start_token_unix(pid: u32) -> Option<String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "lstart="])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
     }
 }
 

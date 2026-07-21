@@ -61,7 +61,7 @@
   }
 
   function connectGitHub() {
-    void openExternalUrl("https://cli.github.com/");
+    void openExternalUrl("https://github.com/login");
   }
 
   function openSettings() {
@@ -141,7 +141,7 @@
         class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-3 flex items-center gap-2"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
-        Install GitHub CLI
+        Connect GitHub
       </button>
       <button
         type="button"
@@ -178,7 +178,7 @@
               </div>
               <div class="font-medium">Open a local repo</div>
             </div>
-            <p class="text-sm text-fg-3">Pick any git repo. Reviews are stored in app data — nothing is written into your project.</p>
+            <p class="text-sm text-fg-3">Pick any git repo. Reviews are stored in <span class="mono text-fg-2">.er/</span> alongside your code.</p>
             <div class="mt-3 text-[11px] text-muted mono">⌘O</div>
           </button>
 

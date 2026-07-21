@@ -909,19 +909,31 @@ pub fn split_shell_args(s: &str) -> Vec<String> {
     args
 }
 
+/// Global config directory (`$XDG_CONFIG_HOME/er`, else `~/.config/er`, else
+/// the platform config dir). Shared by load/save and uninstall planning.
+pub fn global_config_dir() -> Option<std::path::PathBuf> {
+    if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
+        if !xdg.is_empty() {
+            return Some(std::path::PathBuf::from(xdg).join("er"));
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        if !home.is_empty() {
+            return Some(std::path::PathBuf::from(home).join(".config").join("er"));
+        }
+    }
+    dirs::config_dir().map(|d| d.join("er"))
+}
+
 /// Load the global config (~/.config/er/config.toml).
 pub fn load_global_config() -> ErConfig {
-    let global_path = std::env::var("XDG_CONFIG_HOME")
-        .ok()
-        .map(|xdg| format!("{xdg}/er/config.toml"))
+    let global_path = global_config_dir()
+        .map(|d| d.join("config.toml"))
+        .filter(|p| p.exists())
         .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|h| format!("{h}/.config/er/config.toml"))
-        })
-        .filter(|p| std::path::Path::new(p).exists())
-        .or_else(|| {
-            dirs::config_dir().map(|d| d.join("er/config.toml").to_string_lossy().to_string())
+            dirs::config_dir()
+                .map(|d| d.join("er").join("config.toml"))
+                .filter(|p| p.exists())
         });
 
     let global_table = global_path
@@ -938,17 +950,8 @@ pub fn load_global_config() -> ErConfig {
 
 /// Save config to the global config dir (~/.config/er/config.toml).
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let dir = std::env::var("XDG_CONFIG_HOME")
-        .map(|xdg| std::path::PathBuf::from(format!("{xdg}/er")))
-        .or_else(|_| {
-            std::env::var("HOME").map(|h| std::path::PathBuf::from(format!("{h}/.config/er")))
-        })
-        .or_else(|_| {
-            dirs::config_dir()
-                .map(|d| d.join("er"))
-                .ok_or(std::env::VarError::NotPresent)
-        })
-        .map_err(|_| anyhow::anyhow!("Could not determine config directory"))?;
+    let dir = global_config_dir()
+        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
     std::fs::create_dir_all(&dir)?;
     let path = dir.join("config.toml");
     let tmp_path = dir.join("config.toml.tmp");

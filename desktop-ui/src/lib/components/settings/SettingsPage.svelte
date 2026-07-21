@@ -181,13 +181,21 @@
     }
   }
 
+  const fullUninstallRequest = {
+    removeConfig: true,
+    removeData: true,
+    removeCache: true,
+    removeBinaries: true,
+    removeDesktopApp: true,
+  };
+
   async function loadUninstallPreview() {
     uninstallLoading = true;
     try {
       const res = await invoke<{
         targets: { kind: string; path: string; exists: boolean; description: string }[];
         existingCount: number;
-      }>("preview_uninstall", { request: null });
+      }>("preview_uninstall", { request: fullUninstallRequest });
       uninstallPreview = res;
     } catch (e) {
       app.showToast("error", `preview_uninstall: ${e}`);
@@ -200,7 +208,7 @@
     if (uninstallTyped.trim() !== "uninstall") return;
     uninstallBusy = true;
     try {
-      await invoke("run_uninstall", { request: null });
+      await invoke("run_uninstall", { request: fullUninstallRequest });
       app.showToast("success", "Easy Review removed — quitting…");
     } catch (e) {
       app.showToast("error", String(e));

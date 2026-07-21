@@ -3,16 +3,16 @@
 ## In plain terms
 
 - **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
-- **What changed.** First-time setup and uninstall: welcome-screen access to settings/uninstall, and a shared uninstall path for TUI, Desktop, and `install.sh`.
-- **Why it matters.** New users can finish setup and leave cleanly without hunting for config or leftover review data.
+- **What changed.** Uninstall support across TUI, Desktop, and `install.sh`, with welcome/settings entry points.
+- **Why it matters.** You can leave cleanly without hunting for config or leftover review data.
 - **TL;DR.** `er uninstall`, Desktop Settings → Uninstall, and `install.sh --uninstall` remove config, managed data, cache, and apps.
 
 ## Highlights
 
-- **Uninstall.** Shared `er-engine::uninstall` plans and removes config, managed review storage, legacy cache, `er` binaries, and `Easy Review.app` (symlink-safe; defers in-use binary/.app removal).
+- **Uninstall.** Shared `er-engine::uninstall` plans and removes config, managed review storage, legacy cache, `er` binaries, and `Easy Review.app` (symlink-safe; defers in-use binary/.app removal with PID + start-time checks).
 - **TUI.** `er uninstall [--yes|--dry-run|--keep-data|--keep-config|--keep-apps]`.
 - **Desktop.** Settings → General → Uninstall (preview + type-to-confirm); welcome empty state can jump to uninstall.
-- **install.sh.** `install.sh --uninstall` mirrors the CLI options.
+- **install.sh.** `install.sh --uninstall` forwards the same keep/dry-run/yes flags to `er uninstall`.
 
 ## What's Changed
 

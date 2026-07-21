@@ -15,6 +15,10 @@ usage() {
     echo "  --dir DIR           Install directory (default: ~/.local/bin)"
     echo "  --uninstall         Remove er binary, config, and review data"
     echo "  --yes               Skip uninstall confirmation"
+    echo "  --dry-run           List uninstall paths without deleting"
+    echo "  --keep-data         Keep managed review storage"
+    echo "  --keep-config       Keep ~/.config/er"
+    echo "  --keep-apps         Keep the er binary and desktop app"
     echo "  --help              Show this help"
     echo ""
     echo "Examples:"
@@ -25,6 +29,10 @@ usage() {
 
 UNINSTALL=0
 YES=0
+DRY_RUN=0
+KEEP_DATA=0
+KEEP_CONFIG=0
+KEEP_APPS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -32,6 +40,10 @@ while [[ $# -gt 0 ]]; do
         --dir) INSTALL_DIR="$2"; shift 2 ;;
         --uninstall) UNINSTALL=1; shift ;;
         --yes|-y) YES=1; shift ;;
+        --dry-run) DRY_RUN=1; shift ;;
+        --keep-data) KEEP_DATA=1; shift ;;
+        --keep-config) KEEP_CONFIG=1; shift ;;
+        --keep-apps) KEEP_APPS=1; shift ;;
         --help) usage; exit 0 ;;
         *) echo "Unknown option: $1"; usage; exit 1 ;;
     esac
@@ -39,28 +51,72 @@ done
 
 if [[ "$UNINSTALL" -eq 1 ]]; then
     if command -v er >/dev/null 2>&1; then
-        if [[ "$YES" -eq 1 ]]; then
-            exec er uninstall --yes
-        else
-            exec er uninstall
+        args=(uninstall)
+        [[ "$YES" -eq 1 ]] && args+=(--yes)
+        [[ "$DRY_RUN" -eq 1 ]] && args+=(--dry-run)
+        [[ "$KEEP_DATA" -eq 1 ]] && args+=(--keep-data)
+        [[ "$KEEP_CONFIG" -eq 1 ]] && args+=(--keep-config)
+        [[ "$KEEP_APPS" -eq 1 ]] && args+=(--keep-apps)
+        exec er "${args[@]}"
+    fi
+
+    echo "er is not on PATH — removing common locations manually…"
+    echo "(best-effort path list; prefer installing er and re-running for the canonical plan)"
+    if [[ "$DRY_RUN" -eq 1 ]]; then
+        echo "(dry-run) would remove:"
+        [[ "$KEEP_APPS" -eq 0 ]] && echo "  ${INSTALL_DIR}/er" && echo "  $HOME/.local/bin/er" && echo "  $HOME/.cargo/bin/er"
+        [[ "$KEEP_CONFIG" -eq 0 ]] && echo "  $HOME/.config/er"
+        if [[ "$KEEP_DATA" -eq 0 ]]; then
+            if [[ "$(uname -s)" == "Darwin" ]]; then
+                echo "  $HOME/Library/Application Support/easy-review"
+                echo "  $HOME/Library/Application Support/com.reshape.easy-review"
+                echo "  $HOME/Library/Application Support/Easy Review"
+                echo "  $HOME/Library/Caches/com.reshape.easy-review"
+                echo "  $HOME/Library/Caches/Easy Review"
+            fi
+            echo "  $HOME/.local/share/easy-review"
+            echo "  $HOME/.local/share/com.reshape.easy-review"
+            echo "  $HOME/.cache/er"
+        fi
+        if [[ "$KEEP_APPS" -eq 0 ]]; then
+            echo "  /Applications/Easy Review.app"
+            echo "  $HOME/Applications/Easy Review.app"
+        fi
+        exit 0
+    fi
+
+    if [[ "$YES" -ne 1 ]]; then
+        printf "Type uninstall to confirm: "
+        read -r confirm
+        if [[ "$confirm" != "uninstall" ]]; then
+            echo "Cancelled."
+            exit 0
         fi
     fi
-    echo "er is not on PATH — removing common locations manually…"
-    rm -f "${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er" 2>/dev/null || true
-    rm -rf "$HOME/.config/er" 2>/dev/null || true
-    if [[ "$(uname -s)" == "Darwin" ]]; then
-        rm -rf "$HOME/Library/Application Support/er" \
-               "$HOME/Library/Application Support/easy-review" \
-               "$HOME/Library/Application Support/com.reshape.easy-review" \
-               "$HOME/Library/Application Support/Easy Review" \
-               "$HOME/Library/Caches/com.reshape.easy-review" \
-               "$HOME/Library/Caches/Easy Review" 2>/dev/null || true
+
+    if [[ "$KEEP_APPS" -eq 0 ]]; then
+        rm -f "${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er" 2>/dev/null || true
     fi
-    rm -rf "$HOME/.local/share/easy-review" \
-           "$HOME/.local/share/com.reshape.easy-review" \
-           "$HOME/.cache/er" \
-           "/Applications/Easy Review.app" \
-           "$HOME/Applications/Easy Review.app" 2>/dev/null || true
+    if [[ "$KEEP_CONFIG" -eq 0 ]]; then
+        rm -rf "$HOME/.config/er" 2>/dev/null || true
+    fi
+    if [[ "$KEEP_DATA" -eq 0 ]]; then
+        if [[ "$(uname -s)" == "Darwin" ]]; then
+            rm -rf "$HOME/Library/Application Support/er" \
+                   "$HOME/Library/Application Support/easy-review" \
+                   "$HOME/Library/Application Support/com.reshape.easy-review" \
+                   "$HOME/Library/Application Support/Easy Review" \
+                   "$HOME/Library/Caches/com.reshape.easy-review" \
+                   "$HOME/Library/Caches/Easy Review" 2>/dev/null || true
+        fi
+        rm -rf "$HOME/.local/share/easy-review" \
+               "$HOME/.local/share/com.reshape.easy-review" \
+               "$HOME/.cache/er" 2>/dev/null || true
+    fi
+    if [[ "$KEEP_APPS" -eq 0 ]]; then
+        rm -rf "/Applications/Easy Review.app" \
+               "$HOME/Applications/Easy Review.app" 2>/dev/null || true
+    fi
     echo "Done."
     exit 0
 fi
