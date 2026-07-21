@@ -168,6 +168,7 @@ export function resolveAgentSummary(
   counts: { high: number; med: number; low: number },
   fileCount: number,
   isEmpty: boolean,
+  fileRiskCount = 0,
 ): ResolvedSummary {
   if (useAgentScopedSummary(agentFilter)) {
     const scoped = ai.agent_summaries?.[agentFilter]?.trim();
@@ -185,16 +186,25 @@ export function resolveAgentSummary(
     return { text: ai.summary_markdown.trim(), markdown: true };
   }
 
-  if (isEmpty) {
-    if (ai.has_review_json) {
-      return { text: EMPTY_FINDINGS_STATUS, markdown: false };
-    }
-    return { text: MISSING_REVIEW_OUTPUT, markdown: false };
+  if (!isEmpty) {
+    const total = counts.high + counts.med + counts.low;
+    return {
+      text: `${total} findings across ${fileCount} files.`,
+      markdown: false,
+    };
   }
 
-  const total = counts.high + counts.med + counts.low;
-  return {
-    text: `${total} findings across ${fileCount} files.`,
-    markdown: false,
-  };
+  if (fileRiskCount > 0) {
+    const plural = fileRiskCount === 1 ? "file" : "files";
+    return {
+      text: `No line findings. ${fileRiskCount} ${plural} assessed.`,
+      markdown: false,
+    };
+  }
+
+  if (ai.has_review_json) {
+    return { text: EMPTY_FINDINGS_STATUS, markdown: false };
+  }
+
+  return { text: MISSING_REVIEW_OUTPUT, markdown: false };
 }

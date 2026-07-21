@@ -282,6 +282,31 @@ describe("resolveAgentSummary", () => {
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("No findings from Security.");
   });
+
+  it("mentions file assessments when empty findings and no summary", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      emptyCounts,
+      0,
+      true,
+      15,
+    );
+    expect(r.markdown).toBe(false);
+    expect(r.text).toBe("No line findings. 15 files assessed.");
+  });
+
+  it("uses singular file wording for one assessment", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      emptyCounts,
+      0,
+      true,
+      1,
+    );
+    expect(r.text).toBe("No line findings. 1 file assessed.");
+  });
 });
 
 describe("showEmptyFindingsStatus", () => {
