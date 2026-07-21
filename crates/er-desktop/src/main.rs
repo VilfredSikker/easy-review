@@ -643,7 +643,11 @@ fn main() {
                 .map(|p| App::new_unloaded(p.to_string()))
             {
                 Some(Ok(a)) => a,
-                _ => {
+                Some(Err(e)) => {
+                    eprintln!("er-desktop: failed to init engine for last active project: {e}");
+                    std::process::exit(1);
+                }
+                None => {
                     eprintln!("er-desktop: cwd not a repo and no active project on disk; aborting");
                     std::process::exit(1);
                 }

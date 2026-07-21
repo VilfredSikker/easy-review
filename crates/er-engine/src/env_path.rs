@@ -33,11 +33,19 @@ pub fn init_cli_path() {
         return;
     }
 
-    let mut merged = std::env::join_paths(prefix).expect("valid PATH prefix");
+    std::env::set_var("PATH", merge_paths(prefix, current));
+}
+
+/// Join `prefix` and the entries of `current` into one PATH value, keeping the
+/// platform separator between the two halves. (A bare `OsString::push` of the
+/// old PATH fused the last prefix dir with the first existing entry — on a
+/// Finder/Spotlight launch that destroyed `/usr/bin`, making `git`
+/// unresolvable and aborting desktop startup.)
+fn merge_paths(mut prefix: Vec<PathBuf>, current: &Path) -> std::ffi::OsString {
     if !current.as_os_str().is_empty() {
-        merged.push(current);
+        prefix.extend(std::env::split_paths(current));
     }
-    std::env::set_var("PATH", merged);
+    std::env::join_paths(prefix).expect("valid PATH prefix")
 }
 
 fn path_is_on_path(path_env: &Path, candidate: &Path) -> bool {
@@ -47,6 +55,34 @@ fn path_is_on_path(path_env: &Path, candidate: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn merge_keeps_separator_between_prefix_and_existing_path() {
+        let merged = merge_paths(
+            vec![
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/Users/x/.cargo/bin"),
+            ],
+            Path::new("/usr/bin:/bin"),
+        );
+        let entries: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert_eq!(
+            entries,
+            vec![
+                PathBuf::from("/opt/homebrew/bin"),
+                PathBuf::from("/Users/x/.cargo/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/bin"),
+            ]
+        );
+    }
+
+    #[test]
+    fn merge_with_empty_current_is_just_the_prefix() {
+        let merged = merge_paths(vec![PathBuf::from("/opt/homebrew/bin")], Path::new(""));
+        let entries: Vec<PathBuf> = std::env::split_paths(&merged).collect();
+        assert_eq!(entries, vec![PathBuf::from("/opt/homebrew/bin")]);
+    }
 
     #[test]
     fn prepends_missing_homebrew_paths() {
