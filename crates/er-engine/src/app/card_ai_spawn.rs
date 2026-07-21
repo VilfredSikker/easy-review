@@ -10,6 +10,8 @@ pub struct CardAiInvocation {
     pub work_dir: String,
     pub is_claude_compatible: bool,
     pub uses_stream_json: bool,
+    /// Extra process environment (OpenCode read-only permissions).
+    pub env: Vec<(String, String)>,
 }
 
 /// Resolve provider/command/args from config (mirrors background review selection).
@@ -20,39 +22,40 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id) = if let Some(pid) =
-        config.ai_hub.resolve_provider_id(provider_id)
-    {
-        if let Some(provider) = config.ai_hub.providers.get(&pid) {
-            let mut args = provider.args.clone();
-            let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
-            if let Some(mid) = &resolved_model_id {
-                if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                    crate::config::extend_provider_model_args(
-                        &provider.command,
-                        &mut args,
-                        &model.args,
-                    );
+    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id) =
+        if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
+            if let Some(provider) = config.ai_hub.providers.get(&pid) {
+                let mut args = provider.args.clone();
+                let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
+                if let Some(mid) = &resolved_model_id {
+                    if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
+                        crate::config::extend_provider_model_args(
+                            &provider.command,
+                            &mut args,
+                            &model.args,
+                        );
+                    }
                 }
+                let is_claude = crate::config::agent_command_is_claude(&provider.command);
+                (
+                    provider.command.clone(),
+                    args,
+                    is_claude,
+                    Some(pid.to_string()),
+                    resolved_model_id,
+                )
+            } else {
+                fallback_agent(config)
             }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
-            (
-                provider.command.clone(),
-                args,
-                is_claude,
-                Some(pid.to_string()),
-                resolved_model_id,
-            )
         } else {
             fallback_agent(config)
-        }
-    } else {
-        fallback_agent(config)
-    };
+        };
 
-    // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode.
-    if crate::config::agent_command_is_opencode(&command) {
-        crate::config::ensure_opencode_auto(&mut args);
+    // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode,
+    // paired with a read-only permission object so asks cannot mutate the tree.
+    let mut env = Vec::new();
+    if let Some(pair) = crate::config::apply_opencode_readonly_spawn(&command, &mut args) {
+        env.push(pair);
     }
 
     let uses_stream_json =
@@ -84,6 +87,7 @@ pub fn plan_card_ai_invocation(
         work_dir,
         is_claude_compatible: is_claude,
         uses_stream_json,
+        env,
     }
 }
 
@@ -91,7 +95,7 @@ fn fallback_agent(
     config: &ErConfig,
 ) -> (String, Vec<String>, bool, Option<String>, Option<String>) {
     let cmd = config.agent.command.clone();
-    let is_claude = cmd.ends_with("claude") || cmd == "claude";
+    let is_claude = crate::config::agent_command_is_claude(&cmd);
     (
         cmd,
         config.agent.args.clone(),
@@ -180,10 +184,14 @@ pub fn run_card_ai_subprocess(
         }
     }
 
-    let result = Command::new(&inv.command)
-        .args(&args)
-        .current_dir(&inv.work_dir)
-        .output();
+    let result = {
+        let mut cmd = Command::new(&inv.command);
+        cmd.args(&args).current_dir(&inv.work_dir);
+        for (key, value) in &inv.env {
+            cmd.env(key, value);
+        }
+        cmd.output()
+    };
 
     match result {
         Ok(out) if out.status.success() => {
@@ -278,6 +286,7 @@ mod tests {
             work_dir: "/repo".into(),
             is_claude_compatible: false,
             uses_stream_json: false,
+            env: vec![],
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -294,6 +303,7 @@ mod tests {
             work_dir: "/repo".into(),
             is_claude_compatible: true,
             uses_stream_json: false,
+            env: vec![],
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(args
@@ -316,6 +326,7 @@ mod tests {
             work_dir: "/tmp".into(),
             is_claude_compatible: true,
             uses_stream_json: true,
+            env: vec![],
         };
         let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
         assert_eq!(reply, "**Verdict**: Confirmed");
@@ -340,9 +351,18 @@ mod tests {
         let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
         assert_eq!(inv.command, "opencode");
         assert!(inv.args.iter().any(|a| a == "--auto"));
-        let prompt_idx = inv.args.iter().position(|a| a.contains("{prompt}")).unwrap();
+        let prompt_idx = inv
+            .args
+            .iter()
+            .position(|a| a.contains("{prompt}"))
+            .unwrap();
         let auto_idx = inv.args.iter().position(|a| a == "--auto").unwrap();
         assert!(auto_idx < prompt_idx);
+        assert_eq!(inv.env.len(), 1);
+        assert_eq!(inv.env[0].0, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&inv.env[0].1).unwrap();
+        assert_eq!(parsed["edit"], "deny");
+        assert_eq!(parsed["external_directory"]["*"], "deny");
     }
 
     #[test]
@@ -358,6 +378,10 @@ mod tests {
         );
         assert!(inv.args.iter().any(|a| a == "--auto"));
         assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
+        assert_eq!(inv.env.len(), 1);
+        let parsed: serde_json::Value = serde_json::from_str(&inv.env[0].1).unwrap();
+        assert_eq!(parsed["bash"]["*"], "deny");
+        assert_eq!(parsed["bash"]["grep *"], "allow");
     }
 
     #[test]

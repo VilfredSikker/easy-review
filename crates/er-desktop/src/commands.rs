@@ -8480,6 +8480,7 @@ mod tests {
             work_dir: "/tmp".into(),
             is_claude_compatible: true,
             uses_stream_json: false,
+            env: vec![],
         };
         let body = with_fake_claude("ok", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -8495,6 +8496,7 @@ mod tests {
             work_dir: "/tmp".into(),
             is_claude_compatible: true,
             uses_stream_json: false,
+            env: vec![],
         };
         let body = with_fake_claude("fail", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -8513,6 +8515,7 @@ mod tests {
             work_dir: "/tmp".into(),
             is_claude_compatible: true,
             uses_stream_json: false,
+            env: vec![],
         };
         let body = with_fake_claude("custom-response-text", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))

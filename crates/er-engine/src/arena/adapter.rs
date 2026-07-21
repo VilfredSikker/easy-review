@@ -51,15 +51,12 @@ pub fn resolve_provider_command(
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
-    if crate::config::agent_command_is_opencode(&provider.command) {
-        crate::config::ensure_opencode_auto(&mut args);
-    }
     inject_agent_storage_access(&provider.command, &mut args, storage_dir);
     let mut env = Vec::new();
-    if crate::config::agent_command_is_opencode(&provider.command) {
-        if let Some(pair) = crate::config::opencode_storage_permission_env(storage_dir) {
-            env.push(pair);
-        }
+    if let Some(pair) =
+        crate::config::apply_opencode_spawn(&provider.command, &mut args, storage_dir)
+    {
+        env.push(pair);
     }
     Ok(ProviderCommand {
         command: provider.command.clone(),
@@ -409,9 +406,14 @@ mod tests {
             },
         );
 
-        let cmd =
-            resolve_provider_command(&hub, "opencode", "claude-sonnet-4-5", Some("high"), Some(DIR))
-                .unwrap();
+        let cmd = resolve_provider_command(
+            &hub,
+            "opencode",
+            "claude-sonnet-4-5",
+            Some("high"),
+            Some(DIR),
+        )
+        .unwrap();
 
         let prompt_idx = cmd
             .args
@@ -444,10 +446,8 @@ mod tests {
         assert_eq!(cmd.env[0].0, "OPENCODE_PERMISSION");
         let parsed: serde_json::Value = serde_json::from_str(&cmd.env[0].1).unwrap();
         assert!(parsed.get("permission").is_none());
-        assert_eq!(
-            parsed["external_directory"][format!("{DIR}/**")],
-            "allow"
-        );
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert_eq!(parsed["external_directory"][format!("{DIR}/**")], "allow");
     }
 
     #[test]
@@ -457,7 +457,11 @@ mod tests {
             "opencode".to_string(),
             crate::config::AiProviderConfig {
                 command: "opencode".to_string(),
-                args: vec!["run".to_string(), "--auto".to_string(), "{prompt}".to_string()],
+                args: vec![
+                    "run".to_string(),
+                    "--auto".to_string(),
+                    "{prompt}".to_string(),
+                ],
                 models: vec![crate::config::AiModelConfig {
                     id: "default".to_string(),
                     ..Default::default()

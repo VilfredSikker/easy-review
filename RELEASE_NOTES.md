@@ -10,7 +10,7 @@
 ## Highlights
 
 - **OpenCode AI Hub provider.** Catalog presets (`Default`, Claude Sonnet/Opus 4.5, GPT-5.2, Gemini 3 Pro) invoke `opencode run --auto` with model args inserted before the positional prompt.
-- **Managed storage for OpenCode.** Artifact-writing spawns set `OPENCODE_PERMISSION` (bare permission JSON) so the active review bucket is allowed as an `external_directory` (OpenCode has no `--add-dir`).
+- **Managed storage for OpenCode.** Artifact-writing spawns set `OPENCODE_PERMISSION` (bare permission JSON) to deny other `external_directory` paths and allow only the active review bucket (OpenCode has no `--add-dir`). Card AI (Ask/Validate) uses a read-only permission object under `--auto` so edit/bash cannot mutate the worktree.
 - **Effort via `--variant`.** Effort levels from model metadata map to OpenCode’s `--variant` flag.
 - **MCP docs.** `docs/guide/mcp.html` documents OpenCode local MCP config for `easy-review-mcp`.
 

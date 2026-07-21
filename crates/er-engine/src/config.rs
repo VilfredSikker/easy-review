@@ -585,29 +585,39 @@ impl AiProviderConfig {
 
 /// CLI commands that emit Claude/Cursor-style `stream-json` on stdout.
 pub fn agent_command_uses_stream_json(command: &str) -> bool {
-    matches!(command, "claude" | "agent")
-        || command.ends_with("/claude")
-        || command.ends_with("/agent")
+    matches!(agent_command_stem(command), "claude" | "agent")
+}
+
+/// Basename stem of a provider command (`/bin/opencode.exe` / `C:\bin\opencode.exe` → `opencode`).
+///
+/// Uses `/` and `\` so Windows-style command strings still resolve on Unix hosts
+/// (Path separators alone would treat `C:\bin\opencode.exe` as a single name).
+pub fn agent_command_stem(command: &str) -> &str {
+    let trimmed = command.trim();
+    let base = trimmed.rsplit(['/', '\\']).next().unwrap_or(trimmed);
+    base.strip_suffix(".exe")
+        .or_else(|| base.strip_suffix(".EXE"))
+        .unwrap_or(base)
 }
 
 /// True when the provider command is the Claude CLI (supports `--effort`).
 pub fn agent_command_is_claude(command: &str) -> bool {
-    command == "claude" || command.ends_with("/claude")
+    agent_command_stem(command) == "claude"
 }
 
 /// True when the provider command is the Codex CLI (supports `-c model_reasoning_effort=...`).
 pub fn agent_command_is_codex(command: &str) -> bool {
-    command == "codex" || command.ends_with("/codex")
+    agent_command_stem(command) == "codex"
 }
 
 /// True when the provider command is Cursor Agent (supports `--add-dir`).
 pub fn agent_command_is_cursor(command: &str) -> bool {
-    command == "agent" || command.ends_with("/agent")
+    agent_command_stem(command) == "agent"
 }
 
 /// True when the provider command is OpenCode (`opencode run`).
 pub fn agent_command_is_opencode(command: &str) -> bool {
-    command == "opencode" || command.ends_with("/opencode")
+    agent_command_stem(command) == "opencode"
 }
 
 /// Merge model args onto provider args.
@@ -647,23 +657,87 @@ pub fn ensure_opencode_auto(args: &mut Vec<String>) {
 
 /// Env var granting OpenCode write access to a managed review bucket outside cwd.
 ///
-/// OpenCode has no `--add-dir`; `external_directory` defaults to ask and can be
-/// auto-rejected in non-interactive mode without `--auto` / an explicit allow.
+/// OpenCode has no `--add-dir`; `external_directory` defaults to ask. With
+/// `opencode run --auto`, asks auto-approve unless explicitly **denied** — so we
+/// deny all other external paths and only allow the active review bucket.
 ///
 /// `OPENCODE_PERMISSION` is the bare permission object (not a full config with a
-/// nested `permission` key), e.g. `{"external_directory":{"/path/**":"allow"}}`.
+/// nested `permission` key). Last matching rule wins, so `"*":"deny"` is listed
+/// before the bucket allow.
 pub fn opencode_storage_permission_env(storage_dir: Option<&str>) -> Option<(String, String)> {
     let directory = storage_dir.map(str::trim).filter(|dir| !dir.is_empty())?;
     // OpenCode path globs use `/`; normalize Windows `\` so patterns match.
-    let normalized = directory.replace('\\', "/").trim_end_matches('/').to_string();
+    let normalized = directory
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
     let pattern = format!("{normalized}/**");
-    let value = serde_json::json!({
-        "external_directory": {
-            pattern: "allow"
-        }
-    })
+    // Keep key insertion order: deny-all first, then the bucket allow.
+    let mut external = serde_json::Map::new();
+    external.insert("*".into(), serde_json::json!("deny"));
+    external.insert(pattern, serde_json::json!("allow"));
+    let value = serde_json::Value::Object(serde_json::Map::from_iter([(
+        "external_directory".into(),
+        serde_json::Value::Object(external),
+    )]))
     .to_string();
     Some(("OPENCODE_PERMISSION".to_string(), value))
+}
+
+/// Read-only OpenCode permission object for card AI (Ask / Validate).
+///
+/// Card AI still uses `--auto` so headless runs do not hang on asks, but edit and
+/// unrestricted bash/external paths are denied. Grep/git-show style bash matches
+/// Claude's `--allowedTools` allowlist for the same feature.
+pub fn opencode_readonly_permission_env() -> (String, String) {
+    let value = serde_json::json!({
+        "edit": "deny",
+        "bash": {
+            "*": "deny",
+            "grep *": "allow",
+            "rg *": "allow",
+            "git grep*": "allow",
+            "git show*": "allow",
+            "git log*": "allow",
+        },
+        "external_directory": {
+            "*": "deny",
+        },
+    })
+    .to_string();
+    ("OPENCODE_PERMISSION".to_string(), value)
+}
+
+/// Ensure `--auto` and return storage permission env for OpenCode artifact spawns.
+///
+/// Non-OpenCode commands are left unchanged and return `None`. When OpenCode is
+/// detected but `storage_dir` is empty, `--auto` is still applied and the return
+/// is `None` (callers that need read-only policy should use
+/// [`apply_opencode_readonly_spawn`]).
+pub fn apply_opencode_spawn(
+    command: &str,
+    args: &mut Vec<String>,
+    storage_dir: Option<&str>,
+) -> Option<(String, String)> {
+    if !agent_command_is_opencode(command) {
+        return None;
+    }
+    ensure_opencode_auto(args);
+    opencode_storage_permission_env(storage_dir)
+}
+
+/// Ensure `--auto` and return a read-only `OPENCODE_PERMISSION` for Card AI / Ask.
+///
+/// Non-OpenCode commands are left unchanged and return `None`.
+pub fn apply_opencode_readonly_spawn(
+    command: &str,
+    args: &mut Vec<String>,
+) -> Option<(String, String)> {
+    if !agent_command_is_opencode(command) {
+        return None;
+    }
+    ensure_opencode_auto(args);
+    Some(opencode_readonly_permission_env())
 }
 
 /// Allow built-in agent CLIs to access a specific Easy Review storage directory.
@@ -2300,10 +2374,7 @@ mod tests {
             "{prompt}".to_string(),
         ];
         inject_opencode_effort(&mut args, Some("high"));
-        assert_eq!(
-            args,
-            vec!["run", "--auto", "--variant", "high", "{prompt}"]
-        );
+        assert_eq!(args, vec!["run", "--auto", "--variant", "high", "{prompt}"]);
         let len = args.len();
         inject_opencode_effort(&mut args, Some("low"));
         assert_eq!(args.len(), len);
@@ -2328,8 +2399,16 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
         // Bare permission object — not wrapped in {"permission": ...}.
         assert!(parsed.get("permission").is_none());
+        let external = parsed["external_directory"].as_object().unwrap();
+        // Deny-all first, then bucket allow (last match wins under --auto).
+        let keys: Vec<&String> = external.keys().collect();
         assert_eq!(
-            parsed["external_directory"]["/managed/repos/demo/view-buckets/branch/**"],
+            keys,
+            vec!["*", "/managed/repos/demo/view-buckets/branch/**"]
+        );
+        assert_eq!(external["*"], "deny");
+        assert_eq!(
+            external["/managed/repos/demo/view-buckets/branch/**"],
             "allow"
         );
         assert!(opencode_storage_permission_env(None).is_none());
@@ -2343,6 +2422,7 @@ mod tests {
         ))
         .expect("env should be set");
         let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(parsed["external_directory"]["*"], "deny");
         assert_eq!(
             parsed["external_directory"]
                 ["C:/Users/demo/AppData/Local/easy-review/repos/x/branches/main/view-buckets/branch/**"],
@@ -2351,9 +2431,52 @@ mod tests {
     }
 
     #[test]
+    fn opencode_readonly_permission_env_denies_edit_and_external() {
+        let (key, value) = opencode_readonly_permission_env();
+        assert_eq!(key, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&value).unwrap();
+        assert_eq!(parsed["edit"], "deny");
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert_eq!(parsed["bash"]["*"], "deny");
+        assert_eq!(parsed["bash"]["grep *"], "allow");
+        assert_eq!(parsed["bash"]["rg *"], "allow");
+        assert!(parsed.get("permission").is_none());
+    }
+
+    #[test]
+    fn apply_opencode_spawn_sets_auto_flags_and_storage_env() {
+        let mut args = vec!["run".to_string(), "{prompt}".to_string()];
+        let env =
+            apply_opencode_spawn(r"C:\tools\opencode.exe", &mut args, Some("/managed/review"))
+                .expect("env");
+        assert!(args.iter().any(|a| a == "--auto"));
+        let prompt_idx = args.iter().position(|a| a.contains("{prompt}")).unwrap();
+        let auto_idx = args.iter().position(|a| a == "--auto").unwrap();
+        assert!(auto_idx < prompt_idx);
+        assert_eq!(env.0, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert_eq!(parsed["external_directory"]["/managed/review/**"], "allow");
+        assert!(apply_opencode_spawn("claude", &mut args, Some("/managed/review")).is_none());
+    }
+
+    #[test]
+    fn apply_opencode_readonly_spawn_sets_auto_and_readonly_env() {
+        let mut args = vec!["run".to_string(), "{prompt}".to_string()];
+        let env = apply_opencode_readonly_spawn("opencode", &mut args).expect("env");
+        assert!(args.iter().any(|a| a == "--auto"));
+        assert_eq!(env.0, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
+        assert_eq!(parsed["edit"], "deny");
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert!(apply_opencode_readonly_spawn("claude", &mut args).is_none());
+    }
+
+    #[test]
     fn agent_command_is_opencode_detects_basename() {
         assert!(agent_command_is_opencode("opencode"));
         assert!(agent_command_is_opencode("/opt/homebrew/bin/opencode"));
+        assert!(agent_command_is_opencode(r"C:\bin\opencode.exe"));
         assert!(!agent_command_is_opencode("claude"));
     }
 

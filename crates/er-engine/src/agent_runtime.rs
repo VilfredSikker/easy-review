@@ -23,11 +23,7 @@ pub enum CliFamily {
 
 impl CliFamily {
     pub fn detect(command: &str) -> Self {
-        match Path::new(command)
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or(command)
-        {
+        match crate::config::agent_command_stem(command) {
             "claude" => Self::Claude,
             "codex" => Self::Codex,
             "agent" => Self::Cursor,
@@ -274,9 +270,6 @@ pub fn resolve_invocation(
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
-    if family == CliFamily::OpenCode {
-        crate::config::ensure_opencode_auto(&mut args);
-    }
     // Only grant managed-storage --add-dir when the task needs artifact I/O.
     // ReadOnly must not receive a Codex-writable extra root.
     crate::config::inject_agent_storage_access(&command, &mut args, request.access.output_dir());
@@ -315,12 +308,15 @@ pub fn resolve_invocation(
     };
 
     let mut env = Vec::new();
-    if family == CliFamily::OpenCode {
-        if let Some(pair) =
-            crate::config::opencode_storage_permission_env(request.access.output_dir())
-        {
+    if matches!(request.access, AgentAccessProfile::ReadOnly) {
+        if let Some(pair) = crate::config::apply_opencode_readonly_spawn(&command, &mut args) {
             env.push(pair);
         }
+    } else if let Some(pair) =
+        crate::config::apply_opencode_spawn(&command, &mut args, request.access.output_dir())
+    {
+        // apply_opencode_spawn still runs ensure_opencode_auto when storage_dir is None.
+        env.push(pair);
     }
 
     Ok(AgentInvocation {
@@ -1015,6 +1011,10 @@ mod tests {
             CliFamily::detect("/opt/homebrew/bin/opencode"),
             CliFamily::OpenCode
         );
+        assert_eq!(
+            CliFamily::detect(r"C:\tools\opencode.exe"),
+            CliFamily::OpenCode
+        );
         assert_eq!(CliFamily::detect("/custom/provider"), CliFamily::Other);
     }
 
@@ -1076,10 +1076,13 @@ mod tests {
             "OPENCODE_PERMISSION must be the bare permission object"
         );
         assert!(invocation.env[0].1.contains("\"external_directory\""));
+        let parsed: serde_json::Value = serde_json::from_str(&invocation.env[0].1).unwrap();
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert_eq!(parsed["external_directory"]["/managed/review/**"], "allow");
     }
 
     #[test]
-    fn opencode_readonly_skips_storage_permission_env() {
+    fn opencode_readonly_uses_readonly_permission_env() {
         let config = opencode_config();
         let task = AgentTaskKind::CardReply;
         let invocation = resolve_invocation(
@@ -1098,7 +1101,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(invocation.env.is_empty());
+        assert_eq!(invocation.env.len(), 1);
+        assert_eq!(invocation.env[0].0, "OPENCODE_PERMISSION");
+        let parsed: serde_json::Value = serde_json::from_str(&invocation.env[0].1).unwrap();
+        assert_eq!(parsed["edit"], "deny");
+        assert_eq!(parsed["external_directory"]["*"], "deny");
         assert!(!invocation.args.iter().any(|a| a == "stream-json"));
     }
 

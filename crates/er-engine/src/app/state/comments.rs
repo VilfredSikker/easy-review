@@ -2266,7 +2266,7 @@ impl App {
                     );
                 }
             }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&provider.command);
             let is_codex = crate::config::agent_command_is_codex(&provider.command);
             (
                 provider.command.clone(),
@@ -2279,7 +2279,7 @@ impl App {
             )
         } else {
             let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             (
                 cmd.clone(),
@@ -2309,19 +2309,16 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        if crate::config::agent_command_is_opencode(&agent_cmd) {
-            crate::config::ensure_opencode_auto(&mut config_args);
-        }
         crate::config::inject_agent_storage_access(
             &agent_cmd,
             &mut config_args,
             Some(er_dir_path.as_str()),
         );
-        let opencode_env = if crate::config::agent_command_is_opencode(&agent_cmd) {
-            crate::config::opencode_storage_permission_env(Some(er_dir_path.as_str()))
-        } else {
-            None
-        };
+        let opencode_env = crate::config::apply_opencode_spawn(
+            &agent_cmd,
+            &mut config_args,
+            Some(er_dir_path.as_str()),
+        );
 
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
@@ -2724,7 +2721,7 @@ impl App {
                     );
                 }
             }
-            let is_claude = provider.command.ends_with("claude") || provider.command == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&provider.command);
             let is_codex = crate::config::agent_command_is_codex(&provider.command);
             (
                 provider.command.clone(),
@@ -2737,7 +2734,7 @@ impl App {
             )
         } else {
             let cmd = self.config.agent.command.clone();
-            let is_claude = cmd.ends_with("claude") || cmd == "claude";
+            let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             (
                 cmd.clone(),
@@ -2772,19 +2769,16 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        if crate::config::agent_command_is_opencode(&agent_cmd) {
-            crate::config::ensure_opencode_auto(&mut config_args);
-        }
         crate::config::inject_agent_storage_access(
             &agent_cmd,
             &mut config_args,
             Some(target.er_dir.as_str()),
         );
-        let opencode_env = if crate::config::agent_command_is_opencode(&agent_cmd) {
-            crate::config::opencode_storage_permission_env(Some(target.er_dir.as_str()))
-        } else {
-            None
-        };
+        let opencode_env = crate::config::apply_opencode_spawn(
+            &agent_cmd,
+            &mut config_args,
+            Some(target.er_dir.as_str()),
+        );
 
         std::fs::create_dir_all(&target.er_dir)?;
 

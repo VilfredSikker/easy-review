@@ -129,7 +129,7 @@ effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medi
       not rewrite your file.</li>
       <li>The current built-in catalog includes Fable 5, Opus 4.8, Sonnet 5, Haiku 4.5, the GPT-5.6 Sol/Terra/Luna family, GPT-5.5, GPT-5.4, GPT-5.4 Mini, GPT-5.3 Codex Spark, Cursor Grok 4.5 / Composer 2.5, and OpenCode (Default plus Anthropic / OpenAI / Google presets).</li>
       <li>The selected default provider/model applies to every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Explicit review-run selections apply only to that run.</li>
-      <li>Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/</code>; OpenCode uses <code>--auto</code> plus an <code>OPENCODE_PERMISSION</code> allow for the active review bucket. Custom provider commands are left unchanged.</li>
+      <li>Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. On macOS this is <code>~/Library/Application Support/easy-review/</code>; OpenCode uses <code>--auto</code> plus an <code>OPENCODE_PERMISSION</code> object that denies other external paths and allows only the active review bucket. Card AI keeps <code>--auto</code> with a read-only permission object. Custom provider commands are left unchanged.</li>
     </ul>
 
     <h2><code>[summary]</code> — diff summaries</h2>
