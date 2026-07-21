@@ -173,6 +173,14 @@ export interface FlatFinding {
   responses?: FindingResponseSnapshot[];
 }
 
+/** Per-file risk assessment from review.json — distinct from line findings. */
+export interface FileRiskSnapshot {
+  path: string;
+  risk: "high" | "med" | "low";
+  risk_reason: string;
+  summary: string;
+}
+
 export interface TriagePriorityFileSnapshot {
   path: string;
   reason: string;
@@ -209,6 +217,8 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Per-file risk assessments from review.json (not counted as findings). */
+  file_risks: FileRiskSnapshot[];
   /** Whether `{er_dir}/review.json` exists (batch validate target). */
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */

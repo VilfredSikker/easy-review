@@ -1,6 +1,7 @@
 <script lang="ts">
-  import type { AiSnapshot } from "$lib/types";
+  import type { AiSnapshot, FileRiskSnapshot } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
+  import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
@@ -31,12 +32,22 @@
   const { ai }: Props = $props();
 
   let open = $state(false);
+  /** User collapsed the auto-open list (findings-empty reviews). */
+  let fileRisksUserCollapsed = $state(false);
+  /** User expanded the list when findings also exist. */
+  let fileRisksUserExpanded = $state(false);
   let summaryOpen = $state(false);
   let staleHelpOpen = $state(false);
   let filter = $state<"all" | "high" | "med" | "low">("all");
 
   const agentLabels = $derived(
     uniqueAgentLabels(ai.findings, Object.keys(ai.agent_summaries ?? {})),
+  );
+
+  const fileRisks = $derived(ai.file_risks ?? []);
+  const fileRisksOpen = $derived(
+    fileRisks.length > 0 &&
+      (ai.findings.length === 0 ? !fileRisksUserCollapsed : fileRisksUserExpanded),
   );
 
   $effect(() => {
@@ -57,6 +68,24 @@
     navigateToFinding(finding);
   }
 
+  async function jumpToFileRisk(risk: FileRiskSnapshot) {
+    const snap = app.snapshot;
+    if (!snap) return;
+    const f = snap.files.find((file) => file.path === risk.path);
+    if (f) {
+      await app.cmd("select_file", { idx: f.source_index });
+      await tick();
+    }
+  }
+
+  function toggleFileRisks() {
+    if (ai.findings.length === 0) {
+      fileRisksUserCollapsed = !fileRisksUserCollapsed;
+    } else {
+      fileRisksUserExpanded = !fileRisksUserExpanded;
+    }
+  }
+
   const agentScopedFindings = $derived(
     filterByAgent(ai.findings, aiReviewFilter.filter),
   );
@@ -75,7 +104,10 @@
   );
 
   const hasReviewContent = $derived(
-    !isEmpty || !!ai.summary_markdown || ai.has_review_json,
+    !isEmpty ||
+      !!ai.summary_markdown ||
+      ai.has_review_json ||
+      fileRisks.length > 0,
   );
 
   const resolvedSummary = $derived(
@@ -85,6 +117,7 @@
       scopedCounts,
       new Set(agentScopedFindings.map((f) => f.file)).size,
       isEmpty,
+      fileRisks.length,
     ),
   );
   const summary = $derived(resolvedSummary.text);
@@ -99,6 +132,12 @@
   const filtered = $derived(
     agentScopedFindings.filter((f) => filter === "all" || f.severity === filter)
   );
+
+  function riskDotClass(risk: string): string {
+    if (risk === "high") return "bg-risk-high";
+    if (risk === "med") return "bg-risk-med";
+    return "bg-risk-low";
+  }
 
   function revealErFolder() {
     invoke("reveal_er_folder").catch(() => {});
@@ -374,6 +413,45 @@
       </svg>
       <span>{open ? "Hide findings" : "View findings"}</span>
     </Button>
+  {/if}
+
+  {#if fileRisks.length > 0}
+    <div class="mt-3 pt-3 border-t border-hairline">
+      <p class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-info">
+        File risks ({fileRisks.length})
+      </p>
+      {#if fileRisksOpen}
+        <div class="findings-list space-y-1.5 mb-2">
+          {#each fileRisks as risk (risk.path)}
+            <button
+              type="button"
+              onclick={() => jumpToFileRisk(risk)}
+              class="w-full text-left p-2 rounded-md hover:bg-bg border border-transparent hover:border-border block"
+            >
+              <div class="flex items-start gap-2">
+                <span class="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 {riskDotClass(risk.risk)}"></span>
+                <div class="flex-1 min-w-0">
+                  <div class="text-[11px] font-mono text-muted mb-0.5">{basename(risk.path)}</div>
+                  <div class="text-[13px] text-fg-2 leading-snug">
+                    {risk.risk_reason || risk.summary || `${risk.risk} risk`}
+                  </div>
+                </div>
+              </div>
+            </button>
+          {/each}
+        </div>
+      {/if}
+      <Button
+        variant="secondary"
+        onclick={toggleFileRisks}
+        class="w-full flex items-center justify-center gap-2 normal-case"
+      >
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="transition-transform {fileRisksOpen ? 'rotate-180' : ''}">
+          <polyline points="6 9 12 15 18 9"/>
+        </svg>
+        <span>{fileRisksOpen ? "Hide file risks" : "View file risks"}</span>
+      </Button>
+    </div>
   {/if}
 
   <div class="mt-2 flex flex-col gap-1">

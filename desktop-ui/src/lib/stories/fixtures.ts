@@ -288,6 +288,7 @@ export const aiWithFindings: AiSnapshot = {
       agent_label: "General",
     },
   ],
+  file_risks: [],
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
@@ -309,7 +310,60 @@ export const aiEmpty: AiSnapshot = {
   unpushed: 0,
   threads: [],
   findings: [],
+  file_risks: [],
   has_review_json: false,
+  eligible_comment_count: 0,
+  triage: null,
+};
+
+/** Completed review with file risk assessments but no line findings. */
+export const aiFileRisksOnly: AiSnapshot = {
+  fresh: true,
+  stale_reason: null,
+  summary_markdown:
+    "No correctness, security, or reliability findings were identified on changed lines. The checklist records the key manual verification points.",
+  agent_summaries: {},
+  high: 0,
+  med: 0,
+  low: 0,
+  local_comment_count: 0,
+  github_comment_count: 0,
+  comments: 0,
+  questions: 0,
+  notes: 0,
+  unpushed: 0,
+  threads: [],
+  findings: [],
+  file_risks: [
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/embeddable/buildEmbedRef.ts",
+      risk: "high",
+      risk_reason:
+        "Defines the persisted embed wire format and validates hrefs before they reach rendered links.",
+      summary: "Adds safe relative source metadata to embed serialization and parsing.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/extensions/ReportEmbed.svelte.ts",
+      risk: "high",
+      risk_reason:
+        "Replaces the report node view and adds editor transactions for persisted title changes.",
+      summary: "Uses the report card node view, persists titles, and handles input/link events.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/ReportEmbedCard.svelte",
+      risk: "med",
+      risk_reason:
+        "Introduces persisted title editing and source-link rendering in the report node UI.",
+      summary: "Renders report embeds in a card with fallback titles and a source link.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/ReportEmbedCard.test.ts",
+      risk: "low",
+      risk_reason: "Adds focused component coverage for the new card interactions.",
+      summary: "Tests source visibility, title editing, and renderer errors.",
+    },
+  ],
+  has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
 };
@@ -362,6 +416,7 @@ export const aiProfessorOnly: AiSnapshot = {
       severity: "med",
     },
   ],
+  file_risks: [],
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,

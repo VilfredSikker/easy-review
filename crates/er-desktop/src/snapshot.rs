@@ -896,6 +896,17 @@ pub struct FlatFinding {
     pub responses: Vec<FindingResponseSnapshot>,
 }
 
+/// Per-file risk assessment from `review.json` (`ErFileReview`), distinct from
+/// line-anchored findings. Shown in the AI Review card as assessment metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileRiskSnapshot {
+    pub path: String,
+    /// "high" | "med" | "low"
+    pub risk: String,
+    pub risk_reason: String,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSnapshot {
     pub fresh: bool,
@@ -914,6 +925,9 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Per-file risk assessments from review.json (not counted as findings).
+    #[serde(default)]
+    pub file_risks: Vec<FileRiskSnapshot>,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
@@ -1025,6 +1039,33 @@ fn severity_str(r: &RiskLevel) -> &'static str {
         RiskLevel::Medium => "med",
         RiskLevel::Low | RiskLevel::Info => "low",
     }
+}
+
+fn risk_sort_ord(r: &RiskLevel) -> u8 {
+    match r {
+        RiskLevel::High => 0,
+        RiskLevel::Medium => 1,
+        RiskLevel::Low => 2,
+        RiskLevel::Info => 3,
+    }
+}
+
+fn build_file_risks(review: &er_engine::ai::ErReview) -> Vec<FileRiskSnapshot> {
+    let mut entries: Vec<_> = review.files.iter().collect();
+    entries.sort_by(|(pa, fa), (pb, fb)| {
+        risk_sort_ord(&fa.risk)
+            .cmp(&risk_sort_ord(&fb.risk))
+            .then_with(|| pa.cmp(pb))
+    });
+    entries
+        .into_iter()
+        .map(|(path, fr)| FileRiskSnapshot {
+            path: path.clone(),
+            risk: severity_str(&fr.risk).to_string(),
+            risk_reason: fr.risk_reason.clone(),
+            summary: fr.summary.clone(),
+        })
+        .collect()
 }
 
 fn comment_ref_to_thread(
@@ -2238,6 +2279,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
@@ -3415,6 +3457,12 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         vec![]
     };
 
+    let file_risks: Vec<FileRiskSnapshot> = ai
+        .review
+        .as_ref()
+        .map(build_file_risks)
+        .unwrap_or_default();
+
     let er_dir = tab.er_dir();
     let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
     let eligible_comment_count = ai
@@ -3463,6 +3511,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        file_risks,
         has_review_json,
         eligible_comment_count,
         triage,
@@ -3743,6 +3792,66 @@ mod tests {
 
         assert_eq!(snapshot.threads.len(), 1);
         assert!(snapshot.threads[0].stale);
+    }
+
+    #[test]
+    fn ai_snapshot_includes_sorted_file_risks_without_findings() {
+        use er_engine::ai::{ErFileReview, ErReview, RiskLevel};
+        use std::collections::HashMap;
+
+        let mut files = HashMap::new();
+        files.insert(
+            "z_low.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: "minor".into(),
+                summary: "low file".into(),
+                findings: vec![],
+            },
+        );
+        files.insert(
+            "a_high.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::High,
+                risk_reason: "critical path".into(),
+                summary: "high file".into(),
+                findings: vec![],
+            },
+        );
+        files.insert(
+            "m_med.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Medium,
+                risk_reason: "touches API".into(),
+                summary: "med file".into(),
+                findings: vec![],
+            },
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files,
+            file_hashes: HashMap::new(),
+        });
+        tab.ai.summary = Some("No line findings.".into());
+
+        let snapshot = build_ai_snapshot(&tab, None);
+
+        assert!(snapshot.findings.is_empty());
+        assert_eq!(snapshot.high + snapshot.med + snapshot.low, 0);
+        assert_eq!(snapshot.file_risks.len(), 3);
+        assert_eq!(snapshot.file_risks[0].path, "a_high.rs");
+        assert_eq!(snapshot.file_risks[0].risk, "high");
+        assert_eq!(snapshot.file_risks[1].path, "m_med.rs");
+        assert_eq!(snapshot.file_risks[1].risk, "med");
+        assert_eq!(snapshot.file_risks[2].path, "z_low.rs");
+        assert_eq!(snapshot.file_risks[2].risk, "low");
+        assert_eq!(snapshot.summary_markdown.as_deref(), Some("No line findings."));
     }
 
     #[test]
