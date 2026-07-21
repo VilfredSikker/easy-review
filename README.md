@@ -46,7 +46,7 @@ git clone https://github.com/VilfredSikker/easy-review.git
 cd easy-review
 ./scripts/tauri-dev.sh           # dev shell with hot reload
 ./scripts/tauri-build.sh         # local release bundle (ad-hoc sign)
-./scripts/tauri-sign-release.sh  # Developer ID + notarized .dmg (see docs/DEVELOPMENT.md)
+just sign                        # Developer ID + notarized .dmg (see docs/DEVELOPMENT.md)
 ```
 
 See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for install details, and [DEVELOPMENT.md — macOS signed release](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) for signing/notarization.

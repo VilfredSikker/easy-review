@@ -3,9 +3,9 @@
 ## In plain terms
 
 - **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
-- **What changed.** OpenCode (`opencode` CLI) is now a first-class AI Hub provider alongside Claude, Codex, and Cursor — pick it in the TUI Config Hub or Desktop AI Action Palette for reviews, tours, arena, and card AI.
-- **Why it matters.** If you already use OpenCode as your coding agent, Easy Review can spawn the same CLI to write review sidecars without a custom TOML provider.
-- **TL;DR.** Built-in OpenCode provider with curated models, `--variant` effort, managed-storage permissions, and MCP setup docs.
+- **What changed.** OpenCode (`opencode` CLI) is now a first-class AI Hub provider alongside Claude, Codex, and Cursor — pick it in the TUI Config Hub or Desktop AI Action Palette for reviews, tours, arena, and card AI. This branch also picks up uninstall support from main (TUI, Desktop, and `install.sh`).
+- **Why it matters.** If you already use OpenCode as your coding agent, Easy Review can spawn the same CLI to write review sidecars without a custom TOML provider — and you can leave cleanly without hunting for config or leftover review data.
+- **TL;DR.** Built-in OpenCode provider with curated models, `--variant` effort, managed-storage permissions, and MCP setup docs; plus `er uninstall` / Desktop Settings → Uninstall / `install.sh --uninstall`.
 
 ## Highlights
 
@@ -13,6 +13,10 @@
 - **Managed storage for OpenCode.** Artifact-writing spawns set `OPENCODE_PERMISSION` (bare permission JSON) to deny other `external_directory` paths and allow only the active review bucket (OpenCode has no `--add-dir`). Card AI (Ask/Validate) uses a read-only permission object under `--auto` so edit/bash cannot mutate the worktree.
 - **Effort via `--variant`.** Effort levels from model metadata map to OpenCode’s `--variant` flag.
 - **MCP docs.** `docs/guide/mcp.html` documents OpenCode local MCP config for `easy-review-mcp`.
+- **Uninstall.** Shared `er-engine::uninstall` plans and removes config, managed review storage (including Tauri bundle data dirs), legacy cache, `er` binaries, and `Easy Review.app` (symlink-safe; defers in-use binary/.app removal with PID + start-time checks).
+- **TUI uninstall.** `er uninstall [--yes|--dry-run|--keep-data|--keep-config|--keep-apps]`.
+- **Desktop uninstall.** Settings → General → Uninstall (preview + type-to-confirm); welcome empty state can jump to uninstall.
+- **install.sh uninstall.** `install.sh --uninstall` forwards the same keep/dry-run/yes flags to `er uninstall`.
 
 ## What's Changed
 
@@ -20,6 +24,7 @@
 - Add built-in `opencode` provider to `ai_hub_catalog.toml` with curated `provider/model` presets.
 - Detect `CliFamily::OpenCode`; inject `--auto`, `--variant`, and storage permission env on TUI/Desktop/arena spawns.
 - Document OpenCode in config reference, configuration guide, installation, and MCP setup.
+- Uninstall support: shared engine module, TUI subcommand, Desktop Settings/welcome UI, and `install.sh --uninstall`.
 
 ---
 

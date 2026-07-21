@@ -176,9 +176,9 @@ Use this when shipping a desktop `.dmg` others can open without right-click → 
 ### Build a signed + notarized release
 
 ```bash
-./scripts/tauri-sign-release.sh
-# or: cargo desktop-sign-release
+just sign
 # or: just sign-release-desktop
+# or: ./scripts/tauri-sign-release.sh / cargo desktop-sign-release
 ```
 
 Output:

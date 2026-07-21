@@ -1862,6 +1862,8 @@ fn main() {
             config_commands::get_config_hub,
             config_commands::apply_config_patch,
             config_commands::save_config_global_cmd,
+            config_commands::preview_uninstall,
+            config_commands::run_uninstall,
             commands::set_ai_effort,
             commands::promote_to_comment,
             commands::promote_to_note,
