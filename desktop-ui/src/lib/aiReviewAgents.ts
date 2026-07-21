@@ -145,7 +145,7 @@ export type ResolvedSummary = { text: string; markdown: boolean };
 export const EMPTY_FINDINGS_STATUS = "No findings.";
 
 const MISSING_REVIEW_OUTPUT =
-  "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill.";
+  "No findings written. Use Reveal review files to inspect raw output, or re-run the review.";
 
 export type ReviewSummarySource = Pick<
   AiSnapshot,

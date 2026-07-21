@@ -227,7 +227,7 @@ describe("resolveAgentSummary", () => {
     );
     expect(r.markdown).toBe(true);
     expect(r.text).toContain("No actionable findings were identified");
-    expect(r.text).not.toContain("Inspect the `.er/` folder");
+    expect(r.text).not.toContain(".er/");
   });
 
   it("keeps an expert summary when that agent reported no findings", () => {
@@ -268,7 +268,9 @@ describe("resolveAgentSummary", () => {
       true,
     );
     expect(r.markdown).toBe(false);
-    expect(r.text).toContain("Inspect the `.er/` folder");
+    expect(r.text).toContain("No findings written");
+    expect(r.text).toContain("Reveal review files");
+    expect(r.text).not.toContain(".er/");
   });
 
   it("names the agent when a scoped filter has no findings or summary", () => {
@@ -331,7 +333,7 @@ describe("showEmptyFindingsStatus", () => {
     ).toBe(false);
     expect(
       showEmptyFindingsStatus(true, {
-        text: "Inspect the `.er/` folder",
+        text: "Reveal review files",
         markdown: false,
       }),
     ).toBe(false);
