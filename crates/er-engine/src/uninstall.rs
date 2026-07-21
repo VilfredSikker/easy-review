@@ -350,7 +350,9 @@ fn paths_same(a: &Path, b: &Path) -> bool {
 pub fn execute(targets: &[UninstallTarget]) -> UninstallReport {
     let mut report = UninstallReport::default();
 
-    let current_exe = std::env::current_exe().ok().map(|p| canonicalize_best_effort(&p));
+    let current_exe = std::env::current_exe()
+        .ok()
+        .map(|p| canonicalize_best_effort(&p));
     let current_app = current_exe
         .as_ref()
         .and_then(|p| enclosing_app_bundle(p).map(|a| canonicalize_best_effort(&a)));
@@ -543,7 +545,10 @@ mod tests {
             std::os::unix::fs::symlink(&target, &link).unwrap();
             remove_path(&link).unwrap();
             assert!(!link.exists());
-            assert!(target.join("keep.txt").exists(), "symlink target must survive");
+            assert!(
+                target.join("keep.txt").exists(),
+                "symlink target must survive"
+            );
         }
         #[cfg(not(unix))]
         {
@@ -559,7 +564,9 @@ mod tests {
     #[test]
     fn product_binary_name_is_er_only() {
         assert!(looks_like_product_binary(Path::new("/usr/local/bin/er")));
-        assert!(!looks_like_product_binary(Path::new("/usr/local/bin/er-tui")));
+        assert!(!looks_like_product_binary(Path::new(
+            "/usr/local/bin/er-tui"
+        )));
         // Name check alone accepts cargo outputs; install_location gates those out.
         assert!(looks_like_product_binary(Path::new("/tmp/target/debug/er")));
         assert!(!is_install_location(Path::new("/tmp/target/debug/er")));
@@ -570,9 +577,7 @@ mod tests {
         assert!(!is_install_location(Path::new(
             "/Users/me/proj/target/tui/debug/er"
         )));
-        assert!(is_install_location(Path::new(
-            "/Users/me/.local/bin/er"
-        )));
+        assert!(is_install_location(Path::new("/Users/me/.local/bin/er")));
     }
 
     #[test]
