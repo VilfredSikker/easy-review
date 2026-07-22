@@ -2989,6 +2989,16 @@ impl App {
                     }
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
+                // Selected-file reviews overwrite sidecars with a subset —
+                // merge back into the pre-scoped snapshot when present.
+                if let Err(e) = crate::ai::apply_scoped_sidecar_merge(
+                    std::path::Path::new(&er_dir),
+                    &command_name_fail,
+                ) {
+                    anyhow::bail!(
+                        "{command_name_fail} wrote artifacts but failed to merge with previous review: {e}"
+                    );
+                }
                 Ok(())
             })();
             let _ = result_tx.send(result);

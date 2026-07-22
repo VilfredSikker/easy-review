@@ -7,6 +7,7 @@ pub mod professor;
 pub mod prompts;
 mod relocate;
 mod review;
+pub mod scoped_merge;
 pub mod triage;
 
 pub use comments::*;
@@ -17,4 +18,5 @@ pub use loader::*;
 pub use professor::*;
 pub use relocate::*;
 pub use review::*;
+pub use scoped_merge::*;
 pub use triage::*;

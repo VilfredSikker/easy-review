@@ -3316,6 +3316,7 @@ pub fn run_ai_scoped_review(
 
     let scoped_files = !paths.is_empty();
     let file_count = paths.len();
+    let er_path = std::path::Path::new(&er_dir);
     let diff_body = if scoped_files {
         let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
         if filtered.trim().is_empty() {
@@ -3324,15 +3325,16 @@ pub fn run_ai_scoped_review(
         let mut sorted_paths = paths;
         sorted_paths.sort();
         let manifest = sorted_paths.join("\n");
-        std::fs::write(
-            std::path::Path::new(&er_dir).join("review-files.txt"),
-            format!("{manifest}\n"),
-        )
-        .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
+            .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+        // Keep prior findings for files outside this selection: snapshot
+        // before the agent overwrites the sidecars, then merge on exit.
+        er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
+            .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
         filtered
     } else {
-        // Full-diff multi-reviewer run: no file manifest.
-        let _ = std::fs::remove_file(std::path::Path::new(&er_dir).join("review-files.txt"));
+        // Full-diff multi-reviewer run: no file manifest / no merge.
+        er_engine::ai::clear_scoped_review_snapshots(er_path);
         let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
         if ignore.is_empty() {
             raw
