@@ -14,6 +14,7 @@
   import OptionGroup from "./OptionGroup.svelte";
   import SettingsTextField from "./SettingsTextField.svelte";
   import ProjectSettingsCard from "./ProjectSettingsCard.svelte";
+  import AiProviderEditor from "./AiProviderEditor.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
   interface Props {
@@ -37,10 +38,13 @@
   let generalFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
+  let familyOptions = $state<string[]>([]);
   let selectedEffort = $state("Auto");
   let repoRoot = $state("");
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
+  let editProviders = $state(false);
+  let refreshingModels = $state(false);
 
   let uninstallPreview = $state<{
     targets: { kind: string; path: string; exists: boolean; description: string }[];
@@ -93,9 +97,13 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
+    familyOptions = res.familyOptions ?? [];
     selectedEffort = res.activeEffort ?? "Auto";
     if (!effortOptions.includes(selectedEffort)) selectedEffort = "Auto";
     repoRoot = res.settings.repoRoot;
+    for (const w of res.warnings ?? []) {
+      app.showToast("info", w);
+    }
   }
 
   async function reload() {
@@ -141,6 +149,21 @@
     const model = p.models.find((item) => item.id === modelId);
     if (!model?.effort_levels.includes(selectedEffort)) selectedEffort = "Auto";
     await reload();
+  }
+
+  async function refreshModels(force = true) {
+    refreshingModels = true;
+    try {
+      const list = await invoke<AiProviderInfo[]>("refresh_ai_models", {
+        providerId: null,
+        force,
+      });
+      providers = list;
+    } catch (e) {
+      app.showToast("error", `refresh_ai_models: ${e}`);
+    } finally {
+      refreshingModels = false;
+    }
   }
 
   async function selectEffort(level: string) {
@@ -463,13 +486,44 @@
                 </div>
                 <p class="text-[11px] text-muted mt-1.5">Auto uses the provider default.</p>
               </div>
+              <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-hairline">
+                <Button
+                  variant="ghost"
+                  disabled={refreshingModels}
+                  onclick={() => void refreshModels(true)}
+                >
+                  {refreshingModels ? "Refreshing…" : "Refresh models"}
+                </Button>
+                <Button variant="ghost" onclick={() => (editProviders = !editProviders)}>
+                  {editProviders ? "Hide provider editor" : "Edit providers…"}
+                </Button>
+              </div>
+              {#if editProviders}
+                <AiProviderEditor
+                  {providers}
+                  {familyOptions}
+                  onUpdated={(res) => applySettings(res)}
+                  onError={(msg) => app.showToast("error", msg)}
+                />
+              {/if}
             </div>
           {:else}
             <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">
               <p class="text-xs text-muted">
-                No <code class="font-mono">[ai_hub]</code> providers in config. Add providers in
-                <code class="font-mono">~/.config/er/config.toml</code>.
+                No <code class="font-mono">[ai_hub]</code> providers configured — add one in Settings → AI
+                Hub (settings are saved automatically to managed app data).
               </p>
+              <div class="mt-3">
+                <Button variant="ghost" onclick={() => (editProviders = true)}>Edit providers…</Button>
+              </div>
+              {#if editProviders}
+                <AiProviderEditor
+                  {providers}
+                  {familyOptions}
+                  onUpdated={(res) => applySettings(res)}
+                  onError={(msg) => app.showToast("error", msg)}
+                />
+              {/if}
             </div>
           {/if}
 
@@ -550,7 +604,7 @@
 
     <footer class="shrink-0 flex items-center px-5 py-2 border-t border-hairline bg-surface">
       <span class="max-w-2xl mx-auto w-full px-1 text-[10px] font-mono text-muted">
-        Saved automatically to ~/.config/er/config.toml
+        Settings are saved automatically to managed app data
       </span>
     </footer>
   {/if}

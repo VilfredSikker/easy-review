@@ -38,24 +38,18 @@ pub fn resolve_provider_command(
         .get(provider_id)
         .with_context(|| format!("unknown provider: {provider_id}"))?;
     let mut args = provider.args.clone();
+    let family = provider.cli_family();
     if let Some(model) = provider.models.iter().find(|m| m.id == model_id) {
-        crate::config::extend_provider_model_args(&provider.command, &mut args, &model.args);
+        crate::config::extend_provider_model_args(family, &mut args, &model.args);
     }
     let effort = crate::config::normalize_effort(hub, Some(provider_id), Some(model_id), effort);
-    inject_provider_effort(
-        &provider.command,
-        &mut args,
-        Some(model_id),
-        effort.as_deref(),
-    );
+    inject_provider_effort(family, &mut args, Some(model_id), effort.as_deref());
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
-    inject_agent_storage_access(&provider.command, &mut args, storage_dir);
+    inject_agent_storage_access(family, &mut args, storage_dir);
     let mut env = Vec::new();
-    if let Some(pair) =
-        crate::config::apply_opencode_spawn(&provider.command, &mut args, storage_dir)
-    {
+    if let Some(pair) = crate::config::apply_opencode_spawn(family, &mut args, storage_dir) {
         env.push(pair);
     }
     Ok(ProviderCommand {

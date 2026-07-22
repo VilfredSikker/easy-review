@@ -2241,6 +2241,7 @@ impl App {
             is_stream_json,
             resolved_provider_id,
             resolved_model_id,
+            family,
         ) = if let Some(provider_id) = self
             .config
             .ai_hub
@@ -2257,13 +2258,10 @@ impl App {
                 .config
                 .ai_hub
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
+            let family = provider.cli_family();
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    crate::config::extend_provider_model_args(
-                        &provider.command,
-                        &mut args,
-                        &model.args,
-                    );
+                    crate::config::extend_provider_model_args(family, &mut args, &model.args);
                 }
             }
             let is_claude = crate::config::agent_command_is_claude(&provider.command);
@@ -2276,11 +2274,13 @@ impl App {
                 provider.uses_stream_json_log(),
                 Some(provider_id),
                 resolved_model_id,
+                family,
             )
         } else {
             let cmd = self.config.agent.command.clone();
             let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
+            let family = crate::config::CliFamily::detect(&cmd);
             (
                 cmd.clone(),
                 self.config.agent.args.clone(),
@@ -2289,6 +2289,7 @@ impl App {
                 crate::config::agent_command_uses_stream_json(&cmd),
                 None,
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+                family,
             )
         };
         let effort_override = if name == "triage" { Some("low") } else { None };
@@ -2301,7 +2302,7 @@ impl App {
             effort_override,
         );
         crate::config::inject_provider_effort(
-            &agent_cmd,
+            family,
             &mut config_args,
             resolved_model_id.as_deref(),
             effort.as_deref(),
@@ -2310,12 +2311,12 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_agent_storage_access(
-            &agent_cmd,
+            family,
             &mut config_args,
             Some(er_dir_path.as_str()),
         );
         let opencode_env = crate::config::apply_opencode_spawn(
-            &agent_cmd,
+            family,
             &mut config_args,
             Some(er_dir_path.as_str()),
         );
@@ -2696,6 +2697,7 @@ impl App {
             is_stream_json,
             resolved_provider_id,
             resolved_model_id,
+            family,
         ) = if let Some(provider_id) = self
             .config
             .ai_hub
@@ -2712,13 +2714,10 @@ impl App {
                 .config
                 .ai_hub
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
+            let family = provider.cli_family();
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    crate::config::extend_provider_model_args(
-                        &provider.command,
-                        &mut args,
-                        &model.args,
-                    );
+                    crate::config::extend_provider_model_args(family, &mut args, &model.args);
                 }
             }
             let is_claude = crate::config::agent_command_is_claude(&provider.command);
@@ -2731,11 +2730,13 @@ impl App {
                 provider.uses_stream_json_log(),
                 Some(provider_id),
                 resolved_model_id,
+                family,
             )
         } else {
             let cmd = self.config.agent.command.clone();
             let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
+            let family = crate::config::CliFamily::detect(&cmd);
             (
                 cmd.clone(),
                 self.config.agent.args.clone(),
@@ -2744,6 +2745,7 @@ impl App {
                 crate::config::agent_command_uses_stream_json(&cmd),
                 None,
                 (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+                family,
             )
         };
 
@@ -2761,7 +2763,7 @@ impl App {
             effort_override,
         );
         crate::config::inject_provider_effort(
-            &agent_cmd,
+            family,
             &mut config_args,
             resolved_model_id.as_deref(),
             effort.as_deref(),
@@ -2770,12 +2772,12 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_agent_storage_access(
-            &agent_cmd,
+            family,
             &mut config_args,
             Some(target.er_dir.as_str()),
         );
         let opencode_env = crate::config::apply_opencode_spawn(
-            &agent_cmd,
+            family,
             &mut config_args,
             Some(target.er_dir.as_str()),
         );

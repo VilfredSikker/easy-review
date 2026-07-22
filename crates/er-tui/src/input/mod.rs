@@ -250,6 +250,9 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
+        HubAction::RefreshAiModels { provider_id } => {
+            app.request_model_discovery(provider_id);
+        }
         HubAction::OpenAiExpertPicker => {
             app.open_ai_expert_picker();
         }

@@ -22,18 +22,15 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id) =
+    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id, family) =
         if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
             if let Some(provider) = config.ai_hub.providers.get(&pid) {
                 let mut args = provider.args.clone();
+                let family = provider.cli_family();
                 let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(mid) = &resolved_model_id {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                        crate::config::extend_provider_model_args(
-                            &provider.command,
-                            &mut args,
-                            &model.args,
-                        );
+                        crate::config::extend_provider_model_args(family, &mut args, &model.args);
                     }
                 }
                 let is_claude = crate::config::agent_command_is_claude(&provider.command);
@@ -43,6 +40,7 @@ pub fn plan_card_ai_invocation(
                     is_claude,
                     Some(pid.to_string()),
                     resolved_model_id,
+                    family,
                 )
             } else {
                 fallback_agent(config)
@@ -54,7 +52,7 @@ pub fn plan_card_ai_invocation(
     // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode,
     // paired with a read-only permission object so asks cannot mutate the tree.
     let mut env = Vec::new();
-    if let Some(pair) = crate::config::apply_opencode_readonly_spawn(&command, &mut args) {
+    if let Some(pair) = crate::config::apply_opencode_readonly_spawn(family, &mut args) {
         env.push(pair);
     }
 
@@ -73,7 +71,7 @@ pub fn plan_card_ai_invocation(
         None,
     );
     inject_provider_effort(
-        &command,
+        family,
         &mut args,
         resolved_model_id.as_deref(),
         effort.as_deref(),
@@ -93,15 +91,24 @@ pub fn plan_card_ai_invocation(
 
 fn fallback_agent(
     config: &ErConfig,
-) -> (String, Vec<String>, bool, Option<String>, Option<String>) {
+) -> (
+    String,
+    Vec<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+    crate::config::CliFamily,
+) {
     let cmd = config.agent.command.clone();
     let is_claude = crate::config::agent_command_is_claude(&cmd);
+    let family = crate::config::CliFamily::detect(&cmd);
     (
         cmd,
         config.agent.args.clone(),
         is_claude,
         None,
         (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
+        family,
     )
 }
 

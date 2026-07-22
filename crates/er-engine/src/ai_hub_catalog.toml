@@ -6,6 +6,7 @@ default_model = "sonnet-5"
 [ai_hub.providers.claude]
 label = "Claude"
 command = "claude"
+family = "claude"
 args = ["--print", "-p", "{prompt}"]
 
 [[ai_hub.providers.claude.models]]
@@ -51,6 +52,7 @@ avg_latency_ms = 5000
 [ai_hub.providers.codex]
 label = "Codex"
 command = "codex"
+family = "codex"
 args = ["exec", "--ignore-user-config", "--skip-git-repo-check", "--sandbox", "workspace-write", "{prompt}"]
 
 [[ai_hub.providers.codex.models]]
@@ -126,6 +128,8 @@ avg_latency_ms = 7000
 [ai_hub.providers.cursor]
 label = "Cursor"
 command = "agent"
+family = "cursor"
+models_command = ["agent", "--list-models"]
 args = [
     "--print",
     "--trust",
@@ -157,6 +161,8 @@ avg_latency_ms = 12000
 [ai_hub.providers.opencode]
 label = "OpenCode"
 command = "opencode"
+family = "opencode"
+models_command = ["opencode", "models"]
 # `{prompt}` must stay last: OpenCode treats the message as a positional arg.
 # Model/effort flags are inserted before `{prompt}` by extend_provider_model_args.
 args = ["run", "--auto", "{prompt}"]
