@@ -12,30 +12,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CliFamily {
-    Claude,
-    Codex,
-    Cursor,
-    OpenCode,
-    Other,
-}
-
-impl CliFamily {
-    pub fn detect(command: &str) -> Self {
-        match crate::config::agent_command_stem(command) {
-            "claude" => Self::Claude,
-            "codex" => Self::Codex,
-            "agent" => Self::Cursor,
-            "opencode" => Self::OpenCode,
-            _ => Self::Other,
-        }
-    }
-
-    fn supports_claude_stream_json(self) -> bool {
-        matches!(self, Self::Claude | Self::Cursor)
-    }
-}
+pub use crate::config::CliFamily;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AgentTaskKind {
@@ -209,7 +186,8 @@ pub fn resolve_invocation(
     config: &ErConfig,
     request: AgentInvocationRequest<'_>,
 ) -> Result<AgentInvocation> {
-    let (command, mut args, resolved_provider_id, resolved_model_id) = match request.selection {
+    let (command, mut args, resolved_provider_id, resolved_model_id, family) = match request.selection
+    {
         AgentSelection::Runtime {
             provider_id,
             model_id,
@@ -220,24 +198,33 @@ pub fn resolve_invocation(
                     .providers
                     .get(&pid)
                     .with_context(|| format!("unknown provider: {pid}"))?;
+                let family = provider.cli_family();
                 let mut args = provider.args.clone();
                 let resolved_model = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(model_id) = &resolved_model {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
                         crate::config::extend_provider_model_args(
-                            &provider.command,
+                            family,
                             &mut args,
                             &model.args,
                         );
                     }
                 }
-                (provider.command.clone(), args, Some(pid), resolved_model)
+                (
+                    provider.command.clone(),
+                    args,
+                    Some(pid),
+                    resolved_model,
+                    family,
+                )
             } else {
+                let family = CliFamily::detect(&config.agent.command);
                 (
                     config.agent.command.clone(),
                     config.agent.args.clone(),
                     None,
                     (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
+                    family,
                 )
             }
         }
@@ -250,29 +237,30 @@ pub fn resolve_invocation(
                 .providers
                 .get(provider_id)
                 .with_context(|| format!("unknown provider: {provider_id}"))?;
+            let family = provider.cli_family();
             let model = provider
                 .models
                 .iter()
                 .find(|m| m.id == model_id)
                 .with_context(|| format!("unknown model {model_id} for provider {provider_id}"))?;
             let mut args = provider.args.clone();
-            crate::config::extend_provider_model_args(&provider.command, &mut args, &model.args);
+            crate::config::extend_provider_model_args(family, &mut args, &model.args);
             (
                 provider.command.clone(),
                 args,
                 Some(provider_id.to_string()),
                 Some(model_id.to_string()),
+                family,
             )
         }
     };
 
-    let family = CliFamily::detect(&command);
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
     // Only grant managed-storage --add-dir when the task needs artifact I/O.
     // ReadOnly must not receive a Codex-writable extra root.
-    crate::config::inject_agent_storage_access(&command, &mut args, request.access.output_dir());
+    crate::config::inject_agent_storage_access(family, &mut args, request.access.output_dir());
     if family == CliFamily::Codex {
         if let Some(output_dir) = request.access.output_dir() {
             inject_codex_writable_dir(&mut args, output_dir);
@@ -291,7 +279,7 @@ pub fn resolve_invocation(
             request.effort_override,
         );
         inject_provider_effort(
-            &command,
+            family,
             &mut args,
             resolved_model_id.as_deref(),
             effort.as_deref(),
@@ -309,11 +297,11 @@ pub fn resolve_invocation(
 
     let mut env = Vec::new();
     if matches!(request.access, AgentAccessProfile::ReadOnly) {
-        if let Some(pair) = crate::config::apply_opencode_readonly_spawn(&command, &mut args) {
+        if let Some(pair) = crate::config::apply_opencode_readonly_spawn(family, &mut args) {
             env.push(pair);
         }
     } else if let Some(pair) =
-        crate::config::apply_opencode_spawn(&command, &mut args, request.access.output_dir())
+        crate::config::apply_opencode_spawn(family, &mut args, request.access.output_dir())
     {
         // apply_opencode_spawn still runs ensure_opencode_auto when storage_dir is None.
         env.push(pair);
@@ -1107,6 +1095,73 @@ mod tests {
         assert_eq!(parsed["edit"], "deny");
         assert_eq!(parsed["external_directory"]["*"], "deny");
         assert!(!invocation.args.iter().any(|a| a == "stream-json"));
+    }
+
+    #[test]
+    fn family_override_drives_opencode_and_claude_injection() {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "mytool".into(),
+            crate::config::AiProviderConfig {
+                command: "mytool".into(),
+                args: vec!["run".into(), "{prompt}".into()],
+                family: Some("opencode".into()),
+                models: vec![crate::config::AiModelConfig {
+                    id: "m1".into(),
+                    args: vec!["--model".into(), "m1".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let task = AgentTaskKind::Review;
+        let opencode = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Exact {
+                    provider_id: "mytool",
+                    model_id: "m1",
+                },
+                task: &task,
+                effort: None,
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::LocalArtifacts {
+                    output_dir: "/managed/review".into(),
+                },
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(opencode.family, CliFamily::OpenCode);
+        assert!(opencode.args.iter().any(|a| a == "--auto"));
+        assert_eq!(opencode.env[0].0, "OPENCODE_PERMISSION");
+
+        config
+            .ai_hub
+            .providers
+            .get_mut("mytool")
+            .unwrap()
+            .family = Some("claude".into());
+        let claude = resolve_invocation(
+            &config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Exact {
+                    provider_id: "mytool",
+                    model_id: "m1",
+                },
+                task: &task,
+                effort: None,
+                effort_override: None,
+                work_dir: "/repo".into(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(claude.family, CliFamily::Claude);
+        assert!(claude.args.iter().any(|a| a == "--allowedTools"));
+        assert!(!claude.args.iter().any(|a| a == "--auto"));
     }
 
     #[test]

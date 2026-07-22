@@ -132,6 +132,9 @@ pub struct FeatureFlags {
     /// Multi-round AI Review Arena (orchestrated debate + consensus UI).
     #[serde(default = "default_true")]
     pub arena: bool,
+    /// Discover models from provider CLIs (`models_command`) and merge into pickers.
+    #[serde(default = "default_true")]
+    pub model_discovery: bool,
 }
 
 /// Claude-compatible effort levels passed as `--effort` when spawning agents.
@@ -162,6 +165,10 @@ pub struct AiHubConfig {
     pub default_effort: Option<String>,
     #[serde(default)]
     pub providers: BTreeMap<String, AiProviderConfig>,
+    /// Catalog provider ids the user deleted — `supplement_ai_hub` will not
+    /// re-insert them.
+    #[serde(default)]
+    pub removed_catalog_providers: Vec<String>,
     /// Max agent processes running at once (background reviews + arena
     /// reviewers). Extra requests queue and start as slots free up.
     /// 0 means "use the default".
@@ -202,8 +209,19 @@ pub struct AiProviderConfig {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// Optional family override (`"claude"|"codex"|"cursor"|"opencode"`) so a
+    /// custom command can adopt an existing family's arg conventions.
+    #[serde(default)]
+    pub family: Option<String>,
+    /// CLI that lists model ids (e.g. `["agent", "--list-models"]`). Empty = no discovery.
+    #[serde(default)]
+    pub models_command: Vec<String>,
     #[serde(default)]
     pub models: Vec<AiModelConfig>,
+    /// Catalog model ids the user deleted for this provider — `supplement_ai_hub`
+    /// will not re-insert them.
+    #[serde(default)]
+    pub removed_catalog_models: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -227,6 +245,9 @@ pub struct AiModelConfig {
     /// a model ID.
     #[serde(default)]
     pub effort_levels: Vec<String>,
+    /// Runtime-only overlay marker for models from CLI discovery. Never persisted.
+    #[serde(skip)]
+    pub discovered: bool,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -324,6 +345,7 @@ impl Default for FeatureFlags {
             view_hidden: true,
             view_tour: true,
             arena: true,
+            model_discovery: true,
         }
     }
 }
@@ -511,7 +533,7 @@ struct AiHubCatalogFile {
 }
 
 /// Built-in `[ai_hub]` presets shipped with `er` (see `ai_hub_catalog.toml`).
-fn ai_hub_catalog() -> AiHubConfig {
+pub fn ai_hub_catalog() -> AiHubConfig {
     toml::from_str::<AiHubCatalogFile>(include_str!("ai_hub_catalog.toml"))
         .map(|f| f.ai_hub)
         .unwrap_or_default()
@@ -520,10 +542,19 @@ fn ai_hub_catalog() -> AiHubConfig {
 const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4.7"];
 
 /// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
+///
+/// Respects tombstones (`removed_catalog_providers` / `removed_catalog_models`) so
+/// user deletes stick across reloads. Backfills unset `family` / `models_command`
+/// from the catalog so new metadata reaches previously-saved configs.
 pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
     let catalog = ai_hub_catalog();
     if hub.providers.is_empty() {
+        let removed_providers = std::mem::take(&mut hub.removed_catalog_providers);
         *hub = catalog;
+        hub.removed_catalog_providers = removed_providers;
+        for id in hub.removed_catalog_providers.clone() {
+            hub.providers.remove(&id);
+        }
         return;
     }
 
@@ -540,12 +571,36 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
         hub.default_model = catalog.default_model.clone();
     }
 
+    let removed_providers: HashSet<&str> = hub
+        .removed_catalog_providers
+        .iter()
+        .map(String::as_str)
+        .collect();
+
     for (id, catalog_provider) in catalog.providers {
+        if removed_providers.contains(id.as_str()) {
+            continue;
+        }
         match hub.providers.get_mut(&id) {
             Some(existing) => {
+                if existing.family.is_none() {
+                    existing.family = catalog_provider.family.clone();
+                }
+                if existing.models_command.is_empty() && !catalog_provider.models_command.is_empty()
+                {
+                    existing.models_command = catalog_provider.models_command.clone();
+                }
+                let removed_models: HashSet<&str> = existing
+                    .removed_catalog_models
+                    .iter()
+                    .map(String::as_str)
+                    .collect();
                 let existing_ids: HashSet<String> =
                     existing.models.iter().map(|m| m.id.clone()).collect();
                 for model in catalog_provider.models {
+                    if removed_models.contains(model.id.as_str()) {
+                        continue;
+                    }
                     if !existing_ids.contains(&model.id) {
                         existing.models.push(model);
                     }
@@ -577,10 +632,171 @@ impl AiProviderConfig {
             .unwrap_or_else(|| title_case(provider_id))
     }
 
+    /// Resolve the CLI family: explicit `family` override when valid, else detect from `command`.
+    pub fn cli_family(&self) -> CliFamily {
+        self.family
+            .as_deref()
+            .and_then(CliFamily::from_id)
+            .unwrap_or_else(|| CliFamily::detect(&self.command))
+    }
+
     /// True when this provider's CLI emits Claude/Cursor-style `stream-json` on stdout.
     pub fn uses_stream_json_log(&self) -> bool {
-        agent_command_uses_stream_json(&self.command)
+        matches!(self.cli_family(), CliFamily::Claude | CliFamily::Cursor)
     }
+}
+
+/// Overlay CLI-discovered models onto a provider: presets win on id collision;
+/// previous discovered rows are replaced. Safe to call repeatedly.
+pub fn overlay_discovered_models(
+    provider: &mut AiProviderConfig,
+    models: &[crate::model_discovery::DiscoveredModel],
+) {
+    provider.models.retain(|m| !m.discovered);
+    let preset_ids: HashSet<String> = provider.models.iter().map(|m| m.id.clone()).collect();
+    for model in models {
+        if preset_ids.contains(&model.id) {
+            continue;
+        }
+        provider.models.push(AiModelConfig {
+            id: model.id.clone(),
+            label: Some(model.label.clone()),
+            description: None,
+            args: vec!["--model".into(), model.id.clone()],
+            effort_levels: vec![],
+            cost_per_1k_in: None,
+            cost_per_1k_out: None,
+            avg_latency_ms: None,
+            discovered: true,
+        });
+    }
+}
+
+/// Remove a provider; tombstone catalog ids so `supplement_ai_hub` does not resurrect them.
+/// User-created providers are removed with no tombstone.
+pub fn remove_ai_provider(hub: &mut AiHubConfig, id: &str) {
+    hub.providers.remove(id);
+    if ai_hub_catalog().providers.contains_key(id)
+        && !hub.removed_catalog_providers.iter().any(|p| p == id)
+    {
+        hub.removed_catalog_providers.push(id.to_string());
+    }
+}
+
+/// Remove a model; tombstone catalog model ids only. Returns Err when provider is unknown.
+pub fn remove_ai_model(
+    hub: &mut AiHubConfig,
+    provider_id: &str,
+    model_id: &str,
+) -> Result<(), String> {
+    let provider = hub
+        .providers
+        .get_mut(provider_id)
+        .ok_or_else(|| format!("unknown provider: {provider_id}"))?;
+    provider.models.retain(|m| m.id != model_id);
+    let catalog_has = ai_hub_catalog()
+        .providers
+        .get(provider_id)
+        .map(|p| p.models.iter().any(|m| m.id == model_id))
+        .unwrap_or(false);
+    if catalog_has && !provider.removed_catalog_models.iter().any(|m| m == model_id) {
+        provider.removed_catalog_models.push(model_id.to_string());
+    }
+    Ok(())
+}
+
+/// Known agent CLI families. Controls arg injection, effort flags, and storage access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CliFamily {
+    Claude,
+    Codex,
+    Cursor,
+    OpenCode,
+    Other,
+}
+
+impl CliFamily {
+    pub fn from_id(id: &str) -> Option<Self> {
+        match id.trim().to_ascii_lowercase().as_str() {
+            "claude" => Some(Self::Claude),
+            "codex" => Some(Self::Codex),
+            "cursor" => Some(Self::Cursor),
+            "opencode" => Some(Self::OpenCode),
+            _ => None,
+        }
+    }
+
+    pub fn detect(command: &str) -> Self {
+        match agent_command_stem(command) {
+            "claude" => Self::Claude,
+            "codex" => Self::Codex,
+            "agent" => Self::Cursor,
+            "opencode" => Self::OpenCode,
+            _ => Self::Other,
+        }
+    }
+
+    pub fn supports_claude_stream_json(self) -> bool {
+        matches!(self, Self::Claude | Self::Cursor)
+    }
+
+    pub fn id(self) -> Option<&'static str> {
+        match self {
+            Self::Claude => Some("claude"),
+            Self::Codex => Some("codex"),
+            Self::Cursor => Some("cursor"),
+            Self::OpenCode => Some("opencode"),
+            Self::Other => None,
+        }
+    }
+}
+
+/// Known family ids accepted by `family = "..."` in provider config.
+pub const KNOWN_FAMILY_IDS: &[&str] = &["claude", "codex", "cursor", "opencode"];
+
+/// Validate a provider config for the desktop editor (and optional load-time checks).
+///
+/// Returns soft warnings separately — missing `{prompt}` is a warning, not an error,
+/// because `build_argv` appends the prompt as a trailing arg when the placeholder is absent.
+pub fn validate_provider_config(id: &str, p: &AiProviderConfig) -> Result<Vec<String>, String> {
+    let id = id.trim();
+    if id.is_empty() {
+        return Err("Provider id must not be empty".into());
+    }
+    if id.chars().any(char::is_whitespace) {
+        return Err(format!("Provider id '{id}' must not contain whitespace"));
+    }
+    if p.command.trim().is_empty() {
+        return Err("Provider command must not be empty".into());
+    }
+    if let Some(family) = p.family.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        if CliFamily::from_id(family).is_none() {
+            return Err(format!(
+                "Unknown family '{family}' (expected one of: {})",
+                KNOWN_FAMILY_IDS.join(", ")
+            ));
+        }
+    }
+    if !p.models_command.is_empty() && p.models_command[0].trim().is_empty() {
+        return Err("models_command first element must not be empty".into());
+    }
+    let mut seen = HashSet::new();
+    for model in &p.models {
+        if model.id.trim().is_empty() {
+            return Err("Model id must not be empty".into());
+        }
+        if !seen.insert(model.id.clone()) {
+            return Err(format!("Duplicate model id '{}'", model.id));
+        }
+    }
+    let mut warnings = Vec::new();
+    if !p.args.iter().any(|a| a.contains("{prompt}")) {
+        warnings.push(
+            "args do not contain {prompt} — the prompt will be appended as a trailing argument"
+                .into(),
+        );
+    }
+    Ok(warnings)
 }
 
 /// CLI commands that emit Claude/Cursor-style `stream-json` on stdout.
@@ -624,11 +840,11 @@ pub fn agent_command_is_opencode(command: &str) -> bool {
 ///
 /// OpenCode treats the prompt as a trailing positional (`opencode run [message..]`),
 /// so model flags must land *before* `{prompt}` or they become part of the message.
-pub fn extend_provider_model_args(command: &str, args: &mut Vec<String>, model_args: &[String]) {
+pub fn extend_provider_model_args(family: CliFamily, args: &mut Vec<String>, model_args: &[String]) {
     if model_args.is_empty() {
         return;
     }
-    if agent_command_is_opencode(command) {
+    if family == CliFamily::OpenCode {
         let insert_at = args
             .iter()
             .position(|arg| arg.contains("{prompt}"))
@@ -715,11 +931,11 @@ pub fn opencode_readonly_permission_env() -> (String, String) {
 /// is `None` (callers that need read-only policy should use
 /// [`apply_opencode_readonly_spawn`]).
 pub fn apply_opencode_spawn(
-    command: &str,
+    family: CliFamily,
     args: &mut Vec<String>,
     storage_dir: Option<&str>,
 ) -> Option<(String, String)> {
-    if !agent_command_is_opencode(command) {
+    if family != CliFamily::OpenCode {
         return None;
     }
     ensure_opencode_auto(args);
@@ -730,10 +946,10 @@ pub fn apply_opencode_spawn(
 ///
 /// Non-OpenCode commands are left unchanged and return `None`.
 pub fn apply_opencode_readonly_spawn(
-    command: &str,
+    family: CliFamily,
     args: &mut Vec<String>,
 ) -> Option<(String, String)> {
-    if !agent_command_is_opencode(command) {
+    if family != CliFamily::OpenCode {
         return None;
     }
     ensure_opencode_auto(args);
@@ -747,17 +963,17 @@ pub fn apply_opencode_readonly_spawn(
 /// Callers must pass the active review bucket (`er_dir`), never the global
 /// storage root — Codex `--add-dir` under `workspace-write` makes that path
 /// writable. Pass `None` for read-only invocations or when artifacts already
-/// live inside the worktree. Unknown/custom provider commands are left
+/// live inside the worktree. Unknown/custom provider families are left
 /// unchanged because their command line contracts are not known to us.
 pub fn inject_agent_storage_access(
-    command: &str,
+    family: CliFamily,
     args: &mut Vec<String>,
     storage_dir: Option<&str>,
 ) {
-    if !(agent_command_is_claude(command)
-        || agent_command_is_codex(command)
-        || agent_command_is_cursor(command))
-    {
+    if !matches!(
+        family,
+        CliFamily::Claude | CliFamily::Codex | CliFamily::Cursor
+    ) {
         return;
     }
 
@@ -765,7 +981,7 @@ pub fn inject_agent_storage_access(
         return;
     };
 
-    let insert_at = if agent_command_is_codex(command) {
+    let insert_at = if family == CliFamily::Codex {
         args.iter()
             .position(|arg| arg == "exec")
             .map(|index| index + 1)
@@ -780,7 +996,7 @@ pub fn inject_agent_storage_access(
             .unwrap_or(0)
     };
 
-    if agent_command_is_codex(command) {
+    if family == CliFamily::Codex {
         inject_additional_dir(args, directory, insert_at, false);
     } else {
         inject_additional_dir(args, directory, insert_at, true);
@@ -944,17 +1160,16 @@ pub fn inject_opencode_effort(args: &mut Vec<String>, effort: Option<&str>) {
 ///
 /// Codex only supports this override for models with advertised effort levels.
 pub fn inject_provider_effort(
-    command: &str,
+    family: CliFamily,
     args: &mut Vec<String>,
     model_id: Option<&str>,
     effort: Option<&str>,
 ) {
-    if agent_command_is_claude(command) {
-        inject_claude_effort(args, effort);
-    } else if agent_command_is_codex(command) && model_id.is_some() {
-        inject_codex_effort(args, effort);
-    } else if agent_command_is_opencode(command) {
-        inject_opencode_effort(args, effort);
+    match family {
+        CliFamily::Claude => inject_claude_effort(args, effort),
+        CliFamily::Codex if model_id.is_some() => inject_codex_effort(args, effort),
+        CliFamily::OpenCode => inject_opencode_effort(args, effort),
+        _ => {}
     }
 }
 
@@ -1063,7 +1278,7 @@ pub fn split_shell_args(s: &str) -> Vec<String> {
 }
 
 /// Global config directory (`$XDG_CONFIG_HOME/er`, else `~/.config/er`, else
-/// the platform config dir). Shared by load/save and uninstall planning.
+/// the platform config dir). Used by migration (legacy source) and uninstall.
 pub fn global_config_dir() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
@@ -1078,37 +1293,123 @@ pub fn global_config_dir() -> Option<std::path::PathBuf> {
     dirs::config_dir().map(|d| d.join("er"))
 }
 
-/// Load the global config (~/.config/er/config.toml).
+/// Path to the managed `config.toml`.
+///
+/// Overridden by `ER_CONFIG_PATH` when set (full file path). Otherwise
+/// `<storage_root>/config.toml`.
+pub fn managed_config_path() -> std::path::PathBuf {
+    if let Ok(override_path) = std::env::var("ER_CONFIG_PATH") {
+        if !override_path.is_empty() {
+            return std::path::PathBuf::from(override_path);
+        }
+    }
+    crate::storage::storage_root().join("config.toml")
+}
+
+fn legacy_config_candidates() -> Vec<std::path::PathBuf> {
+    let mut paths = Vec::new();
+    if let Some(p) = global_config_dir().map(|d| d.join("config.toml")) {
+        paths.push(p);
+    }
+    if let Some(p) = dirs::config_dir().map(|d| d.join("er").join("config.toml")) {
+        if !paths.iter().any(|existing| existing == &p) {
+            paths.push(p);
+        }
+    }
+    paths
+}
+
+/// One-time copy of legacy `~/.config/er/config.toml` into managed storage.
+/// Copy-only — never moves or deletes the legacy file.
+fn migrate_legacy_config() {
+    let dest = managed_config_path();
+    if dest.exists() {
+        return;
+    }
+    let Some(src) = legacy_config_candidates().into_iter().find(|p| p.exists()) else {
+        return;
+    };
+    let Ok(content) = std::fs::read(&src) else {
+        return;
+    };
+    let root = crate::storage::storage_root();
+    if std::fs::create_dir_all(&root).is_err() {
+        return;
+    }
+    let tmp = root.join(format!("config.toml.tmp.{}", std::process::id()));
+    if std::fs::write(&tmp, &content).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if std::fs::rename(&tmp, &dest).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+fn parse_config_from_path(path: &std::path::Path) -> Option<ErConfig> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let table = match content.parse::<toml::Table>() {
+        Ok(table) => table,
+        Err(_) => {
+            if path.file_name().is_some_and(|name| name == "config.toml") {
+                let invalid = path.with_file_name("config.toml.invalid");
+                let _ = std::fs::copy(path, &invalid);
+            }
+            return None;
+        }
+    };
+    match toml::Value::Table(table).try_into::<ErConfig>() {
+        Ok(config) => Some(config),
+        Err(_) => {
+            if path.file_name().is_some_and(|name| name == "config.toml") {
+                let invalid = path.with_file_name("config.toml.invalid");
+                let _ = std::fs::copy(path, &invalid);
+            }
+            None
+        }
+    }
+}
+
+/// Load the global config from managed storage (with one-time legacy migration).
 pub fn load_global_config() -> ErConfig {
-    let global_path = global_config_dir()
-        .map(|d| d.join("config.toml"))
-        .filter(|p| p.exists())
-        .or_else(|| {
-            dirs::config_dir()
-                .map(|d| d.join("er").join("config.toml"))
-                .filter(|p| p.exists())
-        });
+    let managed = managed_config_path();
+    if !managed.exists() {
+        migrate_legacy_config();
+    }
 
-    let global_table = global_path
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|c| c.parse::<toml::Table>().ok());
-
-    let mut config: ErConfig = match global_table {
-        Some(table) => toml::Value::Table(table).try_into().unwrap_or_default(),
-        None => ErConfig::default(),
+    let mut config = if managed.exists() {
+        parse_config_from_path(&managed).unwrap_or_default()
+    } else {
+        // Migration failed or no legacy file — try legacy paths for this session
+        // so a transient write error does not silently drop the user's settings.
+        legacy_config_candidates()
+            .into_iter()
+            .find(|p| p.exists())
+            .and_then(|p| parse_config_from_path(&p))
+            .unwrap_or_default()
     };
     supplement_ai_hub(&mut config.ai_hub);
     config
 }
 
-/// Save config to the global config dir (~/.config/er/config.toml).
+/// Save config to managed storage (`<storage_root>/config.toml`).
+///
+/// Strips runtime-only discovered models before serializing so discovery
+/// overlays never leak into the persisted file.
 pub fn save_config(config: &ErConfig) -> Result<()> {
-    let dir = global_config_dir()
-        .ok_or_else(|| anyhow::anyhow!("Could not determine config directory"))?;
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("config.toml");
-    let tmp_path = dir.join("config.toml.tmp");
-    let content = toml::to_string_pretty(config)?;
+    let root = crate::storage::storage_root();
+    std::fs::create_dir_all(&root)?;
+    let path = managed_config_path();
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let tmp_path = path.with_file_name(format!("config.toml.tmp.{}", std::process::id()));
+
+    let mut to_save = config.clone();
+    for provider in to_save.ai_hub.providers.values_mut() {
+        provider.models.retain(|m| !m.discovered);
+    }
+    let content = toml::to_string_pretty(&to_save)?;
     std::fs::write(&tmp_path, content)?;
     std::fs::rename(&tmp_path, &path)?;
     Ok(())
@@ -1304,6 +1605,12 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             options: hub_effort_options,
             get: hub_effort_value,
             set: set_hub_effort,
+        },
+        ConfigItem::BoolToggle {
+            label: "Model discovery".into(),
+            description: "List models from provider CLIs".into(),
+            get: |c| c.features.model_discovery,
+            set: |c, v| c.features.model_discovery = v,
         },
         ConfigItem::SectionHeader("Watched Paths".into()),
         ConfigItem::StringCycle {
@@ -1631,6 +1938,7 @@ mod tests {
                         cost_per_1k_out: None,
                         avg_latency_ms: None,
                         effort_levels: vec![],
+                        discovered: false,
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
@@ -1641,8 +1949,10 @@ mod tests {
                         cost_per_1k_out: None,
                         avg_latency_ms: None,
                         effort_levels: vec![],
+                        discovered: false,
                     },
                 ],
+                ..Default::default()
             },
         );
 
@@ -1664,6 +1974,7 @@ mod tests {
                 view_hidden: true,
                 view_tour: true,
                 arena: false,
+                model_discovery: true,
             },
             display: DisplayConfig {
                 tab_width: 8,
@@ -1909,6 +2220,14 @@ mod tests {
             i,
             ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
         )));
+        assert!(general.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label == "Model discovery"
+        )));
+        assert!(!terminal.iter().any(|i| matches!(
+            i,
+            ConfigItem::BoolToggle { label, .. } if label == "Model discovery"
+        )));
         assert!(terminal.iter().any(|i| matches!(
             i,
             ConfigItem::BoolToggle { label, .. } if label.contains("Branch")
@@ -2117,8 +2436,8 @@ mod tests {
                     "{prompt}".to_string(),
                 ],
             };
-            inject_agent_storage_access(command, &mut args, Some(DIR));
-            inject_agent_storage_access(command, &mut args, Some(DIR));
+            inject_agent_storage_access(CliFamily::detect(command), &mut args, Some(DIR));
+            inject_agent_storage_access(CliFamily::detect(command), &mut args, Some(DIR));
 
             let add_dir_flag = format!("--add-dir={DIR}");
             let add_dir_count = args
@@ -2149,8 +2468,8 @@ mod tests {
             "workspace-write".to_string(),
             "{prompt}".to_string(),
         ];
-        inject_agent_storage_access("codex", &mut args, None);
-        inject_agent_storage_access("codex", &mut args, Some(""));
+        inject_agent_storage_access(CliFamily::Codex, &mut args, None);
+        inject_agent_storage_access(CliFamily::Codex, &mut args, Some(""));
         assert!(!args.iter().any(|arg| arg.contains("--add-dir")));
     }
 
@@ -2158,7 +2477,7 @@ mod tests {
     fn claude_add_dir_does_not_swallow_bare_prompt() {
         let mut args = vec!["{prompt}".to_string()];
         inject_agent_storage_access(
-            "claude",
+            CliFamily::Claude,
             &mut args,
             Some("/managed/repos/demo/view-buckets/branch"),
         );
@@ -2174,7 +2493,7 @@ mod tests {
     #[test]
     fn custom_agent_commands_do_not_receive_unknown_flags() {
         let mut args = vec!["{prompt}".to_string()];
-        inject_agent_storage_access("my-custom-provider", &mut args, Some("/managed/repos/demo"));
+        inject_agent_storage_access(CliFamily::Other, &mut args, Some("/managed/repos/demo"));
         assert_eq!(args, vec!["{prompt}".to_string()]);
     }
 
@@ -2353,7 +2672,7 @@ mod tests {
             "{prompt}".to_string(),
         ];
         extend_provider_model_args(
-            "opencode",
+            CliFamily::OpenCode,
             &mut args,
             &["--model".into(), "anthropic/claude-sonnet-4-5".into()],
         );
@@ -2381,7 +2700,7 @@ mod tests {
         let len = args.len();
         inject_opencode_effort(&mut args, Some("low"));
         assert_eq!(args.len(), len);
-        inject_provider_effort("opencode", &mut args, Some("default"), Some("max"));
+        inject_provider_effort(CliFamily::OpenCode, &mut args, Some("default"), Some("max"));
         assert_eq!(args.len(), len);
     }
 
@@ -2450,7 +2769,7 @@ mod tests {
     fn apply_opencode_spawn_sets_auto_flags_and_storage_env() {
         let mut args = vec!["run".to_string(), "{prompt}".to_string()];
         let env =
-            apply_opencode_spawn(r"C:\tools\opencode.exe", &mut args, Some("/managed/review"))
+            apply_opencode_spawn(CliFamily::OpenCode, &mut args, Some("/managed/review"))
                 .expect("env");
         assert!(args.iter().any(|a| a == "--auto"));
         let prompt_idx = args.iter().position(|a| a.contains("{prompt}")).unwrap();
@@ -2460,19 +2779,19 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
         assert_eq!(parsed["external_directory"]["*"], "deny");
         assert_eq!(parsed["external_directory"]["/managed/review/**"], "allow");
-        assert!(apply_opencode_spawn("claude", &mut args, Some("/managed/review")).is_none());
+        assert!(apply_opencode_spawn(CliFamily::Claude, &mut args, Some("/managed/review")).is_none());
     }
 
     #[test]
     fn apply_opencode_readonly_spawn_sets_auto_and_readonly_env() {
         let mut args = vec!["run".to_string(), "{prompt}".to_string()];
-        let env = apply_opencode_readonly_spawn("opencode", &mut args).expect("env");
+        let env = apply_opencode_readonly_spawn(CliFamily::OpenCode, &mut args).expect("env");
         assert!(args.iter().any(|a| a == "--auto"));
         assert_eq!(env.0, "OPENCODE_PERMISSION");
         let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
         assert_eq!(parsed["edit"], "deny");
         assert_eq!(parsed["external_directory"]["*"], "deny");
-        assert!(apply_opencode_readonly_spawn("claude", &mut args).is_none());
+        assert!(apply_opencode_readonly_spawn(CliFamily::Claude, &mut args).is_none());
     }
 
     #[test]
@@ -2491,7 +2810,7 @@ mod tests {
             normalize_effort(&hub, Some("codex"), Some("legacy-model"), Some("high"));
         let mut unsupported_args = vec!["exec".into()];
         inject_provider_effort(
-            "codex",
+            CliFamily::Codex,
             &mut unsupported_args,
             Some("legacy-model"),
             unsupported_effort.as_deref(),
@@ -2502,7 +2821,7 @@ mod tests {
 
         let mut supported_args = vec!["exec".into()];
         inject_provider_effort(
-            "codex",
+            CliFamily::Codex,
             &mut supported_args,
             Some("gpt-5.6-sol"),
             normalize_effort(&hub, Some("codex"), Some("gpt-5.6-sol"), Some("high")).as_deref(),
@@ -2663,5 +2982,326 @@ mod tests {
         assert_eq!(selected.effort.as_deref(), Some("high"));
         assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(config.ai_hub.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn tombstones_block_catalog_resurrection() {
+        let catalog = ai_hub_catalog();
+        assert!(catalog.providers.contains_key("cursor"));
+        let cursor_model = catalog
+            .providers
+            .get("cursor")
+            .unwrap()
+            .models
+            .first()
+            .map(|m| m.id.clone())
+            .expect("cursor has models");
+
+        let mut hub = AiHubConfig::default();
+        hub.removed_catalog_providers = vec!["opencode".into()];
+        supplement_ai_hub(&mut hub);
+        assert!(!hub.providers.contains_key("opencode"));
+        assert!(hub.providers.contains_key("cursor"));
+
+        let cursor = hub.providers.get_mut("cursor").unwrap();
+        cursor.removed_catalog_models = vec![cursor_model.clone()];
+        cursor.models.retain(|m| m.id != cursor_model);
+        // re-borrow after mutate
+        supplement_ai_hub(&mut hub);
+        assert!(!hub
+            .providers
+            .get("cursor")
+            .unwrap()
+            .models
+            .iter()
+            .any(|m| m.id == cursor_model));
+    }
+
+    #[test]
+    fn supplement_backfills_models_command_and_family() {
+        let mut hub = AiHubConfig {
+            providers: [(
+                "cursor".into(),
+                AiProviderConfig {
+                    command: "agent".into(),
+                    args: vec!["-p".into(), "{prompt}".into()],
+                    models: vec![AiModelConfig {
+                        id: "custom".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        supplement_ai_hub(&mut hub);
+        let cursor = hub.providers.get("cursor").unwrap();
+        assert_eq!(
+            cursor.models_command,
+            vec!["agent".to_string(), "--list-models".to_string()]
+        );
+        // family may be None on catalog or set — either way user unset stays fillable
+        assert!(
+            cursor.family.as_deref() == Some("cursor") || cursor.cli_family() == CliFamily::Cursor
+        );
+
+        // User-set models_command is preserved
+        hub.providers.get_mut("cursor").unwrap().models_command =
+            vec!["custom".into(), "models".into()];
+        hub.providers.get_mut("cursor").unwrap().family = Some("claude".into());
+        supplement_ai_hub(&mut hub);
+        let cursor = hub.providers.get("cursor").unwrap();
+        assert_eq!(cursor.models_command, vec!["custom", "models"]);
+        assert_eq!(cursor.family.as_deref(), Some("claude"));
+    }
+
+    #[test]
+    fn validate_provider_config_errors_and_prompt_warning() {
+        let mut p = AiProviderConfig {
+            command: "tool".into(),
+            args: vec!["run".into()],
+            models: vec![
+                AiModelConfig {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+                AiModelConfig {
+                    id: "a".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        let err = validate_provider_config("my tool", &p).unwrap_err();
+        assert!(err.contains("whitespace") || err.to_lowercase().contains("id"));
+
+        let err = validate_provider_config("ok", &p).unwrap_err();
+        assert!(err.contains("Duplicate"));
+
+        p.models.truncate(1);
+        p.family = Some("nope".into());
+        let err = validate_provider_config("ok", &p).unwrap_err();
+        assert!(err.to_lowercase().contains("family"));
+
+        p.family = None;
+        let warnings = validate_provider_config("ok", &p).unwrap();
+        assert!(warnings.iter().any(|w| w.contains("{prompt}")));
+    }
+
+    #[test]
+    fn managed_config_migration_and_er_config_path() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = tmp.path().join("storage");
+        let xdg = tmp.path().join("xdg");
+        let legacy_dir = xdg.join("er");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        let legacy = legacy_dir.join("config.toml");
+        std::fs::write(&legacy, "[display]\ntheme = \"slate\"\n").unwrap();
+
+        std::env::set_var("ER_STORAGE_ROOT", &storage);
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::remove_var("ER_CONFIG_PATH");
+
+        let managed = managed_config_path();
+        let _ = std::fs::remove_file(&managed);
+        assert!(!managed.exists());
+        let cfg = load_global_config();
+        assert_eq!(cfg.display.theme, "slate");
+        assert!(managed.exists());
+        // Legacy file left untouched
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "[display]\ntheme = \"slate\"\n"
+        );
+
+        // Second load is idempotent
+        let cfg2 = load_global_config();
+        assert_eq!(cfg2.display.theme, "slate");
+
+        // ER_CONFIG_PATH override
+        let override_path = tmp.path().join("override.toml");
+        std::fs::write(&override_path, "[display]\ntheme = \"paper\"\n").unwrap();
+        std::env::set_var("ER_CONFIG_PATH", &override_path);
+        let cfg = load_global_config();
+        assert_eq!(cfg.display.theme, "paper");
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("ER_CONFIG_PATH");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn save_config_strips_discovered_models() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        std::env::set_var("ER_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "cursor".into(),
+            AiProviderConfig {
+                command: "agent".into(),
+                models: vec![
+                    AiModelConfig {
+                        id: "preset".into(),
+                        discovered: false,
+                        ..Default::default()
+                    },
+                    AiModelConfig {
+                        id: "disc".into(),
+                        discovered: true,
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        save_config(&config).unwrap();
+        let loaded = load_global_config();
+        let models = &loaded.ai_hub.providers.get("cursor").unwrap().models;
+        assert!(models.iter().any(|m| m.id == "preset"));
+        assert!(!models.iter().any(|m| m.id == "disc" && !m.discovered));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("ER_CONFIG_PATH");
+    }
+
+    #[test]
+    fn managed_config_wins_when_both_exist_legacy_untouched() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = tmp.path().join("storage");
+        let xdg = tmp.path().join("xdg");
+        let legacy_dir = xdg.join("er");
+        std::fs::create_dir_all(&legacy_dir).unwrap();
+        std::fs::create_dir_all(&storage).unwrap();
+
+        let legacy = legacy_dir.join("config.toml");
+        std::fs::write(&legacy, "[display]\ntheme = \"slate\"\n").unwrap();
+        let managed = storage.join("config.toml");
+        std::fs::write(&managed, "[display]\ntheme = \"ember\"\n").unwrap();
+
+        std::env::set_var("ER_STORAGE_ROOT", &storage);
+        std::env::set_var("XDG_CONFIG_HOME", &xdg);
+        std::env::remove_var("ER_CONFIG_PATH");
+
+        let cfg = load_global_config();
+        assert_eq!(cfg.display.theme, "ember");
+        assert_eq!(
+            std::fs::read_to_string(&legacy).unwrap(),
+            "[display]\ntheme = \"slate\"\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&managed).unwrap(),
+            "[display]\ntheme = \"ember\"\n"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
+
+    #[test]
+    fn overlay_discovered_preset_wins_reapply_and_select() {
+        let mut provider = AiProviderConfig {
+            command: "agent".into(),
+            models: vec![AiModelConfig {
+                id: "composer-2.5".into(),
+                label: Some("Preset Composer".into()),
+                discovered: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let discovered = vec![
+            crate::model_discovery::DiscoveredModel {
+                id: "composer-2.5".into(),
+                label: "Discovered Composer".into(),
+            },
+            crate::model_discovery::DiscoveredModel {
+                id: "gpt-5.2".into(),
+                label: "GPT-5.2".into(),
+            },
+        ];
+        overlay_discovered_models(&mut provider, &discovered);
+        assert_eq!(provider.models.len(), 2);
+        let preset = provider.models.iter().find(|m| m.id == "composer-2.5").unwrap();
+        assert!(!preset.discovered);
+        assert_eq!(preset.label.as_deref(), Some("Preset Composer"));
+        let disc = provider.models.iter().find(|m| m.id == "gpt-5.2").unwrap();
+        assert!(disc.discovered);
+
+        // Re-apply replaces prior discovered rows, does not duplicate.
+        overlay_discovered_models(
+            &mut provider,
+            &[crate::model_discovery::DiscoveredModel {
+                id: "gpt-5.2".into(),
+                label: "GPT-5.2 refreshed".into(),
+            }],
+        );
+        assert_eq!(provider.models.iter().filter(|m| m.discovered).count(), 1);
+        assert_eq!(
+            provider
+                .models
+                .iter()
+                .find(|m| m.id == "gpt-5.2")
+                .unwrap()
+                .label
+                .as_deref(),
+            Some("GPT-5.2 refreshed")
+        );
+
+        let mut hub = AiHubConfig {
+            providers: [("cursor".into(), provider)].into_iter().collect(),
+            ..Default::default()
+        };
+        let agent = AgentConfig::default();
+        let selection = hub
+            .set_default_selection("cursor", Some("gpt-5.2"), &agent)
+            .unwrap();
+        assert_eq!(selection.model_id.as_deref(), Some("gpt-5.2"));
+    }
+
+    #[test]
+    fn user_created_provider_and_model_delete_without_tombstone() {
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "mytool".into(),
+            AiProviderConfig {
+                command: "mytool".into(),
+                models: vec![AiModelConfig {
+                    id: "custom-m".into(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        remove_ai_model(&mut hub, "mytool", "custom-m").unwrap();
+        assert!(hub
+            .providers
+            .get("mytool")
+            .unwrap()
+            .removed_catalog_models
+            .is_empty());
+        remove_ai_provider(&mut hub, "mytool");
+        assert!(!hub.providers.contains_key("mytool"));
+        assert!(!hub.removed_catalog_providers.iter().any(|p| p == "mytool"));
+
+        // Catalog delete still tombstones.
+        supplement_ai_hub(&mut hub);
+        assert!(hub.providers.contains_key("cursor"));
+        remove_ai_provider(&mut hub, "cursor");
+        assert!(hub.removed_catalog_providers.iter().any(|p| p == "cursor"));
+        supplement_ai_hub(&mut hub);
+        assert!(!hub.providers.contains_key("cursor"));
     }
 }

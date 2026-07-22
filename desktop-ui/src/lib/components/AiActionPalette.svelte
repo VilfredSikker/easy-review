@@ -27,6 +27,7 @@
   let selectedIdx = $state(0);
   let subView = $state<SubView>("main");
   let providers = $state<AiProviderInfo[]>([]);
+  let modelsRefreshing = $state(false);
   let selectedProvider = $state<AiProviderInfo | null>(null);
   let selectedModelId = $state("");
   let selectedReviewers = $state<Set<string>>(new Set());
@@ -47,6 +48,7 @@
     selectedIdx = 0;
     subView = "main";
     providers = [];
+    modelsRefreshing = false;
     selectedProvider = null;
     selectedModelId = "";
     selectedReviewers = new Set();
@@ -109,14 +111,30 @@
 
   async function openProviderPicker() {
     try {
+      modelsRefreshing = true;
+      const refreshPromise = invoke<AiProviderInfo[]>("refresh_ai_models", {
+        providerId: null,
+        force: false,
+      })
+        .then((list) => {
+          providers = list;
+        })
+        .catch(() => {
+          /* non-fatal — fall through to list_ai_providers */
+        });
       providers = await invoke<AiProviderInfo[]>("list_ai_providers");
       if (providers.length === 0) {
-        app.showToast("error", "No [ai_hub] providers configured — edit .er-config.toml to add providers");
+        modelsRefreshing = false;
+        app.showToast("error", "No [ai_hub] providers configured — add one in Settings → AI Hub");
         return;
       }
       subView = "providers";
       selectedIdx = Math.max(0, providers.findIndex((p) => p.is_selected));
+      void refreshPromise.finally(() => {
+        modelsRefreshing = false;
+      });
     } catch (e) {
+      modelsRefreshing = false;
       app.showToast("error", `list_ai_providers: ${e}`);
     }
   }
@@ -421,6 +439,12 @@
     {/if}
     <kbd class="ml-auto shrink-0 text-[10px] font-mono px-1.5 py-0.5 rounded bg-ink-650 border border-ink-500 text-ink-400">Esc</kbd>
   </div>
+
+  {#if subView === "providers" && modelsRefreshing}
+    <div class="px-4 py-1.5 text-[11px] text-ink-400 font-mono border-b border-ink-600">
+      refreshing…
+    </div>
+  {/if}
 
   {#if subView === "reviewers"}
     <div class="flex-1 min-h-0 flex flex-col overflow-hidden">

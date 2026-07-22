@@ -389,6 +389,8 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
+    let (discovery_tx, discovery_rx) =
+        mpsc::channel::<(String, Result<Vec<er_engine::model_discovery::DiscoveredModel>, String>)>();
     let mut hint_rx = hint_rx;
     let mut pr_data_rx = pr_data_rx;
 
@@ -512,6 +514,50 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             if let Ok(data) = rx.try_recv() {
                 app.tab_mut().pr_data = Some(data);
                 pr_data_rx = None;
+            }
+        }
+
+        // Spawn model discovery when requested (picker refresh / Refresh models)
+        if let Some(provider_id) = app.pending_model_discovery.take() {
+            let command = app
+                .config
+                .ai_hub
+                .providers
+                .get(&provider_id)
+                .map(|p| p.models_command.clone())
+                .unwrap_or_default();
+            if !command.is_empty() && app.model_discovery_inflight.insert(provider_id.clone()) {
+                let tx = discovery_tx.clone();
+                let pid = provider_id.clone();
+                std::thread::spawn(move || {
+                    let result = er_engine::model_discovery::discover_and_cache(&pid, &command)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send((pid, result));
+                });
+            }
+        }
+
+        // Apply discovered models from background threads
+        while let Ok((provider_id, result)) = discovery_rx.try_recv() {
+            app.model_discovery_inflight.remove(&provider_id);
+            match result {
+                Ok(models) => {
+                    app.apply_discovered_models(&provider_id, &models);
+                    // Rebuild model picker if still open for this provider
+                    let reopen = matches!(
+                        &app.overlay,
+                        Some(er_engine::app::OverlayData::ModalHub {
+                            kind: er_engine::app::HubKind::AiModel,
+                            ..
+                        })
+                    );
+                    if reopen {
+                        app.open_ai_model_picker(provider_id, None);
+                    } else {
+                        app.notify("Models updated");
+                    }
+                }
+                Err(e) => app.notify(&format!("Model refresh failed: {e}")),
             }
         }
 

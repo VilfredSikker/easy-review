@@ -3565,6 +3565,15 @@ pub struct AiProviderInfo {
     pub label: String,
     pub models: Vec<AiModelInfo>,
     pub is_selected: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    pub has_models_command: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub models_command: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -3581,6 +3590,54 @@ pub struct AiModelInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub avg_latency_ms: Option<u32>,
     pub effort_levels: Vec<String>,
+    pub discovered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub args: Option<String>,
+}
+
+/// Map hub providers to wire DTOs. `selected_*` are already-resolved highlight ids
+/// (session current for the palette; persisted defaults for Settings).
+pub(crate) fn map_ai_providers(
+    hub: &er_engine::config::AiHubConfig,
+    selected_provider_id: Option<&str>,
+    selected_model_id: Option<&str>,
+) -> Vec<AiProviderInfo> {
+    hub.providers
+        .iter()
+        .map(|(id, cfg)| {
+            let is_selected = selected_provider_id == Some(id.as_str());
+            AiProviderInfo {
+                id: id.clone(),
+                label: cfg.display_name(id),
+                is_selected,
+                family: cfg
+                    .family
+                    .clone()
+                    .or_else(|| cfg.cli_family().id().map(|s| s.to_string())),
+                has_models_command: !cfg.models_command.is_empty(),
+                command: Some(cfg.command.clone()),
+                args: Some(cfg.args.join(" ")),
+                models_command: (!cfg.models_command.is_empty())
+                    .then(|| cfg.models_command.join(" ")),
+                models: cfg
+                    .models
+                    .iter()
+                    .map(|m| AiModelInfo {
+                        id: m.id.clone(),
+                        label: m.display_name(),
+                        is_selected: is_selected && selected_model_id == Some(m.id.as_str()),
+                        description: m.description.clone(),
+                        cost_per_1k_in: m.cost_per_1k_in,
+                        cost_per_1k_out: m.cost_per_1k_out,
+                        avg_latency_ms: m.avg_latency_ms,
+                        effort_levels: m.effort_levels.clone(),
+                        discovered: m.discovered,
+                        args: Some(m.args.join(" ")),
+                    })
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -3592,39 +3649,14 @@ pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, 
     let current_provider = app.current_ai_provider.as_deref();
     let current_model = app.current_ai_model.as_deref();
     let resolved_provider = hub.resolve_provider_id(current_provider);
-
-    let providers = hub
-        .providers
-        .iter()
-        .map(|(id, cfg)| {
-            let resolved_model = if resolved_provider.as_deref() == Some(id.as_str()) {
-                hub.resolve_model_id(id, current_model)
-            } else {
-                None
-            };
-            AiProviderInfo {
-                id: id.clone(),
-                label: cfg.display_name(id),
-                is_selected: resolved_provider.as_deref() == Some(id.as_str()),
-                models: cfg
-                    .models
-                    .iter()
-                    .map(|m| AiModelInfo {
-                        id: m.id.clone(),
-                        label: m.display_name(),
-                        is_selected: resolved_model.as_deref() == Some(m.id.as_str()),
-                        description: m.description.clone(),
-                        cost_per_1k_in: m.cost_per_1k_in,
-                        cost_per_1k_out: m.cost_per_1k_out,
-                        avg_latency_ms: m.avg_latency_ms,
-                        effort_levels: m.effort_levels.clone(),
-                    })
-                    .collect(),
-            }
-        })
-        .collect();
-
-    Ok(providers)
+    let resolved_model = resolved_provider
+        .as_deref()
+        .and_then(|pid| hub.resolve_model_id(pid, current_model));
+    Ok(map_ai_providers(
+        hub,
+        resolved_provider.as_deref(),
+        resolved_model.as_deref(),
+    ))
 }
 
 #[tauri::command]

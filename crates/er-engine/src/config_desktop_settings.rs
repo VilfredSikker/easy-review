@@ -116,6 +116,11 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.features.view_hidden = v;
             }
         }
+        "features.model_discovery" => {
+            if let ConfigFieldValue::Bool(v) = value {
+                config.features.model_discovery = v;
+            }
+        }
         "display.theme" => {
             if let ConfigFieldValue::String(v) = value {
                 config.display.theme = v;
@@ -301,12 +306,26 @@ mod tests {
         assert!(!terminal.iter().any(|k| k == "display.theme"));
 
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
+        assert!(general.iter().any(|k| k == "features.model_discovery"));
+        assert!(!terminal.iter().any(|k| k == "features.model_discovery"));
         assert!(terminal.iter().any(|k| k == "display.line_numbers"));
 
         assert_eq!(
             crate::config::desktop_settings_fields_for_scope(&config, SettingsScope::General).len(),
             grouped.general.len()
         );
+    }
+
+    #[test]
+    fn apply_config_field_model_discovery_round_trip() {
+        let mut config = ErConfig::default();
+        assert!(config.features.model_discovery);
+        apply_config_field(
+            &mut config,
+            "features.model_discovery",
+            ConfigFieldValue::Bool(false),
+        );
+        assert!(!config.features.model_discovery);
     }
 
     #[test]

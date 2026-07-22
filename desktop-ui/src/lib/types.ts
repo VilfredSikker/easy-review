@@ -534,6 +534,8 @@ export interface AiModelInfo {
   avg_latency_ms?: number | null;
   /** Explicit levels from the shared catalog; empty means provider default. */
   effort_levels: string[];
+  discovered?: boolean;
+  args?: string | null;
 }
 
 export interface AiProviderInfo {
@@ -541,6 +543,11 @@ export interface AiProviderInfo {
   label: string;
   models: AiModelInfo[];
   is_selected: boolean;
+  family?: string | null;
+  has_models_command?: boolean;
+  command?: string | null;
+  args?: string | null;
+  models_command?: string | null;
 }
 
 export interface PollResponse {
@@ -665,6 +672,10 @@ export interface GetConfigHubResponse {
   settings: DesktopSettingsSnapshot;
   providers: AiProviderInfo[];
   activeEffort: string | null;
+  /** Soft validation from last upsert (e.g. missing `{prompt}`). */
+  warnings?: string[];
+  /** Known family ids from the backend (`claude`, `codex`, …). */
+  familyOptions?: string[];
 }
 
 export interface FeatureFlagsSnapshot {

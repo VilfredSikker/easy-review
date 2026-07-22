@@ -489,6 +489,10 @@ pub enum HubAction {
         provider_id: String,
         model_id: String,
     },
+    /// Refresh discovered models for a provider (CLI `models_command`)
+    RefreshAiModels {
+        provider_id: String,
+    },
     /// Open expert reviewer picker (specialized review)
     OpenAiExpertPicker,
     /// Run a specialized expert review
@@ -4485,6 +4489,12 @@ pub struct App {
 
     /// Last started arena run id per tab `.er` directory.
     pub active_arena_runs: std::collections::HashMap<String, Vec<String>>,
+
+    /// Provider ids with an in-flight model discovery refresh (dedupe).
+    pub model_discovery_inflight: std::collections::HashSet<String>,
+
+    /// TUI: provider id waiting for the event loop to spawn discovery.
+    pub pending_model_discovery: Option<String>,
 }
 
 impl App {
@@ -4504,8 +4514,63 @@ impl App {
             .effort
     }
 
+    /// Overlay cached discovered models onto hub providers (startup / refresh).
+    pub fn apply_discovered_models(
+        &mut self,
+        provider_id: &str,
+        models: &[crate::model_discovery::DiscoveredModel],
+    ) {
+        let Some(provider) = self.config.ai_hub.providers.get_mut(provider_id) else {
+            return;
+        };
+        crate::config::overlay_discovered_models(provider, models);
+    }
+
+    fn overlay_cached_discovered_models(&mut self) {
+        if !self.config.features.model_discovery {
+            return;
+        }
+        let targets: Vec<(String, Vec<String>)> = self
+            .config
+            .ai_hub
+            .providers
+            .iter()
+            .filter(|(_, p)| !p.models_command.is_empty())
+            .map(|(id, p)| (id.clone(), p.models_command.clone()))
+            .collect();
+        for (provider_id, command) in targets {
+            if let Some(cache) =
+                crate::model_discovery::load_valid_cache(&provider_id, &command)
+            {
+                self.apply_discovered_models(&provider_id, &cache.models);
+            }
+        }
+    }
+
     /// Create the app from CLI path arguments.
     /// If no paths provided, uses current directory.
+    /// Queue a model-discovery refresh for the TUI event loop to spawn.
+    pub fn request_model_discovery(&mut self, provider_id: String) {
+        if !self.config.features.model_discovery {
+            self.notify("Model discovery is disabled");
+            return;
+        }
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            self.notify("Unknown AI provider");
+            return;
+        };
+        if provider.models_command.is_empty() {
+            self.notify("Provider has no models_command");
+            return;
+        }
+        if self.model_discovery_inflight.contains(&provider_id) {
+            self.notify("Model refresh already in progress");
+            return;
+        }
+        self.pending_model_discovery = Some(provider_id);
+    }
+
+
     pub fn new_with_args(paths: &[String]) -> Result<Self> {
         let tabs = if paths.is_empty() {
             let repo_root = git::get_repo_root()?;
@@ -4585,8 +4650,11 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: arena_registry.clone(),
             active_arena_runs: std::collections::HashMap::new(),
+            model_discovery_inflight: std::collections::HashSet::new(),
+            pending_model_discovery: None,
         };
         app.drain_storage_notices();
+        app.overlay_cached_discovered_models();
         app.reconcile_arena_runs();
         Ok(app)
     }
@@ -4603,7 +4671,7 @@ impl App {
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        Ok(App {
+        let mut app = App {
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -4628,7 +4696,11 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
-        })
+            model_discovery_inflight: std::collections::HashSet::new(),
+            pending_model_discovery: None,
+        };
+        app.overlay_cached_discovered_models();
+        Ok(app)
     }
 
     /// Create App for remote PR review — no local git repo needed.
@@ -4639,7 +4711,7 @@ impl App {
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        App {
+        let mut app = App {
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -4664,7 +4736,11 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
-        }
+            model_discovery_inflight: std::collections::HashSet::new(),
+            pending_model_discovery: None,
+        };
+        app.overlay_cached_discovered_models();
+        app
     }
 
     /// Construct an App with a single test tab. Intended for unit tests
@@ -4695,6 +4771,8 @@ impl App {
             pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
+            model_discovery_inflight: std::collections::HashSet::new(),
+            pending_model_discovery: None,
         }
     }
 
@@ -4880,12 +4958,15 @@ impl App {
             return;
         }
 
+        let has_models_command = !provider.models_command.is_empty();
+        let models_command = provider.models_command.clone();
+        let discovery_on = self.config.features.model_discovery;
         let resolved_model = self
             .config
             .ai_hub
             .resolve_model_id(&provider_id, self.current_ai_model.as_deref());
         let mut selected = 0usize;
-        let items = provider
+        let mut items: Vec<HubItem> = provider
             .models
             .iter()
             .enumerate()
@@ -4893,10 +4974,15 @@ impl App {
                 if resolved_model.as_deref() == Some(model.id.as_str()) {
                     selected = idx;
                 }
+                let description = if model.discovered {
+                    format!("{} · discovered", model.id)
+                } else {
+                    model.id.clone()
+                };
                 HubItem {
                     label: model.display_name(),
                     hint: "".into(),
-                    description: model.id.clone(),
+                    description,
                     action: HubAction::SelectAiModel {
                         action: action.clone(),
                         provider_id: provider_id.clone(),
@@ -4907,6 +4993,29 @@ impl App {
                 }
             })
             .collect();
+        if discovery_on && has_models_command {
+            // Soft-refresh when cache is missing or past TTL (stale-while-revalidate).
+            let needs_refresh = match crate::model_discovery::load_valid_cache(
+                &provider_id,
+                &models_command,
+            ) {
+                Some(cache) => !crate::model_discovery::cache_is_fresh(&cache),
+                None => true,
+            };
+            if needs_refresh {
+                self.request_model_discovery(provider_id.clone());
+            }
+            items.push(HubItem {
+                label: "Refresh models".into(),
+                hint: "↻".into(),
+                description: "Re-run provider models_command".into(),
+                action: HubAction::RefreshAiModels {
+                    provider_id: provider_id.clone(),
+                },
+                is_header: false,
+                enabled: true,
+            });
+        }
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiModel,
             title: None,
@@ -8700,6 +8809,8 @@ mod tests {
             pending_background_tasks: std::collections::VecDeque::new(),
             arena_registry: App::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
+            model_discovery_inflight: std::collections::HashSet::new(),
+            pending_model_discovery: None,
         }
     }
 

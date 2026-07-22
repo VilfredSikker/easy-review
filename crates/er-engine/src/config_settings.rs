@@ -187,6 +187,12 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             options: (1..=6).map(|n| n.to_string()).collect(),
             value: config.ai_hub.effective_max_concurrent_reviews().to_string(),
         },
+        ConfigHubFieldDto::Bool {
+            key: "features.model_discovery".into(),
+            label: "Model discovery".into(),
+            description: "List models from provider CLIs (desktop + TUI)".into(),
+            value: config.features.model_discovery,
+        },
         ConfigHubFieldDto::Section {
             title: "Watched Paths".into(),
         },

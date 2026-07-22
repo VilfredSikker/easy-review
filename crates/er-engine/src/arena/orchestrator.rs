@@ -1194,6 +1194,7 @@ mod tests {
                         cost_per_1k_out: None,
                         avg_latency_ms: Some(5_000),
                         effort_levels: vec![],
+                        discovered: false,
                     },
                     AiModelConfig {
                         id: "slow".into(),
@@ -1204,6 +1205,7 @@ mod tests {
                         cost_per_1k_out: None,
                         avg_latency_ms: Some(20_000),
                         effort_levels: vec![],
+                        discovered: false,
                     },
                 ],
                 ..Default::default()
@@ -1242,7 +1244,8 @@ mod tests {
                     cost_per_1k_out: Some(0.001),
                     avg_latency_ms: None,
                     effort_levels: vec![],
-                }],
+                        discovered: false,
+                    }],
                 ..Default::default()
             },
         );
@@ -1260,7 +1263,8 @@ mod tests {
                     cost_per_1k_out: Some(0.1),
                     avg_latency_ms: None,
                     effort_levels: vec![],
-                }],
+                        discovered: false,
+                    }],
                 ..Default::default()
             },
         );
@@ -1297,6 +1301,7 @@ mod tests {
                         cost_per_1k_out: Some(0.001),
                         avg_latency_ms: None,
                         effort_levels: vec![],
+                        discovered: false,
                     },
                     AiModelConfig {
                         id: "dear".into(),
@@ -1307,6 +1312,7 @@ mod tests {
                         cost_per_1k_out: Some(0.2),
                         avg_latency_ms: None,
                         effort_levels: vec![],
+                        discovered: false,
                     },
                 ],
                 ..Default::default()
