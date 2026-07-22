@@ -1,16 +1,14 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
-  import type { DiffViewMode } from "$lib/stores/app.svelte";
 
   interface Props {
     /** Absolute top position in px. When set, renders absolute (flat mode); otherwise sticky. */
     topPx?: number;
-    viewMode?: DiffViewMode;
+    /** Left inset for Guide pillar rail — keep composer aligned with the diff column. */
+    offsetLeftPx?: number;
   }
-  const { topPx, viewMode = "unified" }: Props = $props();
-
-  const gutterInsetPx = $derived(viewMode === "split" ? 80 : 40);
+  const { topPx, offsetLeftPx = 0 }: Props = $props();
 
   const canSubmit = $derived(diffSel.text.trim().length > 0);
   let composerEl: HTMLTextAreaElement | null = $state(null);
@@ -96,9 +94,9 @@
   tabindex="-1"
   onkeydown={() => {}}
   style={topPx !== undefined
-    ? `position:absolute;top:${topPx}px;left:calc(${gutterInsetPx}px + 0.75rem);right:1rem;z-index:20`
+    ? `position:absolute;top:${topPx}px;left:${offsetLeftPx}px;right:0;z-index:20`
     : undefined}
-  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mx-4 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
+  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
          {diffSel.kind === 'question' || diffSel.kind === 'note'
            ? 'border border-question/40 bg-card'
            : 'border border-action/40 bg-card'}"

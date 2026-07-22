@@ -2209,7 +2209,7 @@
       </div>
 
       {#if diffSel.composerOpen}
-        <DiffComposer topPx={composerTopPx} {viewMode} />
+        <DiffComposer topPx={composerTopPx} offsetLeftPx={tourActive ? RAIL_W : 0} />
       {/if}
     {/if}
   </div>

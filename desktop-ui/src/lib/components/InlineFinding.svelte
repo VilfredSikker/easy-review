@@ -200,7 +200,7 @@
 
 <div
   id="finding-{finding.id}"
-  class="mx-4 my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
+  class="my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
   style="border-color: color-mix(in srgb, {severityColor} 30%, transparent); background: color-mix(in srgb, {severityColor} 4%, transparent);"
 >
   <!-- Header -->
