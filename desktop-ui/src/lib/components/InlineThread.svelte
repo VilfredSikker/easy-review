@@ -195,7 +195,7 @@
 
 <div
   id={thread.id}
-  class="{variant === 'panel' ? '' : 'mx-4 my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isLocal ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  class="{variant === 'panel' ? '' : 'my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isLocal ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
