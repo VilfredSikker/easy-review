@@ -19,8 +19,8 @@ const REVIEW_FILES: &str = "review-files.txt";
 /// Read paths from `review-files.txt` (one path per line).
 pub fn read_review_file_manifest(er_dir: &Path) -> Result<Vec<String>> {
     let path = er_dir.join(REVIEW_FILES);
-    let content = std::fs::read_to_string(&path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     Ok(content
         .lines()
         .map(str::trim)
@@ -266,8 +266,8 @@ fn merge_professor_file(er_dir: &Path, paths: &[String]) -> Result<()> {
 }
 
 fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&content).with_context(|| format!("parse {}", path.display()))
 }
 
@@ -285,10 +285,7 @@ fn unique_tmp_path(parent: &Path, final_path: &Path) -> PathBuf {
         .file_name()
         .and_then(|s| s.to_str())
         .unwrap_or("sidecar");
-    parent.join(format!(
-        ".{stem}.{}.tmp",
-        std::process::id()
-    ))
+    parent.join(format!(".{stem}.{}.tmp", std::process::id()))
 }
 
 #[cfg(test)]
@@ -411,7 +408,11 @@ mod tests {
             serde_json::to_string(&previous).unwrap(),
         )
         .unwrap();
-        std::fs::write(er.join("review.json"), serde_json::to_string(&scoped).unwrap()).unwrap();
+        std::fs::write(
+            er.join("review.json"),
+            serde_json::to_string(&scoped).unwrap(),
+        )
+        .unwrap();
         std::fs::write(er.join("review-files.txt"), "plate-template.ts\n").unwrap();
 
         apply_scoped_sidecar_merge(er, "review").unwrap();
@@ -435,7 +436,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let er = dir.path();
         let scoped = review_with(vec![("a.ts", vec![finding("f-1", "Only")])], "h");
-        std::fs::write(er.join("review.json"), serde_json::to_string(&scoped).unwrap()).unwrap();
+        std::fs::write(
+            er.join("review.json"),
+            serde_json::to_string(&scoped).unwrap(),
+        )
+        .unwrap();
         apply_scoped_sidecar_merge(er, "review").unwrap();
         let after: ErReview =
             serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
