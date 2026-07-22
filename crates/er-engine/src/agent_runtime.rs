@@ -186,7 +186,8 @@ pub fn resolve_invocation(
     config: &ErConfig,
     request: AgentInvocationRequest<'_>,
 ) -> Result<AgentInvocation> {
-    let (command, mut args, resolved_provider_id, resolved_model_id, family) = match request.selection
+    let (command, mut args, resolved_provider_id, resolved_model_id, family) = match request
+        .selection
     {
         AgentSelection::Runtime {
             provider_id,
@@ -203,11 +204,7 @@ pub fn resolve_invocation(
                 let resolved_model = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(model_id) = &resolved_model {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                        crate::config::extend_provider_model_args(
-                            family,
-                            &mut args,
-                            &model.args,
-                        );
+                        crate::config::extend_provider_model_args(family, &mut args, &model.args);
                     }
                 }
                 (
@@ -1137,12 +1134,7 @@ mod tests {
         assert!(opencode.args.iter().any(|a| a == "--auto"));
         assert_eq!(opencode.env[0].0, "OPENCODE_PERMISSION");
 
-        config
-            .ai_hub
-            .providers
-            .get_mut("mytool")
-            .unwrap()
-            .family = Some("claude".into());
+        config.ai_hub.providers.get_mut("mytool").unwrap().family = Some("claude".into());
         let claude = resolve_invocation(
             &config,
             AgentInvocationRequest {

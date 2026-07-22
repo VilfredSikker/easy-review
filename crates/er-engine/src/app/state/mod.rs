@@ -4539,9 +4539,7 @@ impl App {
             .map(|(id, p)| (id.clone(), p.models_command.clone()))
             .collect();
         for (provider_id, command) in targets {
-            if let Some(cache) =
-                crate::model_discovery::load_valid_cache(&provider_id, &command)
-            {
+            if let Some(cache) = crate::model_discovery::load_valid_cache(&provider_id, &command) {
                 self.apply_discovered_models(&provider_id, &cache.models);
             }
         }
@@ -4569,7 +4567,6 @@ impl App {
         }
         self.pending_model_discovery = Some(provider_id);
     }
-
 
     pub fn new_with_args(paths: &[String]) -> Result<Self> {
         let tabs = if paths.is_empty() {
@@ -4995,13 +4992,11 @@ impl App {
             .collect();
         if discovery_on && has_models_command {
             // Soft-refresh when cache is missing or past TTL (stale-while-revalidate).
-            let needs_refresh = match crate::model_discovery::load_valid_cache(
-                &provider_id,
-                &models_command,
-            ) {
-                Some(cache) => !crate::model_discovery::cache_is_fresh(&cache),
-                None => true,
-            };
+            let needs_refresh =
+                match crate::model_discovery::load_valid_cache(&provider_id, &models_command) {
+                    Some(cache) => !crate::model_discovery::cache_is_fresh(&cache),
+                    None => true,
+                };
             if needs_refresh {
                 self.request_model_discovery(provider_id.clone());
             }

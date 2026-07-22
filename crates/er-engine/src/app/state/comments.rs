@@ -2261,11 +2261,7 @@ impl App {
             let family = provider.cli_family();
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    crate::config::extend_provider_model_args(
-                        family,
-                        &mut args,
-                        &model.args,
-                    );
+                    crate::config::extend_provider_model_args(family, &mut args, &model.args);
                 }
             }
             let is_claude = crate::config::agent_command_is_claude(&provider.command);
@@ -2721,11 +2717,7 @@ impl App {
             let family = provider.cli_family();
             if let Some(model_id) = &resolved_model_id {
                 if let Some(model) = provider.models.iter().find(|m| m.id == *model_id) {
-                    crate::config::extend_provider_model_args(
-                        family,
-                        &mut args,
-                        &model.args,
-                    );
+                    crate::config::extend_provider_model_args(family, &mut args, &model.args);
                 }
             }
             let is_claude = crate::config::agent_command_is_claude(&provider.command);

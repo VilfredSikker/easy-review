@@ -1244,8 +1244,8 @@ mod tests {
                     cost_per_1k_out: Some(0.001),
                     avg_latency_ms: None,
                     effort_levels: vec![],
-                        discovered: false,
-                    }],
+                    discovered: false,
+                }],
                 ..Default::default()
             },
         );
@@ -1263,8 +1263,8 @@ mod tests {
                     cost_per_1k_out: Some(0.1),
                     avg_latency_ms: None,
                     effort_levels: vec![],
-                        discovered: false,
-                    }],
+                    discovered: false,
+                }],
                 ..Default::default()
             },
         );

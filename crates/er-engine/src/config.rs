@@ -699,7 +699,12 @@ pub fn remove_ai_model(
         .get(provider_id)
         .map(|p| p.models.iter().any(|m| m.id == model_id))
         .unwrap_or(false);
-    if catalog_has && !provider.removed_catalog_models.iter().any(|m| m == model_id) {
+    if catalog_has
+        && !provider
+            .removed_catalog_models
+            .iter()
+            .any(|m| m == model_id)
+    {
         provider.removed_catalog_models.push(model_id.to_string());
     }
     Ok(())
@@ -840,7 +845,11 @@ pub fn agent_command_is_opencode(command: &str) -> bool {
 ///
 /// OpenCode treats the prompt as a trailing positional (`opencode run [message..]`),
 /// so model flags must land *before* `{prompt}` or they become part of the message.
-pub fn extend_provider_model_args(family: CliFamily, args: &mut Vec<String>, model_args: &[String]) {
+pub fn extend_provider_model_args(
+    family: CliFamily,
+    args: &mut Vec<String>,
+    model_args: &[String],
+) {
     if model_args.is_empty() {
         return;
     }
@@ -2768,9 +2777,8 @@ mod tests {
     #[test]
     fn apply_opencode_spawn_sets_auto_flags_and_storage_env() {
         let mut args = vec!["run".to_string(), "{prompt}".to_string()];
-        let env =
-            apply_opencode_spawn(CliFamily::OpenCode, &mut args, Some("/managed/review"))
-                .expect("env");
+        let env = apply_opencode_spawn(CliFamily::OpenCode, &mut args, Some("/managed/review"))
+            .expect("env");
         assert!(args.iter().any(|a| a == "--auto"));
         let prompt_idx = args.iter().position(|a| a.contains("{prompt}")).unwrap();
         let auto_idx = args.iter().position(|a| a == "--auto").unwrap();
@@ -2779,7 +2787,9 @@ mod tests {
         let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
         assert_eq!(parsed["external_directory"]["*"], "deny");
         assert_eq!(parsed["external_directory"]["/managed/review/**"], "allow");
-        assert!(apply_opencode_spawn(CliFamily::Claude, &mut args, Some("/managed/review")).is_none());
+        assert!(
+            apply_opencode_spawn(CliFamily::Claude, &mut args, Some("/managed/review")).is_none()
+        );
     }
 
     #[test]
@@ -2997,8 +3007,10 @@ mod tests {
             .map(|m| m.id.clone())
             .expect("cursor has models");
 
-        let mut hub = AiHubConfig::default();
-        hub.removed_catalog_providers = vec!["opencode".into()];
+        let mut hub = AiHubConfig {
+            removed_catalog_providers: vec!["opencode".into()],
+            ..Default::default()
+        };
         supplement_ai_hub(&mut hub);
         assert!(!hub.providers.contains_key("opencode"));
         assert!(hub.providers.contains_key("cursor"));
@@ -3234,7 +3246,11 @@ mod tests {
         ];
         overlay_discovered_models(&mut provider, &discovered);
         assert_eq!(provider.models.len(), 2);
-        let preset = provider.models.iter().find(|m| m.id == "composer-2.5").unwrap();
+        let preset = provider
+            .models
+            .iter()
+            .find(|m| m.id == "composer-2.5")
+            .unwrap();
         assert!(!preset.discovered);
         assert_eq!(preset.label.as_deref(), Some("Preset Composer"));
         let disc = provider.models.iter().find(|m| m.id == "gpt-5.2").unwrap();

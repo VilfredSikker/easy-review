@@ -30,11 +30,7 @@ pub fn plan_card_ai_invocation(
                 let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
                 if let Some(mid) = &resolved_model_id {
                     if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                        crate::config::extend_provider_model_args(
-                            family,
-                            &mut args,
-                            &model.args,
-                        );
+                        crate::config::extend_provider_model_args(family, &mut args, &model.args);
                     }
                 }
                 let is_claude = crate::config::agent_command_is_claude(&provider.command);

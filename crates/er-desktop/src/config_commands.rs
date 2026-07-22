@@ -7,7 +7,7 @@ use er_engine::config::{
 };
 use tauri::State;
 
-use crate::commands::{snap_from, map_ai_providers, AiProviderInfo, AppState};
+use crate::commands::{map_ai_providers, snap_from, AiProviderInfo, AppState};
 use crate::snapshot::AppSnapshot;
 
 #[derive(serde::Deserialize)]
@@ -425,7 +425,7 @@ pub fn upsert_ai_provider(
     state: State<AppState>,
 ) -> Result<GetConfigHubResponse, String> {
     use er_engine::config::{
-        split_shell_args, validate_provider_config, AiProviderConfig, save_config,
+        save_config, split_shell_args, validate_provider_config, AiProviderConfig,
     };
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -457,7 +457,7 @@ pub fn upsert_ai_provider(
         models: existing_models,
         removed_catalog_models: existing_tombstones,
     };
-    let warnings = validate_provider_config(&id, &cfg).map_err(|e| e)?;
+    let warnings = validate_provider_config(&id, &cfg)?;
 
     let renamed_from = original_id.clone();
     if let Some(old) = original_id {
@@ -508,7 +508,7 @@ pub fn upsert_ai_model(
     state: State<AppState>,
 ) -> Result<GetConfigHubResponse, String> {
     use er_engine::config::{
-        split_shell_args, validate_provider_config, AiModelConfig, save_config,
+        save_config, split_shell_args, validate_provider_config, AiModelConfig,
     };
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -550,7 +550,7 @@ pub fn upsert_ai_model(
     });
 
     let warnings_provider = provider.clone();
-    let warnings = validate_provider_config(&pid, &warnings_provider).map_err(|e| e)?;
+    let warnings = validate_provider_config(&pid, &warnings_provider)?;
 
     if let Some(old) = original_id {
         if app.config.ai_hub.default_model.as_deref() == Some(old.as_str())

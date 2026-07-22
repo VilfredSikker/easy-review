@@ -389,8 +389,10 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 ) -> Result<()> {
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
-    let (discovery_tx, discovery_rx) =
-        mpsc::channel::<(String, Result<Vec<er_engine::model_discovery::DiscoveredModel>, String>)>();
+    let (discovery_tx, discovery_rx) = mpsc::channel::<(
+        String,
+        Result<Vec<er_engine::model_discovery::DiscoveredModel>, String>,
+    )>();
     let mut hint_rx = hint_rx;
     let mut pr_data_rx = pr_data_rx;
 

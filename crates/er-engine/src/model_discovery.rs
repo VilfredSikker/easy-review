@@ -95,11 +95,7 @@ pub fn run_models_command(cmd: &[String]) -> Result<String> {
                 }
                 if !status.success() {
                     let snippet: String = stderr.chars().take(200).collect();
-                    bail!(
-                        "models_command exited with {}: {}",
-                        status,
-                        snippet.trim()
-                    );
+                    bail!("models_command exited with {}: {}", status, snippet.trim());
                 }
                 return Ok(stdout);
             }
