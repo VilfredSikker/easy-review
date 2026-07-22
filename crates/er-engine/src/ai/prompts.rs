@@ -573,7 +573,9 @@ pub fn file_scope_appendix(output_dir: &str) -> String {
         r#"
 ## Scope: selected files only
 
-Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Ignore all other files in the diff."#
+Read `{safe_output_dir}/review-files.txt` — analyze **only** those paths. Ignore all other files in the diff.
+
+**Merge, do not replace the whole review:** If `{safe_output_dir}/review.json` (or the expert/professor sidecar you write) already exists, read it first. Keep every file entry whose path is **not** listed in `review-files.txt`. Overwrite or add entries only for the selected paths. Preserve the existing top-level `diff_hash` when present so the rest of the review stays fresh against the full diff. Easy Review also merges on exit — still write a correct partial update."#
     )
 }
 
@@ -1878,6 +1880,7 @@ mod tests {
         let appendix = file_scope_appendix("/tmp/out");
         assert!(appendix.contains("review-files.txt"));
         assert!(appendix.contains("selected files only"));
+        assert!(appendix.contains("Merge, do not replace"));
     }
 
     #[test]
