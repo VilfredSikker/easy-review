@@ -14,7 +14,4 @@ desktop-ui/storybook-static/
 !.claude/commands/*.md
 !.claude/settings.json
 
-# Local-markdown issue tracker (docs/agents/issue-tracker.md) — override
-# ~/.gitignore_global's `.scratch/` so tickets can be committed for cloud agents.
-!.scratch/
-!.scratch/**
+.scratch/

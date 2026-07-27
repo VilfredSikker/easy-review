@@ -9,7 +9,6 @@
       "Bash(sha256sum *)",
       "Bash(cp .er/*)",
       "Read(.er/*)",
-      "Write(.er/*)",
       "Edit(.er/*)"
     ]
   }
