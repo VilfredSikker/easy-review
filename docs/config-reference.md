@@ -87,9 +87,9 @@ args = ["--model", "claude-sonnet-5"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.claude.models]]
-id = "opus-4.8"
-label = "Opus 4.8"
-args = ["--model", "claude-opus-4-8"]
+id = "opus-5"
+label = "Opus 5"
+args = ["--model", "claude-opus-5"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
 
 [[ai_hub.providers.claude.models]]

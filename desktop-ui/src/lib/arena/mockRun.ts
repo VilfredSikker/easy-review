@@ -261,7 +261,7 @@ export const MOCK_ARENA_RUN: ArenaRun = {
       model_id: r.model_id,
     })),
     rounds: 3,
-    arbiter: { provider_id: "anthropic", model_id: "opus-4.8" },
+    arbiter: { provider_id: "anthropic", model_id: "opus-5" },
     auto_accept_threshold: 0.75,
     scope: "branch",
   },

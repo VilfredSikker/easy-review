@@ -539,7 +539,8 @@ pub fn ai_hub_catalog() -> AiHubConfig {
         .unwrap_or_default()
 }
 
-const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4.7"];
+const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] =
+    &["sonnet-4.6", "opus-4.6", "opus-4.7", "opus-4.8"];
 
 /// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
 ///
@@ -2528,18 +2529,18 @@ mod tests {
         let claude = hub.providers.get("claude").expect("claude provider");
         let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"sonnet-5"), "missing sonnet-5: {ids:?}");
-        assert!(ids.contains(&"opus-4.8"), "missing opus-4.8: {ids:?}");
+        assert!(ids.contains(&"opus-5"), "missing opus-5: {ids:?}");
         assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
 
-        let opus_48 = claude
+        let opus_5 = claude
             .models
             .iter()
-            .find(|m| m.id == "opus-4.8")
-            .expect("opus-4.8 entry");
-        assert_eq!(opus_48.label.as_deref(), Some("Opus 4.8"));
+            .find(|m| m.id == "opus-5")
+            .expect("opus-5 entry");
+        assert_eq!(opus_5.label.as_deref(), Some("Opus 5"));
         assert_eq!(
-            opus_48.args,
-            vec!["--model".to_string(), "claude-opus-4-8".to_string()]
+            opus_5.args,
+            vec!["--model".to_string(), "claude-opus-5".to_string()]
         );
 
         // User-defined models and order are preserved.
@@ -2590,8 +2591,8 @@ mod tests {
         assert!(hub.providers.contains_key("opencode"));
         let claude = hub.providers.get("claude").unwrap();
         assert!(
-            claude.models.iter().any(|m| m.id == "opus-4.8"),
-            "catalog should include opus-4.8"
+            claude.models.iter().any(|m| m.id == "opus-5"),
+            "catalog should include opus-5"
         );
         let cursor = hub.providers.get("cursor").unwrap();
         let grok = cursor
