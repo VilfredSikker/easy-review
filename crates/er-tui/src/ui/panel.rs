@@ -149,7 +149,10 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
     // the wrapped line count is known. Only borders LEFT + horizontal padding, so the inner
     // height is the full area height.
     let scroll = if content == PanelContent::AgentLog && tab.agent_log_auto_scroll {
-        lines.len().saturating_sub(area.height as usize).min(u16::MAX as usize) as u16
+        lines
+            .len()
+            .saturating_sub(area.height as usize)
+            .min(u16::MAX as usize) as u16
     } else {
         tab.panel_scroll
     };

@@ -2610,15 +2610,35 @@ mod tests {
 
     #[test]
     fn slug_match_is_case_insensitive() {
-        assert!(owner_repo_matches_slug("Acme", "Discovery", "acme/discovery"));
-        assert!(owner_repo_matches_slug("acme", "discovery", "Acme/Discovery"));
-        assert!(owner_repo_matches_slug("acme", "discovery", "acme/discovery.git"));
+        assert!(owner_repo_matches_slug(
+            "Acme",
+            "Discovery",
+            "acme/discovery"
+        ));
+        assert!(owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "Acme/Discovery"
+        ));
+        assert!(owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "acme/discovery.git"
+        ));
     }
 
     #[test]
     fn slug_match_rejects_other_repos_and_malformed_slugs() {
-        assert!(!owner_repo_matches_slug("acme", "discovery", "acme/discovery-api"));
-        assert!(!owner_repo_matches_slug("acme", "discovery", "other/discovery"));
+        assert!(!owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "acme/discovery-api"
+        ));
+        assert!(!owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "other/discovery"
+        ));
         assert!(!owner_repo_matches_slug("acme", "discovery", "discovery"));
         assert!(!owner_repo_matches_slug("acme", "discovery", ""));
     }
