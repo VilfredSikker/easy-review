@@ -1,3 +1,28 @@
+# Easy Review v0.4.8
+
+## In plain terms
+
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** The desktop sidebar now shows the installed app version above Settings, and a “New version available” pill when GitHub has a newer release (click opens the release page).
+- **Why it matters.** You can see what you’re running without digging through About dialogs, and you’ll know when it’s time to grab a newer build.
+- **TL;DR.** Sidebar version label + update pill.
+
+## Highlights
+
+- **Installed version in the sidebar.** Expanded rail shows `vX.Y.Z` above Settings; collapsed rail keeps Settings as-is with a small accent dot when an update exists.
+- **Update check.** Desktop compares `CARGO_PKG_VERSION` to GitHub Releases latest (1h cache) and links the pill to the release URL.
+
+## What's Changed
+
+### Features
+- Show app version above Settings and a “New version available” pill when a newer GitHub release exists.
+
+## Contributors
+
+- @VilfredSikker
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.7...v0.4.8
+
 # Easy Review v0.4.7
 
 ## In plain terms
