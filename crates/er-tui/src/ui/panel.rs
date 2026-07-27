@@ -144,9 +144,17 @@ fn render_panel(f: &mut Frame, area: Rect, app: &App, content: PanelContent) {
         .style(Style::default().bg(styles::SURFACE()))
         .padding(Padding::new(0, 1, 0, 0));
 
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .scroll((tab.panel_scroll, 0));
+    // `drain_agent_log` tracks auto-scroll in *entries*, but each entry word-wraps into one
+    // or more lines — so the stored offset under-shoots the bottom. Recompute here, where
+    // the wrapped line count is known. Only borders LEFT + horizontal padding, so the inner
+    // height is the full area height.
+    let scroll = if content == PanelContent::AgentLog && tab.agent_log_auto_scroll {
+        lines.len().saturating_sub(area.height as usize).min(u16::MAX as usize) as u16
+    } else {
+        tab.panel_scroll
+    };
+
+    let paragraph = Paragraph::new(lines).block(block).scroll((scroll, 0));
 
     f.render_widget(paragraph, area);
 }

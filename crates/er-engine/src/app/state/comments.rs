@@ -1,5 +1,11 @@
 use super::*;
 
+/// Review agents never need a second checkout: they run inside the repo (or, for a remote PR
+/// whose repo is not checked out locally, work from the prepared diff plus `gh`). Cloning has
+/// only ever produced stray copies under `/tmp` that later runs then read stale code out of.
+/// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
+const CLONE_DENY_RULE: &str = "Bash(git clone*)";
+
 impl App {
     // ── Comment System ──
 
@@ -2222,6 +2228,7 @@ impl App {
         let repo_root = self.tab().repo_root.clone();
         let er_dir_path = self.tab().er_dir();
         let is_remote = self.tab().is_remote();
+        let remote_repo = self.tab().remote_repo.clone();
         let selection = if let Some(selection) = self.pending_ai_selection_override.clone() {
             selection
         } else {
@@ -2377,6 +2384,11 @@ impl App {
                         "Bash(rg *)",
                         "Bash(git grep*)",
                         "Bash(git diff*)",
+                        "Bash(git show*)",
+                        // Narrow on purpose: a bare `git fetch*` would also permit
+                        // `git fetch origin +refs/heads/*:refs/heads/*`, which can
+                        // clobber the user's local branches.
+                        "Bash(git fetch origin pull/*)",
                         "Bash(shasum*)",
                         "Bash(sha256sum*)",
                         "Bash(mkdir*)",
@@ -2386,11 +2398,28 @@ impl App {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());
                     }
+                    agent_args.insert(0, CLONE_DENY_RULE.to_string());
+                    agent_args.insert(0, "--disallowedTools".to_string());
                 }
 
-                // In remote mode, run from the cache dir so relative paths resolve there.
-                // The agent fetches the diff via `gh` — no local repo access needed.
-                let work_dir = if is_remote { &er_dir_path } else { &repo_root };
+                // Remote mode has no repo around it, which is what sends the agent hunting
+                // the filesystem for a copy of the code. When the local checkout *is* the
+                // PR's repo, run there so verification reads hit real files; otherwise fall
+                // back to the artifact dir. Output dirs are absolute either way.
+                let remote_checkout = if is_remote {
+                    remote_repo
+                        .as_deref()
+                        .and_then(|slug| crate::github::local_checkout_for_repo(&repo_root, slug))
+                } else {
+                    None
+                };
+                let work_dir = if let Some(checkout) = &remote_checkout {
+                    checkout
+                } else if is_remote {
+                    &er_dir_path
+                } else {
+                    &repo_root
+                };
                 let mut cmd = std::process::Command::new(&agent_cmd);
                 cmd.args(&agent_args)
                     .current_dir(work_dir)
@@ -2422,7 +2451,7 @@ impl App {
                             let display = if is_stream_json {
                                 parse_stream_json_line(&line)
                             } else {
-                                Some(truncate_str(line.trim(), 120))
+                                Some(line.trim().to_string())
                             };
                             if let Some(text) = display.filter(|text| !text.is_empty()) {
                                 let _ = log_tx_out.send(AgentLogEntry {
@@ -2787,6 +2816,7 @@ impl App {
         let task_id = task.id.clone();
         let er_dir = target.er_dir.clone();
         let repo_root = target.repo_root.clone();
+        let remote_repo = target.remote_repo.clone();
         let is_remote = target.remote_repo.is_some();
         let managed_local = target.managed_local;
         // For local-branch views (cache-dir er_dir) treat like remote — cwd is
@@ -2843,6 +2873,8 @@ impl App {
                             "Bash(grep *)",
                             "Bash(rg *)",
                             "Bash(git grep*)",
+                            "Bash(git show*)",
+                            "Bash(git fetch origin pull/*)",
                             "Bash(cp .er/*)",
                             "Bash(shasum*)",
                             "Bash(sha256sum*)",
@@ -2857,6 +2889,9 @@ impl App {
                             "Bash(gh pr *)",
                             "Bash(cp .er/*)",
                             "Bash(git diff*)",
+                            "Bash(git grep*)",
+                            "Bash(git show*)",
+                            "Bash(git fetch origin pull/*)",
                             "Bash(shasum*)",
                             "Bash(sha256sum*)",
                             "Bash(mkdir*)",
@@ -2866,11 +2901,24 @@ impl App {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());
                     }
+                    agent_args.insert(0, CLONE_DENY_RULE.to_string());
+                    agent_args.insert(0, "--disallowedTools".to_string());
                 }
 
                 // managed_local: er_dir is outside repo_root but git must run from repo_root.
                 // is_remote / is_cache_er_dir without managed_local: cwd = er_dir (cache-dir or remote).
-                let work_dir = if managed_local || (!is_remote && !is_cache_er_dir) {
+                // A remote PR whose repo *is* the local checkout runs there instead, so the
+                // agent can verify against real code rather than hunting the filesystem.
+                let remote_checkout = if is_remote {
+                    remote_repo
+                        .as_deref()
+                        .and_then(|slug| crate::github::local_checkout_for_repo(&repo_root, slug))
+                } else {
+                    None
+                };
+                let work_dir = if let Some(checkout) = &remote_checkout {
+                    checkout
+                } else if managed_local || (!is_remote && !is_cache_er_dir) {
                     &repo_root
                 } else {
                     &er_dir
@@ -2901,7 +2949,7 @@ impl App {
                             let display = if is_stream_json {
                                 parse_stream_json_line(&line)
                             } else {
-                                Some(truncate_str(line.trim(), 120))
+                                Some(line.trim().to_string())
                             };
                             if let Some(text) = display.filter(|t| !t.is_empty()) {
                                 let _ = log_tx_out.send(AgentLogEntry {

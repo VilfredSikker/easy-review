@@ -129,6 +129,11 @@ pub fn review_rules_preamble(
 - `confidence`: `confirmed` | `informational` | `tentative` (with `verification_plan`)
 - `evidence`: cite files/ranges read; budget ~10 reads per finding (no global session cap)
 
+### Scope
+- Investigate only within the repository checkout you were started in and the artifacts in the output directory. Do **not** run filesystem-wide searches (`find /`, scanning unrelated project directories) and do **not** `git clone` this or any other repository to a new location.
+- If you were given a prepared PR diff and this working tree does not contain the PR's commits, fetch the ref once — `git fetch origin pull/<N>/head:refs/er/pr-<N>` — then read with `git show refs/er/pr-<N>:<path>` and `git grep <pattern> refs/er/pr-<N>`. **Never** `git checkout` / `git switch`: the user is working in this tree.
+- If you are not inside a repository checkout at all, the prepared diff plus `gh` (`gh pr view`, `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>`) is your only evidence. Do not go looking for a copy of the repo on disk — mark the finding `tentative` with a `verification_plan` instead.
+
 ### Finding caps
 - Max {per_file} findings per file, max {total} total
 - {categories}
@@ -1177,7 +1182,7 @@ pub fn build_review_prompt_remote(
     format!(
         r#"You are a code reviewer. Perform a thorough review of the GitHub PR diff and write results to `{safe_output_dir}/`.
 
-Note: `gh pr diff` returns less context than local `git diff` — agentic verification matters more.
+Note: `gh pr diff` returns less context than local `git diff`, so verification matters more — do it from the checkout you were started in (fetch the PR ref, see Scope) or via `gh`, never by searching the filesystem for a local copy. When you cannot verify, mark the finding `tentative`.
 
 {preamble}
 
@@ -1784,6 +1789,38 @@ mod tests {
         assert!(preamble.contains("**no `style`**"));
         assert!(preamble.contains("P0"));
         assert!(preamble.contains("two-dot"));
+    }
+
+    #[test]
+    fn review_rules_preamble_bounds_investigation_scope() {
+        let preamble = review_rules_preamble(".er", false, FindingCaps::general(), None);
+        assert!(preamble.contains("### Scope"));
+        assert!(preamble.contains("find /"));
+        assert!(preamble.contains("`git clone`"));
+        assert!(preamble.contains("git fetch origin pull/<N>/head:refs/er/pr-<N>"));
+        assert!(preamble.contains("git show refs/er/pr-<N>:<path>"));
+        // `git worktree add` would materialize a second checkout at an agent-chosen path —
+        // the very behaviour the Scope section exists to prevent.
+        assert!(!preamble.contains("git worktree"));
+    }
+
+    #[test]
+    fn scope_rules_reach_every_review_prompt_family() {
+        let local = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
+        let prepared = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
+        let remote = build_review_prompt_remote("owner", "repo", 42, "/tmp/cache");
+        let expert = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security");
+        for prompt in [&local, &prepared, &remote, &expert] {
+            assert!(prompt.contains("### Scope"), "missing Scope: {prompt}");
+        }
+    }
+
+    #[test]
+    fn remote_prompt_points_verification_at_checkout_not_filesystem() {
+        let prompt = build_review_prompt_remote("owner", "repo", 42, "/tmp/cache");
+        assert!(!prompt.contains("agentic verification matters more"));
+        assert!(prompt.contains("never by searching the filesystem for a local copy"));
+        assert!(prompt.contains("mark the finding `tentative`"));
     }
 
     #[test]
