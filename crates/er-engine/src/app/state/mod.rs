@@ -7224,7 +7224,7 @@ fn parse_stream_json_line(line: &str) -> Option<String> {
                         };
                         let trimmed = text.trim();
                         if !trimmed.is_empty() {
-                            parts.push(truncate_str(trimmed, 120));
+                            parts.push(trimmed.to_string());
                         }
                     }
                     "tool_use" => {
@@ -7247,12 +7247,12 @@ fn parse_stream_json_line(line: &str) -> Option<String> {
                             "Bash" => input
                                 .and_then(|i| i.get("command"))
                                 .and_then(|c| c.as_str())
-                                .map(|c| truncate_str(c, 60))
+                                .map(|c| c.to_string())
                                 .unwrap_or_default(),
                             "Glob" | "Grep" => input
                                 .and_then(|i| i.get("pattern"))
                                 .and_then(|p| p.as_str())
-                                .map(|p| truncate_str(p, 40))
+                                .map(|p| p.to_string())
                                 .unwrap_or_default(),
                             _ => String::new(),
                         };
@@ -7300,15 +7300,6 @@ fn shorten_path(path: &str) -> String {
         format!("{}/{}", parts[1], parts[0])
     } else {
         parts[0].to_string()
-    }
-}
-
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let boundary = s.char_indices().nth(max).map(|(i, _)| i).unwrap_or(s.len());
-        format!("{}…", &s[..boundary])
     }
 }
 
@@ -9793,46 +9784,6 @@ mod tests {
         assert!(tab.ai.github_comments.is_none());
     }
 
-    // ── truncate_str (multi-byte UTF-8 regression) ──
-
-    #[test]
-    fn truncate_str_emoji_does_not_panic() {
-        // Emoji are multi-byte (4 bytes each). Slicing at byte offset would panic.
-        let s = "hello 🎉🎊🎈 world";
-        let result = truncate_str(s, 8);
-        // Should get 8 chars + ellipsis, no panic
-        assert_eq!(result, "hello 🎉🎊…");
-    }
-
-    #[test]
-    fn truncate_str_cjk_chars() {
-        let s = "你好世界测试";
-        let result = truncate_str(s, 4);
-        assert_eq!(result, "你好世界…");
-    }
-
-    #[test]
-    fn truncate_str_mixed_ascii_and_multibyte() {
-        let s = "café résumé";
-        let result = truncate_str(s, 5);
-        assert_eq!(result, "café …");
-    }
-
-    #[test]
-    fn truncate_str_exact_multibyte_boundary() {
-        let s = "🎉🎊"; // 2 emoji, each 4 bytes
-        let result = truncate_str(s, 2);
-        // Exactly at limit, no truncation needed
-        assert_eq!(result, "🎉🎊");
-    }
-
-    #[test]
-    fn truncate_str_single_emoji_within_limit() {
-        let s = "🎉";
-        let result = truncate_str(s, 5);
-        assert_eq!(result, "🎉");
-    }
-
     // ── parse_stream_json_line ──
 
     #[test]
@@ -9939,6 +9890,50 @@ mod tests {
     fn parse_stream_json_unknown_type_returns_none() {
         let line = r#"{"type":"unknown_event","data":"something"}"#;
         assert_eq!(parse_stream_json_line(line), None);
+    }
+
+    // ── no truncation: the log is the user's audit trail of what the agent ran ──
+
+    #[test]
+    fn parse_stream_json_long_bash_command_not_truncated() {
+        // 60-char cap used to cut this mid-flag, hiding what the agent actually ran.
+        let cmd = r#"find / -maxdepth 6 -iname "discovery-api" -type d 2>/dev/null | head -20"#;
+        assert!(cmd.chars().count() > 60);
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Bash","input":{{"command":{}}}}}]}}}}"#,
+            serde_json::to_string(cmd).unwrap()
+        );
+        let result = parse_stream_json_line(&line).expect("bash event should render");
+        assert_eq!(result, format!("→ Bash {cmd}"));
+        assert!(!result.contains('…'), "result = {result}");
+    }
+
+    #[test]
+    fn parse_stream_json_long_grep_pattern_not_truncated() {
+        let pattern = "timelapse|stitching|compilation|ffmpeg|segmentation|playback_offset";
+        assert!(pattern.chars().count() > 40);
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"tool_use","name":"Grep","input":{{"pattern":{}}}}}]}}}}"#,
+            serde_json::to_string(pattern).unwrap()
+        );
+        let result = parse_stream_json_line(&line).expect("grep event should render");
+        assert_eq!(result, format!("→ Grep {pattern}"));
+        assert!(!result.contains('…'), "result = {result}");
+    }
+
+    #[test]
+    fn parse_stream_json_long_assistant_text_not_truncated() {
+        let text = "Now writing the review artifacts based on confirmed backend evidence \
+                    gathered from the stitching service, the compilation service and the \
+                    ffmpeg helpers referenced by the diff.";
+        assert!(text.chars().count() > 120);
+        let line = format!(
+            r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":{}}}]}}}}"#,
+            serde_json::to_string(text).unwrap()
+        );
+        let result = parse_stream_json_line(&line).expect("text event should render");
+        assert_eq!(result, text);
+        assert!(!result.contains('…'), "result = {result}");
     }
 
     // ── shorten_path ──

@@ -647,6 +647,33 @@ pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
     parse_owner_repo_from_remote(&remote)
 }
 
+/// True when `owner`/`repo` name the same GitHub repository as the `"owner/repo"` slug.
+/// GitHub treats owner and repo names case-insensitively.
+fn owner_repo_matches_slug(owner: &str, repo: &str, slug: &str) -> bool {
+    let (slug_owner, slug_repo) = match slug.split_once('/') {
+        Some(parts) => parts,
+        None => return false,
+    };
+    let repo = repo.strip_suffix(".git").unwrap_or(repo);
+    let slug_repo = slug_repo.strip_suffix(".git").unwrap_or(slug_repo);
+    owner.eq_ignore_ascii_case(slug_owner) && repo.eq_ignore_ascii_case(slug_repo)
+}
+
+/// The local checkout to run a remote PR review in, when `repo_root`'s `origin` is the same
+/// GitHub repository the PR belongs to (`remote_repo` is an `"owner/repo"` slug).
+///
+/// Remote reviews otherwise run from the managed artifact directory with no repository
+/// around them, which pushes the agent into hunting the filesystem for a copy of the code.
+/// Returns `None` whenever the match cannot be established — no origin, unparseable remote,
+/// or a different repository — so the caller keeps the artifact-dir behaviour.
+pub fn local_checkout_for_repo(repo_root: &str, remote_repo: &str) -> Option<String> {
+    if repo_root.is_empty() || remote_repo.is_empty() {
+        return None;
+    }
+    let (owner, repo) = get_repo_info(repo_root).ok()?;
+    owner_repo_matches_slug(&owner, &repo, remote_repo).then(|| repo_root.to_string())
+}
+
 /// Fetch all review comments for a PR
 pub fn gh_pr_comments(
     owner: &str,
@@ -2566,6 +2593,61 @@ pub fn owner_repo_storage_slug(owner: &str, repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── local checkout matching (remote PR reviews) ──
+
+    #[test]
+    fn ssh_and_https_origins_resolve_to_the_same_slug() {
+        for remote in [
+            "git@github.com:Acme/discovery.git",
+            "https://github.com/Acme/discovery.git",
+            "https://github.com/Acme/discovery",
+        ] {
+            let (owner, repo) = parse_owner_repo_from_remote(remote).unwrap();
+            assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
+        }
+    }
+
+    #[test]
+    fn slug_match_is_case_insensitive() {
+        assert!(owner_repo_matches_slug(
+            "Acme",
+            "Discovery",
+            "acme/discovery"
+        ));
+        assert!(owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "Acme/Discovery"
+        ));
+        assert!(owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "acme/discovery.git"
+        ));
+    }
+
+    #[test]
+    fn slug_match_rejects_other_repos_and_malformed_slugs() {
+        assert!(!owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "acme/discovery-api"
+        ));
+        assert!(!owner_repo_matches_slug(
+            "acme",
+            "discovery",
+            "other/discovery"
+        ));
+        assert!(!owner_repo_matches_slug("acme", "discovery", "discovery"));
+        assert!(!owner_repo_matches_slug("acme", "discovery", ""));
+    }
+
+    #[test]
+    fn local_checkout_for_repo_needs_both_inputs() {
+        assert_eq!(local_checkout_for_repo("", "acme/discovery"), None);
+        assert_eq!(local_checkout_for_repo("/tmp/some-repo", ""), None);
+    }
 
     #[test]
     fn parse_standard_url() {
