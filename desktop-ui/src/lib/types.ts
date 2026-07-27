@@ -450,6 +450,8 @@ export interface AppSnapshot {
   tour?: TourSnapshot;
   /** Active arena runs across all tabs (tab-independent background runs). */
   background_arena_runs?: import("./types/arena").ArenaRunSummary[];
+  /** Desktop app version from the backend (`CARGO_PKG_VERSION`). */
+  app_version?: string;
 }
 
 export interface InboxTargetSnapshot {

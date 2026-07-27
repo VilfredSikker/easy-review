@@ -29,6 +29,49 @@
   const inboxLastRefreshMs = $derived<number>(snapshot?.inbox_last_refresh_ms ?? 0);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
+
+  interface AppUpdateInfo {
+    current: string;
+    latest: string | null;
+    update_available: boolean;
+    release_url: string | null;
+  }
+
+  let updateAvailable = $state(false);
+  let latestVersion = $state<string | null>(null);
+  let releaseUrl = $state<string | null>(null);
+
+  $effect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const info = await invoke<AppUpdateInfo>("check_app_update");
+        if (cancelled) return;
+        updateAvailable = info.update_available;
+        latestVersion = info.latest;
+        releaseUrl = info.release_url;
+      } catch {
+        // Offline / rate-limit — keep pill hidden.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  });
+
+  async function openUpdateRelease() {
+    const url =
+      releaseUrl ??
+      (latestVersion
+        ? `https://github.com/VilfredSikker/easy-review/releases/tag/v${latestVersion}`
+        : "https://github.com/VilfredSikker/easy-review/releases/latest");
+    try {
+      await invoke("open_url_in_browser", { url });
+    } catch {
+      // ignore
+    }
+  }
 
   function projectFromPath(path: string): string {
     const segments = path.split("/").filter(Boolean);
@@ -802,7 +845,16 @@
     <button title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
-    <div class="mt-auto">
+    <div class="mt-auto flex flex-col items-center gap-1 pb-0.5">
+      {#if updateAvailable}
+        <button
+          type="button"
+          title={latestVersion ? `v${latestVersion} available` : "New version available"}
+          aria-label="New version available"
+          onclick={openUpdateRelease}
+          class="w-2 h-2 rounded-full bg-accent shrink-0"
+        ></button>
+      {/if}
       <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded flex items-center justify-center hover:bg-hover"><AppMark size={24} /></button>
     </div>
   </aside>
@@ -1692,10 +1744,28 @@
     </div>
   {/if}
 
-  <!-- Footer: er + Settings — fixed at bottom by being a sibling of the flex-1 scroll area. -->
+  <!-- Version + optional update pill above Settings. -->
+  <div class="border-t border-hairline px-3 pt-2.5 pb-1.5 shrink-0 space-y-1.5">
+    <div class="flex items-center gap-2 min-w-0">
+      <span class="text-[11px] font-mono text-fg-3 truncate" title="Installed version">
+        v{appVersion}
+      </span>
+    </div>
+    {#if updateAvailable}
+      <button
+        type="button"
+        class="inline-flex items-center gap-1.5 max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
+        title={latestVersion ? `v${latestVersion} is available` : "Open release notes"}
+        onclick={openUpdateRelease}
+      >
+        <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" aria-hidden="true"></span>
+        <span class="truncate">New version available</span>
+      </button>
+    {/if}
+  </div>
   <button
     onclick={() => app.setMainView("settings")}
-    class="border-t border-hairline p-3 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
+    class="px-3 pb-3 pt-1.5 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >
     <AppMark size={24} />
     <span>Settings</span>

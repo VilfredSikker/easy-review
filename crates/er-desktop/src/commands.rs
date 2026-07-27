@@ -1231,6 +1231,147 @@ pub fn open_url_in_browser(url: String) -> Result<(), String> {
     open_external_url(&url)
 }
 
+/// Result of comparing the running desktop build to GitHub Releases latest.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AppUpdateInfo {
+    pub current: String,
+    pub latest: Option<String>,
+    pub update_available: bool,
+    pub release_url: Option<String>,
+}
+
+const UPDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const RELEASES_LATEST_URL: &str =
+    "https://api.github.com/repos/VilfredSikker/easy-review/releases/latest";
+
+fn parse_semver_parts(raw: &str) -> Option<Vec<u64>> {
+    let s = raw.trim().trim_start_matches('v');
+    if s.is_empty() {
+        return None;
+    }
+    let mut parts = Vec::new();
+    for piece in s.split('.') {
+        // Ignore pre-release / build metadata for ordering ("0.4.7-rc.1" → 0.4.7).
+        let num = piece
+            .split(|c: char| !c.is_ascii_digit())
+            .next()
+            .filter(|t| !t.is_empty())?;
+        parts.push(num.parse().ok()?);
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts)
+    }
+}
+
+/// True when `latest` is strictly newer than `current` (semver-ish numeric compare).
+fn version_is_newer(latest: &str, current: &str) -> bool {
+    let Some(mut a) = parse_semver_parts(latest) else {
+        return false;
+    };
+    let Some(mut b) = parse_semver_parts(current) else {
+        return false;
+    };
+    let n = a.len().max(b.len());
+    a.resize(n, 0);
+    b.resize(n, 0);
+    a > b
+}
+
+fn fetch_latest_release() -> Result<(String, String), String> {
+    #[derive(serde::Deserialize)]
+    struct GhRelease {
+        tag_name: String,
+        html_url: String,
+        #[serde(default)]
+        draft: bool,
+        #[serde(default)]
+        prerelease: bool,
+    }
+
+    let agent = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(8))
+        .build();
+    let resp = agent
+        .get(RELEASES_LATEST_URL)
+        .set("User-Agent", "easy-review-desktop")
+        .set("Accept", "application/vnd.github+json")
+        .call()
+        .map_err(|e| format!("GitHub releases request failed: {e}"))?;
+    let text = resp
+        .into_string()
+        .map_err(|e| format!("GitHub releases body read failed: {e}"))?;
+    let body: GhRelease = serde_json::from_str(&text)
+        .map_err(|e| format!("GitHub releases JSON parse failed: {e}"))?;
+    if body.draft || body.prerelease {
+        return Err("latest release is draft/prerelease".into());
+    }
+    let tag = body.tag_name.trim().to_string();
+    if tag.is_empty() {
+        return Err("empty tag_name".into());
+    }
+    Ok((tag, body.html_url))
+}
+
+fn check_app_update_inner() -> AppUpdateInfo {
+    let current = env!("CARGO_PKG_VERSION").to_string();
+    match fetch_latest_release() {
+        Ok((tag, url)) => {
+            let latest = tag.trim_start_matches('v').to_string();
+            let update_available = version_is_newer(&latest, &current);
+            AppUpdateInfo {
+                current,
+                latest: Some(latest),
+                update_available,
+                release_url: Some(url),
+            }
+        }
+        Err(err) => {
+            log::debug!("check_app_update: {err}");
+            AppUpdateInfo {
+                current,
+                latest: None,
+                update_available: false,
+                release_url: None,
+            }
+        }
+    }
+}
+
+/// Compare the running app version to GitHub Releases latest (1h cache).
+#[tauri::command]
+pub async fn check_app_update() -> Result<AppUpdateInfo, String> {
+    use std::sync::Mutex;
+    use std::time::Instant;
+
+    struct Cache {
+        at: Instant,
+        info: AppUpdateInfo,
+    }
+    static CACHE: Mutex<Option<Cache>> = Mutex::new(None);
+
+    if let Ok(guard) = CACHE.lock() {
+        if let Some(c) = guard.as_ref() {
+            if c.at.elapsed() < UPDATE_CACHE_TTL {
+                return Ok(c.info.clone());
+            }
+        }
+    }
+
+    let info = tauri::async_runtime::spawn_blocking(check_app_update_inner)
+        .await
+        .map_err(|e| format!("check_app_update join: {e}"))?;
+
+    if let Ok(mut guard) = CACHE.lock() {
+        *guard = Some(Cache {
+            at: Instant::now(),
+            info: info.clone(),
+        });
+    }
+    Ok(info)
+}
+
 fn github_file_url_for_tab(
     tab: &er_engine::app::TabState,
     file_path: &str,
@@ -9013,5 +9154,15 @@ mod tests {
         rx.recv_timeout(Duration::from_millis(500))
             .expect("inbox notify path deadlocked (re-entrant lock on ai_review_done)");
         assert_eq!(inbox.lock().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn version_is_newer_compares_semver_numeric() {
+        assert!(version_is_newer("0.4.8", "0.4.7"));
+        assert!(version_is_newer("v0.5.0", "0.4.7"));
+        assert!(!version_is_newer("0.4.7", "0.4.7"));
+        assert!(!version_is_newer("0.4.6", "0.4.7"));
+        assert!(version_is_newer("0.4.7", "0.4"));
+        assert!(!version_is_newer("not-a-version", "0.4.7"));
     }
 }

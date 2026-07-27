@@ -1810,6 +1810,7 @@ fn main() {
             commands::open_in_vscode,
             commands::open_source,
             commands::open_url_in_browser,
+            commands::check_app_update,
             commands::reveal_er_folder,
             commands::reveal_path,
             commands::list_review_revisions,
