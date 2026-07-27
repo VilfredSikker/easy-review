@@ -1,3 +1,40 @@
+# Easy Review v0.4.7
+
+## In plain terms
+
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** AI Hub config now lives in managed storage with an editable provider editor and model discovery. Claude Opus 5 is in the catalog. Remote PR reviews run from your local checkout when it matches the PR repo (no filesystem hunts), agent logs are no longer truncated, selected-file reviews merge into existing findings instead of wiping them, and the desktop composer matches inline thread width.
+- **Why it matters.** You can add custom providers and refresh model lists without hand-editing TOML; remote reviews stay in a real repo with a full audit trail; scoped reviews no longer drop prior findings; and writing comments looks the same as saved cards.
+- **TL;DR.** Managed AI Hub config + provider editor, Opus 5, safer remote reviews with full logs, scoped-review merge, composer width fix.
+
+## Highlights
+
+- **Managed AI Hub config.** Config loads/saves under managed app storage (`<storage_root>/config.toml`, overridable via `ER_CONFIG_PATH`) with one-time migration from `~/.config/er/config.toml`. Catalog deletes use tombstones so presets stay gone. (#159)
+- **Editable providers + model discovery.** Desktop Settings → AI Hub can add/edit/remove providers (including `family` and `models_command`); discovery populates model lists. TUI refreshes the same config live. (#159)
+- **Claude Opus 5.** Shared catalog replaces Opus 4.8 with Opus 5; old ids are deprecated on load.
+- **Remote reviews stay in the repo.** When a remote PR targets the same `origin` repo, agents run from the local checkout and fetch PR refs under `refs/er/*` instead of hunting `/tmp` checkouts. Shared `### Scope` prompt rules out `find /` and `git clone`. (#160)
+- **Full agent logs.** Bash/Grep/assistant text are no longer truncated in TUI or desktop agent output; TUI log auto-scroll tracks wrapped lines. (#160)
+- **Scoped-file review merge.** Selected-file AI reviews snapshot and merge into existing `review.json` / expert / professor sidecars so findings outside the scoped paths are preserved. (#158)
+- **Composer width.** Diff composer and inline threads/findings span the full diff column (Guide rail aware). (#157)
+
+## What's Changed
+
+### Features
+- Move AI Hub `config.toml` into managed storage with migration, tombstones, provider `family`, and `models_command`. (#159)
+- Desktop AI provider editor plus model discovery for editable/custom providers; TUI config refresh parity. (#159)
+- Update Claude catalog to Opus 5 (deprecate Opus 4.8 on load).
+
+### Fixes
+- Keep remote review agents in the matching local checkout; stop truncating agent logs. (#160)
+- Merge selected-file review findings into existing review sidecars. (#158)
+- Align desktop composer width with inline threads and findings. (#157)
+
+## Contributors
+
+- @VilfredSikker
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.6...v0.4.7
+
 # Easy Review v0.4.6
 
 ## In plain terms
