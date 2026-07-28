@@ -5,6 +5,10 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import {
+    commentThreads as allCommentThreads,
+    visibleCommentThreads as filterVisibleComments,
+  } from "$lib/commentVisibility";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import InlineThread from "$lib/components/InlineThread.svelte";
@@ -24,16 +28,10 @@
   let summary = $state("");
   let submitting = $state(false);
 
-  const commentThreads = $derived(ai.threads.filter((t) => t.kind === "comment"));
-  const visibleCommentThreads = $derived.by(() => {
-    const visibility = app.commentVisibility;
-    if (visibility.hideAll) return [];
-    return commentThreads.filter(
-      (thread) =>
-        !(visibility.hideResolved && thread.resolved) &&
-        !(visibility.hideOutdated && thread.stale),
-    );
-  });
+  const commentThreads = $derived(allCommentThreads(ai.threads));
+  const visibleCommentThreads = $derived(
+    filterVisibleComments(ai.threads, app.commentVisibility),
+  );
   const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
   const refreshing = $derived(
     manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
@@ -175,6 +173,9 @@
       <p class="text-[11px] text-muted py-1">
         {#if refreshing}
           Fetching comments from GitHub…
+        {:else if commentThreads.length > 0}
+          {commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"} hidden
+          (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.
         {:else}
           No comments on this diff
         {/if}

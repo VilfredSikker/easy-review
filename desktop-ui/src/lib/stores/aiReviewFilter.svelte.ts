@@ -20,6 +20,12 @@ class AiReviewFilterStore {
     this.labelsKey = key;
     this.filter = coerceAgentFilter(labels, this.filter);
   }
+
+  /** Clear sticky agent filter when switching PR/tab. */
+  reset() {
+    this.filter = ALL_REVIEWERS;
+    this.labelsKey = "";
+  }
 }
 
 export const aiReviewFilter = new AiReviewFilterStore();

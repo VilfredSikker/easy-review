@@ -261,6 +261,27 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     )
 }
 
+/// Build a full snapshot for a tab-switch / open command and invalidate poll
+/// `last_sent_*` so the next poll emits a clean full content snapshot for the
+/// new view (does not merely align to the current revision).
+pub(crate) fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
+    let snap = snap_from(app, state);
+    let content = compute_content_revision(app);
+    let chrome = compute_chrome_revision(state);
+    // wrapping_add(1) guarantees content != last_sent on the next poll even
+    // when the hash is unchanged, forcing a full content snapshot.
+    state
+        .last_sent_content_revision
+        .store(content.wrapping_add(1), Ordering::Relaxed);
+    state
+        .last_sent_chrome_revision
+        .store(chrome.wrapping_add(1), Ordering::Relaxed);
+    state
+        .last_sent_reviewed_revision
+        .store(app.tab().reviewed_revision, Ordering::Relaxed);
+    snap
+}
+
 fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
     build_chrome_snapshot(
         app,
@@ -903,7 +924,7 @@ pub async fn set_mode(
                 }
                 app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
             }
-            return Ok(snap_from(&app, &state));
+            return Ok(snap_from_command(&app, &state));
         }
         let diff_mode = match mode.as_str() {
             "unstaged" => DiffMode::Unstaged,
@@ -915,7 +936,7 @@ pub async fn set_mode(
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_command(&app, &state))
     })
     .await
 }
@@ -4948,7 +4969,7 @@ fn open_remote_pr_impl(
         repo,
         number,
     );
-    Ok(snap_from(&app, state))
+    Ok(snap_from_command(&app, state))
 }
 
 #[tauri::command]
@@ -5222,7 +5243,7 @@ fn open_local_branch_impl(
     let repo_root = app.tab().repo_root.clone();
     let base_branch = app.tab().base_branch.clone();
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, state);
+    let snapshot = snap_from_command(&app, state);
     log_branch_open_phase(&project_id, &branch_name, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_name, "total", t_total);
     drop(app);
@@ -5969,7 +5990,7 @@ fn open_pr_review_impl(
     let record_recent_ms = t_recent.elapsed().as_millis();
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from(&app, state);
+    let snapshot = snap_from_command(&app, state);
     let snap_build_ms = t_snapshot.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
@@ -7339,7 +7360,7 @@ pub async fn select_tab(
         kick_active_gh_status(&app, &state);
         crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
         crate::tabs::persist_app_tabs(&app);
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_command(&app, &state))
     })
     .await
 }

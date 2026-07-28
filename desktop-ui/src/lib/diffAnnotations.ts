@@ -18,6 +18,12 @@ import type {
   LineSnapshot,
   ThreadSnapshot,
 } from "$lib/types";
+import {
+  ALL_VISIBLE,
+  type CommentVisibility,
+} from "./commentVisibility";
+
+export { ALL_VISIBLE, type CommentVisibility };
 
 export interface AnnotationIndex {
   /** `${file}:${line}` → findings anchored to that line. */
@@ -65,28 +71,6 @@ export function lineInThreadAnchorRange(
   const hi = Math.max(t.line, end);
   return line >= start && line <= hi;
 }
-
-export interface CommentVisibility {
-  hideAll: boolean;
-  hideResolved: boolean;
-  hideOutdated: boolean;
-  /** Hide GitHub comment threads (kind === "comment"). */
-  hideComments: boolean;
-  /** Hide AI findings. */
-  hideFindings: boolean;
-  /** Hide personal question threads (kind === "question"). */
-  hideQuestions: boolean;
-}
-
-/** All annotations visible — the default visibility used as a fallback. */
-export const ALL_VISIBLE: CommentVisibility = {
-  hideAll: false,
-  hideResolved: false,
-  hideOutdated: false,
-  hideComments: false,
-  hideFindings: false,
-  hideQuestions: false,
-};
 
 /** Minimal AiSnapshot subset used by the helpers. */
 type AiInput = Pick<AiSnapshot, "threads" | "findings">;
