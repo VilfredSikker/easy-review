@@ -48,20 +48,25 @@ Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally re
 The MCP client agent **is** the reviewer. Easy Review prepares storage and
 validates uploads — it does not spawn agent CLIs.
 
-1. `get_artifact_specs` — JSON Schema, examples, and Desktop prepared-diff prompts
-   (optional but recommended before authoring).
-2. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
-   managed PR bucket (`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`),
-   returns `diff_hash` and prompts with the real output path.
-3. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
-4. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
-5. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
-6. Optionally `pin_pr` so the PR appears in Desktop Saved and `list_pinned_prs`.
+1. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
+   managed PR bucket, returns `diff_hash`, `diff_tmp_path`, and `artifact_specs`
+   (schemas/examples/prompts — the same payload as `get_artifact_specs`). Do **not**
+   also call `get_artifact_specs` in the same review run.
+   Managed path (sandbox **read-only** — read `diff-tmp`, write nothing here):
+   - macOS: `~/Library/Application Support/easy-review/repos/<owner-repo>/prs/pr-<N>/`
+   - Linux: `~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`
+2. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
+   Author file contents once, inline in `upload_artifacts`.
+3. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
+4. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
+5. Optionally `pin_pr` so the PR appears in Desktop Saved and `list_pinned_prs`.
+
+Call `get_artifact_specs` alone only when you are not preparing a PR (offline authoring,
+schema inspection).
 
 ```text
-get_artifact_specs → { "kinds": ["tour"] }
 prepare_review     → { "number": 42, "kinds": ["triage", "tour"] }
-# …you write the JSON per schema…
+# …you write the JSON per artifact_specs…
 upload_artifacts   → { "number": 42, "kind": "tour", "files": { "tour.json": "..." } }
 pin_pr             → { "number": 42 }
 list_artifacts     → { "kinds": ["tour"] }   # discover uploaded sidecars
@@ -71,8 +76,8 @@ summarize_triage   → { "number": 42 }
 **Review uploads** need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
 
 `upload_artifacts` validates serde deserialization + matching `diff_hash` **before** writing.
-It does **not** enforce the full JSON Schema from `get_artifact_specs` — use the schemas as the
-authoring contract.
+It does **not** enforce the full JSON Schema — use `prepare_review`'s `artifact_specs`
+(or `get_artifact_specs` when used alone) as the authoring contract.
 
 ## Build / run
 

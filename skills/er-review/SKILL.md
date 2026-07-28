@@ -7,7 +7,7 @@ description: >
   prepare/review a GitHub PR with Easy Review MCP.
 metadata:
   author: easy-review
-  version: "0.1.0"
+  version: "0.1.1"
 ---
 
 # Easy Review (er-mcp)
@@ -15,7 +15,10 @@ metadata:
 You are the reviewer. Easy Review MCP prepares storage and validates uploads — it does
 **not** spawn agent CLIs. Sidecars land in the same managed path Desktop/TUI read:
 
-`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`
+`~/Library/Application Support/easy-review/repos/<owner-repo>/prs/pr-<N>/`  (macOS)
+`~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`                 (Linux)
+
+This directory is **read-only from the sandbox** — read `diff-tmp` from it, write nothing into it.
 
 ## Prerequisites
 
@@ -50,23 +53,33 @@ Treat these as requests to run this skill end-to-end (not just list tools):
 
 ## Workflow (always)
 
-1. **`get_artifact_specs`** with the kinds you will author (schemas, examples, prompts).
-2. **`prepare_review`** with `{ "number": N, "kinds": [...], "repo": "owner/name" }` when needed.
+1. **`prepare_review`** with `{ "number": N, "kinds": [...], "repo": "owner/name" }` when needed.
    - Writes shared `diff-tmp` under the managed PR bucket.
-   - Returns `diff_hash`, `diff_tmp_path`, and `artifact_specs` (use prompts on specs; ignore duplicate kit artifact prompts).
-3. **Read the prepared diff** at `diff_tmp_path` (and follow the prepared-diff prompts).
-4. **Author sidecar JSON/Markdown** yourself:
+   - Returns `diff_hash`, `diff_tmp_path`, and `artifact_specs` — the **same** schemas/examples/prompts
+     `get_artifact_specs` returns. Do **not** call both; that duplicates a multi-thousand-token payload.
+   - Call `get_artifact_specs` alone only when you are not preparing a PR (authoring offline, inspecting a schema).
+2. **Read the prepared diff** at `diff_tmp_path` (and follow the prepared-diff prompts).
+3. **Author sidecar JSON/Markdown** yourself:
    - Embed the **exact** `diff_hash` from `prepare_review` in every JSON that requires it.
-   - Follow schemas/examples from `get_artifact_specs` / `artifact_specs`.
-5. **`upload_artifacts`** once per kind:
+   - Follow schemas/examples from `artifact_specs` (or `get_artifact_specs` when used alone).
+4. **`upload_artifacts`** once per kind:
    - Triage: `{ "kind": "triage", "files": { "triage.json": "..." } }`
    - Tour: `{ "kind": "tour", "files": { "tour.json": "..." } }`
    - Review: all four — `review.json`, `order.json`, `checklist.json`, `summary.md`
-6. **`pin_pr`** (optional but recommended) so the PR lands in Desktop Saved and is easy to find later via `list_pinned_prs`.
-7. **`summarize_triage`** (optional) and/or **`open_in_easy_review`** so the user can open Desktop/TUI.
+5. **`pin_pr`** (optional but recommended) so the PR lands in Desktop Saved and is easy to find later via `list_pinned_prs`.
+6. **`summarize_triage`** (optional) and/or **`open_in_easy_review`** so the user can open Desktop/TUI.
 
 Do **not** write files under the managed path yourself — always go through `upload_artifacts`.
 Do **not** auto-pin — only call `pin_pr` when the user wants it bookmarked, or after a successful review when they asked to save/pin.
+
+## Local working rules
+
+- **Annotate into the scratchpad**, not the managed dir: redirect the spec's `awk` to
+  `$SCRATCHPAD/diff-annotated`, then read it from there.
+- **Author each sidecar once**, inline in the `upload_artifacts` call. `upload_artifacts` takes file
+  *contents*, so a scratchpad copy means writing the same JSON twice — and the upload is the durable
+  artifact. Use a scratchpad draft only if you expect validation to fail and want to iterate.
+- Use `kit.diff_hash` / `prepare_review`'s `diff_hash` verbatim; skip the spec prompt's step-1 `shasum`.
 
 ## Finding reviewed work
 
@@ -77,7 +90,8 @@ Do **not** auto-pin — only call `pin_pr` when the user wants it bookmarked, or
 ## Validation rules
 
 - `upload_artifacts` checks serde shape + matching `diff_hash` **before** writing.
-- It does **not** enforce full JSON Schema — treat `get_artifact_specs` as the authoring contract.
+- It does **not** enforce full JSON Schema — treat `prepare_review`'s `artifact_specs` as the
+  authoring contract (or `get_artifact_specs` when used alone).
 - If upload fails, fix the payload and retry; do not invent alternate storage paths.
 - Reuse `prepare_review`'s `diff-tmp` / hash unless the PR changed; then call `prepare_review` again.
 
@@ -91,5 +105,6 @@ on the chosen PR.
 
 - Do not spawn `claude` / `codex` / Desktop AI Hub agents for this flow.
 - Do not skip `prepare_review` and invent a `diff_hash`.
+- Do not call both `get_artifact_specs` and `prepare_review` in the same review run.
 - Do not upload with a stale hash after the PR diff changed.
 - Do not put secrets or local file dumps into sidecars beyond what the schemas ask for.
