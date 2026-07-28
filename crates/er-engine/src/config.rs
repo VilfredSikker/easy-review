@@ -539,8 +539,7 @@ pub fn ai_hub_catalog() -> AiHubConfig {
         .unwrap_or_default()
 }
 
-const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] =
-    &["sonnet-4.6", "opus-4.6", "opus-4.7", "opus-4.8"];
+const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4.7", "opus-4.8"];
 
 /// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
 ///

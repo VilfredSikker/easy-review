@@ -983,13 +983,13 @@ pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
     let base = tab.base_branch.clone();
     let output_dir = tab.er_dir();
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_notes_prompt_local_managed(
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+            Some(er_engine::ai::prompts::build_notes_prompt_local_managed(
                 &base,
                 mode.git_mode(),
                 &output_dir,
-            ),
-        ),
+            ))
+        }
         _ => {
             app.notify("AI notes not available in this mode");
             None
