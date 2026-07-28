@@ -558,6 +558,15 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
+        // Export picker — multiselect annotation kinds to clipboard
+        KeyCode::Char('E')
+            if !matches!(mode, DiffMode::History | DiffMode::Tour)
+                && key.modifiers.contains(KeyModifiers::SHIFT) =>
+        {
+            app.open_export_picker();
+            return Ok(());
+        }
+
         _ => {}
     }
 

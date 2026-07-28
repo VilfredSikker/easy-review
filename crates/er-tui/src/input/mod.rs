@@ -2,8 +2,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
-    cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews, AiActionKind, App,
-    ConfirmAction, DiffMode, HubAction, InputMode,
+    cleanup_note_replies, cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews,
+    AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode,
 };
 use er_engine::{git, github};
 
@@ -17,6 +17,19 @@ fn prev_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    // Export picker — multiselect + Enter copies markdown to clipboard
+    if matches!(app.overlay, Some(app::OverlayData::ExportPicker { .. })) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::Char(' ') => app.export_picker_toggle_selected(),
+            KeyCode::Enter => app.export_picker_confirm()?,
+            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
+            _ => {}
+        }
+        return Ok(());
+    }
+
     // Config hub overlay — handles inline string editing
     if matches!(app.overlay, Some(app::OverlayData::ConfigHub { .. })) {
         let is_editing = matches!(
@@ -348,6 +361,20 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 }
             }
         }
+        HubAction::PromptNotes => {
+            let has_replies = app.tab().ai.notes.as_ref().is_some_and(|ns| {
+                ns.notes
+                    .iter()
+                    .any(|n| n.in_reply_to.is_some() && n.author == "Claude")
+            });
+            if has_replies {
+                app.input_mode = InputMode::Confirm(ConfirmAction::RunAgentNotes {
+                    clear_previous: true,
+                });
+            } else if let Some(prompt) = build_agent_notes_prompt(app) {
+                app.spawn_agent_prompt("notes", &prompt)?;
+            }
+        }
         HubAction::OpenDirectory => {
             app.open_directory_browser();
         }
@@ -423,6 +450,7 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
         AiActionKind::Triage => dispatch_hub_action(app, HubAction::RunTriageReview),
         AiActionKind::Validate => dispatch_hub_action(app, HubAction::PromptValidate),
         AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
+        AiActionKind::Notes => dispatch_hub_action(app, HubAction::PromptNotes),
         AiActionKind::Summary => {
             if let Some(prompt) = build_agent_summary_prompt(app) {
                 app.spawn_agent_prompt("summary", &prompt)?;
@@ -444,6 +472,7 @@ fn execute_ai_action_with_selection(
         er_engine::app::InputMode::Confirm(
             er_engine::app::ConfirmAction::RunAgentReview { .. }
                 | er_engine::app::ConfirmAction::RunAgentQuestions { .. }
+                | er_engine::app::ConfirmAction::RunAgentNotes { .. }
         )
     );
     if !waiting_for_confirmation {
@@ -645,6 +674,15 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.spawn_agent_prompt("questions", &prompt)?;
                 }
                 app.clear_ai_selection_override();
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentNotes { .. }) = action {
+                app.input_mode = InputMode::Normal;
+                let er_dir = app.tab().er_dir();
+                cleanup_note_replies(&er_dir);
+                app.tab_mut().reload_ai_state();
+                if let Some(prompt) = build_agent_notes_prompt(app) {
+                    app.spawn_agent_prompt("notes", &prompt)?;
+                }
+                app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
@@ -685,6 +723,13 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.input_mode = InputMode::Normal;
                 if let Some(prompt) = build_agent_questions_prompt(app) {
                     app.spawn_agent_prompt("questions", &prompt)?;
+                }
+                app.clear_ai_selection_override();
+            } else if let InputMode::Confirm(ConfirmAction::RunAgentNotes { .. }) = &app.input_mode
+            {
+                app.input_mode = InputMode::Normal;
+                if let Some(prompt) = build_agent_notes_prompt(app) {
+                    app.spawn_agent_prompt("notes", &prompt)?;
                 }
                 app.clear_ai_selection_override();
             }
@@ -905,6 +950,48 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
         ),
         _ => {
             app.notify("AI questions not available in this mode");
+            None
+        }
+    }
+}
+
+/// Build the notes-addressing agent prompt, using remote mode if applicable.
+pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(er_engine::ai::prompts::build_notes_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
+    let mode = tab.mode;
+    let base = tab.base_branch.clone();
+    let output_dir = tab.er_dir();
+    match mode {
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
+            Some(er_engine::ai::prompts::build_notes_prompt_local_managed(
+                &base,
+                mode.git_mode(),
+                &output_dir,
+            ))
+        }
+        _ => {
+            app.notify("AI notes not available in this mode");
             None
         }
     }

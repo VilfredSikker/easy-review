@@ -657,6 +657,34 @@ impl AiState {
             .is_some_and(|qs| !qs.questions.is_empty())
     }
 
+    /// Unresolved top-level questions with no reply yet (Answer questions hub).
+    pub fn has_unanswered_questions(&self) -> bool {
+        self.questions.as_ref().is_some_and(|qs| {
+            qs.questions.iter().any(|q| {
+                q.in_reply_to.is_none()
+                    && !q.resolved
+                    && !qs
+                        .questions
+                        .iter()
+                        .any(|r| r.in_reply_to.as_deref() == Some(q.id.as_str()))
+            })
+        })
+    }
+
+    /// Unresolved top-level notes with no reply yet (Address notes hub).
+    pub fn has_unaddressed_notes(&self) -> bool {
+        self.notes.as_ref().is_some_and(|ns| {
+            ns.notes.iter().any(|n| {
+                n.in_reply_to.is_none()
+                    && !n.resolved
+                    && !ns
+                        .notes
+                        .iter()
+                        .any(|r| r.in_reply_to.as_deref() == Some(n.id.as_str()))
+            })
+        })
+    }
+
     /// Get file review for a given path
     pub fn file_review(&self, path: &str) -> Option<&ErFileReview> {
         self.review.as_ref()?.files.get(path)

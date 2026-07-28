@@ -14,6 +14,8 @@ pub use config::{
 pub mod agent_runtime;
 pub mod dev_log;
 pub mod env_path;
+#[cfg(feature = "ui")]
+pub mod export;
 pub mod git;
 pub mod github;
 #[cfg(feature = "highlight")]
