@@ -4,6 +4,9 @@
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl } from "$lib/prUrl";
+  import { visibleCommentThreads } from "$lib/commentVisibility";
+  import { totalReviewFindings } from "$lib/aiReviewAgents";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
   import TriageCard from "./TriageCard.svelte";
@@ -53,7 +56,9 @@
   }
 
   // ── Derived counts for tab badges ──────────────────────────────────────────
-  const totalFindings = $derived(ai?.findings.length ?? 0);
+  const totalFindings = $derived(
+    ai ? totalReviewFindings(ai, aiReviewFilter.filter) : 0,
+  );
   const questionThreads = $derived(
     ai?.threads.filter((t) => t.kind === "question") ?? []
   );
@@ -119,7 +124,7 @@
   }
 
   const commentCount = $derived(
-    ai?.threads.filter((t) => t.kind === "comment").length ?? 0
+    visibleCommentThreads(ai?.threads, app.commentVisibility).length
   );
 
   const tabs: TabDef[] = $derived([
@@ -222,7 +227,7 @@
 
   <!-- ── Tab header row ──────────────────────────────────────────────────── -->
   <div class="flex items-stretch border-b border-hairline bg-surface shrink-0">
-    {#each tabs as tab}
+    {#each tabs as tab (tab.id)}
       {@const isActive = tab.id === activeTab}
       <button
         type="button"

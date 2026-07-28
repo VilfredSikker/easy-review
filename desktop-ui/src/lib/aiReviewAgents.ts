@@ -60,6 +60,28 @@ export function countBySeverity(findings: FlatFinding[]): {
   return { high, med, low };
 }
 
+/**
+ * Finding counts for Review badges / AI Review severity tiles.
+ * Unfiltered: backend `high`/`med`/`low`. Agent filter: scoped findings.
+ */
+export function reviewFindingCounts(
+  ai: Pick<AiSnapshot, "high" | "med" | "low" | "findings">,
+  agentFilter: AgentFilter,
+): { high: number; med: number; low: number } {
+  if (agentFilter === ALL_REVIEWERS) {
+    return { high: ai.high, med: ai.med, low: ai.low };
+  }
+  return countBySeverity(filterByAgent(ai.findings, agentFilter));
+}
+
+export function totalReviewFindings(
+  ai: Pick<AiSnapshot, "high" | "med" | "low" | "findings">,
+  agentFilter: AgentFilter = ALL_REVIEWERS,
+): number {
+  const c = reviewFindingCounts(ai, agentFilter);
+  return c.high + c.med + c.low;
+}
+
 export function filterByAgent(
   findings: FlatFinding[],
   agentFilter: AgentFilter,

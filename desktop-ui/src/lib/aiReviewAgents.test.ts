@@ -8,7 +8,9 @@ import {
   countBySeverity,
   defaultAgentFilter,
   filterByAgent,
+  reviewFindingCounts,
   sortAgentLabels,
+  totalReviewFindings,
   uniqueAgentLabels,
   useAgentScopedSummary,
 } from "./aiReviewAgents";
@@ -71,6 +73,33 @@ describe("countBySeverity", () => {
         mkFinding({ id: "f4", severity: "low" }),
       ]),
     ).toEqual({ high: 1, med: 1, low: 2 });
+  });
+});
+
+describe("reviewFindingCounts", () => {
+  it("uses backend totals for all reviewers", () => {
+    const ai = {
+      high: 0,
+      med: 2,
+      low: 1,
+      findings: [mkFinding({ severity: "med" }), mkFinding({ id: "f2", severity: "low" })],
+    };
+    expect(reviewFindingCounts(ai, ALL_REVIEWERS)).toEqual({ high: 0, med: 2, low: 1 });
+    expect(totalReviewFindings(ai, ALL_REVIEWERS)).toBe(3);
+  });
+
+  it("scopes by agent filter", () => {
+    const ai = {
+      high: 1,
+      med: 1,
+      low: 0,
+      findings: [
+        mkFinding({ severity: "high", agent_label: "Security" }),
+        mkFinding({ id: "f2", severity: "med", agent_label: "General" }),
+      ],
+    };
+    expect(reviewFindingCounts(ai, "Security")).toEqual({ high: 1, med: 0, low: 0 });
+    expect(totalReviewFindings(ai, "Security")).toBe(1);
   });
 });
 

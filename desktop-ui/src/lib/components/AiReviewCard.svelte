@@ -11,10 +11,10 @@
   import {
     ALL_REVIEWERS,
     agentPillStyle,
-    countBySeverity,
     filterByAgent,
     findingAgentLabel,
     resolveAgentSummary,
+    reviewFindingCounts,
     uniqueAgentLabels,
     useAgentScopedSummary,
   } from "$lib/aiReviewAgents";
@@ -60,7 +60,9 @@
   const agentScopedFindings = $derived(
     filterByAgent(ai.findings, aiReviewFilter.filter),
   );
-  const scopedCounts = $derived(countBySeverity(agentScopedFindings));
+  const scopedCounts = $derived(
+    reviewFindingCounts(ai, aiReviewFilter.filter),
+  );
   const showAgentDropdown = $derived(
     ai.findings.length > 0 || agentLabels.length > 1,
   );

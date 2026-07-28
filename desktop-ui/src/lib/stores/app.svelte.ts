@@ -3,10 +3,24 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
+import {
+  DEFAULT_COMMENT_VISIBILITY,
+  type CommentVisibility,
+} from "../commentVisibility";
 import { profileLog } from "../profileLog";
+import {
+  canChromeMerge,
+  canChromeMergeTakingNextAi,
+  isStaleSnapshotGeneration,
+  mergeChromeSnapshot,
+  snapshotViewIdentity,
+} from "../snapshotChrome";
 import { resolveOmittedHunks } from "../snapshotDelta";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import type { AppSnapshot, PollResponse } from "../types";
+import { aiReviewFilter } from "./aiReviewFilter.svelte";
+
+export type { CommentVisibility };
 
 export interface ToastMessage {
   id: number;
@@ -34,18 +48,6 @@ const COMMENT_VISIBILITY_KEY = "er.commentVisibility";
 const COMPACT_LINES_KEY = "er.compactLines";
 const WRAP_LINES_KEY = "er.wrapLines";
 
-export interface CommentVisibility {
-  hideAll: boolean;
-  hideResolved: boolean;
-  hideOutdated: boolean;
-  /** Hide GitHub comment threads (kind === "comment"). */
-  hideComments: boolean;
-  /** Hide AI findings. */
-  hideFindings: boolean;
-  /** Hide personal question threads (kind === "question"). */
-  hideQuestions: boolean;
-}
-
 function loadDiffViewMode(): DiffViewMode {
   if (typeof localStorage === "undefined") return "unified";
   const v = localStorage.getItem(DIFF_VIEW_MODE_KEY);
@@ -64,19 +66,14 @@ function loadWrapLines(): boolean {
 }
 
 function loadCommentVisibility(): CommentVisibility {
-  const defaults: CommentVisibility = {
-    hideAll: false,
-    hideResolved: true,
-    hideOutdated: true,
-    hideComments: false,
-    hideFindings: false,
-    hideQuestions: false,
-  };
-  if (typeof localStorage === "undefined") return defaults;
+  if (typeof localStorage === "undefined") return { ...DEFAULT_COMMENT_VISIBILITY };
   try {
-    return { ...defaults, ...JSON.parse(localStorage.getItem(COMMENT_VISIBILITY_KEY) ?? "{}") };
+    return {
+      ...DEFAULT_COMMENT_VISIBILITY,
+      ...JSON.parse(localStorage.getItem(COMMENT_VISIBILITY_KEY) ?? "{}"),
+    };
   } catch {
-    return defaults;
+    return { ...DEFAULT_COMMENT_VISIBILITY };
   }
 }
 
@@ -94,30 +91,6 @@ const VOID_COMMANDS = new Set(["open_url_in_browser"]);
 
 function timingSegmentMs(start: number, end: number): number {
   return Math.max(0, Math.round(end - start));
-}
-
-/** Patch chrome/sidebar fields from a poll snapshot while keeping diff hunks/spans. */
-function mergeChromeSnapshot(prev: AppSnapshot, next: AppSnapshot): AppSnapshot {
-  return {
-    ...next,
-    mode: prev.mode,
-    branch: prev.branch,
-    base: prev.base,
-    input_mode: prev.input_mode,
-    files: prev.files,
-    selected_file: prev.selected_file,
-    current_hunk: prev.current_hunk,
-    filter: prev.filter,
-    reviewed_count: prev.reviewed_count,
-    total_count: prev.total_count,
-    ai: prev.ai,
-    pr: prev.pr,
-    ui_annotations: prev.ui_annotations,
-    browser: prev.browser,
-    filter_suggestions: prev.filter_suggestions,
-    commits: prev.commits,
-    selected_commit_sha: prev.selected_commit_sha,
-  };
 }
 
 /**
@@ -187,6 +160,8 @@ class AppStore {
   private lastPollChromeRevision: number | null = null;
   private revisionUnlisten: UnlistenFn | null = null;
   private pollInFlight = false;
+  /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
+  private snapshotGeneration = 0;
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -356,11 +331,21 @@ class AppStore {
     const doPoll = async (trigger: "revision_event" | "safety_timer" | "unknown" = "unknown") => {
       if (this.pollInFlight) return;
       this.pollInFlight = true;
+      const generation = this.snapshotGeneration;
       const t0 = performance.now();
       profileLog("poll_invoke_start", { trigger });
       try {
         const next = await invoke<PollResponse>("poll");
         const invokeMs = Math.round(performance.now() - t0);
+        if (isStaleSnapshotGeneration(generation, this.snapshotGeneration)) {
+          profileLog("poll_discard_stale_generation", {
+            invoke_ms: invokeMs,
+            trigger,
+            generation,
+            current: this.snapshotGeneration,
+          });
+          return;
+        }
         const hadSnapshot = next.snapshot !== null;
         const contentChanged =
           this.lastPollContentRevision !== next.content_revision;
@@ -371,15 +356,35 @@ class AppStore {
           this.lastPollContentRevision = next.content_revision;
           this.lastPollChromeRevision = next.chrome_revision;
           if (next.snapshot !== null) {
-            const useMerge =
-              this.snapshot !== null &&
-              (next.chrome_only || !contentChanged);
-            if (useMerge) {
-              this.snapshot = mergeChromeSnapshot(this.snapshot!, next.snapshot);
+            const mergeOpts = {
+              chromeOnly: next.chrome_only,
+              contentChanged,
+            };
+            if (canChromeMerge(this.snapshot, next.snapshot, mergeOpts)) {
+              this.snapshot = mergeChromeSnapshot(
+                this.snapshot!,
+                next.snapshot,
+                "prev",
+              );
               profileLog("snapshot_chrome_merge", {
                 invoke_ms: invokeMs,
                 revision: next.revision,
                 chrome_only: next.chrome_only ? 1 : 0,
+                trigger,
+              });
+            } else if (
+              canChromeMergeTakingNextAi(this.snapshot, next.snapshot, mergeOpts)
+            ) {
+              // View identity changed: take next.ai/pr so badges cannot stick
+              // on the previous PR (chrome stubs carry empty AI).
+              this.snapshot = mergeChromeSnapshot(
+                this.snapshot!,
+                next.snapshot,
+                "next",
+              );
+              profileLog("snapshot_chrome_merge_next_ai", {
+                invoke_ms: invokeMs,
+                revision: next.revision,
                 trigger,
               });
             } else {
@@ -461,6 +466,13 @@ class AppStore {
 
   /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
   ingestCommandSnapshot(snapshot: AppSnapshot) {
+    this.snapshotGeneration += 1;
+    if (
+      this.snapshot === null ||
+      snapshotViewIdentity(this.snapshot) !== snapshotViewIdentity(snapshot)
+    ) {
+      aiReviewFilter.reset();
+    }
     resolveOmittedHunks(this.snapshot, snapshot);
     this.snapshot = snapshot;
     this.initialLoadDone = true;

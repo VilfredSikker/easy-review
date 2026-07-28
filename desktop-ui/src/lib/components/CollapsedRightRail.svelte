@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { totalReviewFindings, ALL_REVIEWERS } from "$lib/aiReviewAgents";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -9,11 +10,13 @@
 
   const { ai, onExpand }: Props = $props();
 
-  const totalFindings = $derived(ai?.findings.length ?? 0);
+  const totalFindings = $derived(
+    ai ? totalReviewFindings(ai, ALL_REVIEWERS) : 0,
+  );
   const worstSeverity = $derived.by((): "high" | "med" | "low" | null => {
-    if (!ai || ai.findings.length === 0) return null;
-    if (ai.findings.some((f) => f.severity === "high")) return "high";
-    if (ai.findings.some((f) => f.severity === "med")) return "med";
+    if (!ai || totalFindings === 0) return null;
+    if (ai.high > 0) return "high";
+    if (ai.med > 0) return "med";
     return "low";
   });
 
