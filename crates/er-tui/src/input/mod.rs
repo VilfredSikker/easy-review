@@ -96,8 +96,8 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     };
                     app.config_hub_switch_tab(next);
                 }
-                KeyCode::Char('s') | KeyCode::Char('S') => app.config_hub_save_global(),
-                KeyCode::Esc | KeyCode::Char('q') => app.config_hub_cancel(),
+                KeyCode::Char('s') | KeyCode::Char('S') => app.config_hub_close(),
+                KeyCode::Esc | KeyCode::Char('q') => app.config_hub_close(),
                 _ => {}
             }
         }

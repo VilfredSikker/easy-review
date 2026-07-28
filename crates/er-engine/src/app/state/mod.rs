@@ -6455,6 +6455,31 @@ impl App {
         }
     }
 
+    /// Persist the live hub config and advance the dismiss snapshot.
+    /// On save failure, reverts `self.config` to the last good snapshot so the
+    /// hub never holds unsaved drift (Esc can then be a pure close).
+    fn config_hub_persist_live(&mut self) {
+        if let Err(e) = config::save_config(&self.config) {
+            self.notify(&format!("Failed to save: {}", e));
+            let revert = match &self.overlay {
+                Some(OverlayData::ConfigHub { saved_config, .. }) => {
+                    Some(saved_config.as_ref().clone())
+                }
+                _ => None,
+            };
+            if let Some(prev) = revert {
+                self.config = prev;
+            }
+            return;
+        }
+        if let Some(OverlayData::ConfigHub { saved_config, .. }) = &mut self.overlay {
+            *saved_config = Box::new(self.config.clone());
+        }
+        // Watched paths are mirrored onto the active tab so `W` sees updates
+        // without requiring an explicit Save.
+        self.tab_mut().watched_config = self.config.watched.clone();
+    }
+
     /// Toggle/cycle/activate the currently selected config hub item
     pub fn config_hub_activate(&mut self) {
         let idx = match &self.overlay {
@@ -6476,6 +6501,7 @@ impl App {
             config::ConfigItem::BoolToggle { get, set, .. } => {
                 let current = get(&self.config);
                 set(&mut self.config, !current);
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::StringCycle {
@@ -6484,17 +6510,8 @@ impl App {
                 let current = get(&self.config);
                 let pos = options.iter().position(|&o| o == current).unwrap_or(0);
                 let next = options[(pos + 1) % options.len()];
-                let theme_before = self.config.display.theme.clone();
                 set(&mut self.config, next.to_string());
-                if self.config.display.theme != theme_before {
-                    let mut global = config::load_global_config();
-                    global.display.theme = self.config.display.theme.clone();
-                    let _ = config::save_config(&global);
-                    if let Some(OverlayData::ConfigHub { saved_config, .. }) = &mut self.overlay {
-                        saved_config.display.theme = self.config.display.theme.clone();
-                    }
-                    self.notify("Theme saved globally");
-                }
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::DynamicStringCycle {
@@ -6511,6 +6528,7 @@ impl App {
                     .unwrap_or(0);
                 set(&mut self.config, options[(pos + 1) % options.len()].clone());
                 self.sync_ai_selection_from_defaults();
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::NumberEdit {
@@ -6519,6 +6537,7 @@ impl App {
                 let current = get(&self.config);
                 let next = if current >= max { min } else { current + 1 };
                 set(&mut self.config, next);
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::StringEdit { get, .. } => {
@@ -6587,17 +6606,8 @@ impl App {
                 let current = get(&self.config);
                 let pos = options.iter().position(|&o| o == current).unwrap_or(0);
                 let prev = options[(pos + options.len() - 1) % options.len()];
-                let theme_before = self.config.display.theme.clone();
                 set(&mut self.config, prev.to_string());
-                if self.config.display.theme != theme_before {
-                    let mut global = config::load_global_config();
-                    global.display.theme = self.config.display.theme.clone();
-                    let _ = config::save_config(&global);
-                    if let Some(OverlayData::ConfigHub { saved_config, .. }) = &mut self.overlay {
-                        saved_config.display.theme = self.config.display.theme.clone();
-                    }
-                    self.notify("Theme saved globally");
-                }
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::DynamicStringCycle {
@@ -6615,6 +6625,7 @@ impl App {
                 let prev = (pos + options.len() - 1) % options.len();
                 set(&mut self.config, options[prev].clone());
                 self.sync_ai_selection_from_defaults();
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             config::ConfigItem::NumberEdit {
@@ -6623,6 +6634,7 @@ impl App {
                 let current = get(&self.config);
                 let prev = if current <= min { max } else { current - 1 };
                 set(&mut self.config, prev);
+                self.config_hub_persist_live();
                 self.config_hub_rebuild_items();
             }
             _ => {}
@@ -6648,9 +6660,12 @@ impl App {
         let items = config::config_hub_items_for_scope(&self.config, tab);
         if let Some(config::ConfigItem::StringEdit { set, .. }) = items.get(item_idx) {
             set(&mut self.config, buffer);
+            self.config_hub_persist_live();
         } else if let Some(config::ConfigItem::ListAdd { .. }) = items.get(item_idx) {
             if !buffer.trim().is_empty() {
                 self.config.watched.paths.push(buffer.trim().to_string());
+                self.config_hub_persist_live();
+                self.tab_mut().refresh_watched_files();
             }
         }
 
@@ -6676,31 +6691,22 @@ impl App {
             let path_idx = *index;
             if path_idx < self.config.watched.paths.len() {
                 self.config.watched.paths.remove(path_idx);
+                self.config_hub_persist_live();
+                self.tab_mut().refresh_watched_files();
                 self.config_hub_rebuild_items();
             }
         }
     }
 
-    /// Save config to the global config file and close the hub
-    pub fn config_hub_save_global(&mut self) {
-        if let Err(e) = config::save_config(&self.config) {
-            self.notify(&format!("Failed to save: {}", e));
-        } else {
-            // Sync watched config to active tab so W key sees updated paths
-            self.tab_mut().watched_config = self.config.watched.clone();
-            self.tab_mut().refresh_watched_files();
-            self.notify("Config saved globally");
-            self.sync_ai_selection_from_defaults();
-            self.overlay = None;
+    /// Dismiss the config hub without reverting. Live edits are already
+    /// persisted (or rolled back) by `config_hub_persist_live`.
+    pub fn config_hub_close(&mut self) {
+        if !matches!(self.overlay, Some(OverlayData::ConfigHub { .. })) {
+            return;
         }
-    }
-
-    /// Revert config to the saved snapshot and close the hub
-    pub fn config_hub_cancel(&mut self) {
-        if let Some(OverlayData::ConfigHub { saved_config, .. }) = self.overlay.take() {
-            self.config = *saved_config;
-            self.sync_ai_selection_from_defaults();
-        }
+        self.tab_mut().refresh_watched_files();
+        self.sync_ai_selection_from_defaults();
+        self.overlay = None;
     }
 
     /// Rebuild the config hub items list (e.g. after watched paths change) and clamp selection
@@ -6965,7 +6971,7 @@ impl App {
     /// Close the overlay (reverts settings changes if in ConfigHub overlay)
     pub fn overlay_close(&mut self) {
         if matches!(self.overlay, Some(OverlayData::ConfigHub { .. })) {
-            self.config_hub_cancel();
+            self.config_hub_close();
         } else if matches!(
             self.overlay,
             Some(OverlayData::ModalHub {
@@ -8901,6 +8907,73 @@ mod tests {
 
         assert_eq!(anchor.line_content, "comment target line");
         assert_eq!(anchor.line_start, Some(2));
+    }
+
+    // ── config hub display toggles ──
+
+    #[test]
+    fn config_hub_split_diff_toggle_survives_close_and_persists() {
+        // Display toggles must auto-persist (like theme). Esc/close must not
+        // silently revert split_diff — that made the setting look dead after the
+        // managed-config move (users toggle [x], then Esc, and nothing sticks).
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[display]\nsplit_diff = false\ntheme = \"graphite\"\n",
+        )
+        .unwrap();
+        std::env::set_var("ER_CONFIG_PATH", &config_path);
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let tab = make_test_tab(vec![]);
+        let mut app = make_test_app(tab);
+        app.config = crate::config::load_global_config();
+        assert!(!app.config.display.split_diff);
+
+        app.open_config_hub();
+        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+
+        let split_idx = match &app.overlay {
+            Some(OverlayData::ConfigHub { items, .. }) => items
+                .iter()
+                .position(|item| {
+                    matches!(
+                        item,
+                        crate::config::ConfigItem::BoolToggle { label, .. } if label == "Split diff"
+                    )
+                })
+                .expect("Split diff toggle in Terminal hub"),
+            _ => panic!("expected ConfigHub overlay"),
+        };
+        if let Some(OverlayData::ConfigHub { selected, .. }) = &mut app.overlay {
+            *selected = split_idx;
+        }
+
+        app.config_hub_activate();
+        assert!(
+            app.config.display.split_diff,
+            "Enter on Split diff should flip the live flag"
+        );
+        assert!(
+            app.split_diff_active(&app.config),
+            "split rendering should activate immediately after toggle"
+        );
+
+        // Esc / close must keep the change (auto-persisted), not revert it.
+        app.config_hub_close();
+        assert!(
+            app.config.display.split_diff,
+            "close must not wipe an auto-persisted split_diff toggle"
+        );
+        assert!(app.overlay.is_none());
+        assert!(crate::config::load_global_config().display.split_diff);
+
+        std::env::remove_var("ER_CONFIG_PATH");
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     // ── split_diff_active ──
