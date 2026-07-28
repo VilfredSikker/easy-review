@@ -1304,6 +1304,138 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
+/// Build the note-addressing prompt for local-managed app/TUI runs.
+pub fn build_notes_prompt_local_managed(
+    base_branch: &str,
+    scope: &str,
+    output_dir: &str,
+) -> String {
+    let safe_base_branch = sanitize_for_shell(base_branch)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let diff_args = match scope {
+        "unstaged" => "--unified=3 --no-color --no-ext-diff".to_string(),
+        "staged" => "--staged --unified=3 --no-color --no-ext-diff".to_string(),
+        _ => format!("{safe_base_branch} --unified=3 --no-color --no-ext-diff"),
+    };
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+
+    format!(
+        r#"You are addressing code review notes. Read the notes file and diff, implement each unresolved note in the codebase, then update notes.json.
+
+## Instructions
+
+1. Read `{safe_output_dir}/notes.json`
+   - If it doesn't exist or has no unresolved top-level notes: print "No notes to address" and stop.
+2. Run: `mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp`
+3. Annotate with file line numbers: `{annotate}`
+4. Read `{safe_output_dir}/diff-annotated` — each content line carries `[h<hunk> L<file_line>]` tags matching `Note.hunk_index` and `Note.line_start`
+5. For each note where `resolved == false`, `in_reply_to` is null, and no existing reply (no entry with `in_reply_to` == that note's `id`):
+   a. Treat `text` as an instruction to implement in the repo (not just a comment to answer)
+   b. Locate the relevant code using `file`, `hunk_index`, `line_start`, and the annotated diff
+   c. Make the requested code changes in the working tree
+   d. Append a NEW entry to the `notes` array summarizing what you changed:
+      ```json
+      {{
+        "id": "r-<timestamp>-<seq>",
+        "timestamp": "<ISO 8601>",
+        "file": "<same as note>",
+        "hunk_index": <same as note>,
+        "line_start": <same as note>,
+        "line_content": "<same as note>",
+        "text": "<brief summary of the code change you made>",
+        "resolved": false,
+        "in_reply_to": "<note.id>",
+        "author": "Claude"
+      }}
+      ```
+   e. Set the original note's `resolved` field to `true`
+6. Write the updated `{safe_output_dir}/notes.json`
+7. Back up: `cp {safe_output_dir}/notes.json {safe_output_dir}/notes.prev.json`
+
+## Quality
+
+- Implement the note literally — don't argue with it unless the request is impossible.
+- Keep replies short; they render in a TUI with limited width.
+- If a note is already satisfied by the current diff, say so in the reply and mark it resolved without extra edits.
+
+## Speed
+
+Target: complete in under 90 seconds. Read the diff once, address all notes in-context."#
+    )
+}
+
+/// Build notes-addressing prompt for remote mode (uses gh pr diff instead of git diff).
+pub fn build_notes_prompt_remote(
+    owner: &str,
+    repo: &str,
+    pr_number: u64,
+    output_dir: &str,
+) -> String {
+    let safe_owner = sanitize_for_shell(owner)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_repo = sanitize_for_shell(repo)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let safe_output_dir = sanitize_for_shell(output_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
+    let annotate = annotate_diff_command(
+        &format!("{output_dir}/diff-tmp"),
+        &format!("{output_dir}/diff-annotated"),
+    );
+    format!(
+        r#"You are addressing code review notes. Read the notes file and PR diff, implement each unresolved note in the codebase, then update notes.json.
+
+## Instructions
+
+1. Read `{safe_output_dir}/notes.json`
+   - If it doesn't exist or has no unresolved top-level notes: print "No notes to address" and stop.
+2. Run: `gh pr diff {pr_number} --repo {safe_owner}/{safe_repo} > {safe_output_dir}/diff-tmp`
+3. Annotate with file line numbers: `{annotate}`
+4. Read `{safe_output_dir}/diff-annotated` — each content line carries `[h<hunk> L<file_line>]` tags matching `Note.hunk_index` and `Note.line_start`
+5. For each note where `resolved == false`, `in_reply_to` is null, and no existing reply (no entry with `in_reply_to` == that note's `id`):
+   a. Treat `text` as an instruction to implement in the repo (not just a comment to answer)
+   b. Locate the relevant code using `file`, `hunk_index`, `line_start`, and the annotated diff
+   c. Make the requested code changes in the working tree
+   d. Append a NEW entry to the `notes` array summarizing what you changed:
+      ```json
+      {{
+        "id": "r-<timestamp>-<seq>",
+        "timestamp": "<ISO 8601>",
+        "file": "<same as note>",
+        "hunk_index": <same as note>,
+        "line_start": <same as note>,
+        "line_content": "<same as note>",
+        "text": "<brief summary of the code change you made>",
+        "resolved": false,
+        "in_reply_to": "<note.id>",
+        "author": "Claude"
+      }}
+      ```
+   e. Set the original note's `resolved` field to `true`
+6. Write the updated `{safe_output_dir}/notes.json`
+7. Back up: `cp {safe_output_dir}/notes.json {safe_output_dir}/notes.prev.json`
+
+## Quality
+
+- Implement the note literally — don't argue with it unless the request is impossible.
+- Keep replies short; they render in a TUI with limited width.
+- If a note is already satisfied by the current diff, say so in the reply and mark it resolved without extra edits.
+
+## Speed
+
+Target: complete in under 90 seconds. Read the diff once, address all notes in-context."#
+    )
+}
+
 // ── AI Review Arena (JSON-only stdout) ──
 
 pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
@@ -1583,6 +1715,35 @@ mod tests {
     fn remote_questions_prompt_includes_annotation_step() {
         let prompt = build_questions_prompt_remote("owner", "repo", 10, "/tmp/cache");
         assert!(prompt.contains("'/tmp/cache/diff-annotated'"));
+    }
+
+    // ── build_notes_prompt_local_managed ──
+
+    #[test]
+    fn notes_prompt_branch_scope_includes_base() {
+        let prompt = build_notes_prompt_local_managed("develop", "branch", "/tmp/er-test");
+        assert!(prompt.contains("'develop'"));
+        assert!(prompt.contains("notes.json"));
+    }
+
+    #[test]
+    fn notes_prompt_staged_scope() {
+        let prompt = build_notes_prompt_local_managed("main", "staged", "/tmp/er-test");
+        assert!(prompt.contains("--staged"));
+    }
+
+    #[test]
+    fn remote_notes_prompt_uses_gh_pr_diff() {
+        let prompt = build_notes_prompt_remote("owner", "repo", 10, "/tmp/cache");
+        assert!(prompt.contains("gh pr diff 10"));
+        assert!(prompt.contains("notes.json"));
+    }
+
+    #[test]
+    fn notes_prompt_includes_annotation_step() {
+        let prompt = build_notes_prompt_local_managed("main", "branch", "/tmp/er-test");
+        assert!(prompt.contains("'/tmp/er-test/diff-annotated'"));
+        assert!(prompt.contains("[h<hunk> L<file_line>]"));
     }
 
     // ── agentic review + confidence ──

@@ -1875,7 +1875,7 @@ impl App {
         Ok(())
     }
 
-    fn copy_to_clipboard(text: &str) -> Result<()> {
+    pub(super) fn copy_to_clipboard(text: &str) -> Result<()> {
         let (cmd, args): (&str, Vec<&str>) = if cfg!(target_os = "macos") {
             ("pbcopy", vec![])
         } else if cfg!(target_os = "windows") {

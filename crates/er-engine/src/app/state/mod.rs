@@ -325,6 +325,10 @@ pub enum ConfirmAction {
     RunAgentQuestions {
         clear_previous: bool,
     },
+    /// Confirm clearing previous note replies before addressing notes
+    RunAgentNotes {
+        clear_previous: bool,
+    },
     /// Confirm approving the PR on GitHub
     ApprovePR,
     /// Choose how to push comments: as review or individually
@@ -387,6 +391,14 @@ pub enum OverlayData {
         saved_config: Box<ErConfig>,
         editing: Option<ConfigEditState>,
     },
+    /// Multiselect export-to-clipboard picker (Shift+E)
+    ExportPicker {
+        include_comments: bool,
+        include_findings: bool,
+        include_questions: bool,
+        include_notes: bool,
+        selected: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -397,6 +409,7 @@ pub enum AiActionKind {
     Professor,
     Validate,
     Questions,
+    Notes,
     Summary,
 }
 
@@ -509,6 +522,8 @@ pub enum HubAction {
     PromptValidate,
     /// Run AI question answering via configured agent command
     PromptQuestions,
+    /// Run AI note addressing via configured agent command
+    PromptNotes,
     /// Approve PR on GitHub
     ApprovePR,
     /// Post a general comment on the PR (not attached to a file/line)
@@ -5395,12 +5410,8 @@ impl App {
             .is_some_and(|q| !q.questions.is_empty());
         let has_notes = self.tab().ai.has_notes();
         let has_questions_or_notes = has_questions || has_notes;
-        let has_unresolved_questions = self
-            .tab()
-            .ai
-            .questions
-            .as_ref()
-            .is_some_and(|q| q.questions.iter().any(|q| !q.resolved));
+        let has_unresolved_questions = self.tab().ai.has_unanswered_questions();
+        let has_unresolved_notes = self.tab().ai.has_unaddressed_notes();
         let selection_label = self.active_ai_selection_label();
         let items = vec![
             HubItem {
@@ -5491,6 +5502,18 @@ impl App {
                 enabled: has_unresolved_questions,
             },
             HubItem {
+                label: "Address notes".into(),
+                hint: "".into(),
+                description: if has_unresolved_notes {
+                    format!("Implement unresolved notes via {selection_label}")
+                } else {
+                    "No unresolved notes".into()
+                },
+                action: HubAction::RunAiAction(AiActionKind::Notes),
+                is_header: false,
+                enabled: has_unresolved_notes,
+            },
+            HubItem {
                 label: "Change agent/model".into(),
                 hint: "".into(),
                 description: format!("Current: {selection_label}"),
@@ -5505,30 +5528,6 @@ impl App {
                 action: HubAction::CopyContext,
                 is_header: false,
                 enabled: true,
-            },
-            HubItem {
-                label: "Copy review.json".into(),
-                hint: "".into(),
-                description: if has_review {
-                    "Copy review.json to clipboard".into()
-                } else {
-                    "No review data — run a review first".into()
-                },
-                action: HubAction::CopyReviewJson,
-                is_header: false,
-                enabled: has_review,
-            },
-            HubItem {
-                label: "Copy questions.json".into(),
-                hint: "".into(),
-                description: if has_questions {
-                    "Copy questions.json to clipboard".into()
-                } else {
-                    "No questions — add some with q first".into()
-                },
-                action: HubAction::CopyQuestionsJson,
-                is_header: false,
-                enabled: has_questions,
             },
             HubItem {
                 label: "Toggle AI findings".into(),
@@ -5827,6 +5826,79 @@ impl App {
         });
     }
 
+    /// Open the export picker — multiselect annotation kinds to copy as markdown
+    pub fn open_export_picker(&mut self) {
+        self.overlay = Some(OverlayData::ExportPicker {
+            include_comments: true,
+            include_findings: true,
+            include_questions: true,
+            include_notes: true,
+            selected: 0,
+        });
+    }
+
+    /// Toggle the checked state of the highlighted export picker row
+    pub fn export_picker_toggle_selected(&mut self) {
+        if let Some(OverlayData::ExportPicker {
+            include_comments,
+            include_findings,
+            include_questions,
+            include_notes,
+            selected,
+        }) = &mut self.overlay
+        {
+            match *selected {
+                0 => *include_comments = !*include_comments,
+                1 => *include_findings = !*include_findings,
+                2 => *include_questions = !*include_questions,
+                3 => *include_notes = !*include_notes,
+                _ => {}
+            }
+        }
+    }
+
+    /// Copy selected annotation kinds to the clipboard as markdown
+    pub fn export_picker_confirm(&mut self) -> Result<()> {
+        let picker = match self.overlay.take() {
+            Some(OverlayData::ExportPicker {
+                include_comments,
+                include_findings,
+                include_questions,
+                include_notes,
+                ..
+            }) => (
+                include_comments,
+                include_findings,
+                include_questions,
+                include_notes,
+            ),
+            other => {
+                self.overlay = other;
+                return Ok(());
+            }
+        };
+
+        let (include_comments, include_findings, include_questions, include_notes) = picker;
+        if !include_comments && !include_findings && !include_questions && !include_notes {
+            self.notify("Select at least one section to export");
+            self.open_export_picker();
+            return Ok(());
+        }
+
+        let opts = crate::export::ExportOpts {
+            include_comments,
+            include_questions,
+            include_notes,
+            include_findings,
+            only_unresolved: false,
+            include_annotations: false,
+        };
+        let body = crate::export::render_markdown(self.tab(), &opts);
+        Self::copy_to_clipboard(&body)?;
+        self.notify(&format!("Copied review export ({} chars)", body.len()));
+        Ok(())
+    }
+
     /// Open the Help modal hub (keybind reference)
     pub fn open_help_hub(&mut self) {
         let items = vec![
@@ -5971,7 +6043,15 @@ impl App {
             HubItem {
                 label: "y".into(),
                 hint: "".into(),
-                description: "Yank hunk to clipboard".into(),
+                description: "Copy hub — file, path, hunk, or line".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
+                label: "Shift+E".into(),
+                hint: "".into(),
+                description: "Export review — copy annotations to clipboard".into(),
                 action: HubAction::Noop,
                 is_header: false,
                 enabled: false,
@@ -6805,6 +6885,11 @@ impl App {
                     *selected = next;
                 }
             }
+            Some(OverlayData::ExportPicker { selected, .. }) => {
+                if *selected + 1 < 4 {
+                    *selected += 1;
+                }
+            }
             None => {}
         }
     }
@@ -6851,6 +6936,11 @@ impl App {
                     if !matches!(items[prev], config::ConfigItem::SectionHeader(_)) {
                         *selected = prev;
                     }
+                }
+            }
+            Some(OverlayData::ExportPicker { selected, .. }) => {
+                if *selected > 0 {
+                    *selected -= 1;
                 }
             }
             None => {}
@@ -6938,6 +7028,10 @@ impl App {
             }
             OverlayData::ConfigHub { .. } => {
                 // ConfigHub enter is handled directly in handle_overlay_input
+            }
+            overlay @ OverlayData::ExportPicker { .. } => {
+                // ExportPicker enter is handled directly in handle_overlay_input
+                self.overlay = Some(overlay);
             }
         }
         Ok(())
@@ -7320,42 +7414,57 @@ pub fn cleanup_questions_and_notes(er_dir: &str) {
     let _ = std::fs::remove_file(base.join("notes.prev.json"));
 }
 
+/// Strip Claude-authored replies from a local draft thread list and un-resolve parents.
+fn cleanup_claude_replies(items: &mut Vec<crate::ai::ReviewQuestion>) {
+    let reply_ids: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|q| q.author == "Claude")
+        .map(|q| q.id.clone())
+        .collect();
+    let parent_ids: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|q| q.author == "Claude")
+        .filter_map(|q| q.in_reply_to.clone())
+        .collect();
+
+    items.retain(|q| !reply_ids.contains(&q.id));
+
+    for q in items.iter_mut() {
+        if parent_ids.contains(&q.id) {
+            q.resolved = false;
+        }
+    }
+}
+
+fn write_sidecar_json<T: serde::Serialize>(path: &std::path::Path, value: &T) {
+    if let Ok(json) = serde_json::to_string_pretty(value) {
+        let tmp = path.with_extension("json.tmp");
+        if std::fs::write(&tmp, json).is_ok() {
+            let _ = std::fs::rename(&tmp, path);
+        }
+    }
+}
+
+/// Remove AI-generated replies from notes.json, keeping human notes intact.
+/// Unmarks resolved status on notes whose replies are removed.
+pub fn cleanup_note_replies(er_dir: &str) {
+    let path = std::path::Path::new(er_dir).join("notes.json");
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        if let Ok(mut ns) = serde_json::from_str::<crate::ai::ErNotes>(&content) {
+            cleanup_claude_replies(&mut ns.notes);
+            write_sidecar_json(&path, &ns);
+        }
+    }
+}
+
 /// Remove AI-generated answers from questions.json, keeping human questions intact.
 /// Unmarks resolved status on questions whose answers are removed.
 pub fn cleanup_question_answers(er_dir: &str) {
     let path = std::path::Path::new(er_dir).join("questions.json");
     if let Ok(content) = std::fs::read_to_string(&path) {
         if let Ok(mut qs) = serde_json::from_str::<crate::ai::ErQuestions>(&content) {
-            // Collect IDs of answers being removed (so we can un-resolve their parents)
-            let answer_ids: std::collections::HashSet<String> = qs
-                .questions
-                .iter()
-                .filter(|q| q.author == "Claude")
-                .map(|q| q.id.clone())
-                .collect();
-            let answered_question_ids: std::collections::HashSet<String> = qs
-                .questions
-                .iter()
-                .filter(|q| q.author == "Claude")
-                .filter_map(|q| q.in_reply_to.clone())
-                .collect();
-
-            // Remove AI answers
-            qs.questions.retain(|q| !answer_ids.contains(&q.id));
-
-            // Un-resolve questions whose answers were removed
-            for q in &mut qs.questions {
-                if answered_question_ids.contains(&q.id) {
-                    q.resolved = false;
-                }
-            }
-
-            if let Ok(json) = serde_json::to_string_pretty(&qs) {
-                let tmp = path.with_extension("json.tmp");
-                if std::fs::write(&tmp, json).is_ok() {
-                    let _ = std::fs::rename(&tmp, &path);
-                }
-            }
+            cleanup_claude_replies(&mut qs.questions);
+            write_sidecar_json(&path, &qs);
         }
     }
 }

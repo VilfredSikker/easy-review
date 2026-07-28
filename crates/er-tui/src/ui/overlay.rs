@@ -43,6 +43,23 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
         } => {
             render_modal_hub(f, area, *kind, title.as_deref(), items, *selected);
         }
+        OverlayData::ExportPicker {
+            include_comments,
+            include_findings,
+            include_questions,
+            include_notes,
+            selected,
+        } => {
+            render_export_picker(
+                f,
+                area,
+                *include_comments,
+                *include_findings,
+                *include_questions,
+                *include_notes,
+                *selected,
+            );
+        }
     }
 }
 
@@ -443,6 +460,75 @@ fn render_modal_hub(
         ))
         .borders(Borders::ALL)
         .border_style(ratatui::style::Style::default().fg(title_color))
+        .style(ratatui::style::Style::default().bg(styles::PANEL()));
+
+    let list = List::new(list_items).block(block);
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
+    f.render_stateful_widget(list, popup, &mut state);
+}
+
+fn render_export_picker(
+    f: &mut Frame,
+    area: Rect,
+    include_comments: bool,
+    include_findings: bool,
+    include_questions: bool,
+    include_notes: bool,
+    selected: usize,
+) {
+    let popup_width = 52u16.min(area.width.saturating_sub(6));
+    let popup_height = 9u16.min(area.height.saturating_sub(4)).max(7);
+    let popup = centered_rect(popup_width, popup_height, area);
+
+    f.render_widget(Clear, popup);
+
+    let rows = [
+        ("GitHub comments", include_comments),
+        ("AI findings", include_findings),
+        ("Questions", include_questions),
+        ("Notes", include_notes),
+    ];
+
+    let list_items: Vec<ListItem> = rows
+        .iter()
+        .enumerate()
+        .map(|(idx, (label, checked))| {
+            let is_sel = idx == selected;
+            let marker = if is_sel { "▶ " } else { "  " };
+            let box_char = if *checked { "[x]" } else { "[ ]" };
+
+            let label_style = if is_sel {
+                ratatui::style::Style::default().fg(styles::BRIGHT())
+            } else {
+                ratatui::style::Style::default().fg(styles::TEXT())
+            };
+
+            let line = Line::from(vec![
+                Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),
+                Span::styled(
+                    format!("{box_char} "),
+                    ratatui::style::Style::default().fg(styles::YELLOW()),
+                ),
+                Span::styled(*label, label_style),
+            ]);
+
+            let style = if is_sel {
+                styles::selected_style()
+            } else {
+                ratatui::style::Style::default().bg(styles::PANEL())
+            };
+
+            ListItem::new(line).style(style)
+        })
+        .collect();
+
+    let block = Block::default()
+        .title(Span::styled(
+            " EXPORT (Space=toggle, Enter=copy) ",
+            ratatui::style::Style::default().fg(styles::CYAN()),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::CYAN()))
         .style(ratatui::style::Style::default().bg(styles::PANEL()));
 
     let list = List::new(list_items).block(block);

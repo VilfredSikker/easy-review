@@ -792,6 +792,10 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     "Clear previous AI answers before running? (y=clear k=keep Esc=cancel)"
                         .to_string()
                 }
+                ConfirmAction::RunAgentNotes { .. } => {
+                    "Clear previous note replies before running? (y=clear k=keep Esc=cancel)"
+                        .to_string()
+                }
                 ConfirmAction::ApprovePR => "Approve this PR on GitHub? (y/n)".to_string(),
                 ConfirmAction::PushComments => {
                     "Push as: (r) Review  (i) Individual  (Esc) Cancel".to_string()
