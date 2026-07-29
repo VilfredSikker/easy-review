@@ -6473,7 +6473,7 @@ impl App {
             return;
         }
         if let Some(OverlayData::ConfigHub { saved_config, .. }) = &mut self.overlay {
-            *saved_config = Box::new(self.config.clone());
+            **saved_config = self.config.clone();
         }
         // Watched paths are mirrored onto the active tab so `W` sees updates
         // without requiring an explicit Save.
