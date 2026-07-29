@@ -444,26 +444,6 @@ pub fn render_config_hub(
             ),
             Span::styled(" tab  ", ratatui::style::Style::default().fg(styles::DIM())),
             Span::styled(
-                "s",
-                ratatui::style::Style::default()
-                    .fg(styles::TEXT())
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                " save (repo)  ",
-                ratatui::style::Style::default().fg(styles::DIM()),
-            ),
-            Span::styled(
-                "S",
-                ratatui::style::Style::default()
-                    .fg(styles::TEXT())
-                    .add_modifier(ratatui::style::Modifier::BOLD),
-            ),
-            Span::styled(
-                " save (global)  ",
-                ratatui::style::Style::default().fg(styles::DIM()),
-            ),
-            Span::styled(
                 "d",
                 ratatui::style::Style::default()
                     .fg(styles::TEXT())
@@ -480,7 +460,7 @@ pub fn render_config_hub(
                     .add_modifier(ratatui::style::Modifier::BOLD),
             ),
             Span::styled(
-                " cancel",
+                " close (auto-saves)",
                 ratatui::style::Style::default().fg(styles::DIM()),
             ),
         ])
