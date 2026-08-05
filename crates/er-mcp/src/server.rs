@@ -18,11 +18,12 @@ use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summariz
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
+use std::borrow::Cow;
+
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
-    service::RequestContext,
-    tool, tool_handler, tool_router, ErrorData as McpError, RoleServer, ServerHandler,
+    tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -1218,7 +1219,10 @@ const FUTURE_IDEAS: &[&str] = &[
 #[tool_handler]
 impl ServerHandler for ErMcp {
     fn get_info(&self) -> ServerInfo {
+        // Prefer MCP 2026-07-28 (stateless / discover). Legacy initialize still
+        // negotiates down via supported_protocol_versions when the client asks.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
                 "Easy Review MCP for PR triage and client-owned AI reviews. \
@@ -1231,11 +1235,36 @@ impl ServerHandler for ErMcp {
             )
     }
 
-    async fn initialize(
-        &self,
-        _request: InitializeRequestParams,
-        _context: RequestContext<RoleServer>,
-    ) -> Result<InitializeResult, McpError> {
-        Ok(self.get_info())
+    fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
+        // Dual-era: modern clients use server/discover + per-request _meta;
+        // Cursor/Claude/Codex that still speak initialize negotiate a 2025 revision.
+        Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advertises_mcp_2026_07_28() {
+        let server = ErMcp::new();
+        assert_eq!(
+            server.get_info().protocol_version,
+            ProtocolVersion::V_2026_07_28
+        );
+        assert!(
+            server
+                .supported_protocol_versions()
+                .contains(&ProtocolVersion::V_2026_07_28),
+            "must advertise 2026-07-28 for discover clients"
+        );
+        assert!(
+            server
+                .supported_protocol_versions()
+                .contains(&ProtocolVersion::V_2025_11_25),
+            "must keep legacy initialize clients working"
+        );
+        assert!(server.get_info().capabilities.tools.is_some());
     }
 }

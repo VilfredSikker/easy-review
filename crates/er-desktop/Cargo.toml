@@ -2,6 +2,7 @@
 name = "er-desktop"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 default-run = "er-desktop"
 

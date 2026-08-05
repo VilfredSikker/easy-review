@@ -4,7 +4,7 @@
 # Unconditional updates fail on overlayfs when RUSTUP_HOME=/usr/local/rustup (EXDEV on rename).
 set -euo pipefail
 
-MIN_RUST_VERSION="${MIN_RUST_VERSION:-1.85.0}"
+MIN_RUST_VERSION="${MIN_RUST_VERSION:-1.88.0}"
 
 printf '>>> [install:] start\n'
 

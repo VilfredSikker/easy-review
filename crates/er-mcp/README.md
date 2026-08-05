@@ -1,6 +1,7 @@
 # er-mcp — Easy Review MCP server
 
-Stdio [Model Context Protocol](https://modelcontextprotocol.io) server for PR triage.
+Stdio [Model Context Protocol](https://modelcontextprotocol.io) server for PR triage
+(MCP **2026-07-28** / “MCP 2.0”, with dual-era fallback for initialize-based clients).
 Ask an MCP client things like:
 
 - “Give me the top 5 priority PRs to review”
@@ -184,7 +185,11 @@ open_in_easy_review       → { "number": 42 }
 - Client-owned uploads live in `er-engine::sidecar_upload` (prepare kit + validated write).
 - JSON Schema + prompt contracts live in `er-engine::sidecar_specs` (`get_artifact_specs`).
 - Desktop Saved pins live in `er-engine::projects_pins` (Value-preserving `projects.json` writes).
-- `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
+- `er-mcp` is a thin `rmcp` 3.x stdio wrapper over those APIs.
+- **Protocol:** prefers `2026-07-28` (stateless `server/discover` + per-request `_meta`).
+  Still advertises older revisions so Cursor / Claude Code / Codex that use the
+  legacy `initialize` handshake keep working. Tool handlers are request-scoped
+  (no session state) — the same shape Streamable HTTP expects.
 
 ## Notes
 
