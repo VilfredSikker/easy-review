@@ -1,3 +1,27 @@
+# Easy Review — unreleased (deepseek-support)
+
+## In plain terms
+
+- **What this is.** Easy Review (`er`) is a fast diff reviewer for people who work with AI coding tools — a terminal UI and a desktop app that share the same review engine.
+- **What changed.** DeepSeek is now a first-class AI Hub provider. Pick **DeepSeek V4 Flash** in the TUI Config Hub or Desktop AI Action Palette and `er` spawns the Reasonix CLI (`reasonix -p --output-format stream-json`) against your configured DeepSeek model for reviews, tours, arena, and card AI.
+- **Why it matters.** If you already use Reasonix as your coding agent, Easy Review can reuse the same CLI and model for review sidecars without a custom TOML provider.
+- **TL;DR.** Built-in `deepseek` provider backed by the Reasonix CLI, with a `deepseek-v4-flash` model preset.
+
+## Highlights
+
+- **DeepSeek AI Hub provider.** Catalog preset `DeepSeek V4 Flash` invokes `reasonix -p --output-format stream-json` with `--model deepseek-v4-flash` inserted before the positional prompt.
+- **First-class Reasonix CLI family.** `CliFamily::Reasonix` wires Claude-style stream-json parsing, `--add-dir` managed-storage access, and `--effort` injection (Auto-only for the preset model) through TUI, Desktop, and arena spawns.
+- **Your key, your config.** The Reasonix CLI reads `DEEPSEEK_API_KEY` from the environment, and the model must be configured in your own `reasonix.toml` — `er` only supplies the preset.
+
+## What's Changed
+
+### Features
+- Add built-in `deepseek` provider to `ai_hub_catalog.toml` with the `deepseek-v4-flash` model preset.
+- Add `CliFamily::Reasonix`; model args land before `{prompt}`, `--add-dir` grants managed-storage access, `--effort` injection, and stream-json parsing work on TUI/Desktop/arena spawns.
+- Document DeepSeek in the config reference and configuration guide.
+
+---
+
 # Easy Review v0.4.8
 
 ## In plain terms

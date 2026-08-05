@@ -265,7 +265,7 @@ pub fn resolve_invocation(
     }
     if matches!(
         family,
-        CliFamily::Claude | CliFamily::Codex | CliFamily::OpenCode
+        CliFamily::Claude | CliFamily::Codex | CliFamily::OpenCode | CliFamily::Reasonix
     ) {
         let effort = crate::config::resolve_effort_for_model(
             &config.ai_hub,

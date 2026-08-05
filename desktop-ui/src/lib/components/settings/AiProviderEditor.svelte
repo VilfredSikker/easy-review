@@ -13,7 +13,7 @@
 
   let { providers, familyOptions, onUpdated, onError }: Props = $props();
 
-  const FALLBACK_FAMILY_OPTIONS = ["claude", "codex", "cursor", "opencode"];
+  const FALLBACK_FAMILY_OPTIONS = ["claude", "codex", "cursor", "opencode", "reasonix"];
   const familyChoices = $derived(
     [""].concat(familyOptions?.length ? familyOptions : FALLBACK_FAMILY_OPTIONS),
   );

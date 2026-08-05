@@ -642,7 +642,10 @@ impl AiProviderConfig {
 
     /// True when this provider's CLI emits Claude/Cursor-style `stream-json` on stdout.
     pub fn uses_stream_json_log(&self) -> bool {
-        matches!(self.cli_family(), CliFamily::Claude | CliFamily::Cursor)
+        matches!(
+            self.cli_family(),
+            CliFamily::Claude | CliFamily::Cursor | CliFamily::Reasonix
+        )
     }
 }
 
@@ -717,6 +720,7 @@ pub enum CliFamily {
     Codex,
     Cursor,
     OpenCode,
+    Reasonix,
     Other,
 }
 
@@ -727,6 +731,7 @@ impl CliFamily {
             "codex" => Some(Self::Codex),
             "cursor" => Some(Self::Cursor),
             "opencode" => Some(Self::OpenCode),
+            "reasonix" => Some(Self::Reasonix),
             _ => None,
         }
     }
@@ -737,12 +742,13 @@ impl CliFamily {
             "codex" => Self::Codex,
             "agent" => Self::Cursor,
             "opencode" => Self::OpenCode,
+            "reasonix" => Self::Reasonix,
             _ => Self::Other,
         }
     }
 
     pub fn supports_claude_stream_json(self) -> bool {
-        matches!(self, Self::Claude | Self::Cursor)
+        matches!(self, Self::Claude | Self::Cursor | Self::Reasonix)
     }
 
     pub fn id(self) -> Option<&'static str> {
@@ -751,13 +757,14 @@ impl CliFamily {
             Self::Codex => Some("codex"),
             Self::Cursor => Some("cursor"),
             Self::OpenCode => Some("opencode"),
+            Self::Reasonix => Some("reasonix"),
             Self::Other => None,
         }
     }
 }
 
 /// Known family ids accepted by `family = "..."` in provider config.
-pub const KNOWN_FAMILY_IDS: &[&str] = &["claude", "codex", "cursor", "opencode"];
+pub const KNOWN_FAMILY_IDS: &[&str] = &["claude", "codex", "cursor", "opencode", "reasonix"];
 
 /// Validate a provider config for the desktop editor (and optional load-time checks).
 ///
@@ -806,7 +813,7 @@ pub fn validate_provider_config(id: &str, p: &AiProviderConfig) -> Result<Vec<St
 
 /// CLI commands that emit Claude/Cursor-style `stream-json` on stdout.
 pub fn agent_command_uses_stream_json(command: &str) -> bool {
-    matches!(agent_command_stem(command), "claude" | "agent")
+    matches!(agent_command_stem(command), "claude" | "agent" | "reasonix")
 }
 
 /// Basename stem of a provider command (`/bin/opencode.exe` / `C:\bin\opencode.exe` → `opencode`).
@@ -843,8 +850,9 @@ pub fn agent_command_is_opencode(command: &str) -> bool {
 
 /// Merge model args onto provider args.
 ///
-/// OpenCode treats the prompt as a trailing positional (`opencode run [message..]`),
-/// so model flags must land *before* `{prompt}` or they become part of the message.
+/// OpenCode and Reasonix treat the prompt as a trailing positional
+/// (`opencode run [message..]` / `reasonix -p <task>`), so model flags must
+/// land *before* `{prompt}` or they become part of the message.
 pub fn extend_provider_model_args(
     family: CliFamily,
     args: &mut Vec<String>,
@@ -853,7 +861,7 @@ pub fn extend_provider_model_args(
     if model_args.is_empty() {
         return;
     }
-    if family == CliFamily::OpenCode {
+    if matches!(family, CliFamily::OpenCode | CliFamily::Reasonix) {
         let insert_at = args
             .iter()
             .position(|arg| arg.contains("{prompt}"))
@@ -972,8 +980,9 @@ pub fn apply_opencode_readonly_spawn(
 /// Callers must pass the active review bucket (`er_dir`), never the global
 /// storage root — Codex `--add-dir` under `workspace-write` makes that path
 /// writable. Pass `None` for read-only invocations or when artifacts already
-/// live inside the worktree. Unknown/custom provider families are left
-/// unchanged because their command line contracts are not known to us.
+/// live inside the worktree. Claude/Cursor/Reasonix receive `--add-dir`;
+/// unknown/custom provider families are left unchanged because their command
+/// line contracts are not known to us.
 pub fn inject_agent_storage_access(
     family: CliFamily,
     args: &mut Vec<String>,
@@ -981,7 +990,7 @@ pub fn inject_agent_storage_access(
 ) {
     if !matches!(
         family,
-        CliFamily::Claude | CliFamily::Codex | CliFamily::Cursor
+        CliFamily::Claude | CliFamily::Codex | CliFamily::Cursor | CliFamily::Reasonix
     ) {
         return;
     }
@@ -1165,6 +1174,22 @@ pub fn inject_opencode_effort(args: &mut Vec<String>, effort: Option<&str>) {
     args.insert(insert_at + 1, level.to_string());
 }
 
+/// Append Reasonix `--effort <level>` before `{prompt}` when not already present.
+pub fn inject_reasonix_effort(args: &mut Vec<String>, effort: Option<&str>) {
+    let Some(level) = effort.map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    if args.iter().any(|arg| arg == "--effort") {
+        return;
+    }
+    let insert_at = args
+        .iter()
+        .position(|arg| arg.contains("{prompt}"))
+        .unwrap_or(args.len());
+    args.insert(insert_at, "--effort".to_string());
+    args.insert(insert_at + 1, level.to_string());
+}
+
 /// Inject the configured effort using the target provider CLI's argument format.
 ///
 /// Codex only supports this override for models with advertised effort levels.
@@ -1178,6 +1203,7 @@ pub fn inject_provider_effort(
         CliFamily::Claude => inject_claude_effort(args, effort),
         CliFamily::Codex if model_id.is_some() => inject_codex_effort(args, effort),
         CliFamily::OpenCode => inject_opencode_effort(args, effort),
+        CliFamily::Reasonix => inject_reasonix_effort(args, effort),
         _ => {}
     }
 }
@@ -2135,6 +2161,10 @@ mod tests {
             })
             .expect("provider cycle");
         assert!(provider_options(&config).contains(&"codex".into()));
+        assert!(
+            provider_options(&config).contains(&"deepseek".into()),
+            "TUI/Desktop provider cycle should include the deepseek catalog provider"
+        );
         provider_set(&mut config, "codex".into());
         assert_eq!(provider_get(&config), "codex");
 
@@ -2173,6 +2203,15 @@ mod tests {
         assert_eq!(effort_get(&config), "xhigh");
         effort_set(&mut config, AUTO_EFFORT.into());
         assert_eq!(effort_get(&config), AUTO_EFFORT);
+
+        // Provider-scoped model cycle: switching to DeepSeek exposes its model.
+        provider_set(&mut config, "deepseek".into());
+        assert!(model_options(&config).contains(&"deepseek-v4-flash".into()));
+        model_set(&mut config, "deepseek-v4-flash".into());
+        assert_eq!(
+            config.ai_hub.default_model.as_deref(),
+            Some("deepseek-v4-flash")
+        );
     }
 
     #[test]
@@ -2431,12 +2470,18 @@ mod tests {
     fn supported_agent_commands_receive_managed_storage_access_once() {
         const DIR: &str = "/managed/repos/demo/branches/main/view-buckets/branch";
 
-        for command in ["claude", "codex", "agent"] {
+        for command in ["claude", "codex", "agent", "reasonix"] {
             let mut args = match command {
                 "codex" => vec![
                     "exec".to_string(),
                     "--sandbox".to_string(),
                     "workspace-write".to_string(),
+                    "{prompt}".to_string(),
+                ],
+                "reasonix" => vec![
+                    "-p".to_string(),
+                    "--output-format".to_string(),
+                    "stream-json".to_string(),
                     "{prompt}".to_string(),
                 ],
                 _ => vec![
@@ -2619,6 +2664,20 @@ mod tests {
             opencode.models.iter().any(|m| m.id == "claude-sonnet-4-5"),
             "catalog should include opencode claude-sonnet-4-5"
         );
+        let deepseek = hub.providers.get("deepseek").unwrap();
+        assert_eq!(deepseek.command, "reasonix");
+        assert_eq!(deepseek.family.as_deref(), Some("reasonix"));
+        assert!(deepseek.args.iter().any(|a| a == "stream-json"));
+        assert!(deepseek.args.iter().any(|a| a.contains("{prompt}")));
+        let flash = deepseek
+            .models
+            .iter()
+            .find(|m| m.id == "deepseek-v4-flash")
+            .expect("catalog should include deepseek-v4-flash");
+        assert_eq!(
+            flash.args,
+            vec!["--model".to_string(), "deepseek-v4-flash".to_string()]
+        );
     }
 
     #[test]
@@ -2711,6 +2770,105 @@ mod tests {
         assert_eq!(args.len(), len);
         inject_provider_effort(CliFamily::OpenCode, &mut args, Some("default"), Some("max"));
         assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn reasonix_model_args_insert_before_prompt() {
+        let mut args = vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "{prompt}".to_string(),
+        ];
+        extend_provider_model_args(
+            CliFamily::Reasonix,
+            &mut args,
+            &["--model".into(), "deepseek-v4-flash".into()],
+        );
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--model",
+                "deepseek-v4-flash",
+                "{prompt}",
+            ]
+        );
+    }
+
+    #[test]
+    fn inject_reasonix_effort_before_prompt_idempotent() {
+        let mut args = vec![
+            "-p".to_string(),
+            "--output-format".to_string(),
+            "stream-json".to_string(),
+            "{prompt}".to_string(),
+        ];
+        inject_reasonix_effort(&mut args, Some("high"));
+        assert_eq!(
+            args,
+            vec![
+                "-p",
+                "--output-format",
+                "stream-json",
+                "--effort",
+                "high",
+                "{prompt}"
+            ]
+        );
+        let len = args.len();
+        inject_reasonix_effort(&mut args, Some("low"));
+        assert_eq!(args.len(), len);
+        inject_provider_effort(
+            CliFamily::Reasonix,
+            &mut args,
+            Some("deepseek-v4-flash"),
+            Some("max"),
+        );
+        assert_eq!(args.len(), len);
+    }
+
+    #[test]
+    fn reasonix_detected_from_command_stem_and_family_id() {
+        assert_eq!(CliFamily::from_id("reasonix"), Some(CliFamily::Reasonix));
+        assert_eq!(CliFamily::from_id("REASONIX"), Some(CliFamily::Reasonix));
+        assert_eq!(
+            CliFamily::detect("/opt/homebrew/bin/reasonix"),
+            CliFamily::Reasonix
+        );
+        assert_eq!(CliFamily::detect("reasonix.exe"), CliFamily::Reasonix);
+        assert_eq!(CliFamily::Reasonix.id(), Some("reasonix"));
+        assert!(KNOWN_FAMILY_IDS.contains(&"reasonix"));
+
+        let provider = AiProviderConfig {
+            command: "reasonix".into(),
+            family: Some("reasonix".into()),
+            args: vec!["-p".into(), "{prompt}".into()],
+            models: vec![AiModelConfig {
+                id: "deepseek-v4-flash".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(validate_provider_config("deepseek", &provider).is_ok());
+    }
+
+    #[test]
+    fn reasonix_stream_json_predicates_but_not_claude_verbose() {
+        assert!(agent_command_uses_stream_json("/opt/homebrew/bin/reasonix"));
+        let provider = AiProviderConfig {
+            command: "reasonix".into(),
+            family: Some("reasonix".into()),
+            ..Default::default()
+        };
+        assert!(provider.uses_stream_json_log());
+        assert!(CliFamily::Reasonix.supports_claude_stream_json());
+        // The --verbose auto-inject for print+stream-json stays claude/cursor-only:
+        // comments.rs gates it on is_claude_compatible (agent_command_is_claude).
+        assert!(!crate::config::agent_command_is_claude("reasonix"));
+        assert!(!crate::config::agent_command_is_cursor("reasonix"));
     }
 
     #[test]

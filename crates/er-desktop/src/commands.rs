@@ -8329,6 +8329,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn map_ai_providers_includes_deepseek_catalog_provider() {
+        let mut hub = er_engine::config::AiHubConfig::default();
+        er_engine::config::supplement_ai_hub(&mut hub);
+        let providers = map_ai_providers(&hub, None, None);
+        let deepseek = providers
+            .iter()
+            .find(|p| p.id == "deepseek")
+            .expect("deepseek provider should be listed for Desktop pickers");
+        assert_eq!(deepseek.label, "DeepSeek");
+        assert_eq!(deepseek.family.as_deref(), Some("reasonix"));
+        assert!(
+            deepseek.models.iter().any(|m| m.id == "deepseek-v4-flash"),
+            "deepseek should expose the deepseek-v4-flash model"
+        );
+    }
+
     // Serialize env-var-touching tests to avoid races on parallel runners.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 

@@ -216,3 +216,19 @@ effort_levels = ["low", "high"]
 cost_per_1k_in = 0.002
 cost_per_1k_out = 0.012
 avg_latency_ms = 16000
+
+[ai_hub.providers.deepseek]
+label = "DeepSeek"
+command = "reasonix"
+family = "reasonix"
+args = ["-p", "--output-format", "stream-json", "{prompt}"]
+
+[[ai_hub.providers.deepseek.models]]
+id = "deepseek-v4-flash"
+label = "DeepSeek V4 Flash"
+description = "Fast, low-cost DeepSeek via the Reasonix CLI"
+args = ["--model", "deepseek-v4-flash"]
+effort_levels = []
+cost_per_1k_in = 0.0003
+cost_per_1k_out = 0.0005
+avg_latency_ms = 6000

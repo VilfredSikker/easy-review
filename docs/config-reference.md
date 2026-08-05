@@ -194,17 +194,28 @@ id = "gemini-3-pro"
 label = "Gemini 3 Pro"
 args = ["--model", "google/gemini-3-pro"]
 effort_levels = ["low", "high"]
+
+[ai_hub.providers.deepseek]
+label = "DeepSeek"
+command = "reasonix"
+family = "reasonix"
+args = ["-p", "--output-format", "stream-json", "{prompt}"]
+
+[[ai_hub.providers.deepseek.models]]
+id = "deepseek-v4-flash"
+label = "DeepSeek V4 Flash"
+args = ["--model", "deepseek-v4-flash"]
 ```
 
 Rules:
 - Provider `args` are the shared base arguments for that CLI.
-- Model `args` are normally appended after provider args. For OpenCode, model/effort flags are inserted **before** `{prompt}` because the message is a trailing positional argument.
+- Model `args` are normally appended after provider args. For OpenCode and Reasonix, model/effort flags are inserted **before** `{prompt}` because the prompt is a trailing positional argument (`opencode run [message..]` / `reasonix -p <task>`).
 - If `[ai_hub]` is absent, `er` falls back to the single `[agent]` configuration.
 - On load, `er` merges missing current built-in catalog models into your config in memory without rewriting your TOML file; unknown legacy reviewer-model entries are ignored and disappear the next time the config is saved.
 - The selected default provider/model is used by every ordinary AI Hub action, including review, triage, tours, experts, Professor, validation, questions, summary, and card AI. Triage still forces low effort. An explicit model selected for a single review run overrides it only for that run.
-- Built-in Claude, Codex, Cursor Agent, and OpenCode launches can read and write managed review storage. OpenCode uses `opencode run --auto` plus an `OPENCODE_PERMISSION` object that denies other `external_directory` paths and allows only the active review bucket (bare permission JSON, no `--add-dir`). Card AI (Ask/Validate) keeps `--auto` but sets a read-only permission object (deny `edit`, unrestricted `bash`, and external paths).
-- Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>`, Codex receives `-c model_reasoning_effort=<level>`, and OpenCode receives `--variant <level>` only for supported levels.
-- Built-in Claude, Codex, and Cursor Agent launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
+- Built-in Claude, Codex, Cursor Agent, OpenCode, and DeepSeek (Reasonix) launches can read and write managed review storage. OpenCode uses `opencode run --auto` plus an `OPENCODE_PERMISSION` object that denies other `external_directory` paths and allows only the active review bucket (bare permission JSON, no `--add-dir`). Card AI (Ask/Validate) keeps `--auto` but sets a read-only permission object (deny `edit`, unrestricted `bash`, and external paths).
+- Each model's `effort_levels` metadata is authoritative. `Auto` (the default) omits the override; Claude receives `--effort <level>`, Codex receives `-c model_reasoning_effort=<level>`, OpenCode receives `--variant <level>`, and Reasonix receives `--effort <level>` only for supported levels.
+- Built-in Claude, Codex, Cursor Agent, and Reasonix launches that write review sidecars receive the active review bucket (`er_dir`) as an additional directory via `--add-dir` — not the global storage root. Codex treats that path as writable under `workspace-write`. Custom provider commands are not given unknown CLI flags.
 
 ### `[watched]`
 
