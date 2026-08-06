@@ -3,7 +3,7 @@ pub mod background;
 pub(super) mod comments;
 pub mod github_sync;
 pub(super) mod navigation;
-pub mod remote_diff_sync;
+pub(super) mod preload;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, WatchedConfig};
@@ -47,8 +47,7 @@ fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
 
 /// Apply a freshly-fetched PR commit list, best-effort. An empty `fetched` is the
 /// failure signal for a real PR (which always has ≥1 commit), so it is dropped
-/// rather than clobbering a good existing list. Shared decision with the remote
-/// path (`RemoteDiffResult.commits`), kept in one place so both stay in sync.
+/// rather than clobbering a good existing list.
 pub(crate) fn apply_pr_commit_refresh(existing: &mut Vec<CommitInfo>, fetched: Vec<CommitInfo>) {
     if !fetched.is_empty() {
         *existing = fetched;
@@ -838,10 +837,18 @@ pub struct TabState {
     pub pr_refs_fetched: bool,
 
     /// For remote PR tabs: the head_oid the current `files`/`raw_diff` were
-    /// fetched against. The background remote-PR refresh loop compares this
-    /// against the latest head_oid in pr_cache; equal ⇒ skip the network
-    /// round-trip. Set by `apply_remote_diff_result`. None means "force fetch".
+    /// fetched against. The desktop staleness probe compares this against the
+    /// latest head_oid in pr_cache; equal ⇒ skip the network round-trip. None
+    /// means "force fetch".
     pub last_diff_head_oid: Option<String>,
+
+    /// Desktop-only: branch-scope raw diff prefetched in the background while
+    /// the tab is on another view (e.g. PR Diff). The first Branch-view load
+    /// consumes it instead of running `gh pr diff` / `git diff` synchronously
+    /// under the App lock. Runtime-only — never persisted, never serialized.
+    /// Validation happens on consume: if any input (base, PR, checkout, branch
+    /// name) moved, the slot is dropped and the normal fetch runs.
+    pub preloaded_branch_raw: Option<preload::PreloadedBranchRaw>,
 
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
@@ -1199,15 +1206,31 @@ impl TabState {
     /// Create a TabState for remote PR review (no local git repo needed).
     /// Uses `gh pr diff --repo` instead of local git operations.
     pub fn new_remote(pr_ref: &crate::github::PrRef) -> Result<Self> {
-        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
-        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-
         // Get metadata (base/head branch names)
         let (base_branch, head_branch) =
             crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
 
         // Get the diff from GitHub
         let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+
+        let pr_commits =
+            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
+        Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)
+    }
+
+    /// Build a remote PR tab from already-fetched data — no network, no
+    /// subprocess. The desktop remote-PR open cache uses this so a prefetched
+    /// PR opens with zero `gh` calls; [`Self::new_remote`] fetches the same
+    /// inputs first and delegates here.
+    pub fn new_remote_with_data(
+        pr_ref: &crate::github::PrRef,
+        base_branch: String,
+        head_branch: String,
+        raw: String,
+        pr_commits: Vec<crate::git::CommitInfo>,
+    ) -> Result<Self> {
+        let repo_slug = format!("{}/{}", pr_ref.owner, pr_ref.repo);
+        let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
 
         // Parse the diff
         let compaction_config = crate::git::CompactionConfig::default();
@@ -1221,8 +1244,6 @@ impl TabState {
         };
 
         let diff_hash = crate::ai::compute_diff_hash(&raw);
-        let pr_commits =
-            crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
         let lazy_mode = raw.len() > 200_000;
         let file_headers = if lazy_mode {
             let headers = crate::git::parse_diff_headers(&raw);
@@ -1332,6 +1353,7 @@ impl TabState {
             remote_repo: Some(repo_slug),
             local_branch_view: None,
             local_branch_checkout_root: None,
+            preloaded_branch_raw: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1452,6 +1474,7 @@ impl TabState {
             remote_repo: Some(repo_slug),
             local_branch_view: None,
             local_branch_checkout_root: None,
+            preloaded_branch_raw: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1570,6 +1593,7 @@ impl TabState {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
+            preloaded_branch_raw: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1696,6 +1720,7 @@ impl TabState {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
+            preloaded_branch_raw: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -2209,12 +2234,21 @@ impl TabState {
 
     /// Re-run git diff and update the file list
     pub fn refresh_diff(&mut self) -> Result<()> {
+        // An explicit full refresh demands fresh data: drop any background
+        // preload, otherwise a remote PR tab would silently serve the
+        // open-time diff and never hit the network (the local path is
+        // additionally guarded by mode).
+        self.preloaded_branch_raw = None;
         self.refresh_diff_impl(true, true)
     }
 
     /// For local PR tabs: re-fetch the PR head ref and base branch from origin before
     /// refreshing the diff. For all other tab types, behaves like `refresh_diff`.
     pub fn refetch_and_refresh_diff(&mut self) -> Result<()> {
+        // A background preload captured the open-time diff — a refetch demands
+        // fresh data, so drop it (otherwise the refresh below would consume the
+        // preload and never hit the network).
+        self.preloaded_branch_raw = None;
         let t_total = Instant::now();
         let is_local_pr = self.pr_number.is_some() && !self.is_remote();
 
@@ -2464,40 +2498,29 @@ impl TabState {
         }
 
         if let Some(ref branch) = self.local_branch_view {
-            let base = self.base_branch.clone();
-            // A checked-out head branch (worktree or main tree) takes
-            // precedence over the fetched PR head ref: Branch/Unstaged/Staged
-            // review the live working tree, not `gh pr diff`. PrDiff already
-            // returned via `fetch_pr_diff_for_review` above (it keeps the
-            // parity diff), so reaching here means a working-tree scope.
-            return if let Some(checkout_root) = self.local_branch_checkout_root.clone() {
-                match scope {
-                    "unstaged" | "staged" => {
-                        crate::git::git_diff_raw(scope, &base, &checkout_root, None)
-                    }
-                    _ => crate::git::git_diff_checkout_against_base(&checkout_root, &base),
-                }
-            } else if let Some(head_ref) = self.pr_head_ref.clone() {
-                if let Some(pr_number) = self.pr_number {
-                    crate::github::gh_pr_diff(pr_number, &self.repo_root)
-                } else {
-                    crate::git::git_diff_against_branch(&self.repo_root, &base, &head_ref)
-                }
-            } else {
-                crate::git::git_diff_against_branch(&self.repo_root, &base, branch)
+            let inputs = preload::BranchScopeFetchInputs {
+                repo_root: self.repo_root.clone(),
+                base_branch: self.base_branch.clone(),
+                local_branch_view: Some(branch.clone()),
+                pr_head_ref: self.pr_head_ref.clone(),
+                pr_number: self.pr_number,
+                checkout_root: self.local_branch_checkout_root.clone(),
+                remote_repo: self.remote_repo.clone(),
             };
+            return preload::fetch_branch_scope_raw(scope, &inputs);
         }
 
         if let Some(ref repo_slug) = self.remote_repo {
-            let parts: Vec<&str> = repo_slug.split('/').collect();
-            if parts.len() == 2 {
-                let owner = parts[0];
-                let repo = parts[1];
-                if let Some(pr_number) = self.pr_number {
-                    return crate::github::gh_pr_diff_remote(owner, repo, pr_number);
-                }
-            }
-            anyhow::bail!("Remote tab missing owner/repo or pr_number");
+            let inputs = preload::BranchScopeFetchInputs {
+                repo_root: self.repo_root.clone(),
+                base_branch: self.base_branch.clone(),
+                local_branch_view: None,
+                pr_head_ref: self.pr_head_ref.clone(),
+                pr_number: self.pr_number,
+                checkout_root: None,
+                remote_repo: Some(repo_slug.clone()),
+            };
+            return preload::fetch_branch_scope_raw(scope, &inputs);
         }
 
         let head_ref_owned = self.pr_head_ref.clone();
@@ -2567,7 +2590,22 @@ impl TabState {
             } else {
                 "branch"
             };
-            let raw = self.fetch_tab_raw_diff(scope)?;
+            // Branch-scope preload (desktop): the background prefetcher already
+            // fetched this exact raw diff — consume it instead of running
+            // git/gh synchronously under the App lock. One-shot; validation
+            // happens on consume (dropped when inputs moved). Guarded to the
+            // branch-scope views: in PrDiff mode the fetch below returns the
+            // PR parity diff, and consuming the branch raw here would swap
+            // wrong-scope content into the PrDiff view.
+            let raw = if scope == "branch" && matches!(self.mode, DiffMode::Branch | DiffMode::Tour)
+            {
+                match self.take_preloaded_branch_raw() {
+                    Some(raw) => raw,
+                    None => self.fetch_tab_raw_diff(scope)?,
+                }
+            } else {
+                self.fetch_tab_raw_diff(scope)?
+            };
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -2634,7 +2672,10 @@ impl TabState {
         // Remote mode: fetch diff from GitHub API instead of local git
         if let (Some(repo_slug), Some(_pr_number)) = (&self.remote_repo, self.pr_number) {
             if repo_slug.split('/').count() == 2 {
-                let raw = self.fetch_tab_raw_diff("branch")?;
+                let raw = match self.take_preloaded_branch_raw() {
+                    Some(raw) => raw,
+                    None => self.fetch_tab_raw_diff("branch")?,
+                };
 
                 let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
@@ -7606,6 +7647,7 @@ mod tests {
             remote_repo: None,
             local_branch_view: None,
             local_branch_checkout_root: None,
+            preloaded_branch_raw: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -10595,67 +10637,6 @@ mod tests {
 
         assert_eq!(existing.len(), 3);
         assert_eq!(existing[0].subject, "old 0");
-    }
-
-    // ── remote diff apply: pr_commits refresh ──
-
-    fn remote_pr_app_with_commits(commit_count: usize) -> App {
-        let mut app = App::new_for_test(vec![]);
-        let tab = app.tab_mut();
-        tab.repo_root = "/tmp/test".to_string();
-        tab.remote_repo = Some("owner/repo".to_string());
-        tab.pr_number = Some(42);
-        tab.pr_commits = (0..commit_count)
-            .map(|i| history_commit_info(format!("{:040x}", i), &format!("commit {i}")))
-            .collect();
-        app
-    }
-
-    fn remote_diff_result(
-        commits: Option<Vec<crate::git::CommitInfo>>,
-    ) -> crate::sync::RemoteDiffResult {
-        crate::sync::RemoteDiffResult {
-            raw_diff: String::new(),
-            files: Vec::new(),
-            branch_diff_hash: "hash".to_string(),
-            diff_hash: "hash".to_string(),
-            head_oid: Some("newhead".to_string()),
-            commits,
-            tab_key: ("/tmp/test".to_string(), Some(42), true),
-        }
-    }
-
-    /// A remote diff refresh that carries a fresh commit list replaces the
-    /// frozen `pr_commits` so the COMMITS panel follows the synced head.
-    #[test]
-    fn apply_remote_diff_replaces_pr_commits_when_present() {
-        let mut app = remote_pr_app_with_commits(3);
-        assert_eq!(app.tab().pr_commits.len(), 3);
-
-        let fresh: Vec<_> = (0..5)
-            .map(|i| history_commit_info(format!("{:040x}", i + 100), &format!("fresh {i}")))
-            .collect();
-        app.apply_remote_diff_result(remote_diff_result(Some(fresh)));
-
-        let commits = &app.tab().pr_commits;
-        assert_eq!(commits.len(), 5);
-        assert_eq!(commits[0].subject, "fresh 0");
-        assert_eq!(commits[4].subject, "fresh 4");
-        // Head oid advances alongside the commit list.
-        assert_eq!(app.tab().last_diff_head_oid.as_deref(), Some("newhead"));
-    }
-
-    /// A failed/empty commit fetch (`None`) keeps the existing list intact —
-    /// best-effort, never clobber a good list with an empty one.
-    #[test]
-    fn apply_remote_diff_keeps_pr_commits_when_none() {
-        let mut app = remote_pr_app_with_commits(3);
-
-        app.apply_remote_diff_result(remote_diff_result(None));
-
-        let commits = &app.tab().pr_commits;
-        assert_eq!(commits.len(), 3);
-        assert_eq!(commits[0].subject, "commit 0");
     }
 
     // ── visible_modes / PrDiff wiring ──

@@ -129,6 +129,15 @@ pub struct AppState {
     /// Prevents duplicate background `gh` invocations when the user hovers
     /// the same row repeatedly.
     pub pr_open_prefetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Keys (repo-or-slug, pr_number) with an in-flight branch-scope preload
+    /// (`kick_branch_preload`). Prevents duplicate background `gh`/git calls
+    /// when the same PR is opened repeatedly.
+    pub branch_preload_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Remote-only PR open cache + in-flight claims (see remote_pr_open_cache.rs).
+    /// Warms on sidebar hover (`prefetch_remote_pr_open`); a hit opens the PR
+    /// with zero `gh` calls.
+    pub remote_pr_open_cache: crate::remote_pr_open_cache::RemotePrOpenCache,
+    pub remote_pr_open_in_flight: crate::remote_pr_open_cache::RemotePrOpenInFlight,
     /// Monotonic counter bumped whenever background-owned durable state changes
     /// so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
@@ -4756,33 +4765,245 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
 /// just focus it. Otherwise place it via `replace` semantics.
-fn do_open_remote_pr(
-    app: &mut App,
+/// Everything [`build_remote_pr_tab`] needs from the network, fetched once and
+/// reused for both the tab and the cache entry.
+struct RemotePrOpenInputs {
+    base_branch: String,
+    head_branch: String,
+    raw_diff: String,
+    pr_commits: Vec<er_engine::git::CommitInfo>,
+    pr_data: Option<er_engine::github::PrOverviewData>,
+}
+
+fn fetch_remote_pr_open_inputs(
     owner: &str,
     repo: &str,
     number: u64,
-    replace: bool,
-) -> Result<(), String> {
-    let slug = format!("{owner}/{repo}");
-    for (i, t) in app.tabs.iter().enumerate() {
-        if t.remote_repo.as_deref() == Some(&slug) && t.pr_number == Some(number) {
-            app.active_tab = i;
-            return Ok(());
-        }
+) -> Result<RemotePrOpenInputs, String> {
+    // Four independent gh calls — run them in parallel (same pattern as the
+    // local PR-open prefetch) so hover-warm latency ≈ one call, not four.
+    let (metadata, diff, commits, overview) = std::thread::scope(|s| {
+        let (owner_a, repo_a) = (owner.to_string(), repo.to_string());
+        let metadata_h = s.spawn(move || {
+            er_engine::github::gh_pr_metadata_remote(&owner_a, &repo_a, number)
+                .map_err(|e| e.to_string())
+        });
+        let (owner_b, repo_b) = (owner.to_string(), repo.to_string());
+        let diff_h = s.spawn(move || {
+            er_engine::github::gh_pr_diff_remote(&owner_b, &repo_b, number)
+                .map_err(|e| e.to_string())
+        });
+        let (owner_c, repo_c) = (owner.to_string(), repo.to_string());
+        let commits_h = s
+            .spawn(move || er_engine::github::gh_pr_commits_remote(&owner_c, &repo_c, number, 250));
+        let overview_h =
+            s.spawn(move || er_engine::github::gh_pr_overview_remote(owner, repo, number));
+        (
+            metadata_h
+                .join()
+                .unwrap_or_else(|_| Err("gh pr metadata thread panicked".to_string())),
+            diff_h
+                .join()
+                .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string())),
+            commits_h.join().unwrap_or_default(),
+            overview_h.join().unwrap_or_default(),
+        )
+    });
+    let (base_branch, head_branch) = metadata?;
+    let raw_diff = diff?;
+    Ok(RemotePrOpenInputs {
+        base_branch,
+        head_branch,
+        raw_diff,
+        pr_commits: commits,
+        pr_data: overview,
+    })
+}
+
+/// Build a remote PR tab from a cached open entry — no network, no subprocess.
+/// Pure (only disk reads for managed storage), so it is unit-testable. Seeds
+/// the tab's branch preload from the entry (for remote tabs the branch-scope
+/// diff IS `raw_diff`), so the first Branch-view switch needs no `gh` call.
+fn remote_pr_tab_from_entry(
+    pr_ref: &er_engine::github::PrRef,
+    entry: crate::remote_pr_open_cache::RemotePrOpenEntry,
+) -> Result<er_engine::app::TabState, String> {
+    let mut tab = er_engine::app::TabState::new_remote_with_data(
+        pr_ref,
+        entry.base_branch,
+        entry.head_branch,
+        entry.raw_diff.clone(),
+        entry.pr_commits,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(data) = entry.pr_data {
+        tab.pr_data = Some(data);
     }
+    tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+        raw: entry.raw_diff,
+        base_branch: tab.base_branch.clone(),
+        pr_number: Some(pr_ref.number),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+        pr_head_ref: None,
+    });
+    tab.reload_remote_comments();
+    Ok(tab)
+}
+
+/// Build a remote PR tab outside the App lock: cache hit → zero `gh` calls;
+/// miss → fetch metadata/diff/commits/overview, then warm the cache so the
+/// next open (or a hover prefetch landing later) is instant.
+fn build_remote_pr_tab(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    state: &AppState,
+) -> Result<er_engine::app::TabState, String> {
     let pr_ref = er_engine::github::PrRef {
         owner: owner.to_string(),
         repo: repo.to_string(),
         number,
     };
-    let mut tab = er_engine::app::TabState::new_remote(&pr_ref).map_err(|e| e.to_string())?;
-    let pr_data = er_engine::github::gh_pr_overview_remote(owner, repo, number);
-    if let Some(data) = pr_data {
+    if let Some(entry) = crate::remote_pr_open_cache::get_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        owner,
+        repo,
+        number,
+    ) {
+        let mut tab = remote_pr_tab_from_entry(&pr_ref, entry)?;
+        // Seed the staleness probe's baseline from the PR-list cache (the
+        // freshest head oid we have without a network call): equal oid ⇒ the
+        // stale pill stays off; advanced ⇒ it lights until a sync refreshes.
+        if let Ok(guard) = state.pr_cache.lock() {
+            if let Some(prs) = guard.get(&format!("{owner}/{repo}")) {
+                if let Some(pr) = prs.iter().find(|p| p.number == number) {
+                    if !pr.head_oid.is_empty() {
+                        tab.last_diff_head_oid = Some(pr.head_oid.clone());
+                    }
+                }
+            }
+        }
+        log::info!("remote_pr_open {owner}/{repo}#{number} cache=hit");
+        return Ok(tab);
+    }
+    let inputs = fetch_remote_pr_open_inputs(owner, repo, number)?;
+    let mut tab = er_engine::app::TabState::new_remote_with_data(
+        &pr_ref,
+        inputs.base_branch.clone(),
+        inputs.head_branch.clone(),
+        inputs.raw_diff.clone(),
+        inputs.pr_commits.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(data) = inputs.pr_data.clone() {
         tab.pr_data = Some(data);
     }
+    // Seed the branch preload from the diff we just fetched (branch scope ==
+    // raw_diff for remote tabs) so `kick_branch_preload` skips its refetch.
+    tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+        raw: inputs.raw_diff.clone(),
+        base_branch: tab.base_branch.clone(),
+        pr_number: Some(number),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+        pr_head_ref: None,
+    });
     tab.reload_remote_comments();
-    place_tab(app, tab, replace);
-    Ok(())
+    crate::remote_pr_open_cache::insert_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        owner,
+        repo,
+        number,
+        crate::remote_pr_open_cache::RemotePrOpenEntry {
+            base_branch: inputs.base_branch,
+            head_branch: inputs.head_branch,
+            raw_diff: inputs.raw_diff,
+            pr_data: inputs.pr_data,
+            pr_commits: inputs.pr_commits,
+            last_touched: 0,
+        },
+    );
+    log::info!("remote_pr_open {owner}/{repo}#{number} cache=miss");
+    Ok(tab)
+}
+
+/// Open (or activate, if already open) a remote-only PR. The heavy path
+/// (`gh` calls + diff parse) runs WITHOUT the App lock — previously
+/// `new_remote` ran three network calls while holding the app mutex, blocking
+/// every other command. On a cache hit there is no network at all.
+fn activate_or_open_remote_pr(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    replace: bool,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let remote = format!("{owner}/{repo}");
+    // Fast path: PR already open — activate without any network.
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(idx) = app
+            .tabs
+            .iter()
+            .position(|t| t.remote_repo.as_deref() == Some(&remote) && t.pr_number == Some(number))
+        {
+            app.active_tab = idx;
+            kick_meta_refresh(state, app.tab().repo_root.clone());
+            kick_github_status_refresh(
+                state.gh_status_cache.clone(),
+                Arc::clone(&state.gh_status_in_flight),
+                Arc::clone(&state.desktop_revision),
+                Some(Arc::clone(&state.loading)),
+                owner.to_string(),
+                repo.to_string(),
+                number,
+            );
+            kick_branch_preload(&mut app, state);
+            return Ok(snap_from_command(&app, state));
+        }
+    }
+    // Build outside the lock (network on miss, cache on hit).
+    let tab = build_remote_pr_tab(owner, repo, number, state)?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // Re-check under the lock: a concurrent open of the same PR may have
+    // landed while we were fetching — activate it instead of placing a
+    // duplicate tab.
+    if let Some(idx) = app
+        .tabs
+        .iter()
+        .position(|t| t.remote_repo.as_deref() == Some(&remote) && t.pr_number == Some(number))
+    {
+        app.active_tab = idx;
+        kick_meta_refresh(state, app.tab().repo_root.clone());
+        kick_github_status_refresh(
+            state.gh_status_cache.clone(),
+            Arc::clone(&state.gh_status_in_flight),
+            Arc::clone(&state.desktop_revision),
+            Some(Arc::clone(&state.loading)),
+            owner.to_string(),
+            repo.to_string(),
+            number,
+        );
+        kick_branch_preload(&mut app, state);
+        return Ok(snap_from_command(&app, state));
+    }
+    place_tab(&mut app, tab, replace);
+    app.tab_mut().needs_initial_refresh = false;
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner.to_string(),
+        repo.to_string(),
+        number,
+    );
+    kick_branch_preload(&mut app, state);
+    Ok(snap_from_command(&app, state))
 }
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
@@ -4908,6 +5129,17 @@ fn cache_single_pr_for_remote(
     remote: &str,
     pr_number: u64,
 ) -> Result<PrInfo, String> {
+    // Cache hit → reuse without a gh round-trip. The sidebar PR list comes
+    // from this same pr_cache, so a hover-prefetched remote open pays zero
+    // network on the click path (freshness parity is exact at open time).
+    if let Ok(cache) = state.pr_cache.lock() {
+        if let Some(pr) = cache
+            .get(remote)
+            .and_then(|prs| prs.iter().find(|p| p.number == pr_number))
+        {
+            return Ok(pr.clone());
+        }
+    }
     let fetched_pr = fetch_single_pr_for_remote(remote, pr_number)?;
     if let Ok(mut cache) = state.pr_cache.lock() {
         let entry = cache.entry(remote.to_string()).or_default();
@@ -4957,19 +5189,7 @@ fn open_remote_pr_impl(
 ) -> Result<AppSnapshot, String> {
     let remote = format!("{owner}/{repo}");
     let _project_id = record_remote_recent_pr(state, &remote, number)?;
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner,
-        repo,
-        number,
-    );
-    Ok(snap_from_command(&app, state))
+    activate_or_open_remote_pr(&owner, &repo, number, replace.unwrap_or(false), state)
 }
 
 #[tauri::command]
@@ -5007,25 +5227,13 @@ fn open_pr_url_impl(
     }
 
     let _project_id = record_remote_recent_pr(state, &remote, pr_ref.number)?;
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    do_open_remote_pr(
-        &mut app,
+    activate_or_open_remote_pr(
         &pr_ref.owner,
         &pr_ref.repo,
         pr_ref.number,
         replace.unwrap_or(false),
-    )?;
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        pr_ref.owner,
-        pr_ref.repo,
-        pr_ref.number,
-    );
-    Ok(snap_from(&app, state))
+        state,
+    )
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -5904,6 +6112,14 @@ fn open_pr_review_impl(
             e
         })?;
     let cache_hit = inputs.cache_hit;
+    // Branch-view preload seed for the miss path: the diff was just fetched,
+    // and for a local PR tab without a local checkout the branch scope IS the
+    // same `gh pr diff` — seed it so the first Branch switch needs no network.
+    let raw_diff_for_preload = if cache_hit {
+        None
+    } else {
+        Some(inputs.raw_diff.clone())
+    };
     let recent_title = hint
         .as_ref()
         .map(|h| h.title.trim())
@@ -5983,6 +6199,28 @@ fn open_pr_review_impl(
             .enter_pr_diff_freshly_loaded()
             .map_err(|e| e.to_string())?;
     }
+    // The diff is fully loaded at open (cache hit or freshly fetched) — the
+    // stub-constructor flag would otherwise trigger a redundant `gh pr diff`
+    // refetch on the first later `select_tab`.
+    app.tab_mut().needs_initial_refresh = false;
+    // Seed the branch preload from the freshly fetched diff (miss only — a
+    // cache hit may predate the current head, so kick_branch_preload below
+    // re-fetches fresh content in the background instead). Skipped when the
+    // head branch is checked out locally (working-tree scope, staleness-prone).
+    if let Some(raw) = raw_diff_for_preload {
+        if app.tab().local_branch_checkout_root.is_none() {
+            let tab = app.tab_mut();
+            tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+                raw,
+                base_branch: tab.base_branch.clone(),
+                pr_number: tab.pr_number,
+                local_branch_view: tab.local_branch_view.clone(),
+                checkout_root: None,
+                remote_repo: None,
+                pr_head_ref: tab.pr_head_ref.clone(),
+            });
+        }
+    }
     let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
     let t_recent = std::time::Instant::now();
@@ -5995,6 +6233,9 @@ fn open_pr_review_impl(
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, state);
+    // Background-preload the Branch-view diff so the first switch to the
+    // Branch view doesn't run `gh pr diff` synchronously under the App lock.
+    kick_branch_preload(&mut app, state);
     // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
     // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
     // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
@@ -6124,6 +6365,73 @@ pub fn prefetch_pr_open(
         if let Ok(mut guard) = in_flight.lock() {
             guard.remove(&claim_key);
         }
+    });
+    Ok(())
+}
+
+/// Fire-and-forget background warmup of the remote-only PR open cache.
+/// Invoked from the sidebar's `onmouseenter` (after a short debounce) for
+/// remote-only projects, whose open path (`open_remote_pr`) has no local git
+/// clone to fall back on — a cache hit opens with zero `gh` calls.
+#[tauri::command]
+pub fn prefetch_remote_pr_open(
+    owner: String,
+    repo: String,
+    number: u64,
+    state: State<AppState>,
+) -> Result<(), String> {
+    // Skip when already cached or already in flight.
+    if crate::remote_pr_open_cache::get_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        &owner,
+        &repo,
+        number,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
+    if !crate::remote_pr_open_cache::claim_remote_pr_open(
+        &state.remote_pr_open_in_flight,
+        &owner,
+        &repo,
+        number,
+    ) {
+        return Ok(());
+    }
+
+    let cache = Arc::clone(&state.remote_pr_open_cache);
+    let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        let result = fetch_remote_pr_open_inputs(&owner, &repo, number);
+        match result {
+            Ok(inputs) => {
+                crate::remote_pr_open_cache::insert_remote_pr_open_entry(
+                    &cache,
+                    &owner,
+                    &repo,
+                    number,
+                    crate::remote_pr_open_cache::RemotePrOpenEntry {
+                        base_branch: inputs.base_branch,
+                        head_branch: inputs.head_branch,
+                        raw_diff: inputs.raw_diff,
+                        pr_data: inputs.pr_data,
+                        pr_commits: inputs.pr_commits,
+                        last_touched: 0,
+                    },
+                );
+                log::info!(
+                    "remote_pr_prefetch {owner}/{repo}#{number} ok ms={}",
+                    t.elapsed().as_millis()
+                );
+            }
+            Err(e) => log::warn!(
+                "remote_pr_prefetch {owner}/{repo}#{number} failed ms={} err={e}",
+                t.elapsed().as_millis()
+            ),
+        }
+        crate::remote_pr_open_cache::release_remote_pr_open(&in_flight, &owner, &repo, number);
     });
     Ok(())
 }
@@ -7411,6 +7719,110 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
             "lazy_tab_refresh",
             &[("ms", t.elapsed().as_millis().to_string())],
         );
+    });
+}
+
+/// Decide whether tab `idx` is a PR tab whose branch-scope diff is worth
+/// prefetching in the background. Returns the captured fetch inputs, or `None`.
+///
+/// Rules:
+/// - Requires a PR number (local PR tab or remote tab).
+/// - Local PR tabs whose head branch is checked out locally are skipped: the
+///   working-tree diff is a local `git` call (fast) and preloading it would
+///   risk serving a stale diff after the user edits the working tree.
+/// - Remote tabs are eligible — their branch scope is `gh pr diff --repo`, a
+///   network call with no cache.
+pub(crate) fn branch_preload_target(
+    app: &App,
+    idx: usize,
+) -> Option<er_engine::app::BranchScopeFetchInputs> {
+    let tab = app.tabs.get(idx)?;
+    let pr_number = tab.pr_number?;
+    if tab.local_branch_view.is_none() && tab.remote_repo.is_none() {
+        return None;
+    }
+    if tab.local_branch_checkout_root.is_some() {
+        return None;
+    }
+    // Already prefetched (e.g. seeded from the remote open cache) — no need
+    // for a second background fetch.
+    if tab.preloaded_branch_raw.is_some() {
+        return None;
+    }
+    Some(er_engine::app::BranchScopeFetchInputs {
+        repo_root: tab.repo_root.clone(),
+        base_branch: tab.base_branch.clone(),
+        local_branch_view: tab.local_branch_view.clone(),
+        pr_head_ref: tab.pr_head_ref.clone(),
+        pr_number: Some(pr_number),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+    })
+}
+
+/// Kick a background fetch of the active tab's branch-scope raw diff so the
+/// first switch to the Branch view consumes the preload (`TabState`'s
+/// `preloaded_branch_raw`) instead of running `gh pr diff` / `git diff`
+/// synchronously under the App lock.
+///
+/// Invisible to the frontend: no revision bump, no loading flag. The preload
+/// is consumed one-shot by the next branch-scope refresh, and dropped if any
+/// input moved (base, PR, branch, checkout, remote). Errors are logged and
+/// otherwise ignored; a second kick for the same PR while one is in flight is
+/// a no-op.
+pub(crate) fn kick_branch_preload(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
+    let Some(inputs) = branch_preload_target(app, idx) else {
+        return;
+    };
+    let key = inputs.dedupe_key();
+    {
+        let Ok(mut g) = state.branch_preload_in_flight.lock() else {
+            return;
+        };
+        if !g.insert(key.clone()) {
+            return; // already in flight for this PR
+        }
+    }
+    let app_arc = Arc::clone(&state.app);
+    let in_flight = Arc::clone(&state.branch_preload_in_flight);
+    std::thread::spawn(move || {
+        match er_engine::app::fetch_branch_scope_raw("branch", &inputs) {
+            Ok(raw) => {
+                if let Ok(mut app) = app_arc.lock() {
+                    // Re-resolve the tab by index + identity in case tabs
+                    // changed while the worker waited for the lock. Remote
+                    // tabs share repo_root (current dir), so include the
+                    // distinguishing fields; base_branch/pr_head_ref drift is
+                    // still caught by consume-side validation (the
+                    // authoritative gate, tested).
+                    if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                        t.repo_root == inputs.repo_root
+                            && t.pr_number == inputs.pr_number
+                            && t.remote_repo == inputs.remote_repo
+                            && t.local_branch_view == inputs.local_branch_view
+                            && t.local_branch_checkout_root == inputs.checkout_root
+                    }) {
+                        tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+                            raw,
+                            base_branch: inputs.base_branch.clone(),
+                            pr_number: inputs.pr_number,
+                            local_branch_view: inputs.local_branch_view.clone(),
+                            checkout_root: inputs.checkout_root.clone(),
+                            remote_repo: inputs.remote_repo.clone(),
+                            pr_head_ref: inputs.pr_head_ref.clone(),
+                        });
+                    }
+                }
+            }
+            Err(e) => log::warn!(
+                "er-desktop: branch preload failed for pr={:?}: {e}",
+                inputs.pr_number
+            ),
+        }
+        if let Ok(mut g) = in_flight.lock() {
+            g.remove(&key);
+        }
     });
 }
 
@@ -8993,6 +9405,117 @@ mod tests {
         assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
         assert_eq!(app.active_tab, 1, "new tab is focused");
         assert_eq!(app.tabs[1].repo_root, "new");
+    }
+
+    #[test]
+    fn branch_preload_target_skips_non_pr_tabs() {
+        let app = make_app_with_n_tabs(1);
+        assert!(branch_preload_target(&app, 0).is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_skips_pr_without_number() {
+        let mut app = make_app_with_n_tabs(1);
+        app.tab_mut().local_branch_view = Some("feature".into());
+        assert!(branch_preload_target(&app, 0).is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_local_pr_without_checkout_is_eligible() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.local_branch_view = Some("feature-x".into());
+        tab.pr_number = Some(42);
+        tab.pr_head_ref = Some("refs/er/pr/42/head".into());
+        tab.base_branch = "main".into();
+        let inputs = branch_preload_target(&app, 0).expect("eligible");
+        assert_eq!(inputs.pr_number, Some(42));
+        assert_eq!(inputs.local_branch_view.as_deref(), Some("feature-x"));
+        assert_eq!(inputs.base_branch, "main");
+        assert!(inputs.remote_repo.is_none());
+        assert!(inputs.checkout_root.is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_skips_checked_out_pr() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.local_branch_view = Some("feature-x".into());
+        tab.pr_number = Some(42);
+        tab.local_branch_checkout_root = Some("/worktree".into());
+        assert!(
+            branch_preload_target(&app, 0).is_none(),
+            "working-tree scope is local + staleness-prone — no preload"
+        );
+    }
+
+    #[test]
+    fn branch_preload_target_remote_pr_is_eligible() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(7);
+        let inputs = branch_preload_target(&app, 0).expect("eligible");
+        assert_eq!(inputs.remote_repo.as_deref(), Some("owner/repo"));
+        assert_eq!(inputs.pr_number, Some(7));
+        assert_eq!(inputs.dedupe_key(), ("owner/repo".to_string(), 7));
+    }
+
+    #[test]
+    fn remote_pr_tab_from_entry_builds_without_network() {
+        use crate::remote_pr_open_cache::RemotePrOpenEntry;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let pr_ref = er_engine::github::PrRef {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            number: 9,
+        };
+        const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
+        let tab = remote_pr_tab_from_entry(
+            &pr_ref,
+            RemotePrOpenEntry {
+                base_branch: "main".into(),
+                head_branch: "feature".into(),
+                raw_diff: DIFF.into(),
+                pr_data: None,
+                pr_commits: Vec::new(),
+                last_touched: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
+        assert_eq!(tab.pr_number, Some(9));
+        assert_eq!(tab.base_branch, "main");
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "f.rs");
+        assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
+        assert!(
+            tab.preloaded_branch_raw.is_some(),
+            "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
+        );
+    }
+
+    #[test]
+    fn branch_preload_target_skips_when_preload_already_seeded() {
+        use er_engine::app::PreloadedBranchRaw;
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(7);
+        tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
+            raw: "diff".into(),
+            base_branch: "main".into(),
+            pr_number: Some(7),
+            local_branch_view: None,
+            checkout_root: None,
+            remote_repo: Some("owner/repo".into()),
+            pr_head_ref: None,
+        });
+        assert!(
+            branch_preload_target(&app, 0).is_none(),
+            "no second background fetch when the preload is already seeded"
+        );
     }
 
     #[test]

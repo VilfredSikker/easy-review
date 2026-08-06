@@ -1424,6 +1424,21 @@ pub(crate) fn build_file_snapshot(
     pending_ai: Option<&PendingAiReplies>,
     include_hunks: bool,
 ) -> FileSnapshot {
+    build_file_snapshot_with_keys(source_index, f, tab, pending_ai, include_hunks, None)
+}
+
+/// Like [`build_file_snapshot`], but accepts precomputed `(lines_key, delta_key)`.
+/// The differential omitted-file path already hashed the file to compare against
+/// the sent-files map; passing the keys through avoids a second full hunk hash +
+/// thread build for every unchanged file on every snapshot.
+fn build_file_snapshot_with_keys(
+    source_index: usize,
+    f: &DiffFile,
+    tab: &TabState,
+    pending_ai: Option<&PendingAiReplies>,
+    include_hunks: bool,
+    precomputed: Option<(u64, u64)>,
+) -> FileSnapshot {
     let budget_omitted = !f.compacted && !include_hunks;
     let hunks = if include_hunks {
         build_hunks(f, tab, pending_ai)
@@ -1452,8 +1467,14 @@ pub(crate) fn build_file_snapshot(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(&fr.risk).to_string());
 
-    let lines_key = file_lines_key(f);
-    let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+    let (lines_key, delta_key) = match precomputed {
+        Some(keys) => keys,
+        None => {
+            let lines_key = file_lines_key(f);
+            let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+            (lines_key, delta_key)
+        }
+    };
 
     FileSnapshot {
         path: f.path.clone(),
@@ -1791,8 +1812,14 @@ fn build_snapshot_inner(
                         let delta_key =
                             file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
                         if guard.keys.get(&f.path) == Some(&delta_key) {
-                            let mut snap =
-                                build_file_snapshot(source_index, f, tab, pending_ai, false);
+                            let mut snap = build_file_snapshot_with_keys(
+                                source_index,
+                                f,
+                                tab,
+                                pending_ai,
+                                false,
+                                Some((lines_key, delta_key)),
+                            );
                             snap.is_lazy_stub = false;
                             snap.hunks_omitted = true;
                             return snap;
@@ -4167,6 +4194,40 @@ mod tests {
 
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
     const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    #[test]
+    fn precomputed_keys_produce_identical_snapshot() {
+        // The differential omitted-file path passes the keys it hashed for the
+        // delta comparison into the snapshot builder; the result must be byte
+        // identical to a fresh build (same cache_key, delta_key, hunks).
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let app = er_engine::app::App::new_for_test(files);
+        let tab = app.tab();
+        let f = &tab.files[0];
+        let fresh = build_file_snapshot(0, f, tab, None, true);
+        let lines_key = file_lines_key(f);
+        let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, None));
+        let precomputed =
+            build_file_snapshot_with_keys(0, f, tab, None, true, Some((lines_key, delta_key)));
+        assert_eq!(fresh.cache_key, precomputed.cache_key);
+        assert_eq!(fresh.delta_key, precomputed.delta_key);
+        assert_eq!(fresh.hunks.len(), precomputed.hunks.len());
+        for (a, b) in fresh.hunks.iter().zip(precomputed.hunks.iter()) {
+            assert_eq!(a.header, b.header);
+            assert_eq!(a.old_start, b.old_start);
+            assert_eq!(a.old_count, b.old_count);
+            assert_eq!(a.new_start, b.new_start);
+            assert_eq!(a.new_count, b.new_count);
+            assert_eq!(a.lines.len(), b.lines.len());
+            for (la, lb) in a.lines.iter().zip(b.lines.iter()) {
+                assert_eq!(la.old_num, lb.old_num);
+                assert_eq!(la.new_num, lb.new_num);
+                assert_eq!(la.kind, lb.kind);
+                assert_eq!(la.text, lb.text);
+            }
+        }
+        assert_eq!(fresh.is_lazy_stub, precomputed.is_lazy_stub);
+    }
 
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {

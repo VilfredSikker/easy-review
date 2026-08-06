@@ -13,10 +13,12 @@ mod frame_script;
 mod gh_status_cache;
 mod inbox;
 mod main_webview_policy;
+mod persist;
 mod pr_cache;
 mod pr_open_cache;
 mod profile_log;
 mod projects;
+mod remote_pr_open_cache;
 mod snapshot;
 mod tabs;
 mod terminal;
@@ -821,6 +823,9 @@ fn main() {
         loading: Arc::clone(&loading),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
         pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
+        remote_pr_open_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_content_revision: Arc::clone(&last_sent_content_revision),
         last_sent_chrome_revision: Arc::clone(&last_sent_chrome_revision),
@@ -911,9 +916,8 @@ fn main() {
     // consistency: it auto-swapped the live diff for remote tabs only, while
     // local-PR tabs required manual Sync. Now BOTH require manual Sync, and
     // the 30s PR-head probe (above, "pr_head_probe") lights the stale pill
-    // quickly for both. The underlying fetch/apply plumbing is retained in
-    // crates/er-engine/src/app/state/remote_diff_sync.rs and crates/er-engine/src/sync.rs
-    // for the manual Sync path (force_refresh_diff / refetch_and_refresh_diff).
+    // quickly for both. The old fetch/apply plumbing was deleted — the manual
+    // Sync path (refetch_and_refresh_diff) fetches head/base/diff directly.
 
     // Background base-branch staleness probe on a 60s cadence. The ONLY new
     // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
@@ -1901,6 +1905,7 @@ fn main() {
             commands::open_pr_branch,
             commands::open_pr_review,
             commands::prefetch_pr_open,
+            commands::prefetch_remote_pr_open,
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,
             commands::open_inbox_item,

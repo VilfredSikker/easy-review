@@ -1,11 +1,11 @@
-//! Pure sync core — GitHub comment merge/anchoring and remote diff refresh
-//! without any `App`/`TabState` dependency.
+//! Pure sync core — GitHub comment merge/anchoring without any
+//! `App`/`TabState` dependency.
 //!
 //! The TUI and desktop call these through thin `App` wrappers in
-//! `app/state/github_sync.rs` and `app/state/remote_diff_sync.rs` (three-phase
-//! pattern: snapshot under the App lock → fetch/process here without the lock →
-//! apply under the lock). Headless consumers (the er-api server) call these
-//! directly with their own session state.
+//! `app/state/github_sync.rs` (three-phase pattern: snapshot under the App
+//! lock → fetch/process here without the lock → apply under the lock).
+//! Headless consumers (the er-api server) call these directly with their own
+//! session state.
 //!
 //! This module is always compiled — it must not depend on any feature-gated
 //! module (`app`, `arena`, `watch`, `highlight`).
@@ -499,76 +499,6 @@ pub fn local_pr_target(
         return Ok((owner, repo_name, n));
     }
     github::get_pr_info(repo_root)
-}
-
-// ── Remote diff refresh ───────────────────────────────────────────────────────
-
-/// Inputs for one remote-PR diff refresh cycle. Built while holding the App
-/// lock (or, headless, from server session state).
-#[derive(Debug, Clone)]
-pub struct RemoteDiffContext {
-    pub owner: String,
-    pub repo: String,
-    pub pr_number: u64,
-    /// Used by `apply_remote_diff_result` to find the right tab if the user
-    /// switches or closes tabs during the network fetch.
-    pub repo_root: String,
-    /// What `last_diff_head_oid` was on the tab when the snapshot was taken.
-    pub last_head_oid: Option<String>,
-    /// Latest head_oid available out-of-band (typically the PR cache). When
-    /// this equals `last_head_oid` the loop short-circuits.
-    pub expected_head_oid: Option<String>,
-}
-
-/// Output of one refresh cycle. Applied via `apply_remote_diff_result`.
-#[derive(Debug, Clone)]
-pub struct RemoteDiffResult {
-    pub raw_diff: String,
-    pub files: Vec<git::DiffFile>,
-    pub branch_diff_hash: String,
-    pub diff_hash: String,
-    pub head_oid: Option<String>,
-    /// Refreshed PR commit list for the COMMITS panel. `None` means the fetch
-    /// failed (or returned empty) — apply keeps the tab's existing list rather
-    /// than clobbering a good one.
-    pub commits: Option<Vec<git::CommitInfo>>,
-    /// (repo_root, pr_number, is_remote) — used to find the right tab on apply.
-    pub tab_key: (String, Option<u64>, bool),
-}
-
-/// Run the network fetch + parse + hash for a remote-PR diff refresh.
-/// Returns `Ok(None)` when the expected head_oid matches the last fetched
-/// one (no work needed).
-pub fn fetch_remote_diff_data(ctx: &RemoteDiffContext) -> Result<Option<RemoteDiffResult>> {
-    if let (Some(expected), Some(last)) = (
-        ctx.expected_head_oid.as_deref(),
-        ctx.last_head_oid.as_deref(),
-    ) {
-        if expected == last {
-            return Ok(None);
-        }
-    }
-
-    let raw = github::gh_pr_diff_remote(&ctx.owner, &ctx.repo, ctx.pr_number)?;
-    let files = git::parse_diff(&raw);
-    let branch_diff_hash = crate::ai::compute_diff_hash(&raw);
-    let diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
-
-    // Refresh the COMMITS panel alongside the diff. `gh_pr_commits_remote`
-    // returns an empty Vec on failure, so treat empty as "no fresh data" and
-    // leave the existing list intact on apply (a real PR has ≥1 commit).
-    let fetched = github::gh_pr_commits_remote(&ctx.owner, &ctx.repo, ctx.pr_number, 250);
-    let commits = (!fetched.is_empty()).then_some(fetched);
-
-    Ok(Some(RemoteDiffResult {
-        raw_diff: raw,
-        files,
-        branch_diff_hash,
-        diff_hash,
-        head_oid: ctx.expected_head_oid.clone(),
-        commits,
-        tab_key: (ctx.repo_root.clone(), Some(ctx.pr_number), true),
-    }))
 }
 
 #[cfg(test)]

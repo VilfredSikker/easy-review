@@ -800,12 +800,34 @@
     prPrefetchTimers.set(key, timer);
   }
 
-  function cancelPrPrefetch(projectId: string, prNumber: number) {
-    const key = `${projectId}:${prNumber}`;
-    const timer = prPrefetchTimers.get(key);
-    if (timer !== undefined) {
-      clearTimeout(timer);
+  /** Remote-only projects have no local clone — the open path would be three
+   *  synchronous `gh` calls. Warm the remote PR open cache on hover so the
+   *  click opens with zero network. Same debounce/dedupe/cancel discipline. */
+  function scheduleRemotePrPrefetch(project: ProjectSnapshot, pr: PrInfo) {
+    const parts = remoteParts(project);
+    if (!parts) return;
+    const key = `remote:${project.id}:${pr.number}`;
+    if (prPrefetchTimers.has(key)) return;
+    const timer = setTimeout(() => {
       prPrefetchTimers.delete(key);
+      invoke("prefetch_remote_pr_open", {
+        owner: parts.owner,
+        repo: parts.repo,
+        number: pr.number,
+      }).catch(() => {
+        // Background fetch — failure is logged in Rust, nothing to do here.
+      });
+    }, PR_HOVER_PREFETCH_DELAY_MS);
+    prPrefetchTimers.set(key, timer);
+  }
+
+  function cancelPrPrefetch(projectId: string, prNumber: number) {
+    for (const key of [`${projectId}:${prNumber}`, `remote:${projectId}:${prNumber}`]) {
+      const timer = prPrefetchTimers.get(key);
+      if (timer !== undefined) {
+        clearTimeout(timer);
+        prPrefetchTimers.delete(key);
+      }
     }
   }
 
@@ -1353,14 +1375,19 @@
                 {@const prMenuOpen = isPrRowMenuOpen(project.id, pr.number)}
                 {@const prSyncing = syncingPrKey === `${project.id}:${pr.number}`}
                 {@const prBusy = prTriaging || prSyncing}
-                <div class="group relative flex items-center">
+                <div class="group relative flex items-center" onmouseleave={() => cancelPrPrefetch(project.id, pr.number)}>
                   <button
                     type="button"
                     title="{pr.title} #{pr.number}"
                     onclick={(e) => openPr(project, pr.number, pr.head_ref, e, pr)}
                     onauxclick={(e) => { if (e.button === 1) openPr(project, pr.number, pr.head_ref, e, pr); }}
-                    onmouseenter={() => { if (!project.remote_only) schedulePrPrefetch(project.id, pr); }}
-                    onmouseleave={() => { if (!project.remote_only) cancelPrPrefetch(project.id, pr.number); }}
+                    onmouseenter={() => {
+                      if (project.remote_only) {
+                        scheduleRemotePrPrefetch(project, pr);
+                      } else {
+                        schedulePrPrefetch(project.id, pr);
+                      }
+                    }}
                     class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left pr-7 {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
                   >
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
