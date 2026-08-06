@@ -162,8 +162,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
 
     let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
-    std::fs::write(format!("{er_dir}/diff-tmp"), &raw_diff)
-        .map_err(|e| format!("write diff-tmp: {e}"))?;
+    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw_diff)?;
 
     let base_branch = if req.base_ref.is_empty() {
         "main".to_string()
@@ -182,7 +181,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
         managed_local: !req.repo_root.is_empty(),
     };
 
-    let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir);
+    let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir, &diff_hash);
     let mut app = ctx.app.lock().map_err(|e| e.to_string())?;
     app.spawn_background_triage_review(target, prompt, true)
         .map_err(|e| e.to_string())?;
@@ -266,8 +265,7 @@ fn run_branch_triage_once(
         return Err("Failed to resolve branch storage".to_string());
     }
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
-    std::fs::write(format!("{er_dir}/diff-tmp"), &raw_diff)
-        .map_err(|e| format!("write diff-tmp: {e}"))?;
+    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw_diff)?;
 
     let target = BackgroundTaskTarget {
         repo_root: repo_root.to_string(),
@@ -280,7 +278,7 @@ fn run_branch_triage_once(
         managed_local: true,
     };
 
-    let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir);
+    let prompt = prompts::build_triage_review_prompt_prepared_diff("branch", &er_dir, &diff_hash);
     let mut app = ctx.app.lock().map_err(|e| e.to_string())?;
     app.spawn_background_triage_review(target, prompt, true)
         .map_err(|e| e.to_string())?;

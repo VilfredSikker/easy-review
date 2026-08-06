@@ -3501,7 +3501,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     }
 }
 
-fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
+pub(crate) fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;
     Some(PrSnapshot {
         number: pr.number,

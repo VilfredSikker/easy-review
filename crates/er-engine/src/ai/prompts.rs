@@ -74,6 +74,19 @@ pub fn review_rules_preamble(
     caps: FindingCaps,
     git_diff_capture: Option<&str>,
 ) -> String {
+    review_rules_preamble_with_hash(output_dir, prepared_diff, caps, git_diff_capture, None)
+}
+
+/// Like [`review_rules_preamble`], but with the harness-computed diff hash
+/// (O1): the agent skips `sha256sum` and the `awk` annotation — the parent
+/// wrote `diff-annotated` already and hands the hash over in the prompt.
+fn review_rules_preamble_with_hash(
+    output_dir: &str,
+    prepared_diff: bool,
+    caps: FindingCaps,
+    git_diff_capture: Option<&str>,
+    prepared_diff_hash: Option<&str>,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
@@ -81,9 +94,15 @@ pub fn review_rules_preamble(
     let diff_annotated = format!("{output_dir}/diff-annotated");
     let annotate = annotate_diff_command(&diff_tmp, &diff_annotated);
     let hash_step = if prepared_diff {
-        format!(
-            "1. Run: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`\n   - Save the SHA-256 hash as `diff_hash` (do **not** run `git diff` — the diff is already prepared)"
-        )
+        if let Some(h) = prepared_diff_hash {
+            format!(
+                "1. The diff hash is `{h}` — SHA-256 of `{safe_output_dir}/diff-tmp`, computed by the harness. Save it as `diff_hash` (do **not** run `sha256sum` or `git diff` — the diff is already prepared)"
+            )
+        } else {
+            format!(
+                "1. Run: `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`\n   - Save the SHA-256 hash as `diff_hash` (do **not** run `git diff` — the diff is already prepared)"
+            )
+        }
     } else {
         let capture = git_diff_capture.unwrap_or(
             "git diff <base> --unified=20 --no-color --no-ext-diff > .er/diff-tmp && (sha256sum .er/diff-tmp 2>/dev/null || shasum -a 256 .er/diff-tmp)",
@@ -91,6 +110,13 @@ pub fn review_rules_preamble(
         format!(
             "1. Run: `{capture}`\n   - Use a **two-dot** diff (`git diff <base>`), never three-dot (`main...HEAD`)\n   - Always `--unified=20 --no-color --no-ext-diff`\n   - Save the SHA-256 hash as `diff_hash`"
         )
+    };
+    let annotate_step = if prepared_diff && prepared_diff_hash.is_some() {
+        format!(
+            "2. The annotated diff is already at `{safe_output_dir}/diff-annotated` (pre-annotated by the harness — read it; each line has `[h<hunk> L<file_line>]` tags)"
+        )
+    } else {
+        format!("2. Annotate: `{annotate}`")
     };
     let categories = if caps.is_expert {
         "Set `category` to the expert id for every finding — only report issues in that lens."
@@ -107,7 +133,7 @@ pub fn review_rules_preamble(
 
 ### Diff and hash
 {hash_step}
-2. Annotate: `{annotate}`
+{annotate_step}
 3. Read `{safe_output_dir}/diff-annotated` — each line has `[h<hunk> L<file_line>]` tags (20 lines of context per hunk).
 
 ### Annotate and anchor
@@ -413,6 +439,7 @@ pub fn build_review_prompt_prepared_diff(
     output_dir: &str,
     base_branch: &str,
     head_branch: &str,
+    diff_hash: &str,
 ) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
@@ -427,7 +454,13 @@ pub fn build_review_prompt_prepared_diff(
     } else {
         head_branch.replace('{', "{{").replace('}', "}}")
     };
-    let preamble = review_rules_preamble(output_dir, true, FindingCaps::general(), None);
+    let preamble = review_rules_preamble_with_hash(
+        output_dir,
+        true,
+        FindingCaps::general(),
+        None,
+        Some(diff_hash),
+    );
     let outputs = general_review_outputs_section(output_dir, scope, &base_hint, &head_hint);
     format!(
         r#"You are a code reviewer. Perform a thorough review of the prepared diff and write results to `{safe_output_dir}/`.
@@ -485,12 +518,19 @@ pub fn build_expert_review_prompt_prepared_diff(
     scope: &str,
     output_dir: &str,
     expert_id: &str,
+    diff_hash: &str,
 ) -> String {
     let _ = expert_by_id(expert_id).expect("unknown expert_id");
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let preamble = review_rules_preamble(output_dir, true, FindingCaps::expert(), None);
+    let preamble = review_rules_preamble_with_hash(
+        output_dir,
+        true,
+        FindingCaps::expert(),
+        None,
+        Some(diff_hash),
+    );
     let lens = expert_lens_instructions(expert_id);
     let output = expert_review_output_section(output_dir, expert_id);
     format!(
@@ -513,7 +553,12 @@ pub fn build_expert_review_prompt_prepared_diff(
 /// `output_dir` is the active view's per-view tour bucket (`tour_bucket_er_dir`) and
 /// `output_file` is `tour.json` — the branch bucket holds the branch tour, the PR
 /// bucket holds the PR tour, so the tour stays attached to whichever diff was viewed.
-pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str, output_file: &str) -> String {
+pub fn build_tour_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    output_file: &str,
+    diff_hash: &str,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
@@ -522,7 +567,7 @@ pub fn build_tour_prompt_prepared_diff(scope: &str, output_dir: &str, output_fil
         r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`.
 
 ## Steps
-1. Compute the diff hash: `sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp`.
+1. The diff hash is `{diff_hash}` — SHA-256 of `{safe_output_dir}/diff-tmp`, computed by the harness. Save it as `diff_hash` in the output (do **not** run `sha256sum`).
 2. Read `{safe_output_dir}/diff-tmp` (the full diff) into context.
 3. Optionally read `{safe_output_dir}/review.json` if it exists and its `diff_hash` matches — reuse its groupings and reference finding ids.
 4. Group the changed files into **pillars** ordered foundation-first, then by importance:
@@ -588,13 +633,20 @@ fn professor_rules_preamble(
     output_dir: &str,
     prepared_diff: bool,
     git_diff_capture: Option<&str>,
+    prepared_diff_hash: Option<&str>,
 ) -> String {
     let caps = FindingCaps {
         per_file: 3,
         total: 12,
         is_expert: true,
     };
-    let mut preamble = review_rules_preamble(output_dir, prepared_diff, caps, git_diff_capture);
+    let mut preamble = review_rules_preamble_with_hash(
+        output_dir,
+        prepared_diff,
+        caps,
+        git_diff_capture,
+        prepared_diff_hash,
+    );
     preamble.push_str(
         r#"
 
@@ -703,7 +755,7 @@ pub fn build_professor_review_prompt_local_managed(
     let capture = format!(
         "mkdir -p {safe_output_dir} && git diff {diff_args} > {safe_output_dir}/diff-tmp && (sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)"
     );
-    let preamble = professor_rules_preamble(output_dir, false, Some(&capture));
+    let preamble = professor_rules_preamble(output_dir, false, Some(&capture), None);
     let lens = professor_lens_instructions(user_focus);
     let output = professor_output_section(output_dir);
     let file_scope = file_scope_if_present(output_dir);
@@ -727,11 +779,12 @@ pub fn build_professor_review_prompt_prepared_diff(
     output_dir: &str,
     user_focus: Option<&str>,
     scoped_files: bool,
+    diff_hash: &str,
 ) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let preamble = professor_rules_preamble(output_dir, true, None);
+    let preamble = professor_rules_preamble(output_dir, true, None, Some(diff_hash));
     let lens = professor_lens_instructions(user_focus);
     let output = professor_output_section(output_dir);
     let file_scope = if scoped_files {
@@ -873,11 +926,15 @@ pub fn build_triage_review_prompt_local_managed(
 }
 
 /// Triage when `{output_dir}/diff-tmp` is already prepared (desktop).
-pub fn build_triage_review_prompt_prepared_diff(scope: &str, output_dir: &str) -> String {
+pub fn build_triage_review_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    diff_hash: &str,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let preamble = review_rules_preamble(
+    let preamble = review_rules_preamble_with_hash(
         output_dir,
         true,
         FindingCaps {
@@ -886,6 +943,7 @@ pub fn build_triage_review_prompt_prepared_diff(scope: &str, output_dir: &str) -
             is_expert: true,
         },
         None,
+        Some(diff_hash),
     );
     let lens = triage_lens_instructions();
     let output = triage_output_section(output_dir);
@@ -1029,14 +1087,15 @@ Target: complete in under 5 minutes. Each evidence read should map to a specific
 }
 
 /// Validate prompt when `{output_dir}/diff-tmp` is already written by `er`.
-pub fn build_validate_prompt_prepared_diff(_scope: &str, output_dir: &str) -> String {
+pub fn build_validate_prompt_prepared_diff(
+    _scope: &str,
+    output_dir: &str,
+    diff_hash: &str,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
-    );
+    let safe_hash = diff_hash.replace('{', "{{").replace('}', "}}");
 
     format!(
         r#"You are validating and re-anchoring an existing code review.
@@ -1045,9 +1104,7 @@ Do not create unrelated new findings in this action.
 ## Instructions
 
 1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
-2. Refresh the annotated diff from the prepared file on disk:
-   - `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
-   - `{annotate}`
+2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
 3. For each active finding, read existing replies (`responses`) before deciding the outcome.
 4. For each finding, choose exactly one result:
    - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
@@ -1055,7 +1112,7 @@ Do not create unrelated new findings in this action.
    - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
 5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
    `informational`, `dropped`) based on current code.
-6. Preserve `diff_hash`, `version`, and unchanged file entries unless your existing refresh workflow recomputes them.
+6. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
 7. Write updated `{safe_output_dir}/review.json`.
 8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
    `Refresh: N removed, M updated, K re-anchored.`
@@ -1072,14 +1129,14 @@ Target: complete in under 5 minutes. Each evidence read should map to a specific
 }
 
 /// Validate and re-anchor GitHub PR comments when `{output_dir}/diff-tmp` is already on disk.
-pub fn build_validate_github_comments_prompt_prepared_diff(output_dir: &str) -> String {
+pub fn build_validate_github_comments_prompt_prepared_diff(
+    output_dir: &str,
+    diff_hash: &str,
+) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
-    let annotate = annotate_diff_command(
-        &format!("{output_dir}/diff-tmp"),
-        &format!("{output_dir}/diff-annotated"),
-    );
+    let safe_hash = diff_hash.replace('{', "{{").replace('}', "}}");
 
     format!(
         r#"You are validating and re-anchoring existing GitHub PR review comments.
@@ -1089,13 +1146,11 @@ Do not add new review comments in this action.
 
 1. Read `{safe_output_dir}/github-comments.json`. If it does not exist, print "No comments to validate" and stop.
 2. Consider only **top-level** line comments where `resolved` is false and `outdated` is false (skip replies — `in_reply_to` set).
-3. Refresh the annotated diff from the prepared file on disk:
-   - `(sha256sum {safe_output_dir}/diff-tmp 2>/dev/null || shasum -a 256 {safe_output_dir}/diff-tmp)`
-   - `{annotate}`
+3. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate).
 4. For each eligible comment, read the current code at the anchored location and decide:
    - `PERSISTS`: still applies — keep the comment; update text only if needed.
    - `RESOLVED`: addressed or no longer applies — set `resolved: true` (do not delete unless your workflow removes resolved threads).
-   - `SHIFTED`: still applies but the line moved — update `hunk_index`, `line_start`, `line_content`, `context_before`, `context_after`, `old_line_start`, `hunk_header`, set `anchor_status` to `relocated`, update `relocated_at_hash` to the current diff hash.
+   - `SHIFTED`: still applies but the line moved — update `hunk_index`, `line_start`, `line_content`, `context_before`, `context_after`, `old_line_start`, `hunk_header`, set `anchor_status` to `relocated`, update `relocated_at_hash` to `{safe_hash}` (the harness-computed hash of the prepared diff you are anchoring against).
    - `LOST`: cannot anchor — set `anchor_status` to `lost` (leave `resolved` false unless the concern is clearly obsolete).
 5. Do **not** set `outdated` — that flag reflects GitHub thread state from sync.
 6. Preserve `version`, `github` sync metadata, `github_id`, `source`, `synced`, and reply threads unless a parent is resolved.
@@ -1528,6 +1583,10 @@ Respond ONLY with JSON:
 mod tests {
     use super::*;
 
+    /// Dummy diff hash for prompt-builder tests (the real hash comes from
+    /// `ai::prepared_diff::ensure_diff_artifacts` at call time).
+    const HASH: &str = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
+
     // ── sanitize_for_shell ──
 
     #[test]
@@ -1801,10 +1860,10 @@ mod tests {
 
     #[test]
     fn validate_github_comments_prompt_reads_github_comments_json() {
-        let prompt = build_validate_github_comments_prompt_prepared_diff("/tmp/out");
+        let prompt = build_validate_github_comments_prompt_prepared_diff("/tmp/out", HASH);
         assert!(prompt.contains("github-comments.json"));
         assert!(prompt.contains("outdated"));
-        assert!(prompt.contains("diff-tmp"));
+        assert!(prompt.contains("diff-annotated"));
     }
 
     #[test]
@@ -1843,20 +1902,22 @@ mod tests {
     // ── prepared diff prompts (desktop) ──
 
     #[test]
-    fn prepared_review_prompt_hashes_existing_diff_tmp() {
+    fn prepared_review_prompt_uses_harness_hash_and_pre_annotated_diff() {
         let prompt =
-            build_review_prompt_prepared_diff("branch", "/tmp/er-managed", "main", "feat/x");
-        assert!(prompt.contains("'/tmp/er-managed/diff-tmp'"));
-        assert!(prompt.contains("sha256sum"));
-        assert!(prompt.contains("do **not** run `git diff`"));
+            build_review_prompt_prepared_diff("branch", "/tmp/er-managed", "main", "feat/x", HASH);
+        assert!(prompt.contains("`'/tmp/er-managed'/diff-tmp`"));
+        assert!(prompt.contains(HASH), "hash embedded for the agent");
+        assert!(prompt.contains("do **not** run `sha256sum`"));
+        assert!(prompt.contains("`'/tmp/er-managed'/diff-annotated`"));
         assert!(!prompt.contains("gh pr diff"));
     }
 
     #[test]
-    fn prepared_review_prompt_annotates_from_diff_tmp() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
-        assert!(prompt.contains("'/tmp/out/diff-tmp'"));
-        assert!(prompt.contains("'/tmp/out/diff-annotated'"));
+    fn prepared_review_prompt_references_pre_annotated_file() {
+        let prompt =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+        assert!(prompt.contains("`'/tmp/out'/diff-tmp`"));
+        assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
     }
 
     #[test]
@@ -1866,6 +1927,7 @@ mod tests {
             "/tmp/out",
             "main",
             "mikkelam/dev-5713-add-outbox",
+            HASH,
         );
         assert!(prompt.contains(r#""head_branch": "mikkelam/dev-5713-add-outbox""#));
         assert!(prompt.contains(r#""base_branch": "main""#));
@@ -1875,15 +1937,16 @@ mod tests {
 
     #[test]
     fn prepared_review_prompt_falls_back_to_placeholders_when_unknown() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "", "  ");
+        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "", "  ", HASH);
         assert!(prompt.contains(r#""head_branch": "<head branch if known>""#));
         assert!(prompt.contains(r#""base_branch": "<base branch if known>""#));
     }
 
     #[test]
     fn prepared_validate_prompt_no_git_or_gh() {
-        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out");
-        assert!(prompt.contains("'/tmp/out/diff-tmp'"));
+        let prompt = build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(prompt.contains("`'/tmp/out'/diff-annotated`"));
+        assert!(prompt.contains("do **not** run `sha256sum`"));
         assert!(!prompt.contains("git diff"));
         assert!(!prompt.contains("gh pr"));
     }
@@ -1968,9 +2031,11 @@ mod tests {
     #[test]
     fn scope_rules_reach_every_review_prompt_family() {
         let local = build_review_prompt_local_managed("main", "branch", "/tmp/er-test");
-        let prepared = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
+        let prepared =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
         let remote = build_review_prompt_remote("owner", "repo", 42, "/tmp/cache");
-        let expert = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security");
+        let expert =
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH);
         for prompt in [&local, &prepared, &remote, &expert] {
             assert!(prompt.contains("### Scope"), "missing Scope: {prompt}");
         }
@@ -1994,7 +2059,8 @@ mod tests {
 
     #[test]
     fn general_prompt_still_requests_four_output_files() {
-        let prompt = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x");
+        let prompt =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
         assert!(prompt.contains("review.json"));
         assert!(prompt.contains("order.json"));
         assert!(prompt.contains("checklist.json"));
@@ -2004,7 +2070,8 @@ mod tests {
 
     #[test]
     fn expert_prepared_prompt_targets_expert_json_only() {
-        let prompt = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security");
+        let prompt =
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH);
         assert!(prompt.contains("Expert lens: Security"));
         assert!(prompt.contains("experts/security.json"));
         assert!(prompt.contains("Max 2 findings per file, max 10 total"));
@@ -2044,7 +2111,8 @@ mod tests {
 
     #[test]
     fn mentorship_expert_prompt_is_positive_only() {
-        let prompt = build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "mentorship");
+        let prompt =
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "mentorship", HASH);
         assert!(prompt.contains("Expert lens: Mentorship"));
         assert!(prompt.contains("positive-only"));
         assert!(prompt.contains("experts/mentorship.json"));
@@ -2052,7 +2120,8 @@ mod tests {
 
     #[test]
     fn professor_prompt_targets_professor_json_only() {
-        let prompt = build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false);
+        let prompt =
+            build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false, HASH);
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
         assert!(prompt.contains("category: \"professor\""));
@@ -2068,6 +2137,7 @@ mod tests {
             "/tmp/out",
             Some("auth flow"),
             false,
+            HASH,
         );
         assert!(prompt.contains("Learner focus"));
         assert!(prompt.contains("auth flow"));
@@ -2093,7 +2163,7 @@ mod tests {
 
     #[test]
     fn triage_prepared_prompt_mentions_routing_verdicts() {
-        let prompt = build_triage_review_prompt_prepared_diff("branch", "/tmp/out");
+        let prompt = build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH);
         assert!(prompt.contains("general|expert|arena|professor|skip"));
         assert!(prompt.contains("triage.json"));
     }

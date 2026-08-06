@@ -849,6 +849,9 @@ pub struct TabState {
     /// Validation happens on consume: if any input (base, PR, checkout, branch
     /// name) moved, the slot is dropped and the normal fetch runs.
     pub preloaded_branch_raw: Option<preload::PreloadedBranchRaw>,
+    /// Background-loaded AI sidecar state for the branch view bucket (adopted
+    /// by `reload_ai_state` when the bucket dir + diff hash still match).
+    pub preloaded_branch_ai: Option<preload::BranchAiPreload>,
 
     // ── Agent log state (per-tab) ──
     /// Receivers for running background commands (keyed by command name)
@@ -1088,6 +1091,76 @@ impl TabState {
         Self::new_inner(repo_root, current_branch, base_branch, false)
     }
 
+    /// Stub tab for an async-miss PR open: placed instantly with a
+    /// chrome-only snapshot ("Loading diff…"); `populate_pr_tab` lands the
+    /// real diff + metadata from the offload worker, delivered via the
+    /// revision-event poll. Mirrors the restored-stub shape
+    /// (`needs_initial_refresh = true`).
+    pub fn new_stub_pr_tab(
+        repo_root: String,
+        pr_number: u64,
+        base_branch: String,
+        head_branch_name: Option<String>,
+        pr_data: Option<PrOverviewData>,
+        head_oid: Option<String>,
+    ) -> Result<Self> {
+        let mut tab = Self::new_with_base_unloaded(repo_root, base_branch)?;
+        tab.local_branch_view = Some(match head_branch_name {
+            Some(name) if !name.is_empty() => name,
+            _ => format!("pr/{pr_number}"),
+        });
+        tab.pr_head_ref = Some(format!("refs/er/pr/{pr_number}/head"));
+        tab.pr_number = Some(pr_number);
+        tab.pr_data = pr_data;
+        tab.last_diff_head_oid = head_oid;
+        tab.mode = DiffMode::PrDiff;
+        tab.apply_managed_root();
+        tab.needs_initial_refresh = true;
+        Ok(tab)
+    }
+
+    /// Populate a stub PR tab from fetched inputs (async-miss open): parse
+    /// the raw diff (mirrors `new_local_pr_from_github_diff`), attach
+    /// metadata + staleness baseline, and load the PR-bucket AI sidecars.
+    /// Called by the desktop offload worker after the command returned.
+    pub fn populate_pr_tab(
+        &mut self,
+        raw: &str,
+        pr_data: Option<PrOverviewData>,
+        pr_commits: Vec<CommitInfo>,
+        base_branch: String,
+        head_oid: Option<String>,
+    ) {
+        let compaction_config = self.compaction_config.clone();
+        if raw.len() > 200_000 {
+            let headers = crate::git::parse_diff_headers(raw);
+            let files =
+                crate::git::lazy_files_with_compaction(raw, &headers, &compaction_config, |p| {
+                    self.user_expanded.contains(p)
+                });
+            self.files = files;
+            self.file_headers = headers;
+            self.raw_diff = Some(raw.to_string());
+            self.lazy_mode = true;
+        } else {
+            self.file_headers = crate::git::parse_diff_headers(raw);
+            self.raw_diff = Some(raw.to_string());
+            self.files = crate::git::parse_diff(raw);
+            self.lazy_mode = false;
+            crate::git::compact_files(&mut self.files, &self.compaction_config);
+        }
+        self.base_branch = base_branch;
+        let hash = crate::ai::compute_diff_hash(raw);
+        self.diff_hash = hash.clone();
+        self.branch_diff_hash = hash;
+        self.pr_data = pr_data;
+        self.pr_commits = pr_commits;
+        self.last_diff_head_oid = head_oid;
+        self.needs_initial_refresh = false;
+        self.apply_managed_root();
+        self.reload_ai_state();
+    }
+
     /// Create a TabState for a read-only diff of a local branch against the
     /// project's base branch. Runs `git diff <base>...<branch>` — never
     /// checks the branch out or mutates the working tree.
@@ -1193,9 +1266,14 @@ impl TabState {
         tab.mtime_cache.clear();
         tab.update_mem_budget();
         let t_ai_reload = Instant::now();
-        tab.sync_managed_storage();
+        // Light sync only: the open path immediately follows with
+        // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
+        // `apply_managed_root` re-routes to the PR bucket and performs the
+        // authoritative AI reload — a full reload here would be the 3rd of 3
+        // (first-paint plan step 1).
+        tab.sync_managed_storage_light();
         eprintln!(
-            "pr_open repo={} pr={} phase=ai_reload ms={}",
+            "pr_open repo={} pr={} phase=storage_sync ms={}",
             tab.repo_root,
             pr_number,
             t_ai_reload.elapsed().as_millis()
@@ -1354,6 +1432,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1475,6 +1554,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1594,6 +1674,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -1721,6 +1802,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -2058,12 +2140,21 @@ impl TabState {
     /// before the first `refresh_diff()` on a read-only branch tab. `new_inner` runs
     /// `finish_storage_setup()` while `local_branch_view` is still unset, so branch
     /// views must sync again once the viewed branch is known.
-    pub fn sync_managed_storage(&mut self) {
+    /// Storage routing + reviewed-state sync WITHOUT the AI reload. Used by
+    /// hot open paths where the authoritative `reload_ai_state` runs moments
+    /// later with the final view bucket (first-paint plan step 1: the
+    /// constructor + `place_tab` + `enter_pr_diff_*` used to reload the AI
+    /// sidecars three times per open).
+    pub fn sync_managed_storage_light(&mut self) {
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
         if !self.active_diff_files().is_empty() {
             self.prune_reviewed_not_in_diff();
         }
+    }
+
+    pub fn sync_managed_storage(&mut self) {
+        self.sync_managed_storage_light();
         self.reload_ai_state();
     }
 
@@ -2171,16 +2262,22 @@ impl TabState {
 
         if !self.pr_refs_fetched {
             // First entry: fetch and cache the refs. Errors surface to the caller.
+            let t = Instant::now();
             let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
+            log_branch_profile_phase(self, "enter_pr_diff.fetch_pr_head", t);
             let base = self.base_branch.clone();
+            let t = Instant::now();
             let base_ref = crate::github::fetch_base_branch_ref(
                 &self.repo_root,
                 base.trim_start_matches("origin/"),
             )?;
+            log_branch_profile_phase(self, "enter_pr_diff.fetch_base_branch_ref", t);
             // Record the oid the diff is computed against so the desktop
             // freshness check has a baseline on the normal open path (not just
             // after a manual sync). The ref oid is stable until re-fetched.
+            let t = Instant::now();
             self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
+            log_branch_profile_phase(self, "enter_pr_diff.rev_parse_oid", t);
             self.pr_head_ref = Some(head_ref);
             self.base_branch = base_ref;
             self.pr_refs_fetched = true;
@@ -2189,7 +2286,9 @@ impl TabState {
         self.mode = DiffMode::PrDiff;
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
+        let t = Instant::now();
         self.reload_ai_state();
+        log_branch_profile_phase(self, "enter_pr_diff.reload_ai_state", t);
 
         if skip_refresh_if_loaded && !self.files.is_empty() {
             return Ok(());
@@ -2216,7 +2315,19 @@ impl TabState {
     /// of re-fetching.
     ///
     /// Returns `Err` if no PR number is set on this tab.
-    pub fn enter_pr_diff_preloaded(&mut self, cache_head_oid: String) -> Result<()> {
+    /// Enter PR Diff from an already-loaded diff without any gh/git round-trip.
+    ///
+    /// `defer_ai_reload`: when true, skips the AI sidecar reload — used by the
+    /// desktop two-phase open (first-paint plan step 2), where the background
+    /// offload worker performs the single authoritative `reload_ai_state()`
+    /// right after the command returns. Storage routing (`apply_managed_root`)
+    /// and the reviewed-file set still apply synchronously so the first
+    /// snapshot is correctly rooted.
+    pub fn enter_pr_diff_preloaded(
+        &mut self,
+        cache_head_oid: String,
+        defer_ai_reload: bool,
+    ) -> Result<()> {
         self.pr_number
             .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
 
@@ -2226,7 +2337,9 @@ impl TabState {
         self.mode = DiffMode::PrDiff;
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
-        self.reload_ai_state();
+        if !defer_ai_reload {
+            self.reload_ai_state();
+        }
         Ok(())
     }
 
@@ -2549,6 +2662,15 @@ impl TabState {
     }
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.
+    /// Test-only seam: seed the raw diff so `raw_diff_for_review` short-circuits
+    /// without a git/gh fetch (used by the TUI handler tests).
+    #[doc(hidden)]
+    pub fn set_raw_diff_for_test(&mut self, raw: &str) {
+        self.raw_diff = Some(raw.to_string());
+        self.branch_diff_hash = crate::ai::compute_diff_hash(raw);
+        self.diff_hash = self.branch_diff_hash.clone();
+    }
+
     pub fn raw_diff_for_review(&self, scope: &str) -> Result<String> {
         if let Some(raw) = self.raw_diff.as_ref() {
             if !self.branch_diff_hash.is_empty() && self.review_scope_matches_cached_diff(scope) {
@@ -3069,8 +3191,27 @@ impl TabState {
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
         let prev_tour_stale = self.ai.tour_stale;
-        self.ai = ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref());
+        // Adopt the background branch-AI preload when it matches this view's
+        // bucket + diff hash (the worker loaded it without holding the App
+        // lock) — otherwise read the sidecars as before.
+        let diff_hash = self.branch_diff_hash.clone();
+        self.ai = match self.take_preloaded_branch_ai(&er_dir, &diff_hash) {
+            Some(ai) => ai,
+            None => ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref()),
+        };
+        self.finish_ai_reload(&er_dir, prev_stale_files, prev_tour_stale);
+    }
 
+    /// The in-memory post-load steps of [`reload_ai_state`] (PR-scoped GitHub
+    /// comments, guided-tour resolution, cursor clamps, mtime bookkeeping).
+    /// Shared between the disk-load path and the background-preload adoption
+    /// path so both produce identical state.
+    fn finish_ai_reload(
+        &mut self,
+        er_dir: &str,
+        prev_stale_files: std::collections::HashSet<String>,
+        prev_tour_stale: bool,
+    ) {
         // GitHub PR comments are PR-scoped: stored in the shared PR bucket and shown
         // only in the Local branch (Branch) and PR Diff views — hidden in Unstaged/
         // Staged/History, where PR-line comments don't apply.
@@ -3146,7 +3287,7 @@ impl TabState {
         // item_count == 0 before indexing.
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
-        self.last_ai_check = ai::latest_er_mtime(&er_dir);
+        self.last_ai_check = ai::latest_er_mtime(er_dir);
     }
 
     /// Reload github comments from cache in remote mode.
@@ -7648,6 +7789,7 @@ mod tests {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
@@ -9595,7 +9737,7 @@ mod tests {
         let cached_hash = crate::ai::compute_diff_hash(raw);
         tab.diff_hash = cached_hash.clone();
 
-        tab.enter_pr_diff_preloaded("head-oid-abc".to_string())
+        tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), false)
             .expect("preloaded entry succeeds when a PR number is set");
 
         // Seeds the freshness baseline and marks refs as fetched — no round-trip.
@@ -9613,9 +9755,260 @@ mod tests {
         let mut tab = TabState::new_for_test(vec![]);
         assert!(tab.pr_number.is_none());
         let err = tab
-            .enter_pr_diff_preloaded("oid".to_string())
+            .enter_pr_diff_preloaded("oid".to_string(), false)
             .expect_err("missing PR number must error, not silently no-op");
         assert!(err.to_string().contains("No PR number"));
+    }
+
+    #[test]
+    fn reload_ai_state_adopts_matching_branch_ai_preload() {
+        // Collapsed-Branch-view fix: the background worker preloads the branch
+        // bucket's AI sidecars at open; the first Branch click's
+        // `reload_ai_state` must adopt them (no disk reads) when bucket +
+        // diff hash match, and fall back to reading the sidecars otherwise.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.apply_managed_root();
+        let er_dir = tab.er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            std::path::Path::new(&er_dir).join("questions.json"),
+            r#"{"version":1,"diff_hash":"hash-abc","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
+        )
+        .unwrap();
+
+        // A matching preload (empty state) is adopted without reading disk.
+        tab.branch_diff_hash = "hash-abc".to_string();
+        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+            bucket_dir: er_dir.clone(),
+            diff_hash: "hash-abc".to_string(),
+            ai: crate::ai::AiState::default(),
+        });
+        tab.reload_ai_state();
+        assert!(
+            tab.ai.questions.is_none(),
+            "matching preload adopted — sidecar not re-read"
+        );
+
+        // A stale preload (hash mismatch) is not served; the disk is read.
+        // The slot itself survives (see the preload.rs keep-on-mismatch test).
+        tab.branch_diff_hash = "hash-abc".to_string();
+        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+            bucket_dir: er_dir.clone(),
+            diff_hash: "hash-other".to_string(),
+            ai: crate::ai::AiState::default(),
+        });
+        tab.reload_ai_state();
+        assert_eq!(
+            tab.ai
+                .questions
+                .as_ref()
+                .map(|q| q.questions.len())
+                .unwrap_or(0),
+            1,
+            "stale preload not served — sidecar read from disk"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn new_stub_pr_tab_places_prdiff_stub() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        let root = repo_root.as_path();
+        run_git_for_history_test(root, &["init", "-b", "main"]);
+        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+        run_git_for_history_test(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        );
+        std::fs::write(root.join("file.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "file.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+
+        let tab = TabState::new_stub_pr_tab(
+            repo_root.to_string_lossy().into_owned(),
+            42,
+            "main".to_string(),
+            Some("feature-x".to_string()),
+            None,
+            Some("oid-1".to_string()),
+        )
+        .expect("stub builds");
+        assert_eq!(tab.pr_number, Some(42));
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(tab.local_branch_view.as_deref(), Some("feature-x"));
+        assert!(tab.needs_initial_refresh, "stub flagged for async populate");
+        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-1"));
+        assert_eq!(tab.pr_head_ref.as_deref(), Some("refs/er/pr/42/head"));
+        // The stub routes to the PR bucket (review_bucket() == Pr in PrDiff).
+        assert!(
+            tab.er_dir().contains("prs/pr-42"),
+            "stub er_dir routes to the PR bucket: {}",
+            tab.er_dir()
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn populate_pr_tab_parses_diff_and_loads_ai() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let repo_root = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo_root).unwrap();
+        let root = repo_root.as_path();
+        run_git_for_history_test(root, &["init", "-b", "main"]);
+        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+        run_git_for_history_test(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/owner/repo.git",
+            ],
+        );
+        std::fs::write(root.join("file.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "file.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+
+        let mut tab = TabState::new_stub_pr_tab(
+            repo_root.to_string_lossy().into_owned(),
+            42,
+            "main".to_string(),
+            Some("feature-x".to_string()),
+            None,
+            None,
+        )
+        .expect("stub builds");
+        let er_dir = tab.er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            std::path::Path::new(&er_dir).join("questions.json"),
+            r#"{"version":1,"diff_hash":"h","questions":[{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}]}"#,
+        )
+        .unwrap();
+
+        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        tab.populate_pr_tab(
+            raw,
+            None,
+            Vec::new(),
+            "main".to_string(),
+            Some("oid-9".to_string()),
+        );
+
+        assert_eq!(tab.files.len(), 1, "diff parsed");
+        assert!(!tab.needs_initial_refresh, "populated");
+        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("oid-9"));
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(tab.diff_hash, crate::ai::compute_diff_hash(raw));
+        assert_eq!(
+            tab.ai
+                .questions
+                .as_ref()
+                .map(|q| q.questions.len())
+                .unwrap_or(0),
+            1,
+            "PR-bucket AI sidecars loaded by populate"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn deferred_enter_pr_diff_preloaded_defers_ai_reload() {
+        // Two-phase open contract (first-paint plan step 2): with
+        // `defer_ai_reload = true` the PR-bucket routing + reviewed set apply
+        // synchronously, but the AI sidecars are NOT read — the offload worker
+        // performs the single authoritative `reload_ai_state()` after the
+        // command returns.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![make_file(
+            "x",
+            vec![make_hunk(vec![make_line(LineType::Add, "new", Some(1))])],
+            1,
+            1,
+        )]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "main".to_string();
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature-x".to_string());
+        tab.pr_head_ref = Some("refs/er/pr/42/head".to_string());
+        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        let hash = crate::ai::compute_diff_hash(raw);
+        tab.diff_hash = hash.clone();
+        tab.branch_diff_hash = hash.clone();
+        // Route to the PR bucket so the sidecar lands where the reload reads.
+        tab.mode = DiffMode::PrDiff;
+        tab.apply_managed_root();
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            er_dir.join("questions.json"),
+            format!(
+                r#"{{"version":1,"diff_hash":"{hash}","questions":[{{"id":"q1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false}}]}}"#
+            ),
+        )
+        .unwrap();
+
+        tab.enter_pr_diff_preloaded("head-oid-abc".to_string(), true)
+            .expect("deferred entry succeeds");
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(tab.last_diff_head_oid.as_deref(), Some("head-oid-abc"));
+        assert!(
+            tab.ai
+                .questions
+                .as_ref()
+                .map(|q| q.questions.len())
+                .unwrap_or(0)
+                == 0,
+            "deferred entry must not read the sidecars"
+        );
+
+        // The offload worker's single authoritative reload picks them up.
+        tab.reload_ai_state();
+        assert_eq!(
+            tab.ai
+                .questions
+                .as_ref()
+                .map(|q| q.questions.len())
+                .unwrap_or(0),
+            1,
+            "authoritative reload loads the PR-bucket sidecar"
+        );
+        assert!(tab.ai.questions.as_ref().unwrap().questions[0]
+            .text
+            .contains("pending"));
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 
     #[test]
@@ -11186,6 +11579,49 @@ mod tests {
             assert_eq!(tab.er_dir(), expected, "{mode:?} should use PR bucket");
         }
 
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn completion_reload_picks_up_newer_sidecar_without_forced_reset() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+        tab.apply_managed_root();
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+
+        // Baseline sidecar + reload: last_ai_check = its mtime.
+        std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
+        tab.reload_ai_state();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(
+            !tab.check_ai_files_changed(),
+            "no newer files — mtime comparison alone must not reload"
+        );
+
+        // Agent writes its output after the last check (completion path no
+        // longer resets last_ai_check to None — the newer mtime must fire the
+        // reload on its own).
+        std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
+        assert!(
+            tab.check_ai_files_changed(),
+            "newer sidecar must fire the reload without a forced reset"
+        );
+
+        // And the state settles again after reload.
+        tab.reload_ai_state();
+        assert!(
+            !tab.check_ai_files_changed(),
+            "settled after reload — no redundant full re-read"
+        );
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 

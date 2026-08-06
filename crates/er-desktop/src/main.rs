@@ -822,8 +822,9 @@ fn main() {
         gh_status_cache: Arc::clone(&gh_status_cache),
         loading: Arc::clone(&loading),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
-        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashMap::new())),
         branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pr_ref_fetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
         remote_pr_open_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
@@ -1299,6 +1300,10 @@ fn main() {
                     }
                     let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
                         Ok(result) => {
+                            // The fetched data supersedes any cached bundle —
+                            // a manual pull within the bundle TTL must not
+                            // regress this fresher file (review-fix-loop F2).
+                            er_engine::github::invalidate_pr_comments_cache();
                             // Phase 3: brief lock — apply pre-fetched results to the correct tab.
                             match comments_app.lock() {
                                 Ok(mut g) => {

@@ -101,30 +101,19 @@ impl App {
             }
         };
 
-        let gh_comments = if is_remote {
-            match github::gh_pr_comments_remote(&owner, &repo_name, pr_number) {
-                Ok(c) => c,
-                Err(e) => {
-                    self.notify(&format!("GitHub sync error: {}", e));
-                    return Ok(());
-                }
-            }
+        // The hover prefetch warms this bundle (first-paint plan step 3): the
+        // two gh calls cost ~2.5–3 s on a cold cache, ~0 ms on a warm one.
+        let bundle = if is_remote {
+            github::gh_pr_comment_bundle_cached(&owner, &repo_name, pr_number, None)
         } else {
-            match github::gh_pr_comments(&owner, &repo_name, pr_number, &repo_root) {
-                Ok(c) => c,
-                Err(e) => {
-                    self.notify(&format!("GitHub sync error: {}", e));
-                    return Ok(());
-                }
-            }
+            github::gh_pr_comment_bundle_cached(&owner, &repo_name, pr_number, Some(&repo_root))
         };
-
-        // Fetch review-thread state that the REST comments endpoint does not expose reliably.
-        let thread_state = if is_remote {
-            github::gh_pr_review_threads_remote(&owner, &repo_name, pr_number).unwrap_or_default()
-        } else {
-            github::gh_pr_review_threads(&owner, &repo_name, pr_number, &repo_root)
-                .unwrap_or_default()
+        let (gh_comments, thread_state) = match &bundle {
+            Ok(b) => (b.comments.clone(), b.threads.clone()),
+            Err(e) => {
+                self.notify(&format!("GitHub sync error: {}", e));
+                return Ok(());
+            }
         };
 
         // Load existing github-comments.json (PR-scoped: shared PR bucket for PR tabs)
@@ -273,6 +262,9 @@ impl App {
 
     /// Push all unpushed local comments to GitHub
     pub fn push_all_comments_to_github(&mut self) -> Result<()> {
+        // Any push invalidates the comment-bundle cache (the next pull must
+        // see the pushed comments — review-fix-loop A1).
+        crate::github::invalidate_pr_comments_cache();
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let explicit_pr_number = tab.pr_number;
@@ -478,6 +470,7 @@ impl App {
         thread_id: &str,
         pr_number_hint: Option<u64>,
     ) -> Result<()> {
+        crate::github::invalidate_pr_comments_cache();
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();
         let explicit_pr_number = tab.pr_number.or(pr_number_hint);
@@ -655,6 +648,7 @@ impl App {
         if reply_id.starts_with("fr-") {
             anyhow::bail!("Finding validation replies cannot be pushed individually");
         }
+        crate::github::invalidate_pr_comments_cache();
 
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();

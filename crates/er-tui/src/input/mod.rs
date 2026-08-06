@@ -270,18 +270,26 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             app.open_ai_expert_picker();
         }
         HubAction::RunExpertReview { expert_id } => {
-            if let Some(prompt) = build_agent_expert_prompt(app, &expert_id) {
-                app.spawn_agent_prompt(&format!("expert-{expert_id}"), &prompt)?;
+            if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                if let Some(prompt) =
+                    build_agent_expert_prompt(app, &expert_id, &er_dir, &diff_hash)
+                {
+                    app.spawn_agent_prompt(&format!("expert-{expert_id}"), &prompt)?;
+                }
             }
         }
         HubAction::RunProfessorReview => {
-            if let Some(prompt) = build_agent_professor_prompt(app) {
-                app.spawn_agent_prompt("professor", &prompt)?;
+            if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                if let Some(prompt) = build_agent_professor_prompt(app, &er_dir, &diff_hash) {
+                    app.spawn_agent_prompt("professor", &prompt)?;
+                }
             }
         }
         HubAction::RunTriageReview => {
-            if let Some(prompt) = build_agent_triage_prompt(app) {
-                app.spawn_agent_prompt("triage", &prompt)?;
+            if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                if let Some(prompt) = build_agent_triage_prompt(app, &er_dir, &diff_hash) {
+                    app.spawn_agent_prompt("triage", &prompt)?;
+                }
             }
         }
         HubAction::PromptReview => {
@@ -293,8 +301,10 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 });
             } else {
                 // No previous review, run directly
-                if let Some(prompt) = build_agent_review_prompt(app) {
-                    app.spawn_agent_prompt("review", &prompt)?;
+                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
                 }
             }
         }
@@ -313,28 +323,19 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                 app.notify(
                     "validate is local-only — checkout the PR first, then re-run review locally",
                 );
-            } else {
-                let scope = app.tab().mode.git_mode();
+            } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
                 if comment_count > 0 {
-                    let er_dir = app.tab().er_dir();
-                    if let Ok(raw) = app.tab().raw_diff_for_review(scope) {
-                        if !raw.trim().is_empty() {
-                            let diff_tmp = std::path::Path::new(&er_dir).join("diff-tmp");
-                            let _ = std::fs::write(&diff_tmp, raw);
-                        }
-                    }
                     app.tab_mut().relocate_all_comments();
                 }
                 if has_review {
-                    if let Some(prompt) = build_agent_validate_prompt(app) {
+                    if let Some(prompt) = build_agent_validate_prompt(app, &er_dir, &diff_hash) {
                         app.spawn_agent_prompt("validate", &prompt)?;
                     }
                 }
                 if comment_count > 0 {
-                    let er_dir = app.tab().er_dir();
                     let comments_prompt =
                         er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
-                            &er_dir,
+                            &er_dir, &diff_hash,
                         );
                     app.spawn_agent_prompt("validate-comments", &comments_prompt)?;
                 }
@@ -660,8 +661,10 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 let er_dir = app.tab().er_dir();
                 cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
-                if let Some(prompt) = build_agent_review_prompt(app) {
-                    app.spawn_agent_prompt("review", &prompt)?;
+                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
                 }
                 app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
@@ -713,8 +716,10 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             // For agent prompts, 'k' = keep previous data but still run
             if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
                 app.input_mode = InputMode::Normal;
-                if let Some(prompt) = build_agent_review_prompt(app) {
-                    app.spawn_agent_prompt("review", &prompt)?;
+                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
                 }
                 app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
@@ -762,40 +767,45 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Build the triage scan prompt (local diff modes only).
-pub(super) fn build_agent_triage_prompt(app: &mut App) -> Option<String> {
-    let mode = app.tab().mode;
-    if app.tab().is_remote() {
+pub(super) fn build_agent_triage_prompt(
+    app: &mut App,
+    er_dir: &str,
+    diff_hash: &str,
+) -> Option<String> {
+    let tab = app.tab();
+    if tab.is_remote() {
         app.notify("Triage is local-only in v1 — checkout the PR first");
         return None;
     }
-    let base = app.tab().base_branch.clone();
-    let output_dir = app.tab().er_dir();
     Some(
-        er_engine::ai::prompts::build_triage_review_prompt_local_managed(
-            &base,
-            mode.git_mode(),
-            &output_dir,
+        er_engine::ai::prompts::build_triage_review_prompt_prepared_diff(
+            tab.mode.git_mode(),
+            er_dir,
+            diff_hash,
         ),
     )
 }
 
 /// Build the Professor learning prompt (local diff modes only).
-pub(super) fn build_agent_professor_prompt(app: &mut App) -> Option<String> {
+pub(super) fn build_agent_professor_prompt(
+    app: &mut App,
+    er_dir: &str,
+    diff_hash: &str,
+) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("Professor is local-only in v1 — checkout the PR first");
         return None;
     }
     let mode = tab.mode;
-    let base = tab.base_branch.clone();
-    let output_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_professor_review_prompt_local_managed(
-                &base,
+            er_engine::ai::prompts::build_professor_review_prompt_prepared_diff(
                 mode.git_mode(),
-                &output_dir,
+                er_dir,
                 None,
+                false,
+                diff_hash,
             ),
         ),
         _ => {
@@ -806,7 +816,12 @@ pub(super) fn build_agent_professor_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build a specialized expert review prompt (local diff modes only).
-pub(super) fn build_agent_expert_prompt(app: &mut App, expert_id: &str) -> Option<String> {
+pub(super) fn build_agent_expert_prompt(
+    app: &mut App,
+    expert_id: &str,
+    er_dir: &str,
+    diff_hash: &str,
+) -> Option<String> {
     if er_engine::ai::expert_by_id(expert_id).is_none() {
         app.notify(&format!("Unknown expert: {expert_id}"));
         return None;
@@ -817,15 +832,13 @@ pub(super) fn build_agent_expert_prompt(app: &mut App, expert_id: &str) -> Optio
         return None;
     }
     let mode = tab.mode;
-    let base = tab.base_branch.clone();
-    let output_dir = tab.er_dir();
     match mode {
         DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => Some(
-            er_engine::ai::prompts::build_expert_review_prompt_local_managed(
-                &base,
+            er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
                 mode.git_mode(),
-                &output_dir,
+                er_dir,
                 expert_id,
+                diff_hash,
             ),
         ),
         _ => {
@@ -835,46 +848,66 @@ pub(super) fn build_agent_expert_prompt(app: &mut App, expert_id: &str) -> Optio
     }
 }
 
-/// Build the review agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_review_prompt(app: &mut App) -> Option<String> {
-    let tab = app.tab();
-    if tab.is_remote() {
-        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
-            (Some(ref s), Some(n)) => (s.clone(), n),
-            _ => {
-                app.notify("Remote mode missing repo or PR number");
-                return None;
-            }
-        };
-        let parts: Vec<&str> = slug.split('/').collect();
-        if parts.len() != 2 {
-            app.notify(&format!("Invalid remote repo slug: {}", slug));
+/// Prepare the harness diff artifacts (diff-tmp + diff-annotated + markers)
+/// for an agent action, aborting with a notification when there is no local
+/// diff to fetch. Review/validate/expert/professor/triage must anchor against
+/// the SAME prepared bytes (review-fix-loop final pass): an agent-side git
+/// diff would use different `--unified` flags and mis-anchor findings.
+pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
+    if app.tab().is_remote() {
+        // Remote tabs have no local working tree to fetch; their review
+        // prompt is built from the remote PR instead. TUI tabs are local by
+        // construction (desktop owns remote tabs) — this is defensive.
+        app.notify("This action needs a local checkout — open the PR as a local branch first");
+        return None;
+    }
+    let scope = app.tab().mode.git_mode();
+    let er_dir = app.tab().er_dir();
+    let raw = match app.tab().raw_diff_for_review(scope) {
+        Ok(raw) if !raw.trim().is_empty() => raw,
+        _ => {
+            app.notify("No local diff to review against");
             return None;
         }
-        let output_dir = app.tab().er_dir();
-        return Some(er_engine::ai::prompts::build_review_prompt_remote(
-            parts[0],
-            parts[1],
-            pr_number,
-            &output_dir,
-        ));
+    };
+    match er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw) {
+        Ok(hash) => Some((er_dir, hash)),
+        Err(e) => {
+            app.notify(&format!("action skipped: {e}"));
+            None
+        }
     }
+}
+
+/// Build the review agent prompt. Only the local prepared-diff prompt is built
+/// here: every call site routes through `ensure_prepared_diff_for_action`,
+/// which rejects remote tabs (the desktop owns the remote-tab review flow and
+/// uses its own prepared-diff commands).
+pub(super) fn build_agent_review_prompt(
+    app: &mut App,
+    er_dir: &str,
+    diff_hash: &str,
+) -> Option<String> {
+    let tab = app.tab();
     let mode = tab.mode;
     let base = tab.base_branch.clone();
-    let output_dir = tab.er_dir();
+    // Desktop convention (commands.rs:3194): the PR head is the local branch
+    // view, not the checked-out branch — a wrong head_branch makes the
+    // loader's artifacts_branch_mismatch silently discard the fresh review.
+    let head = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    let scope = match mode {
+        DiffMode::PrDiff => "branch".to_string(),
+        m => m.git_mode().to_string(),
+    };
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-            Some(er_engine::ai::prompts::build_review_prompt_local_managed(
-                &base,
-                mode.git_mode(),
-                &output_dir,
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
+            Some(er_engine::ai::prompts::build_review_prompt_prepared_diff(
+                &scope, er_dir, &base, &head, diff_hash,
             ))
         }
-        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_review_prompt_local_managed(
-            &base,
-            "branch",
-            &output_dir,
-        )),
         _ => {
             app.notify("AI review not available in this mode");
             None
@@ -883,29 +916,30 @@ pub(super) fn build_agent_review_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build the validate agent prompt. Local mode only — remote validation needs a working
-/// tree to read, which is a separate plumbing job (defer).
-pub(super) fn build_agent_validate_prompt(app: &mut App) -> Option<String> {
+/// tree to read, which is a separate plumbing job (defer). Uses the prepared-diff prompt
+/// (O1 contract): the caller pre-writes `diff-tmp`/`diff-annotated` via
+/// `ensure_diff_artifacts`, so the agent anchors against the harness-computed hash instead
+/// of re-running `git diff` + `sha256sum` + awk (review-fix-loop P4-2).
+pub(super) fn build_agent_validate_prompt(
+    app: &mut App,
+    er_dir: &str,
+    diff_hash: &str,
+) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("validate is local-only — checkout the PR first, then re-run review locally");
         return None;
     }
     let mode = tab.mode;
-    let base = tab.base_branch.clone();
-    let output_dir = tab.er_dir();
+    let scope = if mode == DiffMode::PrDiff {
+        "branch"
+    } else {
+        mode.git_mode()
+    };
     match mode {
-        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
-            Some(er_engine::ai::prompts::build_validate_prompt_local_managed(
-                &base,
-                mode.git_mode(),
-                &output_dir,
-            ))
-        }
-        DiffMode::PrDiff => Some(er_engine::ai::prompts::build_validate_prompt_local_managed(
-            &base,
-            "branch",
-            &output_dir,
-        )),
+        DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => Some(
+            er_engine::ai::prompts::build_validate_prompt_prepared_diff(scope, er_dir, diff_hash),
+        ),
         _ => {
             app.notify("validate not available in this mode");
             None
@@ -1901,14 +1935,54 @@ mod tests {
     }
 
     #[test]
+    fn validate_action_ensures_artifacts_for_review_only_tabs() {
+        // F1 regression: with a review but zero GitHub comments, PromptValidate
+        // must still prepare the diff artifacts — the ensure call previously
+        // sat inside the comments gate and validate silently no-oped.
+        let output_dir = "/tmp/er-tui-validate-f1";
+        let _ = std::fs::remove_dir_all(output_dir);
+        std::fs::create_dir_all(output_dir).unwrap(); // storage creates it in the real flow
+        let mut app = app_with_managed_dir(output_dir);
+        let raw = "diff --git a/x b/x\n@@ -1 +1 @@\n-old\n+new\n";
+        app.tab_mut().set_raw_diff_for_test(raw);
+        app.tab_mut().ai.review = Some(er_engine::ai::ErReview {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            base_branch: "main".into(),
+            head_branch: "feature".into(),
+            files: std::collections::HashMap::new(),
+            file_hashes: std::collections::HashMap::new(),
+        });
+        // The handler fires a real agent subprocess on success — keep the
+        // child inert so the test has no external side effect (ratchet-6).
+        app.config.agent.command = "/bin/true".to_string();
+
+        dispatch_hub_action(&mut app, HubAction::PromptValidate).expect("validate dispatch");
+
+        assert!(
+            std::fs::metadata(format!("{output_dir}/.diff-tmp.sha256")).is_ok(),
+            "artifacts ensured even with zero comments (F1)"
+        );
+        assert!(
+            std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
+            "annotated diff ensured"
+        );
+        let _ = std::fs::remove_dir_all(output_dir);
+    }
+
+    #[test]
     fn local_ai_prompt_builders_target_tab_er_dir() {
         let output_dir = "/tmp/er-tui-managed";
         let mut app = app_with_managed_dir(output_dir);
+        let er_dir = app.tab().er_dir();
+        let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
 
-        let review = build_agent_review_prompt(&mut app).expect("review prompt");
+        let review = build_agent_review_prompt(&mut app, &er_dir, hash).expect("review prompt");
         assert_managed_prompt(&review, output_dir, "review.json");
 
-        let validate = build_agent_validate_prompt(&mut app).expect("validate prompt");
+        let validate =
+            build_agent_validate_prompt(&mut app, &er_dir, hash).expect("validate prompt");
         assert_managed_prompt(&validate, output_dir, "review.json");
 
         let questions = build_agent_questions_prompt(&mut app).expect("questions prompt");
@@ -1917,13 +1991,15 @@ mod tests {
         let summary = build_agent_summary_prompt(&mut app).expect("summary prompt");
         assert_managed_prompt(&summary, output_dir, "summary.md");
 
-        let triage = build_agent_triage_prompt(&mut app).expect("triage prompt");
+        let triage = build_agent_triage_prompt(&mut app, &er_dir, hash).expect("triage prompt");
         assert_managed_prompt(&triage, output_dir, "triage.json");
 
-        let professor = build_agent_professor_prompt(&mut app).expect("professor prompt");
+        let professor =
+            build_agent_professor_prompt(&mut app, &er_dir, hash).expect("professor prompt");
         assert_managed_prompt(&professor, output_dir, "professor.json");
 
-        let expert = build_agent_expert_prompt(&mut app, "security").expect("expert prompt");
+        let expert =
+            build_agent_expert_prompt(&mut app, "security", &er_dir, hash).expect("expert prompt");
         assert_managed_prompt(&expert, output_dir, "experts/security.json");
     }
 
