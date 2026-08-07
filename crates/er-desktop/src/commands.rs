@@ -6662,13 +6662,22 @@ fn kick_miss_open_offload(
                 };
                 if let Ok(mut app) = app_arc.lock() {
                     // Re-resolve the stub by index + identity (sibling worker
-                    // pattern): `place_tab` may append duplicates for repeated
-                    // opens — a first-match find could populate the wrong stub.
-                    if let Some(tab) = app.tabs.get_mut(expect_idx).filter(|t| {
+                    // pattern); if a tab closed during the fetch window
+                    // shifted the index, fall back to a scan so the populated
+                    // diff still lands (mirrors the error path).
+                    let target = match app.tabs.get_mut(expect_idx).filter(|t| {
                         t.repo_root == expect_root
                             && t.pr_number == Some(pr_number)
                             && t.local_branch_view == expect_local_view
                     }) {
+                        Some(tab) => Some(tab),
+                        None => app.tabs.iter_mut().find(|t| {
+                            t.repo_root == expect_root
+                                && t.pr_number == Some(pr_number)
+                                && t.needs_initial_refresh
+                        }),
+                    };
+                    if let Some(tab) = target {
                         tab.populate_pr_tab(
                             &inputs.raw_diff,
                             Some(inputs.metadata.pr_data),

@@ -300,8 +300,14 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                     clear_previous: true,
                 });
             } else {
-                // No previous review, run directly
-                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                // No previous review, run directly. Remote TUI tabs (`--remote`
+                // sessions) build the remote review prompt — no local diff
+                // exists, so skip the prepared-artifact helper entirely.
+                if app.tab().is_remote() {
+                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
+                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
                     if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
                         app.spawn_agent_prompt("review", &prompt)?;
                     }
@@ -661,7 +667,11 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 let er_dir = app.tab().er_dir();
                 cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
-                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                if app.tab().is_remote() {
+                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
+                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
                     if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
                         app.spawn_agent_prompt("review", &prompt)?;
                     }
@@ -716,7 +726,11 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             // For agent prompts, 'k' = keep previous data but still run
             if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
                 app.input_mode = InputMode::Normal;
-                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                if app.tab().is_remote() {
+                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
+                        app.spawn_agent_prompt("review", &prompt)?;
+                    }
+                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
                     if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
                         app.spawn_agent_prompt("review", &prompt)?;
                     }
@@ -855,9 +869,10 @@ pub(super) fn build_agent_expert_prompt(
 /// diff would use different `--unified` flags and mis-anchor findings.
 pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
     if app.tab().is_remote() {
-        // Remote tabs have no local working tree to fetch; their review
-        // prompt is built from the remote PR instead. TUI tabs are local by
-        // construction (desktop owns remote tabs) — this is defensive.
+        // Remote tabs (TUI `--remote` sessions, desktop remote tabs) have no
+        // local working tree to fetch. Review routes around this via the
+        // remote prompt; the local-only actions (validate/expert/professor/
+        // triage) need a checkout, so notify.
         app.notify("This action needs a local checkout — open the PR as a local branch first");
         return None;
     }
@@ -879,16 +894,36 @@ pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, 
     }
 }
 
-/// Build the review agent prompt. Only the local prepared-diff prompt is built
-/// here: every call site routes through `ensure_prepared_diff_for_action`,
-/// which rejects remote tabs (the desktop owns the remote-tab review flow and
-/// uses its own prepared-diff commands).
+/// Build the review agent prompt. Remote tabs (`--remote` sessions) build the
+/// remote prompt from the PR; local tabs build the prepared-diff prompt (the
+/// caller pre-writes `diff-tmp`/`diff-annotated` via the helper).
 pub(super) fn build_agent_review_prompt(
     app: &mut App,
     er_dir: &str,
     diff_hash: &str,
 ) -> Option<String> {
     let tab = app.tab();
+    if tab.is_remote() {
+        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
+            (Some(ref s), Some(n)) => (s.clone(), n),
+            _ => {
+                app.notify("Remote mode missing repo or PR number");
+                return None;
+            }
+        };
+        let parts: Vec<&str> = slug.split('/').collect();
+        if parts.len() != 2 {
+            app.notify(&format!("Invalid remote repo slug: {}", slug));
+            return None;
+        }
+        let output_dir = app.tab().er_dir();
+        return Some(er_engine::ai::prompts::build_review_prompt_remote(
+            parts[0],
+            parts[1],
+            pr_number,
+            &output_dir,
+        ));
+    }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
     // Desktop convention (commands.rs:3194): the PR head is the local branch

@@ -491,6 +491,7 @@ mod tests {
 
     #[test]
     fn new_remote_with_data_builds_tab_without_network() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK.lock();
         let tmp = tempfile::tempdir().unwrap();
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
         let pr_ref = crate::github::PrRef {
@@ -514,5 +515,6 @@ mod tests {
         assert_eq!(tab.files.len(), 1);
         assert_eq!(tab.files[0].path, "f.rs");
         assert!(!tab.needs_initial_refresh, "loaded tab is not a stub");
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 }
