@@ -1301,14 +1301,20 @@ pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<
 fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
     let (base_sha, head_sha) = gh_pr_commit_shas_remote(owner, repo, number)?;
     let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
-    let tmp_dir = std::env::temp_dir().join(format!("er-remote-{}-{}-{}", owner, repo, number));
+    // tempfile::Builder::tempdir: random name + 0700, so an attacker cannot
+    // pre-create the clone dir (the old fixed `er-remote-{owner}-{repo}-{n}`
+    // name with remove_dir_all + clone let an attacker win the dir, then swap
+    // .git/config — core.sshCommand + ssh origin → code execution on the
+    // fetch below; or poison the diff). 0700 also blocks reading the clone.
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("er-remote-")
+        .tempdir()
+        .context("Failed to create temp dir for large PR diff")?;
     let tmp_path = tmp_dir
+        .path()
         .to_str()
         .context("Temp dir path is not valid UTF-8")?
         .to_string();
-
-    // Clean up any previous failed attempt
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Shallow clone with only the two refs we need
     let clone = Command::new("git")
@@ -1324,7 +1330,6 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .context("Failed to shallow clone for large PR diff")?;
 
     if !clone.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         let stderr = String::from_utf8_lossy(&clone.stderr);
         anyhow::bail!("Shallow clone failed: {}", stderr.trim());
     }
@@ -1344,7 +1349,6 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .context("Failed to fetch PR commits")?;
 
     if !fetch.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         let stderr = String::from_utf8_lossy(&fetch.stderr);
         anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
     }
@@ -1365,8 +1369,8 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .output()
         .context("Failed to generate diff from cloned repo")?;
 
-    // Clean up
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // Clean up (TempDir removes the clone on drop — including on error).
+    drop(tmp_dir);
 
     if !diff.status.success() {
         let stderr = String::from_utf8_lossy(&diff.stderr);
