@@ -1963,9 +1963,13 @@ fn post_pr_review(
     repo_root: Option<&str>,
 ) -> Result<()> {
     let payload = pr_review_payload_json(commit_id, event, body, comments);
-    let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
-    std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
-        .context("Failed to write review payload")?;
+    // NamedTempFile: O_EXCL + 0600, so no symlink/race exposure in world-
+    // writable /tmp and no world-readable payload (security review MEDIUM:
+    // the previous fixed-name /tmp/er_review_payload_{pid}.json allowed
+    // symlink overwrite, race-swap, and payload disclosure). Deleted on drop.
+    let mut tmp = tempfile::NamedTempFile::new().context("Failed to create review payload file")?;
+    serde_json::to_writer(&mut tmp, &payload).context("Failed to write review payload")?;
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
 
     let mut cmd = Command::new("gh");
     cmd.args([
@@ -1981,7 +1985,7 @@ fn post_pr_review(
     }
     let output = cmd.output().context("Failed to submit PR review")?;
 
-    let _ = std::fs::remove_file(&tmp_path);
+    drop(tmp);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
