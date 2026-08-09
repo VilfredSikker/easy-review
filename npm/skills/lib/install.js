@@ -21,7 +21,7 @@ function ensureBundle() {
 
 function resolveSkillsCli() {
   try {
-    return require.resolve("skills/bin/cli.mjs");
+    return require.resolve("skills-installer/bin/cli.mjs");
   } catch {
     return null;
   }
