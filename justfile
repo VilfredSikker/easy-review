@@ -139,6 +139,11 @@ install-mcp:
 test-mcp-npm:
     cd npm/er-mcp && npm test
 
+# Test the skills installer (Node 18+).
+[group('test')]
+test-skills-npm:
+    cd npm/skills && npm test
+
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:

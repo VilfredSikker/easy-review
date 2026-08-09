@@ -2,15 +2,16 @@
 "use strict";
 
 /**
- * Copy Easy Review skills from the repo root into this package and inline
- * skills/_shared so installed SKILL.md files are self-contained.
+ * Copy Easy Review skill sources from npm/skills/source/ into the bundled
+ * npm/skills/skills/ tree and inline source/_shared so installed SKILL.md
+ * files are self-contained.
  */
 
 const fs = require("node:fs");
 const path = require("node:path");
 
 const PKG_ROOT = path.join(__dirname, "..");
-const REPO_SKILLS = path.join(PKG_ROOT, "..", "..", "skills");
+const SOURCE_ROOT = path.join(PKG_ROOT, "source");
 const OUT_ROOT = path.join(PKG_ROOT, "skills");
 
 const SKILL_DIRS = [
@@ -24,7 +25,7 @@ const SKILL_DIRS = [
 ];
 
 function readShared(name) {
-  const file = path.join(REPO_SKILLS, "_shared", name);
+  const file = path.join(SOURCE_ROOT, "_shared", name);
   if (!fs.existsSync(file)) {
     throw new Error(`missing shared doc: ${file}`);
   }
@@ -70,15 +71,15 @@ function inlineShared(skillMarkdown) {
 }
 
 function syncSkills() {
-  if (!fs.existsSync(REPO_SKILLS)) {
-    throw new Error(`repo skills directory not found: ${REPO_SKILLS}`);
+  if (!fs.existsSync(SOURCE_ROOT)) {
+    throw new Error(`skill sources not found: ${SOURCE_ROOT}`);
   }
 
   fs.rmSync(OUT_ROOT, { recursive: true, force: true });
   fs.mkdirSync(OUT_ROOT, { recursive: true });
 
   for (const dir of SKILL_DIRS) {
-    const srcDir = path.join(REPO_SKILLS, dir);
+    const srcDir = path.join(SOURCE_ROOT, dir);
     const srcFile = path.join(srcDir, "SKILL.md");
     if (!fs.existsSync(srcFile)) {
       throw new Error(`missing skill: ${srcFile}`);

@@ -72,7 +72,7 @@ cargo install --path crates/er-mcp
 ```
 
 Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
-Skills: [`skills/er-review/`](skills/er-review/) and [`skills/_shared/`](skills/_shared/).
+Skills installer: [`npm/skills`](npm/skills/) (`bunx @easy-review/skills`).
 
 ## Documentation
 

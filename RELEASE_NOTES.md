@@ -1,3 +1,22 @@
+# Easy Review v0.4.9
+
+## In plain terms
+
+- **What changed.** Agent skills install only via npm (`bunx @easy-review/skills`); sources live under `npm/skills/source/`. Bumps `easy-review-mcp` and `@easy-review/skills` to v0.4.9 for release CI npm publish (includes MCP 2026-07-28 upgrade from v0.4.8).
+- **TL;DR.** npm-only skills installer + version bump for MCP/skills npm packages.
+
+## Highlights
+
+- **`@easy-review/skills`** — `bunx @easy-review/skills` installs all ER agent skills; repo-root `skills/er-*` removed (prompt canon `skills/REVIEW_*.md` kept).
+- **Release CI** — publishes `@easy-review/skills` alongside `easy-review-mcp` on `v*` tags.
+
+## What's Changed
+
+### Features
+- npm skills installer package with `source/` → bundled `skills/` sync and tests (`just test-skills-npm`).
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.8...v0.4.9
+
 # Easy Review v0.4.8
 
 ## In plain terms

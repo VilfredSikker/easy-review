@@ -21,6 +21,7 @@ scripts/aliases below, so either form works.
 | Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; setup: `docs/guide/mcp.html`) |
 | npm MCP launcher | `npm/er-mcp` — `npx -y easy-review-mcp` (downloads release binary) |
 | Install ER agent skills | `bunx @easy-review/skills` or `npx @easy-review/skills` — see `npm/skills/` |
+| Test skills installer | `just test-skills-npm` |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release (local/ad-hoc) | `./scripts/tauri-build.sh` or `cargo desktop-release` |
 | Desktop signed release | `just sign` (or `just sign-release-desktop`) — guide: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) (`.env.signing`) |
