@@ -16,6 +16,8 @@ Non-interactive (all agents, all skills, default paths):
 npx -y @easy-review/skills
 ```
 
+`bunx @easy-review/skills` runs the same wizard (reads prompts from `/dev/tty` when bun leaves `stdin` non-interactive).
+
 If you run this inside the monorepo `npm/skills` directory, use the home-directory form above.
 
 Install one skill:

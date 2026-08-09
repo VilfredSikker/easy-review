@@ -18,6 +18,7 @@ Options:
   -p, --project        Install under project-local agent paths
   -a, --agent <ids>    Agent ids: cursor, claude-code, codex, all
   -y, --yes            Non-interactive defaults
+  -i, --interactive    Force wizard prompts (useful under bunx)
   -f, --force          Overwrite existing skill folders
   -h, --help           Show this help
   -V, --version        Show version
@@ -59,6 +60,10 @@ function parseArgs(argv) {
       case "-y":
       case "--yes":
         opts.yes = true;
+        break;
+      case "-i":
+      case "--interactive":
+        opts.interactive = true;
         break;
       case "-f":
       case "--force":

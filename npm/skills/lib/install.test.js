@@ -8,6 +8,7 @@ const path = require("node:path");
 const {
   install,
   installRoot,
+  isInteractive,
   listSkills,
   parseIndexedPick,
   resolveAgents,
@@ -53,6 +54,17 @@ describe("install", () => {
     } finally {
       process.chdir(prev);
       fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("treats stdout TTY as interactive unless --yes", () => {
+    const prev = process.stdout.isTTY;
+    Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+    try {
+      assert.equal(isInteractive({}), true);
+      assert.equal(isInteractive({ yes: true }), false);
+    } finally {
+      Object.defineProperty(process.stdout, "isTTY", { value: prev, configurable: true });
     }
   });
 

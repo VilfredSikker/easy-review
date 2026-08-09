@@ -142,6 +142,49 @@ function skillCatalog() {
   }));
 }
 
+function isInteractive(options = {}) {
+  if (options.yes) {
+    return false;
+  }
+  if (options.interactive) {
+    return true;
+  }
+  if (process.env.CI === "true" || process.env.CI === "1") {
+    return false;
+  }
+  // bunx often leaves stdin.isTTY false while stdout is a real terminal.
+  return Boolean(process.stdout.isTTY);
+}
+
+function createPrompt() {
+  if (!process.stdout.isTTY) {
+    return null;
+  }
+  let inputStream = input;
+  let ownsInput = false;
+  if (!process.stdin.isTTY && process.platform !== "win32") {
+    try {
+      const ttyFd = fs.openSync("/dev/tty", "rs");
+      inputStream = fs.createReadStream(null, { fd: ttyFd, autoClose: true });
+      ownsInput = true;
+    } catch {
+      inputStream = input;
+    }
+  }
+  const rl = readline.createInterface({ input: inputStream, output });
+  return { rl, ownsInput, inputStream };
+}
+
+function closePrompt(prompt) {
+  if (!prompt) {
+    return;
+  }
+  prompt.rl.close();
+  if (prompt.ownsInput && prompt.inputStream) {
+    prompt.inputStream.destroy();
+  }
+}
+
 async function ask(rl, question, fallback, auto) {
   if (auto) {
     console.log(`${question} → ${fallback}`);
@@ -217,8 +260,9 @@ async function runInstall(options = {}) {
   const bundleDir = ensureBundle();
   const global = options.global !== false;
   const root = installRoot(global);
-  const auto = options.yes === true || !process.stdin.isTTY;
-  const rl = auto ? null : readline.createInterface({ input, output });
+  const auto = !isInteractive(options);
+  const prompt = auto ? null : createPrompt();
+  const rl = prompt?.rl ?? null;
 
   console.log("\nEasy Review skills installer\n");
   console.log("Installs er-* agent skills for PR review, guides, and MCP workflows.\n");
@@ -315,11 +359,12 @@ async function runInstall(options = {}) {
   if (installed.length === 0 && skipped > 0) {
     console.log("\nNothing new installed (all selected skills already present).");
     console.log("Re-run with --force to overwrite.\n");
-    rl?.close();
+    closePrompt(prompt);
     return { bundleDir, installed, skipped, skills: selectedSkills };
   }
 
   if (installed.length === 0) {
+    closePrompt(prompt);
     throw new Error("no skills installed");
   }
 
@@ -332,7 +377,7 @@ async function runInstall(options = {}) {
   }
   console.log("Docs: https://vilfredsikker.github.io/easy-review/guide/mcp.html\n");
 
-  rl?.close();
+  closePrompt(prompt);
   return { bundleDir, installed, skipped, skills: selectedSkills };
 }
 
@@ -363,10 +408,13 @@ function install(options = {}) {
 module.exports = {
   AGENTS,
   ask,
+  closePrompt,
+  createPrompt,
   ensureBundle,
   install,
   installRoot,
   installToTargets,
+  isInteractive,
   listSkills,
   parseIndexedPick,
   resolveAgents,
