@@ -1,0 +1,50 @@
+{
+  "name": "@easy-review/skills",
+  "version": "0.4.8",
+  "description": "Install Easy Review agent skills (er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved) for Cursor, Claude Code, and Codex.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/VilfredSikker/easy-review.git",
+    "directory": "npm/skills"
+  },
+  "homepage": "https://vilfredsikker.github.io/easy-review/guide/mcp.html",
+  "bugs": {
+    "url": "https://github.com/VilfredSikker/easy-review/issues"
+  },
+  "keywords": [
+    "easy-review",
+    "skills",
+    "cursor",
+    "claude-code",
+    "codex",
+    "code-review",
+    "mcp",
+    "agent"
+  ],
+  "bin": {
+    "easy-review-skills": "./bin/easy-review-skills.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "skills/",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "skills": "^1.5.22"
+  },
+  "scripts": {
+    "prepare": "node scripts/sync-skills.js",
+    "prepack": "node scripts/sync-skills.js",
+    "test": "node --test lib/*.test.js scripts/*.test.js",
+    "start": "node ./bin/easy-review-skills.js --list"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

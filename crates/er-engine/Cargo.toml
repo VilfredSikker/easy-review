@@ -2,6 +2,7 @@
 name = "er-engine"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "UI-agnostic engine for easy-review (git diffs, watching, AI sidecars, GitHub)"
 

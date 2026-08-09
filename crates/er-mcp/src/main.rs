@@ -1,6 +1,8 @@
 //! Easy Review MCP — triage open PRs from Cursor / Claude / other MCP clients.
 //!
-//! Transport: stdio (JSON-RPC). Logging goes to stderr so it does not corrupt the protocol.
+//! Transport: stdio (JSON-RPC). Speaks MCP **2026-07-28** (stateless discover) and
+//! older initialize-based revisions via `rmcp` 3.x. Logging goes to stderr so it
+//! does not corrupt the protocol.
 
 mod projects;
 mod server;

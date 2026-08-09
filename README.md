@@ -29,7 +29,7 @@ cd easy-review
 cargo install --path crates/er-tui
 ```
 
-Requires Rust 1.85+.
+Requires Rust 1.88+.
 
 ## Desktop app
 
@@ -39,7 +39,7 @@ As of **v0.4.0**, prebuilt Apple Silicon `.dmg` bundles are published on the [Re
 
 Intel Macs, Linux, and Windows aren't packaged yet — build from source instead.
 
-**Prerequisites:** [Rust 1.85+](https://rustup.rs), the Tauri CLI (`cargo install tauri-cli --locked`), and [bun](https://bun.sh) for the frontend. On Linux you'll also need the [WebKitGTK build dependencies](https://v2.tauri.app/start/prerequisites/#linux). The scripts below check for these and `bun install` the frontend on first run.
+**Prerequisites:** [Rust 1.88+](https://rustup.rs), the Tauri CLI (`cargo install tauri-cli --locked`), and [bun](https://bun.sh) for the frontend. On Linux you'll also need the [WebKitGTK build dependencies](https://v2.tauri.app/start/prerequisites/#linux). The scripts below check for these and `bun install` the frontend on first run.
 
 ```bash
 git clone https://github.com/VilfredSikker/easy-review.git
@@ -60,19 +60,19 @@ low-hanging fruit, production-only diff line counts, and client-owned AI sidecar
 (also in-repo: [`docs/guide/mcp.html`](docs/guide/mcp.html)) — `claude mcp add` / `codex mcp add`, Cursor `mcp.json`, and OpenCode `opencode.json`.
 
 ```bash
+# Agent skills — installs all ER skills globally
+bunx @easy-review/skills
+# or: npx @easy-review/skills -s er-review
+
 # MCP via npm
 npx -y easy-review-mcp
-
-# Agent skill ("ER review") — same as: npx skills add github/gh-stack
-npx skills add VilfredSikker/easy-review -s er-review -g
 
 # Or build MCP from source
 cargo install --path crates/er-mcp
 ```
 
 Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
-npm launcher: [`npm/er-mcp`](npm/er-mcp).
-Skill: [`skills/er-review/SKILL.md`](skills/er-review/SKILL.md).
+Skills: [`skills/er-review/`](skills/er-review/) and [`skills/_shared/`](skills/_shared/).
 
 ## Documentation
 

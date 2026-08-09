@@ -1,195 +1,103 @@
 # er-mcp — Easy Review MCP server
 
-Stdio [Model Context Protocol](https://modelcontextprotocol.io) server for PR triage.
-Ask an MCP client things like:
+Stdio [Model Context Protocol](https://modelcontextprotocol.io) server (MCP **2026-07-28**).
+Thin REST API over `er-engine` — use **skills** for workflows.
 
-- “Give me the top 5 priority PRs to review”
-- “Show me the smallest / low-hanging-fruit PRs”
-- “How many production lines changed in PR #42?” (excludes tests, Storybook, generated, docs)
-- “Which open PRs are outdated, blocked, failing CI, or waiting on the author?”
-- “What’s my review debt?” / “Any stale PRs?” / “Already addressed feedback?”
-- “Priority across all my Easy Review projects”
-- “Prepare a review kit for PR #42 — I’ll write triage/tour and upload them”
-
-Uses the authenticated `gh` CLI (same as Easy Review desktop/TUI). Optionally reads
-`~/.config/er/projects.json` so you can omit `repo=` when a project is configured.
-
-## Tools
+## MCP tools (11)
 
 | Tool | Purpose |
 |------|---------|
-| `list_projects` | Easy Review projects (id, name, remote) |
-| `list_prs` | Open PRs with size, review decision, merge state |
-| `priority_prs` | Ranked “review next” queue |
-| `low_hanging_fruit` | Smallest open PRs (defaults to production-only line enrichment) |
-| `cross_repo_queue` | Priority queue across all configured projects |
-| `my_review_debt` | Requested of you; you have not approved / requested changes |
-| `pr_diff_stats` | Adds/dels split by production / test / storybook / generated / docs |
-| `diff_hotspots` | Top production files by churn in a PR |
-| `compare_prod_size` | Rank a list of PR numbers by production-only lines |
-| `prs_by_status` | Filter: `ready_to_review`, `outdated`, `blocked_conflicts`, `waiting_on_author`, … |
-| `prs_stale` | No GitHub activity for N days (default 14) |
-| `prs_blocked` | Conflicts, `mergeStateStatus=BLOCKED`, or failing CI |
-| `prs_failing_ci` | Failing `gh pr checks` |
-| `prs_already_addressed` | All review threads resolved or outdated |
-| `prepare_review` | Write shared `diff-tmp`, return `diff_hash` + prompts |
-| `get_artifact_specs` | JSON Schema + examples + prompts for triage/review/tour (no PR needed) |
-| `upload_artifacts` | Validate + write `triage` / `review` / `tour` JSON you produced |
-| `pin_pr` | Pin a PR into Desktop Saved PRs (`projects.json`) |
-| `unpin_pr` | Remove a PR from Desktop Saved |
-| `list_pinned_prs` | List Saved PRs + which sidecars exist |
-| `list_artifacts` | Scan managed storage for uploaded triage/review/tour (marks `pinned`) |
-| `summarize_triage` | Local managed `triage.json` / `review.json` / `tour.json` summary |
-| `open_in_easy_review` | GitHub URL + desktop/TUI open instructions |
-| `tool_ideas` | Catalog of shipped + future tools |
+| `projects_list` | Easy Review projects (`~/.config/er/projects.json`) |
+| `pr_resolve` | `ref` → owner, repo, number, `pr_url`, `bucket_path` |
+| `prs_query` | List/rank/filter open PRs (`sort`, `filter`, `cross_repo`) |
+| `pr_stats` | Production vs test/docs diff stats; batch + hotspots |
+| `pr_guide` | Prepare + upload guided tour (`tour.json`) |
+| `pr_prepare` | Fetch diff, write `diff-tmp`, return `diff_hash` + specs |
+| `pr_upload` | Validate + write triage/review/tour sidecars |
+| `pr_summarize` | Read triage/review/tour summary from managed storage |
+| `pr_feedback_get` | Questions, notes, AI findings |
+| `pr_feedback_reply` | Reply (`type`: question \| note \| finding) |
+| `pr_saved` | Pin / unpin / list saved PRs and artifacts |
 
-## AI sidecars (client-owned)
+## Universal `ref` targeting
 
-The MCP client agent **is** the reviewer. Easy Review prepares storage and
-validates uploads — it does not spawn agent CLIs.
+Every PR-scoped tool accepts **`ref`** (preferred) or `pr_url` / `repo` + `number`:
 
-1. `prepare_review` — fetches the PR diff via `gh`, writes `diff-tmp` into the
-   managed PR bucket, returns `diff_hash`, `diff_tmp_path`, and `artifact_specs`
-   (schemas/examples/prompts — the same payload as `get_artifact_specs`). Do **not**
-   also call `get_artifact_specs` in the same review run.
-   Managed path (sandbox **read-only** — read `diff-tmp`, write nothing here):
-   - macOS: `~/Library/Application Support/easy-review/repos/<owner-repo>/prs/pr-<N>/`
-   - Linux: `~/.local/share/easy-review/repos/<owner-repo>/prs/pr-<N>/`
-2. You read `diff_tmp_path`, produce the sidecars (embed that exact `diff_hash`).
-   Author file contents once, inline in `upload_artifacts`.
-3. `upload_artifacts` — atomic write + schema/`diff_hash` validation.
-4. `summarize_triage` or open the PR in Desktop/TUI — sidecars are shared.
-5. Optionally `pin_pr` so the PR appears in Desktop Saved and `list_pinned_prs`.
+| `ref` | Example |
+|-------|---------|
+| PR URL | `https://github.com/acme/widgets/pull/42` |
+| Worktree path | `/Users/me/Projects/foo` |
+| `owner/repo#N` | `acme/widgets#42` |
+| `owner/repo` | `vilfred/ai-report-builder` (ER project → open PR in checkout) |
+| Branch | `feature/auth` |
+| Number | `42` (with active ER project) |
 
-Call `get_artifact_specs` alone only when you are not preparing a PR (offline authoring,
-schema inspection).
+Call `pr_resolve` first when ambiguous.
+
+## Skills (workflows)
+
+Install with **`bunx @easy-review/skills`** (or `npx @easy-review/skills`):
+
+| Skill | Intent |
+|-------|--------|
+| `er-review` | Prepare → author → upload sidecars |
+| `er-guide` | Guided tour only (`tour.json`) |
+| `er-queue` | What to review next (priority, debt, blocked, stale) |
+| `er-low-hanging-fruit` | Smallest / quick-win PRs |
+| `er-get-feedback` | Read questions, notes, findings |
+| `er-respond` | Reply on PR threads |
+| `er-saved` | Pin / list saved work |
+
+One skill: `bunx @easy-review/skills -s er-review`. Source: [`skills/`](../../skills/).
+
+Guided tour:
 
 ```text
-prepare_review     → { "number": 42, "kinds": ["triage", "tour"] }
-# …you write the JSON per artifact_specs…
-upload_artifacts   → { "number": 42, "kind": "tour", "files": { "tour.json": "..." } }
-pin_pr             → { "number": 42 }
-list_artifacts     → { "kinds": ["tour"] }   # discover uploaded sidecars
-summarize_triage   → { "number": 42 }
+pr_guide     → { "ref": "…", "action": "prepare" }
+pr_guide     → { "ref": "…", "action": "upload", "files": { "tour.json": "..." } }
 ```
 
-**Review uploads** need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
+Full review flow:
 
-`upload_artifacts` validates serde deserialization + matching `diff_hash` **before** writing.
-It does **not** enforce the full JSON Schema — use `prepare_review`'s `artifact_specs`
-(or `get_artifact_specs` when used alone) as the authoring contract.
+```text
+pr_prepare   → { "ref": "…", "kinds": ["triage"] }
+# …author JSON per artifact_specs…
+pr_upload    → { "ref": "…", "kind": "triage", "files": { "triage.json": "..." } }
+pr_summarize → { "ref": "…" }
+```
+
+Guided tours use **`pr_guide`** (not `pr_prepare` / `pr_upload`). See `er-guide` skill.
+
+Review uploads need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
+
+## `prs_query` reference
+
+```json
+{
+  "sort": "priority | smallest | updated",
+  "filter": "review_debt | stale | blocked | failing_ci | ready | addressed | …",
+  "cross_repo": false,
+  "production_lines": false,
+  "limit": 10,
+  "scan_limit": 15,
+  "stale_days": 14
+}
+```
 
 ## Build / run
 
 ```bash
-# npm launcher (downloads the release binary on first run)
 npx -y easy-review-mcp
-
-# From source
 cargo build -p er-mcp --release
-# binary: target/release/er-mcp
-
 cargo install --path crates/er-mcp
-# → ~/.cargo/bin/er-mcp
 ```
 
 Requires `gh auth login`.
 
-## Client setup (Claude / Cursor / Codex / OpenCode)
-
-Full guide with **`mcp.json`**, **`claude mcp add`**, **`codex mcp add`**, and OpenCode
-**`opencode.json`**:
-[docs/guide/mcp.html](../../docs/guide/mcp.html)
-([published](https://vilfredsikker.github.io/easy-review/guide/mcp.html)).
-
-npm launcher (package: [`npm/er-mcp`](../../npm/er-mcp)):
-
-```bash
-# Claude Code
-claude mcp add --scope user easy-review -- npx -y easy-review-mcp
-
-# Codex
-codex mcp add easy-review -- npx -y easy-review-mcp
-```
-
-Cursor — `~/.cursor/mcp.json` or `.cursor/mcp.json`:
-
-```json
-{
-  "mcpServers": {
-    "easy-review": {
-      "command": "npx",
-      "args": ["-y", "easy-review-mcp"]
-    }
-  }
-}
-```
-
-OpenCode — `~/.config/opencode/opencode.json` or project `opencode.json`:
-
-```json
-{
-  "$schema": "https://opencode.ai/config.json",
-  "mcp": {
-    "easy-review": {
-      "type": "local",
-      "command": ["npx", "-y", "easy-review-mcp"],
-      "enabled": true
-    }
-  }
-}
-```
-
-Or point `command` at a source-built `/absolute/path/to/er-mcp`.
-
-### Agent skill (“ER review”)
-
-Install the companion skill so agents know to call `prepare_review` → author →
-`upload_artifacts` when you say **“ER review”** (same as `npx skills add github/gh-stack`):
-
-```bash
-npx skills add VilfredSikker/easy-review -s er-review -g   # global; prompts for agents
-npx skills add VilfredSikker/easy-review -s er-review      # project
-npx skills add VilfredSikker/easy-review -s er-review -g -a cursor -y
-```
-
-Skill source: [`skills/er-review/SKILL.md`](../../skills/er-review/SKILL.md).
-
-## Example calls
-
-```text
-priority_prs              → { "limit": 5, "repo": "acme/widgets" }
-low_hanging_fruit         → { "limit": 5 }
-my_review_debt            → {}
-prs_stale                 → { "days": 14 }
-prs_blocked               → { "scan_limit": 20 }
-prs_already_addressed     → { "scan_limit": 15 }
-cross_repo_queue          → { "limit": 10 }
-pr_diff_stats             → { "number": 42 }
-diff_hotspots             → { "number": 42, "limit": 10 }
-compare_prod_size         → { "numbers": [12, 15, 18] }
-prepare_review            → { "number": 42, "kinds": ["tour"] }
-get_artifact_specs        → { "kinds": ["tour", "triage"] }
-upload_artifacts          → { "number": 42, "kind": "tour", "files": { "tour.json": "{...}" } }
-pin_pr                    → { "number": 42 }
-list_pinned_prs           → {}
-list_artifacts            → { "kinds": ["triage", "tour"], "limit": 20 }
-summarize_triage          → { "number": 42 }
-open_in_easy_review       → { "number": 42 }
-```
+Setup: [docs/guide/mcp.html](../../docs/guide/mcp.html).
 
 ## Architecture
 
-- Pure ranking / file classification live in `er-engine` (`review_queue`, `git::file_kind`, `git::diff_stats`, `sidecar_summary`).
-- Client-owned uploads live in `er-engine::sidecar_upload` (prepare kit + validated write).
-- JSON Schema + prompt contracts live in `er-engine::sidecar_specs` (`get_artifact_specs`).
-- Desktop Saved pins live in `er-engine::projects_pins` (Value-preserving `projects.json` writes).
-- `er-mcp` is a thin `rmcp` stdio wrapper over those APIs.
-
-## Notes
-
-- `prs_failing_ci` / `prs_blocked` / `prs_already_addressed` fetch per-PR metadata — use `scan_limit` (capped at 20) to bound cost; enrichments run in parallel.
-- `compare_prod_size` caps at 12 PRs and fetches diffs in parallel.
-- `prepare_review` + `upload_artifacts` share storage with Desktop without touching `agent_slots`.
-- `open_in_easy_review` returns instructions; there is no `er://` deep-link handler yet.
-- Production line counts exclude paths classified as test, Storybook, generated/lock, or docs.
+- Ranking, diff stats, sidecar I/O live in `er-engine`.
+- `pr_resolve` lives in `er-engine::pr_resolve`.
+- `er-mcp` is a thin `rmcp` stdio wrapper.

@@ -565,6 +565,64 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
     Some((number, base.to_string()))
 }
 
+/// Open PR number whose head branch matches `head` on `owner/repo` (first non-draft).
+pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result<Option<u64>> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            &format!("{owner}/{repo}"),
+            "--head",
+            head,
+            "--state",
+            "open",
+            "--limit",
+            "10",
+            "--json",
+            "number,isDraft",
+        ])
+        .output()
+        .map_err(gh_spawn_context)?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr list --head failed: {}", stderr.trim());
+    }
+
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_slice(&output.stdout).context("invalid gh pr list JSON")?;
+    let number = rows
+        .iter()
+        .find(|row| row.get("isDraft").and_then(|v| v.as_bool()) != Some(true))
+        .and_then(|row| row.get("number").and_then(|v| v.as_u64()));
+    Ok(number)
+}
+
+/// PR title via `gh pr view --repo` (returns `None` when `gh` fails).
+pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &number.to_string(),
+            "--repo",
+            &format!("{owner}/{repo}"),
+            "--json",
+            "title",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    value
+        .get("title")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+}
+
 /// Check if a string looks like a GitHub PR URL
 pub fn is_github_pr_url(s: &str) -> bool {
     parse_github_pr_url(s).is_some()
