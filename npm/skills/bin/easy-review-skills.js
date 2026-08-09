@@ -1,33 +1,38 @@
 #!/usr/bin/env node
 "use strict";
 
-const { install, listSkills, SKILL_DIRS } = require("../lib/install.js");
+const { runInstall, listSkills, SKILL_DIRS } = require("../lib/install.js");
 
 function printUsage() {
-  console.error(`@easy-review/skills — install Easy Review agent skills for Cursor, Claude Code, Codex, etc.
+  console.error(`@easy-review/skills — install Easy Review agent skills for Cursor, Claude Code, Codex
 
 Usage:
-  bunx @easy-review/skills              Install all ER skills globally (default)
-  bunx @easy-review/skills --list       List bundled skills
-  bunx @easy-review/skills -s er-review Install one skill
+  npx @easy-review/skills                 Interactive wizard (default in a TTY)
+  npx @easy-review/skills --yes           All agents, all skills, default paths
+  npx @easy-review/skills --list          List bundled skills
+  npx @easy-review/skills -s er-review    Install one skill (with --yes)
 
 Options:
-  -s, --skill <name>   Skill to install (${SKILL_DIRS.join(", ")}, or *)
-  -g, --global         Install globally (default)
-  -p, --project        Install project-local instead
-  -a, --agent <name>   Target agent (cursor, claude-code, codex, …)
-  -y, --yes            Skip prompts (default)
+  -s, --skill <names>  Skill id(s), comma-separated, or * (default: all)
+  -g, --global         Install under home dir agent paths (default)
+  -p, --project        Install under project-local agent paths
+  -a, --agent <ids>    Agent ids: cursor, claude-code, codex, all
+  -y, --yes            Non-interactive defaults
+  -f, --force          Overwrite existing skill folders
   -h, --help           Show this help
   -V, --version        Show version
 
-Also install the MCP server:
-  bunx easy-review-mcp   (or npx -y easy-review-mcp)
+Run from home if you're inside the monorepo package dir:
+  cd ~ && npx -y @easy-review/skills
+
+Pair with the MCP server:
+  npx -y easy-review-mcp
 
 Docs: https://vilfredsikker.github.io/easy-review/guide/mcp.html`);
 }
 
 function parseArgs(argv) {
-  const opts = { global: true, yes: true };
+  const opts = { global: true, yes: false };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     switch (arg) {
@@ -55,6 +60,10 @@ function parseArgs(argv) {
       case "--yes":
         opts.yes = true;
         break;
+      case "-f":
+      case "--force":
+        opts.force = true;
+        break;
       case "-s":
       case "--skill":
         opts.skill = argv[++i];
@@ -62,9 +71,6 @@ function parseArgs(argv) {
       case "-a":
       case "--agent":
         opts.agent = argv[++i];
-        break;
-      case "--copy":
-        opts.copy = true;
         break;
       default:
         if (arg.startsWith("-")) {
@@ -76,7 +82,7 @@ function parseArgs(argv) {
   return opts;
 }
 
-function main() {
+async function main() {
   let opts;
   try {
     opts = parseArgs(process.argv.slice(2));
@@ -103,11 +109,14 @@ function main() {
   }
 
   try {
-    install(opts);
+    await runInstall(opts);
   } catch (err) {
     console.error(`@easy-review/skills: ${err.message || err}`);
     process.exit(typeof err.code === "number" ? err.code : 1);
   }
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

@@ -5,12 +5,18 @@ Install [Easy Review](https://github.com/VilfredSikker/easy-review) agent skills
 ## Quick start
 
 ```bash
-cd ~ && npx -y @easy-review/skills
-# or
-bunx @easy-review/skills
+cd ~ && npx @easy-review/skills
 ```
 
-If you run this inside the monorepo `npm/skills` directory, use the home-directory form above so the launcher does not pick up local dev dependencies.
+The installer walks you through agents, skills, and install directories (like TechProfessor).
+
+Non-interactive (all agents, all skills, default paths):
+
+```bash
+npx -y @easy-review/skills
+```
+
+If you run this inside the monorepo `npm/skills` directory, use the home-directory form above.
 
 Install one skill:
 
@@ -45,10 +51,12 @@ bunx easy-review-mcp   # stdio MCP — see docs/guide/mcp.html
 ## Options
 
 ```
--g, --global     Install to user-level agent dirs (default)
--p, --project    Install project-local (.cursor/.claude/.codex skills dirs)
--s, --skill      Skill name or * (default: all)
--a, --agent      Agent id (cursor, claude-code, codex, all)
+-g, --global     Install under home agent dirs (default)
+-p, --project    Install under project-local agent dirs
+-s, --skill      Skill id(s), comma-separated, or *
+-a, --agent      Agent ids: cursor, claude-code, codex, all
+-y, --yes        Non-interactive: all agents/skills, default paths
+-f, --force      Overwrite existing skill folders
 ```
 
 ## Publish

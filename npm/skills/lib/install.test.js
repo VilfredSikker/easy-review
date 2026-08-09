@@ -9,8 +9,10 @@ const {
   install,
   installRoot,
   listSkills,
+  parseIndexedPick,
   resolveAgents,
   resolveSkills,
+  skillExists,
   SKILL_DIRS,
 } = require("./install.js");
 
@@ -27,6 +29,11 @@ describe("install", () => {
     assert.equal(agents[0].id, "claude-code");
   });
 
+  it("parses indexed picks", () => {
+    assert.equal(parseIndexedPick("a", 3), null);
+    assert.deepEqual(parseIndexedPick("1,3", 3), [1, 3]);
+  });
+
   it("copies skills into agent directories", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "er-skills-install-"));
     const prev = process.cwd();
@@ -36,10 +43,12 @@ describe("install", () => {
         global: false,
         agent: "cursor",
         skill: "er-review",
+        force: true,
       });
       assert.equal(installed.length, 1);
       const dest = path.join(root, ".cursor", "skills", "er-review", "SKILL.md");
       assert.ok(fs.existsSync(dest));
+      assert.ok(skillExists(path.join(root, ".cursor", "skills"), "er-review"));
       assert.ok(fs.readFileSync(dest, "utf8").includes("er-review"));
     } finally {
       process.chdir(prev);
