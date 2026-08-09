@@ -1,25 +1,27 @@
 # @easy-review/skills
 
-Install [Easy Review](https://github.com/VilfredSikker/easy-review) agent skills for Cursor, Claude Code, Codex, and other agents that support the [skills](https://www.npmjs.com/package/skills) installer.
+Install [Easy Review](https://github.com/VilfredSikker/easy-review) agent skills for Cursor, Claude Code, and Codex.
 
 ## Quick start
 
 ```bash
-bunx @easy-review/skills
+cd ~ && npx -y @easy-review/skills
 # or
-npx @easy-review/skills
+bunx @easy-review/skills
 ```
+
+If you run this inside the monorepo `npm/skills` directory, use the home-directory form above so the launcher does not pick up local dev dependencies.
 
 Install one skill:
 
 ```bash
-bunx @easy-review/skills -s er-review
+npx -y @easy-review/skills -s er-review
 ```
 
 List bundled skills:
 
 ```bash
-bunx @easy-review/skills --list
+npx -y @easy-review/skills --list
 ```
 
 ## Bundled skills
@@ -44,9 +46,9 @@ bunx easy-review-mcp   # stdio MCP — see docs/guide/mcp.html
 
 ```
 -g, --global     Install to user-level agent dirs (default)
--p, --project    Install project-local
+-p, --project    Install project-local (.cursor/.claude/.codex skills dirs)
 -s, --skill      Skill name or * (default: all)
--a, --agent      Agent id (cursor, claude-code, codex, …)
+-a, --agent      Agent id (cursor, claude-code, codex, all)
 ```
 
 ## Publish
