@@ -1,5 +1,7 @@
-//! MCP tool surface for Easy Review PR triage.
+//! MCP tool surface for Easy Review — thin REST API over er-engine.
 
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use er_engine::git::ProdDiffStats;
@@ -7,19 +9,19 @@ use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
     gh_pr_thread_addressing_remote,
 };
+use er_engine::pr_review_feedback::{
+    get_pr_review_feedback, reply_to_pr_finding, reply_to_pr_note, reply_to_pr_question,
+};
 use er_engine::projects_pins::{self, PinnedPr};
 use er_engine::review_queue::{
     filter_blocked, filter_by_status, filter_failing_ci, filter_review_debt, filter_stale,
-    open_in_easy_review, rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr,
-    ReviewStatus,
+    rank_low_hanging, rank_priority, score_pr, QueuePr, RankedPr, ReviewStatus,
 };
-use er_engine::sidecar_specs::{artifact_specs, artifact_specs_for_dir};
+use er_engine::sidecar_specs::artifact_specs_for_dir;
 use er_engine::sidecar_summary::{list_repo_pr_artifacts, present_kinds, summarize_pr_sidecars};
 use er_engine::sidecar_upload::{
     prepare_review_kit, upload_pr_artifacts, SidecarKind, UploadArtifactsRequest,
 };
-use std::borrow::Cow;
-
 use rmcp::{
     handler::server::{router::tool::ToolRouter, wrapper::Parameters},
     model::*,
@@ -29,200 +31,152 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::projects::{self, resolve_repo};
+use crate::projects::{self, PrTargetInput, ResolvedPr};
 
 #[derive(Clone)]
 pub struct ErMcp {
-    /// Kept so callers can compose routers; `#[tool_handler]` uses `Self::tool_router()`.
     #[allow(dead_code)]
     tool_router: ToolRouter<Self>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct RepoArgs {
-    /// GitHub `owner/repo` (or URL). Defaults to the active Easy Review project remote.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct PrRefFields {
+    /// Universal ref: PR URL, worktree path, `owner/repo`, `owner/repo#N`, branch name, or bare PR number.
+    #[serde(default)]
+    pub r#ref: Option<String>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
     #[serde(default)]
     pub repo: Option<String>,
-    /// Easy Review project id from `~/.config/er/projects.json`.
     #[serde(default)]
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub number: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct LimitRepoArgs {
+pub struct PrResolveArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrsQueryArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
     #[serde(default)]
-    pub repo: Option<String>,
+    pub cross_repo: Option<bool>,
+    /// `priority` | `smallest` | `updated` (default `priority`).
     #[serde(default)]
-    pub project_id: Option<String>,
-    /// Max PRs to return (default 5, max 50).
+    pub sort: Option<String>,
+    /// `review_debt` | `stale` | `blocked` | `failing_ci` | `ready` | `outdated` |
+    /// `waiting_on_author` | `addressed` | `draft` | `approved` | `merge_ready`.
     #[serde(default)]
-    pub limit: Option<u32>,
-    /// When true, enrich candidates with production-only line counts (slower: fetches diffs).
+    pub filter: Option<String>,
+    #[serde(default)]
+    pub stale_days: Option<u32>,
     #[serde(default)]
     pub production_lines: Option<bool>,
-    /// Include draft PRs (default false for low-hanging fruit).
     #[serde(default)]
     pub include_drafts: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct StaleArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// Days without GitHub activity (default 14).
-    #[serde(default)]
-    pub days: Option<u32>,
     #[serde(default)]
     pub limit: Option<u32>,
+    #[serde(default)]
+    pub scan_limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct DiffStatsArgs {
+pub struct PrStatsArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// Compare multiple PR numbers in one repo (max 12). When set, `target.number` is ignored.
     #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// PR number.
-    pub number: u64,
-    /// Include per-file breakdown (default false).
+    pub numbers: Option<Vec<u64>>,
     #[serde(default)]
     pub include_files: Option<bool>,
+    #[serde(default)]
+    pub include_hotspots: Option<bool>,
+    #[serde(default)]
+    pub hotspot_limit: Option<u32>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct StatusFilterArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// One of: ready_to_review, draft, outdated, blocked_conflicts, waiting_on_author, approved, merge_ready, inactive
-    pub status: String,
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct PrNumberArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    pub number: u64,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct HotspotsArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    pub number: u64,
-    /// Max production files to return (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CompareProdArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// PR numbers to compare.
-    pub numbers: Vec<u64>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct PrepareReviewArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    pub number: u64,
-    /// Artifact kinds to prepare prompts for. Default: triage, review, tour.
-    /// Allowed: triage, review, tour.
+pub struct PrPrepareArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
     #[serde(default)]
     pub kinds: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct UploadArtifactsArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    pub number: u64,
-    /// One of: triage, review, tour.
+pub struct PrUploadArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
     pub kind: String,
-    /// Map of relative filename → file contents (e.g. `{"tour.json": "{...}"}`).
-    pub files: std::collections::BTreeMap<String, String>,
-    /// Re-fetch PR diff before validating (default false — reuse prepare_review's diff-tmp).
+    pub files: BTreeMap<String, String>,
     #[serde(default)]
     pub refresh_diff: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct ArtifactSpecsArgs {
-    /// Artifact kinds to return. Default: triage, review, tour.
-    /// Allowed: triage, review, tour.
+pub struct PrGuideArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `prepare` (default) fetches diff + tour spec; `upload` writes tour.json.
     #[serde(default)]
-    pub kinds: Option<Vec<String>>,
+    pub action: Option<String>,
+    /// Required for `upload`: `{ "tour.json": "..." }`.
+    #[serde(default)]
+    pub files: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub refresh_diff: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
-pub struct PinPrArgs {
+pub struct PrSummarizeArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrFeedbackGetArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
     #[serde(default)]
-    pub repo: Option<String>,
+    pub include_resolved: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrFeedbackReplyArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `question` | `note` | `finding`.
+    pub r#type: String,
+    pub id: String,
+    pub text: String,
     #[serde(default)]
-    pub project_id: Option<String>,
-    /// PR number to pin into Desktop Saved PRs.
-    pub number: u64,
-    /// Optional title (fetched via `gh` when omitted).
+    pub author: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrSavedArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `pin` | `unpin` | `list`.
+    pub action: String,
+    /// For `list`: `pinned` | `artifacts` | `all` (default `all`).
+    #[serde(default)]
+    pub source: Option<String>,
+    #[serde(default)]
+    pub kinds: Option<Vec<String>>,
     #[serde(default)]
     pub title: Option<String>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ListArtifactsArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    /// Optional kind filter (any-of): triage, review, tour.
-    #[serde(default)]
-    pub kinds: Option<Vec<String>>,
-    /// Max PRs to return (default 50, max 50).
     #[serde(default)]
     pub limit: Option<u32>,
 }
 
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CrossRepoArgs {
-    /// Max PRs to return across all projects (default 10).
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Enrich with production-only lines (slower).
-    #[serde(default)]
-    pub production_lines: Option<bool>,
-}
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct ScanLimitArgs {
-    #[serde(default)]
-    pub repo: Option<String>,
-    #[serde(default)]
-    pub project_id: Option<String>,
-    #[serde(default)]
-    pub limit: Option<u32>,
-    /// Max open PRs to scan for expensive enrichments (default 20, max 40).
-    #[serde(default)]
-    pub scan_limit: Option<u32>,
-}
-
-fn clamp_limit(limit: Option<u32>, default: u32) -> usize {
-    limit.unwrap_or(default).clamp(1, 50) as usize
+fn clamp_limit(limit: Option<u32>, default: u32, max: u32) -> usize {
+    limit.unwrap_or(default).clamp(1, max) as usize
 }
 
 fn now_epoch_secs() -> i64 {
@@ -242,28 +196,47 @@ fn tool_err(msg: impl Into<String>) -> McpError {
     McpError::invalid_params(msg.into(), None)
 }
 
-/// Best-effort PR title via `gh pr view --json title`.
-fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
-    let output = std::process::Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &format!("{owner}/{repo}"),
-            "--json",
-            "title",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+fn target_input(target: &PrRefFields) -> PrTargetInput<'_> {
+    PrTargetInput {
+        ref_str: target.r#ref.as_deref(),
+        pr_url: target.pr_url.as_deref(),
+        repo: target.repo.as_deref(),
+        project_id: target.project_id.as_deref(),
+        number: target.number,
     }
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    value
-        .get("title")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+}
+
+fn resolve_target(target: &PrRefFields) -> Result<ResolvedPr, McpError> {
+    projects::resolve_pr_target(&target_input(target)).map_err(|e| tool_err(e.to_string()))
+}
+
+/// Repo slug for queue/list tools: explicit `repo`, or `ref` when it names a repo (`owner/repo`).
+fn query_repo_args(target: &PrRefFields) -> (Option<&str>, Option<&str>) {
+    if target.repo.as_deref().is_some_and(|s| !s.trim().is_empty()) {
+        return (target.repo.as_deref(), target.project_id.as_deref());
+    }
+    let Some(raw) = target
+        .r#ref
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    else {
+        return (None, target.project_id.as_deref());
+    };
+    if let Some((left, _)) = raw.split_once('#').or_else(|| raw.split_once('!')) {
+        return (Some(left), target.project_id.as_deref());
+    }
+    if er_engine::github::parse_github_pr_url(raw).is_some() {
+        return (None, target.project_id.as_deref());
+    }
+    if raw.contains('/') && !raw.starts_with('/') && !raw.starts_with('~') {
+        return (Some(raw), target.project_id.as_deref());
+    }
+    (None, target.project_id.as_deref())
+}
+
+fn fetch_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
+    er_engine::github::gh_pr_title(owner, repo, number)
 }
 
 fn pinned_sidecar_json(
@@ -288,8 +261,7 @@ async fn load_queue(
     project_id: Option<&str>,
 ) -> Result<(String, String, Option<String>, Vec<QueuePr>), McpError> {
     let (owner, name, project_name) =
-        resolve_repo(repo, project_id).map_err(|e| tool_err(e.to_string()))?;
-
+        projects::resolve_repo(repo, project_id).map_err(|e| tool_err(e.to_string()))?;
     let prs = tokio::task::spawn_blocking({
         let owner = owner.clone();
         let name = name.clone();
@@ -298,7 +270,6 @@ async fn load_queue(
     .await
     .map_err(|e| McpError::internal_error(e.to_string(), None))?
     .map_err(|e| tool_err(e.to_string()))?;
-
     Ok((owner, name, project_name, prs))
 }
 
@@ -316,7 +287,6 @@ async fn enrich_production_lines(owner: &str, repo: &str, prs: &mut [QueuePr], m
             )
         })
         .collect();
-
     let mut by_number = std::collections::HashMap::new();
     for (number, handle) in jobs {
         if let Ok(Ok(stats)) = handle.await {
@@ -346,7 +316,6 @@ async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usi
             )
         })
         .collect();
-
     let mut by_number = std::collections::HashMap::new();
     for (number, handle) in jobs {
         if let Ok(state) = handle.await {
@@ -360,12 +329,254 @@ async fn enrich_ci(owner: &str, repo: &str, prs: &mut [QueuePr], max_enrich: usi
     }
 }
 
+fn parse_status_filter(filter: &str) -> Result<ReviewStatus, McpError> {
+    match filter.trim().to_ascii_lowercase().as_str() {
+        "ready" | "ready_to_review" => Ok(ReviewStatus::ReadyToReview),
+        "draft" => Ok(ReviewStatus::Draft),
+        "outdated" | "behind" => Ok(ReviewStatus::Outdated),
+        "blocked_conflicts" | "conflicts" => Ok(ReviewStatus::BlockedConflicts),
+        "waiting_on_author" | "changes_requested" => Ok(ReviewStatus::WaitingOnAuthor),
+        "approved" => Ok(ReviewStatus::Approved),
+        "merge_ready" | "ready_to_merge" => Ok(ReviewStatus::MergeReady),
+        "inactive" | "closed" | "merged" => Ok(ReviewStatus::Inactive),
+        other => Err(tool_err(format!(
+            "unknown filter status '{other}'; use review_debt|stale|blocked|failing_ci|ready|outdated|waiting_on_author|addressed|draft|approved|merge_ready"
+        ))),
+    }
+}
+
+fn parse_kind(s: &str) -> Result<SidecarKind, McpError> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "triage" => Ok(SidecarKind::Triage),
+        "review" => Ok(SidecarKind::Review),
+        "tour" => Ok(SidecarKind::Tour),
+        other => Err(tool_err(format!(
+            "unknown kind '{other}'; expected triage|review|tour"
+        ))),
+    }
+}
+
+fn parse_prepare_kinds(kinds: Option<Vec<String>>) -> Result<Vec<SidecarKind>, McpError> {
+    let parsed: Vec<SidecarKind> = match kinds {
+        None => vec![SidecarKind::Triage],
+        Some(list) if list.is_empty() => return Err(tool_err("kinds must not be empty")),
+        Some(list) => list
+            .iter()
+            .map(|s| parse_kind(s))
+            .collect::<Result<_, _>>()?,
+    };
+    if parsed.contains(&SidecarKind::Tour) {
+        return Err(tool_err(
+            "tour uses pr_guide — omit tour from pr_prepare kinds",
+        ));
+    }
+    Ok(parsed)
+}
+
+async fn prepare_kit_json(
+    pr: &ResolvedPr,
+    kinds: &[SidecarKind],
+    note: &str,
+) -> Result<serde_json::Value, McpError> {
+    let kinds_vec = kinds.to_vec();
+    let kinds_for_specs = kinds.to_vec();
+    let owner = pr.owner.clone();
+    let name = pr.repo.clone();
+    let number = pr.number;
+
+    let kit = tokio::task::spawn_blocking(move || {
+        prepare_review_kit(&owner, &name, number, &kinds_vec, &[])
+    })
+    .await
+    .map_err(|e| McpError::internal_error(e.to_string(), None))?
+    .map_err(|e| tool_err(e.to_string()))?;
+
+    let specs = artifact_specs_for_dir(&kinds_for_specs, &kit.er_dir, &kit.base_ref, &kit.head_ref);
+    let mut kit = kit;
+    for artifact in &mut kit.artifacts {
+        artifact.prompt.clear();
+    }
+
+    Ok(json!({
+        "project": pr.project_name,
+        "repo": format!("{}/{}", pr.owner, pr.repo),
+        "number": pr.number,
+        "bucket_path": pr.bucket_path,
+        "pr_url": pr.pr_url,
+        "kit": kit,
+        "artifact_specs": specs,
+        "note": note,
+    }))
+}
+
 #[derive(Serialize)]
 struct TaggedRankedPr<'a> {
     project: Option<&'a str>,
     repo: String,
     #[serde(flatten)]
     ranked: RankedPr,
+}
+
+async fn query_single_repo(args: &PrsQueryArgs) -> Result<serde_json::Value, McpError> {
+    let limit = clamp_limit(args.limit, 10, 50);
+    let scan = clamp_limit(args.scan_limit, 15, 20);
+    let sort = args
+        .sort
+        .as_deref()
+        .unwrap_or("priority")
+        .to_ascii_lowercase();
+    let filter = args.filter.as_deref().map(|s| s.to_ascii_lowercase());
+
+    let (repo, project_id) = query_repo_args(&args.target);
+    let (owner, name, project_name, mut prs) = load_queue(repo, project_id).await?;
+
+    let needs_ci = matches!(filter.as_deref(), Some("blocked") | Some("failing_ci"));
+    if needs_ci {
+        let n = prs.len().min(scan);
+        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
+    }
+
+    if args.production_lines.unwrap_or(false)
+        || sort == "smallest"
+        || filter.as_deref() == Some("blocked")
+    {
+        let window = prs.len().min(if sort == "smallest" {
+            25
+        } else {
+            scan.max(limit)
+        });
+        enrich_production_lines(&owner, &name, &mut prs[..window], window).await;
+    }
+
+    let ranked: Vec<RankedPr> = match filter.as_deref() {
+        Some("review_debt") => filter_review_debt(&prs, limit),
+        Some("stale") => {
+            let days = args.stale_days.unwrap_or(14).clamp(1, 365) as u64;
+            filter_stale(&prs, days, now_epoch_secs(), limit)
+        }
+        Some("blocked") => filter_blocked(&prs, limit),
+        Some("failing_ci") => filter_failing_ci(&prs, limit),
+        Some("addressed") => filter_addressed(&owner, &name, &prs, scan, limit).await?,
+        Some(f) => {
+            let status = parse_status_filter(f)?;
+            let mut rows = filter_by_status(&prs, status);
+            rows.truncate(limit);
+            rows
+        }
+        None => match sort.as_str() {
+            "smallest" => rank_low_hanging(&prs, limit, args.include_drafts.unwrap_or(false)),
+            "updated" => {
+                let mut scored: Vec<_> = prs.iter().map(score_pr).collect();
+                scored.sort_by(|a, b| b.pr.updated_at.cmp(&a.pr.updated_at));
+                scored.truncate(limit);
+                scored
+            }
+            _ => rank_priority(&prs, limit),
+        },
+    };
+
+    Ok(json!({
+        "repo": format!("{owner}/{name}"),
+        "project": project_name,
+        "sort": sort,
+        "filter": filter,
+        "count": ranked.len(),
+        "prs": ranked,
+    }))
+}
+
+async fn filter_addressed(
+    owner: &str,
+    name: &str,
+    prs: &[QueuePr],
+    scan: usize,
+    limit: usize,
+) -> Result<Vec<RankedPr>, McpError> {
+    let mut out = Vec::new();
+    for pr in prs
+        .iter()
+        .filter(|p| p.state.eq_ignore_ascii_case("OPEN"))
+        .take(scan)
+    {
+        let owner_c = owner.to_string();
+        let name_c = name.to_string();
+        let number = pr.number;
+        let summary = tokio::task::spawn_blocking(move || {
+            gh_pr_thread_addressing_remote(&owner_c, &name_c, number).unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
+        if summary.all_addressed {
+            let mut ranked = score_pr(pr);
+            ranked.reasons.push(format!(
+                "threads addressed: {} resolved, {} outdated, {} open",
+                summary.resolved, summary.outdated, summary.open
+            ));
+            out.push(ranked);
+        }
+        if out.len() >= limit {
+            break;
+        }
+    }
+    Ok(out)
+}
+
+async fn query_cross_repo(args: &PrsQueryArgs) -> Result<serde_json::Value, McpError> {
+    let limit = clamp_limit(args.limit, 10, 50);
+    let file = projects::load_projects();
+    let mut tagged: Vec<TaggedRankedPr<'_>> = Vec::new();
+    let mut batches: Vec<(String, String, String, Vec<QueuePr>)> = Vec::new();
+
+    let mut list_jobs = Vec::new();
+    for project in &file.projects {
+        let Some(remote) = project.remote.as_deref() else {
+            continue;
+        };
+        let Ok((owner, name)) = projects::parse_repo_slug(remote) else {
+            continue;
+        };
+        let project_name = project.name.clone();
+        list_jobs.push((
+            project_name,
+            owner.clone(),
+            name.clone(),
+            tokio::task::spawn_blocking(move || gh_pr_list_queue(&owner, &name, "open", 50)),
+        ));
+    }
+    for (project_name, owner, name, handle) in list_jobs {
+        let prs = handle.await.ok().and_then(|r| r.ok()).unwrap_or_default();
+        batches.push((project_name, owner, name, prs));
+    }
+
+    if args.production_lines.unwrap_or(false) {
+        for (_, owner, name, prs) in &mut batches {
+            let window = prs.len().min(10);
+            enrich_production_lines(owner, name, &mut prs[..window], window).await;
+        }
+    }
+
+    for (project_name, owner, name, prs) in &batches {
+        for pr in prs {
+            tagged.push(TaggedRankedPr {
+                project: Some(project_name.as_str()),
+                repo: format!("{owner}/{name}"),
+                ranked: score_pr(pr),
+            });
+        }
+    }
+    tagged.sort_by(|a, b| {
+        b.ranked
+            .priority_score
+            .cmp(&a.ranked.priority_score)
+            .then_with(|| a.ranked.total_lines.cmp(&b.ranked.total_lines))
+    });
+    tagged.truncate(limit);
+
+    Ok(json!({
+        "projects_scanned": batches.len(),
+        "limit": limit,
+        "prs": tagged,
+    }))
 }
 
 #[tool_router]
@@ -376,10 +587,8 @@ impl ErMcp {
         }
     }
 
-    #[tool(
-        description = "List Easy Review projects from ~/.config/er/projects.json (name, id, remote)."
-    )]
-    async fn list_projects(&self) -> Result<CallToolResult, McpError> {
+    #[tool(description = "List Easy Review projects from ~/.config/er/projects.json.")]
+    async fn projects_list(&self) -> Result<CallToolResult, McpError> {
         let file = projects::load_projects();
         text_json(&json!({
             "active_id": file.active_id,
@@ -393,92 +602,85 @@ impl ErMcp {
     }
 
     #[tool(
-        description = "List open PRs for a repo (or the active Easy Review project) with size, review decision, and merge state."
+        description = "Resolve a PR ref (URL, worktree path, owner/repo, owner/repo#N, branch, or number) to owner/repo/number + bucket_path."
     )]
-    async fn list_prs(
+    async fn pr_resolve(
         &self,
-        Parameters(args): Parameters<RepoArgs>,
+        Parameters(args): Parameters<PrResolveArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name, prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let ranked: Vec<_> = prs.iter().map(score_pr).collect();
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
+        let pr = resolve_target(&args.target)?;
+        text_json(&pr)
     }
 
     #[tool(
-        description = "Top priority PRs to review next. Scores by review request, readiness, size, labels, and blocked/outdated penalties."
+        description = "Query open PRs: sort (priority|smallest|updated), filter (review_debt|stale|blocked|failing_ci|ready|addressed|…), optional cross_repo."
     )]
-    async fn priority_prs(
+    async fn prs_query(
         &self,
-        Parameters(args): Parameters<LimitRepoArgs>,
+        Parameters(args): Parameters<PrsQueryArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 5);
-        let (owner, name, project_name, mut prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
+        let body = if args.cross_repo.unwrap_or(false) {
+            query_cross_repo(&args).await?
+        } else {
+            query_single_repo(&args).await?
+        };
+        text_json(&body)
+    }
 
-        if args.production_lines.unwrap_or(false) {
-            let window = (limit * 3).min(prs.len());
-            enrich_production_lines(&owner, &name, &mut prs[..window], window).await;
+    #[tool(
+        description = "PR diff stats (production vs test/docs). Single PR via ref, or batch via numbers=[…]. Optional hotspots."
+    )]
+    async fn pr_stats(
+        &self,
+        Parameters(args): Parameters<PrStatsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let hotspot_limit = clamp_limit(args.hotspot_limit, 10, 50);
+
+        if let Some(numbers) = args.numbers.filter(|n| !n.is_empty()) {
+            if numbers.len() > 12 {
+                return Err(tool_err("compare at most 12 PRs at a time"));
+            }
+            let (repo, project_id) = query_repo_args(&args.target);
+            let (owner, name, project_name) =
+                projects::resolve_repo(repo, project_id).map_err(|e| tool_err(e.to_string()))?;
+            let mut rows = Vec::new();
+            for number in numbers {
+                let owner_c = owner.clone();
+                let name_c = name.clone();
+                let stats = tokio::task::spawn_blocking(move || {
+                    gh_pr_prod_diff_stats(&owner_c, &name_c, number)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok());
+                rows.push(match stats {
+                    Some(stats) => json!({
+                        "number": number,
+                        "production_lines": stats.production.lines_changed(),
+                        "total_lines": stats.total.lines_changed(),
+                        "production_files": stats.production.files,
+                    }),
+                    None => json!({ "number": number, "error": "failed to fetch diff" }),
+                });
+            }
+            rows.sort_by_key(|row| {
+                row.get("production_lines")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(u64::MAX)
+            });
+            return text_json(&json!({
+                "repo": format!("{owner}/{name}"),
+                "project": project_name,
+                "prs": rows,
+            }));
         }
 
-        let ranked = rank_priority(&prs, limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "limit": limit,
-            "production_lines_enriched": args.production_lines.unwrap_or(false),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "Smallest / low-hanging-fruit open PRs. Defaults to production-only line enrichment (excludes test, storybook, generated, docs)."
-    )]
-    async fn low_hanging_fruit(
-        &self,
-        Parameters(args): Parameters<LimitRepoArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 5);
-        let include_drafts = args.include_drafts.unwrap_or(false);
-        let (owner, name, project_name, mut prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-
-        if args.production_lines.unwrap_or(true) {
-            let window = prs.len().min(25);
-            enrich_production_lines(&owner, &name, &mut prs[..window], window).await;
-        }
-
-        let ranked = rank_low_hanging(&prs, limit, include_drafts);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "limit": limit,
-            "sorted_by": if args.production_lines.unwrap_or(true) {
-                "production_lines"
-            } else {
-                "total_github_lines"
-            },
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "Diff line stats for one PR, split into production vs test / storybook / generated / docs."
-    )]
-    async fn pr_diff_stats(
-        &self,
-        Parameters(args): Parameters<DiffStatsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
         let include_files = args.include_files.unwrap_or(false);
+        let include_hotspots = args.include_hotspots.unwrap_or(false);
 
         let stats: ProdDiffStats = tokio::task::spawn_blocking({
             let owner = owner.clone();
@@ -494,443 +696,117 @@ impl ErMcp {
         } else {
             stats.summary_only()
         };
-
-        text_json(&json!({
+        let mut body = json!({
             "repo": format!("{owner}/{name}"),
-            "project": project_name,
+            "project": pr.project_name,
             "number": number,
+            "bucket_path": pr.bucket_path,
             "stats": stats,
             "production_lines": stats.production.lines_changed(),
             "total_lines": stats.total.lines_changed(),
-        }))
-    }
-
-    #[tool(
-        description = "List open PRs filtered by review status: ready_to_review, draft, outdated, blocked_conflicts, waiting_on_author, approved, merge_ready."
-    )]
-    async fn prs_by_status(
-        &self,
-        Parameters(args): Parameters<StatusFilterArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let status = parse_status(&args.status)?;
-        let limit = clamp_limit(args.limit, 20);
-        let (owner, name, project_name, prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let mut ranked = filter_by_status(&prs, status);
-        ranked.truncate(limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "status": status.as_str(),
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "PRs blocked by merge conflicts, mergeStateStatus=BLOCKED, or failing CI (fetches checks). Use for 'what is blocked?'."
-    )]
-    async fn prs_blocked(
-        &self,
-        Parameters(args): Parameters<ScanLimitArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 15).min(20);
-        let (owner, name, project_name, mut prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let n = prs.len().min(scan);
-        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
-        let ranked = filter_blocked(&prs, limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "Open PRs with failing CI checks. Fetches `gh pr checks` for a scan window."
-    )]
-    async fn prs_failing_ci(
-        &self,
-        Parameters(args): Parameters<ScanLimitArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 15).min(20);
-        let (owner, name, project_name, mut prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let n = prs.len().min(scan);
-        enrich_ci(&owner, &name, &mut prs[..n], scan).await;
-        let ranked = filter_failing_ci(&prs, limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "PRs where review was requested of you and you have not approved / requested changes yet (your review debt)."
-    )]
-    async fn my_review_debt(
-        &self,
-        Parameters(args): Parameters<LimitRepoArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 20);
-        let (owner, name, project_name, prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let ranked = filter_review_debt(&prs, limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "Stale open PRs with no GitHub activity for N days (default 14). Uses PR updatedAt."
-    )]
-    async fn prs_stale(
-        &self,
-        Parameters(args): Parameters<StaleArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let days = args.days.unwrap_or(14).clamp(1, 365) as u64;
-        let limit = clamp_limit(args.limit, 20);
-        let (owner, name, project_name, prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-        let ranked = filter_stale(&prs, days, now_epoch_secs(), limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "days": days,
-            "count": ranked.len(),
-            "prs": ranked,
-        }))
-    }
-
-    #[tool(
-        description = "PRs where all review threads are resolved or outdated (feedback already addressed / fixed). Scans open PRs via GraphQL."
-    )]
-    async fn prs_already_addressed(
-        &self,
-        Parameters(args): Parameters<ScanLimitArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 20);
-        let scan = clamp_limit(args.scan_limit, 15).min(20);
-        let (owner, name, project_name, prs) =
-            load_queue(args.repo.as_deref(), args.project_id.as_deref()).await?;
-
-        let mut out = Vec::new();
-        for pr in prs
-            .iter()
-            .filter(|p| p.state.eq_ignore_ascii_case("OPEN"))
-            .take(scan)
-        {
-            let owner_c = owner.clone();
-            let name_c = name.clone();
-            let number = pr.number;
-            let summary = tokio::task::spawn_blocking(move || {
-                gh_pr_thread_addressing_remote(&owner_c, &name_c, number).unwrap_or_default()
-            })
-            .await
-            .unwrap_or_default();
-            if summary.all_addressed {
-                let mut ranked = score_pr(pr);
-                ranked.reasons.push(format!(
-                    "threads addressed: {} resolved, {} outdated, {} open",
-                    summary.resolved, summary.outdated, summary.open
-                ));
-                out.push(json!({
-                    "ranked": ranked,
-                    "threads": summary,
-                }));
-            }
-            if out.len() >= limit {
-                break;
-            }
+        });
+        if include_hotspots {
+            body["hotspots"] = json!(stats.production_hotspots(hotspot_limit));
         }
-
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "scanned": scan.min(prs.len()),
-            "count": out.len(),
-            "prs": out,
-        }))
+        text_json(&body)
     }
 
     #[tool(
-        description = "Priority PRs across ALL configured Easy Review projects (cross-repo review queue)."
+        description = "Prepare a PR review kit (diff-tmp + diff_hash + artifact_specs). You review; then call pr_upload."
     )]
-    async fn cross_repo_queue(
+    async fn pr_prepare(
         &self,
-        Parameters(args): Parameters<CrossRepoArgs>,
+        Parameters(args): Parameters<PrPrepareArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let limit = clamp_limit(args.limit, 10);
-        let file = projects::load_projects();
-        let mut tagged: Vec<TaggedRankedPr<'_>> = Vec::new();
-        // Collect owned strings first so we can borrow project names.
-        let mut batches: Vec<(String, String, String, Vec<QueuePr>)> = Vec::new();
+        let pr = resolve_target(&args.target)?;
+        let kinds = parse_prepare_kinds(args.kinds)?;
+        let body = prepare_kit_json(
+            &pr,
+            &kinds,
+            "Author files per artifact_specs; embed kit.diff_hash; then pr_upload.",
+        )
+        .await?;
+        text_json(&body)
+    }
 
-        let mut list_jobs = Vec::new();
-        for project in &file.projects {
-            let Some(remote) = project.remote.as_deref() else {
-                continue;
-            };
-            let Ok((owner, name)) = projects::parse_repo_slug(remote) else {
-                continue;
-            };
-            let project_name = project.name.clone();
-            list_jobs.push((
-                project_name,
-                owner.clone(),
-                name.clone(),
-                tokio::task::spawn_blocking(move || gh_pr_list_queue(&owner, &name, "open", 50)),
+    #[tool(
+        description = "Create a guided tour (tour.json) for a PR. action=prepare fetches diff + tour schema; action=upload writes tour.json."
+    )]
+    async fn pr_guide(
+        &self,
+        Parameters(args): Parameters<PrGuideArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let action = args
+            .action
+            .as_deref()
+            .unwrap_or("prepare")
+            .to_ascii_lowercase();
+        let pr = resolve_target(&args.target)?;
+
+        match action.as_str() {
+            "prepare" => {
+                let body = prepare_kit_json(
+                    &pr,
+                    &[SidecarKind::Tour],
+                    "Read diff_tmp_path, author tour.json per artifact_specs (3–7 pillars), embed kit.diff_hash, then pr_guide action=upload.",
+                )
+                .await?;
+                text_json(&body)
+            }
+            "upload" => {
+                let files = args
+                    .files
+                    .filter(|f| !f.is_empty())
+                    .ok_or_else(|| tool_err("upload requires files: { \"tour.json\": \"...\" }"))?;
+                let owner = pr.owner.clone();
+                let name = pr.repo.clone();
+                let number = pr.number;
+                let refresh_diff = args.refresh_diff.unwrap_or(false);
+
+                let result = tokio::task::spawn_blocking(move || {
+                    upload_pr_artifacts(UploadArtifactsRequest {
+                        owner,
+                        repo: name,
+                        pr: number,
+                        kind: SidecarKind::Tour,
+                        files,
+                        refresh_diff,
+                    })
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?;
+
+                text_json(&json!({
+                    "project": pr.project_name,
+                    "repo": format!("{}/{}", pr.owner, pr.repo),
+                    "number": pr.number,
+                    "bucket_path": pr.bucket_path,
+                    "uploaded": result,
+                    "note": "Open the PR in Desktop/TUI Guide tab, or pr_summarize.",
+                }))
+            }
+            _ => Err(tool_err("action must be prepare or upload")),
+        }
+    }
+
+    #[tool(
+        description = "Upload triage or review sidecars into shared Easy Review storage. Tours use pr_guide."
+    )]
+    async fn pr_upload(
+        &self,
+        Parameters(args): Parameters<PrUploadArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pr = resolve_target(&args.target)?;
+        let kind = parse_kind(&args.kind)?;
+        if kind == SidecarKind::Tour {
+            return Err(tool_err(
+                "tour uploads use pr_guide with action=upload — not pr_upload",
             ));
         }
-        for (project_name, owner, name, handle) in list_jobs {
-            let prs = handle.await.ok().and_then(|r| r.ok()).unwrap_or_default();
-            batches.push((project_name, owner, name, prs));
-        }
-
-        if args.production_lines.unwrap_or(false) {
-            for (_, owner, name, prs) in &mut batches {
-                let window = prs.len().min(10);
-                enrich_production_lines(owner, name, &mut prs[..window], window).await;
-            }
-        }
-
-        for (project_name, owner, name, prs) in &batches {
-            for pr in prs {
-                tagged.push(TaggedRankedPr {
-                    project: Some(project_name.as_str()),
-                    repo: format!("{owner}/{name}"),
-                    ranked: score_pr(pr),
-                });
-            }
-        }
-        tagged.sort_by(|a, b| {
-            b.ranked
-                .priority_score
-                .cmp(&a.ranked.priority_score)
-                .then_with(|| a.ranked.total_lines.cmp(&b.ranked.total_lines))
-        });
-        tagged.truncate(limit);
-
-        text_json(&json!({
-            "projects_scanned": batches.len(),
-            "limit": limit,
-            "prs": tagged,
-        }))
-    }
-
-    #[tool(
-        name = "open_in_easy_review",
-        description = "How to open a PR in Easy Review (GitHub URL + desktop/TUI instructions). No OS deep-link yet."
-    )]
-    async fn open_in_easy_review_tool(
-        &self,
-        Parameters(args): Parameters<PrNumberArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let hint = open_in_easy_review(&owner, &name, args.number);
-        text_json(&json!({
-            "project": project_name,
-            "open": hint,
-        }))
-    }
-
-    #[tool(
-        description = "Summarize managed Easy Review triage.json / review.json / tour.json sidecars for a PR (local app data), if present."
-    )]
-    async fn summarize_triage(
-        &self,
-        Parameters(args): Parameters<PrNumberArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
-        let summary =
-            tokio::task::spawn_blocking(move || summarize_pr_sidecars(&owner, &name, number))
-                .await
-                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        text_json(&json!({
-            "project": project_name,
-            "summary": summary,
-        }))
-    }
-
-    #[tool(
-        description = "Top production-code files by churn in a PR (excludes test/storybook/generated/docs)."
-    )]
-    async fn diff_hotspots(
-        &self,
-        Parameters(args): Parameters<HotspotsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
-        let limit = clamp_limit(args.limit, 10);
-        let stats: ProdDiffStats = tokio::task::spawn_blocking({
-            let owner = owner.clone();
-            let name = name.clone();
-            move || gh_pr_prod_diff_stats(&owner, &name, number)
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?
-        .map_err(|e| tool_err(e.to_string()))?;
-        let hotspots = stats.production_hotspots(limit);
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "number": number,
-            "production_lines": stats.production.lines_changed(),
-            "hotspots": hotspots,
-        }))
-    }
-
-    #[tool(
-        description = "Compare production-only changed lines for a list of PR numbers and rank smallest → largest."
-    )]
-    async fn compare_prod_size(
-        &self,
-        Parameters(args): Parameters<CompareProdArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        if args.numbers.is_empty() {
-            return Err(tool_err("numbers must be a non-empty array of PR numbers"));
-        }
-        if args.numbers.len() > 12 {
-            return Err(tool_err("compare at most 12 PRs at a time"));
-        }
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-
-        let jobs: Vec<_> = args
-            .numbers
-            .into_iter()
-            .map(|number| {
-                let owner_c = owner.clone();
-                let name_c = name.clone();
-                (
-                    number,
-                    tokio::task::spawn_blocking(move || {
-                        gh_pr_prod_diff_stats(&owner_c, &name_c, number)
-                    }),
-                )
-            })
-            .collect();
-
-        let mut rows = Vec::new();
-        for (number, handle) in jobs {
-            let stats = handle.await.ok().and_then(|r| r.ok());
-            let Some(stats) = stats else {
-                rows.push(json!({
-                    "number": number,
-                    "error": "failed to fetch diff",
-                }));
-                continue;
-            };
-            rows.push(json!({
-                "number": number,
-                "production_lines": stats.production.lines_changed(),
-                "total_lines": stats.total.lines_changed(),
-                "production_files": stats.production.files,
-                "test_lines": stats.test.lines_changed(),
-                "generated_lines": stats.generated.lines_changed(),
-            }));
-        }
-        rows.sort_by(|a, b| {
-            let la = a
-                .get("production_lines")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(u64::MAX);
-            let lb = b
-                .get("production_lines")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(u64::MAX);
-            la.cmp(&lb)
-        });
-
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project": project_name,
-            "prs": rows,
-        }))
-    }
-
-    #[tool(
-        description = "Prepare a PR review kit (writes shared diff-tmp, returns diff_hash + prompts). You (the MCP client agent) do the review yourself, then call upload_artifacts. Does not spawn agent CLIs."
-    )]
-    async fn prepare_review(
-        &self,
-        Parameters(args): Parameters<PrepareReviewArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
-        let kinds = parse_kinds(args.kinds).map_err(tool_err)?;
-        let kinds_for_specs = kinds.clone();
-
-        let kit = tokio::task::spawn_blocking(move || {
-            prepare_review_kit(&owner, &name, number, &kinds, &[])
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?
-        .map_err(|e| tool_err(e.to_string()))?;
-
-        let specs =
-            artifact_specs_for_dir(&kinds_for_specs, &kit.er_dir, &kit.base_ref, &kit.head_ref);
-
-        // Drop duplicate prompts from kit.artifacts — use artifact_specs[].prompt only.
-        let mut kit = kit;
-        for artifact in &mut kit.artifacts {
-            artifact.prompt.clear();
-        }
-
-        text_json(&json!({
-            "project": project_name,
-            "kit": kit,
-            "artifact_specs": specs,
-            "note": "Author files using artifact_specs schemas/examples/prompts; embed kit.diff_hash; then upload_artifacts. Upload validates serde shape + diff_hash (not full JSON Schema).",
-        }))
-    }
-
-    #[tool(
-        description = "Return JSON Schema, examples, and prepared-diff prompts for triage/review/tour sidecars so you can author upload_artifacts payloads precisely. No network / no PR required."
-    )]
-    async fn get_artifact_specs(
-        &self,
-        Parameters(args): Parameters<ArtifactSpecsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let kinds = parse_kinds(args.kinds).map_err(tool_err)?;
-        let specs = artifact_specs(&kinds);
-        text_json(&json!({
-            "flow": "get_artifact_specs → prepare_review → author files per schema → upload_artifacts → summarize_triage",
-            "specs": specs,
-        }))
-    }
-
-    #[tool(
-        description = "Upload triage/review/tour sidecar files you produced into shared Easy Review storage. Validates JSON deserialize + diff_hash in memory before writing (does not enforce full JSON Schema from get_artifact_specs)."
-    )]
-    async fn upload_artifacts(
-        &self,
-        Parameters(args): Parameters<UploadArtifactsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, project_name) =
-            resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-                .map_err(|e| tool_err(e.to_string()))?;
-        let kind = parse_kind(&args.kind).map_err(tool_err)?;
-        let number = args.number;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
         let files = args.files;
         let refresh_diff = args.refresh_diff.unwrap_or(false);
 
@@ -949,24 +825,146 @@ impl ErMcp {
         .map_err(|e| tool_err(e.to_string()))?;
 
         text_json(&json!({
-            "project": project_name,
+            "project": pr.project_name,
+            "repo": format!("{}/{}", pr.owner, pr.repo),
+            "number": pr.number,
+            "bucket_path": pr.bucket_path,
             "uploaded": result,
-            "note": "Sidecars are in shared managed storage — open the PR in Desktop/TUI, call summarize_triage, or pin_pr to bookmark in Desktop Saved.",
         }))
     }
 
-    #[tool(
-        description = "Pin a PR into Desktop Saved PRs (projects.json saved_prs) so you can find agent-reviewed work later. Does not auto-pin on upload — call explicitly after review."
-    )]
-    async fn pin_pr(
+    #[tool(description = "Summarize managed triage/review/tour sidecars for a PR.")]
+    async fn pr_summarize(
         &self,
-        Parameters(args): Parameters<PinPrArgs>,
+        Parameters(args): Parameters<PrSummarizeArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-            .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
+        let summary =
+            tokio::task::spawn_blocking(move || summarize_pr_sidecars(&owner, &name, number))
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        text_json(&json!({
+            "project": pr.project_name,
+            "repo": format!("{}/{}", pr.owner, pr.repo),
+            "number": pr.number,
+            "bucket_path": pr.bucket_path,
+            "summary": summary,
+        }))
+    }
+
+    #[tool(description = "Read review questions, notes, and AI findings for a PR.")]
+    async fn pr_feedback_get(
+        &self,
+        Parameters(args): Parameters<PrFeedbackGetArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
+        let include_resolved = args.include_resolved.unwrap_or(false);
+        let feedback = tokio::task::spawn_blocking(move || {
+            get_pr_review_feedback(&owner, &name, number, include_resolved)
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+        text_json(&json!({
+            "project": pr.project_name,
+            "repo": format!("{}/{}", pr.owner, pr.repo),
+            "number": pr.number,
+            "bucket_path": pr.bucket_path,
+            "feedback": feedback,
+        }))
+    }
+
+    #[tool(description = "Reply to a question, note, or AI finding on a PR.")]
+    async fn pr_feedback_reply(
+        &self,
+        Parameters(args): Parameters<PrFeedbackReplyArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
+        let text = args.text;
+        let author = args.author;
+
+        let reply = match args.r#type.to_ascii_lowercase().as_str() {
+            "question" => {
+                let question_id = args.id.clone();
+                tokio::task::spawn_blocking(move || {
+                    reply_to_pr_question(
+                        &owner,
+                        &name,
+                        number,
+                        &question_id,
+                        &text,
+                        author.as_deref(),
+                    )
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?
+            }
+            "note" => {
+                let note_id = args.id.clone();
+                tokio::task::spawn_blocking(move || {
+                    reply_to_pr_note(&owner, &name, number, &note_id, &text, author.as_deref())
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?
+            }
+            "finding" => {
+                let finding_id = args.id.clone();
+                tokio::task::spawn_blocking(move || {
+                    reply_to_pr_finding(&owner, &name, number, &finding_id, &text)
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?
+            }
+            other => {
+                return Err(tool_err(format!(
+                    "type must be question, note, or finding (got '{other}')"
+                )));
+            }
+        };
+
+        text_json(&json!({
+            "project": pr.project_name,
+            "repo": format!("{}/{}", pr.owner, pr.repo),
+            "number": pr.number,
+            "bucket_path": pr.bucket_path,
+            "reply": reply,
+        }))
+    }
+
+    #[tool(description = "Pin, unpin, or list saved PRs and uploaded artifacts.")]
+    async fn pr_saved(
+        &self,
+        Parameters(args): Parameters<PrSavedArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        match args.action.to_ascii_lowercase().as_str() {
+            "pin" => self.pr_saved_pin(args).await,
+            "unpin" => self.pr_saved_unpin(args).await,
+            "list" => self.pr_saved_list(args).await,
+            _ => Err(tool_err("action must be pin, unpin, or list")),
+        }
+    }
+}
+
+impl ErMcp {
+    async fn pr_saved_pin(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
         let title_arg = args.title.clone();
-        let project_id_arg = args.project_id.clone();
+        let project_id_arg = args.target.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let (project_id, project_name) =
@@ -989,19 +987,15 @@ impl ErMcp {
             "project_id": project_id,
             "project": project_name,
             "pinned": pinned_sidecar_json(&pinned, &summary),
-            "note": "Also visible in Desktop sidebar Saved PRs.",
         }))
     }
 
-    #[tool(description = "Remove a PR from Desktop Saved PRs (unpin).")]
-    async fn unpin_pr(
-        &self,
-        Parameters(args): Parameters<PrNumberArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-            .map_err(|e| tool_err(e.to_string()))?;
-        let number = args.number;
-        let project_id_arg = args.project_id.clone();
+    async fn pr_saved_unpin(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
+        let project_id_arg = args.target.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let Some((project_id, project_name)) =
@@ -1026,218 +1020,121 @@ impl ErMcp {
         }))
     }
 
-    #[tool(
-        description = "List Desktop Saved (pinned) PRs for a repo/project, enriched with which triage/review/tour sidecars exist in managed storage."
-    )]
-    async fn list_pinned_prs(
-        &self,
-        Parameters(args): Parameters<RepoArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-            .map_err(|e| tool_err(e.to_string()))?;
-        let project_id_arg = args.project_id.clone();
-
-        let result = tokio::task::spawn_blocking(move || {
-            let Some((project_id, project_name)) =
-                projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?
-            else {
-                return Ok((None, None, owner, name, Vec::<serde_json::Value>::new()));
-            };
-            let pinned = projects_pins::list_pinned(&project_id)?;
-            let rows: Vec<_> = pinned
-                .iter()
-                .map(|entry| {
-                    let summary = summarize_pr_sidecars(&owner, &name, entry.number);
-                    pinned_sidecar_json(entry, &summary)
-                })
-                .collect();
-            Ok::<_, anyhow::Error>((Some(project_id), Some(project_name), owner, name, rows))
-        })
-        .await
-        .map_err(|e| McpError::internal_error(e.to_string(), None))?
-        .map_err(|e| tool_err(e.to_string()))?;
-
-        let (project_id, project_name, owner, name, prs) = result;
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project_id": project_id,
-            "project": project_name,
-            "count": prs.len(),
-            "prs": prs,
-        }))
-    }
-
-    #[tool(
-        description = "List PRs in managed storage that have uploaded triage/review/tour artifacts (whether pinned or not). Optional kinds filter. Marks pinned:true when in Desktop Saved."
-    )]
-    async fn list_artifacts(
-        &self,
-        Parameters(args): Parameters<ListArtifactsArgs>,
-    ) -> Result<CallToolResult, McpError> {
-        let (owner, name, _) = resolve_repo(args.repo.as_deref(), args.project_id.as_deref())
-            .map_err(|e| tool_err(e.to_string()))?;
+    async fn pr_saved_list(&self, args: PrSavedArgs) -> Result<CallToolResult, McpError> {
+        let source = args.source.as_deref().unwrap_or("all").to_ascii_lowercase();
+        let (repo, project_id) = query_repo_args(&args.target);
+        let (owner, name, project_name) =
+            projects::resolve_repo(repo, project_id).map_err(|e| tool_err(e.to_string()))?;
+        let limit = clamp_limit(args.limit, 50, 50);
+        let project_id_arg = args.target.project_id.clone();
         let kinds = match args.kinds {
             None => None,
             Some(list) if list.is_empty() => None,
             Some(list) => Some(
                 list.iter()
                     .map(|s| parse_kind(s))
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(tool_err)?,
+                    .collect::<Result<Vec<_>, _>>()?,
             ),
         };
-        let limit = clamp_limit(args.limit, 50);
-        let project_id_arg = args.project_id.clone();
 
         let result = tokio::task::spawn_blocking(move || {
             let project =
                 projects_pins::resolve_project_for_list(project_id_arg.as_deref(), &owner, &name)?;
-            let (project_id, project_name, pinned_set) = match project {
+            let (project_id, project_name, pinned_set, pinned_rows) = match project {
                 Some((id, pname)) => {
+                    let pinned = projects_pins::list_pinned(&id)?;
                     let set = projects_pins::pinned_numbers(&id);
-                    (Some(id), Some(pname), set)
+                    let rows: Vec<_> = pinned
+                        .iter()
+                        .map(|entry| {
+                            let summary = summarize_pr_sidecars(&owner, &name, entry.number);
+                            pinned_sidecar_json(entry, &summary)
+                        })
+                        .collect();
+                    (Some(id), Some(pname), set, rows)
                 }
-                None => (None, None, std::collections::HashSet::new()),
+                None => (None, None, std::collections::HashSet::new(), Vec::new()),
             };
-            let filter = kinds.as_deref();
-            let listed = list_repo_pr_artifacts(&owner, &name, filter, limit);
-            let artifacts: Vec<_> = listed
-                .into_iter()
-                .map(|entry| {
-                    let number = entry.summary.number;
-                    json!({
-                        "number": number,
-                        "kinds": entry.kinds,
-                        "pinned": pinned_set.contains(&number),
-                        "mtime_secs": entry.mtime_secs,
-                        "bucket_path": entry.summary.bucket_path,
-                        "triage": entry.summary.triage,
-                        "review": entry.summary.review,
-                        "tour": entry.summary.tour,
-                        "missing": entry.summary.missing,
+
+            let artifact_rows: Vec<_> = if source == "pinned" {
+                Vec::new()
+            } else {
+                let filter = kinds.as_deref();
+                list_repo_pr_artifacts(&owner, &name, filter, limit)
+                    .into_iter()
+                    .map(|entry| {
+                        let number = entry.summary.number;
+                        json!({
+                            "number": number,
+                            "kinds": entry.kinds,
+                            "pinned": pinned_set.contains(&number),
+                            "mtime_secs": entry.mtime_secs,
+                            "bucket_path": entry.summary.bucket_path,
+                            "triage": entry.summary.triage,
+                            "review": entry.summary.review,
+                            "tour": entry.summary.tour,
+                            "missing": entry.summary.missing,
+                        })
                     })
-                })
-                .collect();
-            Ok::<_, anyhow::Error>((project_id, project_name, owner, name, artifacts))
+                    .collect()
+            };
+
+            Ok::<_, anyhow::Error>((
+                project_id,
+                project_name,
+                owner,
+                name,
+                pinned_rows,
+                artifact_rows,
+                source,
+            ))
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
         .map_err(|e| tool_err(e.to_string()))?;
 
-        let (project_id, project_name, owner, name, artifacts) = result;
-        text_json(&json!({
-            "repo": format!("{owner}/{name}"),
-            "project_id": project_id,
-            "project": project_name,
-            "count": artifacts.len(),
-            "artifacts": artifacts,
-        }))
-    }
-
-    #[tool(description = "Catalog of Easy Review MCP tools (shipped + future ideas).")]
-    async fn tool_ideas(&self) -> Result<CallToolResult, McpError> {
-        text_json(&json!({
-            "shipped": SHIPPED_TOOLS,
-            "ideas": FUTURE_IDEAS,
-        }))
-    }
-}
-
-fn parse_kind(s: &str) -> Result<SidecarKind, String> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "triage" => Ok(SidecarKind::Triage),
-        "review" => Ok(SidecarKind::Review),
-        "tour" => Ok(SidecarKind::Tour),
-        other => Err(format!(
-            "unknown kind '{other}'; expected triage|review|tour"
-        )),
+        let (project_id, proj_name, owner, name, pinned_rows, artifact_rows, source) = result;
+        let body = match source.as_str() {
+            "pinned" => json!({
+                "repo": format!("{owner}/{name}"),
+                "project_id": project_id,
+                "project": proj_name.or(project_name),
+                "pinned": pinned_rows,
+            }),
+            "artifacts" => json!({
+                "repo": format!("{owner}/{name}"),
+                "project_id": project_id,
+                "project": proj_name.or(project_name),
+                "artifacts": artifact_rows,
+            }),
+            _ => json!({
+                "repo": format!("{owner}/{name}"),
+                "project_id": project_id,
+                "project": proj_name.or(project_name),
+                "pinned": pinned_rows,
+                "artifacts": artifact_rows,
+            }),
+        };
+        text_json(&body)
     }
 }
-
-fn parse_kinds(kinds: Option<Vec<String>>) -> Result<Vec<SidecarKind>, String> {
-    match kinds {
-        None => Ok(vec![
-            SidecarKind::Triage,
-            SidecarKind::Review,
-            SidecarKind::Tour,
-        ]),
-        Some(list) if list.is_empty() => Err("kinds must not be empty".into()),
-        Some(list) => list.iter().map(|s| parse_kind(s)).collect(),
-    }
-}
-
-fn parse_status(s: &str) -> Result<ReviewStatus, McpError> {
-    match s.trim().to_ascii_lowercase().as_str() {
-        "ready_to_review" | "ready" => Ok(ReviewStatus::ReadyToReview),
-        "draft" => Ok(ReviewStatus::Draft),
-        "outdated" | "behind" => Ok(ReviewStatus::Outdated),
-        "blocked_conflicts" | "conflicts" => Ok(ReviewStatus::BlockedConflicts),
-        "waiting_on_author" | "changes_requested" => Ok(ReviewStatus::WaitingOnAuthor),
-        "approved" => Ok(ReviewStatus::Approved),
-        "merge_ready" | "ready_to_merge" => Ok(ReviewStatus::MergeReady),
-        "inactive" | "closed" | "merged" => Ok(ReviewStatus::Inactive),
-        other => Err(tool_err(format!(
-            "unknown status '{other}'; expected ready_to_review|draft|outdated|blocked_conflicts|waiting_on_author|approved|merge_ready (for CI/conflicts combo use prs_blocked)"
-        ))),
-    }
-}
-
-const SHIPPED_TOOLS: &[&str] = &[
-    "list_projects",
-    "list_prs",
-    "priority_prs",
-    "low_hanging_fruit",
-    "pr_diff_stats",
-    "prs_by_status",
-    "prs_blocked",
-    "prs_failing_ci",
-    "my_review_debt",
-    "prs_stale",
-    "prs_already_addressed",
-    "cross_repo_queue",
-    "open_in_easy_review",
-    "summarize_triage",
-    "diff_hotspots",
-    "compare_prod_size",
-    "prepare_review",
-    "get_artifact_specs",
-    "upload_artifacts",
-    "pin_pr",
-    "unpin_pr",
-    "list_pinned_prs",
-    "list_artifacts",
-    "tool_ideas",
-];
-
-const FUTURE_IDEAS: &[&str] = &[
-    "prepare/upload for expert / professor / arena artifacts",
-    "er:// deep-link / single-instance desktop open from MCP",
-    "required-checks-only CI filter (GitHub branch protection)",
-    "inbox_digest / export_review_brief / missing_tests",
-];
 
 #[tool_handler]
 impl ServerHandler for ErMcp {
     fn get_info(&self) -> ServerInfo {
-        // Prefer MCP 2026-07-28 (stateless / discover). Legacy initialize still
-        // negotiates down via supported_protocol_versions when the client asks.
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
-                "Easy Review MCP for PR triage and client-owned AI reviews. \
-             Queues: priority_prs, low_hanging_fruit, my_review_debt, cross_repo_queue. \
-             Filters: prs_by_status, prs_stale, prs_blocked, prs_failing_ci, prs_already_addressed. \
-             Sizing: pr_diff_stats, diff_hotspots, compare_prod_size. \
-             AI sidecars: get_artifact_specs (schemas+prompts) → prepare_review → upload_artifacts → summarize_triage. \
-             Find reviewed work: pin_pr (Desktop Saved) / list_pinned_prs / list_artifacts (scan managed storage). \
-             Open: open_in_easy_review.",
+                "Easy Review MCP — REST-style PR API. Resolve refs with pr_resolve. \
+                 Query queues with prs_query. Review: pr_prepare → pr_upload. \
+                 Guided tour: pr_guide (prepare → upload tour.json). \
+                 Feedback: pr_feedback_get / pr_feedback_reply. Saved: pr_saved. \
+                 Skills: er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved.",
             )
     }
 
     fn supported_protocol_versions(&self) -> Cow<'static, [ProtocolVersion]> {
-        // Dual-era: modern clients use server/discover + per-request _meta;
-        // Cursor/Claude/Codex that still speak initialize negotiate a 2025 revision.
         Cow::Borrowed(ProtocolVersion::KNOWN_VERSIONS)
     }
 }
@@ -1252,18 +1149,6 @@ mod tests {
         assert_eq!(
             server.get_info().protocol_version,
             ProtocolVersion::V_2026_07_28
-        );
-        assert!(
-            server
-                .supported_protocol_versions()
-                .contains(&ProtocolVersion::V_2026_07_28),
-            "must advertise 2026-07-28 for discover clients"
-        );
-        assert!(
-            server
-                .supported_protocol_versions()
-                .contains(&ProtocolVersion::V_2025_11_25),
-            "must keep legacy initialize clients working"
         );
         assert!(server.get_info().capabilities.tools.is_some());
     }

@@ -84,6 +84,20 @@ pub fn get_repo_root_in(dir: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// Get the repository root for a path inside a worktree (file or directory).
+pub fn get_repo_root_at(path: &str) -> Result<String> {
+    let output = Command::new("git")
+        .args(["-C", path, "rev-parse", "--show-toplevel"])
+        .output()
+        .context(format!("Failed to run git at '{}'", path))?;
+
+    if !output.status.success() {
+        anyhow::bail!("Not a git repository: {}", path);
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
 /// Get the current branch name
 #[allow(dead_code)]
 pub fn get_current_branch() -> Result<String> {
