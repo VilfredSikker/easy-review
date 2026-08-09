@@ -167,6 +167,22 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
     tab.repo_root.hash(&mut h);
+    // Tour mode displays the source view's diff — the same files, hunks, and
+    // per-file delta_keys (the pillar arrangement is carried by the `tour`
+    // snapshot field, not by the hunks). Share the source view's token so
+    // Guide↔Diff toggles reuse the differential map instead of clearing it
+    // and resending every hunk (a full ~200–400 ms snapshot + large IPC
+    // payload on big PRs — see review-fix-loop follow-up).
+    let mode = match mode {
+        "tour" => {
+            if tab.tour_context_is_pr() {
+                "pr"
+            } else {
+                "branch"
+            }
+        }
+        m => m,
+    };
     mode.hash(&mut h);
     tab.current_branch.hash(&mut h);
     tab.base_branch.hash(&mut h);
@@ -3606,6 +3622,41 @@ mod tests {
         p.head_ref = head_ref.to_string();
         p.state = state.to_string();
         p
+    }
+
+    /// Guide↔Diff toggles must reuse the differential map: Tour mode displays
+    /// the source view's diff (same files/hunks/delta_keys), so its view token
+    /// must equal the source view's token — otherwise every toggle resends all
+    /// hunks (~200–400 ms snapshots on big PRs).
+    #[test]
+    fn tour_token_shares_source_view_token() {
+        let app = er_engine::app::App::new_for_test(vec![]);
+        let mut tab = TabState::new_for_test(vec![]);
+
+        // Guide opened from PR Diff → tour token == pr token.
+        tab.mode = DiffMode::PrDiff;
+        tab.tour_is_pr = false;
+        let pr_token = snapshot_view_token(&app, &tab, "pr");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            pr_token,
+            "tour from PR Diff must share the pr token"
+        );
+
+        // Guide opened from Branch → tour token == branch token, and the
+        // pr/branch tokens differ from each other.
+        tab.mode = DiffMode::Branch;
+        let branch_token = snapshot_view_token(&app, &tab, "branch");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = false;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            branch_token,
+            "tour from Branch must share the branch token"
+        );
+        assert_ne!(pr_token, branch_token, "pr and branch views differ");
     }
 
     /// A local PR tab (pr_number set, no remote) must key its GitHub status off
