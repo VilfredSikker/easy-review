@@ -65,18 +65,12 @@ fn tabs_path() -> Option<PathBuf> {
 /// tmp file + rename so a crash mid-save never produces a truncated file.
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     let path = tabs_path().context("no config dir")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
     let file = TabsFile {
         tabs: tabs.to_vec(),
         active_idx,
     };
-    let json = serde_json::to_string_pretty(&file)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("rename to {}", path.display()))?;
-    Ok(())
+    crate::persist::save_json_atomic(&path, &file)
+        .with_context(|| format!("persist {}", path.display()))
 }
 
 /// Serialize the live tab list and active index to disk.

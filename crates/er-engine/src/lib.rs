@@ -4,7 +4,6 @@ pub mod ai;
 pub mod app;
 #[cfg(feature = "ui")]
 pub mod arena;
-pub mod cache;
 pub mod config;
 #[allow(unused_imports)]
 pub use config::{

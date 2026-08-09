@@ -3,6 +3,7 @@ pub mod experts;
 pub mod finding_cleanup;
 pub mod finding_responses;
 mod loader;
+pub mod prepared_diff;
 pub mod professor;
 pub mod prompts;
 mod relocate;

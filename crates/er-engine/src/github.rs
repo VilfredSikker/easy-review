@@ -4,6 +4,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Parsed reference to a GitHub PR
 #[derive(Debug, Clone)]
@@ -500,12 +502,24 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
         return Ok(remote_ref);
     }
 
-    // Fetch from origin
-    let fetch = Command::new("git")
-        .args(["fetch", "origin", base_branch.as_str()])
-        .current_dir(repo_root)
-        .output()
-        .context("Failed to fetch base branch from origin")?;
+    // Fetch from origin. Guard against option injection: a dash-prefixed
+    // ref (e.g. `--upload-pack=…`) parses as a git option, not a refspec —
+    // qualify bare names as `refs/heads/<name>` so the value never starts
+    // with `-` (the fetch then simply fails to resolve, no injection).
+    let fetch = if base_branch.starts_with("refs/") {
+        Command::new("git")
+            .args(["fetch", "origin", &base_branch])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to fetch base branch from origin")?
+    } else {
+        let qualified = format!("refs/heads/{base_branch}");
+        Command::new("git")
+            .args(["fetch", "origin", &qualified])
+            .current_dir(repo_root)
+            .output()
+            .context("Failed to fetch base branch from origin")?
+    };
 
     if !fetch.status.success() {
         let stderr = String::from_utf8_lossy(&fetch.stderr);
@@ -630,8 +644,67 @@ fn parse_owner_repo_from_remote(remote: &str) -> Result<(String, String)> {
     }
 }
 
+type RepoInfoEntry = (Arc<(String, String)>, Instant);
+type RepoInfoMap = HashMap<String, RepoInfoEntry>;
+
+/// Process-wide cache of [`get_repo_info`] results (origin owner/repo per repo
+/// root). `git remote get-url` runs on every agent spawn of a remote PR via
+/// [`local_checkout_for_repo`]; the origin remote is effectively static per
+/// repo, so a short TTL removes the subprocess from the hot path (O3).
+/// Failures are not cached; expired and excess entries are pruned on insert.
+struct RepoInfoCache {
+    inner: Mutex<RepoInfoMap>,
+    ttl: Duration,
+    cap: usize,
+}
+
+impl RepoInfoCache {
+    fn get(&self, repo_root: &str) -> Option<Arc<(String, String)>> {
+        let mut g = self.inner.lock().ok()?;
+        let (v, at) = g.get(repo_root)?;
+        if at.elapsed() > self.ttl {
+            g.remove(repo_root);
+            return None;
+        }
+        Some(Arc::clone(v))
+    }
+
+    fn insert(&self, repo_root: &str, v: (String, String)) {
+        let Ok(mut g) = self.inner.lock() else {
+            return;
+        };
+        let now = Instant::now();
+        if g.len() >= self.cap && !g.contains_key(repo_root) {
+            // Drop one expired entry, else the oldest by insertion time.
+            if let Some(k) = g
+                .iter()
+                .find(|(_, (_, at))| at.elapsed() > self.ttl)
+                .map(|(k, _)| k.clone())
+                .or_else(|| {
+                    g.iter()
+                        .min_by_key(|(_, (_, at))| *at)
+                        .map(|(k, _)| k.clone())
+                })
+            {
+                g.remove(&k);
+            }
+        }
+        g.insert(repo_root.to_string(), (Arc::new(v), now));
+    }
+}
+
+static REPO_INFO_CACHE: OnceLock<RepoInfoCache> = OnceLock::new();
+
 /// Get GitHub owner/repo from the repository's `origin` remote.
 pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
+    let cache = REPO_INFO_CACHE.get_or_init(|| RepoInfoCache {
+        inner: Mutex::new(HashMap::new()),
+        ttl: Duration::from_secs(60),
+        cap: 64,
+    });
+    if let Some(cached) = cache.get(repo_root) {
+        return Ok((cached.0.clone(), cached.1.clone()));
+    }
     let remote_output = Command::new("git")
         .args(["remote", "get-url", "origin"])
         .current_dir(repo_root)
@@ -644,7 +717,9 @@ pub fn get_repo_info(repo_root: &str) -> Result<(String, String)> {
     let remote = String::from_utf8_lossy(&remote_output.stdout)
         .trim()
         .to_string();
-    parse_owner_repo_from_remote(&remote)
+    let parsed = parse_owner_repo_from_remote(&remote)?;
+    cache.insert(repo_root, parsed.clone());
+    Ok(parsed)
 }
 
 /// True when `owner`/`repo` name the same GitHub repository as the `"owner/repo"` slug.
@@ -1226,14 +1301,20 @@ pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<
 fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> {
     let (base_sha, head_sha) = gh_pr_commit_shas_remote(owner, repo, number)?;
     let repo_url = format!("https://github.com/{}/{}.git", owner, repo);
-    let tmp_dir = std::env::temp_dir().join(format!("er-remote-{}-{}-{}", owner, repo, number));
+    // tempfile::Builder::tempdir: random name + 0700, so an attacker cannot
+    // pre-create the clone dir (the old fixed `er-remote-{owner}-{repo}-{n}`
+    // name with remove_dir_all + clone let an attacker win the dir, then swap
+    // .git/config — core.sshCommand + ssh origin → code execution on the
+    // fetch below; or poison the diff). 0700 also blocks reading the clone.
+    let tmp_dir = tempfile::Builder::new()
+        .prefix("er-remote-")
+        .tempdir()
+        .context("Failed to create temp dir for large PR diff")?;
     let tmp_path = tmp_dir
+        .path()
         .to_str()
         .context("Temp dir path is not valid UTF-8")?
         .to_string();
-
-    // Clean up any previous failed attempt
-    let _ = std::fs::remove_dir_all(&tmp_dir);
 
     // Shallow clone with only the two refs we need
     let clone = Command::new("git")
@@ -1249,7 +1330,6 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .context("Failed to shallow clone for large PR diff")?;
 
     if !clone.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         let stderr = String::from_utf8_lossy(&clone.stderr);
         anyhow::bail!("Shallow clone failed: {}", stderr.trim());
     }
@@ -1269,7 +1349,6 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .context("Failed to fetch PR commits")?;
 
     if !fetch.status.success() {
-        let _ = std::fs::remove_dir_all(&tmp_dir);
         let stderr = String::from_utf8_lossy(&fetch.stderr);
         anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
     }
@@ -1290,8 +1369,8 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
         .output()
         .context("Failed to generate diff from cloned repo")?;
 
-    // Clean up
-    let _ = std::fs::remove_dir_all(&tmp_dir);
+    // Clean up (TempDir removes the clone on drop — including on error).
+    drop(tmp_dir);
 
     if !diff.status.success() {
         let stderr = String::from_utf8_lossy(&diff.stderr);
@@ -1531,6 +1610,132 @@ pub fn gh_pr_review_threads(
     parse_review_threads_response(&stdout)
 }
 
+/// Cached PR comment sync bundle (hover-prefetch warming, first-paint plan
+/// step 3). Keyed by (owner, repo, pr); 60s TTL; failures never cached. The
+/// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s — the
+/// sidebar hover prefetch warms this cache so the post-open
+/// `pull_github_comments` is served from memory instead of the network.
+pub struct PrCommentBundle {
+    pub comments: Vec<GitHubComment>,
+    pub threads: HashMap<u64, ReviewThreadState>,
+}
+
+type PrCommentEntry = (Arc<PrCommentBundle>, Instant);
+type PrCommentMap = HashMap<(String, String, u64), PrCommentEntry>;
+
+struct PrCommentsCache {
+    inner: Mutex<PrCommentMap>,
+    ttl: Duration,
+    cap: usize,
+}
+
+impl PrCommentsCache {
+    fn get(&self, owner: &str, repo: &str, pr: u64) -> Option<Arc<PrCommentBundle>> {
+        let mut g = self.inner.lock().ok()?;
+        let key = (owner.to_string(), repo.to_string(), pr);
+        let (bundle, at) = g.get(&key)?;
+        if at.elapsed() > self.ttl {
+            g.remove(&key);
+            return None;
+        }
+        Some(Arc::clone(bundle))
+    }
+
+    fn insert(&self, owner: &str, repo: &str, pr: u64, bundle: Arc<PrCommentBundle>) {
+        let Ok(mut g) = self.inner.lock() else {
+            return;
+        };
+        let key = (owner.to_string(), repo.to_string(), pr);
+        if g.len() >= self.cap && !g.contains_key(&key) {
+            if let Some(k) = g
+                .iter()
+                .find(|(_, (_, at))| at.elapsed() > self.ttl)
+                .map(|(k, _)| k.clone())
+                .or_else(|| {
+                    g.iter()
+                        .min_by_key(|(_, (_, at))| *at)
+                        .map(|(k, _)| k.clone())
+                })
+            {
+                g.remove(&k);
+            }
+        }
+        g.insert(key, (bundle, Instant::now()));
+    }
+}
+
+static PR_COMMENTS_CACHE: OnceLock<PrCommentsCache> = OnceLock::new();
+
+/// Fetch (and cache) the PR comment sync bundle: REST comments + GraphQL
+/// review-thread state. `repo_root = None` uses the remote variants (no local
+/// clone needed). A warm cache makes `sync_github_comments` network-free.
+pub fn gh_pr_comment_bundle_cached(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: Option<&str>,
+) -> Result<Arc<PrCommentBundle>> {
+    let cache = PR_COMMENTS_CACHE.get_or_init(|| PrCommentsCache {
+        inner: Mutex::new(HashMap::new()),
+        ttl: Duration::from_secs(60),
+        cap: 32,
+    });
+    if let Some(bundle) = cache.get(owner, repo, pr) {
+        return Ok(bundle);
+    }
+    let comments = match repo_root {
+        Some(root) => gh_pr_comments(owner, repo, pr, root)?,
+        None => gh_pr_comments_remote(owner, repo, pr)?,
+    };
+    let threads = match repo_root {
+        Some(root) => gh_pr_review_threads(owner, repo, pr, root)?,
+        None => gh_pr_review_threads_remote(owner, repo, pr)?,
+    };
+    let bundle = Arc::new(PrCommentBundle { comments, threads });
+    cache.insert(owner, repo, pr, Arc::clone(&bundle));
+    Ok(bundle)
+}
+
+/// Drop all cached PR comment bundles. Called on push: a comment pushed while
+/// the 60 s TTL is warm would otherwise be absent from the stale bundle and
+/// dropped from `github-comments.json` on the next pull (review-fix-loop A1).
+pub fn invalidate_pr_comments_cache() {
+    if let Some(cache) = PR_COMMENTS_CACHE.get() {
+        if let Ok(mut g) = cache.inner.lock() {
+            g.clear();
+        }
+    }
+}
+
+/// Head oid of a remote PR (no local clone needed) — the staleness baseline
+/// for remote tabs (review-fix-loop R1).
+pub fn gh_pr_head_oid_remote(owner: &str, repo: &str, pr: u64) -> Result<String> {
+    let remote = format!("{owner}/{repo}");
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr.to_string(),
+            "--repo",
+            &remote,
+            "--json",
+            "headRefOid",
+            "--jq",
+            ".headRefOid",
+        ])
+        .output()
+        .context("Failed to get remote PR head SHA")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: {}", stderr.trim());
+    }
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if oid.is_empty() {
+        anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
+    }
+    Ok(oid)
+}
+
 /// Fetch review thread state for a remote PR (no local clone needed).
 pub fn gh_pr_review_threads_remote(
     owner: &str,
@@ -1762,9 +1967,13 @@ fn post_pr_review(
     repo_root: Option<&str>,
 ) -> Result<()> {
     let payload = pr_review_payload_json(commit_id, event, body, comments);
-    let tmp_path = format!("/tmp/er_review_payload_{}.json", std::process::id());
-    std::fs::write(&tmp_path, serde_json::to_string(&payload)?)
-        .context("Failed to write review payload")?;
+    // NamedTempFile: O_EXCL + 0600, so no symlink/race exposure in world-
+    // writable /tmp and no world-readable payload (security review MEDIUM:
+    // the previous fixed-name /tmp/er_review_payload_{pid}.json allowed
+    // symlink overwrite, race-swap, and payload disclosure). Deleted on drop.
+    let mut tmp = tempfile::NamedTempFile::new().context("Failed to create review payload file")?;
+    serde_json::to_writer(&mut tmp, &payload).context("Failed to write review payload")?;
+    let tmp_path = tmp.path().to_string_lossy().into_owned();
 
     let mut cmd = Command::new("gh");
     cmd.args([
@@ -1780,7 +1989,7 @@ fn post_pr_review(
     }
     let output = cmd.output().context("Failed to submit PR review")?;
 
-    let _ = std::fs::remove_file(&tmp_path);
+    drop(tmp);
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -3399,5 +3608,108 @@ mod tests {
         let s = summarize_thread_addressing_from_graphql(json);
         assert!(s.all_addressed);
         assert_eq!(s.thread_count, 2);
+    }
+
+    // ── get_repo_info cache (O3) ──
+
+    #[test]
+    fn repo_info_cache_serves_within_ttl_and_expires() {
+        let cache = RepoInfoCache {
+            inner: Mutex::new(HashMap::new()),
+            ttl: Duration::from_millis(5),
+            cap: 4,
+        };
+        cache.insert("/r", ("owner".into(), "repo".into()));
+        let hit = cache.get("/r").expect("fresh entry serves");
+        assert_eq!((hit.0.as_str(), hit.1.as_str()), ("owner", "repo"));
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(cache.get("/r").is_none(), "expired entry must miss");
+    }
+
+    #[test]
+    fn repo_info_cache_evicts_over_cap() {
+        let cache = RepoInfoCache {
+            inner: Mutex::new(HashMap::new()),
+            ttl: Duration::from_secs(60),
+            cap: 2,
+        };
+        cache.insert("/a", ("o1".into(), "r1".into()));
+        cache.insert("/b", ("o2".into(), "r2".into()));
+        cache.insert("/c", ("o3".into(), "r3".into()));
+        assert!(cache.get("/a").is_none(), "oldest evicted at cap");
+        assert!(cache.get("/b").is_some());
+        assert!(cache.get("/c").is_some());
+    }
+
+    #[test]
+    fn get_repo_info_parses_origin_remote_and_serves_from_cache() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_str().unwrap();
+        git_init_with_remote(root, "https://github.com/Acme/discovery.git");
+        let (owner, repo) = get_repo_info(root).expect("parses origin remote");
+        assert_eq!((owner.as_str(), repo.as_str()), ("Acme", "discovery"));
+        // Second call is served from the process-wide cache (same value).
+        let (owner2, repo2) = get_repo_info(root).expect("cache serves");
+        assert_eq!((owner2.as_str(), repo2.as_str()), ("Acme", "discovery"));
+    }
+
+    // ── PR comment bundle cache (plan step 3) ──
+
+    #[test]
+    fn pr_comments_cache_serves_within_ttl_and_expires() {
+        let cache = PrCommentsCache {
+            inner: Mutex::new(HashMap::new()),
+            ttl: Duration::from_millis(5),
+            cap: 4,
+        };
+        let bundle = Arc::new(PrCommentBundle {
+            comments: Vec::new(),
+            threads: HashMap::new(),
+        });
+        cache.insert("o", "r", 1, Arc::clone(&bundle));
+        assert!(cache.get("o", "r", 1).is_some(), "fresh entry serves");
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(cache.get("o", "r", 1).is_none(), "expired entry must miss");
+    }
+
+    #[test]
+    fn pr_comments_cache_is_keyed_by_owner_repo_pr() {
+        let cache = PrCommentsCache {
+            inner: Mutex::new(HashMap::new()),
+            ttl: Duration::from_secs(60),
+            cap: 4,
+        };
+        cache.insert(
+            "o",
+            "r",
+            1,
+            Arc::new(PrCommentBundle {
+                comments: Vec::new(),
+                threads: HashMap::new(),
+            }),
+        );
+        assert!(cache.get("o", "r", 2).is_none(), "different PR misses");
+        assert!(
+            cache.get("o", "other", 1).is_none(),
+            "different repo misses"
+        );
+        assert!(
+            cache.get("other", "r", 1).is_none(),
+            "different owner misses"
+        );
+    }
+
+    fn git_init_with_remote(root: &str, remote: &str) {
+        let out = Command::new("git")
+            .args(["init", "-q", root])
+            .output()
+            .expect("git init");
+        assert!(out.status.success());
+        let out = Command::new("git")
+            .args(["remote", "add", "origin", remote])
+            .current_dir(root)
+            .output()
+            .expect("git remote add");
+        assert!(out.status.success());
     }
 }

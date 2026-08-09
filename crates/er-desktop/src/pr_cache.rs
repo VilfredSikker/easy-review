@@ -85,15 +85,11 @@ pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAt
         version: PR_CACHE_SCHEMA_VERSION,
         entries,
     };
-    let Ok(json) = serde_json::to_string_pretty(&payload) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
+        log::error!(
+            "[pr-cache] failed to persist PR cache at {}: {e}",
+            path.display()
+        );
     }
 }
 

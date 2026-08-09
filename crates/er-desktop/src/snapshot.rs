@@ -167,6 +167,22 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
     tab.repo_root.hash(&mut h);
+    // Tour mode displays the source view's diff — the same files, hunks, and
+    // per-file delta_keys (the pillar arrangement is carried by the `tour`
+    // snapshot field, not by the hunks). Share the source view's token so
+    // Guide↔Diff toggles reuse the differential map instead of clearing it
+    // and resending every hunk (a full ~200–400 ms snapshot + large IPC
+    // payload on big PRs — see review-fix-loop follow-up).
+    let mode = match mode {
+        "tour" => {
+            if tab.tour_context_is_pr() {
+                "pr"
+            } else {
+                "branch"
+            }
+        }
+        m => m,
+    };
     mode.hash(&mut h);
     tab.current_branch.hash(&mut h);
     tab.base_branch.hash(&mut h);
@@ -1424,6 +1440,21 @@ pub(crate) fn build_file_snapshot(
     pending_ai: Option<&PendingAiReplies>,
     include_hunks: bool,
 ) -> FileSnapshot {
+    build_file_snapshot_with_keys(source_index, f, tab, pending_ai, include_hunks, None)
+}
+
+/// Like [`build_file_snapshot`], but accepts precomputed `(lines_key, delta_key)`.
+/// The differential omitted-file path already hashed the file to compare against
+/// the sent-files map; passing the keys through avoids a second full hunk hash +
+/// thread build for every unchanged file on every snapshot.
+fn build_file_snapshot_with_keys(
+    source_index: usize,
+    f: &DiffFile,
+    tab: &TabState,
+    pending_ai: Option<&PendingAiReplies>,
+    include_hunks: bool,
+    precomputed: Option<(u64, u64)>,
+) -> FileSnapshot {
     let budget_omitted = !f.compacted && !include_hunks;
     let hunks = if include_hunks {
         build_hunks(f, tab, pending_ai)
@@ -1452,8 +1483,14 @@ pub(crate) fn build_file_snapshot(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(&fr.risk).to_string());
 
-    let lines_key = file_lines_key(f);
-    let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+    let (lines_key, delta_key) = match precomputed {
+        Some(keys) => keys,
+        None => {
+            let lines_key = file_lines_key(f);
+            let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+            (lines_key, delta_key)
+        }
+    };
 
     FileSnapshot {
         path: f.path.clone(),
@@ -1791,8 +1828,14 @@ fn build_snapshot_inner(
                         let delta_key =
                             file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
                         if guard.keys.get(&f.path) == Some(&delta_key) {
-                            let mut snap =
-                                build_file_snapshot(source_index, f, tab, pending_ai, false);
+                            let mut snap = build_file_snapshot_with_keys(
+                                source_index,
+                                f,
+                                tab,
+                                pending_ai,
+                                false,
+                                Some((lines_key, delta_key)),
+                            );
                             snap.is_lazy_stub = false;
                             snap.hunks_omitted = true;
                             return snap;
@@ -3474,7 +3517,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     }
 }
 
-fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
+pub(crate) fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;
     Some(PrSnapshot {
         number: pr.number,
@@ -3579,6 +3622,41 @@ mod tests {
         p.head_ref = head_ref.to_string();
         p.state = state.to_string();
         p
+    }
+
+    /// Guide↔Diff toggles must reuse the differential map: Tour mode displays
+    /// the source view's diff (same files/hunks/delta_keys), so its view token
+    /// must equal the source view's token — otherwise every toggle resends all
+    /// hunks (~200–400 ms snapshots on big PRs).
+    #[test]
+    fn tour_token_shares_source_view_token() {
+        let app = er_engine::app::App::new_for_test(vec![]);
+        let mut tab = TabState::new_for_test(vec![]);
+
+        // Guide opened from PR Diff → tour token == pr token.
+        tab.mode = DiffMode::PrDiff;
+        tab.tour_is_pr = false;
+        let pr_token = snapshot_view_token(&app, &tab, "pr");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            pr_token,
+            "tour from PR Diff must share the pr token"
+        );
+
+        // Guide opened from Branch → tour token == branch token, and the
+        // pr/branch tokens differ from each other.
+        tab.mode = DiffMode::Branch;
+        let branch_token = snapshot_view_token(&app, &tab, "branch");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = false;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            branch_token,
+            "tour from Branch must share the branch token"
+        );
+        assert_ne!(pr_token, branch_token, "pr and branch views differ");
     }
 
     /// A local PR tab (pr_number set, no remote) must key its GitHub status off
@@ -4167,6 +4245,40 @@ mod tests {
 
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
     const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    #[test]
+    fn precomputed_keys_produce_identical_snapshot() {
+        // The differential omitted-file path passes the keys it hashed for the
+        // delta comparison into the snapshot builder; the result must be byte
+        // identical to a fresh build (same cache_key, delta_key, hunks).
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let app = er_engine::app::App::new_for_test(files);
+        let tab = app.tab();
+        let f = &tab.files[0];
+        let fresh = build_file_snapshot(0, f, tab, None, true);
+        let lines_key = file_lines_key(f);
+        let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, None));
+        let precomputed =
+            build_file_snapshot_with_keys(0, f, tab, None, true, Some((lines_key, delta_key)));
+        assert_eq!(fresh.cache_key, precomputed.cache_key);
+        assert_eq!(fresh.delta_key, precomputed.delta_key);
+        assert_eq!(fresh.hunks.len(), precomputed.hunks.len());
+        for (a, b) in fresh.hunks.iter().zip(precomputed.hunks.iter()) {
+            assert_eq!(a.header, b.header);
+            assert_eq!(a.old_start, b.old_start);
+            assert_eq!(a.old_count, b.old_count);
+            assert_eq!(a.new_start, b.new_start);
+            assert_eq!(a.new_count, b.new_count);
+            assert_eq!(a.lines.len(), b.lines.len());
+            for (la, lb) in a.lines.iter().zip(b.lines.iter()) {
+                assert_eq!(la.old_num, lb.old_num);
+                assert_eq!(la.new_num, lb.new_num);
+                assert_eq!(la.kind, lb.kind);
+                assert_eq!(la.text, lb.text);
+            }
+        }
+        assert_eq!(fresh.is_lazy_stub, precomputed.is_lazy_stub);
+    }
 
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {
