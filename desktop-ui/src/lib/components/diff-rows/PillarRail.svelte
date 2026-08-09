@@ -1,5 +1,6 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
+  import { diffNav } from "$lib/stores/diffNav.svelte";
   import type { FileSnapshot } from "$lib/types";
   import type { PillarHeaderInfo } from "$lib/diffRenderModel";
 
@@ -35,6 +36,10 @@
   }
 
   function jumpToFile(f: FileSnapshot) {
+    // Scroll the diff viewport to the file first (mirrors FileTree.jumpToFile):
+    // the rail's model is the same pillar-ordered cross-file model, so the
+    // computed offset is correct in Guide mode. select_file then highlights it.
+    void diffNav.scrollToFile(f.path);
     void app.cmd("select_file", { idx: f.source_index });
   }
 

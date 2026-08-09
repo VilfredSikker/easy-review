@@ -431,7 +431,7 @@ fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> Arti
             required_files: vec!["triage.json"],
             schemas: json!({ "triage.json": triage_schema() }),
             examples: json!({ "triage.json": triage_example() }),
-            prompt: build_triage_review_prompt_prepared_diff("branch", output_dir),
+            prompt: build_triage_review_prompt_prepared_diff("branch", output_dir, "<DIFF_HASH>"),
             notes: vec![
                 "Write only triage.json — no review/order/checklist/summary.",
                 "Replace <DIFF_HASH> with the prepare_review diff_hash.",
@@ -447,7 +447,13 @@ fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> Arti
                 "summary.md": summary_md_schema(),
             }),
             examples: review_examples(),
-            prompt: build_review_prompt_prepared_diff("branch", output_dir, base, head),
+            prompt: build_review_prompt_prepared_diff(
+                "branch",
+                output_dir,
+                base,
+                head,
+                "<DIFF_HASH>",
+            ),
             notes: vec![
                 "All four files are required for upload_artifacts kind=review.",
                 "Every JSON file must share the same diff_hash.",
@@ -460,7 +466,12 @@ fn spec_for(kind: SidecarKind, output_dir: &str, base: &str, head: &str) -> Arti
             required_files: vec!["tour.json"],
             schemas: json!({ "tour.json": tour_schema() }),
             examples: json!({ "tour.json": tour_example() }),
-            prompt: build_tour_prompt_prepared_diff("PR diff", output_dir, "tour.json"),
+            prompt: build_tour_prompt_prepared_diff(
+                "PR diff",
+                output_dir,
+                "tour.json",
+                "<DIFF_HASH>",
+            ),
             notes: vec![
                 "Write only tour.json.",
                 "Every changed file appears once — as a pillar files[] entry or nested related[].",

@@ -3167,12 +3167,13 @@ impl App {
             handle.task.finished_at_ms = Some(now);
             handle.task.error = error.clone();
 
-            // Force reload only on matching tabs.
+            // Force reload only on matching tabs. No `last_ai_check = None`
+            // reset here (O5): the agent's freshly written sidecars have
+            // newer mtimes than the previous check, so `check_ai_files_changed`
+            // fires the reload naturally — while a tab whose poll already
+            // loaded the final files skips the redundant full re-read.
             for tab in self.tabs.iter_mut() {
                 if tab.matches_target(&target) {
-                    if matches!(status, CommandStatus::Done) {
-                        tab.last_ai_check = None;
-                    }
                     tab.push_synthetic_log("review", status_msg.clone(), AgentLogSource::Status);
                 }
             }

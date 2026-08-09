@@ -296,13 +296,7 @@ pub fn load() -> ProjectsFile {
 
 pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
     let path = config_path();
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("json.tmp");
-    let bytes = serde_json::to_vec_pretty(file)?;
-    std::fs::write(&tmp, &bytes)?;
-    std::fs::rename(&tmp, &path)?;
+    crate::persist::save_json_atomic(&path, file)?;
     invalidate_load_cache();
     Ok(())
 }

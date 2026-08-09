@@ -174,14 +174,10 @@ pub fn save_inbox_state(handle: &InboxHandle) {
         refresh_error_at_ms: snapshot.refresh_error_at_ms,
         last_refresh_ms: snapshot.last_refresh_ms,
     };
-    let Ok(json) = serde_json::to_string_pretty(&payload) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
+        log::error!(
+            "[inbox] failed to persist inbox state at {}: {e}",
+            path.display()
+        );
     }
 }

@@ -15,7 +15,7 @@ persistence. See `state/agent.md` for the `App` vs `TabState` vs desktop
 | `state/github_sync.rs` | GitHub comment sync capture/fetch/apply flow |
 | `state/background.rs` | App-level background review task identity and lifecycle |
 | `state/arena.rs` | Arena (multi-reviewer) run start/promotion glue |
-| `state/remote_diff_sync.rs` | Remote PR diff polling |
+| `state/preload.rs` | Background branch-scope diff preload (desktop) — one-shot consume + validation |
 | `filter.rs` | Composable filter system (parse, apply, presets) |
 | `card_ai_context.rs` / `card_ai_spawn.rs` | Per-card AI invocation context + subprocess spawn |
 

@@ -98,9 +98,27 @@ fn build_prompt(kind: SidecarKind, er_dir: &str, base: &str, head: &str) -> Stri
         build_triage_review_prompt_prepared_diff,
     };
     match kind {
-        SidecarKind::Triage => build_triage_review_prompt_prepared_diff("branch", er_dir),
-        SidecarKind::Review => build_review_prompt_prepared_diff("branch", er_dir, base, head),
-        SidecarKind::Tour => build_tour_prompt_prepared_diff("PR diff", er_dir, "tour.json"),
+        SidecarKind::Triage => build_triage_review_prompt_prepared_diff(
+            "branch",
+            er_dir,
+            &crate::ai::prepared_diff::diff_tmp_hash(er_dir)
+                .unwrap_or_else(|| "<DIFF_HASH>".into()),
+        ),
+        SidecarKind::Review => build_review_prompt_prepared_diff(
+            "branch",
+            er_dir,
+            base,
+            head,
+            &crate::ai::prepared_diff::diff_tmp_hash(er_dir)
+                .unwrap_or_else(|| "<DIFF_HASH>".into()),
+        ),
+        SidecarKind::Tour => build_tour_prompt_prepared_diff(
+            "PR diff",
+            er_dir,
+            "tour.json",
+            &crate::ai::prepared_diff::diff_tmp_hash(er_dir)
+                .unwrap_or_else(|| "<DIFF_HASH>".into()),
+        ),
     }
 }
 
@@ -199,8 +217,9 @@ pub fn prepare_pr_diff_tmp(
         bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
     }
     std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
+    crate::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
     let diff_path = format!("{er_dir}/diff-tmp");
-    std::fs::write(&diff_path, &raw).with_context(|| format!("write {diff_path}"))?;
     Ok((er_dir, diff_path))
 }
 
