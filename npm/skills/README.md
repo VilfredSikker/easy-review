@@ -57,8 +57,8 @@ From repo root (after version bump in `package.json`):
 cd npm/skills && npm publish --access public
 ```
 
-`prepack` syncs skills from `../../skills/` and inlines shared docs.
+`prepack` syncs `source/` → `skills/` and inlines shared docs.
 
 ## Source
 
-Canonical skill sources: [`skills/`](../../skills/) at the repo root.
+Edit skill markdown under [`source/`](source/) (`source/er-review/SKILL.md`, etc.). Shared snippets live in `source/_shared/`. Run `npm run sync` after edits; `prepare`/`prepack` run it automatically.

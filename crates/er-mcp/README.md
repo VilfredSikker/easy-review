@@ -48,7 +48,7 @@ Install with **`bunx @easy-review/skills`** (or `npx @easy-review/skills`):
 | `er-respond` | Reply on PR threads |
 | `er-saved` | Pin / list saved work |
 
-One skill: `bunx @easy-review/skills -s er-review`. Source: [`skills/`](../../skills/).
+One skill: `bunx @easy-review/skills -s er-review`. Source: [`npm/skills/source/`](../../npm/skills/source/).
 
 Guided tour:
 

@@ -1,6 +1,6 @@
 {
   "name": "@easy-review/skills",
-  "version": "0.4.8",
+  "version": "0.4.9",
   "description": "Install Easy Review agent skills (er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved) for Cursor, Claude Code, and Codex.",
   "license": "MIT",
   "repository": {
@@ -39,6 +39,7 @@
     "skills": "^1.5.22"
   },
   "scripts": {
+    "sync": "node scripts/sync-skills.js",
     "prepare": "node scripts/sync-skills.js",
     "prepack": "node scripts/sync-skills.js",
     "test": "node --test lib/*.test.js scripts/*.test.js",
