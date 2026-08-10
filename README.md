@@ -74,6 +74,16 @@ cargo install --path crates/er-mcp
 Tool reference: [`crates/er-mcp/README.md`](crates/er-mcp/README.md).
 Skills installer: [`npm/skills`](npm/skills/) (`bunx @easy-review/skills`).
 
+## Herdr plugin
+
+[Herdr](https://herdr.dev) users can install the Easy Review plugin to open `er` in a workspace tab, auto-open review on new worktrees, and Ctrl-click GitHub PR links (`er --remote`).
+
+```bash
+herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review --yes
+```
+
+Guide: [Herdr integration](https://vilfredsikker.github.io/easy-review/guide/herdr.html) — in-repo: [`docs/guide/herdr.html`](docs/guide/herdr.html), sources: [`tools/herdr-easy-review`](tools/herdr-easy-review).
+
 ## Documentation
 
 📚 The full guide is at **[vilfredsikker.github.io/easy-review/guide](https://vilfredsikker.github.io/easy-review/guide/)** — [installation](https://vilfredsikker.github.io/easy-review/guide/installation.html), [quick start](https://vilfredsikker.github.io/easy-review/guide/quick-start.html), core concepts, keybindings, the AI review workflow, configuration, storage, GitHub sync, and troubleshooting for both the terminal UI and the desktop app.

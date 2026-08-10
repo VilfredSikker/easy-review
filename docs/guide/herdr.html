@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Herdr integration — easy-review docs</title>
+  <meta name="description" content="Install and use the Easy Review Herdr plugin: review the current branch in a tab, auto-open on new worktrees, and Ctrl-click GitHub PR links.">
+  <link rel="stylesheet" href="assets/docs.css">
+</head>
+<body>
+  <main class="content">
+    <p class="eyebrow">Getting Started</p>
+    <h1>Herdr integration</h1>
+    <p class="lead">
+      <a href="https://herdr.dev" target="_blank" rel="noopener">Herdr</a> manages git worktrees and agent
+      workspaces. The Easy Review plugin opens <code>er</code> inside Herdr — in a Review tab for the checked-out
+      branch, automatically when a worktree is created, or from a Ctrl-clicked GitHub pull request URL.
+    </p>
+
+    <h2>Prerequisites</h2>
+    <ul>
+      <li><strong>Herdr 0.7.0+</strong> — <a href="https://herdr.dev" target="_blank" rel="noopener">herdr.dev</a></li>
+      <li><strong><code>er</code></strong> on <code>PATH</code> — see <a href="installation.html">Installation</a></li>
+      <li><strong>git</strong> — required by <code>er</code> (and optionally <strong>gh</strong> for PR sync)</li>
+    </ul>
+
+    <h2>Install the plugin</h2>
+
+    <h3>From GitHub</h3>
+    <pre><code>herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review --yes
+herdr plugin list
+herdr plugin action list --plugin easy-review</code></pre>
+    <p>
+      <code>plugin install</code> clones the plugin into Herdr-managed storage and registers it globally.
+      Use <code>--yes</code> to skip the interactive preview when you already trust the source.
+    </p>
+
+    <h3>Local development (link)</h3>
+    <p>While working on the plugin in a clone of this repository:</p>
+    <pre><code>herdr plugin link /path/to/easy-review/tools/herdr-easy-review
+herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
+
+    <h2>What you get</h2>
+    <table>
+      <thead><tr><th>Feature</th><th>How to use it</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><strong>Review tab</strong></td>
+          <td>
+            Opens <code>er</code> in a Herdr tab. The pane cwd is the workspace checkout, so you review the
+            branch checked out there.
+            <pre><code>herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Auto-open on new worktree</strong></td>
+          <td>
+            When Herdr creates a worktree, the plugin opens a Review tab for that workspace in the background
+            (<code>--no-focus</code>) so you can keep working in the main pane.
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Review current branch</strong></td>
+          <td>
+            Action <code>easy-review.review-branch</code> — bind it to a key (see below) or invoke from the
+            command palette.
+          </td>
+        </tr>
+        <tr>
+          <td><strong>Review a PR link</strong></td>
+          <td>
+            <strong>Ctrl-click</strong> (Control on all platforms, including macOS) a
+            <code>https://github.com/…/pull/N</code> URL in the terminal. Herdr routes it to
+            <code>er --remote &lt;url&gt;</code> so you can review without a local clone of that repo.
+          </td>
+        </tr>
+      </tbody>
+    </table>
+
+    <h2>Optional keybinding</h2>
+    <p>Add to <code>~/.config/herdr/config.toml</code>:</p>
+    <pre><code>[[keys.command]]
+key = "prefix+r"
+type = "plugin_action"
+command = "easy-review.review-branch"
+description = "Review branch in Easy Review"</code></pre>
+
+    <h2>Troubleshooting</h2>
+    <ul>
+      <li><strong>“Easy Review (er) is not installed.”</strong> — Install <code>er</code> and ensure it is on
+      <code>PATH</code> inside Herdr panes (same shell profile as your terminal).</li>
+      <li><strong>Plugin not listed.</strong> — Run <code>herdr plugin list</code>. Re-link or reinstall if the
+      manifest path moved.</li>
+      <li><strong>PR link does nothing.</strong> — Link handlers require a modified click (Ctrl+click). Plain
+      clicks still open the browser.</li>
+      <li><strong>Logs.</strong> — <code>herdr plugin log list --plugin easy-review</code></li>
+    </ul>
+
+    <div class="callout note">
+      <span class="ico">◆</span>
+      <div>
+        <p>
+          Plugins run as your user and can call the full Herdr CLI. This plugin only shells out to
+          <code>herdr</code> and <code>er</code>. Read
+          <code>tools/herdr-easy-review/herdr-plugin.toml</code> and the <code>*.sh</code> scripts before
+          installing from an untrusted source.
+        </p>
+      </div>
+    </div>
+
+    <h2>Related</h2>
+    <ul>
+      <li><a href="mcp.html">MCP server setup</a> — wire Claude / Cursor / Codex to Easy Review</li>
+      <li><a href="github.html">GitHub &amp; pull requests</a> — PR diff modes and comment sync in <code>er</code></li>
+      <li><a href="https://herdr.dev/docs/plugins/" target="_blank" rel="noopener">Herdr plugin docs</a></li>
+    </ul>
+  </main>
+  <script src="assets/docs.js"></script>
+</body>
+</html>

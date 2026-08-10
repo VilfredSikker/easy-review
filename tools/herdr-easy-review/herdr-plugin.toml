@@ -1,0 +1,36 @@
+id = "easy-review"
+name = "Easy Review"
+version = "0.1.0"
+min_herdr_version = "0.7.0"
+description = "Open the Easy Review TUI on the current branch or a clicked PR."
+platforms = ["linux", "macos", "windows"]
+
+[[panes]]
+id = "review"
+title = "Review"
+placement = "tab"
+command = ["bash", "open.sh"]
+
+# Open the Review tab automatically whenever a new worktree is created.
+# The event hook runs in the context of the new workspace, so the pane's
+# cwd is the worktree checkout — `er` picks up the checked-out branch.
+[[events]]
+on = "worktree.created"
+command = ["bash", "open-branch.sh"]
+
+[[link_handlers]]
+id = "github-pr"
+title = "Review PR in Easy Review"
+pattern = "^https://github\\.com/[^/]+/[^/]+/pull/[0-9]+/?$"
+action = "review-pr"
+
+[[actions]]
+id = "review-pr"
+title = "Review PR in Easy Review"
+command = ["bash", "open-pr.sh"]
+
+[[actions]]
+id = "review-branch"
+title = "Review current branch in Easy Review"
+contexts = ["workspace"]
+command = ["bash", "open-branch.sh"]
