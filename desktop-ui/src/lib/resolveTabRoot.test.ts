@@ -8,6 +8,7 @@ const tab = (overrides: Partial<TabSummary> = {}): TabSummary => ({
   kind: "local_branch",
   branch: "feat",
   pr_number: null,
+  remote: null,
   repo_root: "/Users/me/Projects/discovery",
   is_active: true,
   change_token: "",
@@ -73,6 +74,7 @@ describe("resolveTabRoot", () => {
           is_pr: false,
           pr_number: null,
           is_merged: false,
+          remote: null,
         },
         {
           path: "/Users/me/Projects/discovery/.claude/worktrees/vilfred+dev-6490-1-frontend-and-backend-mock",
@@ -81,6 +83,7 @@ describe("resolveTabRoot", () => {
           is_pr: true,
           pr_number: 6490,
           is_merged: false,
+          remote: null,
         },
       ],
     });

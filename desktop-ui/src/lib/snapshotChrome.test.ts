@@ -37,6 +37,7 @@ function tab(partial: Partial<TabSummary> & Pick<TabSummary, "idx" | "label">): 
     kind: "remote_pr",
     branch: null,
     pr_number: null,
+    remote: null,
     repo_root: "/repo",
     is_active: false,
     change_token: "t",

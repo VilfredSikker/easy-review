@@ -595,6 +595,10 @@ pub struct TabSummary {
     pub kind: String, // "working" | "local_branch" | "remote_pr"
     pub branch: Option<String>,
     pub pr_number: Option<u64>,
+    /// The repo (owner/repo slug) this tab actually views — may differ from
+    /// the active project's remote (worktrees/branches from other repos).
+    #[serde(default)]
+    pub remote: Option<String>,
     pub repo_root: String,
     pub is_active: bool,
     pub change_token: String,
@@ -739,13 +743,31 @@ pub(crate) fn resolve_github_status_key(
         .unwrap_or(&tab.current_branch);
 
     // 2. Local PR tab: trust the tab's own pr_number; only resolve the slug.
+    //    When the tab knows its own remote (local PR tabs resolve it from the
+    //    repo's git remote), restrict the slug search to that repo — otherwise
+    //    a PR number that exists in several repos (e.g. #73 in both easy-review
+    //    and design-system) matches an arbitrary repo's PR.
     if let Some(number) = tab.pr_number {
+        let matches = |slug: &str, prs: &[PrInfo]| {
+            let in_repo = tab
+                .remote_repo
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case(slug))
+                .unwrap_or(true);
+            in_repo && prs.iter().any(|p| p.number == number)
+        };
         return pr_cache
             .iter()
-            .find(|(_, prs)| prs.iter().any(|p| p.number == number))
+            .find(|(slug, prs)| matches(slug, prs))
             .or_else(|| {
                 pr_cache
                     .iter()
+                    .filter(|(slug, _)| {
+                        tab.remote_repo
+                            .as_deref()
+                            .map(|r| r.eq_ignore_ascii_case(slug))
+                            .unwrap_or(true)
+                    })
                     .find(|(_, prs)| prs.iter().any(|p| p.head_ref == branch))
             })
             .and_then(|(slug, _)| {
@@ -754,16 +776,28 @@ pub(crate) fn resolve_github_status_key(
             });
     }
 
-    // 3. Plain branch / working tab: match by head_ref, prefer an OPEN PR.
-    pr_cache.iter().find_map(|(slug, prs)| {
-        prs.iter()
-            .filter(|p| p.head_ref == branch)
-            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-            .and_then(|p| {
-                slug.split_once('/')
-                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-            })
-    })
+    // 3. Plain branch / working tab: match by head_ref, preferring an OPEN PR.
+    //    When the tab knows its own remote (branch tabs resolve it from the
+    //    repo's git remote), restrict the match to that repo — otherwise a
+    //    branch name that exists in several repos matches an arbitrary PR in
+    //    the wrong one.
+    pr_cache
+        .iter()
+        .filter(|(slug, _)| {
+            tab.remote_repo
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case(slug))
+                .unwrap_or(true)
+        })
+        .find_map(|(slug, prs)| {
+            prs.iter()
+                .filter(|p| p.head_ref == branch)
+                .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                .and_then(|p| {
+                    slug.split_once('/')
+                        .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+                })
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1031,6 +1065,10 @@ pub struct WorktreeSnapshot {
     pub is_pr: bool,
     pub pr_number: Option<u64>,
     pub is_merged: bool,
+    /// The repo (owner/repo slug) this worktree belongs to, from its own git
+    /// remote — may differ from the active project's remote.
+    #[serde(default)]
+    pub remote: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1936,6 +1974,7 @@ fn build_snapshot_inner(
                 kind: kind.to_string(),
                 branch: t.local_branch_view.clone(),
                 pr_number: t.pr_number,
+                remote: t.remote_repo.clone(),
                 repo_root: t.repo_root.clone(),
                 is_active: i == active_tab,
                 change_token: t.branch_diff_hash.clone(),
@@ -2391,8 +2430,8 @@ struct WorktreesMetaKey {
     fingerprint: u64,
 }
 
-/// Per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by worktree path.
-type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool)>;
+/// Per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed by worktree path.
+type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool, Option<String>)>;
 
 /// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
 ///
@@ -2452,18 +2491,20 @@ fn build_worktrees(
     let meta = worktrees_meta_cached(key, || {
         wts.iter()
             .map(|wt| {
-                (
-                    wt.path.clone(),
-                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged),
-                )
+                let (is_pr, pr_number, is_merged) =
+                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
+                let remote = crate::projects::resolve_repo_remote(&wt.path);
+                (wt.path.clone(), (is_pr, pr_number, is_merged, remote))
             })
             .collect()
     });
 
     wts.into_iter()
         .map(|wt| {
-            let (is_pr, pr_number, is_merged) =
-                meta.get(&wt.path).copied().unwrap_or((false, None, false));
+            let (is_pr, pr_number, is_merged, remote) = meta
+                .get(&wt.path)
+                .cloned()
+                .unwrap_or((false, None, false, None));
             WorktreeSnapshot {
                 is_current: wt.path == current_root,
                 branch: wt.branch,
@@ -2471,6 +2512,7 @@ fn build_worktrees(
                 is_pr,
                 pr_number,
                 is_merged,
+                remote,
             }
         })
         .collect()
@@ -3684,6 +3726,39 @@ mod tests {
         );
     }
 
+    /// A local PR tab that knows its own remote must not resolve the slug from
+    /// a DIFFERENT repo that happens to have the same PR number — the exact
+    /// "opens easy-review#73 while reviewing design-system#73" bug.
+    #[test]
+    fn github_key_local_pr_tab_restricts_slug_to_own_remote() {
+        let branch = "feat/floating-toolbar-design-system";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        // Same PR number in two repos: the tab's own repo and another.
+        cache.insert(
+            "reshapebiotech/design-system".to_string(),
+            vec![pr_with(73, branch, "OPEN")],
+        );
+        cache.insert(
+            "VilfredSikker/easy-review".to_string(),
+            vec![pr_with(73, "claude/issue-69-reference-highlight", "MERGED")],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = Some(73);
+        tab.remote_repo = Some("reshapebiotech/design-system".to_string());
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some((
+                "reshapebiotech".to_string(),
+                "design-system".to_string(),
+                73
+            )),
+            "must resolve the PR in the tab's own repo, not the colliding easy-review#73"
+        );
+    }
+
     /// Even if the tab's own PR isn't in the cache yet, the slug is recovered
     /// from any PR on the head branch and the tab's number is forced.
     #[test]
@@ -3734,6 +3809,28 @@ mod tests {
         assert_eq!(
             resolve_github_status_key(&tab, &cache),
             Some(("octo".to_string(), "cat".to_string(), 11))
+        );
+    }
+
+    /// A branch tab that knows its own remote must not match a PR in a
+    /// different repo, even when the head branch name collides there.
+    #[test]
+    fn github_key_branch_tab_restricts_to_own_remote() {
+        let branch = "feature/x";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        cache.insert("octo/cat".to_string(), vec![pr_with(11, branch, "OPEN")]);
+        // Same branch name exists in a different repo.
+        cache.insert("other/repo".to_string(), vec![pr_with(99, branch, "OPEN")]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = None;
+        tab.remote_repo = Some("octo/cat".to_string());
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some(("octo".to_string(), "cat".to_string(), 11)),
+            "must match the PR in the tab's own repo, not the colliding repo"
         );
     }
 
@@ -4388,7 +4485,7 @@ mod tests {
         let compute = || {
             calls.set(calls.get() + 1);
             let mut m = HashMap::new();
-            m.insert("/wt".to_string(), (true, Some(7u64), false));
+            m.insert("/wt".to_string(), (true, Some(7u64), false, None));
             m
         };
         let key = || WorktreesMetaKey {
@@ -4402,7 +4499,7 @@ mod tests {
         // First call: cache miss → compute runs once, value flows through.
         let v1 = worktrees_meta_cached(key(), compute);
         assert_eq!(calls.get(), 1);
-        assert_eq!(v1.get("/wt").copied(), Some((true, Some(7), false)));
+        assert_eq!(v1.get("/wt").cloned(), Some((true, Some(7), false, None)));
 
         // Same key within TTL: cache hit → no recompute, same value.
         let v2 = worktrees_meta_cached(key(), compute);
@@ -4411,7 +4508,7 @@ mod tests {
             1,
             "same worktree set within TTL must reuse cached meta, not respawn git subprocesses"
         );
-        assert_eq!(v2.get("/wt").copied(), Some((true, Some(7), false)));
+        assert_eq!(v2.get("/wt").cloned(), Some((true, Some(7), false, None)));
 
         // Changed fingerprint (worktree added/removed/switched): miss → recompute.
         let changed = WorktreesMetaKey {

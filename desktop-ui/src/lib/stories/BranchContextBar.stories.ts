@@ -55,6 +55,7 @@ export const RemotePrTab: Story = {
           kind: "remote_pr",
           branch: null,
           pr_number: 154,
+          remote: "octocat/Hello-World",
           repo_root: "",
           is_active: true,
           change_token: "",

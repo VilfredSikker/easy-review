@@ -117,14 +117,14 @@ describe("resolveActivePrUrl", () => {
     expect(resolveActivePrUrl(snap)).toBe("https://github.com/x/y/pull/99");
   });
 
-  it("builds URL from project remote and tab pr_number", () => {
+  it("builds URL from tab remote first, falling back to project remote", () => {
     const snap = minimalSnapshot({
       projects: [
         {
           id: "p1",
           name: "proj",
           root_path: "/tmp",
-          remote: "git@github.com:org/repo.git",
+          remote: "git@github.com:wrong/repo.git",
           is_active: true,
           local_branches: [],
           auto_branches: [],
@@ -142,8 +142,59 @@ describe("resolveActivePrUrl", () => {
           kind: "working",
           branch: "feat",
           pr_number: 42,
+          remote: "git@github.com:org/repo.git",
           repo_root: "/tmp",
           is_active: true,
+          change_token: "",
+        },
+      ],
+      active_tab: 0,
+    });
+    // The tab's own remote wins over the active project's remote — a project
+    // may point at a different repo than the branch actually being viewed.
+    expect(resolveActivePrUrl(snap)).toBe("https://github.com/org/repo/pull/42");
+  });
+
+  it("falls back to the current worktree's remote when the tab has none", () => {
+    const snap = minimalSnapshot({
+      projects: [
+        {
+          id: "p1",
+          name: "proj",
+          root_path: "/tmp",
+          remote: "git@github.com:wrong/repo.git",
+          is_active: true,
+          local_branches: [],
+          auto_branches: [],
+          saved_prs: [],
+          my_prs: [],
+          prs_to_review: [],
+          recent_prs: [],
+          recently_merged: [],
+        },
+      ],
+      worktrees: [
+        {
+          path: "/tmp/wt",
+          branch: "feat",
+          is_current: true,
+          is_pr: false,
+          pr_number: 42,
+          is_merged: false,
+          remote: "git@github.com:org/repo.git",
+        },
+      ],
+      tabs: [
+        {
+          idx: 0,
+          label: "feat",
+          kind: "working",
+          branch: "feat",
+          pr_number: null,
+          remote: null,
+          repo_root: "/tmp",
+          is_active: true,
+          change_token: "",
         },
       ],
       active_tab: 0,
