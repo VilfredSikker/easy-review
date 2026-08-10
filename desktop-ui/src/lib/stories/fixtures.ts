@@ -413,9 +413,9 @@ export const prDraft: PrSnapshot = {
 // ─── worktrees + commits ────────────────────────────────────────────────────
 
 export const worktreesMulti: WorktreeSnapshot[] = [
-  { path: "/Users/vilfred/Projects/discovery-platform", branch: "show-experiment-params", is_current: true, is_pr: false, pr_number: null, is_merged: false },
-  { path: "/Users/vilfred/Projects/discovery-platform/.worktrees/fix-forward-button", branch: "fix-forward-button", is_current: false, is_pr: true, pr_number: 142, is_merged: false },
-  { path: "/Users/vilfred/Projects/.codex/worktrees/c175", branch: "c175", is_current: false, is_pr: false, pr_number: null, is_merged: true },
+  { path: "/Users/vilfred/Projects/discovery-platform", branch: "show-experiment-params", is_current: true, is_pr: false, pr_number: null, is_merged: false, remote: "Vilfred/discovery-platform" },
+  { path: "/Users/vilfred/Projects/discovery-platform/.worktrees/fix-forward-button", branch: "fix-forward-button", is_current: false, is_pr: true, pr_number: 142, is_merged: false, remote: "Vilfred/discovery-platform" },
+  { path: "/Users/vilfred/Projects/.codex/worktrees/c175", branch: "c175", is_current: false, is_pr: false, pr_number: null, is_merged: true, remote: "Vilfred/discovery-platform" },
 ];
 
 const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -435,6 +435,7 @@ export const tabsWorkingActive: TabSummary[] = [
     kind: "working",
     branch: "show-experiment-params",
     pr_number: 142,
+    remote: "Vilfred/discovery-platform",
     repo_root: "/Users/vilfred/Projects/discovery-platform",
     is_active: true,
     change_token: "",
@@ -551,6 +552,7 @@ export const remoteOnlyProjectSnapshot: AppSnapshot = {
       kind: "remote_pr",
       branch: null,
       pr_number: 123,
+      remote: "owner/repo",
       repo_root: "",
       is_active: true,
       change_token: "",

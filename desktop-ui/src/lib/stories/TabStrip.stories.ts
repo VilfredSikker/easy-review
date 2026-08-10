@@ -8,6 +8,7 @@ function tab(overrides: Partial<TabSummary> & { idx: number; label: string }): T
     kind: "working",
     branch: null,
     pr_number: null,
+    remote: null,
     repo_root: "/Users/me/code/repo",
     is_active: false,
     change_token: "",

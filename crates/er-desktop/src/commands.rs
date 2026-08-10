@@ -5393,6 +5393,12 @@ fn build_local_branch_tab(
 
     new_tab.local_branch_view = Some(name);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    // The tab's own remote is the repo actually being viewed — NOT the active
+    // project's remote (a project may point at a different repo than the
+    // worktree/branch it reviews). Resolve it from this repo's git remote so
+    // PR links, the GitHub status card, and the PR-list cache all key on the
+    // right repo.
+    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
     new_tab.sync_managed_storage();
     let t_local_refresh = std::time::Instant::now();
     match new_tab.refresh_diff_without_remote_fetch_quick() {
@@ -7376,6 +7382,10 @@ pub fn open_project_branch(
     .map_err(|e| e.to_string())?;
     new_tab.local_branch_view = Some(branch);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    // The tab's own remote is the repo actually being viewed, not the active
+    // project's remote — resolve it from this repo's git remote (see
+    // `build_local_branch_tab`).
+    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
     new_tab.sync_managed_storage();
     refresh_branch_open_diff(&mut new_tab)?;
 

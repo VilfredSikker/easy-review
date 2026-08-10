@@ -135,7 +135,7 @@ export const SparseData: Story = {
       ...emptySnapshot,
       branch: "main",
       base: "origin/main",
-      worktrees: [{ path: "/Users/me/repo", branch: "main", is_current: true, is_pr: false, pr_number: null, is_merged: false }],
+      worktrees: [{ path: "/Users/me/repo", branch: "main", is_current: true, is_pr: false, pr_number: null, is_merged: false, remote: null }],
     },
   },
 };

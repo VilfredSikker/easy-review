@@ -239,6 +239,8 @@ export interface WorktreeSnapshot {
   is_pr: boolean;
   pr_number: number | null;
   is_merged: boolean;
+  /** Repo (owner/repo slug) this worktree belongs to, from its own git remote. */
+  remote: string | null;
 }
 
 export interface BranchInfo {
@@ -324,6 +326,8 @@ export interface TabSummary {
   kind: "working" | "local_branch" | "remote_pr";
   branch: string | null;
   pr_number: number | null;
+  /** Repo (owner/repo slug) this tab actually views — may differ from the active project's remote. */
+  remote: string | null;
   repo_root: string;
   is_active: boolean;
   change_token: string;

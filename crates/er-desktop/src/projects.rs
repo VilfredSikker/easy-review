@@ -361,6 +361,12 @@ fn query_remote(root_path: &str) -> Option<String> {
     }
 }
 
+/// Resolve the `owner/repo` slug for a repo root from its own git remote.
+/// Returns `None` when the repo has no GitHub remote (offline / no gh).
+pub fn resolve_repo_remote(root_path: &str) -> Option<String> {
+    query_remote(root_path).filter(|s| !s.is_empty())
+}
+
 /// Lightweight tab identity for project registration (testable without git/gh).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TabProjectRef {

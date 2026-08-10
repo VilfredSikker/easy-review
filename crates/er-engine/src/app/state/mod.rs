@@ -1111,6 +1111,9 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{pr_number}/head"));
         tab.pr_number = Some(pr_number);
+        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+            .ok()
+            .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
         tab.last_diff_head_oid = head_oid;
         tab.mode = DiffMode::PrDiff;
@@ -1192,6 +1195,9 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
+        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+            .ok()
+            .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_commits =
             crate::github::gh_pr_commits(&tab.repo_root, pr_number, 250).unwrap_or_default();
         tab.mode = DiffMode::Branch;
@@ -1220,6 +1226,9 @@ impl TabState {
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{}/head", pr_number));
         tab.pr_number = Some(pr_number);
+        tab.remote_repo = crate::github::get_repo_info(&tab.repo_root)
+            .ok()
+            .map(|(owner, repo)| format!("{owner}/{repo}"));
         tab.pr_data = pr_data;
         tab.pr_commits = pr_commits;
         tab.mode = DiffMode::Branch;

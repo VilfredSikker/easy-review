@@ -38,7 +38,16 @@ export function resolveActivePrUrl(snapshot: AppSnapshot | null): string | null 
 
   if (prNumber == null) return null;
 
-  const remote = snapshot.projects.find((p) => p.is_active)?.remote;
+  // Resolve the repo from the tab's own remote first — a project may point at
+  // a different repo than the branch/PR actually being viewed (e.g. a project
+  // registered under the EasyReview repo reviewing a PR from another repo).
+  // Fall back to the current worktree's remote, then the active project's.
+  const worktreeRemote = snapshot.worktrees.find((w) => w.is_current)?.remote ?? null;
+  const remote =
+    activeTab?.remote ??
+    worktreeRemote ??
+    snapshot.projects.find((p) => p.is_active)?.remote ??
+    null;
   if (!remote) return null;
 
   const slug = parseGithubSlug(remote);
