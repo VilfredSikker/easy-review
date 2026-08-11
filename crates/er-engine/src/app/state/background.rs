@@ -64,11 +64,15 @@ impl BackgroundTaskTarget {
 /// identical (e.g. a security pass and a professor pass running side by side).
 ///
 /// Accepts the raw `BackgroundTask::kind` string: `"review"`/`"general"`,
-/// `"expert:<id>"`, `"professor"`, `"triage"`, or `"tour"`.
+/// `"expert:<id>"`, `"professor"`, `"triage"`, `"tour"`, or `"diagram:<kind>"`.
 pub fn kind_label(kind: &str) -> String {
     match kind {
         "" | "review" | "general" => "Review".to_string(),
         "tour" => "Guide".to_string(),
+        other if other.starts_with("diagram:") => {
+            let sub = other.trim_start_matches("diagram:");
+            format!("Diagram ({})", crate::ai::diagram_kind_label(sub))
+        }
         other => {
             // expert:<id>, professor, and triage all resolve through the
             // shared finding-agent label map.
@@ -278,6 +282,8 @@ mod tests {
         assert_eq!(kind_label("triage"), "Triage");
         assert_eq!(kind_label("expert:security"), "Security");
         assert_eq!(kind_label("expert:performance"), "Performance");
+        assert_eq!(kind_label("diagram:mental-model"), "Diagram (Mental model)");
+        assert_eq!(kind_label("diagram:custom"), "Diagram (Custom)");
     }
 
     #[test]

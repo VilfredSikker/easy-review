@@ -291,6 +291,26 @@ export const aiWithFindings: AiSnapshot = {
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [
+    {
+      id: "mental-model",
+      kind: "mental-model",
+      title: "Variant warning copy flow",
+      prompt: "",
+      mermaid: "flowchart TD\n  checkout[\"Checkout page\"]\n  copy[\"variant-warning-copy.ts\"]\n  resolution[\"experiment-template-resolution.ts\"]\n  checkout -->|\"renders warnings\"| copy\n  copy -->|\"resolves template\"| resolution",
+      fresh: true,
+      created_at: "2026-08-11T10:00:00Z",
+    },
+    {
+      id: "flows",
+      kind: "flows",
+      title: "Warning resolution flow",
+      prompt: "",
+      mermaid: "sequenceDiagram\n  participant UI as Checkout\n  participant Lib as WarningCopy\n  UI->>Lib: getWarning(variant)\n  Lib-->>UI: message",
+      fresh: false,
+      created_at: "2026-08-11T09:00:00Z",
+    },
+  ],
 };
 
 export const aiEmpty: AiSnapshot = {
@@ -312,6 +332,7 @@ export const aiEmpty: AiSnapshot = {
   has_review_json: false,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [],
 };
 
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
@@ -365,6 +386,7 @@ export const aiProfessorOnly: AiSnapshot = {
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [],
 };
 
 /** General + Professor + Security for multi-agent dropdown. */

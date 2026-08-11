@@ -3375,6 +3375,137 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
     .await
 }
 
+/// Generate a mermaid diagram of the active view's diff (`kind` =
+/// `mental-model` | `subsystems` | `flows` | `custom`). The agent writes one
+/// sidecar, `{er_dir}/diagrams/<kind>.json` (presets overwrite on re-run;
+/// customs get a timestamped id and accumulate). Diagrams are per-view-bucket,
+/// like triage: the active bucket is both write target and (via
+/// `load_ai_state`) read source. The mtime poll picks up the result.
+#[tauri::command]
+pub async fn generate_diagram(
+    kind: String,
+    custom_prompt: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !er_engine::ai::is_valid_diagram_kind(&kind) {
+            return Err(format!("Unknown diagram kind: {kind}"));
+        }
+        let custom_prompt = custom_prompt
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        if kind == er_engine::ai::DIAGRAM_KIND_CUSTOM && custom_prompt.is_none() {
+            return Err("A custom diagram needs a prompt".to_string());
+        }
+
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = "branch".to_string();
+
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        let diagrams_dir = format!("{er_dir}/diagrams");
+        std::fs::create_dir_all(&diagrams_dir)
+            .map_err(|e| format!("Failed to create diagrams directory: {e}"))?;
+
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to diagram".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+
+        // Presets regenerate in place (`mental-model.json`, …); each custom
+        // prompt produces a new timestamped diagram so they accumulate.
+        let output_file = if kind == er_engine::ai::DIAGRAM_KIND_CUSTOM {
+            let ms = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0);
+            format!("custom-{ms}.json")
+        } else {
+            format!("{kind}.json")
+        };
+
+        let scope_label = if app.tab().tour_context_is_pr() {
+            "PR diff"
+        } else {
+            "branch diff"
+        };
+        let prompt = er_engine::ai::prompts::build_diagram_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &output_file,
+            &diff_hash,
+            &kind,
+            custom_prompt.as_deref(),
+        );
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        app.spawn_background_diagram(&kind, target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Delete one diagram sidecar (`{er_dir}/diagrams/<id>.json`) from the active
+/// view bucket.
+#[tauri::command]
+pub async fn delete_diagram(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !er_engine::ai::is_safe_diagram_id(&id) {
+            return Err(format!("Invalid diagram id: {id}"));
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let path = std::path::Path::new(&app.tab().er_dir())
+            .join("diagrams")
+            .join(format!("{id}.json"));
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("Failed to delete diagram: {e}"))?;
+        }
+        app.tab_mut().reload_ai_state();
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
 pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
 
 #[tauri::command]

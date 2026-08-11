@@ -2,10 +2,11 @@
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { totalReviewFindings, ALL_REVIEWERS } from "$lib/aiReviewAgents";
+  import type { RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
-    onExpand: (tab: "branch" | "review" | "notes") => void;
+    onExpand: (tab: RightPanelTab) => void;
   }
 
   const { ai, onExpand }: Props = $props();
@@ -115,6 +116,22 @@
     </svg>
     {#if questionCount > 0}
       <span class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 flex items-center justify-center text-[8px] font-bold rounded-full bg-question/20 text-question border-2 border-surface">{questionCount}</span>
+    {/if}
+  </button>
+
+  <!-- Context (diagrams) atom -->
+  <button
+    type="button"
+    title="Context — expand rail"
+    onclick={() => onExpand("context")}
+    class="relative w-8 h-8 rounded-lg flex items-center justify-center hover:bg-hover transition-colors"
+  >
+    <!-- flowchart -->
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-3">
+      <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5a2 2 0 0 1 2 2V14"/>
+    </svg>
+    {#if (ai?.diagrams?.length ?? 0) > 0}
+      <span class="absolute -top-0.5 -right-0.5 w-3.5 h-3.5 px-0.5 flex items-center justify-center text-[8px] font-bold rounded-full bg-accent/20 text-accent border-2 border-surface">{ai?.diagrams?.length}</span>
     {/if}
   </button>
 

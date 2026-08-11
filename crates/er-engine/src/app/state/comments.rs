@@ -2583,6 +2583,25 @@ impl App {
         self.spawn_background_agent_task("tour".to_string(), "tour", target, prompt, prepared_diff)
     }
 
+    /// Spawn diagram generation (`kind` = `diagram:<diagram-kind>`). Writes
+    /// `diagrams/<file>.json` only; per-preset kinds keep concurrent preset
+    /// runs from deduping against each other.
+    pub fn spawn_background_diagram(
+        &mut self,
+        diagram_kind: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::diagram_task_kind(diagram_kind),
+            "diagram",
+            target,
+            prompt,
+            prepared_diff,
+        )
+    }
+
     /// Spawn the Professor learning agent (`kind` = `professor`).
     pub fn spawn_background_professor_review(
         &mut self,

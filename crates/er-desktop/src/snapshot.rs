@@ -973,6 +973,24 @@ pub struct AiSnapshot {
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
     pub triage: Option<TriageSnapshot>,
+    /// Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab.
+    pub diagrams: Vec<DiagramSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagramSnapshot {
+    /// File-stem id (`diagrams/<id>.json`) — delete/regenerate target.
+    pub id: String,
+    /// `mental-model` | `subsystems` | `flows` | `custom`.
+    pub kind: String,
+    pub title: String,
+    /// User prompt for custom diagrams (empty for presets).
+    pub prompt: String,
+    /// Bare mermaid source.
+    pub mermaid: String,
+    /// True when the diagram's diff hash matches the current diff.
+    pub fresh: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2328,6 +2346,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
+        diagrams: Vec::new(),
     }
 }
 
@@ -3537,6 +3556,24 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         }
     });
 
+    // A diagram is fresh when it was generated against the diff it is viewed
+    // with: branch bucket diagrams hash the branch diff, PR bucket diagrams
+    // hash the PR diff (`tab.diff_hash` after a full refresh) — accept either.
+    let diagrams = ai
+        .diagrams
+        .iter()
+        .map(|d| DiagramSnapshot {
+            id: d.id.clone(),
+            kind: d.kind.clone(),
+            title: d.title.clone(),
+            prompt: d.prompt.clone(),
+            mermaid: d.mermaid.clone(),
+            fresh: d.diff_hash == tab.branch_diff_hash
+                || (!tab.diff_hash.is_empty() && d.diff_hash == tab.diff_hash),
+            created_at: d.created_at.clone(),
+        })
+        .collect();
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -3556,6 +3593,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         has_review_json,
         eligible_comment_count,
         triage,
+        diagrams,
     }
 }
 
