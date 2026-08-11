@@ -61,11 +61,13 @@
     reviewerSelection = new Set();
   }
 
-  /** Close the palette without resetting the submenu stack (used by submenu items). */
+  /** Close the palette from a submenu action. Clears the submenu stack so the
+   *  next open (via ⌘K or the TabStrip/sidebar buttons) lands at the root. */
   function closeKeepSubmenu() {
     commandPalette.close();
     query = "";
     selectedIdx = 0;
+    submenuStack = [];
   }
 
   function openExportReviewView() {
@@ -158,7 +160,11 @@
         description: validateDescription,
         group: "AI" as const,
         kbd: "l",
-        run: guard(() => { closeKeepSubmenu(); void app.cmd("run_ai_validate", { scope: reviewScope }); }),
+        run: guard(() => {
+          if (!validateAvailable) return;
+          closeKeepSubmenu();
+          void app.cmd("run_ai_validate", { scope: reviewScope });
+        }),
       },
       {
         id: "ai-select-files",
