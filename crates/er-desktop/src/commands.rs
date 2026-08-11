@@ -2523,11 +2523,17 @@ fn anchor_range_in_current_diff(
 
 // ── GitHub sync ───────────────────────────────────────────────────────────────
 
+// Sync commands run on the main thread; `refresh_diff` shells out to git and
+// rebuilds the snapshot — heavy enough to freeze the window from ⌘K.
 #[tauri::command]
-pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
@@ -3184,115 +3190,99 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
         .collect())
 }
 
+// ⌘K / AI Hub: may shell out for the review diff and writes artifacts, then
+// rebuilds a snapshot — must not run on the main thread. Hold the App lock
+// only to capture tab context / spawn; do artifact IO with the lock released.
 #[tauri::command]
-pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
-
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
+pub async fn run_ai_review(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let (
+            scope,
+            repo_root,
             branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
+            base_branch,
+            er_dir,
+            pr_number,
+            remote_repo,
+            is_remote,
+            mut raw,
+        ) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let scope = resolve_review_scope(&scope, app.tab())?;
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            let raw = tab.raw_diff_for_review(&scope).map_err(|e| e.to_string())?;
+            (
+                scope,
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+                raw,
+            )
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    spawn_ai_review_with_diff(
-        &mut app,
-        &state,
-        &scope,
-        &er_dir,
-        repo_root,
-        branch_label,
-        base_branch,
-        pr_number,
-        remote_repo,
-        is_remote,
-        raw,
-    )?;
-    Ok(snap_from(&app, &state))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_ai_review_with_diff(
-    app: &mut er_engine::app::App,
-    state: &AppState,
-    scope: &str,
-    er_dir: &str,
-    repo_root: String,
-    branch_label: String,
-    base_branch: String,
-    pr_number: Option<u64>,
-    remote_repo: Option<String>,
-    is_remote: bool,
-    raw: String,
-) -> Result<(), String> {
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(er_dir, &raw)?;
-
-    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
-        scope,
-        er_dir,
-        &base_branch,
-        &branch_label,
-        &diff_hash,
-    );
-
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.to_string(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-
-    app.spawn_background_review(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-
-    let debug_bg = er_engine::app::debug_bg_enabled();
-    if debug_bg {
-        eprintln!(
-            "[bg] run_ai_review post-spawn snapshots={}",
-            app.background_task_snapshots().len()
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
+            &scope,
+            &er_dir,
+            &base_branch,
+            &branch_label,
+            &diff_hash,
         );
-    }
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope: scope.clone(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if debug_bg {
-        let snap = snap_from(app, state);
-        eprintln!(
-            "[bg] run_ai_review snapshot.background_tasks.len()={}",
-            snap.background_tasks.len()
-        );
-    }
-    Ok(())
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.spawn_background_review(target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        let debug_bg = er_engine::app::debug_bg_enabled();
+        if debug_bg {
+            eprintln!(
+                "[bg] run_ai_review post-spawn snapshots={}",
+                app.background_task_snapshots().len()
+            );
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if debug_bg {
+            let snap = snap_from(&app, &state);
+            eprintln!(
+                "[bg] run_ai_review snapshot.background_tasks.len()={}",
+                snap.background_tasks.len()
+            );
+        }
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Generate a guided Tour with AI: captures the active view's diff and spawns the
@@ -3301,84 +3291,88 @@ fn spawn_ai_review_with_diff(
 /// tour the branch diff (branch bucket). The mtime poll reloads it automatically on
 /// completion, surfacing the Guide tab.
 #[tauri::command]
-pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // `raw_diff_for_review("branch")` returns the active view's diff (the PR
-    // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
-    let scope = "branch".to_string();
+pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // `raw_diff_for_review("branch")` returns the active view's diff (the PR
+        // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
+        let scope = "branch".to_string();
 
-    let (
-        repo_root,
-        branch_label,
-        base_branch,
-        er_dir,
-        pr_number,
-        remote_repo,
-        is_remote,
-        tour_file,
-        is_pr,
-    ) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        // Route to the active context's tour bucket (PR vs branch), matching where
-        // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
-        let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
-        (
-            tab.repo_root.clone(),
+        let (
+            repo_root,
             branch_label,
-            tab.base_branch.clone(),
+            base_branch,
             er_dir,
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-            // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
-            "tour.json".to_string(),
-            tab.tour_context_is_pr(),
-        )
-    };
+            pr_number,
+            remote_repo,
+            is_remote,
+            tour_file,
+            is_pr,
+        ) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            // Route to the active context's tour bucket (PR vs branch), matching where
+            // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
+            let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                er_dir,
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+                // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
+                "tour.json".to_string(),
+                tab.tour_context_is_pr(),
+            )
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    if raw.trim().is_empty() {
-        return Err("Nothing to tour".to_string());
-    }
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to tour".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
 
-    let scope_label = if is_pr { "PR diff" } else { "branch diff" };
-    let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(
-        scope_label,
-        &er_dir,
-        &tour_file,
-        &diff_hash,
-    );
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope,
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-    app.spawn_background_tour(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+        let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &tour_file,
+            &diff_hash,
+        );
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        app.spawn_background_tour(target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
@@ -3394,79 +3388,83 @@ pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
 }
 
 #[tauri::command]
-pub fn run_ai_expert_review(
+pub async fn run_ai_expert_review(
     scope: String,
     expert_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    if er_engine::ai::expert_by_id(&expert_id).is_none() {
-        return Err(format!("Unknown expert: {expert_id}"));
-    }
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if er_engine::ai::expert_by_id(&expert_id).is_none() {
+            return Err(format!("Unknown expert: {expert_id}"));
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
 
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+
+        let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
+            &scope, &er_dir, &expert_id, &diff_hash,
+        );
+
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
             branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
+            base_branch,
+            scope: scope.to_string(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        app.spawn_background_expert_review(&expert_id, target, prompt, true)
+            .map_err(|e| e.to_string())?;
 
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
-
-    let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
-        &scope, &er_dir, &expert_id, &diff_hash,
-    );
-
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-
-    app.spawn_background_expert_review(&expert_id, target, prompt, true)
-        .map_err(|e| e.to_string())?;
-
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn run_ai_professor_review(
+pub async fn run_ai_professor_review(
     scope: String,
     focus_prompt: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     run_ai_scoped_review(
         scope,
@@ -3475,155 +3473,163 @@ pub fn run_ai_professor_review(
         focus_prompt,
         state,
     )
+    .await
 }
 
 #[tauri::command]
-pub fn run_ai_triage_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state)
+pub async fn run_ai_triage_review(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state).await
 }
 
 #[tauri::command]
-pub fn run_ai_review_files(
+pub async fn run_ai_review_files(
     scope: String,
     paths: Vec<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    run_ai_scoped_review(scope, paths, vec!["general".to_string()], None, state)
+    run_ai_scoped_review(scope, paths, vec!["general".to_string()], None, state).await
 }
 
 #[tauri::command]
-pub fn run_ai_scoped_review(
+pub async fn run_ai_scoped_review(
     scope: String,
     paths: Vec<String>,
     reviewer_kinds: Vec<String>,
     focus_prompt: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    if reviewer_kinds.is_empty() {
-        return Err("No reviewers selected".to_string());
-    }
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
-
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
-            branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
-
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-    let raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-
-    let scoped_files = !paths.is_empty();
-    let file_count = paths.len();
-    let er_path = std::path::Path::new(&er_dir);
-    let diff_body = if scoped_files {
-        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
-        if filtered.trim().is_empty() {
-            return Err("No diff for selected files".to_string());
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if reviewer_kinds.is_empty() {
+            return Err("No reviewers selected".to_string());
         }
-        let mut sorted_paths = paths;
-        sorted_paths.sort();
-        let manifest = sorted_paths.join("\n");
-        std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
-            .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
-        // Keep prior findings for files outside this selection: snapshot
-        // before the agent overwrites the sidecars, then merge on exit.
-        er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
-            .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
-        filtered
-    } else {
-        // Full-diff multi-reviewer run: no file manifest / no merge.
-        er_engine::ai::clear_scoped_review_snapshots(er_path);
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-        if ignore.is_empty() {
-            raw
+
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
+
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+        let raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+
+        let scoped_files = !paths.is_empty();
+        let file_count = paths.len();
+        let er_path = std::path::Path::new(&er_dir);
+        let diff_body = if scoped_files {
+            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+            if filtered.trim().is_empty() {
+                return Err("No diff for selected files".to_string());
+            }
+            let mut sorted_paths = paths;
+            sorted_paths.sort();
+            let manifest = sorted_paths.join("\n");
+            std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
+                .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+            // Keep prior findings for files outside this selection: snapshot
+            // before the agent overwrites the sidecars, then merge on exit.
+            er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
+                .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
+            filtered
         } else {
-            er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+            // Full-diff multi-reviewer run: no file manifest / no merge.
+            er_engine::ai::clear_scoped_review_snapshots(er_path);
+            let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+            if ignore.is_empty() {
+                raw
+            } else {
+                er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+            }
+        };
+
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope: scope.to_string(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+
+        let (started, skipped) = spawn_scoped_reviewers(
+            &mut app,
+            &scope,
+            &er_dir,
+            target,
+            &reviewer_kinds,
+            focus_prompt.as_deref(),
+            scoped_files,
+            &diff_hash,
+        )?;
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if started.is_empty() && !skipped.is_empty() {
+            return Err(format!(
+                "All selected reviewers already running: {}",
+                skipped.join(", ")
+            ));
         }
-    };
 
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+        let file_note = if scoped_files {
+            format!(
+                " for {file_count} file{}",
+                if file_count == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        };
 
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
+        let msg = if skipped.is_empty() {
+            format!(
+                "Started {} reviewer(s){file_note}: {}",
+                started.len(),
+                started.join(", ")
+            )
+        } else {
+            format!(
+                "Started {} reviewer(s){file_note}: {} (skipped: {})",
+                started.len(),
+                started.join(", "),
+                skipped.join(", ")
+            )
+        };
+        app.notify(&msg);
 
-    let (started, skipped) = spawn_scoped_reviewers(
-        &mut app,
-        &scope,
-        &er_dir,
-        target,
-        &reviewer_kinds,
-        focus_prompt.as_deref(),
-        scoped_files,
-        &diff_hash,
-    )?;
-
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    if started.is_empty() && !skipped.is_empty() {
-        return Err(format!(
-            "All selected reviewers already running: {}",
-            skipped.join(", ")
-        ));
-    }
-
-    let file_note = if scoped_files {
-        format!(
-            " for {file_count} file{}",
-            if file_count == 1 { "" } else { "s" }
-        )
-    } else {
-        String::new()
-    };
-
-    let msg = if skipped.is_empty() {
-        format!(
-            "Started {} reviewer(s){file_note}: {}",
-            started.len(),
-            started.join(", ")
-        )
-    } else {
-        format!(
-            "Started {} reviewer(s){file_note}: {} (skipped: {})",
-            started.len(),
-            started.join(", "),
-            skipped.join(", ")
-        )
-    };
-    app.notify(&msg);
-
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3720,70 +3726,89 @@ fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
 }
 
 #[tauri::command]
-pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
+pub async fn run_ai_validate(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
 
-    if app.tab().is_remote() {
-        return Err("Validate review is local-only. Check out the PR locally first.".to_string());
-    }
+        if app.tab().is_remote() {
+            return Err(
+                "Validate review is local-only. Check out the PR locally first.".to_string(),
+            );
+        }
 
-    let er_dir = app.tab().er_dir();
-    let review_path = std::path::Path::new(&er_dir).join("review.json");
-    let has_review = review_path.exists();
-    let comment_count = eligible_github_comment_count(app.tab());
-    if !has_review && comment_count == 0 {
-        return Err("Nothing to validate. Run AI review or add GitHub comments first.".to_string());
-    }
+        let er_dir = app.tab().er_dir();
+        let review_path = std::path::Path::new(&er_dir).join("review.json");
+        let has_review = review_path.exists();
+        let comment_count = eligible_github_comment_count(app.tab());
+        if !has_review && comment_count == 0 {
+            return Err(
+                "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
+            );
+        }
 
-    let raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to validate".to_string());
-    }
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
-
-    app.tab_mut().relocate_all_comments();
-
-    if has_review {
-        let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(
-            &scope, &er_dir, &diff_hash,
-        );
-        app.spawn_agent_prompt("validate", &prompt)
+        let raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
             .map_err(|e| e.to_string())?;
-    }
-    if comment_count > 0 {
-        let prompt = er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
-            &er_dir, &diff_hash,
-        );
-        app.spawn_agent_prompt("validate-comments", &prompt)
-            .map_err(|e| e.to_string())?;
-    }
+        if raw.trim().is_empty() {
+            return Err("Nothing to validate".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
 
-    let msg = match (has_review, comment_count) {
-        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
-        (true, _) => "Validation started (review)".to_string(),
-        (false, n) => format!("Validation started ({n} comments)"),
-    };
-    app.notify(&msg);
+        app.tab_mut().relocate_all_comments();
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        if has_review {
+            let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(
+                &scope, &er_dir, &diff_hash,
+            );
+            app.spawn_agent_prompt("validate", &prompt)
+                .map_err(|e| e.to_string())?;
+        }
+        if comment_count > 0 {
+            let prompt =
+                er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
+                    &er_dir, &diff_hash,
+                );
+            app.spawn_agent_prompt("validate-comments", &prompt)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let msg = match (has_review, comment_count) {
+            (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
+            (true, _) => "Validation started (review)".to_string(),
+            (false, n) => format!("Validation started ({n} comments)"),
+        };
+        app.notify(&msg);
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_model(model: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn set_ai_model(
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let mut cfg = er_engine::config::load_global_config();
-    cfg.agent.model = model;
-    er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
+        let mut cfg = er_engine::config::load_global_config();
+        cfg.agent.model = model;
+        er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -3870,116 +3895,128 @@ pub(crate) fn map_ai_providers(
 }
 
 #[tauri::command]
-pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_config_from_active_tab();
-    let hub = &app.config.ai_hub;
-    // Palette / session highlight: use live current_* (not persisted defaults).
-    let current_provider = app.current_ai_provider.as_deref();
-    let current_model = app.current_ai_model.as_deref();
-    let resolved_provider = hub.resolve_provider_id(current_provider);
-    let resolved_model = resolved_provider
-        .as_deref()
-        .and_then(|pid| hub.resolve_model_id(pid, current_model));
-    Ok(map_ai_providers(
-        hub,
-        resolved_provider.as_deref(),
-        resolved_model.as_deref(),
-    ))
+pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProviderInfo>, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.sync_config_from_active_tab();
+        let hub = &app.config.ai_hub;
+        // Palette / session highlight: use live current_* (not persisted defaults).
+        let current_provider = app.current_ai_provider.as_deref();
+        let current_model = app.current_ai_model.as_deref();
+        let resolved_provider = hub.resolve_provider_id(current_provider);
+        let resolved_model = resolved_provider
+            .as_deref()
+            .and_then(|pid| hub.resolve_model_id(pid, current_model));
+        Ok(map_ai_providers(
+            hub,
+            resolved_provider.as_deref(),
+            resolved_model.as_deref(),
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_selection(
+pub async fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
     persist: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let persist = persist.unwrap_or(false);
-    let agent = app.config.agent.clone();
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let persist = persist.unwrap_or(false);
+        let agent = app.config.agent.clone();
 
-    let selection = if persist {
-        let selection = app
-            .config
-            .ai_hub
-            .set_default_selection(&provider_id, model_id.as_deref(), &agent)
-            .map_err(|e| e.to_string())?;
-        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-        selection
-    } else {
-        // Session-only: keep current effort when the new model still supports it.
-        let runtime_effort = app.current_ai_effort.clone();
-        app.config
-            .ai_hub
-            .resolve_selection(
-                &provider_id,
-                model_id.as_deref(),
-                &agent,
-                runtime_effort.as_deref(),
-            )
-            .map_err(|e| e.to_string())?
-    };
-    app.current_ai_provider = selection.provider_id;
-    app.current_ai_model = selection.model_id;
-    app.current_ai_effort = selection.effort;
+        let selection = if persist {
+            let selection = app
+                .config
+                .ai_hub
+                .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+                .map_err(|e| e.to_string())?;
+            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+            selection
+        } else {
+            // Session-only: keep current effort when the new model still supports it.
+            let runtime_effort = app.current_ai_effort.clone();
+            app.config
+                .ai_hub
+                .resolve_selection(
+                    &provider_id,
+                    model_id.as_deref(),
+                    &agent,
+                    runtime_effort.as_deref(),
+                )
+                .map_err(|e| e.to_string())?
+        };
+        app.current_ai_provider = selection.provider_id;
+        app.current_ai_model = selection.model_id;
+        app.current_ai_effort = selection.effort;
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_effort(
+pub async fn set_ai_effort(
     effort: Option<String>,
     persist: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let persist = persist.unwrap_or(false);
-    let default_selection = app
-        .config
-        .ai_hub
-        .resolve_default_selection(&app.config.agent);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let persist = persist.unwrap_or(false);
+        let default_selection = app
+            .config
+            .ai_hub
+            .resolve_default_selection(&app.config.agent);
 
-    let (provider_id, model_id) = if persist {
-        // Settings: normalize against persisted defaults, not a session palette pick.
-        (default_selection.provider_id, default_selection.model_id)
-    } else {
-        (
-            app.current_ai_provider
-                .clone()
-                .or(default_selection.provider_id),
-            app.current_ai_model.clone().or(default_selection.model_id),
-        )
-    };
+        let (provider_id, model_id) = if persist {
+            // Settings: normalize against persisted defaults, not a session palette pick.
+            (default_selection.provider_id, default_selection.model_id)
+        } else {
+            (
+                app.current_ai_provider
+                    .clone()
+                    .or(default_selection.provider_id),
+                app.current_ai_model.clone().or(default_selection.model_id),
+            )
+        };
 
-    let normalized = er_engine::config::normalize_effort(
-        &app.config.ai_hub,
-        provider_id.as_deref(),
-        model_id.as_deref(),
-        effort.as_deref(),
-    );
-    if effort.is_some() && normalized.is_none() {
-        return Err("Effort is unsupported for the selected model".into());
-    }
+        let normalized = er_engine::config::normalize_effort(
+            &app.config.ai_hub,
+            provider_id.as_deref(),
+            model_id.as_deref(),
+            effort.as_deref(),
+        );
+        if effort.is_some() && normalized.is_none() {
+            return Err("Effort is unsupported for the selected model".into());
+        }
 
-    if persist {
-        app.config.ai_hub.default_effort = normalized.clone();
-        // Keep session aligned with the defaults being edited in Settings.
-        app.current_ai_provider = provider_id;
-        app.current_ai_model = model_id;
-        app.current_ai_effort = normalized;
-        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-    } else {
-        app.current_ai_effort = normalized;
-    }
+        if persist {
+            app.config.ai_hub.default_effort = normalized.clone();
+            // Keep session aligned with the defaults being edited in Settings.
+            app.current_ai_provider = provider_id;
+            app.current_ai_model = model_id;
+            app.current_ai_effort = normalized;
+            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+        } else {
+            app.current_ai_effort = normalized;
+        }
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
@@ -8119,21 +8156,25 @@ pub fn export_review_to_file(
 /// Back-compat shim: delegate to `export_review_to_file` with all-defaults
 /// opts. Kept so older bindings / CommandPalette entries don't break.
 #[tauri::command]
-pub fn export_to_agent(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let opts = ExportOpts::default();
-    let path = {
+pub async fn export_to_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let opts = ExportOpts::default();
+        let path = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let tab = app.tab();
+            let body = render_markdown(tab, &opts);
+            let dir = tab.comments_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
+            let path = format!("{dir}/export.md");
+            std::fs::write(&path, body).map_err(|e| format!("Failed to write {path}: {e}"))?;
+            path
+        };
+        let _ = path;
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let body = render_markdown(tab, &opts);
-        let dir = tab.comments_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-        let path = format!("{dir}/export.md");
-        std::fs::write(&path, body).map_err(|e| format!("Failed to write {path}: {e}"))?;
-        path
-    };
-    let _ = path;
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Commit composer ──────────────────────────────────────────────────────────
@@ -10586,5 +10627,109 @@ mod tests {
         assert!(!version_is_newer("0.4.6", "0.4.7"));
         assert!(version_is_newer("0.4.7", "0.4"));
         assert!(!version_is_newer("not-a-version", "0.4.7"));
+    }
+
+    /// ⌘K / AI Hub actions (run review, change model, triage, …) used to be
+    /// sync Tauri commands: they locked `App`, rebuilt a full snapshot (and for
+    /// reviews also shelled out to git / wrote diff artifacts) on the **main
+    /// thread**, freezing the window for a noticeable stretch — the same class
+    /// of bug as the file-filter freeze (`set_filter` → `run_blocking`).
+    ///
+    /// Guard: every palette-hot leaf command must be `pub async fn` whose body
+    /// contains `run_blocking`. Thin `.await` wrappers (triage / files /
+    /// professor → scoped_review) must stay async and lock-free.
+    #[test]
+    fn cmdk_ai_actions_must_run_off_main_thread() {
+        let src = include_str!("commands.rs");
+        let must_run_blocking = [
+            "set_ai_selection",
+            "set_ai_model",
+            "set_ai_effort",
+            "list_ai_providers",
+            "run_ai_review",
+            "run_ai_scoped_review",
+            "run_ai_validate",
+            "run_ai_expert_review",
+            "generate_tour",
+            "export_to_agent",
+            "refresh_diff",
+            "force_refresh_diff",
+        ];
+        let wrappers = [
+            "run_ai_triage_review",
+            "run_ai_review_files",
+            "run_ai_professor_review",
+        ];
+
+        fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+            let sig = format!("pub async fn {name}");
+            let start = src.find(&sig)?;
+            let rest = &src[start + 1..];
+            let next = [
+                "\n#[tauri::command]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\npub use ",
+            ]
+            .iter()
+            .filter_map(|m| rest.find(m).map(|i| i + 1))
+            .min()
+            .unwrap_or(rest.len());
+            Some(&src[start..start + 1 + next])
+        }
+
+        let mut failures = Vec::new();
+        for name in must_run_blocking {
+            let async_sig = format!("pub async fn {name}");
+            let sync_sig = format!("pub fn {name}");
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` (sync / main-thread) — must be `pub async fn` + run_blocking"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
+                continue;
+            }
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains("run_blocking") {
+                failures.push(format!("{name} is async but its body has no run_blocking"));
+            }
+        }
+        for name in wrappers {
+            let async_sig = format!("pub async fn {name}");
+            let sync_sig = format!("pub fn {name}");
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` — must be `pub async fn` wrapper"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
+                continue;
+            }
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains(".await") {
+                failures.push(format!("{name} wrapper body has no .await"));
+            }
+            if body.contains("state.app.lock") {
+                failures.push(format!(
+                    "{name} should stay a thin .await wrapper (no App lock)"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "⌘K/AI actions would freeze the UI:\n{}",
+            failures.join("\n")
+        );
     }
 }

@@ -68,6 +68,23 @@
     query = "";
     selectedIdx = 0;
     submenuStack = [];
+    reviewerSelection = new Set();
+  }
+
+  /** Close the palette, let it paint, then run a heavy (IPC / snapshot) action. */
+  async function dismissAndRun(fn: () => void | Promise<void>) {
+    closeKeepSubmenu();
+    await Promise.resolve();
+    if (typeof requestAnimationFrame === "function") {
+      await new Promise<void>((r) => requestAnimationFrame(() => r()));
+    }
+    await fn();
+  }
+
+  /** Instant local UI — no IPC. Close immediately and run. */
+  function dismissLocal(fn: () => void) {
+    close();
+    fn();
   }
 
   function openExportReviewView() {
@@ -107,7 +124,7 @@
           : "Not available in this view",
         group: "AI" as const,
         kbd: "t",
-        run: guard(() => { closeKeepSubmenu(); void app.cmd("run_ai_triage_review", { scope: reviewScope }); }),
+        run: guard(() => { void dismissAndRun(() => app.cmd("run_ai_triage_review", { scope: reviewScope })); }),
       },
       {
         id: "ai-run-review",
@@ -117,7 +134,7 @@
           : "Not available in this view",
         group: "AI" as const,
         kbd: "r",
-        run: guard(() => { closeKeepSubmenu(); void app.cmd("run_ai_review", { scope: reviewScope }); }),
+        run: guard(() => { void dismissAndRun(() => app.cmd("run_ai_review", { scope: reviewScope })); }),
       },
       {
         id: "ai-run-reviewers",
@@ -140,8 +157,7 @@
         kbd: "p",
         run: guard(() => {
           if (!reviewScope) return;
-          closeKeepSubmenu();
-          openProfessorFocusModal(reviewScope, ["professor"], []);
+          dismissLocal(() => openProfessorFocusModal(reviewScope, ["professor"], []));
         }),
       },
       {
@@ -152,7 +168,7 @@
           : "Not available in this view",
         group: "AI" as const,
         kbd: "g",
-        run: guard(() => { closeKeepSubmenu(); void app.cmd("generate_tour"); }),
+        run: guard(() => { void dismissAndRun(() => app.cmd("generate_tour")); }),
       },
       {
         id: "ai-validate",
@@ -162,8 +178,7 @@
         kbd: "l",
         run: guard(() => {
           if (!validateAvailable) return;
-          closeKeepSubmenu();
-          void app.cmd("run_ai_validate", { scope: reviewScope });
+          void dismissAndRun(() => app.cmd("run_ai_validate", { scope: reviewScope }));
         }),
       },
       {
@@ -174,7 +189,7 @@
           : "Not available in this view",
         group: "AI" as const,
         kbd: "s",
-        run: guard(() => { closeKeepSubmenu(); openAiReviewFilesModal(); }),
+        run: guard(() => { dismissLocal(() => openAiReviewFilesModal()); }),
       },
       {
         id: "ai-open-output",
@@ -184,7 +199,7 @@
           : "View the agent log from the last run",
         group: "AI" as const,
         kbd: "o",
-        run: () => { closeKeepSubmenu(); app.setMainView("agent-output"); },
+        run: () => { dismissLocal(() => { app.setMainView("agent-output"); }); },
       },
       {
         id: "ai-copy-context",
@@ -192,7 +207,7 @@
         description: "Export current diff context to clipboard",
         group: "AI" as const,
         kbd: "c",
-        run: () => { closeKeepSubmenu(); void app.cmd("export_to_agent"); },
+        run: () => { void dismissAndRun(() => app.cmd("export_to_agent")); },
       },
       {
         id: "ai-provider-model",
@@ -216,8 +231,9 @@
       group: "AI" as const,
       run: () => {
         if (p.models.length === 0) {
-          void app.cmd("set_ai_selection", { providerId: p.id, modelId: null, persist: false });
-          closeKeepSubmenu();
+          void dismissAndRun(() =>
+            app.cmd("set_ai_selection", { providerId: p.id, modelId: null, persist: false }),
+          );
         }
       },
       submenuItems: p.models.length > 0
@@ -227,8 +243,9 @@
             description: m.is_selected ? "currently selected" : "",
             group: "AI" as const,
             run: () => {
-              void app.cmd("set_ai_selection", { providerId: p.id, modelId: m.id, persist: false });
-              closeKeepSubmenu();
+              void dismissAndRun(() =>
+                app.cmd("set_ai_selection", { providerId: p.id, modelId: m.id, persist: false }),
+              );
             },
           }))
         : undefined,
@@ -261,17 +278,17 @@
     if (!scope || reviewerSelection.size === 0) return;
     const kinds = [...reviewerSelection];
     if (kinds.includes("professor")) {
-      closeKeepSubmenu();
-      openProfessorFocusModal(scope, kinds, []);
+      dismissLocal(() => openProfessorFocusModal(scope, kinds, []));
       return;
     }
-    closeKeepSubmenu();
-    void app.cmd("run_ai_scoped_review", {
-      scope,
-      paths: [],
-      reviewerKinds: kinds,
-      focusPrompt: null,
-    });
+    void dismissAndRun(() =>
+      app.cmd("run_ai_scoped_review", {
+        scope,
+        paths: [],
+        reviewerKinds: kinds,
+        focusPrompt: null,
+      }),
+    );
   }
 
   // ── Root menu containers ──────────────────────────────────────────────────
@@ -288,10 +305,11 @@
         group: "Actions",
         kbd: "e",
         run: () => {
-          close();
-          void invoke<{ kind: string; target: string }>("open_in_vscode").then((r) => {
-            if (r.kind === "needs_checkout") app.showToast("info", r.target);
-          }).catch((e) => app.showToast("error", `VS Code: ${e}`));
+          void dismissAndRun(() =>
+            invoke<{ kind: string; target: string }>("open_in_vscode").then((r) => {
+              if (r.kind === "needs_checkout") app.showToast("info", r.target);
+            }).catch((e) => app.showToast("error", `VS Code: ${e}`)),
+          );
         },
       },
       {
@@ -300,14 +318,14 @@
         description: "Open export view for copy, save, and preview",
         group: "Actions",
         kbd: "⌘⇧E",
-        run: () => { close(); openExportReviewView(); },
+        run: () => { dismissLocal(() => { openExportReviewView(); }); },
       },
       {
         id: "export-review-file",
         label: "Export review to file",
         description: "Write markdown to .er/export.md",
         group: "Actions",
-        run: () => { close(); app.cmd("export_to_agent"); },
+        run: () => { void dismissAndRun(() => app.cmd("export_to_agent")); },
       },
       {
         id: "copy-logs",
@@ -315,24 +333,25 @@
         description: "All captured errors & warnings since launch",
         group: "Actions",
         run: () => {
-          close();
-          const text = app.dumpLogs() || "(no logs)";
-          copyToClipboard(text)
-            .then(() => app.pushLog("info", "clipboard", `Copied ${text.length} chars`))
-            .catch(() => {});
+          dismissLocal(() => {
+            const text = app.dumpLogs() || "(no logs)";
+            void copyToClipboard(text)
+              .then(() => app.pushLog("info", "clipboard", `Copied ${text.length} chars`))
+              .catch(() => {});
+          });
         },
       },
       {
         id: "clear-logs",
         label: "Clear logs",
         group: "Actions",
-        run: () => { close(); app.clearLogs(); },
+        run: () => { dismissLocal(() => { app.clearLogs(); }); },
       },
       {
         id: "open-settings",
         label: "Open settings",
         group: "Actions",
-        run: () => { close(); app.setMainView("settings"); },
+        run: () => { dismissLocal(() => { app.setMainView("settings"); }); },
       },
     ];
 
@@ -342,7 +361,7 @@
         label: "Refresh diff",
         group: "Navigate",
         kbd: "R",
-        run: () => { close(); app.cmd("refresh_diff"); },
+        run: () => { void dismissAndRun(() => app.cmd("refresh_diff")); },
       },
       {
         id: "force-refresh",
@@ -350,7 +369,7 @@
         description: "Re-fetch PR head and base from remote",
         group: "Navigate",
         kbd: "⌘R",
-        run: () => { close(); app.cmd("force_refresh_diff"); },
+        run: () => { void dismissAndRun(() => app.cmd("force_refresh_diff")); },
       },
       {
         id: "toggle-terminal",
@@ -358,7 +377,7 @@
         description: "Bottom drawer shell at the active tab's repo root",
         group: "Navigate",
         kbd: "`",
-        run: () => { close(); terminal.toggle(); },
+        run: () => { dismissLocal(() => { terminal.toggle(); }); },
       },
     ];
 
@@ -369,7 +388,7 @@
         description: `Currently: ${app.diffViewMode}`,
         group: "View & Layout",
         kbd: "d",
-        run: () => { close(); app.toggleDiffViewMode(); },
+        run: () => { dismissLocal(() => { app.toggleDiffViewMode(); }); },
       },
       {
         id: "open-browser-view",
@@ -377,21 +396,25 @@
         description: "Per-tab embedded browser — ⌘B cycles hidden → split → fullscreen",
         group: "View & Layout",
         kbd: "⌘B",
-        run: () => { close(); void (browser.open ? browser.cycleLayout() : browser.setLayout("split")); },
+        run: () => {
+          dismissLocal(() => {
+            void (browser.open ? browser.cycleLayout() : browser.setLayout("split"));
+          });
+        },
       },
       {
         id: "toggle-left",
         label: "Toggle left panel",
         group: "View & Layout",
         kbd: "[",
-        run: () => { close(); app.togglePanel("left"); },
+        run: () => { dismissLocal(() => { app.togglePanel("left"); }); },
       },
       {
         id: "toggle-right",
         label: "Toggle right panel",
         group: "View & Layout",
         kbd: "]",
-        run: () => { close(); app.togglePanel("right"); },
+        run: () => { dismissLocal(() => { app.togglePanel("right"); }); },
       },
     ];
 
@@ -402,14 +425,14 @@
         description: "Paste a GitHub PR link to open it",
         group: "PR",
         kbd: "⌘⇧O",
-        run: () => { close(); openPrUrlModal(); },
+        run: () => { dismissLocal(() => { openPrUrlModal(); }); },
       },
       {
         id: "open-arena",
         label: "Open AI review arena",
         description: "Compare multiple reviewers on the current diff",
         group: "PR",
-        run: () => { close(); arena.openLauncher(); },
+        run: () => { dismissLocal(() => { arena.openLauncher(); }); },
       },
     ];
 
@@ -419,10 +442,11 @@
       group: "Files in this diff" as const,
       file: { path: file.path, additions: file.additions, deletions: file.deletions },
       run: () => {
-        close();
-        // Mirror FileTree.jumpToFile: select + scroll the flat diff to the file.
-        void diffNav.scrollToFile(file.path);
-        void app.cmd("select_file", { idx: file.source_index });
+        void dismissAndRun(() => {
+          // Mirror FileTree.jumpToFile: select + scroll the flat diff to the file.
+          void diffNav.scrollToFile(file.path);
+          return app.cmd("select_file", { idx: file.source_index });
+        });
       },
     }));
 
@@ -494,11 +518,16 @@
   /** The top item of the submenu stack, or null when showing the root list. */
   const activeSubmenu = $derived(submenuStack[submenuStack.length - 1]?.item ?? null);
 
-  /** Root items: the menu containers (Actions / Navigate / … / Files). */
-  const allRootItems = $derived(buildItems());
+  /** Root items: the menu containers (Actions / Navigate / … / Files).
+   *  Only build while open — when closed, `$effect`s below still subscribe to
+   *  `navList`, and rebuilding the full file list on every poll snapshot was
+   *  free work that amplified ⌘K action jank. */
+  const allRootItems = $derived(commandPalette.open ? buildItems() : []);
 
   /** Flatten containers + their leaves for search (leaves get a "in <menu>" hint). */
-  const searchableItems = $derived(flattenAll(allRootItems));
+  const searchableItems = $derived(
+    commandPalette.open ? flattenAll(allRootItems) : [],
+  );
 
   /** When searching, surface nested actions inline with their submenu hint. */
   const searchResults = $derived(
@@ -533,12 +562,14 @@
   );
 
   $effect(() => {
+    if (!commandPalette.open) return;
     // Reset selection when filter narrows past current index.
     if (selectedIdx >= navList.length) selectedIdx = 0;
   });
 
   /** Keep the active row in view when keyboard-navigating. */
   $effect(() => {
+    if (!commandPalette.open) return;
     void selectedIdx;
     void navList;
     if (!listEl) return;
