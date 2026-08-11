@@ -25,7 +25,6 @@
   import FileTree from "$lib/components/FileTree.svelte";
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
-  import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import { filesByPathMap } from "$lib/treeFromPaths";
   import { reviewScopeFromMode } from "$lib/reviewScope";
@@ -149,7 +148,6 @@
       app.showToast("error", "Switch to All changes, Unstaged, or Staged to review files");
       return;
     }
-    closeAiActionPalette();
     pickerMode = "review";
     pickOnlyOnConfirm = null;
     subView = "files";

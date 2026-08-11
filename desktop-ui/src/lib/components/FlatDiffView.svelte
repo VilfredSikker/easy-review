@@ -72,7 +72,7 @@
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
 
-  const COMPOSER_APPROX_HEIGHT_PX = 160;
+  const COMPOSER_APPROX_HEIGHT_PX = 220;
 
   /** Empty scroll space below the last row so the last file's final lines clear
    *  the bottom chrome. Render-only — added to the .hscroll height, never to the
@@ -1223,6 +1223,22 @@
     return undefined;
   });
 
+  /** Left edge + width of the composer. In split mode it matches the selected
+   *  column (old → left panel, new → right panel); otherwise full-width. */
+  const composerGeometry = $derived.by(() => {
+    const railOffset = tourActive ? RAIL_W : 0;
+    if (viewMode === "split" && diffSel.side !== null && bandWidthPx > 0) {
+      const panelW = bandWidthPx / 2;
+      const left = diffSel.side === "old"
+        ? railOffset + GUTTER_PX
+        : railOffset + panelW + GUTTER_PX;
+      const width = panelW - GUTTER_PX - 8; // 8px right breathing room
+      return { leftPx: left, widthPx: width };
+    }
+    // Unmeasured band or unified mode → full-width (DiffComposer uses left/right).
+    return { leftPx: railOffset, widthPx: bandWidthPx > 0 ? bandWidthPx : undefined };
+  });
+
   // ── Composer scroll: one-shot into view on open; free scroll afterward ───
   let composerAutoScrolledKey = $state<string | null>(null);
 
@@ -1242,7 +1258,9 @@
     if (top === undefined || !scrollEl) return;
     const LINE_H = 20;
     const selectedLineTop = top - LINE_H;
-    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.25));
+    // Place the anchor line at 15% of the viewport height — comfortably above
+    // the card (which starts at `top`), so the clicked/selected line stays visible.
+    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.15));
   }
 
   $effect(() => {
@@ -2209,7 +2227,12 @@
       </div>
 
       {#if diffSel.composerOpen}
-        <DiffComposer topPx={composerTopPx} offsetLeftPx={tourActive ? RAIL_W : 0} />
+        <DiffComposer
+          topPx={composerTopPx}
+          leftPx={composerGeometry.leftPx}
+          widthPx={composerGeometry.widthPx}
+          offsetLeftPx={tourActive ? RAIL_W : 0}
+        />
       {/if}
     {/if}
   </div>

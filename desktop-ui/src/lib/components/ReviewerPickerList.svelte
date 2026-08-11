@@ -71,12 +71,12 @@
           type="button"
           role="option"
           aria-selected={selected.has(r.kind)}
-          class="w-full text-left px-4 py-2.5 flex items-start gap-3 hover:bg-ink-700/60 {i === highlightIdx ? 'bg-ink-700/80' : ''}"
+          class="w-full text-left px-4 py-2.5 flex items-center gap-3 hover:bg-ink-700/60 {i === highlightIdx ? 'bg-ink-700/80' : ''}"
           onclick={() => toggle(r.kind)}
         >
           <input
             type="checkbox"
-            class="mt-0.5 shrink-0"
+            class="shrink-0"
             checked={selected.has(r.kind)}
             tabindex={-1}
             onclick={(e) => e.stopPropagation()}

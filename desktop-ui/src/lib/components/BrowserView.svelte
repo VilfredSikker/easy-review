@@ -20,11 +20,9 @@
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
-  import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
   import {
     dismissBrowserAnnotationComposerNow,
     registerBrowserAnnotationComposerDismiss,
-    triggerAiPalette,
   } from "$lib/stores/keyboard";
   import { overlay } from "$lib/stores/overlay.svelte";
 
@@ -509,10 +507,6 @@
     const shortcut = typeof (data as { __er_shortcut?: unknown }).__er_shortcut === "string"
       ? (data as { __er_shortcut: string }).__er_shortcut
       : null;
-    if (shortcut === "ai-hub") {
-      triggerAiPalette();
-      return;
-    }
     if (shortcut === "browser-cycle") {
       void browser.cycleLayout();
       return;
@@ -527,7 +521,6 @@
       return;
     }
     if (shortcut === "dismiss-overlay") {
-      closeAiActionPalette();
       dismissBrowserAnnotationComposerNow();
       return;
     }
