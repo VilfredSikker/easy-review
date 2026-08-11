@@ -3200,7 +3200,17 @@ pub async fn run_ai_review(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        let (scope, repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote, mut raw) = {
+        let (
+            scope,
+            repo_root,
+            branch_label,
+            base_branch,
+            er_dir,
+            pr_number,
+            remote_repo,
+            is_remote,
+            mut raw,
+        ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
             let tab = app.tab();
@@ -3726,7 +3736,9 @@ pub async fn run_ai_validate(
         let scope = resolve_review_scope(&scope, app.tab())?;
 
         if app.tab().is_remote() {
-            return Err("Validate review is local-only. Check out the PR locally first.".to_string());
+            return Err(
+                "Validate review is local-only. Check out the PR locally first.".to_string(),
+            );
         }
 
         let er_dir = app.tab().er_dir();
@@ -3758,9 +3770,10 @@ pub async fn run_ai_validate(
                 .map_err(|e| e.to_string())?;
         }
         if comment_count > 0 {
-            let prompt = er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
-                &er_dir, &diff_hash,
-            );
+            let prompt =
+                er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
+                    &er_dir, &diff_hash,
+                );
             app.spawn_agent_prompt("validate-comments", &prompt)
                 .map_err(|e| e.to_string())?;
         }
@@ -10652,11 +10665,16 @@ mod tests {
             let sig = format!("pub async fn {name}");
             let start = src.find(&sig)?;
             let rest = &src[start + 1..];
-            let next = ["\n#[tauri::command]", "\npub async fn ", "\npub fn ", "\npub use "]
-                .iter()
-                .filter_map(|m| rest.find(m).map(|i| i + 1))
-                .min()
-                .unwrap_or(rest.len());
+            let next = [
+                "\n#[tauri::command]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\npub use ",
+            ]
+            .iter()
+            .filter_map(|m| rest.find(m).map(|i| i + 1))
+            .min()
+            .unwrap_or(rest.len());
             Some(&src[start..start + 1 + next])
         }
 
