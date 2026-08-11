@@ -1,3 +1,29 @@
+# Easy Review v0.4.10
+
+## In plain terms
+
+- **What changed.** Desktop ⌘K is now the single command hub — AI review actions moved into nested menus, ⌘A is free for select-all again, and PR/GitHub links respect each tab's own repo. The `@easy-review/skills` installer got an interactive wizard and reliable `bunx`/`npx` routing.
+- **TL;DR.** Nested ⌘K palette, per-tab PR repo fix, skills installer wizard + bunx fixes.
+
+## Highlights
+
+- **Nested ⌘K command palette.** AI actions (triage, review, reviewers, professor, tour, validate, file scope, agent output, copy context, provider/model picker) live under nested menus with letter shortcuts, arrow navigation, and searchable submenus.
+- **⌘A restored.** Native select-all works again in the embedded browser; the old AI action palette is removed.
+- **Per-tab PR repo.** Local PR and branch tabs carry `remote_repo` so PR links, GitHub status, and approval resolve the correct repo when the same PR number exists in multiple projects.
+- **`@easy-review/skills` wizard.** Interactive TTY installer (agents, skills, paths); `--yes`/`--force` for scripts. Fixes `bunx`/`npx` bin shadowing and non-interactive stdin.
+
+## What's Changed
+
+### Features
+- Consolidate desktop command palette into nested ⌘K menus with AI review actions. (#170)
+- Interactive skills installer wizard for `@easy-review/skills`.
+
+### Fixes
+- Key PR links and GitHub status to the tab's own repo. (#169)
+- Route `bunx @easy-review/skills` to our CLI; TTY wizard under bunx.
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.9...v0.4.10
+
 # Easy Review v0.4.9
 
 ## In plain terms
