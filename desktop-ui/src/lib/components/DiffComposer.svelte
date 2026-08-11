@@ -7,8 +7,12 @@
     topPx?: number;
     /** Left inset for Guide pillar rail — keep composer aligned with the diff column. */
     offsetLeftPx?: number;
+    /** Horizontal position (px) of the composer's left edge, when constrained to a column. */
+    leftPx?: number;
+    /** Width (px) of the composer, when constrained to a column (split mode). */
+    widthPx?: number;
   }
-  const { topPx, offsetLeftPx = 0 }: Props = $props();
+  const { topPx, offsetLeftPx = 0, leftPx, widthPx }: Props = $props();
 
   const canSubmit = $derived(diffSel.text.trim().length > 0);
   let composerEl: HTMLTextAreaElement | null = $state(null);
@@ -94,7 +98,7 @@
   tabindex="-1"
   onkeydown={() => {}}
   style={topPx !== undefined
-    ? `position:absolute;top:${topPx}px;left:${offsetLeftPx}px;right:0;z-index:20`
+    ? `position:absolute;top:${topPx}px;left:${widthPx !== undefined ? leftPx : offsetLeftPx}px;${widthPx !== undefined ? `width:${widthPx}px` : "right:0"};z-index:20`
     : undefined}
   class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
          {diffSel.kind === 'question' || diffSel.kind === 'note'

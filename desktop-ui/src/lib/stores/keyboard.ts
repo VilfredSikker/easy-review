@@ -6,7 +6,6 @@ import { refHighlight } from "./referenceHighlight.svelte";
 import { searchPrefillFromSelection } from "$lib/referenceHighlight";
 import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
-import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { overlay } from "./overlay.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
@@ -17,18 +16,6 @@ import { rightRail } from "$lib/stores/rightRail.svelte";
 interface OpenSourceResult {
   kind: string;
   target: string;
-}
-
-// Callbacks registered by AiActionPalette to open itself
-let openAiPaletteCallback: (() => void) | null = null;
-
-export function registerAiPaletteOpener(fn: () => void): () => void {
-  openAiPaletteCallback = fn;
-  return () => { if (openAiPaletteCallback === fn) openAiPaletteCallback = null; };
-}
-
-export function triggerAiPalette(): void {
-  void openAiPaletteCallback?.();
 }
 
 function openExportReviewView(): void {
@@ -164,7 +151,6 @@ export function initKeyboard(): () => void {
         e.preventDefault();
         return;
       }
-      closeAiActionPalette();
       // Esc precedence: usages popover → Cmd+F search bar → diff selection →
       // identifier highlight.
       if (refHighlight.popoverOpen) {
@@ -202,12 +188,6 @@ export function initKeyboard(): () => void {
       return;
     }
     if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "a" || e.key === "A")) {
-      e.preventDefault();
-      e.stopPropagation();
-      openAiPaletteCallback?.();
       return;
     }
     // Cmd/Ctrl+F opens the diff search bar. preventDefault suppresses the

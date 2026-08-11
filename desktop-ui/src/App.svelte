@@ -13,7 +13,6 @@
   import Toast from "$lib/components/Toast.svelte";
   import BackgroundTasks from "$lib/components/BackgroundTasks.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
-  import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
   import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
@@ -418,7 +417,6 @@
     </div>
   {/if}
   <CommandPalette />
-  <AiActionPalette />
   <AiReviewFilesModal />
   <ProfessorFocusModal />
 

@@ -66,6 +66,14 @@
   const selectedModels = $derived(selectedProvider?.models ?? []);
   const selectedModel = $derived(selectedModels.find((model) => model.is_selected) ?? null);
   const effortOptions = $derived(["Auto", ...(selectedModel?.effort_levels ?? [])]);
+
+  /** Search query for the model list (long model lists get a filter + scroll). */
+  let modelQuery = $state("");
+  const filteredModels = $derived(
+    modelQuery.trim() === ""
+      ? selectedModels
+      : selectedModels.filter((m) => m.label.toLowerCase().includes(modelQuery.trim().toLowerCase())),
+  );
   interface FieldSection {
     title: string | null;
     fields: ConfigHubField[];
@@ -454,8 +462,16 @@
               {#if selectedModels.length > 0}
                 <div class="py-2 mt-1">
                   <div class="text-sm text-fg mb-1.5">Model</div>
-                  <div class="flex flex-wrap gap-1.5">
-                    {#each selectedModels as m (m.id)}
+                  {#if selectedModels.length > 12}
+                    <input
+                      type="text"
+                      bind:value={modelQuery}
+                      placeholder="Search models…"
+                      class="w-full mb-2 px-2.5 py-1 text-xs rounded-md border border-hairline bg-surface text-fg-2 outline-none placeholder:text-muted focus:border-border"
+                    />
+                  {/if}
+                  <div class="flex flex-wrap gap-1.5 {selectedModels.length > 12 ? 'max-h-48 overflow-y-auto pr-1' : ''}">
+                    {#each filteredModels as m (m.id)}
                       <button
                         type="button"
                         class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
@@ -466,6 +482,9 @@
                         {m.label}
                       </button>
                     {/each}
+                    {#if filteredModels.length === 0}
+                      <span class="text-xs text-muted px-1">No models match “{modelQuery}”</span>
+                    {/if}
                   </div>
                 </div>
               {/if}

@@ -429,16 +429,15 @@ fn proxied_response(
 }
 
 /// Install a custom application menu. Mirrors Tauri's default menu but defines
-/// Select All as a custom item with no accelerator, so ⌘A is no longer claimed
-/// by macOS at the menu-bar level and can reach desktop-ui's JS handler
-/// (which opens the AI palette).
+/// Select All as a custom item with a native ⌘A accelerator — restoring
+/// macOS's default Select All behavior (desktop-ui no longer claims ⌘A).
 fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let pkg = app.package_info();
     let app_name = pkg.name.clone();
 
-    // Select All without an accelerator. Wired in `on_menu_event` below.
+    // Select All with the native accelerator. Wired in `on_menu_event` below.
     let select_all = MenuItemBuilder::with_id("er.select_all", "Select All")
-        .accelerator("")
+        .accelerator("CmdOrCtrl+A")
         .build(app)?;
 
     let edit_menu = Submenu::with_items(

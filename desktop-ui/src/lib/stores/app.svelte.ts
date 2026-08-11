@@ -1,4 +1,3 @@
-import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
@@ -541,18 +540,6 @@ class AppStore {
       if (path) return this.cmdReviewed(command, path);
     }
 
-    if (
-      command === "run_ai_review"
-      || command === "run_ai_expert_review"
-      || command === "run_ai_professor_review"
-      || command === "run_ai_triage_review"
-      || command === "run_ai_scoped_review"
-      || command === "validate_with_ai"
-      || command === "run_ai_validate"
-      || command === "run_ai_review_files"
-    ) {
-      closeAiActionPalette();
-    }
     const tStart = performance.now();
     const isSlow = SLOW_COMMANDS.has(command);
     const isForceRefresh = command === "force_refresh_diff";
