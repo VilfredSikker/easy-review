@@ -218,6 +218,27 @@ export const filePageTest: FileSnapshot = {
 
 // ─── AI snapshots ───────────────────────────────────────────────────────────
 
+/** Mirrors `diagram_presets()` in er-engine for Storybook (no live snapshot).
+ *  Production UI reads `ai.diagram_presets` from the snapshot wire contract;
+ *  fixtures can't import the Rust catalog, so keep this list aligned manually. */
+export const diagramPresetsFixture = [
+  {
+    kind: "mental-model",
+    label: "Mental model",
+    description: "High-level map of the areas this diff touches and how they relate",
+  },
+  {
+    kind: "subsystems",
+    label: "Subsystems",
+    description: "Changed files grouped by subsystem, with interactions",
+  },
+  {
+    kind: "flows",
+    label: "Flows",
+    description: "Runtime flow through the changed code for the main scenarios",
+  },
+];
+
 export const aiWithFindings: AiSnapshot = {
   fresh: true,
   stale_reason: null,
@@ -311,6 +332,7 @@ export const aiWithFindings: AiSnapshot = {
       created_at: "2026-08-11T09:00:00Z",
     },
   ],
+  diagram_presets: diagramPresetsFixture,
 };
 
 export const aiEmpty: AiSnapshot = {
@@ -333,6 +355,7 @@ export const aiEmpty: AiSnapshot = {
   eligible_comment_count: 0,
   triage: null,
   diagrams: [],
+  diagram_presets: diagramPresetsFixture,
 };
 
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
@@ -387,6 +410,7 @@ export const aiProfessorOnly: AiSnapshot = {
   eligible_comment_count: 0,
   triage: null,
   diagrams: [],
+  diagram_presets: diagramPresetsFixture,
 };
 
 /** General + Professor + Security for multi-agent dropdown. */

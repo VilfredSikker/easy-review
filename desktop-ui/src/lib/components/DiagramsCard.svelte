@@ -12,26 +12,8 @@
 
   const { ai }: Props = $props();
 
-  // ── Presets (mirror `diagram_presets()` in crates/er-engine/src/ai/diagrams.rs) ──
-  const PRESETS = [
-    {
-      kind: "mental-model",
-      label: "Mental model",
-      description: "High-level map of the areas this diff touches and how they relate",
-    },
-    {
-      kind: "subsystems",
-      label: "Subsystems",
-      description: "Changed files grouped by subsystem, with interactions",
-    },
-    {
-      kind: "flows",
-      label: "Flows",
-      description: "Runtime flow through the changed code for the main scenarios",
-    },
-  ] as const;
-
-  const diagrams = $derived(ai.diagrams ?? []);
+  const presets = $derived(ai.diagram_presets);
+  const diagrams = $derived(ai.diagrams);
 
   // A diagram task's kind is `diagram:<kind>`; correlate running/queued tasks
   // with the preset buttons so each shows its own spinner.
@@ -83,7 +65,7 @@
   }
 
   function kindLabel(kind: string): string {
-    return PRESETS.find((p) => p.kind === kind)?.label ?? "Custom";
+    return presets.find((p) => p.kind === kind)?.label ?? "Custom";
   }
 
   function formatCreated(iso: string): string {
@@ -107,7 +89,7 @@
     your local review storage — never pushed.
   </p>
   <div class="space-y-1.5">
-    {#each PRESETS as preset (preset.kind)}
+    {#each presets as preset (preset.kind)}
       {@const task = taskFor(preset.kind)}
       <button
         type="button"

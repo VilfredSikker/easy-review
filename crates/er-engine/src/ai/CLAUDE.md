@@ -18,6 +18,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `experts.rs` | Expert review files (`experts/*.json`) |
 | `triage.rs` | Fast branch triage (`triage.json`) |
 | `professor.rs` | Learning/teaching insights (`professor.json`) |
+| `diagrams.rs` | Mermaid diagram sidecars (`diagrams/*.json`) + preset catalog |
 | `finding_cleanup.rs` / `finding_responses.rs` | Finding lifecycle: cleanup and AI responses |
 | `relocate.rs` | Re-anchor findings/comments when the diff shifts |
 
@@ -33,6 +34,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `triage.json` | `TriageReview` | Fast branch scan / routing verdict |
 | `professor.json` | — | Teaching insights |
 | `experts/*.json` | — | Domain-specific expert findings |
+| `diagrams/*.json` | `ErDiagram` | Mermaid diagrams of the diff (mental-model / subsystems / flows / custom). Presets overwrite in place; custom diagrams accumulate as timestamped ids. Per-view-bucket like triage/review. |
 | `questions.json` | `ErQuestions` | Personal review questions (written by `er`) |
 | `notes.json` | `ErNotes` | Local actionable notes — private, agent hand-off oriented (written by `er`) |
 | `github-comments.json` | `ErGitHubComments` | GitHub PR comments, two-way sync (written by `er`) |
@@ -41,7 +43,7 @@ paths below use the repo-local `.er/` names, which are identical.
 
 **`AiState`** — Aggregate state for one tab: optional `review`, `order`,
 `summary`, `agent_summaries`, `checklist`, `questions`, `github_comments`,
-`triage`, legacy `feedback`, plus:
+`triage`, `diagrams`, legacy `feedback`, plus:
 - `is_stale` — true if any sidecar's `diff_hash` differs from the current diff
 - `stale_files` — per-file staleness set
 - `comment_index` — lazily-built `CommentIndexData` for O(1) per-file comment lookup

@@ -975,6 +975,19 @@ pub struct AiSnapshot {
     pub triage: Option<TriageSnapshot>,
     /// Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab.
     pub diagrams: Vec<DiagramSnapshot>,
+    /// Built-in diagram generate presets (mental-model / subsystems / flows).
+    /// Always populated from the engine catalog so the UI never hand-rolls
+    /// a parallel list that can drift from `prompts.rs` / kind validation.
+    #[serde(default)]
+    pub diagram_presets: Vec<DiagramPresetSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagramPresetSnapshot {
+    /// `mental-model` | `subsystems` | `flows`.
+    pub kind: String,
+    pub label: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2347,7 +2360,19 @@ fn empty_ai_snapshot() -> AiSnapshot {
         eligible_comment_count: 0,
         triage: None,
         diagrams: Vec::new(),
+        diagram_presets: diagram_preset_snapshots(),
     }
+}
+
+fn diagram_preset_snapshots() -> Vec<DiagramPresetSnapshot> {
+    er_engine::ai::diagram_presets()
+        .into_iter()
+        .map(|p| DiagramPresetSnapshot {
+            kind: p.kind,
+            label: p.label,
+            description: p.description,
+        })
+        .collect()
 }
 
 /// Load the most recent 10 commits for the file viewer's commit history
@@ -3594,6 +3619,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         eligible_comment_count,
         triage,
         diagrams,
+        diagram_presets: diagram_preset_snapshots(),
     }
 }
 
@@ -3961,6 +3987,22 @@ mod tests {
 
         assert_eq!(snapshot.threads.len(), 1);
         assert!(snapshot.threads[0].stale);
+    }
+
+    #[test]
+    fn ai_snapshot_includes_diagram_presets_from_engine_catalog() {
+        let tab = TabState::new_for_test(vec![]);
+        let snapshot = build_ai_snapshot(&tab, None);
+        let kinds: Vec<&str> = snapshot
+            .diagram_presets
+            .iter()
+            .map(|p| p.kind.as_str())
+            .collect();
+        assert_eq!(kinds, vec!["mental-model", "subsystems", "flows"]);
+        assert!(snapshot
+            .diagram_presets
+            .iter()
+            .all(|p| !p.label.is_empty() && !p.description.is_empty()));
     }
 
     #[test]

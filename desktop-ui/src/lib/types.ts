@@ -192,6 +192,13 @@ export interface TriageSnapshot {
   domains: string[];
 }
 
+export interface DiagramPresetSnapshot {
+  /** "mental-model" | "subsystems" | "flows" */
+  kind: string;
+  label: string;
+  description: string;
+}
+
 export interface DiagramSnapshot {
   /** File-stem id (`diagrams/<id>.json`) — delete/regenerate target. */
   id: string;
@@ -231,6 +238,8 @@ export interface AiSnapshot {
   triage: TriageSnapshot | null;
   /** Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab. */
   diagrams: DiagramSnapshot[];
+  /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
+  diagram_presets: DiagramPresetSnapshot[];
 }
 
 export interface PrSnapshot {

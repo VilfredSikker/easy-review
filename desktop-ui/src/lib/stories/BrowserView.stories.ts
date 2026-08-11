@@ -3,6 +3,7 @@ import BrowserView from "$lib/components/BrowserView.svelte";
 import { browser } from "$lib/stores/browser.svelte";
 import { app } from "$lib/stores/app.svelte";
 import type { UiAnnotation } from "$lib/types";
+import { diagramPresetsFixture } from "./fixtures";
 
 // Minimal HTML loaded into the iframe so the stories render something visible
 // without depending on a running dev server.
@@ -67,6 +68,7 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       eligible_comment_count: 0,
       triage: null,
       diagrams: [],
+      diagram_presets: diagramPresetsFixture,
     },
     pr: null,
     panels: { left: true, tree: true, right: true },

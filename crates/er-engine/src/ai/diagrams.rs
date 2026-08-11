@@ -109,3 +109,25 @@ pub fn is_safe_diagram_id(id: &str) -> bool {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diagram_presets_are_valid_kinds_in_display_order() {
+        let presets = diagram_presets();
+        let kinds: Vec<&str> = presets.iter().map(|p| p.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                DIAGRAM_KIND_MENTAL_MODEL,
+                DIAGRAM_KIND_SUBSYSTEMS,
+                DIAGRAM_KIND_FLOWS
+            ]
+        );
+        assert!(presets.iter().all(|p| is_valid_diagram_kind(&p.kind)));
+        assert!(!is_valid_diagram_kind("not-a-kind"));
+        assert!(is_valid_diagram_kind(DIAGRAM_KIND_CUSTOM));
+    }
+}
