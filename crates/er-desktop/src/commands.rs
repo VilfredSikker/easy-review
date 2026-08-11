@@ -3190,8 +3190,9 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
         .collect())
 }
 
-// ⌘K / AI Hub: locks App, shells out for the review diff, writes artifacts,
-// then rebuilds a snapshot — must not run on the main thread.
+// ⌘K / AI Hub: may shell out for the review diff and writes artifacts, then
+// rebuilds a snapshot — must not run on the main thread. Hold the App lock
+// only to capture tab context / spawn; do artifact IO with the lock released.
 #[tauri::command]
 pub async fn run_ai_review(
     scope: String,
@@ -3199,16 +3200,17 @@ pub async fn run_ai_review(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let scope = resolve_review_scope(&scope, app.tab())?;
-
-        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+        let (scope, repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote, mut raw) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let scope = resolve_review_scope(&scope, app.tab())?;
             let tab = app.tab();
             let branch_label = tab
                 .local_branch_view
                 .clone()
                 .unwrap_or_else(|| tab.current_branch.clone());
+            let raw = tab.raw_diff_for_review(&scope).map_err(|e| e.to_string())?;
             (
+                scope,
                 tab.repo_root.clone(),
                 branch_label,
                 tab.base_branch.clone(),
@@ -3216,98 +3218,61 @@ pub async fn run_ai_review(
                 tab.pr_number,
                 tab.remote_repo.clone(),
                 tab.remote_repo.is_some(),
+                raw,
             )
         };
 
         std::fs::create_dir_all(&er_dir)
             .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-        let mut raw = app
-            .tab()
-            .raw_diff_for_review(&scope)
-            .map_err(|e| e.to_string())?;
         let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        spawn_ai_review_with_diff(
-            &mut app,
-            &state,
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
+            &base_branch,
+            &branch_label,
+            &diff_hash,
+        );
+        let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
+            er_dir: er_dir.clone(),
             branch_label,
             base_branch,
+            scope: scope.clone(),
             pr_number,
             remote_repo,
-            is_remote,
-            raw,
-        )?;
+            managed_local: !is_remote,
+        };
+
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.spawn_background_review(target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        let debug_bg = er_engine::app::debug_bg_enabled();
+        if debug_bg {
+            eprintln!(
+                "[bg] run_ai_review post-spawn snapshots={}",
+                app.background_task_snapshots().len()
+            );
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if debug_bg {
+            let snap = snap_from(&app, &state);
+            eprintln!(
+                "[bg] run_ai_review snapshot.background_tasks.len()={}",
+                snap.background_tasks.len()
+            );
+        }
         Ok(snap_from(&app, &state))
     })
     .await
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_ai_review_with_diff(
-    app: &mut er_engine::app::App,
-    state: &AppState,
-    scope: &str,
-    er_dir: &str,
-    repo_root: String,
-    branch_label: String,
-    base_branch: String,
-    pr_number: Option<u64>,
-    remote_repo: Option<String>,
-    is_remote: bool,
-    raw: String,
-) -> Result<(), String> {
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(er_dir, &raw)?;
-
-    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
-        scope,
-        er_dir,
-        &base_branch,
-        &branch_label,
-        &diff_hash,
-    );
-
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.to_string(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-
-    app.spawn_background_review(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-
-    let debug_bg = er_engine::app::debug_bg_enabled();
-    if debug_bg {
-        eprintln!(
-            "[bg] run_ai_review post-spawn snapshots={}",
-            app.background_task_snapshots().len()
-        );
-    }
-
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if debug_bg {
-        let snap = snap_from(app, state);
-        eprintln!(
-            "[bg] run_ai_review snapshot.background_tasks.len()={}",
-            snap.background_tasks.len()
-        );
-    }
-    Ok(())
 }
 
 /// Generate a guided Tour with AI: captures the active view's diff and spawns the
@@ -10657,41 +10622,90 @@ mod tests {
     /// thread**, freezing the window for a noticeable stretch — the same class
     /// of bug as the file-filter freeze (`set_filter` → `run_blocking`).
     ///
-    /// Guard: every palette-hot command that returns `AppSnapshot` (or locks
-    /// `App` while listing providers) must be `pub async fn` and wrap its body
-    /// in `run_blocking`. Fails red if any of them regress back to `pub fn`.
+    /// Guard: every palette-hot leaf command must be `pub async fn` whose body
+    /// contains `run_blocking`. Thin `.await` wrappers (triage / files /
+    /// professor → scoped_review) must stay async and lock-free.
     #[test]
     fn cmdk_ai_actions_must_run_off_main_thread() {
         let src = include_str!("commands.rs");
-        let must_be_async = [
+        let must_run_blocking = [
             "set_ai_selection",
             "set_ai_model",
             "set_ai_effort",
             "list_ai_providers",
             "run_ai_review",
-            "run_ai_triage_review",
             "run_ai_scoped_review",
-            "run_ai_review_files",
             "run_ai_validate",
             "run_ai_expert_review",
-            "run_ai_professor_review",
             "generate_tour",
             "export_to_agent",
             "refresh_diff",
+            "force_refresh_diff",
         ];
+        let wrappers = [
+            "run_ai_triage_review",
+            "run_ai_review_files",
+            "run_ai_professor_review",
+        ];
+
+        fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+            let sig = format!("pub async fn {name}");
+            let start = src.find(&sig)?;
+            let rest = &src[start + 1..];
+            let next = ["\n#[tauri::command]", "\npub async fn ", "\npub fn ", "\npub use "]
+                .iter()
+                .filter_map(|m| rest.find(m).map(|i| i + 1))
+                .min()
+                .unwrap_or(rest.len());
+            Some(&src[start..start + 1 + next])
+        }
+
         let mut failures = Vec::new();
-        for name in must_be_async {
+        for name in must_run_blocking {
             let async_sig = format!("pub async fn {name}");
             let sync_sig = format!("pub fn {name}");
-            if src.contains(&async_sig) {
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` (sync / main-thread) — must be `pub async fn` + run_blocking"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
                 continue;
             }
-            if src.contains(&sync_sig) {
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains("run_blocking") {
+                failures.push(format!("{name} is async but its body has no run_blocking"));
+            }
+        }
+        for name in wrappers {
+            let async_sig = format!("pub async fn {name}");
+            let sync_sig = format!("pub fn {name}");
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` — must be `pub async fn` wrapper"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
+                continue;
+            }
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains(".await") {
+                failures.push(format!("{name} wrapper body has no .await"));
+            }
+            if body.contains("state.app.lock") {
                 failures.push(format!(
-                    "{name} is still `pub fn` (sync / main-thread) — must be `pub async fn` + run_blocking"
+                    "{name} should stay a thin .await wrapper (no App lock)"
                 ));
-            } else {
-                failures.push(format!("{name} signature not found in commands.rs"));
             }
         }
         assert!(

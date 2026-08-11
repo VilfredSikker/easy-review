@@ -68,10 +68,10 @@
     query = "";
     selectedIdx = 0;
     submenuStack = [];
+    reviewerSelection = new Set();
   }
 
-  /** Close the palette, let it paint, then run the action. Keeps the window
-   *  responsive when the command still takes a beat (snapshot rebuild). */
+  /** Close the palette, let it paint, then run a heavy (IPC / snapshot) action. */
   async function dismissAndRun(fn: () => void | Promise<void>) {
     closeKeepSubmenu();
     await Promise.resolve();
@@ -79,6 +79,12 @@
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
     }
     await fn();
+  }
+
+  /** Instant local UI — no IPC. Close immediately and run. */
+  function dismissLocal(fn: () => void) {
+    close();
+    fn();
   }
 
   function openExportReviewView() {
@@ -151,7 +157,7 @@
         kbd: "p",
         run: guard(() => {
           if (!reviewScope) return;
-          void dismissAndRun(() => openProfessorFocusModal(reviewScope, ["professor"], []));
+          dismissLocal(() => openProfessorFocusModal(reviewScope, ["professor"], []));
         }),
       },
       {
@@ -183,7 +189,7 @@
           : "Not available in this view",
         group: "AI" as const,
         kbd: "s",
-        run: guard(() => { void dismissAndRun(() => openAiReviewFilesModal()); }),
+        run: guard(() => { dismissLocal(() => openAiReviewFilesModal()); }),
       },
       {
         id: "ai-open-output",
@@ -193,7 +199,7 @@
           : "View the agent log from the last run",
         group: "AI" as const,
         kbd: "o",
-        run: () => { void dismissAndRun(() => { app.setMainView("agent-output"); }); },
+        run: () => { dismissLocal(() => { app.setMainView("agent-output"); }); },
       },
       {
         id: "ai-copy-context",
@@ -272,7 +278,7 @@
     if (!scope || reviewerSelection.size === 0) return;
     const kinds = [...reviewerSelection];
     if (kinds.includes("professor")) {
-      void dismissAndRun(() => openProfessorFocusModal(scope, kinds, []));
+      dismissLocal(() => openProfessorFocusModal(scope, kinds, []));
       return;
     }
     void dismissAndRun(() =>
@@ -312,7 +318,7 @@
         description: "Open export view for copy, save, and preview",
         group: "Actions",
         kbd: "⌘⇧E",
-        run: () => { void dismissAndRun(() => { openExportReviewView(); }); },
+        run: () => { dismissLocal(() => { openExportReviewView(); }); },
       },
       {
         id: "export-review-file",
@@ -327,9 +333,9 @@
         description: "All captured errors & warnings since launch",
         group: "Actions",
         run: () => {
-          void dismissAndRun(() => {
+          dismissLocal(() => {
             const text = app.dumpLogs() || "(no logs)";
-            return copyToClipboard(text)
+            void copyToClipboard(text)
               .then(() => app.pushLog("info", "clipboard", `Copied ${text.length} chars`))
               .catch(() => {});
           });
@@ -339,13 +345,13 @@
         id: "clear-logs",
         label: "Clear logs",
         group: "Actions",
-        run: () => { void dismissAndRun(() => { app.clearLogs(); }); },
+        run: () => { dismissLocal(() => { app.clearLogs(); }); },
       },
       {
         id: "open-settings",
         label: "Open settings",
         group: "Actions",
-        run: () => { void dismissAndRun(() => { app.setMainView("settings"); }); },
+        run: () => { dismissLocal(() => { app.setMainView("settings"); }); },
       },
     ];
 
@@ -371,7 +377,7 @@
         description: "Bottom drawer shell at the active tab's repo root",
         group: "Navigate",
         kbd: "`",
-        run: () => { void dismissAndRun(() => { terminal.toggle(); }); },
+        run: () => { dismissLocal(() => { terminal.toggle(); }); },
       },
     ];
 
@@ -382,7 +388,7 @@
         description: `Currently: ${app.diffViewMode}`,
         group: "View & Layout",
         kbd: "d",
-        run: () => { void dismissAndRun(() => { app.toggleDiffViewMode(); }); },
+        run: () => { dismissLocal(() => { app.toggleDiffViewMode(); }); },
       },
       {
         id: "open-browser-view",
@@ -391,9 +397,9 @@
         group: "View & Layout",
         kbd: "⌘B",
         run: () => {
-          void dismissAndRun(() =>
-            browser.open ? browser.cycleLayout() : browser.setLayout("split"),
-          );
+          dismissLocal(() => {
+            void (browser.open ? browser.cycleLayout() : browser.setLayout("split"));
+          });
         },
       },
       {
@@ -401,14 +407,14 @@
         label: "Toggle left panel",
         group: "View & Layout",
         kbd: "[",
-        run: () => { void dismissAndRun(() => { app.togglePanel("left"); }); },
+        run: () => { dismissLocal(() => { app.togglePanel("left"); }); },
       },
       {
         id: "toggle-right",
         label: "Toggle right panel",
         group: "View & Layout",
         kbd: "]",
-        run: () => { void dismissAndRun(() => { app.togglePanel("right"); }); },
+        run: () => { dismissLocal(() => { app.togglePanel("right"); }); },
       },
     ];
 
@@ -419,14 +425,14 @@
         description: "Paste a GitHub PR link to open it",
         group: "PR",
         kbd: "⌘⇧O",
-        run: () => { void dismissAndRun(() => { openPrUrlModal(); }); },
+        run: () => { dismissLocal(() => { openPrUrlModal(); }); },
       },
       {
         id: "open-arena",
         label: "Open AI review arena",
         description: "Compare multiple reviewers on the current diff",
         group: "PR",
-        run: () => { void dismissAndRun(() => { arena.openLauncher(); }); },
+        run: () => { dismissLocal(() => { arena.openLauncher(); }); },
       },
     ];
 
