@@ -132,10 +132,22 @@ pub(crate) struct PendingBackgroundTask {
     pub command_name: String,
     pub prompt: String,
     pub prepared_diff: bool,
+    /// When set, the agent runs read-only and this sidecar is written by the
+    /// host from stdout (diagram confinement against prompt injection).
+    pub host_write_diagram: Option<HostWriteDiagram>,
     /// Optional action-bound provider/model/effort selection. This is captured
     /// when a TUI action is queued so it cannot leak into later actions or be
     /// replaced by a changed global default before launch.
     pub ai_selection: Option<crate::config::AiSelection>,
+}
+
+/// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
+#[derive(Debug, Clone)]
+pub struct HostWriteDiagram {
+    pub output_path: std::path::PathBuf,
+    pub kind: String,
+    pub diff_hash: String,
+    pub custom_prompt: Option<String>,
 }
 
 /// In-flight + recently finished background task channels. The `App` owns

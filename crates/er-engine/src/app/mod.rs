@@ -9,6 +9,7 @@ pub use card_ai_spawn::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiI
 pub use crate::git::Worktree;
 pub use state::background::{
     debug_bg_enabled, BackgroundTask, BackgroundTaskSnapshot, BackgroundTaskTarget,
+    HostWriteDiagram,
 };
 pub use state::chrono_now;
 pub use state::github_sync::{fetch_comment_sync_data, CommentSyncContext, CommentSyncResult};

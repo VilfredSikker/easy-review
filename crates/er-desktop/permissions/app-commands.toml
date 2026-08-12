@@ -20,6 +20,8 @@ commands.allow = [
   "bulk_review_pillar",
   "unbulk_review_pillar",
   "generate_tour",
+  "generate_diagram",
+  "delete_diagram",
   "open_in_editor",
   "open_in_vscode",
   "open_source",

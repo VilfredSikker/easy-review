@@ -34,7 +34,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `triage.json` | `TriageReview` | Fast branch scan / routing verdict |
 | `professor.json` | — | Teaching insights |
 | `experts/*.json` | — | Domain-specific expert findings |
-| `diagrams/*.json` | `ErDiagram` | Mermaid diagrams of the diff (mental-model / subsystems / flows / custom). Presets overwrite in place; custom diagrams accumulate as timestamped ids. Per-view-bucket like triage/review. |
+| `diagrams/*.json` | `ErDiagram` | Mermaid diagrams of the diff (mental-model / subsystems / flows / custom). Presets overwrite in place; custom diagrams accumulate as timestamped ids. Per-view-bucket like triage/review. **Host-owned write:** the agent runs read-only and emits JSON on stdout; `persist_diagram_from_agent_stdout` validates and atomically writes only this path (prompt-injection confinement). |
 | `questions.json` | `ErQuestions` | Personal review questions (written by `er`) |
 | `notes.json` | `ErNotes` | Local actionable notes — private, agent hand-off oriented (written by `er`) |
 | `github-comments.json` | `ErGitHubComments` | GitHub PR comments, two-way sync (written by `er`) |
