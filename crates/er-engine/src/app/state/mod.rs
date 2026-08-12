@@ -29,7 +29,8 @@ fn profile_branch_enabled() -> bool {
 }
 
 fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
-    if !profile_branch_enabled() && tab.local_branch_view.is_none() {
+    // Must stay behind the env gate: unconditional eprintln! corrupts the TUI.
+    if !profile_branch_enabled() {
         return;
     }
     let branch = tab
@@ -1085,9 +1086,7 @@ impl TabState {
     /// checkout diff refresh. Callers that immediately switch the tab to another
     /// diff target can avoid computing a throwaway diff before their real refresh.
     pub fn new_with_base_unloaded(repo_root: String, base_branch: String) -> Result<Self> {
-        let t_cb = Instant::now(); // TEMP diagnostic
         let current_branch = git::get_current_branch_in(&repo_root)?;
-        eprintln!("pr_open phase=cur_branch ms={}", t_cb.elapsed().as_millis()); // TEMP diagnostic
         Self::new_inner(repo_root, current_branch, base_branch, false)
     }
 
@@ -1234,7 +1233,6 @@ impl TabState {
         tab.mode = DiffMode::Branch;
 
         let compaction_config = tab.compaction_config.clone();
-        let t_parse = Instant::now();
         if raw.len() > 200_000 {
             let headers = crate::git::parse_diff_headers(&raw);
             let files =
@@ -1252,41 +1250,21 @@ impl TabState {
             tab.lazy_mode = false;
             crate::git::compact_files(&mut tab.files, &tab.compaction_config);
         }
-        eprintln!(
-            "pr_open repo={} pr={} phase=parse ms={}",
-            tab.repo_root,
-            pr_number,
-            t_parse.elapsed().as_millis()
-        );
 
-        let t_diff_hash = Instant::now();
         tab.diff_hash = crate::ai::compute_diff_hash(&raw);
         tab.branch_diff_hash = tab.diff_hash.clone();
-        eprintln!(
-            "pr_open repo={} pr={} phase=diff_hash ms={}",
-            tab.repo_root,
-            pr_number,
-            t_diff_hash.elapsed().as_millis()
-        );
         tab.selected_file = 0;
         tab.clamp_hunk();
         tab.ensure_file_parsed();
         tab.rebuild_hunk_offsets();
         tab.mtime_cache.clear();
         tab.update_mem_budget();
-        let t_ai_reload = Instant::now();
         // Light sync only: the open path immediately follows with
         // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
         // `apply_managed_root` re-routes to the PR bucket and performs the
         // authoritative AI reload — a full reload here would be the 3rd of 3
         // (first-paint plan step 1).
         tab.sync_managed_storage_light();
-        eprintln!(
-            "pr_open repo={} pr={} phase=storage_sync ms={}",
-            tab.repo_root,
-            pr_number,
-            t_ai_reload.elapsed().as_millis()
-        );
         Ok(tab)
     }
 
@@ -1592,12 +1570,10 @@ impl TabState {
         refresh_initial_diff: bool,
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-        let t_cfg = Instant::now(); // TEMP diagnostic
         let er_config = config::load_global_config();
         let watched_config = er_config.watched.clone();
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
-        eprintln!("pr_open phase=cfg_merge ms={}", t_cfg.elapsed().as_millis()); // TEMP diagnostic
         let er_root = ErRoot::RepoLocal(repo_root.clone());
 
         let mut tab = TabState {
@@ -1701,22 +1677,12 @@ impl TabState {
             pr_refs_fetched: false,
         };
 
-        let t_fs = Instant::now(); // TEMP diagnostic
         tab.finish_storage_setup();
-        eprintln!(
-            "pr_open phase=finish_storage ms={}",
-            t_fs.elapsed().as_millis()
-        ); // TEMP diagnostic
 
         if refresh_initial_diff {
             tab.refresh_diff()?;
         }
-        let t_w = Instant::now(); // TEMP diagnostic
         tab.refresh_watched_files();
-        eprintln!(
-            "pr_open phase=refresh_watched ms={}",
-            t_w.elapsed().as_millis()
-        ); // TEMP diagnostic
         Ok(tab)
     }
 
