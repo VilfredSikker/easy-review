@@ -2550,6 +2550,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2570,6 +2571,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2580,7 +2582,35 @@ impl App {
         prompt: String,
         prepared_diff: bool,
     ) -> Result<()> {
-        self.spawn_background_agent_task("tour".to_string(), "tour", target, prompt, prepared_diff)
+        self.spawn_background_agent_task(
+            "tour".to_string(),
+            "tour",
+            target,
+            prompt,
+            prepared_diff,
+            None,
+        )
+    }
+
+    /// Spawn diagram generation (`kind` = `diagram:<diagram-kind>`). The agent
+    /// runs read-only and emits JSON; the harness atomically writes
+    /// `diagrams/<file>.json` only (prompt-injection write confinement).
+    pub fn spawn_background_diagram(
+        &mut self,
+        diagram_kind: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+        host_write: super::background::HostWriteDiagram,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::diagram_task_kind(diagram_kind),
+            "diagram",
+            target,
+            prompt,
+            prepared_diff,
+            Some(host_write),
+        )
     }
 
     /// Spawn the Professor learning agent (`kind` = `professor`).
@@ -2596,6 +2626,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2612,6 +2643,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2633,6 +2665,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        host_write_diagram: Option<super::background::HostWriteDiagram>,
     ) -> Result<()> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
@@ -2661,6 +2694,7 @@ impl App {
                 command_name: command_name.to_string(),
                 prompt,
                 prepared_diff,
+                host_write_diagram,
                 // Snapshot at enqueue so a mid-queue palette change cannot retarget
                 // an already-queued job.
                 ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(
@@ -2701,6 +2735,7 @@ impl App {
             command_name,
             prompt,
             prepared_diff,
+            host_write_diagram,
             ai_selection,
         } = pending;
         let command_name = command_name.as_str();
@@ -2805,11 +2840,21 @@ impl App {
             &mut config_args,
             Some(target.er_dir.as_str()),
         );
-        let opencode_env = crate::config::apply_opencode_spawn(
-            family,
-            &mut config_args,
-            Some(target.er_dir.as_str()),
-        );
+        // Diagrams: host writes the sidecar — deny agent edit tools. Still allow
+        // reading the managed bucket (diff-tmp) via external_directory allow.
+        let opencode_env = if host_write_diagram.is_some() {
+            crate::config::apply_opencode_readonly_storage_spawn(
+                family,
+                &mut config_args,
+                Some(target.er_dir.as_str()),
+            )
+        } else {
+            crate::config::apply_opencode_spawn(
+                family,
+                &mut config_args,
+                Some(target.er_dir.as_str()),
+            )
+        };
 
         std::fs::create_dir_all(&target.er_dir)?;
 
@@ -2865,7 +2910,17 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed: &[&str] = if prepared_diff {
+                    let allowed: &[&str] = if host_write_diagram.is_some() {
+                        // Read-only: harness persists the diagram JSON from stdout.
+                        &[
+                            "Read",
+                            "Bash(grep *)",
+                            "Bash(rg *)",
+                            "Bash(git grep*)",
+                            "Bash(git show*)",
+                            "Bash(git log*)",
+                        ]
+                    } else if prepared_diff {
                         &[
                             "Read",
                             "Write",
@@ -3038,6 +3093,21 @@ impl App {
                         );
                     }
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
+                }
+                // Host-owned diagram write: agent had no Write/Edit; persist
+                // only the validated diagrams/<id>.json from stdout.
+                if let Some(hw) = &host_write_diagram {
+                    crate::ai::persist_diagram_from_agent_stdout(
+                        &stdout_lines.join("\n"),
+                        is_stream_json,
+                        &hw.kind,
+                        &hw.diff_hash,
+                        hw.custom_prompt.as_deref(),
+                        &hw.output_path,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail}: failed to persist diagram sidecar")
+                    })?;
                 }
                 // Selected-file reviews overwrite sidecars with a subset —
                 // merge back into the pre-scoped snapshot when present.

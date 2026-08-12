@@ -487,6 +487,8 @@ pub struct AiState {
     pub github_comments: Option<ErGitHubComments>,
     /// Fast branch triage (`.er/triage.json`) — routing verdict, not merged into review.
     pub triage: Option<super::triage::TriageReview>,
+    /// Mermaid diagrams of the diff (`diagrams/*.json`), newest preset state only.
+    pub diagrams: Vec<super::diagrams::ErDiagram>,
     /// Legacy feedback (kept for migration, not used for new comments)
     pub feedback: Option<ErFeedback>,
     /// Whether the loaded data matches the current diff
@@ -516,6 +518,7 @@ impl Default for AiState {
             notes: None,
             github_comments: None,
             triage: None,
+            diagrams: Vec::new(),
             feedback: None,
             is_stale: false,
             tour_stale: false,

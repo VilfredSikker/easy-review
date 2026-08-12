@@ -4,6 +4,7 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use er_engine::diagram_upload::{list_diagrams, prepare_diagram_kit, upload_diagram};
 use er_engine::git::ProdDiffStats;
 use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
@@ -136,6 +137,29 @@ pub struct PrGuideArgs {
 pub struct PrSummarizeArgs {
     #[serde(flatten)]
     pub target: PrRefFields,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrDiagramArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `list` (default) fetches existing diagrams; `prepare` fetches diff + prompt for
+    /// one kind; `upload` writes the diagram JSON.
+    #[serde(default)]
+    pub action: Option<String>,
+    /// Required for `prepare`/`upload`: `mental-model` | `subsystems` | `flows` | `custom`.
+    #[serde(default)]
+    pub kind: Option<String>,
+    /// For `kind=custom`: the diagram instructions (required on `prepare`; pinned onto
+    /// the sidecar on `upload`, overriding whatever `prompt` the uploaded JSON carries).
+    #[serde(default)]
+    pub prompt: Option<String>,
+    /// Required for `upload`: exactly one entry, `{ "<output_file>": "<diagram JSON>" }`
+    /// using the filename from `action=prepare`'s `kit.output_file`.
+    #[serde(default)]
+    pub files: Option<BTreeMap<String, String>>,
+    #[serde(default)]
+    pub refresh_diff: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -855,6 +879,104 @@ impl ErMcp {
         }))
     }
 
+    #[tool(
+        description = "List, prepare, or upload Mermaid diagrams for a PR (kind: mental-model|subsystems|flows|custom). action=list (default) reads diagrams/*.json; action=prepare fetches diff + prompt for one kind; action=upload writes the diagram JSON."
+    )]
+    async fn pr_diagram(
+        &self,
+        Parameters(args): Parameters<PrDiagramArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let action = args
+            .action
+            .as_deref()
+            .unwrap_or("list")
+            .to_ascii_lowercase();
+        let pr = resolve_target(&args.target)?;
+        let owner = pr.owner.clone();
+        let name = pr.repo.clone();
+        let number = pr.number;
+
+        match action.as_str() {
+            "list" => {
+                let (er_dir, diagrams) =
+                    tokio::task::spawn_blocking(move || list_diagrams(&owner, &name, number))
+                        .await
+                        .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+                text_json(&json!({
+                    "project": pr.project_name,
+                    "repo": format!("{}/{}", pr.owner, pr.repo),
+                    "number": pr.number,
+                    "bucket_path": pr.bucket_path,
+                    "er_dir": er_dir,
+                    "diagrams": diagrams,
+                }))
+            }
+            "prepare" => {
+                let kind = args
+                    .kind
+                    .filter(|k| !k.trim().is_empty())
+                    .ok_or_else(|| tool_err("prepare requires kind"))?;
+                let prompt = args.prompt.clone();
+                let kit = tokio::task::spawn_blocking(move || {
+                    prepare_diagram_kit(&owner, &name, number, &kind, prompt.as_deref(), &[])
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?;
+
+                text_json(&json!({
+                    "project": pr.project_name,
+                    "repo": format!("{}/{}", pr.owner, pr.repo),
+                    "number": pr.number,
+                    "bucket_path": pr.bucket_path,
+                    "kit": kit,
+                }))
+            }
+            "upload" => {
+                let kind = args
+                    .kind
+                    .filter(|k| !k.trim().is_empty())
+                    .ok_or_else(|| tool_err("upload requires kind"))?;
+                let files = args.files.filter(|f| !f.is_empty()).ok_or_else(|| {
+                    tool_err("upload requires files: { \"<output_file>\": \"...\" }")
+                })?;
+                if files.len() != 1 {
+                    return Err(tool_err(
+                        "upload accepts exactly one file entry (the kit.output_file from prepare)",
+                    ));
+                }
+                let (file_name, content) = files.into_iter().next().expect("checked len == 1");
+                let custom_prompt = args.prompt.clone();
+                let refresh_diff = args.refresh_diff.unwrap_or(false);
+
+                let result = tokio::task::spawn_blocking(move || {
+                    upload_diagram(
+                        &owner,
+                        &name,
+                        number,
+                        &kind,
+                        &file_name,
+                        &content,
+                        custom_prompt.as_deref(),
+                        refresh_diff,
+                    )
+                })
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| tool_err(e.to_string()))?;
+
+                text_json(&json!({
+                    "project": pr.project_name,
+                    "repo": format!("{}/{}", pr.owner, pr.repo),
+                    "number": pr.number,
+                    "bucket_path": pr.bucket_path,
+                    "uploaded": result,
+                }))
+            }
+            _ => Err(tool_err("action must be list, prepare, or upload")),
+        }
+    }
+
     #[tool(description = "Read review questions, notes, and AI findings for a PR.")]
     async fn pr_feedback_get(
         &self,
@@ -1129,6 +1251,7 @@ impl ServerHandler for ErMcp {
                 "Easy Review MCP — REST-style PR API. Resolve refs with pr_resolve. \
                  Query queues with prs_query. Review: pr_prepare → pr_upload. \
                  Guided tour: pr_guide (prepare → upload tour.json). \
+                 Diagrams: pr_diagram (list | prepare → upload diagram JSON). \
                  Feedback: pr_feedback_get / pr_feedback_reply. Saved: pr_saved. \
                  Skills: er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved.",
             )
@@ -1151,5 +1274,23 @@ mod tests {
             ProtocolVersion::V_2026_07_28
         );
         assert!(server.get_info().capabilities.tools.is_some());
+    }
+
+    #[test]
+    fn registers_pr_diagram_tool() {
+        let server = ErMcp::new();
+        let tools = server.tool_router.list_all();
+        let diagram_tool = tools
+            .iter()
+            .find(|t| t.name == "pr_diagram")
+            .expect("pr_diagram tool registered");
+        let schema = &diagram_tool.input_schema;
+        let props = schema
+            .get("properties")
+            .and_then(|p| p.as_object())
+            .expect("input schema has properties");
+        for field in ["action", "kind", "prompt", "files", "refresh_diff"] {
+            assert!(props.contains_key(field), "missing field: {field}");
+        }
     }
 }

@@ -933,6 +933,51 @@ pub fn opencode_readonly_permission_env() -> (String, String) {
     ("OPENCODE_PERMISSION".to_string(), value)
 }
 
+/// Ensure `--auto` and return a read-only `OPENCODE_PERMISSION` that can still
+/// *read* a managed review bucket (for `diff-tmp`) but cannot edit anything.
+///
+/// Used by diagram generation: the host writes the sidecar from agent stdout.
+pub fn apply_opencode_readonly_storage_spawn(
+    family: CliFamily,
+    args: &mut Vec<String>,
+    storage_dir: Option<&str>,
+) -> Option<(String, String)> {
+    if family != CliFamily::OpenCode {
+        return None;
+    }
+    ensure_opencode_auto(args);
+    opencode_readonly_storage_permission_env(storage_dir)
+}
+
+/// OpenCode permission: deny all edits; allow reading only `storage_dir`.
+pub fn opencode_readonly_storage_permission_env(
+    storage_dir: Option<&str>,
+) -> Option<(String, String)> {
+    let directory = storage_dir.map(str::trim).filter(|dir| !dir.is_empty())?;
+    let normalized = directory
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    let pattern = format!("{normalized}/**");
+    let mut external = serde_json::Map::new();
+    external.insert("*".into(), serde_json::json!("deny"));
+    external.insert(pattern, serde_json::json!("allow"));
+    let value = serde_json::json!({
+        "edit": "deny",
+        "bash": {
+            "*": "deny",
+            "grep *": "allow",
+            "rg *": "allow",
+            "git grep*": "allow",
+            "git show*": "allow",
+            "git log*": "allow",
+        },
+        "external_directory": serde_json::Value::Object(external),
+    })
+    .to_string();
+    Some(("OPENCODE_PERMISSION".to_string(), value))
+}
+
 /// Ensure `--auto` and return storage permission env for OpenCode artifact spawns.
 ///
 /// Non-OpenCode commands are left unchanged and return `None`. When OpenCode is
@@ -2802,6 +2847,28 @@ mod tests {
         assert_eq!(parsed["edit"], "deny");
         assert_eq!(parsed["external_directory"]["*"], "deny");
         assert!(apply_opencode_readonly_spawn(CliFamily::Claude, &mut args).is_none());
+    }
+
+    #[test]
+    fn apply_opencode_readonly_storage_spawn_allows_bucket_read_denies_edit() {
+        let mut args = vec!["run".to_string(), "{prompt}".to_string()];
+        let env = apply_opencode_readonly_storage_spawn(
+            CliFamily::OpenCode,
+            &mut args,
+            Some("/managed/review"),
+        )
+        .expect("env");
+        assert!(args.iter().any(|a| a == "--auto"));
+        let parsed: serde_json::Value = serde_json::from_str(&env.1).unwrap();
+        assert_eq!(parsed["edit"], "deny");
+        assert_eq!(parsed["external_directory"]["*"], "deny");
+        assert_eq!(parsed["external_directory"]["/managed/review/**"], "allow");
+        assert!(apply_opencode_readonly_storage_spawn(
+            CliFamily::Claude,
+            &mut args,
+            Some("/managed/review")
+        )
+        .is_none());
     }
 
     #[test]

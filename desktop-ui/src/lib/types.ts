@@ -192,6 +192,28 @@ export interface TriageSnapshot {
   domains: string[];
 }
 
+export interface DiagramPresetSnapshot {
+  /** "mental-model" | "subsystems" | "flows" */
+  kind: string;
+  label: string;
+  description: string;
+}
+
+export interface DiagramSnapshot {
+  /** File-stem id (`diagrams/<id>.json`) — delete/regenerate target. */
+  id: string;
+  /** "mental-model" | "subsystems" | "flows" | "custom" */
+  kind: string;
+  title: string;
+  /** User prompt for custom diagrams (empty for presets). */
+  prompt: string;
+  /** Bare mermaid source. */
+  mermaid: string;
+  /** True when the diagram's diff hash matches the current diff. */
+  fresh: boolean;
+  created_at: string;
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
@@ -214,6 +236,10 @@ export interface AiSnapshot {
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
   triage: TriageSnapshot | null;
+  /** Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab. */
+  diagrams: DiagramSnapshot[];
+  /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
+  diagram_presets: DiagramPresetSnapshot[];
 }
 
 export interface PrSnapshot {

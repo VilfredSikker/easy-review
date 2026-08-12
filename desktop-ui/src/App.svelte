@@ -25,6 +25,7 @@
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
+  import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
@@ -73,11 +74,9 @@
   let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
   let resizingRightPanel = $state(false);
 
-  function expandRightPanelToTab(tab: "branch" | "review" | "notes") {
+  function expandRightPanelToTab(tab: RightPanelTab) {
     rightRail.expand();
-    try {
-      localStorage.setItem("rightPanelActiveTab", tab);
-    } catch { /* ignore */ }
+    rightPanelTab.set(tab);
   }
 
   function clampRightPanelWidth(w: number): number {

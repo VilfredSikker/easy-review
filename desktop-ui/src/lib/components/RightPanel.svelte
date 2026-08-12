@@ -13,7 +13,9 @@
   import CommentsCard from "./CommentsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
   import AgentOutputCard from "./AgentOutputCard.svelte";
+  import DiagramsCard from "./DiagramsCard.svelte";
   import InlineThread from "./InlineThread.svelte";
+  import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -33,26 +35,14 @@
     onCollapseToggle,
   }: Props = $props();
 
-  // ── Tab state (persisted to localStorage) ──────────────────────────────────
-  const TAB_STORAGE_KEY = "rightPanelActiveTab";
-
-  type Tab = "branch" | "review" | "notes";
-
-  function readStoredTab(): Tab {
-    try {
-      const raw = localStorage.getItem(TAB_STORAGE_KEY);
-      if (raw === "branch" || raw === "review" || raw === "notes") return raw;
-    } catch { /* ignore */ }
-    return "branch";
-  }
-
-  let activeTab = $state<Tab>(readStoredTab());
+  // ── Tab state (shared store, persisted to localStorage) ───────────────────
+  // The store lets the command palette and collapsed rail switch the tab even
+  // while the panel is already mounted.
+  type Tab = RightPanelTab;
+  const activeTab = $derived(rightPanelTab.active);
 
   function setTab(t: Tab) {
-    activeTab = t;
-    try {
-      localStorage.setItem(TAB_STORAGE_KEY, t);
-    } catch { /* ignore */ }
+    rightPanelTab.set(t);
   }
 
   // ── Derived counts for tab badges ──────────────────────────────────────────
@@ -127,10 +117,13 @@
     visibleCommentThreads(ai?.threads, app.commentVisibility).length
   );
 
+  const diagramCount = $derived(ai?.diagrams?.length ?? 0);
+
   const tabs: TabDef[] = $derived([
     { id: "branch", label: "Branch", badge: commentCount > 0 ? commentCount : null },
     { id: "review", label: "Review", badge: totalFindings > 0 ? totalFindings : null },
     { id: "notes",  label: "Notes",  badge: noteCount + questionCount > 0 ? noteCount + questionCount : null },
+    { id: "context", label: "Context", badge: diagramCount > 0 ? diagramCount : null },
   ]);
 
   // ── Per-tab export ───────────────────────────────────────────────────────────
@@ -169,6 +162,10 @@
         return { ...NO_SECTIONS, includeComments: true };
       case "review":
         return { ...NO_SECTIONS, includeFindings: true };
+      case "context":
+        // Handled client-side in copyTabToClipboard (mermaid fences, not the
+        // export_review sections).
+        return NO_SECTIONS;
       case "notes":
         switch (notesSubTab) {
           case "notes":
@@ -193,7 +190,13 @@
     copying = true;
     const label = exportLabel();
     try {
-      const body = await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
+      // The Context tab has no `export_review` section — build its markdown
+      // (title + mermaid fence per diagram) client-side.
+      const body = activeTab === "context"
+        ? (ai?.diagrams ?? [])
+            .map((d) => `## ${d.title || d.kind}\n\n\`\`\`mermaid\n${d.mermaid}\n\`\`\``)
+            .join("\n\n")
+        : await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
       if (!body.trim()) {
         app.showToast("info", `Nothing to export from the ${label} tab`);
         return;
@@ -246,6 +249,11 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             class={isActive ? "text-accent" : "text-fg-3"}>
             <path d="M12 2l2.4 7.2H22l-6.2 4.5 2.4 7.2L12 17l-6.2 3.9 2.4-7.2L2 9.2h7.6z"/>
+          </svg>
+        {:else if tab.id === "context"}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            class={isActive ? "text-accent" : "text-fg-3"}>
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5a2 2 0 0 1 2 2V14"/>
           </svg>
         {:else}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -379,6 +387,14 @@
             <UiAnnotationsCard />
           {/if}
         </div>
+      </div>
+
+    <!-- Context tab (mermaid diagrams of the diff) -->
+    {:else if activeTab === "context"}
+      <div class="p-4 space-y-4 pb-8">
+        {#if ai}
+          <DiagramsCard {ai} />
+        {/if}
       </div>
     {/if}
   </div>

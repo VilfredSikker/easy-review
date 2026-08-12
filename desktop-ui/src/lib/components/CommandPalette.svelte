@@ -4,6 +4,8 @@
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
+  import { rightRail } from "$lib/stores/rightRail.svelte";
+  import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -169,6 +171,20 @@
         group: "AI" as const,
         kbd: "g",
         run: guard(() => { void dismissAndRun(() => app.cmd("generate_tour")); }),
+      },
+      {
+        id: "ai-diagrams",
+        label: "Diagrams",
+        description: reviewScope
+          ? "Generate mermaid diagrams of this diff (mental model, subsystems, flows)"
+          : "Not available in this view",
+        group: "AI" as const,
+        kbd: "d",
+        run: guard(() => {
+          closeKeepSubmenu();
+          rightRail.expand();
+          rightPanelTab.set("context");
+        }),
       },
       {
         id: "ai-validate",

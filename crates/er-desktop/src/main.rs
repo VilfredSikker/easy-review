@@ -1814,6 +1814,8 @@ fn main() {
             commands::bulk_review_pillar,
             commands::unbulk_review_pillar,
             commands::generate_tour,
+            commands::generate_diagram,
+            commands::delete_diagram,
             commands::open_in_editor,
             commands::open_in_vscode,
             commands::open_source,

@@ -1,4 +1,7 @@
 use super::comments::{ErFeedback, ErGitHubComments, ErNotes, ErQuestions};
+use super::diagrams::{
+    ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
+};
 use super::experts::{
     expert_by_id, load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
 };
@@ -286,6 +289,9 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
+    // Load .er/diagrams/*.json (mermaid diagrams — one file per generated diagram)
+    state.diagrams = load_diagrams(er_dir, current_diff_hash);
+
     // Load legacy .er-feedback.json (only if new files don't exist — migration support)
     if state.questions.is_none() && state.github_comments.is_none() {
         let feedback_path = Path::new(er_dir).join("feedback.json");
@@ -306,6 +312,53 @@ pub fn load_tour_sidecar(dir: &str, name: &str) -> Option<ErTour> {
     let path = Path::new(dir).join(name);
     let content = read_sidecar(&path).ok()?;
     serde_json::from_str::<ErTour>(&content).ok()
+}
+
+/// Load all mermaid diagrams from `{er_dir}/diagrams/*.json`. Each diagram is a
+/// standalone file (written one-per-run by the diagram agent), so unreadable or
+/// malformed files are skipped rather than failing the whole set. The `id` is
+/// the file stem and `stale` is computed against the current diff hash.
+/// Ordering: presets in their fixed display order, then customs newest-first.
+pub fn load_diagrams(er_dir: &str, current_diff_hash: &str) -> Vec<ErDiagram> {
+    let dir = Path::new(er_dir).join("diagrams");
+    let mut out: Vec<ErDiagram> = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(content) = read_sidecar(&path) else {
+                continue;
+            };
+            let Ok(mut diagram) = serde_json::from_str::<ErDiagram>(&content) else {
+                continue;
+            };
+            if diagram.mermaid.trim().is_empty() {
+                continue;
+            }
+            diagram.id = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or_default()
+                .to_string();
+            diagram.stale = diagram.diff_hash != current_diff_hash;
+            out.push(diagram);
+        }
+    }
+    out.sort_by(|a, b| {
+        let rank = |d: &ErDiagram| match d.kind.as_str() {
+            k if k == DIAGRAM_KIND_MENTAL_MODEL => 0,
+            k if k == DIAGRAM_KIND_SUBSYSTEMS => 1,
+            k if k == DIAGRAM_KIND_FLOWS => 2,
+            _ => 3,
+        };
+        rank(a)
+            .cmp(&rank(b))
+            // Newest first within a rank (created_at is ISO 8601).
+            .then_with(|| b.created_at.cmp(&a.created_at))
+    });
+    out
 }
 
 /// Get the mtime of the most recently modified .er-* file
@@ -334,6 +387,18 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
 
     let experts_dir = er_dir.join("experts");
     if let Ok(entries) = std::fs::read_dir(&experts_dir) {
+        for entry in entries.flatten() {
+            if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
+                latest = Some(match latest {
+                    Some(prev) => prev.max(m),
+                    None => m,
+                });
+            }
+        }
+    }
+
+    let diagrams_dir = er_dir.join("diagrams");
+    if let Ok(entries) = std::fs::read_dir(&diagrams_dir) {
         for entry in entries.flatten() {
             if let Ok(m) = entry.metadata().and_then(|m| m.modified()) {
                 latest = Some(match latest {
@@ -637,6 +702,60 @@ mod tests {
             .collect();
         // order 0 foundation first, then order 0 non-foundation, then order 1.
         assert_eq!(ordered, vec!["a", "b", "c"]);
+    }
+
+    #[test]
+    fn load_diagrams_reads_dir_sets_id_and_stale() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let diagrams_dir = dir.path().join("diagrams");
+        std::fs::create_dir_all(&diagrams_dir).unwrap();
+
+        let write = |name: &str, kind: &str, hash: &str, created: &str, mermaid: &str| {
+            let d = serde_json::json!({
+                "version": 1,
+                "diff_hash": hash,
+                "created_at": created,
+                "kind": kind,
+                "title": format!("title-{name}"),
+                "prompt": "",
+                "mermaid": mermaid,
+            });
+            std::fs::write(diagrams_dir.join(name), serde_json::to_string(&d).unwrap()).unwrap();
+        };
+
+        write(
+            "flows.json",
+            "flows",
+            "abc",
+            "2026-08-11T10:00:00Z",
+            "flowchart TD\nA-->B",
+        );
+        write(
+            "mental-model.json",
+            "mental-model",
+            "stale-hash",
+            "2026-08-11T09:00:00Z",
+            "flowchart TD\nC-->D",
+        );
+        write(
+            "custom-1.json",
+            "custom",
+            "abc",
+            "2026-08-11T12:00:00Z",
+            "sequenceDiagram\nA->>B: hi",
+        );
+        // Empty mermaid source and malformed JSON are skipped, not fatal.
+        write("empty.json", "custom", "abc", "2026-08-11T13:00:00Z", "  ");
+        std::fs::write(diagrams_dir.join("broken.json"), "{not json").unwrap();
+
+        let diagrams = load_diagrams(er_dir, "abc");
+        let ids: Vec<&str> = diagrams.iter().map(|d| d.id.as_str()).collect();
+        // Presets in fixed display order, then customs; broken/empty skipped.
+        assert_eq!(ids, vec!["mental-model", "flows", "custom-1"]);
+        assert!(!diagrams[1].stale); // flows matches the current diff hash
+        assert!(diagrams[0].stale); // mental-model was generated for another diff
+        assert!(load_ai_state(er_dir, "abc", None).diagrams.len() == 3);
     }
 
     #[test]

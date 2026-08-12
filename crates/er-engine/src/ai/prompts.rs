@@ -614,6 +614,188 @@ Do NOT modify `review.json`, `order.json`, or any other file. Write only `{safe_
     )
 }
 
+/// Per-kind task instructions shared by [`build_diagram_prompt_prepared_diff`]
+/// (desktop, host-owned write) and [`build_diagram_prompt_mcp`] (MCP clients).
+fn diagram_task_for_kind(kind: &str) -> &'static str {
+    match kind {
+        super::diagrams::DIAGRAM_KIND_MENTAL_MODEL => {
+            r#"Build a **mental model overview** of this diff: the 5–15 most important components, modules, or concepts the change touches, and how they relate. This is the map a reviewer holds in their head before reading code.
+
+- Use `flowchart TD` (top-down).
+- Nodes are areas/components (not individual functions); use short labels.
+- Edges show relationships introduced or changed by the diff (e.g. "calls", "extends", "persists to") — label the important ones.
+- Group with `subgraph` only when it clearly helps."#
+        }
+        super::diagrams::DIAGRAM_KIND_SUBSYSTEMS => {
+            r#"Build a **subsystem breakdown** of this diff: group the changed files by the subsystem/area they belong to, and show how the subsystems interact.
+
+- Use `flowchart LR` with one `subgraph` per subsystem (2–6 subgraphs).
+- Inside each subgraph, nodes are the key changed files/modules of that subsystem (not every file — the 3–6 most important per subsystem).
+- Edges between subgraphs/nodes show the interactions this diff introduces or changes."#
+        }
+        super::diagrams::DIAGRAM_KIND_FLOWS => {
+            r#"Build a **flow diagram** of this diff: the runtime flow(s) through the changed code for the main scenario the diff implements (e.g. a request path, a user action, a data pipeline).
+
+- Prefer `sequenceDiagram` when the flow crosses component boundaries (actors = modules/functions); use `flowchart TD` for branching logic.
+- Show the flow *after* the change; only include pre-change steps when they are essential context.
+- One diagram for the primary scenario; mention a fork/alt path inside the same diagram only if it is central."#
+        }
+        _ => {
+            r#"Build the diagram the user asked for in **Custom instructions** below. Pick the most fitting mermaid diagram type (`flowchart`, `sequenceDiagram`, `classDiagram`, `stateDiagram-v2`, `erDiagram`, …) for the request."#
+        }
+    }
+}
+
+/// Diagram generation when `{output_dir}/diff-tmp` is already prepared
+/// (desktop "Generate diagram"). The agent emits JSON on stdout; the harness
+/// atomically writes `{output_dir}/diagrams/{output_file}` (no agent Write/Edit).
+/// Built with `push_str` instead of one `format!` so the mermaid examples and
+/// the user's custom prompt never collide with `format!` brace parsing.
+///
+/// `kind` is one of `mental-model` | `subsystems` | `flows` | `custom`; `custom_prompt`
+/// carries the user's free-form instructions for `custom`. One diagram per file, so
+/// re-running a preset replaces only that preset's diagram.
+pub fn build_diagram_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    output_file: &str,
+    diff_hash: &str,
+    kind: &str,
+    custom_prompt: Option<&str>,
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir);
+    let task = diagram_task_for_kind(kind);
+
+    let mut prompt = String::new();
+    prompt.push_str(
+        "You are preparing a **Mermaid diagram** of a code diff for a reviewer. A diff for scope `",
+    );
+    prompt.push_str(scope);
+    prompt.push_str("` is already captured at `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp`.\n\n## Steps\n1. The diff hash is `");
+    prompt.push_str(diff_hash);
+    prompt.push_str("` — SHA-256 of `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp`, computed by the harness. Save it as `diff_hash` in the output (do **not** run `sha256sum`).\n2. Read `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp` (the full diff) into context. You may read referenced source files under the repo to understand surrounding structure, but the diagram is about **the change**.\n3. ");
+    prompt.push_str(task);
+    prompt.push_str(
+        "\n4. Emit the diagram JSON in your **final reply text** (do **not** use Write/Edit or any file tools — the harness writes the sidecar). Wrap the JSON exactly like this:\n\n",
+    );
+    prompt.push_str(crate::ai::diagrams::DIAGRAM_JSON_BEGIN);
+    prompt.push('\n');
+    prompt.push_str(
+        r#"{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "created_at": "<ISO 8601>",
+  "kind": ""#,
+    );
+    prompt.push_str(kind);
+    prompt.push_str(
+        r#"",
+  "title": "<short diagram title>",
+  "prompt": "<the custom instructions, or empty string for presets>",
+  "mermaid": "<bare mermaid source — no ``` fences>"
+}
+"#,
+    );
+    prompt.push_str(crate::ai::diagrams::DIAGRAM_JSON_END);
+    prompt.push_str(
+        r#"
+
+## Mermaid rules (the renderer rejects invalid source)
+- First line must be the diagram type (`flowchart TD`, `sequenceDiagram`, …). No title/frontmatter comment before it.
+- Quote any node label containing special characters: `A["calls foo()"]`, not `A[calls foo()]`.
+- Keep ids alphanumeric (`parser`, `store2`) — put display text in the quoted label.
+- No `click` handlers, links, or raw HTML in labels.
+- Aim for readability in a ~350px-wide panel: ≤ 15 nodes for flowcharts, ≤ 8 participants for sequence diagrams. Omit detail rather than shrink it.
+
+Do NOT call Write, Edit, Bash redirects, or otherwise mutate the filesystem. Print only the marked JSON block above. The harness saves it as `diagrams/"#,
+    );
+    prompt.push_str(output_file);
+    prompt.push_str("`.");
+
+    if let Some(p) = custom_prompt.map(str::trim).filter(|s| !s.is_empty()) {
+        prompt.push_str("\n\n## Custom instructions (user-provided)\n");
+        prompt.push_str(p);
+    }
+
+    prompt
+}
+
+/// Diagram generation for MCP clients. Unlike
+/// [`build_diagram_prompt_prepared_diff`] (a restricted subprocess with no
+/// Write/Edit, so it must emit stdout for host-owned write), an MCP caller is
+/// the reviewing agent itself with full tool access — so it embeds the
+/// diagram JSON directly in the `pr_diagram` `action=upload` call instead of
+/// printing a delimited block.
+pub fn build_diagram_prompt_mcp(
+    scope: &str,
+    output_dir: &str,
+    diff_hash: &str,
+    kind: &str,
+    custom_prompt: Option<&str>,
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir);
+    let task = diagram_task_for_kind(kind);
+
+    let mut prompt = String::new();
+    prompt.push_str(
+        "You are preparing a **Mermaid diagram** of a code diff for a reviewer. A diff for scope `",
+    );
+    prompt.push_str(scope);
+    prompt.push_str("` is already captured at `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp`.\n\n## Steps\n1. The diff hash is `");
+    prompt.push_str(diff_hash);
+    prompt.push_str("` — SHA-256 of `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp`, computed by the harness. Record it as `diff_hash` in the output (do **not** run `sha256sum`).\n2. Read `");
+    prompt.push_str(&safe_output_dir);
+    prompt.push_str("/diff-tmp` (the full diff) into context. You may read referenced source files under the repo to understand surrounding structure, but the diagram is about **the change**.\n3. ");
+    prompt.push_str(task);
+    prompt.push_str(
+        "\n4. Call `pr_diagram` with `action=\"upload\"`, the same `kind`, and `files` set to a single entry keyed by the output filename from `action=\"prepare\"` (`kit.output_file`), with this exact JSON shape as the value:\n\n",
+    );
+    prompt.push_str(
+        r#"```json
+{
+  "version": 1,
+  "diff_hash": "<sha256 from step 1>",
+  "created_at": "<ISO 8601>",
+  "kind": ""#,
+    );
+    prompt.push_str(kind);
+    prompt.push_str(
+        r#"",
+  "title": "<short diagram title>",
+  "prompt": "<the custom instructions, or empty string for presets>",
+  "mermaid": "<bare mermaid source — no ``` fences>"
+}
+```"#,
+    );
+    prompt.push_str(
+        r#"
+
+## Mermaid rules (the renderer rejects invalid source)
+- First line must be the diagram type (`flowchart TD`, `sequenceDiagram`, …). No title/frontmatter comment before it.
+- Quote any node label containing special characters: `A["calls foo()"]`, not `A[calls foo()]`.
+- Keep ids alphanumeric (`parser`, `store2`) — put display text in the quoted label.
+- No `click` handlers, links, or raw HTML in labels.
+- Aim for readability in a ~350px-wide panel: ≤ 15 nodes for flowcharts, ≤ 8 participants for sequence diagrams. Omit detail rather than shrink it."#,
+    );
+
+    if let Some(p) = custom_prompt.map(str::trim).filter(|s| !s.is_empty()) {
+        prompt.push_str("\n\n## Custom instructions (user-provided)\n");
+        prompt.push_str(p);
+    }
+
+    prompt
+}
+
 /// When `review-files.txt` exists, agents must limit analysis to those paths.
 pub fn file_scope_appendix(output_dir: &str) -> String {
     let safe_output_dir = sanitize_for_shell(output_dir)
