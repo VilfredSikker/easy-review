@@ -3438,15 +3438,7 @@ pub async fn generate_diagram(
 
         // Presets regenerate in place (`mental-model.json`, …); each custom
         // prompt produces a new timestamped diagram so they accumulate.
-        let output_file = if kind == er_engine::ai::DIAGRAM_KIND_CUSTOM {
-            let ms = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0);
-            format!("custom-{ms}.json")
-        } else {
-            format!("{kind}.json")
-        };
+        let output_file = er_engine::ai::diagram_output_file(&kind);
 
         let scope_label = if app.tab().tour_context_is_pr() {
             "PR diff"
@@ -3461,6 +3453,8 @@ pub async fn generate_diagram(
             &kind,
             custom_prompt.as_deref(),
         );
+        let output_path = er_engine::ai::diagram_sidecar_path(&er_dir, &output_file)
+            .ok_or_else(|| format!("Invalid diagram output file: {output_file}"))?;
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
             er_dir: er_dir.clone(),
@@ -3471,7 +3465,13 @@ pub async fn generate_diagram(
             remote_repo,
             managed_local: !is_remote,
         };
-        app.spawn_background_diagram(&kind, target, prompt, true)
+        let host_write = er_engine::app::HostWriteDiagram {
+            output_path,
+            kind: kind.clone(),
+            diff_hash,
+            custom_prompt,
+        };
+        app.spawn_background_diagram(&kind, target, prompt, true, host_write)
             .map_err(|e| e.to_string())?;
         state
             .desktop_revision

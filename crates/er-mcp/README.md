@@ -3,7 +3,7 @@
 Stdio [Model Context Protocol](https://modelcontextprotocol.io) server (MCP **2026-07-28**).
 Thin REST API over `er-engine` — use **skills** for workflows.
 
-## MCP tools (11)
+## MCP tools (12)
 
 | Tool | Purpose |
 |------|---------|
@@ -14,6 +14,7 @@ Thin REST API over `er-engine` — use **skills** for workflows.
 | `pr_guide` | Prepare + upload guided tour (`tour.json`) |
 | `pr_prepare` | Fetch diff, write `diff-tmp`, return `diff_hash` + specs |
 | `pr_upload` | Validate + write triage/review/tour sidecars |
+| `pr_diagram` | List / prepare / upload Mermaid diagrams (`diagrams/<id>.json`) |
 | `pr_summarize` | Read triage/review/tour summary from managed storage |
 | `pr_feedback_get` | Questions, notes, AI findings |
 | `pr_feedback_reply` | Reply (`type`: question \| note \| finding) |
@@ -69,6 +70,19 @@ pr_summarize → { "ref": "…" }
 Guided tours use **`pr_guide`** (not `pr_prepare` / `pr_upload`). See `er-guide` skill.
 
 Review uploads need all four: `review.json`, `order.json`, `checklist.json`, `summary.md`.
+
+Diagrams (`kind`: `mental-model` | `subsystems` | `flows` | `custom`):
+
+```text
+pr_diagram   → { "ref": "…", "action": "list" }
+pr_diagram   → { "ref": "…", "action": "prepare", "kind": "flows" }
+# …author the diagram JSON at kit.output_file…
+pr_diagram   → { "ref": "…", "action": "upload", "kind": "flows", "files": { "flows.json": "..." } }
+```
+
+`custom` diagrams need `prompt` on both `prepare` and `upload`, and accumulate under
+timestamped ids (`custom-<ms>.json`) instead of overwriting each other. Presets
+(`mental-model` / `subsystems` / `flows`) always upload as `<kind>.json`.
 
 ## `prs_query` reference
 
