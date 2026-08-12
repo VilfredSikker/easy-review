@@ -1,6 +1,6 @@
 {
   "name": "@easy-review/skills",
-  "version": "0.4.10",
+  "version": "0.4.11",
   "description": "Install Easy Review agent skills (er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved) for Cursor, Claude Code, and Codex.",
   "license": "MIT",
   "repository": {

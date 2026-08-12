@@ -1,3 +1,27 @@
+# Easy Review v0.4.11
+
+## In plain terms
+
+- **What changed.** ⌘K AI actions no longer freeze the desktop UI. The Context tab can render Mermaid diagrams from an AI command. The TUI no longer spills `pr_open` debug output over the diff.
+- **TL;DR.** ⌘K freeze fix, Mermaid Context tab, TUI pr_open noise fix.
+
+## Highlights
+
+- **⌘K AI actions.** Background review commands run off the main thread again so the palette stays responsive.
+- **Mermaid in Context.** New AI command generates diagrams; Context tab renders them.
+- **TUI pr_open.** Stops phase `eprintln` spillover corrupting the diff view during PR open.
+
+## What's Changed
+
+### Features
+- Mermaid diagram AI command and Context tab rendering. (#172)
+
+### Fixes
+- Stop ⌘K AI actions from freezing the desktop UI. (#171)
+- Stop `pr_open` phase eprintln spillover over the TUI diff. (#173)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.10...v0.4.11
+
 # Easy Review v0.4.10
 
 ## In plain terms
