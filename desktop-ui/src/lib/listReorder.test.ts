@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { destIndexAfterRemove, dropSlot } from "./listReorder";
+import { destIndexAfterRemove, dropSlot, movedIds } from "./listReorder";
 
 describe("dropSlot", () => {
   it("returns the item index when the pointer is in the first half", () => {
@@ -25,5 +25,22 @@ describe("destIndexAfterRemove", () => {
   it("is a no-op when dropping on the source (before or after its midpoint)", () => {
     expect(destIndexAfterRemove(1, 1)).toBe(1);
     expect(destIndexAfterRemove(1, 2)).toBe(1);
+  });
+});
+
+describe("movedIds", () => {
+  it("moves the first id to the end", () => {
+    expect(movedIds(["a", "b", "c"], 0, 2)).toEqual(["b", "c", "a"]);
+  });
+
+  it("moves the last id to the front", () => {
+    expect(movedIds(["a", "b", "c"], 2, 0)).toEqual(["c", "a", "b"]);
+  });
+
+  it("returns a copy when from equals dest", () => {
+    const ids = ["a", "b"];
+    const next = movedIds(ids, 0, 0);
+    expect(next).toEqual(["a", "b"]);
+    expect(next).not.toBe(ids);
   });
 });

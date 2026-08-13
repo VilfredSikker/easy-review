@@ -21,3 +21,14 @@ export function dropSlot(
 export function destIndexAfterRemove(from: number, slot: number): number {
   return slot > from ? slot - 1 : slot;
 }
+
+/** Copy of `items` with the entry at `from` moved to `dest`. */
+export function movedIds<T>(items: readonly T[], from: number, dest: number): T[] {
+  const next = items.slice();
+  if (from === dest || from < 0 || dest < 0 || from >= next.length || dest >= next.length) {
+    return next;
+  }
+  const [item] = next.splice(from, 1);
+  next.splice(dest, 0, item);
+  return next;
+}

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -214,24 +215,40 @@ pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
     save(&file)
 }
 
-/// Move the project at `from` to index `to`. Out-of-bounds or `from == to`
-/// are silent no-ops. Persisted order is the sidebar display order.
-pub fn reorder_projects(from: usize, to: usize) -> anyhow::Result<()> {
-    let mut file = load();
-    if reorder_projects_in_file(&mut file, from, to) {
-        save(&file)?;
-    }
-    Ok(())
+/// Rewrite persisted project order to match `ordered_ids`. Unknown ids in the
+/// payload are ignored; records missing from the payload keep their relative
+/// order at the end. Empty payloads are a no-op so a bad client cannot wipe
+/// the list.
+pub fn reorder_projects(ordered_ids: &[String]) -> anyhow::Result<()> {
+    update_file(|file| Ok(reorder_projects_in_file(file, ordered_ids)))
 }
 
-fn reorder_projects_in_file(file: &mut ProjectsFile, from: usize, to: usize) -> bool {
-    let len = file.projects.len();
-    if from >= len || to >= len || from == to {
+fn reorder_projects_in_file(file: &mut ProjectsFile, ordered_ids: &[String]) -> bool {
+    if ordered_ids.is_empty() {
         return false;
     }
-    let project = file.projects.remove(from);
-    file.projects.insert(to, project);
-    true
+    let original: Vec<String> = file.projects.iter().map(|p| p.id.clone()).collect();
+    let mut by_id: HashMap<String, ProjectRecord> = HashMap::new();
+    for project in file.projects.drain(..) {
+        by_id.insert(project.id.clone(), project);
+    }
+    let mut new_list = Vec::with_capacity(by_id.len());
+    for id in ordered_ids {
+        if let Some(project) = by_id.remove(id) {
+            new_list.push(project);
+        }
+    }
+    for id in &original {
+        if let Some(project) = by_id.remove(id) {
+            new_list.push(project);
+        }
+    }
+    let changed = new_list
+        .iter()
+        .map(|p| p.id.as_str())
+        .ne(original.iter().map(String::as_str));
+    file.projects = new_list;
+    changed
 }
 
 pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
@@ -279,6 +296,7 @@ use std::sync::Mutex;
 
 static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
 static PROJECTS_CONTENT_GEN: AtomicU64 = AtomicU64::new(0);
+static PROJECTS_IO: Mutex<()> = Mutex::new(());
 
 /// Drop the in-process parse cache so the next [`load`] re-reads from disk.
 pub fn invalidate_load_cache() {
@@ -324,10 +342,26 @@ pub fn load() -> ProjectsFile {
 }
 
 pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
+    save_unlocked(file)
+}
+
+fn save_unlocked(file: &ProjectsFile) -> anyhow::Result<()> {
     let path = config_path();
     crate::persist::save_json_atomic(&path, file)?;
     invalidate_load_cache();
     PROJECTS_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Load-mutate-save under a process lock so this writer cannot interleave with
+/// another `update_file` call. Other `load`+`save` helpers still exist; new
+/// mutations should go through here.
+fn update_file(op: impl FnOnce(&mut ProjectsFile) -> anyhow::Result<bool>) -> anyhow::Result<()> {
+    let _guard = PROJECTS_IO.lock().unwrap_or_else(|e| e.into_inner());
+    let mut file = load();
+    if op(&mut file)? {
+        save_unlocked(&file)?;
+    }
     Ok(())
 }
 
@@ -1032,46 +1066,55 @@ mod tests {
         file.projects.iter().map(|p| p.id.as_str()).collect()
     }
 
-    #[test]
-    fn reorder_projects_moves_first_to_last() {
-        let mut file = ProjectsFile {
+    fn three() -> ProjectsFile {
+        ProjectsFile {
             projects: vec![
                 local_project("alpha", None),
                 local_project("beta", None),
                 local_project("gamma", None),
             ],
             active_id: None,
-        };
+        }
+    }
 
-        assert!(reorder_projects_in_file(&mut file, 0, 2));
+    #[test]
+    fn reorder_projects_moves_first_to_last() {
+        let mut file = three();
+        assert!(reorder_projects_in_file(
+            &mut file,
+            &["beta".into(), "gamma".into(), "alpha".into()]
+        ));
         assert_eq!(ids(&file), vec!["beta", "gamma", "alpha"]);
     }
 
     #[test]
     fn reorder_projects_moves_last_to_first() {
-        let mut file = ProjectsFile {
-            projects: vec![
-                local_project("alpha", None),
-                local_project("beta", None),
-                local_project("gamma", None),
-            ],
-            active_id: None,
-        };
-
-        assert!(reorder_projects_in_file(&mut file, 2, 0));
+        let mut file = three();
+        assert!(reorder_projects_in_file(
+            &mut file,
+            &["gamma".into(), "alpha".into(), "beta".into()]
+        ));
         assert_eq!(ids(&file), vec!["gamma", "alpha", "beta"]);
     }
 
     #[test]
-    fn reorder_projects_noop_when_from_equals_to_or_out_of_bounds() {
-        let mut file = ProjectsFile {
-            projects: vec![local_project("alpha", None), local_project("beta", None)],
-            active_id: None,
-        };
+    fn reorder_projects_ignores_unknown_ids_and_appends_omitted() {
+        let mut file = three();
+        assert!(reorder_projects_in_file(
+            &mut file,
+            &["beta".into(), "alpha".into(), "ghost".into()]
+        ));
+        assert_eq!(ids(&file), vec!["beta", "alpha", "gamma"]);
+    }
 
-        assert!(!reorder_projects_in_file(&mut file, 0, 0));
-        assert!(!reorder_projects_in_file(&mut file, 2, 0));
-        assert!(!reorder_projects_in_file(&mut file, 0, 2));
-        assert_eq!(ids(&file), vec!["alpha", "beta"]);
+    #[test]
+    fn reorder_projects_noop_when_empty_or_unchanged() {
+        let mut file = three();
+        assert!(!reorder_projects_in_file(&mut file, &[]));
+        assert!(!reorder_projects_in_file(
+            &mut file,
+            &["alpha".into(), "beta".into(), "gamma".into()]
+        ));
+        assert_eq!(ids(&file), vec!["alpha", "beta", "gamma"]);
     }
 }
