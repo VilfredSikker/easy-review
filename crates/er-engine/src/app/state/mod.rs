@@ -1409,7 +1409,9 @@ impl TabState {
             mem_budget: MemoryBudget::default(),
             lazy_mode,
             file_headers,
-            raw_diff: if lazy_mode { Some(raw) } else { None },
+            // Keep the fetched PR diff so remote review can write prepared
+            // artifacts without a second `gh pr diff` from a sandboxed agent.
+            raw_diff: Some(raw),
             symbol_refs: None,
             pending_unmark_count: 0,
             reviewed_revision: 0,
@@ -2787,15 +2789,16 @@ impl TabState {
                     );
                     self.files = files;
                     self.file_headers = headers;
-                    self.raw_diff = Some(raw.clone());
                     self.lazy_mode = true;
                 } else {
                     self.files = crate::git::parse_diff(&raw);
                     self.file_headers.clear();
-                    self.raw_diff = None;
                     self.lazy_mode = false;
                     crate::git::compact_files(&mut self.files, &self.compaction_config);
                 }
+                // Same as local-branch refresh: keep the bytes so AI review can
+                // prepare diff-tmp without the sandboxed agent calling `gh`.
+                self.raw_diff = Some(raw.clone());
 
                 if recompute_branch_hash {
                     self.diff_hash = crate::ai::compute_diff_hash(&raw);
