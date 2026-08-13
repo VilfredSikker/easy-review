@@ -95,13 +95,13 @@
         </div>
         <div class="bottom">
           <span><b>⌘K</b> commands</span><span class="sep">·</span>
-          <span><b>⌘A</b> AI hub</span><span class="sep">·</span>
+          <span><b>⌘A</b> select all</span><span class="sep">·</span>
           <span><b>⌘F</b> find usages</span><span class="sep">·</span>
           <span><b>d</b> split ↔ unified</span><span class="sep">·</span>
           <span><b>⌘T</b> terminal drawer</span>
         </div>
       </div>
-      <figcaption>The desktop app — persistent tabs, a branch context bar with a Local&nbsp;↔&nbsp;PR toggle, a side-by-side split diff with intra-line <span style="color:var(--green)">word-diff</span> highlighting, inline AI threads with “Ask AI” / “promote to GitHub”, and a three-tab right panel (Branch · Review · Notes).</figcaption>
+      <figcaption>The desktop app — persistent tabs, a branch context bar with a Local&nbsp;↔&nbsp;PR toggle, a side-by-side split diff with intra-line <span style="color:var(--green)">word-diff</span> highlighting, inline AI threads with “Ask AI” / “promote to GitHub”, and a four-tab right panel (Branch · Review · Notes · Context).</figcaption>
     </figure>
 
     <table>
@@ -111,20 +111,21 @@
         <tr><td><strong>Branch context bar</strong></td><td>Current branch, base comparison, PR number, change summary, and a Local&nbsp;Branch ↔ PR&nbsp;Diff toggle.</td></tr>
         <tr><td><strong>Left sidebar</strong></td><td>Collapsible file tree with search, plus a project / branch / PR picker for switching context.</td></tr>
         <tr><td><strong>Diff view</strong> (center)</td><td>Unified or split diff with inline threads, AI findings, and intra-line word-diff highlighting.</td></tr>
-        <tr><td><strong>Right panel</strong></td><td>Three tabs — Branch (git/PR status), Review (AI findings, summary, arena history), and Notes (questions &amp; GitHub comments).</td></tr>
+        <tr><td><strong>Right panel</strong></td><td>Four tabs — Branch (git/PR status), Review (AI findings, summary, arena history), Notes (questions &amp; GitHub comments), and Context (Mermaid diagrams of the diff).</td></tr>
         <tr><td><strong>Browser</strong> (optional)</td><td>An embedded webview for docs, design systems, or APIs, with an annotation mode.</td></tr>
         <tr><td><strong>Terminal drawer</strong> (bottom)</td><td>A resizable embedded shell for running commands without leaving the app.</td></tr>
       </tbody>
     </table>
 
     <h2>Command surfaces</h2>
-    <p>Two palettes make everything reachable without hunting through menus:</p>
+    <p>Everything is reachable from the <strong>command palette</strong> (<kbd>Cmd</kbd>+<kbd>K</kbd>):</p>
     <ul>
-      <li><strong>Command palette</strong> (<kbd>Cmd</kbd>+<kbd>K</kbd>) — a searchable list of actions, navigation, and
-      files in the current diff.</li>
-      <li><strong>AI action palette / AI Hub</strong> (<kbd>Cmd</kbd>+<kbd>A</kbd>) — run a review, launch the arena,
-      pick a provider and model, choose specialized reviewers, export, and more.</li>
+      <li><strong>Top level</strong> — navigation, PR actions, settings, export, and files in the current diff.</li>
+      <li><strong>AI submenu</strong> — run a review, launch the arena, triage, professor, generate a tour or diagrams,
+      pick a provider and model, choose specialized reviewers, validate findings, and more. Letter shortcuts and arrow
+      keys work inside nested menus.</li>
     </ul>
+    <p><kbd>Cmd</kbd>+<kbd>A</kbd> is native select-all again (including in the embedded browser).</p>
 
     <h2>What the desktop adds over the terminal</h2>
     <table>
@@ -139,6 +140,7 @@
         <tr><td>Persistent, drag-to-reorder tabs</td><td>Yes</td><td>Session tabs</td></tr>
         <tr><td>Reference “find usages” popover</td><td>Yes</td><td>—</td></tr>
         <tr><td>Export review to markdown</td><td>Preview + copy/save</td><td>—</td></tr>
+        <tr><td>Mermaid diagrams (Context tab)</td><td>Yes</td><td>—</td></tr>
         <tr><td>Keyboard-driven, zero-dependency, instant start</td><td>—</td><td>Yes</td></tr>
       </tbody>
     </table>
@@ -149,8 +151,9 @@
       The desktop app supports the same live loop as the terminal: watch mode keeps the diff current while an
       assistant edits, stages, and commits. The embedded <strong>terminal drawer</strong> means the assistant can run
       <em>inside</em> the app — open Claude Code in the drawer, review its changes in the diff above, and drop
-      questions or notes inline as they come up. Run reviews from the AI Hub (<kbd>Cmd</kbd>+<kbd>A</kbd>); findings,
-      triage, and the guided tour land in the Review panel and the Guide tab automatically.
+      questions or notes inline as they come up. Run reviews from the command palette (<kbd>Cmd</kbd>+<kbd>K</kbd> →
+      <strong>AI</strong>); findings, triage, guided tour, and Mermaid diagrams land in the Review, Guide, and Context
+      panels automatically.
     </p>
 
     <h2>Running it</h2>

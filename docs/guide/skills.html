@@ -12,9 +12,10 @@
     <p class="eyebrow">Core Concepts</p>
     <h1>AI Hub Actions</h1>
     <p class="lead">
-      Open the AI Hub — press <kbd>a</kbd> in the TUI or <kbd>Cmd+A</kbd> (macOS) / <kbd>Ctrl+A</kbd> (Windows/Linux)
-      in the desktop app — to run any of these actions. Each writes sidecar files that <code>er</code> reads and
-      renders inline. The Hub is the primary way to trigger AI work; no external tool or command is needed.
+      Open the AI Hub — press <kbd>a</kbd> in the TUI or <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> (macOS) /
+      <kbd>Ctrl</kbd>+<kbd>K</kbd> → <strong>AI</strong> (Windows/Linux) in the desktop app — to run any of these
+      actions. Each writes sidecar files that <code>er</code> reads and renders inline. The Hub is the primary way to
+      trigger AI work; no external tool or command is needed.
     </p>
 
     <h2>The standard loop</h2>
@@ -77,7 +78,7 @@
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
         <tr><td>TUI</td><td>Press <kbd>a</kbd> → select <strong>Review work</strong></td></tr>
-        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → select <strong>Run review</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Run review</strong></td></tr>
       </tbody>
     </table>
     <p>
@@ -95,7 +96,7 @@
       <div>
         <p>
           <strong>TUI:</strong> Press <kbd>a</kbd> → <strong>Specialized review</strong> → a sub-menu lists all 8 experts; select one to run it.<br>
-          <strong>Desktop:</strong> Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Run reviewers…</strong> → a
+          <strong>Desktop:</strong> Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Run reviewers…</strong> → a
           <strong>Choose reviewers</strong> multi-select appears (General + 8 experts + Professor); toggle with
           <kbd>Space</kbd> and confirm with <strong>Run N reviewer(s)</strong>. You can run multiple in one go.
         </p>
@@ -120,7 +121,7 @@
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
         <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Triage branch</strong></td></tr>
-        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Triage branch</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Triage branch</strong></td></tr>
       </tbody>
     </table>
     <p>
@@ -133,7 +134,7 @@
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
         <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Professor</strong></td></tr>
-        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Professor</strong> (opens an optional focus-prompt modal before running)</td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Professor</strong> (opens an optional focus-prompt modal before running)</td></tr>
       </tbody>
     </table>
     <p>
@@ -149,7 +150,7 @@
         <p>
           <strong>TUI only:</strong> Press <kbd>a</kbd> → <strong>Generate summary</strong> to regenerate
           <code>summary.md</code> as a standalone action.<br>
-          <strong>Desktop:</strong> There is no standalone "Generate summary" action in the AI Actions palette.
+          <strong>Desktop:</strong> There is no standalone "Generate summary" action in the ⌘K AI menu.
           <code>summary.md</code> is produced automatically as part of <strong>Run review</strong>.
         </p>
       </div>
@@ -174,7 +175,7 @@
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
         <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Validate review</strong></td></tr>
-        <tr><td>Desktop</td><td>Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Validate / re-anchor</strong></td></tr>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Validate / re-anchor</strong></td></tr>
       </tbody>
     </table>
     <p>
@@ -187,7 +188,7 @@
       <span class="ico">◆</span>
       <div>
         <p>
-          <strong>Desktop only:</strong> Press <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd> → <strong>Generate tour</strong>
+          <strong>Desktop only:</strong> Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Generate tour</strong>
           (or <strong>Regenerate tour</strong> if one already exists). A "Re-run guide" button also appears in the
           Guide tab when the tour is stale. Writes <code>tour.json</code>.<br>
           <strong>TUI:</strong> The TUI can navigate an existing tour in Guide / Tour mode, but it cannot
@@ -196,12 +197,26 @@
       </div>
     </div>
 
+    <h3>Generate diagrams</h3>
+    <table>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
+      <tbody>
+        <tr><td>Desktop</td><td>Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Diagrams</strong> (opens the Context tab), then pick a preset or enter a custom prompt</td></tr>
+      </tbody>
+    </table>
+    <p>
+      AI-generated Mermaid diagrams of the current diff: mental model, subsystems, flows, or a custom description.
+      Writes <code>diagrams/*.json</code> (presets overwrite in place; custom diagrams accumulate). Rendered in the
+      right panel's <strong>Context</strong> tab. See
+      <a href="desktop-features.html">Desktop Features → Context tab</a>.
+    </p>
+
     <h3>Arena (multi-reviewer consensus)</h3>
     <div class="callout note">
       <span class="ico">◆</span>
       <div>
         <p>
-          <strong>Desktop only — and not in the AI Actions palette.</strong> The Arena lives in the
+          <strong>Desktop only — and not in the ⌘K AI menu.</strong> The Arena lives in the
           <strong>Review panel</strong> Arena card: use <strong>Run as Arena</strong> or
           <strong>Promote to Arena</strong> there.<br>
           <strong>TUI:</strong> Arena is not available in the TUI.
@@ -252,7 +267,7 @@
       sidecar (matching the current diff hash) into the in-memory review, and every finding carries an <strong>agent
       pill</strong> — <code>General</code>, <code>Security</code>, <code>Professor</code>, and so on — so you can tell at a
       glance which agent raised it. The desktop app makes this a first-class flow: use <strong>Run reviewers…</strong>
-      in the AI Actions palette to select and launch multiple reviewers at once, or use the
+      in the ⌘K AI menu to select and launch multiple reviewers at once, or use the
       <a href="desktop-features.html#arena">review arena</a> for adversarial multi-model consensus.
     </p>
 
