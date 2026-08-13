@@ -1936,6 +1936,7 @@ fn main() {
             commands::remove_tracked_branch,
             commands::list_available_branches,
             commands::delete_project,
+            commands::reorder_projects,
             commands::open_project_branch,
             commands::new_tab,
             commands::close_tab,

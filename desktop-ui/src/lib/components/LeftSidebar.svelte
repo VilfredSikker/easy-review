@@ -6,6 +6,7 @@
   import type { BackgroundTaskSnapshot, InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
+  import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
 
   interface PinnedItem {
     id: string;
@@ -132,8 +133,16 @@
   let pendingDeleteProjectId = $state<string | null>(null);
   let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Project-row drag reorder. `dragFrom` is the source index in the displayed
+  // list (search disables drag). `dropAt` is the insertion gap (0..=len).
+  // `pendingOrder` is an optimistic id list until `reorder_projects` returns.
+  let dragFrom = $state<number | null>(null);
+  let dropAt = $state<number | null>(null);
+  let pendingOrder = $state<string[] | null>(null);
+
   const sidebarSearchNeedle = $derived(sidebarSearch.trim().toLowerCase());
   const searchActive = $derived(sidebarSearchNeedle.length > 0);
+  const canReorder = $derived(!searchActive && projects.length > 1);
   const matchesSearch = (v: string): boolean => v.toLowerCase().includes(sidebarSearchNeedle);
   const filteredProjects = $derived(
     !sidebarSearchNeedle
@@ -149,6 +158,23 @@
           return false;
         }),
   );
+  const displayProjects = $derived.by(() => {
+    const list = filteredProjects;
+    if (!pendingOrder || searchActive) return list;
+    const byId = new Map(list.map((p) => [p.id, p]));
+    const out: ProjectSnapshot[] = [];
+    for (const id of pendingOrder) {
+      const p = byId.get(id);
+      if (p) {
+        out.push(p);
+        byId.delete(id);
+      }
+    }
+    for (const p of list) {
+      if (byId.has(p.id)) out.push(p);
+    }
+    return out;
+  });
 
   // Branch-picker state for the project 3-dot menu "New" item.
   let addingTo = $state<string | null>(null);
@@ -427,6 +453,75 @@
 
   function toggleProject(p: ProjectSnapshot) {
     expandedProject = expandedProject === p.id ? null : p.id;
+  }
+
+  function handleProjectDragStart(e: DragEvent, idx: number) {
+    if (!canReorder) {
+      e.preventDefault();
+      return;
+    }
+    dragFrom = idx;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(idx));
+    }
+  }
+
+  function dropSlotFor(e: DragEvent, idx: number, el: HTMLElement): number {
+    const rect = el.getBoundingClientRect();
+    return dropSlot(e.clientY, rect.top, rect.height, idx);
+  }
+
+  function handleProjectDragOver(e: DragEvent, idx: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropAt = dropSlotFor(e, idx, e.currentTarget as HTMLElement);
+  }
+
+  function handleProjectAfterDragOver(e: DragEvent, idx: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropAt = idx + 1;
+  }
+
+  function handleProjectDrop(e: DragEvent, idx: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    const slot = dropSlotFor(e, idx, e.currentTarget as HTMLElement);
+    void commitProjectDrop(slot);
+  }
+
+  function handleProjectDropAtSlot(e: DragEvent, slot: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    void commitProjectDrop(slot);
+  }
+
+  async function commitProjectDrop(slot: number) {
+    if (dragFrom === null) return;
+    const fromIdx = dragFrom;
+    const toIdx = destIndexAfterRemove(fromIdx, slot);
+    dragFrom = null;
+    dropAt = null;
+    if (toIdx === fromIdx) return;
+    const orderedIds = movedIds(
+      displayProjects.map((p) => p.id),
+      fromIdx,
+      toIdx,
+    );
+    pendingOrder = orderedIds;
+    try {
+      await app.cmd("reorder_projects", { orderedIds });
+    } finally {
+      pendingOrder = null;
+    }
+  }
+
+  function handleProjectDragEnd() {
+    dragFrom = null;
+    dropAt = null;
   }
 
   async function deleteProject(project: ProjectSnapshot) {
@@ -1207,16 +1302,28 @@
     </div>
     <div class="space-y-0.5">
       {#if filteredProjects.length > 0}
-        {#each filteredProjects as project (project.id)}
+        {#each displayProjects as project, i (project.id)}
           {@const badge = projectBadge(project)}
           {@const open = isProjectOpen(project)}
           <!-- Project header row: chevron + folder + name + badge + 3-dot menu -->
-          <div class="group relative">
-            <div class="flex items-center">
+          <div class="group relative {dragFrom === i ? 'opacity-50' : ''}">
+            {#if dragFrom !== null && dropAt === i}
+              <div class="absolute -top-px left-2 right-2 h-0.5 bg-accent rounded-full z-10" aria-hidden="true"></div>
+            {/if}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="flex items-center"
+              ondragover={(e) => handleProjectDragOver(e, i)}
+              ondrop={(e) => handleProjectDrop(e, i)}
+            >
               <button
                 type="button"
+                draggable={canReorder}
                 onclick={() => toggleProject(project)}
-                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0"
+                ondragstart={(e) => handleProjectDragStart(e, i)}
+                ondragend={handleProjectDragEnd}
+                title={canReorder ? "Drag to reorder" : undefined}
+                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0 {canReorder ? 'cursor-grab active:cursor-grabbing' : ''}"
               >
                 <!-- Chevron caret: down when expanded, right when collapsed — 10px fg-muted -->
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
@@ -1325,7 +1432,12 @@
           </div>
 
           {#if open}
-            <div class="ml-4 pl-3 border-l border-hairline space-y-0.5">
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="ml-4 pl-3 border-l border-hairline space-y-0.5"
+              ondragover={(e) => handleProjectAfterDragOver(e, i)}
+              ondrop={(e) => handleProjectDropAtSlot(e, i + 1)}
+            >
               {#if project.pr_cache_stale}
                 <div class="flex items-center gap-1.5 px-2 py-1">
                   <span class="text-[9px] uppercase tracking-wider text-warning">Stale</span>
@@ -1575,6 +1687,9 @@
             </div>
           {/if}
         {/each}
+        {#if dragFrom !== null && dropAt !== null && dropAt >= displayProjects.length}
+          <div class="h-0.5 bg-accent rounded-full mx-2" aria-hidden="true"></div>
+        {/if}
       {:else if projects.length > 0 && sidebarSearchNeedle}
         <div class="px-2 py-2 text-[12px] text-muted">No matching projects, branches, or PRs.</div>
       {:else}
