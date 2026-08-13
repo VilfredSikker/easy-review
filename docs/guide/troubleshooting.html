@@ -29,8 +29,9 @@
     <ul>
       <li><strong>Check where the artifacts went.</strong> By default <code>er</code> reads from managed storage, not the
       repo's <code>.er/</code>. External tools may write to <code>.er/</code> in the repo
-      instead. To bridge the gap: run reviews via the AI Hub (<kbd>a</kbd> in the TUI, <kbd>Cmd+A</kbd> / <kbd>Ctrl+A</kbd>
-      in the desktop), or launch <code>er</code> with <code>ER_REPO_LOCAL=1</code> to read the repo directory directly.
+      instead. To bridge the gap: run reviews via the AI Hub (<kbd>a</kbd> in the TUI,
+      <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> in the desktop), or launch <code>er</code> with
+      <code>ER_REPO_LOCAL=1</code> to read the repo directory directly.
       See <a href="storage.html">Review Storage</a>.</li>
       <li><strong>Check freshness.</strong> If the diff changed after the review ran, the data is dimmed as
       <em>stale</em>. Re-run the relevant action from the AI Hub.</li>

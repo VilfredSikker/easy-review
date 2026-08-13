@@ -89,11 +89,27 @@
 
     <h2>AI Hub: providers, models, reviewers</h2>
     <p>
-      The command palette (<kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong>) is the desktop's front door to AI. From it you can run a review,
-      launch the arena, choose a <strong>provider</strong> (Claude, Codex, Cursor), pick a specific <strong>model</strong>,
-      select which <strong>reviewer kinds</strong> to run, and reach export, the browser, and settings. Running reviews
-      surface as background tasks with cancellation; results land in the Review tab, filterable by severity or by agent.
-      The provider and model catalog comes from your <a href="configuration.html#ai-hub">AI Hub configuration</a>.
+      The command palette (<kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong>) is the desktop's front door to AI. Nested
+      menus group reviews, triage, professor, tour, diagrams, validation, and model selection. From it you can run a
+      review, launch the arena, choose a <strong>provider</strong> (Claude, Codex, Cursor), pick a specific
+      <strong>model</strong>, select which <strong>reviewer kinds</strong> to run, and reach export, the browser, and
+      settings. Running reviews surface as background tasks with cancellation; results land in the Review tab, filterable
+      by severity or by agent. The provider and model catalog comes from your
+      <a href="configuration.html#ai-hub">AI Hub configuration</a>.
+    </p>
+
+    <h2>Context tab: Mermaid diagrams</h2>
+    <p>
+      The right panel's <strong>Context</strong> tab generates and renders AI-authored Mermaid diagrams of the current
+      diff. Built-in presets cover a <strong>mental model</strong> (areas touched and how they relate),
+      <strong>subsystems</strong> (changed files grouped with interactions), and <strong>flows</strong> (runtime paths
+      through the changed code). A <strong>custom</strong> prompt covers anything else. Open the tab from the panel rail,
+      or jump there with <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Diagrams</strong>.
+    </p>
+    <p>
+      Diagrams are stored locally per branch/PR view bucket (<code>diagrams/*.json</code> — see
+      <a href="storage.html">Review Storage</a>) and never pushed. Regenerate or delete from the card; copy the raw
+      Mermaid source to paste elsewhere. When the diff changes, stale diagrams dim until you regenerate.
     </p>
 
     <h2>Inline threads &amp; findings</h2>
