@@ -60,18 +60,49 @@ jobs:
           path: target/${{ matrix.target }}/release/er-mcp
           if-no-files-found: error
 
+  build-desktop:
+    name: Build desktop DMG (macOS arm64)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: oven-sh/setup-bun@v2
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked --version "^2.0"
+
+      - name: Build desktop .app + DMG (ad-hoc signed)
+        run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-build.sh
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-dmg
+          path: target/desktop/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
   release:
     name: Create Release
-    needs: build
+    needs: [build, build-desktop]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download artifacts
+      - name: Download TUI/MCP artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: bins-*
           merge-multiple: true
+
+      - name: Download desktop DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-dmg
+          path: desktop
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
@@ -80,6 +111,7 @@ jobs:
           files: |
             er-*.tar.gz
             er-mcp-*.tar.gz
+            desktop/*.dmg
 
   npm:
     name: Publish easy-review-mcp to npm
