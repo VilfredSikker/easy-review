@@ -7529,6 +7529,18 @@ pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppS
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
+pub fn reorder_projects(
+    fromIdx: usize,
+    toIdx: usize,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    projects::reorder_projects(fromIdx, toIdx).map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
 pub fn open_project_branch(
     project_id: String,
     branch: String,

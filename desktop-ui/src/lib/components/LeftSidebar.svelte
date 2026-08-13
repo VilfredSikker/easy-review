@@ -6,6 +6,7 @@
   import type { BackgroundTaskSnapshot, InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
+  import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
 
   interface PinnedItem {
     id: string;
@@ -132,8 +133,15 @@
   let pendingDeleteProjectId = $state<string | null>(null);
   let pendingDeleteTimer: ReturnType<typeof setTimeout> | null = null;
 
+  // Project-row drag reorder. `dragFrom` is the source index in `projects`
+  // (search disables drag so filtered indices match persisted order). `dropAt`
+  // is the insertion gap (0..projects.length).
+  let dragFrom = $state<number | null>(null);
+  let dropAt = $state<number | null>(null);
+
   const sidebarSearchNeedle = $derived(sidebarSearch.trim().toLowerCase());
   const searchActive = $derived(sidebarSearchNeedle.length > 0);
+  const canReorder = $derived(!searchActive && projects.length > 1);
   const matchesSearch = (v: string): boolean => v.toLowerCase().includes(sidebarSearchNeedle);
   const filteredProjects = $derived(
     !sidebarSearchNeedle
@@ -427,6 +435,53 @@
 
   function toggleProject(p: ProjectSnapshot) {
     expandedProject = expandedProject === p.id ? null : p.id;
+  }
+
+  function handleProjectDragStart(e: DragEvent, idx: number) {
+    if (!canReorder) {
+      e.preventDefault();
+      return;
+    }
+    const target = e.target as HTMLElement | null;
+    if (target?.closest("[data-no-project-drag]")) {
+      e.preventDefault();
+      return;
+    }
+    dragFrom = idx;
+    if (e.dataTransfer) {
+      e.dataTransfer.effectAllowed = "move";
+      e.dataTransfer.setData("text/plain", String(idx));
+    }
+  }
+
+  function dropSlotFor(e: DragEvent, idx: number, el: HTMLElement): number {
+    const rect = el.getBoundingClientRect();
+    return dropSlot(e.clientY, rect.top, rect.height, idx);
+  }
+
+  function handleProjectDragOver(e: DragEvent, idx: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = "move";
+    dropAt = dropSlotFor(e, idx, e.currentTarget as HTMLElement);
+  }
+
+  function handleProjectDrop(e: DragEvent, idx: number) {
+    if (dragFrom === null) return;
+    e.preventDefault();
+    const slot = dropSlotFor(e, idx, e.currentTarget as HTMLElement);
+    const toIdx = destIndexAfterRemove(dragFrom, slot);
+    const fromIdx = dragFrom;
+    dragFrom = null;
+    dropAt = null;
+    if (toIdx !== fromIdx) {
+      app.cmd("reorder_projects", { fromIdx, toIdx });
+    }
+  }
+
+  function handleProjectDragEnd() {
+    dragFrom = null;
+    dropAt = null;
   }
 
   async function deleteProject(project: ProjectSnapshot) {
@@ -1207,16 +1262,28 @@
     </div>
     <div class="space-y-0.5">
       {#if filteredProjects.length > 0}
-        {#each filteredProjects as project (project.id)}
+        {#each filteredProjects as project, i (project.id)}
           {@const badge = projectBadge(project)}
           {@const open = isProjectOpen(project)}
           <!-- Project header row: chevron + folder + name + badge + 3-dot menu -->
-          <div class="group relative">
+          <!-- svelte-ignore a11y_no_static_element_interactions -->
+          <div
+            class="group relative {dragFrom === i ? 'opacity-50' : ''}"
+            ondragover={(e) => handleProjectDragOver(e, i)}
+            ondrop={(e) => handleProjectDrop(e, i)}
+          >
+            {#if dragFrom !== null && dropAt === i}
+              <div class="absolute -top-px left-2 right-2 h-0.5 bg-accent rounded-full z-10" aria-hidden="true"></div>
+            {/if}
             <div class="flex items-center">
               <button
                 type="button"
+                draggable={canReorder}
                 onclick={() => toggleProject(project)}
-                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0"
+                ondragstart={(e) => handleProjectDragStart(e, i)}
+                ondragend={handleProjectDragEnd}
+                title={canReorder ? "Drag to reorder" : undefined}
+                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0 {canReorder ? 'cursor-grab active:cursor-grabbing' : ''}"
               >
                 <!-- Chevron caret: down when expanded, right when collapsed — 10px fg-muted -->
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
@@ -1234,6 +1301,7 @@
               <!-- 3-dot more menu button — revealed on row hover -->
               <button
                 type="button"
+                data-no-project-drag
                 onclick={(e) => openProjectMenu(project.id, e)}
                 title="More options"
                 aria-label="More options for {project.name}"
@@ -1575,6 +1643,9 @@
             </div>
           {/if}
         {/each}
+        {#if dragFrom !== null && dropAt !== null && dropAt >= filteredProjects.length}
+          <div class="h-0.5 bg-accent rounded-full mx-2" aria-hidden="true"></div>
+        {/if}
       {:else if projects.length > 0 && sidebarSearchNeedle}
         <div class="px-2 py-2 text-[12px] text-muted">No matching projects, branches, or PRs.</div>
       {:else}

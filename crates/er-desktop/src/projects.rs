@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProjectsFile {
@@ -213,6 +214,26 @@ pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
     save(&file)
 }
 
+/// Move the project at `from` to index `to`. Out-of-bounds or `from == to`
+/// are silent no-ops. Persisted order is the sidebar display order.
+pub fn reorder_projects(from: usize, to: usize) -> anyhow::Result<()> {
+    let mut file = load();
+    if reorder_projects_in_file(&mut file, from, to) {
+        save(&file)?;
+    }
+    Ok(())
+}
+
+fn reorder_projects_in_file(file: &mut ProjectsFile, from: usize, to: usize) -> bool {
+    let len = file.projects.len();
+    if from >= len || to >= len || from == to {
+        return false;
+    }
+    let project = file.projects.remove(from);
+    file.projects.insert(to, project);
+    true
+}
+
 pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
     let mut file = load();
     let proj = file
@@ -257,12 +278,20 @@ pub fn config_path() -> PathBuf {
 use std::sync::Mutex;
 
 static PROJECTS_LOAD_CACHE: Mutex<Option<(std::time::SystemTime, ProjectsFile)>> = Mutex::new(None);
+static PROJECTS_CONTENT_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// Drop the in-process parse cache so the next [`load`] re-reads from disk.
 pub fn invalidate_load_cache() {
     if let Ok(mut guard) = PROJECTS_LOAD_CACHE.lock() {
         *guard = None;
     }
+}
+
+/// Monotonic generation bumped on every successful [`save`]. Snapshot caching
+/// keys off this so in-process reorders are visible even when filesystem mtime
+/// resolution would otherwise keep the old cache entry.
+pub fn content_generation() -> u64 {
+    PROJECTS_CONTENT_GEN.load(Ordering::Relaxed)
 }
 
 pub fn load() -> ProjectsFile {
@@ -298,6 +327,7 @@ pub fn save(file: &ProjectsFile) -> anyhow::Result<()> {
     let path = config_path();
     crate::persist::save_json_atomic(&path, file)?;
     invalidate_load_cache();
+    PROJECTS_CONTENT_GEN.fetch_add(1, Ordering::Relaxed);
     Ok(())
 }
 
@@ -996,5 +1026,52 @@ mod tests {
         // Idempotent — duplicate refs do not add rows.
         assert!(!sync_project_refs_in_file(&mut file, &refs));
         assert_eq!(file.projects.len(), 3);
+    }
+
+    fn ids(file: &ProjectsFile) -> Vec<&str> {
+        file.projects.iter().map(|p| p.id.as_str()).collect()
+    }
+
+    #[test]
+    fn reorder_projects_moves_first_to_last() {
+        let mut file = ProjectsFile {
+            projects: vec![
+                local_project("alpha", None),
+                local_project("beta", None),
+                local_project("gamma", None),
+            ],
+            active_id: None,
+        };
+
+        assert!(reorder_projects_in_file(&mut file, 0, 2));
+        assert_eq!(ids(&file), vec!["beta", "gamma", "alpha"]);
+    }
+
+    #[test]
+    fn reorder_projects_moves_last_to_first() {
+        let mut file = ProjectsFile {
+            projects: vec![
+                local_project("alpha", None),
+                local_project("beta", None),
+                local_project("gamma", None),
+            ],
+            active_id: None,
+        };
+
+        assert!(reorder_projects_in_file(&mut file, 2, 0));
+        assert_eq!(ids(&file), vec!["gamma", "alpha", "beta"]);
+    }
+
+    #[test]
+    fn reorder_projects_noop_when_from_equals_to_or_out_of_bounds() {
+        let mut file = ProjectsFile {
+            projects: vec![local_project("alpha", None), local_project("beta", None)],
+            active_id: None,
+        };
+
+        assert!(!reorder_projects_in_file(&mut file, 0, 0));
+        assert!(!reorder_projects_in_file(&mut file, 2, 0));
+        assert!(!reorder_projects_in_file(&mut file, 0, 2));
+        assert_eq!(ids(&file), vec!["alpha", "beta"]);
     }
 }

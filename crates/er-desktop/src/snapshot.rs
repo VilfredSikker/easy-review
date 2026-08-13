@@ -2839,6 +2839,7 @@ fn build_projects(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectsCacheKey {
     projects_mtime_ns: u128,
+    projects_gen: u64,
     pr_cache_fingerprint: u64,
     meta_cache_fingerprint: u64,
     active_root: String,
@@ -2910,6 +2911,7 @@ fn build_projects_cache_key(
 
     ProjectsCacheKey {
         projects_mtime_ns,
+        projects_gen: projects::content_generation(),
         pr_cache_fingerprint,
         meta_cache_fingerprint,
         active_root: tab.repo_root.clone(),
@@ -4363,6 +4365,35 @@ mod tests {
         assert!(projects[0].recently_merged.is_empty());
         assert_eq!(projects[0].recent_prs.len(), 1);
         assert_eq!(projects[0].recent_prs[0].title, "Remote PR title");
+    }
+
+    #[test]
+    fn projects_snapshot_preserves_file_order() {
+        let tab = TabState::new_for_test(vec![]);
+        let record = |id: &str| projects::ProjectRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: format!("/tmp/{id}"),
+            remote: None,
+            dismissed_prs: Vec::new(),
+            tracked_prs: Vec::new(),
+            tracked_branches: Vec::new(),
+            dismissed_branches: Vec::new(),
+            recent_prs: Vec::new(),
+            saved_prs: Vec::new(),
+            auto_triage: false,
+            auto_triage_own_prs: false,
+            auto_triage_when: "new-and-push".to_string(),
+            auto_triage_max_diff_kb: 0,
+            review_ignore_globs: Vec::new(),
+        };
+        let file = projects::ProjectsFile {
+            projects: vec![record("zeta"), record("alpha")],
+            active_id: None,
+        };
+        let snaps = build_projects_from_file(&file, &tab, None, None, None, None);
+        let ids: Vec<&str> = snaps.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["zeta", "alpha"]);
     }
 
     #[test]
