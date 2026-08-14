@@ -37,6 +37,41 @@ export function commentThreads(threads: ThreadSnapshot[] | undefined | null): Th
   return threads?.filter((t) => t.kind === "comment") ?? [];
 }
 
+type DiffFiles = { hunks: { threads: ThreadSnapshot[] }[] }[] | null | undefined;
+
+/**
+ * GitHub comment threads for the Comments panel / Branch badge.
+ *
+ * Inline diff rows render `file.hunks[].threads`. The panel used to read only
+ * `ai.threads`. Those copies can disagree (differential snapshots splice old
+ * hunks while replacing AI), which shows comments in the diff and hides them
+ * in the panel. Prefer the hunk copy when both exist so the panel matches
+ * what the user is scrolling.
+ */
+export function commentThreadsFromDiff(
+  aiThreads: ThreadSnapshot[] | undefined | null,
+  files?: DiffFiles,
+): ThreadSnapshot[] {
+  const hunkById = new Map<string, ThreadSnapshot>();
+  for (const file of files ?? []) {
+    for (const hunk of file.hunks ?? []) {
+      for (const t of hunk.threads ?? []) {
+        if (t.kind === "comment") hunkById.set(t.id, t);
+      }
+    }
+  }
+  const seen = new Set<string>();
+  const out: ThreadSnapshot[] = [];
+  for (const t of commentThreads(aiThreads)) {
+    seen.add(t.id);
+    out.push(hunkById.get(t.id) ?? t);
+  }
+  for (const [id, t] of hunkById) {
+    if (!seen.has(id)) out.push(t);
+  }
+  return out;
+}
+
 /**
  * Comment threads visible under the current hide-resolved / hide-outdated /
  * hide-all filters. Branch badge and CommentsCard must use the same set.
@@ -44,12 +79,36 @@ export function commentThreads(threads: ThreadSnapshot[] | undefined | null): Th
 export function visibleCommentThreads(
   threads: ThreadSnapshot[] | undefined | null,
   visibility: CommentVisibility,
+  files?: DiffFiles,
 ): ThreadSnapshot[] {
-  const all = commentThreads(threads);
+  const all = commentThreadsFromDiff(threads, files);
   if (visibility.hideAll) return [];
   return all.filter(
     (thread) =>
       !(visibility.hideResolved && thread.resolved) &&
       !(visibility.hideOutdated && thread.stale),
   );
+}
+
+/** Toggle one Comments-panel filter. Clearing Hide all when the user
+ *  flips Hide outdated / Hide resolved, otherwise those clicks are no-ops. */
+export function toggleCommentFilter(
+  current: CommentVisibility,
+  key: "hideOutdated" | "hideResolved" | "hideAll",
+): CommentVisibility {
+  if (key === "hideAll") {
+    return { ...current, hideAll: !current.hideAll };
+  }
+  return { ...current, [key]: !current[key], hideAll: false };
+}
+
+/** Empty-state copy for the Comments panel. Distinguishes Hide all from
+ *  the resolved/outdated filters so the user is told the filter that
+ *  actually emptied the list. */
+export function hiddenCommentsHint(hiddenCount: number, visibility: CommentVisibility): string {
+  const n = `${hiddenCount} comment${hiddenCount === 1 ? "" : "s"} hidden`;
+  if (visibility.hideAll) {
+    return `${n}. Turn off Hide all above to show them.`;
+  }
+  return `${n} (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.`;
 }

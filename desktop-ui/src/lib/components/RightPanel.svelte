@@ -114,7 +114,7 @@
   }
 
   const commentCount = $derived(
-    visibleCommentThreads(ai?.threads, app.commentVisibility).length
+    visibleCommentThreads(ai?.threads, app.commentVisibility, app.snapshot?.files).length
   );
 
   const diagramCount = $derived(ai?.diagrams?.length ?? 0);

@@ -140,20 +140,69 @@ pub(crate) fn merged_outdated_state(thread_state: ReviewThreadState, rest_outdat
 /// Perform the network I/O and data processing for a comment sync.
 /// Does NOT hold the App mutex — all data comes from `CommentSyncContext`.
 /// Writes the comments JSON file to disk before returning.
+///
+/// Always hits GitHub (no 60s bundle cache). The background 45s tick uses this
+/// so a later manual pull cannot regress to a stale hover-prefetch bundle.
 pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncResult> {
-    let gh_comments = if ctx.is_remote {
-        github::gh_pr_comments_remote(&ctx.owner, &ctx.repo_name, ctx.pr_number)?
-    } else {
-        github::gh_pr_comments(&ctx.owner, &ctx.repo_name, ctx.pr_number, &ctx.repo_root)?
-    };
+    fetch_comment_sync_data_with(ctx, false)
+}
 
-    let thread_state = if ctx.is_remote {
-        github::gh_pr_review_threads_remote(&ctx.owner, &ctx.repo_name, ctx.pr_number)
-            .unwrap_or_default()
+/// Like [`fetch_comment_sync_data`], but serves comments/threads from the
+/// hover-prefetch cache when it is warm.
+pub fn fetch_comment_sync_data_cached(ctx: &CommentSyncContext) -> Result<CommentSyncResult> {
+    fetch_comment_sync_data_with(ctx, true)
+}
+
+fn fetch_comment_sync_data_with(
+    ctx: &CommentSyncContext,
+    use_cache: bool,
+) -> Result<CommentSyncResult> {
+    let repo_root = if ctx.is_remote {
+        None
     } else {
-        github::gh_pr_review_threads(&ctx.owner, &ctx.repo_name, ctx.pr_number, &ctx.repo_root)
-            .unwrap_or_default()
+        Some(ctx.repo_root.as_str())
     };
+    let overview_pr = ctx.pr_number_for_overview.unwrap_or(ctx.pr_number);
+
+    // Comments+threads and PR overview are independent gh calls — overlap them
+    // so a cold pull is ~max(bundle, overview) instead of the sum.
+    let (bundle, pr_data) = std::thread::scope(|s| {
+        let bundle_h = s.spawn(|| {
+            if use_cache {
+                github::gh_pr_comment_bundle_cached(
+                    &ctx.owner,
+                    &ctx.repo_name,
+                    ctx.pr_number,
+                    repo_root,
+                )
+                .map(|b| (b.comments.clone(), b.threads.clone()))
+            } else {
+                github::fetch_pr_comment_bundle(
+                    &ctx.owner,
+                    &ctx.repo_name,
+                    ctx.pr_number,
+                    repo_root,
+                )
+                .map(|b| (b.comments, b.threads))
+            }
+        });
+        // Overview is independent of comments. Remote skips CI checks (no
+        // local clone). Local uses the checks-free variant: the desktop's
+        // gh-status loop already polls `gh pr checks` for this PR.
+        let overview_h = s.spawn(|| {
+            if ctx.is_remote {
+                github::gh_pr_overview_remote(&ctx.owner, &ctx.repo_name, overview_pr)
+            } else {
+                github::gh_pr_overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
+            }
+        });
+        let bundle = bundle_h
+            .join()
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("comment bundle fetch panicked")));
+        let pr_data = overview_h.join().ok().flatten();
+        (bundle, pr_data)
+    });
+    let (gh_comments, thread_state) = bundle?;
 
     let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&ctx.comments_path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
@@ -260,27 +309,6 @@ pub fn fetch_comment_sync_data(ctx: &CommentSyncContext) -> Result<CommentSyncRe
     let tmp_path = format!("{}.tmp", ctx.comments_path);
     std::fs::write(&tmp_path, &json)?;
     std::fs::rename(&tmp_path, &ctx.comments_path)?;
-
-    // Refresh PR overview (still outside app lock).
-    // Remote PRs already skip the CI-checks subprocess inside
-    // `gh_pr_overview_remote` (no local clone for `gh pr checks` to target).
-    // Local-clone PRs use the checks-free variant: the desktop's 30s
-    // gh-status loop (`fetch_github_status`, er-desktop/src/commands.rs)
-    // already polls `gh pr checks` for this same (owner, repo, pr_number)
-    // every tick — re-fetching checks here every 45s was pure duplication
-    // (~80 calls/hr per open local-clone PR tab). `tab.pr_data.checks` is
-    // not read by any desktop code path (the desktop snapshot drops
-    // `checks`/`reviewers` when building `PrSnapshot`); only the TUI reads
-    // `pr.checks`, and the TUI never calls this function.
-    let pr_data = if ctx.is_remote {
-        github::gh_pr_overview_remote(
-            &ctx.owner,
-            &ctx.repo_name,
-            ctx.pr_number_for_overview.unwrap_or(ctx.pr_number),
-        )
-    } else {
-        github::gh_pr_overview_no_checks(&ctx.repo_root, ctx.pr_number_for_overview)
-    };
 
     Ok(CommentSyncResult {
         gc,

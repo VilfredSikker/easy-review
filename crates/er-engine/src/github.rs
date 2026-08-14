@@ -1668,11 +1668,38 @@ pub fn gh_pr_review_threads(
     parse_review_threads_response(&stdout)
 }
 
+/// Run two independent closures concurrently and return both results.
+///
+/// Used so REST comments and GraphQL review-threads (and similar gh pairs)
+/// overlap instead of stacking ~2.5–3 s of sequential CLI time.
+pub(crate) fn run_parallel<A, B>(
+    left: impl FnOnce() -> A + Send,
+    right: impl FnOnce() -> B + Send,
+) -> (A, B)
+where
+    A: Send,
+    B: Send,
+{
+    std::thread::scope(|s| {
+        let left_h = s.spawn(left);
+        let right_h = s.spawn(right);
+        (
+            left_h
+                .join()
+                .unwrap_or_else(|_| panic!("left parallel task panicked")),
+            right_h
+                .join()
+                .unwrap_or_else(|_| panic!("right parallel task panicked")),
+        )
+    })
+}
+
 /// Cached PR comment sync bundle (hover-prefetch warming, first-paint plan
 /// step 3). Keyed by (owner, repo, pr); 60s TTL; failures never cached. The
-/// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s — the
-/// sidebar hover prefetch warms this cache so the post-open
-/// `pull_github_comments` is served from memory instead of the network.
+/// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s
+/// sequentially — they run in parallel here, and the sidebar hover prefetch
+/// warms this cache so the post-open `pull_github_comments` is served from
+/// memory instead of the network.
 pub struct PrCommentBundle {
     pub comments: Vec<GitHubComment>,
     pub threads: HashMap<u64, ReviewThreadState>,
@@ -1724,6 +1751,30 @@ impl PrCommentsCache {
 
 static PR_COMMENTS_CACHE: OnceLock<PrCommentsCache> = OnceLock::new();
 
+/// Fetch REST comments + GraphQL review-thread state in parallel.
+/// `repo_root = None` uses the remote variants (no local clone needed).
+pub fn fetch_pr_comment_bundle(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: Option<&str>,
+) -> Result<PrCommentBundle> {
+    let (comments, threads) = run_parallel(
+        || match repo_root {
+            Some(root) => gh_pr_comments(owner, repo, pr, root),
+            None => gh_pr_comments_remote(owner, repo, pr),
+        },
+        || match repo_root {
+            Some(root) => gh_pr_review_threads(owner, repo, pr, root),
+            None => gh_pr_review_threads_remote(owner, repo, pr),
+        },
+    );
+    Ok(PrCommentBundle {
+        comments: comments?,
+        threads: threads?,
+    })
+}
+
 /// Fetch (and cache) the PR comment sync bundle: REST comments + GraphQL
 /// review-thread state. `repo_root = None` uses the remote variants (no local
 /// clone needed). A warm cache makes `sync_github_comments` network-free.
@@ -1741,15 +1792,7 @@ pub fn gh_pr_comment_bundle_cached(
     if let Some(bundle) = cache.get(owner, repo, pr) {
         return Ok(bundle);
     }
-    let comments = match repo_root {
-        Some(root) => gh_pr_comments(owner, repo, pr, root)?,
-        None => gh_pr_comments_remote(owner, repo, pr)?,
-    };
-    let threads = match repo_root {
-        Some(root) => gh_pr_review_threads(owner, repo, pr, root)?,
-        None => gh_pr_review_threads_remote(owner, repo, pr)?,
-    };
-    let bundle = Arc::new(PrCommentBundle { comments, threads });
+    let bundle = Arc::new(fetch_pr_comment_bundle(owner, repo, pr, repo_root)?);
     cache.insert(owner, repo, pr, Arc::clone(&bundle));
     Ok(bundle)
 }
@@ -2860,6 +2903,43 @@ pub fn owner_repo_storage_slug(owner: &str, repo: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_parallel_overlaps_independent_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let concurrent = AtomicUsize::new(0);
+        let max_concurrent = AtomicUsize::new(0);
+        let start = Instant::now();
+        let (left, right) = run_parallel(
+            || {
+                let n = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(n, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(40));
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                1u8
+            },
+            || {
+                let n = concurrent.fetch_add(1, Ordering::SeqCst) + 1;
+                max_concurrent.fetch_max(n, Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(40));
+                concurrent.fetch_sub(1, Ordering::SeqCst);
+                2u8
+            },
+        );
+        assert_eq!((left, right), (1, 2));
+        assert_eq!(
+            max_concurrent.load(Ordering::SeqCst),
+            2,
+            "both closures should run at the same time"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(70),
+            "sequential 40ms+40ms should overlap; took {:?}",
+            start.elapsed()
+        );
+    }
 
     // ── local checkout matching (remote PR reviews) ──
 

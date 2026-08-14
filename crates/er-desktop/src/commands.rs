@@ -2623,11 +2623,110 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
     snap!(state)
 }
 
+/// Pull GitHub review comments for the active tab.
+///
+/// Runs off the main thread and does not hold the App mutex during `gh`
+/// (same three-phase pattern as the background 45s comment sync). Pass
+/// `force: true` to bypass the 60s hover-prefetch cache (the Comments
+/// panel re-fetch button); auto-pull omits it so a warm cache stays instant.
 #[tauri::command]
-pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_github_comments().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn pull_github_comments(
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    let force = force.unwrap_or(false);
+    run_blocking(move || pull_github_comments_blocking(&state, force)).await
+}
+
+fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSnapshot, String> {
+    // Identity + files + comments_path must come from one lock. Re-reading
+    // `app.tab()` after `local_pr_target` (git/gh) can mix PR A's comments
+    // into tab B's sidecar if the user switched tabs mid-resolve.
+    let (mut ctx, remote_repo, explicit_pr) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let remote_repo = tab.remote_repo.clone();
+        let explicit_pr = tab.pr_number;
+        let ctx = app.snapshot_for_comment_sync(String::new(), String::new(), 0);
+        (ctx, remote_repo, explicit_pr)
+    };
+
+    let identity = if ctx.is_remote {
+        match (remote_repo.as_deref(), explicit_pr) {
+            (Some(slug), Some(n)) => {
+                let mut parts = slug.split('/');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => {
+                        Some((owner.to_string(), repo.to_string(), n))
+                    }
+                    _ => {
+                        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                        app.notify("Invalid remote repo slug");
+                        return Ok(snap_from(&app, state));
+                    }
+                }
+            }
+            _ => {
+                let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                app.notify("No PR info for remote mode");
+                return Ok(snap_from(&app, state));
+            }
+        }
+    } else {
+        match er_engine::sync::local_pr_target(&ctx.repo_root, explicit_pr) {
+            Ok(info) => Some(info),
+            Err(_) => {
+                let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                app.notify("No PR found for current branch");
+                return Ok(snap_from(&app, state));
+            }
+        }
+    };
+
+    let Some((owner, repo, number)) = identity else {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
+    };
+    ctx.owner = owner;
+    ctx.repo_name = repo;
+    ctx.pr_number = number;
+
+    if force {
+        er_engine::github::invalidate_pr_comments_cache();
+    }
+
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = true;
+    }
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "gh_comments_pull_start");
+
+    // `force` already cleared the cache above so this misses and refills;
+    // auto-pull hits the hover-prefetch bundle when it is still warm.
+    let result = er_engine::app::fetch_comment_sync_data_cached(&ctx);
+
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = false;
+    }
+
+    match result {
+        Ok(sync) => {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.apply_comment_sync_result(sync);
+            Ok(snap_from(&app, state))
+        }
+        Err(e) => {
+            log::error!(
+                "pull_github_comments: {}/{}#{} force={force} err={e}",
+                ctx.owner,
+                ctx.repo_name,
+                ctx.pr_number
+            );
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.notify(&format!("GitHub sync error: {e}"));
+            Ok(snap_from(&app, state))
+        }
+    }
 }
 
 #[tauri::command]
@@ -9465,7 +9564,15 @@ fn compute_content_revision(app: &App) -> u64 {
             last.timestamp.hash(&mut h);
             last.synced.hash(&mut h);
             last.resolved.hash(&mut h);
+            last.outdated.hash(&mut h);
+            last.stale.hash(&mut h);
+            last.anchor_status.hash(&mut h);
         }
+        gc.comments
+            .iter()
+            .filter(|c| c.stale || c.outdated)
+            .count()
+            .hash(&mut h);
     }
     if let Some(review) = &tab.ai.review {
         review.diff_hash.hash(&mut h);

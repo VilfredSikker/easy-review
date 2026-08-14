@@ -6,7 +6,9 @@
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import {
-    commentThreads as allCommentThreads,
+    commentThreadsFromDiff,
+    hiddenCommentsHint,
+    toggleCommentFilter,
     visibleCommentThreads as filterVisibleComments,
   } from "$lib/commentVisibility";
   import Card from "$lib/components/ui/Card.svelte";
@@ -28,10 +30,10 @@
   let summary = $state("");
   let submitting = $state(false);
 
-  const commentThreads = $derived(allCommentThreads(ai.threads));
-  const visibleCommentThreads = $derived(
-    filterVisibleComments(ai.threads, app.commentVisibility),
-  );
+  const files = $derived(app.snapshot?.files);
+  const commentThreads = $derived(commentThreadsFromDiff(ai.threads, files));
+  const vis = $derived(app.commentVisibility);
+  const visibleCommentThreads = $derived(filterVisibleComments(ai.threads, vis, files));
   const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
   const refreshing = $derived(
     manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
@@ -71,8 +73,7 @@
   async function onRefresh() {
     manualRefreshing = true;
     try {
-      await app.cmd("pull_github_comments");
-      app.showToast("success", "Comments refreshed");
+      await app.cmd("pull_github_comments", { force: true });
     } finally {
       manualRefreshing = false;
     }
@@ -145,21 +146,24 @@
   <div class="flex flex-wrap items-center gap-1.5 mb-3">
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideOutdated: !app.commentVisibility.hideOutdated })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideOutdated ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideOutdated"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideOutdated ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide outdated GitHub comments in the side panel and inline diff"
+      aria-pressed={vis.hideOutdated}
     >Hide outdated</button>
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideResolved: !app.commentVisibility.hideResolved })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideResolved ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideResolved"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideResolved ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide resolved GitHub comments in the side panel and inline diff"
+      aria-pressed={vis.hideResolved}
     >Hide resolved</button>
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideAll: !app.commentVisibility.hideAll })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideAll ? 'bg-del-bg border-del-fg/30 text-del-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideAll"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideAll ? 'bg-del-bg border-del-fg/30 text-del-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide every GitHub comment in the side panel and inline diff"
+      aria-pressed={vis.hideAll}
     >Hide all</button>
     {#if visibleCommentThreads.length !== commentThreads.length}
       <span class="text-[10px] text-muted mono">{visibleCommentThreads.length}/{commentThreads.length} shown</span>
@@ -174,8 +178,7 @@
         {#if refreshing}
           Fetching comments from GitHub…
         {:else if commentThreads.length > 0}
-          {commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"} hidden
-          (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.
+          {hiddenCommentsHint(commentThreads.length, vis)}
         {:else}
           No comments on this diff
         {/if}

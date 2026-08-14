@@ -1223,9 +1223,10 @@ fn main() {
             // comment-panel latency on a push-idle PR — NOT a "nothing changed"
             // guarantee. A push changes head_oid (via the pr-head-probe loop,
             // itself throttled to ~60s), so a fresh push resyncs within ~1-2 min
-            // instead of waiting out `ttl`. Manual sync (`G` key →
-            // `pull_github_comments` → `App::sync_github_comments`) is a separate
-            // synchronous path that never touches this loop or map, unaffected.
+            // instead of waiting out `ttl`. Manual sync (`G` key / Comments
+            // re-fetch) uses the same three-phase fetch as this loop
+            // (`pull_github_comments` → `fetch_comment_sync_data_cached`) and
+            // never consults this map.
             let mut last_synced: HashMap<(String, String, u64), (String, std::time::Instant)> =
                 HashMap::new();
             loop {

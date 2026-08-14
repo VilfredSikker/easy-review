@@ -3299,21 +3299,29 @@ impl TabState {
 
         let is_lazy = self.lazy_mode;
 
-        // Helper: find DiffFile by path, respecting renames.
-        // Returns None for lazy stubs (hunks not yet parsed) to avoid false Lost results.
-        let find_file = |path: &str| -> Option<usize> {
+        // Ready / unparsed-stub / missing. Unparsed lazy stubs must not be
+        // treated as Missing — that stamped every comment `stale` and the
+        // Comments panel hid them behind Hide outdated.
+        enum RelocateLookup {
+            Ready(usize),
+            UnparsedStub,
+            Missing,
+        }
+        let lookup_file = |path: &str| -> RelocateLookup {
             let find_idx =
                 |p: &str| -> Option<usize> { self.files.iter().position(|f| f.path == p) };
-            let idx =
-                find_idx(path).or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))?;
-            // Skip unparsed lazy stubs — hunks empty and not compacted
+            let Some(idx) =
+                find_idx(path).or_else(|| rename_map.get(path).and_then(|np| find_idx(np)))
+            else {
+                return RelocateLookup::Missing;
+            };
             if is_lazy {
                 let f = &self.files[idx];
                 if f.hunks.is_empty() && !f.compacted {
-                    return None;
+                    return RelocateLookup::UnparsedStub;
                 }
             }
-            Some(idx)
+            RelocateLookup::Ready(idx)
         };
 
         // Process questions
@@ -3328,20 +3336,22 @@ impl TabState {
                     q.relocated_at_hash = current_hash.clone();
                     continue;
                 }
-                let result = if let Some(idx) = find_file(&q.file) {
-                    let anchor = ai::CommentAnchor {
-                        file: q.file.clone(),
-                        hunk_index: q.hunk_index,
-                        line_start: q.line_start,
-                        line_content: q.line_content.clone(),
-                        context_before: q.context_before.clone(),
-                        context_after: q.context_after.clone(),
-                        old_line_start: q.old_line_start,
-                        hunk_header: q.hunk_header.clone(),
-                    };
-                    ai::relocate_comment(&anchor, &self.files[idx])
-                } else {
-                    ai::RelocationResult::Lost
+                let result = match lookup_file(&q.file) {
+                    RelocateLookup::UnparsedStub => continue,
+                    RelocateLookup::Ready(idx) => {
+                        let anchor = ai::CommentAnchor {
+                            file: q.file.clone(),
+                            hunk_index: q.hunk_index,
+                            line_start: q.line_start,
+                            line_content: q.line_content.clone(),
+                            context_before: q.context_before.clone(),
+                            context_after: q.context_after.clone(),
+                            old_line_start: q.old_line_start,
+                            hunk_header: q.hunk_header.clone(),
+                        };
+                        ai::relocate_comment(&anchor, &self.files[idx])
+                    }
+                    RelocateLookup::Missing => ai::RelocationResult::Lost,
                 };
                 match result {
                     ai::RelocationResult::Unchanged => {
@@ -3385,20 +3395,22 @@ impl TabState {
                     n.relocated_at_hash = current_hash.clone();
                     continue;
                 }
-                let result = if let Some(idx) = find_file(&n.file) {
-                    let anchor = ai::CommentAnchor {
-                        file: n.file.clone(),
-                        hunk_index: n.hunk_index,
-                        line_start: n.line_start,
-                        line_content: n.line_content.clone(),
-                        context_before: n.context_before.clone(),
-                        context_after: n.context_after.clone(),
-                        old_line_start: n.old_line_start,
-                        hunk_header: n.hunk_header.clone(),
-                    };
-                    ai::relocate_comment(&anchor, &self.files[idx])
-                } else {
-                    ai::RelocationResult::Lost
+                let result = match lookup_file(&n.file) {
+                    RelocateLookup::UnparsedStub => continue,
+                    RelocateLookup::Ready(idx) => {
+                        let anchor = ai::CommentAnchor {
+                            file: n.file.clone(),
+                            hunk_index: n.hunk_index,
+                            line_start: n.line_start,
+                            line_content: n.line_content.clone(),
+                            context_before: n.context_before.clone(),
+                            context_after: n.context_after.clone(),
+                            old_line_start: n.old_line_start,
+                            hunk_header: n.hunk_header.clone(),
+                        };
+                        ai::relocate_comment(&anchor, &self.files[idx])
+                    }
+                    RelocateLookup::Missing => ai::RelocationResult::Lost,
                 };
                 match result {
                     ai::RelocationResult::Unchanged => {
@@ -3446,20 +3458,22 @@ impl TabState {
                     c.relocated_at_hash = current_hash.clone();
                     continue;
                 }
-                let result = if let Some(idx) = find_file(&c.file) {
-                    let anchor = ai::CommentAnchor {
-                        file: c.file.clone(),
-                        hunk_index: c.hunk_index,
-                        line_start: c.line_start,
-                        line_content: c.line_content.clone(),
-                        context_before: c.context_before.clone(),
-                        context_after: c.context_after.clone(),
-                        old_line_start: c.old_line_start,
-                        hunk_header: c.hunk_header.clone(),
-                    };
-                    ai::relocate_comment(&anchor, &self.files[idx])
-                } else {
-                    ai::RelocationResult::Lost
+                let result = match lookup_file(&c.file) {
+                    RelocateLookup::UnparsedStub => continue,
+                    RelocateLookup::Ready(idx) => {
+                        let anchor = ai::CommentAnchor {
+                            file: c.file.clone(),
+                            hunk_index: c.hunk_index,
+                            line_start: c.line_start,
+                            line_content: c.line_content.clone(),
+                            context_before: c.context_before.clone(),
+                            context_after: c.context_after.clone(),
+                            old_line_start: c.old_line_start,
+                            hunk_header: c.hunk_header.clone(),
+                        };
+                        ai::relocate_comment(&anchor, &self.files[idx])
+                    }
+                    RelocateLookup::Missing => ai::RelocationResult::Lost,
                 };
                 match result {
                     ai::RelocationResult::Unchanged => {
@@ -7818,6 +7832,87 @@ mod tests {
         }
     }
 
+    fn make_gh_comment(file: &str, line: usize) -> ai::GitHubReviewComment {
+        ai::GitHubReviewComment {
+            id: "gh-1".to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index: Some(0),
+            line_start: Some(line),
+            line_end: None,
+            line_content: "fn foo() {}".to_string(),
+            comment: "please look".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(1),
+            author: "octocat".to_string(),
+            synced: true,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: "@@ -1,3 +1,4 @@".to_string(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: "old-hash".to_string(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    // ── relocate_all_comments / lazy stubs ──
+
+    #[test]
+    fn relocate_skips_unparsed_lazy_stubs_instead_of_marking_lost() {
+        // Large diffs keep files as empty-hunk stubs until parsed. find_file()
+        // returns None for those stubs "to avoid false Lost", but the caller
+        // treated None as Lost — which marked every GitHub comment stale and
+        // the Comments panel hid them behind Hide outdated.
+        let stub = make_file("big.rs", vec![], 10, 10);
+        let mut tab = make_test_tab(vec![stub]);
+        tab.lazy_mode = true;
+        tab.diff_hash = "current-hash".to_string();
+        tab.ai.github_comments = Some(ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "old-hash".to_string(),
+            github: None,
+            comments: vec![make_gh_comment("big.rs", 10)],
+        });
+
+        tab.relocate_all_comments();
+
+        let c = &tab.ai.github_comments.as_ref().unwrap().comments[0];
+        assert!(
+            !c.stale,
+            "unparsed lazy stub must not mark the comment stale"
+        );
+        assert_eq!(c.anchor_status, "original");
+        assert_eq!(
+            c.relocated_at_hash, "old-hash",
+            "must leave the hash so relocate retries after the file is parsed"
+        );
+    }
+
+    #[test]
+    fn relocate_marks_comment_lost_when_file_is_absent_from_diff() {
+        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+        tab.diff_hash = "current-hash".to_string();
+        tab.ai.github_comments = Some(ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "old-hash".to_string(),
+            github: None,
+            comments: vec![make_gh_comment("missing.rs", 10)],
+        });
+
+        tab.relocate_all_comments();
+
+        let c = &tab.ai.github_comments.as_ref().unwrap().comments[0];
+        assert!(c.stale);
+        assert_eq!(c.anchor_status, "lost");
+        assert_eq!(c.relocated_at_hash, "current-hash");
+    }
+
     // ── truncate ──
 
     #[test]
@@ -10347,6 +10442,9 @@ mod tests {
     fn reload_remote_comments_handles_missing_file_gracefully() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/nonexistent/path/that/does/not/exist".to_string();
+        // new_for_test pins er_root at /tmp/test; leftover github-comments.json
+        // there must not satisfy this assertion.
+        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
         // Should not panic
         tab.reload_remote_comments();
         assert!(tab.ai.github_comments.is_none());
