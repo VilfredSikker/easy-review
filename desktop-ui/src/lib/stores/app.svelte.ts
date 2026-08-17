@@ -463,6 +463,7 @@ class AppStore {
                 });
               }
               this.rememberSnapshot(this.snapshot);
+              this.lastConfirmedSnapshot = this.snapshot;
               this.syncSnapshotToast(this.snapshot);
             }
           } else {
@@ -647,6 +648,7 @@ class AppStore {
       if (this.snapshot && snapshotsShareTabCacheKey(this.snapshot, returned)) {
         this.snapshot = mergeChromeSnapshot(this.snapshot, returned);
         this.rememberSnapshot(this.snapshot);
+        this.lastConfirmedSnapshot = this.snapshot;
       }
     } catch (e) {
       // Roll back optimistic mutation only on the tab we mutated.
