@@ -597,6 +597,7 @@ class AppStore {
   private restoreConfirmedSnapshot(): void {
     if (!this.lastConfirmedSnapshot) return;
     this.snapshot = this.lastConfirmedSnapshot;
+    this.rememberSnapshot(this.snapshot);
     this.snapshotGeneration += 1;
     this.lastPollRevision = null;
     this.lastPollContentRevision = null;
@@ -733,6 +734,9 @@ class AppStore {
               )
             : await invoke<AppSnapshot>(command, args);
       if (snapshot === LATEST_INVOKE_SKIPPED) return;
+      if (isTabChange) {
+        this.lastConfirmedSnapshot = snapshot;
+      }
       const tInvokeDone = performance.now();
       const applied = this.ingestCommandSnapshot(snapshot, {
         allowTabChange: isTabChange,
