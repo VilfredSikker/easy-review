@@ -687,10 +687,20 @@ class AppStore {
     const invokeArgs = optimisticInvokeArgs(command, args, op, snapshotViewParts(snap));
 
     await this.enqueueOptimistic(async () => {
+      const rollbackPaintedView = () => {
+        rollbackOptimisticOp(originSnap, op);
+        if (
+          this.snapshot &&
+          this.snapshot !== originSnap &&
+          snapshotViewIdentity(this.snapshot) === viewAtStart
+        ) {
+          rollbackOptimisticOp(this.snapshot, op);
+        }
+      };
       const stillHere =
         this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
       if (!stillHere) {
-        rollbackOptimisticOp(originSnap, op);
+        rollbackPaintedView();
         this.dropPendingOp(op.id);
         return;
       }
@@ -704,11 +714,11 @@ class AppStore {
         ) {
           this.ingestCommandSnapshot(returned);
         } else {
-          rollbackOptimisticOp(originSnap, op);
+          rollbackPaintedView();
         }
       } catch (e) {
         this.dropPendingOp(op.id);
-        rollbackOptimisticOp(originSnap, op);
+        rollbackPaintedView();
         if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
           this.reportCmdError(command, e);
         }

@@ -36,6 +36,7 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
     expect(src).toContain("applyOptimisticOp(snap, op);");
     expect(src).toContain("rollbackOptimisticOp(originSnap, op);");
+    expect(src).toContain("this.snapshot !== originSnap");
     expect(src).toContain("this.keepOptimisticOps();");
     expect(src).toContain("if (!this.canPaintOptimistic()) return;");
     expect(src).toContain("!this.pendingTabSwitch && !this.switching");
