@@ -41,6 +41,7 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("!this.pendingTabSwitch && !this.switching");
     expect(src).toContain("snapshotViewParts(snap)");
     expect(src).toContain("const stillHere =");
+    expect(src).toContain("snapshotViewIdentity(returned) === viewAtStart");
   });
 });
 

@@ -697,7 +697,11 @@ class AppStore {
       try {
         const returned = await invoke<AppSnapshot>(command, invokeArgs);
         this.dropPendingOp(op.id);
-        if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+        if (
+          this.snapshot &&
+          snapshotViewIdentity(this.snapshot) === viewAtStart &&
+          snapshotViewIdentity(returned) === viewAtStart
+        ) {
           this.ingestCommandSnapshot(returned);
         } else {
           rollbackOptimisticOp(originSnap, op);
