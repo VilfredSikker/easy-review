@@ -2226,6 +2226,7 @@ pub async fn add_comment(
     line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
+    id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -2234,6 +2235,9 @@ pub async fn add_comment(
         // Set side before submit so submit_github_comment can consume it
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
             file,
@@ -2259,6 +2263,7 @@ pub async fn add_question(
     line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
+    id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -2266,6 +2271,9 @@ pub async fn add_question(
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
             file,
@@ -2291,6 +2299,7 @@ pub async fn add_note(
     line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
+    id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -2298,6 +2307,9 @@ pub async fn add_note(
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
             file,
@@ -9123,6 +9135,7 @@ pub async fn add_ui_annotation(
     screenshotDataUrl: Option<String>,
     elementContext: Option<String>,
     domContext: Option<serde_json::Value>,
+    id: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -9130,13 +9143,15 @@ pub async fn add_ui_annotation(
         let app = state.app.lock().map_err(|e| e.to_string())?;
         let dir = app.tab().comments_dir();
         let mut anns = er_engine::ai::load_ui_annotations(&dir);
-        let id = format!(
-            "ui-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
-        );
+        let id = id.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+            format!(
+                "ui-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            )
+        });
 
         // If a screenshot data URL was provided, decode and persist it under
         // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:

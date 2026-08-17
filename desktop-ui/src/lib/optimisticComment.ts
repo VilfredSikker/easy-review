@@ -32,9 +32,11 @@ export function isAddThreadCommand(command: string): command is AddThreadCommand
   return (ADD_THREAD_COMMANDS as readonly string[]).includes(command);
 }
 
-export function nextOptimisticId(now = Date.now()): string {
+export function nextOptimisticId(opts?: { now?: number; prefix?: string }): string {
   seq += 1;
-  return `opt-${now}-${seq}`;
+  const now = opts?.now ?? Date.now();
+  const prefix = opts?.prefix ?? "opt";
+  return `${prefix}-${now}-${seq}`;
 }
 
 function asNumber(value: unknown): number | null {
@@ -90,7 +92,9 @@ export function buildOptimisticThread(
   filePath: string,
   opts?: { nowIso?: string; id?: string },
 ): OptimisticThread {
-  const id = opts?.id ?? nextOptimisticId();
+  const prefix =
+    command === "add_comment" ? "c" : command === "add_note" ? "n" : "q";
+  const id = opts?.id ?? nextOptimisticId({ prefix });
   const timestamp = opts?.nowIso ?? new Date().toISOString();
   const line = parsed.lineNum ?? 0;
   const thread: ThreadSnapshot = {

@@ -12,6 +12,7 @@ import {
   applyOptimisticOp,
   buildOptimisticOp,
   isOptimisticCommand,
+  optimisticInvokeArgs,
   reapplyOptimisticOps,
   rollbackOptimisticOp,
   type OptimisticOp,
@@ -356,7 +357,7 @@ class AppStore {
       const snap = await invoke<AppSnapshot>("get_snapshot");
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
-      this.keepOptimisticThreads();
+      this.keepOptimisticOps();
       this.rememberSnapshot(snap);
       this.lastConfirmedSnapshot = snap;
       this.syncSnapshotToast(this.snapshot);
@@ -475,7 +476,7 @@ class AppStore {
               }
               this.rememberSnapshot(this.snapshot);
               this.lastConfirmedSnapshot = this.snapshot;
-              this.keepOptimisticThreads();
+              this.keepOptimisticOps();
               this.syncSnapshotToast(this.snapshot);
             }
           } else {
@@ -605,7 +606,7 @@ class AppStore {
     }
     this.spliceAndConfirmSnapshot(snapshot);
     this.snapshot = snapshot;
-    this.keepOptimisticThreads();
+    this.keepOptimisticOps();
     this.rememberSnapshot(snapshot);
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
@@ -618,7 +619,7 @@ class AppStore {
   private restoreConfirmedSnapshot(): void {
     if (!this.lastConfirmedSnapshot) return;
     this.snapshot = this.lastConfirmedSnapshot;
-    this.keepOptimisticThreads();
+    this.keepOptimisticOps();
     this.rememberSnapshot(this.snapshot);
     this.snapshotGeneration += 1;
     this.lastPollRevision = null;
@@ -626,7 +627,7 @@ class AppStore {
     this.lastPollChromeRevision = null;
   }
 
-  private keepOptimisticThreads() {
+  private keepOptimisticOps() {
     if (!this.snapshot || this.pendingOps.length === 0) return;
     reapplyOptimisticOps(this.snapshot, this.pendingOps);
   }
@@ -645,6 +646,18 @@ class AppStore {
     }, 5000);
   }
 
+  /** Serializes optimistic IPC so add-then-reply/delete hit the same id. */
+  private optimisticChain: Promise<void> = Promise.resolve();
+
+  private enqueueOptimistic(task: () => Promise<void>): Promise<void> {
+    const run = this.optimisticChain.then(task, task);
+    this.optimisticChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
   /**
    * Paint a local sidecar write immediately, then run IPC in the
    * background. Rollback only if the write fails. Apply happens before
@@ -652,44 +665,31 @@ class AppStore {
    */
   private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
     const snap = this.snapshot;
-    if (!snap || this.pendingTabSwitch) {
-      try {
-        const snapshot = await invoke<AppSnapshot>(command, args);
-        this.ingestCommandSnapshot(snapshot);
-      } catch (e) {
-        this.reportCmdError(command, e);
-      }
-      return;
-    }
+    if (!snap || this.pendingTabSwitch) return;
 
     const op = buildOptimisticOp(command, args, snap);
-    if (!op) {
-      try {
-        const snapshot = await invoke<AppSnapshot>(command, args);
-        this.ingestCommandSnapshot(snapshot);
-      } catch (e) {
-        this.reportCmdError(command, e);
-      }
-      return;
-    }
+    if (!op) return;
 
     const viewAtStart = op.viewIdentity;
     this.pendingOps = [...this.pendingOps, op];
     applyOptimisticOp(snap, op);
+    const invokeArgs = optimisticInvokeArgs(command, args, op);
 
-    try {
-      const returned = await invoke<AppSnapshot>(command, args);
-      this.dropPendingOp(op.id);
-      if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
-        this.ingestCommandSnapshot(returned);
+    await this.enqueueOptimistic(async () => {
+      try {
+        const returned = await invoke<AppSnapshot>(command, invokeArgs);
+        this.dropPendingOp(op.id);
+        if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+          this.ingestCommandSnapshot(returned);
+        }
+      } catch (e) {
+        this.dropPendingOp(op.id);
+        if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+          rollbackOptimisticOp(this.snapshot, op);
+        }
+        this.reportCmdError(command, e);
       }
-    } catch (e) {
-      this.dropPendingOp(op.id);
-      if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
-        rollbackOptimisticOp(this.snapshot, op);
-      }
-      this.reportCmdError(command, e);
-    }
+    });
   }
 
   /**

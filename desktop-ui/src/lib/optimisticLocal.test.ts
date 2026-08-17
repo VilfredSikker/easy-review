@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOptimisticOp,
   buildOptimisticOp,
+  optimisticInvokeArgs,
   reapplyOptimisticOps,
   rollbackOptimisticOp,
 } from "./optimisticLocal";
@@ -386,5 +387,122 @@ describe("dismiss / promote / bulk / annotation", () => {
     reapplyOptimisticOps(other, [op!]);
     expect(other.ai.threads).toEqual([]);
     expect(snapshotViewIdentity(view)).not.toBe(snapshotViewIdentity(other));
+  });
+
+  it("paints Review all on the snapshot Other pillar", () => {
+    const files = [
+      file({ path: "a.ts", reviewed: false }),
+      file({ path: "orphan.ts", reviewed: false, source_index: 1 }),
+    ];
+    const view = snap({
+      files,
+      total_count: 2,
+      tour: {
+        available: true,
+        fresh: true,
+        scope: "branch",
+        title: "Guide",
+        overviewMarkdown: "",
+        pillars: [
+          {
+            id: "p1",
+            title: "core",
+            descriptionMarkdown: "",
+            importance: 1,
+            foundation: false,
+            files: [{ path: "a.ts", reason: "", findingIds: [] }],
+            reviewedCount: 0,
+            totalCount: 1,
+          },
+          {
+            id: "__other__",
+            title: "Other changes",
+            descriptionMarkdown: "",
+            importance: 0,
+            foundation: false,
+            files: [{ path: "orphan.ts", reason: "", findingIds: [] }],
+            reviewedCount: 0,
+            totalCount: 1,
+          },
+        ],
+      },
+    });
+    const op = buildOptimisticOp(
+      "bulk_review_pillar",
+      { pillarId: "__other__" },
+      view,
+      { id: "opt-o" },
+    );
+    expect(op?.type).toBe("bulk-reviewed");
+    applyOptimisticOp(view, op!);
+    expect(view.files.find((f) => f.path === "orphan.ts")?.reviewed).toBe(true);
+    expect(view.files.find((f) => f.path === "a.ts")?.reviewed).toBe(false);
+    expect(view.tour?.pillars[1].reviewedCount).toBe(1);
+  });
+
+  it("hides a finding's linked thread with the finding", () => {
+    const thread = commentThread("t-linked");
+    const finding: FlatFinding = {
+      id: "f-1",
+      file: "src/a.ts",
+      line: 12,
+      hunk_index: 0,
+      severity: "high",
+      expert_label: null,
+      agent_label: "General",
+      title: "bug",
+      message_markdown: "nope",
+      promoted_to: null,
+      thread_id: "t-linked",
+    };
+    const h = hunk({ threads: [thread] });
+    const view = snap({
+      files: [file({ hunks: [h], finding_count: 1, comment_count: 1 })],
+      ai: emptyAi({ threads: [thread], findings: [finding], high: 1, comments: 1 }),
+    });
+    const op = buildOptimisticOp("dismiss_finding", { findingId: "f-1" }, view, { id: "opt-f" });
+    applyOptimisticOp(view, op!);
+    expect(view.ai.findings).toEqual([]);
+    expect(view.ai.threads).toEqual([]);
+    rollbackOptimisticOp(view, op!);
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["t-linked"]);
+  });
+
+  it("mints a persistable id for add_comment and add_ui_annotation", () => {
+    const comment = buildOptimisticOp(
+      "add_comment",
+      { file: "src/a.ts", hunkIdx: 0, lineNum: 1, text: "hi" },
+      snap(),
+    );
+    expect(comment?.type).toBe("add-thread");
+    if (comment?.type !== "add-thread") throw new Error("expected add-thread");
+    expect(comment.pending.id.startsWith("c-")).toBe(true);
+    expect(optimisticInvokeArgs("add_comment", { text: "hi" }, comment).id).toBe(
+      comment.pending.id,
+    );
+
+    const ann = buildOptimisticOp(
+      "add_ui_annotation",
+      { url: "https://ex/app", text: "pin", bbox: [1, 2, 3, 4], viewport: [800, 600] },
+      snap({ ui_annotations: [] }),
+    );
+    expect(ann?.type).toBe("add-annotation");
+    if (ann?.type !== "add-annotation") throw new Error("expected add-annotation");
+    expect(ann.annotation.id.startsWith("ui-")).toBe(true);
+    expect(optimisticInvokeArgs("add_ui_annotation", { text: "pin" }, ann).id).toBe(
+      ann.annotation.id,
+    );
+  });
+
+  it("deletes a thread that only lives on a hunk copy", () => {
+    const thread = commentThread("hunk-only");
+    const view = snap({
+      files: [file({ hunks: [hunk({ threads: [thread] })], comment_count: 1 })],
+      ai: emptyAi(),
+    });
+    const op = buildOptimisticOp("delete_thread", { id: "hunk-only" }, view, { id: "opt-d" });
+    expect(op?.type).toBe("delete-root");
+    applyOptimisticOp(view, op!);
+    expect(view.files[0].hunks[0].threads).toEqual([]);
   });
 });

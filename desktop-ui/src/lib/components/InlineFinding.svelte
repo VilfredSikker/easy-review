@@ -121,19 +121,21 @@
     editInitialBody = reply.body_markdown;
   }
 
-  async function submitEdit(body: string) {
+  function submitEdit(body: string) {
     if (!editMessageId || !editOrigin) return;
-    if (editOrigin === "finding_response") {
-      await app.cmd("update_finding_response", {
-        findingId: finding.id,
-        responseId: editMessageId,
-        body,
-      });
-    } else {
-      await app.cmd("update_thread_message", { id: editMessageId, body });
-    }
+    const id = editMessageId;
+    const origin = editOrigin;
     editMessageId = null;
     editOrigin = null;
+    if (origin === "finding_response") {
+      void app.cmd("update_finding_response", {
+        findingId: finding.id,
+        responseId: id,
+        body,
+      });
+      return;
+    }
+    void app.cmd("update_thread_message", { id, body });
   }
 
   async function validateWithAi() {

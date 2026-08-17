@@ -36,6 +36,9 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
     expect(src).toContain("applyOptimisticOp(snap, op);");
     expect(src).toContain("rollbackOptimisticOp(this.snapshot, op);");
+    expect(src).toContain("optimisticInvokeArgs(command, args, op)");
+    expect(src).toContain("if (!snap || this.pendingTabSwitch) return;");
+    expect(src).toContain("if (!op) return;");
   });
 });
 
@@ -68,6 +71,8 @@ describe("optimistic local-write call sites", () => {
     const finding = component("InlineFinding.svelte");
     expect(finding).toContain('void app.cmd("dismiss_finding"');
     expect(finding).not.toContain('await app.cmd("dismiss_finding"');
+    expect(finding).toContain('void app.cmd("update_thread_message"');
+    expect(finding).not.toContain('await app.cmd("update_thread_message"');
 
     const browser = component("BrowserView.svelte");
     expect(browser).toContain('void app.cmd("add_ui_annotation"');

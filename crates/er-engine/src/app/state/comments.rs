@@ -6,6 +6,26 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+fn mint_comment_id(prefix: &str) -> String {
+    let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{prefix}{}-{seq}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
+}
+
+fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
+    if let Some(id) = tab.comment_id_override.take() {
+        if !id.is_empty() && id.starts_with(prefix) {
+            return id;
+        }
+    }
+    mint_comment_id(prefix)
+}
+
 impl App {
     // ── Comment System ──
 
@@ -284,15 +304,7 @@ impl App {
             questions.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "q-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "q-");
 
         let is_reply = reply_to.is_some();
         let finding_ref = self.tab().comment_finding_ref.clone();
@@ -401,15 +413,7 @@ impl App {
             notes.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "n-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "n-");
 
         let is_reply = reply_to.is_some();
         let finding_ref = self.tab().comment_finding_ref.clone();
@@ -508,15 +512,7 @@ impl App {
             gh_comments.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "c-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "c-");
 
         let is_reply = reply_to.is_some();
         let author = self

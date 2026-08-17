@@ -48,7 +48,7 @@ export type OptimisticOp =
       parentId: string;
       reply: ThreadMessage;
     }
-  | { type: "resolve"; id: string; viewIdentity: string; threadId: string }
+  | { type: "resolve"; id: string; viewIdentity: string; threadId: string; prevResolved: boolean }
   | {
       type: "delete-root";
       id: string;
@@ -77,6 +77,7 @@ export type OptimisticOp =
       id: string;
       viewIdentity: string;
       finding: FlatFinding;
+      threads: OptimisticThread[];
     }
   | {
       type: "promote";
@@ -137,15 +138,14 @@ function locateRoot(
   snap: AppSnapshot,
   threadId: string,
 ): { thread: ThreadSnapshot; filePath: string; hunkIdx: number } | null {
-  const inAi = snap.ai.threads.find((t) => t.id === threadId);
-  if (!inAi) return null;
   for (const file of snap.files) {
     for (let i = 0; i < file.hunks.length; i++) {
-      if (file.hunks[i].threads.some((t) => t.id === threadId)) {
-        return { thread: inAi, filePath: file.path, hunkIdx: i };
-      }
+      const thread = file.hunks[i].threads.find((t) => t.id === threadId);
+      if (thread) return { thread, filePath: file.path, hunkIdx: i };
     }
   }
+  const inAi = snap.ai.threads.find((t) => t.id === threadId);
+  if (!inAi) return null;
   return { thread: inAi, filePath: inAi.file, hunkIdx: 0 };
 }
 
@@ -153,22 +153,28 @@ function locateReply(
   snap: AppSnapshot,
   replyId: string,
 ): { parent: ThreadSnapshot; reply: ThreadMessage; index: number } | null {
-  for (const t of snap.ai.threads) {
-    const index = t.replies.findIndex((r) => r.id === replyId);
-    if (index >= 0) return { parent: t, reply: t.replies[index], index };
-  }
-  return null;
+  const search = (threads: ThreadSnapshot[]) => {
+    for (const t of threads) {
+      const index = t.replies.findIndex((r) => r.id === replyId);
+      if (index >= 0) return { parent: t, reply: t.replies[index], index };
+    }
+    return null;
+  };
+  return search(snap.ai.threads) ?? search(snap.files.flatMap((f) => f.hunks.flatMap((h) => h.threads)));
 }
 
 function locateMessage(
   snap: AppSnapshot,
   messageId: string,
 ): { thread: ThreadSnapshot; isRoot: boolean } | null {
-  for (const t of snap.ai.threads) {
-    if (t.id === messageId || t.root.id === messageId) return { thread: t, isRoot: true };
-    if (t.replies.some((r) => r.id === messageId)) return { thread: t, isRoot: false };
-  }
-  return null;
+  const search = (threads: ThreadSnapshot[]) => {
+    for (const t of threads) {
+      if (t.id === messageId || t.root.id === messageId) return { thread: t, isRoot: true };
+      if (t.replies.some((r) => r.id === messageId)) return { thread: t, isRoot: false };
+    }
+    return null;
+  };
+  return search(snap.ai.threads) ?? search(snap.files.flatMap((f) => f.hunks.flatMap((h) => h.threads)));
 }
 
 function pendingFromThread(
@@ -190,18 +196,7 @@ function bumpFindingCounts(snap: AppSnapshot, finding: FlatFinding, delta: numbe
 }
 
 function pillarPaths(snap: AppSnapshot, pillarId: string): string[] {
-  const pillars = snap.tour?.pillars ?? [];
-  if (pillarId === "__other__") {
-    const assigned = new Set<string>();
-    for (const p of pillars) {
-      for (const f of p.files) {
-        assigned.add(f.path);
-        for (const rel of f.related ?? []) assigned.add(rel.path);
-      }
-    }
-    return snap.files.map((f) => f.path).filter((p) => !assigned.has(p));
-  }
-  const pillar = pillars.find((p) => p.id === pillarId);
+  const pillar = snap.tour?.pillars.find((p) => p.id === pillarId);
   if (!pillar) return [];
   const paths: string[] = [];
   for (const f of pillar.files) {
@@ -209,6 +204,19 @@ function pillarPaths(snap: AppSnapshot, pillarId: string): string[] {
     for (const rel of f.related ?? []) paths.push(rel.path);
   }
   return paths;
+}
+
+function syncPillarReviewedCount(
+  snap: AppSnapshot,
+  pillarId: string,
+  files: { path: string; was: boolean }[],
+): void {
+  const pillar = snap.tour?.pillars.find((p) => p.id === pillarId);
+  if (!pillar) return;
+  pillar.reviewedCount = files.filter((row) => {
+    const file = snap.files.find((f) => f.path === row.path);
+    return file?.reviewed === true;
+  }).length;
 }
 
 function youMessage(id: string, text: string, nowIso: string): ThreadMessage {
@@ -233,7 +241,9 @@ export function buildOptimisticOp(
   if (!isOptimisticCommand(command)) return null;
   const viewIdentity = snapshotViewIdentity(snap);
   const nowIso = opts?.nowIso ?? new Date().toISOString();
-  const id = opts?.id ?? nextOptimisticId();
+  const id =
+    opts?.id ??
+    nextOptimisticId(command === "add_ui_annotation" ? { prefix: "ui" } : undefined);
 
   if (isAddThreadCommand(command)) {
     const parsed = parseAddThreadArgs(command, args);
@@ -241,7 +251,7 @@ export function buildOptimisticOp(
     const filePath = parsed.file || snap.files[snap.selected_file]?.path || "";
     const pending = buildOptimisticThread(command, parsed, viewIdentity, filePath, {
       nowIso,
-      id,
+      id: opts?.id,
     });
     return { type: "add-thread", id: pending.id, viewIdentity, pending };
   }
@@ -263,7 +273,7 @@ export function buildOptimisticOp(
     const threadId = asString(args.id);
     const root = threadId ? locateRoot(snap, threadId) : null;
     if (!root || root.thread.resolved) return null;
-    return { type: "resolve", id, viewIdentity, threadId };
+    return { type: "resolve", id, viewIdentity, threadId, prevResolved: root.thread.resolved };
   }
 
   if (command === "delete_thread") {
@@ -315,7 +325,14 @@ export function buildOptimisticOp(
     if (!findingId) return null;
     const finding = snap.ai.findings.find((f) => f.id === findingId);
     if (!finding) return null;
-    return { type: "dismiss-finding", id, viewIdentity, finding: { ...finding } };
+    const threads: OptimisticThread[] = [];
+    if (finding.thread_id) {
+      const root = locateRoot(snap, finding.thread_id);
+      if (root) {
+        threads.push(pendingFromThread(root.thread, root.filePath, root.hunkIdx, viewIdentity));
+      }
+    }
+    return { type: "dismiss-finding", id, viewIdentity, finding: { ...finding }, threads };
   }
 
   if (command === "promote_to_comment" || command === "promote_to_note") {
@@ -339,11 +356,11 @@ export function buildOptimisticOp(
       },
       viewIdentity,
       root.filePath,
-      { nowIso, id },
+      { nowIso, id: opts?.id },
     );
     return {
       type: "promote",
-      id,
+      id: created.id,
       viewIdentity,
       source: pendingFromThread(root.thread, root.filePath, root.hunkIdx, viewIdentity),
       created,
@@ -445,6 +462,9 @@ export function applyOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void {
         snap.ai.findings = snap.ai.findings.filter((f) => f.id !== op.finding.id);
         bumpFindingCounts(snap, op.finding, -1);
       }
+      for (const thread of op.threads) {
+        removeOptimisticThread(snap, thread);
+      }
       return;
     case "promote":
       removeOptimisticThread(snap, op.source);
@@ -459,10 +479,7 @@ export function applyOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void {
         delta += op.target ? 1 : -1;
       }
       snap.reviewed_count = Math.max(0, snap.reviewed_count + delta);
-      const pillar = snap.tour?.pillars.find((p) => p.id === op.pillarId);
-      if (pillar) {
-        pillar.reviewedCount = op.target ? pillar.totalCount : 0;
-      }
+      syncPillarReviewedCount(snap, op.pillarId, op.files);
       return;
     }
     case "add-annotation": {
@@ -492,7 +509,7 @@ export function rollbackOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void 
       return;
     case "resolve":
       forEachThreadCopy(snap, op.threadId, (t) => {
-        t.resolved = false;
+        t.resolved = op.prevResolved;
       });
       return;
     case "delete-root":
@@ -521,6 +538,9 @@ export function rollbackOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void 
         snap.ai.findings = [...snap.ai.findings, op.finding];
         bumpFindingCounts(snap, op.finding, 1);
       }
+      for (const thread of op.threads) {
+        applyOptimisticThread(snap, thread);
+      }
       return;
     case "promote":
       removeOptimisticThread(snap, op.created);
@@ -535,10 +555,7 @@ export function rollbackOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void 
         delta += row.was ? 1 : -1;
       }
       snap.reviewed_count = Math.max(0, snap.reviewed_count + delta);
-      const pillar = snap.tour?.pillars.find((p) => p.id === op.pillarId);
-      if (pillar) {
-        pillar.reviewedCount = op.files.filter((f) => f.was).length;
-      }
+      syncPillarReviewedCount(snap, op.pillarId, op.files);
       return;
     }
     case "add-annotation":
@@ -562,4 +579,14 @@ export function reapplyOptimisticOps(snap: AppSnapshot, ops: OptimisticOp[]): vo
     if (op.viewIdentity !== identity) continue;
     applyOptimisticOp(snap, op);
   }
+}
+
+export function optimisticInvokeArgs(
+  command: string,
+  args: Record<string, unknown>,
+  op: OptimisticOp,
+): Record<string, unknown> {
+  if (op.type === "add-thread") return { ...args, id: op.pending.id };
+  if (op.type === "add-annotation") return { ...args, id: op.annotation.id };
+  return args;
 }

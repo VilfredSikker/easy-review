@@ -716,6 +716,11 @@ pub struct TabState {
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
 
+    /// Transient: client-minted id for the next comment/question/note. Consumed
+    /// by submit. Lets the desktop paint a thread and persist the same id so a
+    /// follow-up reply/delete before ingest still hits the backend row.
+    pub comment_id_override: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -1389,6 +1394,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits,
             pr_head_ref: None,
@@ -1513,6 +1519,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -1631,6 +1638,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -1749,6 +1757,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -7780,6 +7789,7 @@ mod tests {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
