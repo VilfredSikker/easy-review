@@ -514,6 +514,11 @@ mod tests {
         assert_eq!(tab.current_branch, "feature");
         assert_eq!(tab.files.len(), 1);
         assert_eq!(tab.files[0].path, "f.rs");
+        assert_eq!(
+            tab.raw_diff_for_review("branch").unwrap(),
+            DIFF,
+            "small remote diffs must keep raw_diff so review can prepare artifacts without gh"
+        );
         assert!(!tab.needs_initial_refresh, "loaded tab is not a stub");
         std::env::remove_var("ER_STORAGE_ROOT");
     }

@@ -5,7 +5,9 @@ use crate::github;
 
 // The pure sync core (no App dependency) lives in `crate::sync`; re-exported
 // here so existing `crate::app::...` paths keep working.
-pub use crate::sync::{fetch_comment_sync_data, CommentSyncContext, CommentSyncResult};
+pub use crate::sync::{
+    fetch_comment_sync_data, fetch_comment_sync_data_cached, CommentSyncContext, CommentSyncResult,
+};
 use crate::sync::{
     find_local_line_for_diff_hunk, local_pr_target, merged_outdated_state, resolve_anchor,
 };

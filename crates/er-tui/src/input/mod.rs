@@ -300,18 +300,10 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
                     clear_previous: true,
                 });
             } else {
-                // No previous review, run directly. Remote TUI tabs (`--remote`
-                // sessions) build the remote review prompt — no local diff
-                // exists, so skip the prepared-artifact helper entirely.
-                if app.tab().is_remote() {
-                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                }
+                // No previous review — prepare the in-memory diff (including
+                // remote `--remote` tabs) so the sandboxed agent reads
+                // diff-tmp instead of calling `gh`.
+                start_agent_review(app)?;
             }
         }
         HubAction::PromptValidate => {
@@ -667,15 +659,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 let er_dir = app.tab().er_dir();
                 cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
-                if app.tab().is_remote() {
-                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                }
+                start_agent_review(app)?;
                 app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
                 // User said "yes" to clearing previous answers — clear answers, then run
@@ -726,15 +710,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             // For agent prompts, 'k' = keep previous data but still run
             if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = &app.input_mode {
                 app.input_mode = InputMode::Normal;
-                if app.tab().is_remote() {
-                    if let Some(prompt) = build_agent_review_prompt(app, "", "") {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                } else if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-                    if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
-                        app.spawn_agent_prompt("review", &prompt)?;
-                    }
-                }
+                start_agent_review(app)?;
                 app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) =
                 &app.input_mode
@@ -863,25 +839,20 @@ pub(super) fn build_agent_expert_prompt(
 }
 
 /// Prepare the harness diff artifacts (diff-tmp + diff-annotated + markers)
-/// for an agent action, aborting with a notification when there is no local
-/// diff to fetch. Review/validate/expert/professor/triage must anchor against
+/// for an agent action, aborting with a notification when there is no diff
+/// to prepare. Review/validate/expert/professor/triage must anchor against
 /// the SAME prepared bytes (review-fix-loop final pass): an agent-side git
-/// diff would use different `--unified` flags and mis-anchor findings.
+/// or `gh pr diff` would use different `--unified` flags and mis-anchor
+/// findings. Remote tabs (`er --remote`) already hold the PR diff in memory
+/// (or can re-fetch it from this unsandboxed process); they use the same
+/// prepared-artifact path so the sandboxed agent does not call `gh`.
 pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
-    if app.tab().is_remote() {
-        // Remote tabs (TUI `--remote` sessions, desktop remote tabs) have no
-        // local working tree to fetch. Review routes around this via the
-        // remote prompt; the local-only actions (validate/expert/professor/
-        // triage) need a checkout, so notify.
-        app.notify("This action needs a local checkout — open the PR as a local branch first");
-        return None;
-    }
-    let scope = app.tab().mode.git_mode();
+    let scope = app.tab().mode.fetch_scope();
     let er_dir = app.tab().er_dir();
     let raw = match app.tab().raw_diff_for_review(scope) {
         Ok(raw) if !raw.trim().is_empty() => raw,
         _ => {
-            app.notify("No local diff to review against");
+            app.notify("No diff to review against");
             return None;
         }
     };
@@ -894,41 +865,33 @@ pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, 
     }
 }
 
-/// Build the review agent prompt. Remote tabs (`--remote` sessions) build the
-/// remote prompt from the PR; local tabs build the prepared-diff prompt (the
-/// caller pre-writes `diff-tmp`/`diff-annotated` via the helper).
+/// Write prepared artifacts and spawn the review agent. Shared by the hub
+/// action and the confirm-dialog keep/clear paths so remote and local tabs
+/// cannot drift (desktop `run_ai_review` already uses this same prompt).
+fn start_agent_review(app: &mut App) -> anyhow::Result<()> {
+    if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+        if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
+            app.spawn_agent_prompt("review", &prompt)?;
+        }
+    }
+    Ok(())
+}
+
+/// Build the review agent prompt from prepared-diff artifacts. Remote
+/// (`--remote`) and local tabs share this prompt — the caller pre-writes
+/// `diff-tmp`/`diff-annotated` so the agent never shells out to `gh`/`git`.
 pub(super) fn build_agent_review_prompt(
     app: &mut App,
     er_dir: &str,
     diff_hash: &str,
 ) -> Option<String> {
     let tab = app.tab();
-    if tab.is_remote() {
-        let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
-            (Some(ref s), Some(n)) => (s.clone(), n),
-            _ => {
-                app.notify("Remote mode missing repo or PR number");
-                return None;
-            }
-        };
-        let parts: Vec<&str> = slug.split('/').collect();
-        if parts.len() != 2 {
-            app.notify(&format!("Invalid remote repo slug: {}", slug));
-            return None;
-        }
-        let output_dir = app.tab().er_dir();
-        return Some(er_engine::ai::prompts::build_review_prompt_remote(
-            parts[0],
-            parts[1],
-            pr_number,
-            &output_dir,
-        ));
-    }
     let mode = tab.mode;
     let base = tab.base_branch.clone();
     // Desktop convention (commands.rs:3194): the PR head is the local branch
     // view, not the checked-out branch — a wrong head_branch makes the
     // loader's artifacts_branch_mismatch silently discard the fresh review.
+    // Remote tabs have no local_branch_view; `current_branch` is the PR head.
     let head = tab
         .local_branch_view
         .clone()
@@ -2036,6 +1999,50 @@ mod tests {
         let expert =
             build_agent_expert_prompt(&mut app, "security", &er_dir, hash).expect("expert prompt");
         assert_managed_prompt(&expert, output_dir, "experts/security.json");
+    }
+
+    #[test]
+    fn remote_review_uses_prepared_diff_not_gh_pr_diff() {
+        // `er --remote` previously skipped prepared artifacts and told the
+        // sandboxed agent to `gh pr diff` from the artifact directory, which
+        // cannot reach GitHub. Desktop already uses the prepared-diff prompt.
+        let output_dir = "/tmp/er-tui-remote-review";
+        let _ = std::fs::remove_dir_all(output_dir);
+        std::fs::create_dir_all(output_dir).unwrap();
+        let mut app = app_with_managed_dir(output_dir);
+        app.tab_mut().remote_repo = Some("reshapebiotech/discovery".into());
+        app.tab_mut().pr_number = Some(1473);
+        app.tab_mut().mode = DiffMode::PrDiff;
+        app.tab_mut().base_branch = "main".into();
+        app.tab_mut().current_branch = "agent/refresh-all-experiment-metrics".into();
+        let raw = "diff --git a/x.rs b/x.rs\nindex 0000000..1111111 100644\n--- a/x.rs\n+++ b/x.rs\n@@ -1 +1,2 @@\n fn x() {}\n+fn y() {}\n";
+        app.tab_mut().set_raw_diff_for_test(raw);
+        app.config.agent.command = "/bin/true".to_string();
+
+        let er_dir = app.tab().er_dir();
+        let hash = "abc123abc123abc123abc123abc123abc123abc123abc123abc123abc123abc1";
+        let prompt =
+            build_agent_review_prompt(&mut app, &er_dir, hash).expect("remote review prompt");
+        assert_managed_prompt(&prompt, output_dir, "review.json");
+        assert!(
+            prompt.contains("prepared diff"),
+            "remote review must use the prepared-diff prompt:\n{prompt}"
+        );
+        assert!(
+            !prompt.contains("gh pr diff"),
+            "sandboxed remote agent must not be told to fetch via gh:\n{prompt}"
+        );
+
+        dispatch_hub_action(&mut app, HubAction::PromptReview).expect("review dispatch");
+        assert!(
+            std::fs::metadata(format!("{output_dir}/diff-tmp")).is_ok(),
+            "parent must write diff-tmp before spawning the agent"
+        );
+        assert!(
+            std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
+            "parent must write diff-annotated before spawning the agent"
+        );
+        let _ = std::fs::remove_dir_all(output_dir);
     }
 
     #[test]
