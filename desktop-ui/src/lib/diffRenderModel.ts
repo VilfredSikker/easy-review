@@ -801,7 +801,11 @@ function emptyCrossFileModel(identity: string): CrossFileModel {
 export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const { files, viewMode, mode, annotationIndex, commentVisibility, snapshotKey } = input;
   const wrapCols = input.wrapCols ?? null;
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
+  let annFp = 17;
+  for (const f of files) {
+    annFp = (annFp * 31 + fileAnnotationFingerprint(f, annotationIndex)) | 0;
+  }
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {

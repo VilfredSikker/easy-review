@@ -890,7 +890,11 @@ impl AiState {
             if c.side().is_some_and(|s| s.eq_ignore_ascii_case("LEFT")) {
                 return ols.or(ls).is_some_and(in_old_range);
             }
-            ls.is_some_and(in_new_range) || (new_count == 0 && ls.is_some_and(in_old_range))
+            // RIGHT `line_start` is a new-side number. Do not match it against
+            // old ranges, even on delete-only hunks (`new_count == 0`): those
+            // old numbers can overlap an earlier hunk's new-side lines (the
+            // original EOF duplicate). Deleted-line comments store LEFT.
+            ls.is_some_and(in_new_range)
         };
 
         if let Some(qs) = &self.questions {
@@ -2202,6 +2206,7 @@ mod tests {
         let mut state = AiState::default();
         let mut q = make_question("q1", ".airlock/config.sh", Some(0));
         q.line_start = Some(1);
+        q.side = "LEFT".to_string();
         state.questions = Some(ErQuestions {
             version: 1,
             diff_hash: "test".to_string(),
@@ -2243,6 +2248,30 @@ mod tests {
         assert!(
             hunk1.is_empty(),
             "new-side line 222 must not match a later hunk's old-side range"
+        );
+    }
+
+    #[test]
+    fn comments_for_hunk_or_line_range_right_comment_does_not_match_later_delete_hunk() {
+        let mut state = AiState::default();
+        let mut c = make_github_comment("c1", "pipeline.py", Some(0), None);
+        c.line_start = Some(222);
+        c.side = "RIGHT".to_string();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+
+        let hunk0 = state.comments_for_hunk_or_line_range("pipeline.py", 0, 218, 20, 140, 20);
+        assert_eq!(hunk0.len(), 1);
+
+        // Pure-delete hunk: old 200..250 includes 222, new_count is 0.
+        let hunk1 = state.comments_for_hunk_or_line_range("pipeline.py", 1, 250, 0, 200, 50);
+        assert!(
+            hunk1.is_empty(),
+            "RIGHT line 222 must not match a later delete-only hunk's old range"
         );
     }
 

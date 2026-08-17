@@ -779,6 +779,33 @@ describe("getCrossFileModel — identity & cache invalidation", () => {
     expect(a.identity).not.toBe(b.identity);
   });
 
+  it("editing a thread body or side busts cross-file identity", () => {
+    const t = thread("t1", "a.ts", 1, {
+      side: "RIGHT",
+      root: { id: "t1-root", author: "me", kind: "you", timestamp: "", body_markdown: "short" },
+    });
+    const f0 = file({
+      path: "a.ts",
+      cache_key: "a",
+      hunks: [hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1, text: "a" })], threads: [t] })],
+    });
+    const before = mkCross([f0], emptyAi([t]), { snapshotKey: "x-body" });
+    const edited = thread("t1", "a.ts", 1, {
+      side: "RIGHT",
+      root: { id: "t1-root", author: "me", kind: "you", timestamp: "", body_markdown: "a much longer comment" },
+    });
+    f0.hunks[0].threads = [edited];
+    const afterBody = mkCross([f0], emptyAi([edited]), { snapshotKey: "x-body" });
+    expect(afterBody.identity).not.toBe(before.identity);
+    const flipped = thread("t1", "a.ts", 1, {
+      side: "LEFT",
+      root: { id: "t1-root", author: "me", kind: "you", timestamp: "", body_markdown: "short" },
+    });
+    f0.hunks[0].threads = [flipped];
+    const afterSide = mkCross([f0], emptyAi([flipped]), { snapshotKey: "x-body" });
+    expect(afterSide.identity).not.toBe(before.identity);
+  });
+
   it("toggling hideResolved changes identity", () => {
     const f0 = makeSimpleFile("a.ts", 1);
     const a = mkCross([f0], emptyAi(), { snapshotKey: "vis" });
