@@ -73,6 +73,21 @@ export function commentThreadsFromDiff(
 }
 
 /**
+ * Local comments that have not been pushed to GitHub.
+ *
+ * Review submit and individual push only send these. Existing GitHub
+ * threads and already-synced local comments are not included.
+ */
+export function unpushedLocalCommentThreads(
+  threads: ThreadSnapshot[] | undefined | null,
+  files?: DiffFiles,
+): ThreadSnapshot[] {
+  return commentThreadsFromDiff(threads, files).filter(
+    (t) => t.source === "local" && !t.synced,
+  );
+}
+
+/**
  * Comment threads visible under the current hide-resolved / hide-outdated /
  * hide-all filters. Branch badge and CommentsCard must use the same set.
  */
