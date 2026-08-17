@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -778,10 +779,12 @@
   // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
   // that reveals several stubs is one call, not N full-snapshot serializations.
   async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
+    if (app.pendingTabSwitch) return;
     const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
     if (fresh.length === 0) return;
     for (const i of fresh) _requestingFiles.add(i);
     const reqSnap = app.snapshot;
+    const reqTabKey = reqSnap ? tabSnapshotCacheKey(reqSnap) : null;
     const reqTab = reqSnap?.active_tab;
     const reqMode = reqSnap?.mode;
     const reqBase = reqSnap?.base;
@@ -791,8 +794,10 @@
         sourceIndices: fresh,
       });
       if (!files || !app.snapshot) return;
+      if (app.pendingTabSwitch) return;
       // Drop stale responses: the view changed while the round-trip was in flight.
       if (
+        (reqTabKey !== null && tabSnapshotCacheKey(app.snapshot) !== reqTabKey) ||
         app.snapshot.active_tab !== reqTab ||
         app.snapshot.mode !== reqMode ||
         app.snapshot.base !== reqBase ||
@@ -861,6 +866,7 @@
   }
 
   $effect(() => {
+    if (app.pendingTabSwitch) return;
     const pending: number[] = [];
     const seen = new Set<number>();
 

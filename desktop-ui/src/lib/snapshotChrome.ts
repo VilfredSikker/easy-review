@@ -9,8 +9,9 @@ export function snapshotViewIdentity(snap: AppSnapshot): string {
   const tab =
     snap.tabs?.find((t) => t.is_active) ??
     (typeof snap.active_tab === "number" ? snap.tabs?.[snap.active_tab] : undefined);
-  const pr =
-    snap.pr?.number ?? tab?.pr_number ?? snap.github?.number ?? null;
+  // Tab fields only. `github.number` / `detected_pr_number` arriving later
+  // must not look like a view change (that deferred chrome and stuck status).
+  const pr = tab?.pr_number ?? null;
   const root = tab?.repo_root ?? "";
   const branch = snap.branch ?? tab?.branch ?? "";
   const mode = snap.mode ?? "";
@@ -44,8 +45,8 @@ export function mergeChromeSnapshot(
     total_count: prev.total_count,
     ai: aiSource === "next" ? next.ai : prev.ai,
     pr: aiSource === "next" ? next.pr : prev.pr,
-    ui_annotations: prev.ui_annotations,
-    browser: prev.browser,
+    ui_annotations: aiSource === "next" ? next.ui_annotations : prev.ui_annotations,
+    browser: aiSource === "next" ? next.browser : prev.browser,
     filter_suggestions: prev.filter_suggestions,
     commits: prev.commits,
     selected_commit_sha: prev.selected_commit_sha,
@@ -64,8 +65,8 @@ export function canChromeMerge(
 }
 
 /**
- * Chrome-style poll (chrome_only or content unchanged) for a *different* view:
- * merge chrome but take `next.ai` / `next.pr` so badges cannot stick on the old PR.
+ * Chrome-style poll whose view identity differs. Never merge files across
+ * views (that poisons the tab cache with the other tab's diff).
  */
 export function canChromeMergeTakingNextAi(
   prev: AppSnapshot | null,
@@ -75,6 +76,19 @@ export function canChromeMergeTakingNextAi(
   if (prev === null) return false;
   if (!(opts.chromeOnly || !opts.contentChanged)) return false;
   return snapshotViewIdentity(prev) !== snapshotViewIdentity(next);
+}
+
+/**
+ * Chrome-only poll for a *different* view (including Branch vs PR Diff):
+ * skip applying it. Chrome stubs carry empty AI/files; merging them would
+ * keep the previous view's diff. Wait for the full content snapshot.
+ */
+export function shouldDeferChromeIdentityChange(
+  prev: AppSnapshot | null,
+  next: AppSnapshot,
+  opts: { chromeOnly: boolean; contentChanged: boolean },
+): boolean {
+  return opts.chromeOnly && canChromeMergeTakingNextAi(prev, next, opts);
 }
 
 /** Pure helper so poll generation discard is unit-testable. */

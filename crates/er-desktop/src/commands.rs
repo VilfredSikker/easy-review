@@ -958,6 +958,7 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
 pub async fn set_mode(
     mode: String,
     pr_number: Option<u64>,
+    tab_idx: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -965,6 +966,11 @@ pub async fn set_mode(
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
             return Err(format!("'{mode}' view is disabled in settings"));
+        }
+        if let Some(idx) = tab_idx {
+            if app.active_tab != idx {
+                return Ok(snap_from_command(&app, &state));
+            }
         }
         if matches!(mode.as_str(), "pr" | "pr_diff") {
             // Only enter PrDiff when not already there (avoids re-fetching refs

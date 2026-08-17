@@ -53,22 +53,43 @@ fn load_ui_annotations_cached(comments_dir: &str) -> Vec<er_engine::ai::UiAnnota
 // the frontend can't match the key it downgrades the file to a lazy stub and
 // re-fetches via `request_file_content` — the protocol self-heals.
 
+/// Cap of remembered views. Matches the frontend tab snapshot cache.
+const SENT_FILES_VIEW_CAP: usize = 8;
+
 /// Per-view memory of what file content the frontend currently holds.
+///
+/// Keys are kept **per view token** so switching away and back can omit hunks
+/// the frontend cache already has, instead of clearing on every switch.
 #[derive(Default)]
 pub struct SentFilesState {
-    /// Identifies the (tab, mode, branch, filter…) the keys belong to.
-    /// A mismatch clears the map — never omit across view switches.
-    view_token: u64,
-    /// path → `delta_key` of the full hunks last sent for that path.
-    keys: HashMap<String, u64>,
+    /// view_token → (path → `delta_key` of the full hunks last sent).
+    views: HashMap<u64, HashMap<String, u64>>,
+    /// LRU order, front is oldest.
+    order: Vec<u64>,
 }
 
 impl SentFilesState {
     /// Forget everything — next snapshot sends full content (used when the
     /// frontend re-fetches from scratch via `get_snapshot`).
     pub fn reset(&mut self) {
-        self.view_token = 0;
-        self.keys.clear();
+        self.views.clear();
+        self.order.clear();
+    }
+
+    /// Touch `token` as most-recent, creating an empty map if needed. Drops the
+    /// oldest view when the cap is exceeded.
+    fn activate(&mut self, token: u64) -> &mut HashMap<String, u64> {
+        if let Some(i) = self.order.iter().position(|&t| t == token) {
+            self.order.remove(i);
+        }
+        self.order.push(token);
+        while self.order.len() > SENT_FILES_VIEW_CAP {
+            let old = self.order.remove(0);
+            if old != token {
+                self.views.remove(&old);
+            }
+        }
+        self.views.entry(token).or_default()
     }
 }
 
@@ -138,7 +159,6 @@ fn mode_str(mode: DiffMode) -> &'static str {
 
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
-/// No-op when the sent-files map belongs to a different view.
 pub(crate) fn record_sent_file(
     app: &App,
     tab: &TabState,
@@ -151,11 +171,9 @@ pub(crate) fn record_sent_file(
     let Ok(mut guard) = sent_files.lock() else {
         return;
     };
-    if guard.view_token != snapshot_view_token(app, tab, mode_str(tab.mode)) {
-        return;
-    }
+    let token = snapshot_view_token(app, tab, mode_str(tab.mode));
     if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
-        guard.keys.insert(snap.path.clone(), key);
+        guard.activate(token).insert(snap.path.clone(), key);
     }
 }
 
@@ -1875,10 +1893,7 @@ fn build_snapshot_inner(
     };
     if let Some(guard) = sent_guard.as_mut() {
         let token = snapshot_view_token(app, tab, mode);
-        if guard.view_token != token {
-            guard.keys.clear();
-            guard.view_token = token;
-        }
+        guard.activate(token);
     }
     let files: Vec<FileSnapshot> = if chrome_only {
         Vec::new()
@@ -1896,7 +1911,9 @@ fn build_snapshot_inner(
                         let lines_key = file_lines_key(f);
                         let delta_key =
                             file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
-                        if guard.keys.get(&f.path) == Some(&delta_key) {
+                        let token = snapshot_view_token(app, tab, mode);
+                        if guard.views.get(&token).and_then(|m| m.get(&f.path)) == Some(&delta_key)
+                        {
                             let mut snap = build_file_snapshot_with_keys(
                                 source_index,
                                 f,
@@ -1921,13 +1938,15 @@ fn build_snapshot_inner(
                 }
                 let snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
                 if let Some(guard) = sent_guard.as_mut() {
+                    let token = snapshot_view_token(app, tab, mode);
+                    let keys = guard.activate(token);
                     // Track only paths the frontend now holds full hunks for.
                     if include_hunks && !snap.hunks.is_empty() {
                         if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
-                            guard.keys.insert(snap.path.clone(), key);
+                            keys.insert(snap.path.clone(), key);
                         }
                     } else {
-                        guard.keys.remove(&snap.path);
+                        keys.remove(&snap.path);
                     }
                 }
                 snap
@@ -4577,11 +4596,21 @@ mod tests {
         let _ = delta_snap(&app, &sent);
         assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // View switch (mode change) busts the view token — full resend.
+        // View switch (mode change) — first visit of the new token resends.
         app.tab_mut().mode = DiffMode::Unstaged;
         let s3 = delta_snap(&app, &sent);
-        assert!(!s3.files[0].hunks_omitted, "view switch must resend hunks");
+        assert!(
+            !s3.files[0].hunks_omitted,
+            "new view token must resend hunks"
+        );
         assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // Switch back to the original view — keys for that token are kept.
+        app.tab_mut().mode = DiffMode::Branch;
+        assert!(
+            delta_snap(&app, &sent).files[0].hunks_omitted,
+            "revisit of a remembered view must omit unchanged hunks"
+        );
 
         // Reset (frontend re-fetches from scratch) — full resend.
         sent.lock().unwrap().reset();
