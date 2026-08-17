@@ -319,7 +319,8 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
         .review
         .as_ref()
         .map(|r| r.diff_hash.as_str())
-        .unwrap_or("");
+        .unwrap_or("")
+        .to_string();
     let comment_count = app
         .tab()
         .ai
@@ -336,12 +337,30 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
         .map(|c| c.synced)
         .unwrap_or(true);
 
-    std::fs::remove_dir_all(&base).ok();
-
     assert_eq!(
         review_hash, "memory-only",
         "adding a local GH comment must not reload_ai_state (would drop in-memory review)"
     );
     assert_eq!(comment_count, 1, "the new local comment must be visible");
     assert!(!synced, "new comments stay local until the user pushes");
+
+    let reloaded = app.tab_mut().check_ai_files_changed();
+    assert!(
+        !reloaded,
+        "the next poll must not treat our own sidecar write as an AI reload"
+    );
+    let review_hash_after_poll = app
+        .tab()
+        .ai
+        .review
+        .as_ref()
+        .map(|r| r.diff_hash.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(
+        review_hash_after_poll, "memory-only",
+        "in-memory review must survive the poll after a local comment write"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
 }

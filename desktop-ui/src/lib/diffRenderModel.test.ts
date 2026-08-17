@@ -418,6 +418,41 @@ describe("getFileBlock — thread/finding injection", () => {
       expect(threadRows[0].threadId).toBe("t1");
     }
   });
+
+  it("still fallback-renders a last-hunk thread whose line number exists earlier in the file", () => {
+    const t = thread("t1", "pipeline.py", 222);
+    const h0 = hunk({
+      header: "@@ -140,20 +218,20 @@",
+      old_start: 140,
+      old_count: 20,
+      new_start: 218,
+      new_count: 20,
+      lines: [
+        line({ kind: "add", old_num: null, new_num: 222, text: "count_over_time" }),
+      ],
+    });
+    const h1 = hunk({
+      header: "@@ -200,50 +250,26 @@",
+      old_start: 200,
+      old_count: 50,
+      new_start: 250,
+      new_count: 26,
+      lines: [
+        line({ kind: "add", old_num: null, new_num: 265, text: "def run_time_series" }),
+      ],
+      threads: [t],
+    });
+    const f = file({ path: "pipeline.py", hunks: [h0, h1] });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    const threadRows = block.rows.filter(
+      (r) => r.type === "inline-thread" || r.type === "fallback-thread",
+    );
+    expect(threadRows).toHaveLength(1);
+    expect(threadRows[0].type).toBe("fallback-thread");
+    if (threadRows[0].type === "fallback-thread") {
+      expect(threadRows[0].threadId).toBe("t1");
+    }
+  });
 });
 
 describe("getFileBlock — geometry & invariants", () => {
@@ -577,6 +612,44 @@ describe("getFileBlock — caching", () => {
     expect(afterUntouched).toBe(before);
     expect(afterUntouched.modelKey).toBe(before.modelKey);
     expect(afterTarget.rows.some((r) => r.type === "inline-thread")).toBe(true);
+  });
+
+  it("editing a thread body busts that file's block cache", () => {
+    const t = thread("t1", "a.ts", 1, { root: { id: "t1-root", author: "me", kind: "you", timestamp: "", body_markdown: "short" } });
+    const h1 = hunk({
+      lines: [line({ kind: "context", old_num: 1, new_num: 1, text: "a" })],
+      threads: [t],
+    });
+    const f = file({ path: "a.ts", cache_key: "a", hunks: [h1] });
+    const before = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    const edited = thread("t1", "a.ts", 1, {
+      root: { id: "t1-root", author: "me", kind: "you", timestamp: "", body_markdown: "a much longer comment that wraps" },
+    });
+    h1.threads = [edited];
+    const after = getFileBlock(mkInputs(f, [f], emptyAi([edited])));
+    expect(after).not.toBe(before);
+    expect(after.modelKey).not.toBe(before.modelKey);
+  });
+
+  it("relocating a thread or changing its side busts that file's block cache", () => {
+    const t = thread("t1", "a.ts", 1, { side: "RIGHT" });
+    const h1 = hunk({
+      lines: [
+        line({ kind: "context", old_num: 1, new_num: 1, text: "a" }),
+        line({ kind: "add", old_num: null, new_num: 2, text: "b" }),
+      ],
+      threads: [t],
+    });
+    const f = file({ path: "a.ts", cache_key: "a", hunks: [h1] });
+    const before = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    const moved = thread("t1", "a.ts", 2, { side: "RIGHT" });
+    h1.threads = [moved];
+    const afterMove = getFileBlock(mkInputs(f, [f], emptyAi([moved])));
+    expect(afterMove.modelKey).not.toBe(before.modelKey);
+    const flipped = thread("t1", "a.ts", 1, { side: "LEFT" });
+    h1.threads = [flipped];
+    const afterSide = getFileBlock(mkInputs(f, [f], emptyAi([flipped])));
+    expect(afterSide.modelKey).not.toBe(before.modelKey);
   });
 });
 

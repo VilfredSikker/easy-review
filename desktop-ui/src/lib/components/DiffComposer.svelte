@@ -64,7 +64,7 @@
       lineNumEnd: lineStart !== lineEnd ? lineEnd : null,
       text: diffSel.text.trim(),
     };
-    if (command === "add_comment" && diffSel.side !== null) {
+    if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
     await app.cmd(command, cmdArgs);

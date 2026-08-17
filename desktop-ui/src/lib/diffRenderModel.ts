@@ -337,20 +337,6 @@ function lineNumOf(line: LineSnapshot): number | null {
   return line.new_num ?? line.old_num;
 }
 
-/** Line numbers actually drawn in this file (skips fold rows). Used so a
- *  thread rendered inline on one hunk is not also a fallback on another. */
-function fileRenderedLineNums(file: FileSnapshot): Set<number> {
-  const nums = new Set<number>();
-  for (const hunk of file.hunks) {
-    for (const line of hunk.lines) {
-      if (line.kind === "fold") continue;
-      const ln = lineNumOf(line);
-      if (ln !== null) nums.add(ln);
-    }
-  }
-  return nums;
-}
-
 function visBits(v: CommentVisibility): number {
   return (
     (v.hideAll ? 1 : 0) |
@@ -431,7 +417,8 @@ export function fileAnnotationFingerprint(
   for (const hunk of file.hunks) {
     h = (h * 31 + hunk.threads.length) | 0;
     for (const t of hunk.threads) {
-      h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0) + t.replies.length) | 0;
+      h = (h * 31 + hashStr(t.id) + hashStr(t.root.body_markdown) + hashStr(t.side ?? "") + t.line + (t.line_end ?? 0) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0) + t.replies.length) | 0;
+      for (const r of t.replies) h = (h * 31 + hashStr(r.body_markdown)) | 0;
     }
   }
   for (const f of annotationIndex.findingMap.values()) {
@@ -508,7 +495,6 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       renamed: file.status === "renamed",
     });
   } else {
-    const renderedInFile = fileRenderedLineNums(file);
     const placedThreadIds = new Set<string>();
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
       const hunk = file.hunks[hunkIdx];
@@ -521,6 +507,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         identity: `hh:${file.path}:${hunkIdx}`,
       });
 
+      const renderedLineNums = new Set<number>();
       const side: "unified" | "split" = viewMode === "split" ? "split" : "unified";
 
       if (viewMode === "unified") {
@@ -548,6 +535,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           });
           const ln = lineNumOf(line);
           if (ln !== null) {
+            renderedLineNums.add(ln);
             const skipDel =
               line.kind === "del" && hunk.lines.some((l) => l.new_num === ln);
             const findings = findingsForLine(
@@ -616,6 +604,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           });
           const leftLn = r.left ? lineNumOf(r.left) : null;
           const rightLn = r.right ? lineNumOf(r.right) : null;
+          if (leftLn !== null) renderedLineNums.add(leftLn);
+          if (rightLn !== null) renderedLineNums.add(rightLn);
 
           const findings = findingsForSplitRow(
             annotationIndex,
@@ -709,7 +699,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         file.path,
         hunkIdx,
         hunk,
-        renderedInFile,
+        renderedLineNums,
         commentVisibility,
       );
       for (const t of fbThreads) {

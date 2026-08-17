@@ -29,6 +29,8 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
+        let side = tab.comment_side_for_cursor(split_active);
+        tab.comment_side = Some(side);
         self.input_mode = InputMode::Comment;
     }
 
@@ -299,6 +301,11 @@ impl App {
             .comment_author_override
             .take()
             .unwrap_or_else(|| "You".to_string());
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
         questions.questions.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -313,6 +320,7 @@ impl App {
             context_before: anchor.context_before,
             context_after: anchor.context_after,
             old_line_start: anchor.old_line_start,
+            side,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
@@ -331,6 +339,7 @@ impl App {
 
         self.tab_mut().ai.questions = Some(questions);
         self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&questions_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Question" };
@@ -409,6 +418,11 @@ impl App {
             .comment_author_override
             .take()
             .unwrap_or_else(|| "You".to_string());
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
         notes.notes.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -423,6 +437,7 @@ impl App {
             context_before: anchor.context_before,
             context_after: anchor.context_after,
             old_line_start: anchor.old_line_start,
+            side,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
@@ -441,6 +456,7 @@ impl App {
 
         self.tab_mut().ai.notes = Some(notes);
         self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&notes_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Note" };
@@ -553,6 +569,7 @@ impl App {
         // feel like a GitHub round-trip. The comment is local and unpushed.
         self.tab_mut().ai.github_comments = Some(gh_comments);
         self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&comments_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
         let label = if is_reply { "Reply" } else { "Comment" };

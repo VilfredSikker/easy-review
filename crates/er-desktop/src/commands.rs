@@ -2244,11 +2244,15 @@ pub async fn add_question(
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
+    side: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
         app.submit_comment_text(
             file,
             hunk_idx,
@@ -2272,11 +2276,15 @@ pub async fn add_note(
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
+    side: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
         app.submit_comment_text(
             file,
             hunk_idx,
@@ -4292,7 +4300,7 @@ pub fn promote_to_comment(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
     // 1. Resolve the source question or note + already-promoted guard.
-    let (file, hunk_idx, line_start, default_body) = {
+    let (file, hunk_idx, line_start, default_body, side) = {
         let tab = app.tab();
         // Both questions and notes use the `ReviewQuestion` shape; pick the
         // collection by id prefix so notes can be promoted too.
@@ -4337,6 +4345,7 @@ pub fn promote_to_comment(
             item.hunk_index.unwrap_or(0),
             item.line_start,
             default,
+            item.side.clone(),
         )
     };
 
@@ -4352,7 +4361,8 @@ pub fn promote_to_comment(
             .unwrap_or_default()
     };
 
-    // 3. Create the new comment.
+    // 3. Create the new comment on the same review side as the source.
+    app.tab_mut().comment_side = Some(side);
     app.submit_comment_text(
         file,
         hunk_idx,
@@ -4395,7 +4405,7 @@ pub fn promote_to_note(
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let (file, hunk_idx, line_start, default_body) = {
+    let (file, hunk_idx, line_start, default_body, side) = {
         let tab = app.tab();
         let qs = tab
             .ai
@@ -4419,6 +4429,7 @@ pub fn promote_to_note(
             q.hunk_index.unwrap_or(0),
             q.line_start,
             default,
+            q.side.clone(),
         )
     };
 
@@ -4433,6 +4444,7 @@ pub fn promote_to_note(
             .unwrap_or_default()
     };
 
+    app.tab_mut().comment_side = Some(side);
     app.submit_comment_text(
         file,
         hunk_idx,
@@ -10343,6 +10355,7 @@ mod tests {
                 context_before: vec![],
                 context_after: vec![],
                 old_line_start: None,
+                side: "RIGHT".to_string(),
                 hunk_header: String::new(),
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),

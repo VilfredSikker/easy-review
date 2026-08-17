@@ -860,10 +860,11 @@ impl AiState {
     /// Like `comments_for_hunk` but also matches comments whose `hunk_index` is missing
     /// or stale by falling back to a line-range check against `new_start`/`old_start`.
     ///
-    /// `line_start` is a new-side number. It is not compared to `old_start` unless
-    /// this hunk has an empty new side (full-file delete). Lined comments do not
-    /// also attach via `hunk_index` to a hunk that does not contain the line —
-    /// that duplicated the same comment inline and again at the last hunk footer.
+    /// New-side comments (`side != LEFT`) match `line_start` against the new range
+    /// only. LEFT comments store an old-side number in `line_start` and match the
+    /// old range. Lined comments do not also attach via `hunk_index` to a hunk
+    /// that does not contain the line. Deleted hunks (`new_count == 0`) still
+    /// accept a new-side `line_start` against the old range.
     /// Returns both top-level comments and their replies (same contract as `comments_for_hunk`).
     pub fn comments_for_hunk_or_line_range(
         &self,
@@ -880,29 +881,23 @@ impl AiState {
         let in_new_range = |ls: usize| ls >= new_start && ls < new_start + new_count;
         let in_old_range = |ls: usize| ls >= old_start && ls < old_start + old_count;
 
-        macro_rules! matches_hunk {
-            ($c:expr, $hunk_idx:expr) => {{
-                let on_new = $c.line_start().is_some_and(|ls| in_new_range(ls));
-                let on_old = $c.old_line_start().is_some_and(|ls| in_old_range(ls));
-                // Deleted hunks have no new side; some comments only store line_start
-                // as the old-side number (see full-file delete test).
-                let on_deleted =
-                    new_count == 0 && $c.line_start().is_some_and(|ls| in_old_range(ls));
-                if on_new || on_old || on_deleted {
-                    true
-                } else if $c.line_start().is_some() || $c.old_line_start().is_some() {
-                    false
-                } else {
-                    $c.hunk_index() == Some($hunk_idx)
-                }
-            }};
-        }
+        let comment_matches_hunk = |c: &CommentRef<'_>| -> bool {
+            let ls = c.line_start();
+            let ols = c.old_line_start();
+            if ls.is_none() && ols.is_none() {
+                return c.hunk_index() == Some(hunk_idx);
+            }
+            if c.side().is_some_and(|s| s.eq_ignore_ascii_case("LEFT")) {
+                return ols.or(ls).is_some_and(in_old_range);
+            }
+            ls.is_some_and(in_new_range) || (new_count == 0 && ls.is_some_and(in_old_range))
+        };
 
         if let Some(qs) = &self.questions {
             for q in &qs.questions {
                 if q.file == path && q.in_reply_to.is_none() {
                     let c = CommentRef::Question(q);
-                    if matches_hunk!(c, hunk_idx) && seen_ids.insert(q.id.clone()) {
+                    if comment_matches_hunk(&c) && seen_ids.insert(q.id.clone()) {
                         result.push(CommentRef::Question(q));
                     }
                 }
@@ -912,7 +907,7 @@ impl AiState {
             for n in &ns.notes {
                 if n.file == path && n.in_reply_to.is_none() {
                     let c = CommentRef::Note(n);
-                    if matches_hunk!(c, hunk_idx) && seen_ids.insert(n.id.clone()) {
+                    if comment_matches_hunk(&c) && seen_ids.insert(n.id.clone()) {
                         result.push(CommentRef::Note(n));
                     }
                 }
@@ -922,7 +917,7 @@ impl AiState {
             for c in &gc.comments {
                 if c.file == path && c.in_reply_to.is_none() {
                     let cr = CommentRef::GitHubComment(c);
-                    if matches_hunk!(cr, hunk_idx) && seen_ids.insert(c.id.clone()) {
+                    if comment_matches_hunk(&cr) && seen_ids.insert(c.id.clone()) {
                         result.push(CommentRef::GitHubComment(c));
                     }
                 }
@@ -932,7 +927,7 @@ impl AiState {
             for c in &fb.comments {
                 if c.file == path && c.in_reply_to.is_none() {
                     let cr = CommentRef::Legacy(c);
-                    if matches_hunk!(cr, hunk_idx) && seen_ids.insert(c.id.clone()) {
+                    if comment_matches_hunk(&cr) && seen_ids.insert(c.id.clone()) {
                         result.push(CommentRef::Legacy(c));
                     }
                 }
@@ -2273,6 +2268,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn comments_for_hunk_or_line_range_left_comment_matches_old_range_not_earlier_new_line() {
+        // LEFT comments store the old-side number in line_start. After a large
+        // insertion that number can also appear as a new-side line in an earlier
+        // hunk. The comment belongs on the hunk that contains the deleted line.
+        let mut state = AiState::default();
+        let mut c = make_github_comment("c1", "pipeline.py", Some(1), None);
+        c.line_start = Some(222);
+        c.old_line_start = Some(222);
+        c.side = "LEFT".to_string();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+
+        let hunk0 = state.comments_for_hunk_or_line_range("pipeline.py", 0, 218, 20, 140, 20);
+        assert!(
+            hunk0.is_empty(),
+            "LEFT line 222 must not attach to an earlier hunk just because new-side 222 exists there"
+        );
+
+        let hunk1 = state.comments_for_hunk_or_line_range("pipeline.py", 1, 250, 26, 200, 50);
+        assert_eq!(hunk1.len(), 1);
+        assert_eq!(hunk1[0].id(), "c1");
+    }
+
+    #[test]
+    fn comments_for_hunk_or_line_range_left_question_matches_old_range_not_earlier_new_line() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "pipeline.py", Some(1));
+        q.line_start = Some(222);
+        q.old_line_start = Some(222);
+        q.side = "LEFT".to_string();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+
+        let hunk0 = state.comments_for_hunk_or_line_range("pipeline.py", 0, 218, 20, 140, 20);
+        assert!(hunk0.is_empty());
+        let hunk1 = state.comments_for_hunk_or_line_range("pipeline.py", 1, 250, 26, 200, 50);
+        assert_eq!(hunk1.len(), 1);
+        assert_eq!(hunk1[0].id(), "q1");
+    }
+
+    #[test]
+    fn comments_for_hunk_or_line_range_left_comment_matches_mixed_delete_hunk() {
+        let mut state = AiState::default();
+        let mut c = make_github_comment("c1", "a.rs", Some(0), None);
+        c.line_start = Some(10);
+        c.old_line_start = Some(10);
+        c.side = "LEFT".to_string();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+
+        // Mixed hunk: deletes and adds. new_count > 0, old range still owns the LEFT line.
+        let results = state.comments_for_hunk_or_line_range("a.rs", 0, 20, 8, 8, 12);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), "c1");
+    }
+
     // ── AiState::comments_for_hunk_only ──
 
     #[test]
@@ -2515,6 +2578,7 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             old_line_start: None,
+            side: "RIGHT".to_string(),
             hunk_header: String::new(),
             anchor_status: "original".to_string(),
             relocated_at_hash: String::new(),
