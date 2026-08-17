@@ -216,6 +216,27 @@ describe("getFileBlock — split mode", () => {
     const contentSplitRows = block.rows.filter((r) => r.type === "content-split");
     expect(contentSplitRows.length).toBe(splitRowCount);
   });
+
+  it("places a LEFT thread using old_num when split context old and new numbers differ", () => {
+    const t = thread("t-left", "a.ts", 5, { side: "LEFT" });
+    const h = hunk({
+      old_start: 5,
+      old_count: 1,
+      new_start: 20,
+      new_count: 1,
+      lines: [line({ kind: "context", old_num: 5, new_num: 20, text: "keep" })],
+      threads: [t],
+    });
+    const f = file({ path: "a.ts", hunks: [h] });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t]), "split"));
+    const splitIdx = block.rows.findIndex((r) => r.type === "content-split");
+    expect(splitIdx).toBeGreaterThanOrEqual(0);
+    expect(block.rows[splitIdx + 1]?.type).toBe("inline-thread");
+    if (block.rows[splitIdx + 1]?.type === "inline-thread") {
+      expect(block.rows[splitIdx + 1].threadId).toBe("t-left");
+    }
+    expect(block.rows.some((r) => r.type === "fallback-thread")).toBe(false);
+  });
 });
 
 describe("getFileBlock — bypass cases", () => {

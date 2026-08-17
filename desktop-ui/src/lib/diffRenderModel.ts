@@ -637,8 +637,12 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             ),
             identity: `cs:${file.path}:${hunkIdx}:${splitRowIdx}`,
           });
+          const leftOld = r.left?.old_num ?? null;
+          const rightNew = r.right?.new_num ?? null;
           const leftLn = r.left ? lineNumOf(r.left) : null;
           const rightLn = r.right ? lineNumOf(r.right) : null;
+          if (leftOld !== null) renderedLineNums.add(leftOld);
+          if (rightNew !== null) renderedLineNums.add(rightNew);
           if (leftLn !== null) renderedLineNums.add(leftLn);
           if (rightLn !== null) renderedLineNums.add(rightLn);
 
@@ -666,8 +670,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           const seenThreads = new Set<string>();
           const collected: ThreadSnapshot[] = [];
           for (const [ln, rowSide] of [
-            [rightLn, "new"],
-            [leftLn, "old"],
+            [rightNew, "new"],
+            [leftOld, "old"],
           ] as const) {
             if (ln === null) continue;
             const ts = threadsForLine(

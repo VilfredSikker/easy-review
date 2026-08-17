@@ -3589,15 +3589,24 @@ impl TabState {
     /// Record that we wrote `sidecar_path` so the next poll does not treat that
     /// write as an external AI update. If some other watched sidecar is newer
     /// than this file, leave `last_ai_check` alone so that write still reloads.
+    ///
+    /// No-op when the file is outside `er_dir()` (GitHub comments live in the
+    /// PR bucket on a local PR Branch view). Stamping from that path would make
+    /// `last_ai_check` Some while `latest_er_mtime` on an empty view bucket is
+    /// None, and the next poll would take the "files deleted" reload path.
     pub fn mark_sidecar_written(&mut self, sidecar_path: &str) {
-        let written = std::fs::metadata(sidecar_path)
+        let sidecar = std::path::Path::new(sidecar_path);
+        let watched_dir = self.er_dir();
+        if !sidecar.starts_with(&watched_dir) {
+            return;
+        }
+        let written = std::fs::metadata(sidecar)
             .ok()
             .and_then(|m| m.modified().ok());
         let Some(written) = written else {
             return;
         };
-        let others =
-            ai::latest_er_mtime_skipping(&self.er_dir(), Some(std::path::Path::new(sidecar_path)));
+        let others = ai::latest_er_mtime_skipping(&self.er_dir(), Some(sidecar));
         if let (Some(others), Some(prev)) = (others, self.last_ai_check) {
             if others > prev {
                 return;
@@ -11847,6 +11856,61 @@ mod tests {
         assert!(
             tab.check_ai_files_changed(),
             "a newer review.json must still reload after marking our questions write"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn mark_sidecar_written_ignores_github_comments_outside_view_bucket() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        run_git_for_history_test(root, &["init", "-q"]);
+        run_git_for_history_test(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widget.git",
+            ],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = root.to_string_lossy().to_string();
+        tab.current_branch = "feat/foo".to_string();
+        tab.local_branch_view = Some("feat/foo".to_string());
+        tab.pr_number = Some(99);
+        tab.remote_repo = None;
+        tab.mode = DiffMode::Branch;
+        tab.apply_managed_root();
+
+        let view = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&view).unwrap();
+        tab.last_ai_check = None;
+
+        let gh_dir = std::path::PathBuf::from(tab.github_comments_dir());
+        assert!(
+            !gh_dir.starts_with(&view),
+            "github comments must live in the PR bucket, not the Branch view bucket"
+        );
+        std::fs::create_dir_all(&gh_dir).unwrap();
+        let gh_path = gh_dir.join("github-comments.json");
+        std::fs::write(&gh_path, "{}").unwrap();
+        tab.mark_sidecar_written(gh_path.to_str().unwrap());
+
+        assert!(
+            tab.last_ai_check.is_none(),
+            "must not stamp last_ai_check from a sidecar outside er_dir"
+        );
+        assert!(
+            !tab.check_ai_files_changed(),
+            "empty view bucket plus a PR-bucket write must not take the deleted-files reload path"
         );
         std::env::remove_var("ER_STORAGE_ROOT");
     }
