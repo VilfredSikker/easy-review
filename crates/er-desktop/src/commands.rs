@@ -1088,57 +1088,65 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
 }
 
 #[tauri::command]
-pub fn bulk_review_pillar(
+pub async fn bulk_review_pillar(
     pillar_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        let paths = pillar_file_paths(tab, &pillar_id);
-        let mut changed = false;
-        for path in paths {
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
-            tab.reviewed.insert(path, hash);
-            changed = true;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        {
+            let tab = app.tab_mut();
+            let paths = pillar_file_paths(tab, &pillar_id);
+            let mut changed = false;
+            for path in paths {
+                let hash = tab
+                    .current_per_file_hashes
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_default();
+                tab.reviewed.insert(path, hash);
+                changed = true;
+            }
+            if changed {
+                tab.reviewed_revision += 1;
+                let _ = tab.save_reviewed_files();
+            }
         }
-        if changed {
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
-        }
-    }
-    // Full snapshot (not chrome-only): this command is invoked via the generic
-    // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
-    // carries `files: []`, which would blank the diff. snap_from keeps files
-    // (hunks differential-omitted + spliced by the frontend).
-    Ok(snap_from(&app, &state))
+        // Full snapshot (not chrome-only): this command is invoked via the generic
+        // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
+        // carries `files: []`, which would blank the diff. snap_from keeps files
+        // (hunks differential-omitted + spliced by the frontend).
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn unbulk_review_pillar(
+pub async fn unbulk_review_pillar(
     pillar_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        let paths = pillar_file_paths(tab, &pillar_id);
-        let mut changed = false;
-        for path in paths {
-            if tab.reviewed.remove(&path).is_some() {
-                changed = true;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        {
+            let tab = app.tab_mut();
+            let paths = pillar_file_paths(tab, &pillar_id);
+            let mut changed = false;
+            for path in paths {
+                if tab.reviewed.remove(&path).is_some() {
+                    changed = true;
+                }
+            }
+            if changed {
+                tab.reviewed_revision += 1;
+                let _ = tab.save_reviewed_files();
             }
         }
-        if changed {
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
-        }
-    }
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -2382,16 +2390,20 @@ pub async fn reply_to_thread(
 }
 
 #[tauri::command]
-pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.remove(&id);
-    }
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn delete_thread(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        if let Ok(mut p) = state.pending_ai_replies.lock() {
+            p.remove(&id);
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Remove all question/github threads linked to a finding (`finding_ref`), keeping the finding.
@@ -2502,19 +2514,23 @@ fn mark_thread_resolved_in_files(
 }
 
 #[tauri::command]
-pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn resolve_thread(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let tab = app.tab();
-    let q_path = format!("{}/questions.json", tab.er_dir());
-    let notes_path = format!("{}/notes.json", tab.er_dir());
-    let gc_path = tab.github_comments_path();
-    let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
-    if !changed {
-        return Err(format!("Thread not found or already resolved: {id}"));
-    }
-    app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
+        let tab = app.tab();
+        let q_path = format!("{}/questions.json", tab.er_dir());
+        let notes_path = format!("{}/notes.json", tab.er_dir());
+        let gc_path = tab.github_comments_path();
+        let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
+        if !changed {
+            return Err(format!("Thread not found or already resolved: {id}"));
+        }
+        app.tab_mut().reload_ai_state();
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 fn validate_review_submission(
@@ -4298,34 +4314,127 @@ fn build_promoted_body(root_text: &str, replies: &[(&str, &str)]) -> String {
 }
 
 #[tauri::command]
-pub fn promote_to_comment(
+pub async fn promote_to_comment(
     id: String,
     body: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
-    // 1. Resolve the source question or note + already-promoted guard.
-    let (file, hunk_idx, line_start, default_body, side) = {
-        let tab = app.tab();
-        // Both questions and notes use the `ReviewQuestion` shape; pick the
-        // collection by id prefix so notes can be promoted too.
-        let (items, item): (
-            &[er_engine::ai::ReviewQuestion],
-            &er_engine::ai::ReviewQuestion,
-        ) = if id.starts_with("n-") {
-            let ns = tab
-                .ai
-                .notes
-                .as_ref()
-                .ok_or_else(|| "No notes loaded".to_string())?;
-            let n = ns
-                .notes
+        // 1. Resolve the source question or note + already-promoted guard.
+        let (file, hunk_idx, line_start, default_body, side) = {
+            let tab = app.tab();
+            // Both questions and notes use the `ReviewQuestion` shape; pick the
+            // collection by id prefix so notes can be promoted too.
+            let (items, item): (
+                &[er_engine::ai::ReviewQuestion],
+                &er_engine::ai::ReviewQuestion,
+            ) = if id.starts_with("n-") {
+                let ns = tab
+                    .ai
+                    .notes
+                    .as_ref()
+                    .ok_or_else(|| "No notes loaded".to_string())?;
+                let n = ns
+                    .notes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .ok_or_else(|| format!("Note not found: {id}"))?;
+                (ns.notes.as_slice(), n)
+            } else {
+                let qs = tab
+                    .ai
+                    .questions
+                    .as_ref()
+                    .ok_or_else(|| "No questions loaded".to_string())?;
+                let q = qs
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id)
+                    .ok_or_else(|| format!("Question not found: {id}"))?;
+                (qs.questions.as_slice(), q)
+            };
+
+            let replies: Vec<(&str, &str)> = items
                 .iter()
-                .find(|n| n.id == id)
-                .ok_or_else(|| format!("Note not found: {id}"))?;
-            (ns.notes.as_slice(), n)
-        } else {
+                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
+                .map(|r| (r.author.as_str(), r.text.as_str()))
+                .collect();
+            let default = build_promoted_body(&item.text, &replies);
+
+            (
+                item.file.clone(),
+                item.hunk_index.unwrap_or(0),
+                item.line_start,
+                default,
+                item.side.clone(),
+            )
+        };
+
+        let text = body.unwrap_or(default_body);
+
+        // 2. Snapshot existing comment ids to detect the new one.
+        let existing_ids: std::collections::HashSet<String> = {
+            let tab = app.tab();
+            tab.ai
+                .github_comments
+                .as_ref()
+                .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        // 3. Create the new comment on the same review side as the source.
+        app.tab_mut().comment_side = Some(side);
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_start,
+            None,
+            text,
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+
+        // 4. Find the new comment id (anything not in the pre-existing set).
+        let new_id: Option<String> = {
+            let tab = app.tab();
+            tab.ai.github_comments.as_ref().and_then(|gc| {
+                gc.comments
+                    .iter()
+                    .find(|c| !existing_ids.contains(&c.id))
+                    .map(|c| c.id.clone())
+            })
+        };
+
+        // 5. Remove the source question thread (replaced by the new GitHub comment).
+        if new_id.is_some() {
+            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        }
+
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Promote a question to a local note. Notes are still private but framed as
+/// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
+/// target is `notes.json`. The source question (and its replies) is removed.
+#[tauri::command]
+pub async fn promote_to_note(
+    id: String,
+    body: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+
+        let (file, hunk_idx, line_start, default_body, side) = {
+            let tab = app.tab();
             let qs = tab
                 .ai
                 .questions
@@ -4336,148 +4445,63 @@ pub fn promote_to_comment(
                 .iter()
                 .find(|q| q.id == id)
                 .ok_or_else(|| format!("Question not found: {id}"))?;
-            (qs.questions.as_slice(), q)
+            let replies: Vec<(&str, &str)> = qs
+                .questions
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
+                .map(|r| (r.author.as_str(), r.text.as_str()))
+                .collect();
+            let default = build_promoted_body(&q.text, &replies);
+            (
+                q.file.clone(),
+                q.hunk_index.unwrap_or(0),
+                q.line_start,
+                default,
+                q.side.clone(),
+            )
         };
 
-        let replies: Vec<(&str, &str)> = items
-            .iter()
-            .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-            .map(|r| (r.author.as_str(), r.text.as_str()))
-            .collect();
-        let default = build_promoted_body(&item.text, &replies);
+        let text = body.unwrap_or(default_body);
 
-        (
-            item.file.clone(),
-            item.hunk_index.unwrap_or(0),
-            item.line_start,
-            default,
-            item.side.clone(),
+        let existing_ids: std::collections::HashSet<String> = {
+            let tab = app.tab();
+            tab.ai
+                .notes
+                .as_ref()
+                .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        app.tab_mut().comment_side = Some(side);
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_start,
+            None,
+            text,
+            CommentType::Note,
+            None,
+            None,
         )
-    };
+        .map_err(|e| e.to_string())?;
 
-    let text = body.unwrap_or(default_body);
+        let new_id: Option<String> = {
+            let tab = app.tab();
+            tab.ai.notes.as_ref().and_then(|ns| {
+                ns.notes
+                    .iter()
+                    .find(|n| !existing_ids.contains(&n.id))
+                    .map(|n| n.id.clone())
+            })
+        };
 
-    // 2. Snapshot existing comment ids to detect the new one.
-    let existing_ids: std::collections::HashSet<String> = {
-        let tab = app.tab();
-        tab.ai
-            .github_comments
-            .as_ref()
-            .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
-            .unwrap_or_default()
-    };
+        if new_id.is_some() {
+            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        }
 
-    // 3. Create the new comment on the same review side as the source.
-    app.tab_mut().comment_side = Some(side);
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
-        text,
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 4. Find the new comment id (anything not in the pre-existing set).
-    let new_id: Option<String> = {
-        let tab = app.tab();
-        tab.ai.github_comments.as_ref().and_then(|gc| {
-            gc.comments
-                .iter()
-                .find(|c| !existing_ids.contains(&c.id))
-                .map(|c| c.id.clone())
-        })
-    };
-
-    // 5. Remove the source question thread (replaced by the new GitHub comment).
-    if new_id.is_some() {
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    }
-
-    Ok(snap_from(&app, &state))
-}
-
-/// Promote a question to a local note. Notes are still private but framed as
-/// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
-/// target is `notes.json`. The source question (and its replies) is removed.
-#[tauri::command]
-pub fn promote_to_note(
-    id: String,
-    body: Option<String>,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-
-    let (file, hunk_idx, line_start, default_body, side) = {
-        let tab = app.tab();
-        let qs = tab
-            .ai
-            .questions
-            .as_ref()
-            .ok_or_else(|| "No questions loaded".to_string())?;
-        let q = qs
-            .questions
-            .iter()
-            .find(|q| q.id == id)
-            .ok_or_else(|| format!("Question not found: {id}"))?;
-        let replies: Vec<(&str, &str)> = qs
-            .questions
-            .iter()
-            .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-            .map(|r| (r.author.as_str(), r.text.as_str()))
-            .collect();
-        let default = build_promoted_body(&q.text, &replies);
-        (
-            q.file.clone(),
-            q.hunk_index.unwrap_or(0),
-            q.line_start,
-            default,
-            q.side.clone(),
-        )
-    };
-
-    let text = body.unwrap_or(default_body);
-
-    let existing_ids: std::collections::HashSet<String> = {
-        let tab = app.tab();
-        tab.ai
-            .notes
-            .as_ref()
-            .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
-            .unwrap_or_default()
-    };
-
-    app.tab_mut().comment_side = Some(side);
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
-        text,
-        CommentType::Note,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let new_id: Option<String> = {
-        let tab = app.tab();
-        tab.ai.notes.as_ref().and_then(|ns| {
-            ns.notes
-                .iter()
-                .find(|n| !existing_ids.contains(&n.id))
-                .map(|n| n.id.clone())
-        })
-    };
-
-    if new_id.is_some() {
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    }
-
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Finding promotions sidecar ───────────────────────────────────────────────
@@ -8102,27 +8126,34 @@ pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<Ap
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
 
 #[tauri::command]
-pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn dismiss_finding(
+    finding_id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let er_dir = app.tab().er_dir();
-    let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
-        .map_err(|e| format!("Failed to remove finding: {e}"))?;
-    if !removed {
-        return Err(format!("Finding not found: {finding_id}"));
-    }
+        let er_dir = app.tab().er_dir();
+        let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
+            .map_err(|e| format!("Failed to remove finding: {e}"))?;
+        if !removed {
+            return Err(format!("Finding not found: {finding_id}"));
+        }
 
-    let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+        let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
 
-    let mut promotions = load_finding_promotions(&er_dir);
-    if promotions.remove(&finding_id).is_some() {
-        save_finding_promotions(&er_dir, &promotions)
-            .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
-    }
+        let mut promotions = load_finding_promotions(&er_dir);
+        if promotions.remove(&finding_id).is_some() {
+            save_finding_promotions(&er_dir, &promotions)
+                .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
+        }
 
-    app.tab_mut().reload_ai_state();
+        app.tab_mut().reload_ai_state();
 
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8354,50 +8385,54 @@ pub fn reply_to_finding(
 }
 
 #[tauri::command]
-pub fn update_thread_message(
+pub async fn update_thread_message(
     id: String,
     body: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let text = body.trim();
+    let text = body.trim().to_string();
     if text.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let author = {
-        let tab = app.tab();
-        if id.starts_with("q-") {
-            tab.ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
-                .map(|q| q.author.clone())
-        } else if id.starts_with("n-") {
-            tab.ai
-                .notes
-                .as_ref()
-                .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
-                .map(|n| n.author.clone())
-        } else {
-            tab.ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
-                .map(|c| c.author.clone())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let author = {
+            let tab = app.tab();
+            if id.starts_with("q-") {
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
+                    .map(|q| q.author.clone())
+            } else if id.starts_with("n-") {
+                tab.ai
+                    .notes
+                    .as_ref()
+                    .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
+                    .map(|n| n.author.clone())
+            } else {
+                tab.ai
+                    .github_comments
+                    .as_ref()
+                    .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
+                    .map(|c| c.author.clone())
+            }
+        };
+        let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
+        if author == "ai" {
+            return Err("Cannot edit AI-generated text".to_string());
         }
-    };
-    let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
-    if author == "ai" {
-        return Err("Cannot edit AI-generated text".to_string());
-    }
-    if !author.is_empty() && author != "You" {
-        return Err("Can only edit your own messages".to_string());
-    }
+        if !author.is_empty() && author != "You" {
+            return Err("Can only edit your own messages".to_string());
+        }
 
-    app.update_comment_text(&id, text)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+        app.update_comment_text(&id, &text)
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Review export (markdown) ─────────────────────────────────────────────────
@@ -9079,7 +9114,7 @@ pub fn reorder_tabs(
 
 #[tauri::command]
 #[allow(non_snake_case, clippy::too_many_arguments)]
-pub fn add_ui_annotation(
+pub async fn add_ui_annotation(
     url: String,
     selector: Option<String>,
     bbox: [f64; 4],
@@ -9088,50 +9123,54 @@ pub fn add_ui_annotation(
     screenshotDataUrl: Option<String>,
     elementContext: Option<String>,
     domContext: Option<serde_json::Value>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let mut anns = er_engine::ai::load_ui_annotations(&dir);
-    let id = format!(
-        "ui-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let dir = app.tab().comments_dir();
+        let mut anns = er_engine::ai::load_ui_annotations(&dir);
+        let id = format!(
+            "ui-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis())
+                .unwrap_or(0)
+        );
 
-    // If a screenshot data URL was provided, decode and persist it under
-    // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
-    // the annotation is still saved without a screenshot path.
-    let screenshot_path = match screenshotDataUrl.as_deref() {
-        Some(data_url) => decode_data_url_png(data_url)
-            .and_then(|bytes| save_screenshot_bytes(&dir, &id, &bytes).ok()),
-        None => None,
-    };
+        // If a screenshot data URL was provided, decode and persist it under
+        // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
+        // the annotation is still saved without a screenshot path.
+        let screenshot_path = match screenshotDataUrl.as_deref() {
+            Some(data_url) => decode_data_url_png(data_url)
+                .and_then(|bytes| save_screenshot_bytes(&dir, &id, &bytes).ok()),
+            None => None,
+        };
 
-    let ts = chrono_like_timestamp();
-    anns.push(er_engine::ai::UiAnnotation {
-        id,
-        url,
-        selector,
-        box_x: bbox[0],
-        box_y: bbox[1],
-        box_w: bbox[2],
-        box_h: bbox[3],
-        viewport_w: viewport[0],
-        viewport_h: viewport[1],
-        text,
-        timestamp: ts,
-        author: "You".to_string(),
-        screenshot_path,
-        stale: false,
-        element_context: elementContext,
-        dom_context: domContext,
-    });
-    er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        let ts = chrono_like_timestamp();
+        anns.push(er_engine::ai::UiAnnotation {
+            id,
+            url,
+            selector,
+            box_x: bbox[0],
+            box_y: bbox[1],
+            box_w: bbox[2],
+            box_h: bbox[3],
+            viewport_w: viewport[0],
+            viewport_h: viewport[1],
+            text,
+            timestamp: ts,
+            author: "You".to_string(),
+            screenshot_path,
+            stale: false,
+            element_context: elementContext,
+            dom_context: domContext,
+        });
+        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Decode a `data:image/png;base64,<payload>` URL into raw PNG bytes. Returns
@@ -9254,14 +9293,21 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn delete_ui_annotation(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let mut anns = er_engine::ai::load_ui_annotations(&dir);
-    anns.retain(|a| a.id != id);
-    er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn delete_ui_annotation(
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let dir = app.tab().comments_dir();
+        let mut anns = er_engine::ai::load_ui_annotations(&dir);
+        anns.retain(|a| a.id != id);
+        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -10952,6 +10998,16 @@ mod tests {
             "add_question",
             "add_note",
             "reply_to_thread",
+            "delete_thread",
+            "resolve_thread",
+            "update_thread_message",
+            "dismiss_finding",
+            "promote_to_comment",
+            "promote_to_note",
+            "bulk_review_pillar",
+            "unbulk_review_pillar",
+            "add_ui_annotation",
+            "delete_ui_annotation",
         ];
         let wrappers = [
             "run_ai_triage_review",

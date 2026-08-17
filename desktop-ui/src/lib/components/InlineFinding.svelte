@@ -92,8 +92,8 @@
     replyInputEl?.focus();
   }
 
-  async function dismiss() {
-    await app.cmd("dismiss_finding", { findingId: finding.id });
+  function dismiss() {
+    void app.cmd("dismiss_finding", { findingId: finding.id });
   }
   async function reply() {
     if (!replyText.trim()) return;

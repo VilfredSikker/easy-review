@@ -9,14 +9,13 @@ import {
 import { LATEST_INVOKE_SKIPPED, createLatestInvokeQueue } from "../latestInvokeQueue";
 import { profileLog } from "../profileLog";
 import {
-  applyOptimisticThread,
-  buildOptimisticThread,
-  isAddThreadCommand,
-  parseAddThreadArgs,
-  reapplyOptimisticThreads,
-  removeOptimisticThread,
-  type OptimisticThread,
-} from "../optimisticComment";
+  applyOptimisticOp,
+  buildOptimisticOp,
+  isOptimisticCommand,
+  reapplyOptimisticOps,
+  rollbackOptimisticOp,
+  type OptimisticOp,
+} from "../optimisticLocal";
 import {
   canChromeMerge,
   isStaleSnapshotGeneration,
@@ -210,8 +209,8 @@ class AppStore {
   private pollPending = false;
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
-  /** Local add-thread cards shown before the sidecar write returns. */
-  private pendingThreads: OptimisticThread[] = [];
+  /** Local sidecar writes shown before IPC returns. */
+  private pendingOps: OptimisticOp[] = [];
   private tabCache = new TabSnapshotCache();
   /** Last snapshot the backend confirmed. Cache paints are not confirmed. */
   private lastConfirmedSnapshot: AppSnapshot | null = null;
@@ -628,12 +627,12 @@ class AppStore {
   }
 
   private keepOptimisticThreads() {
-    if (!this.snapshot || this.pendingThreads.length === 0) return;
-    reapplyOptimisticThreads(this.snapshot, this.pendingThreads);
+    if (!this.snapshot || this.pendingOps.length === 0) return;
+    reapplyOptimisticOps(this.snapshot, this.pendingOps);
   }
 
-  private dropPendingThread(id: string) {
-    this.pendingThreads = this.pendingThreads.filter((p) => p.id !== id);
+  private dropPendingOp(id: string) {
+    this.pendingOps = this.pendingOps.filter((p) => p.id !== id);
   }
 
   private reportCmdError(command: string, e: unknown) {
@@ -647,14 +646,13 @@ class AppStore {
   }
 
   /**
-   * Paint the new thread immediately, then write the sidecar in the
-   * background. Rollback only if IPC fails. Apply happens before the first
-   * await so the composer can close without waiting.
+   * Paint a local sidecar write immediately, then run IPC in the
+   * background. Rollback only if the write fails. Apply happens before
+   * the first await so composers can close without waiting.
    */
-  private async cmdAddThread(command: string, args: Record<string, unknown>): Promise<void> {
-    const parsed = parseAddThreadArgs(command, args);
+  private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
     const snap = this.snapshot;
-    if (!parsed || !snap || !isAddThreadCommand(command)) {
+    if (!snap || this.pendingTabSwitch) {
       try {
         const snapshot = await invoke<AppSnapshot>(command, args);
         this.ingestCommandSnapshot(snapshot);
@@ -664,22 +662,31 @@ class AppStore {
       return;
     }
 
-    const viewAtStart = snapshotViewIdentity(snap);
-    const filePath = parsed.file || snap.files[snap.selected_file]?.path || "";
-    const pending = buildOptimisticThread(command, parsed, viewAtStart, filePath);
-    this.pendingThreads = [...this.pendingThreads, pending];
-    applyOptimisticThread(snap, pending);
+    const op = buildOptimisticOp(command, args, snap);
+    if (!op) {
+      try {
+        const snapshot = await invoke<AppSnapshot>(command, args);
+        this.ingestCommandSnapshot(snapshot);
+      } catch (e) {
+        this.reportCmdError(command, e);
+      }
+      return;
+    }
+
+    const viewAtStart = op.viewIdentity;
+    this.pendingOps = [...this.pendingOps, op];
+    applyOptimisticOp(snap, op);
 
     try {
       const returned = await invoke<AppSnapshot>(command, args);
-      this.dropPendingThread(pending.id);
+      this.dropPendingOp(op.id);
       if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
         this.ingestCommandSnapshot(returned);
       }
     } catch (e) {
-      this.dropPendingThread(pending.id);
+      this.dropPendingOp(op.id);
       if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
-        removeOptimisticThread(this.snapshot, pending);
+        rollbackOptimisticOp(this.snapshot, op);
       }
       this.reportCmdError(command, e);
     }
@@ -747,8 +754,8 @@ class AppStore {
       const path = (args as { path?: string } | undefined)?.path;
       if (path) return this.cmdReviewed(command, path);
     }
-    if (isAddThreadCommand(command)) {
-      return this.cmdAddThread(command, args ?? {});
+    if (isOptimisticCommand(command)) {
+      return this.cmdOptimistic(command, args ?? {});
     }
 
     const tStart = performance.now();

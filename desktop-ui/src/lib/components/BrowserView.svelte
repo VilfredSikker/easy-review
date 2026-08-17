@@ -628,7 +628,7 @@
     handleBrowserPayload(data);
   }
 
-  async function submitAnnotation(
+  function submitAnnotation(
     bbox: [number, number, number, number],
     selector: string | null,
     text: string,
@@ -636,7 +636,7 @@
     elementContext: string | null,
     domContext: UiDomContext | null,
   ) {
-    await app.cmd("add_ui_annotation", {
+    void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
       selector,
       bbox,
