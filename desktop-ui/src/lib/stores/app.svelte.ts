@@ -6,6 +6,7 @@ import {
   DEFAULT_COMMENT_VISIBILITY,
   type CommentVisibility,
 } from "../commentVisibility";
+import { LATEST_INVOKE_SKIPPED, createLatestInvokeQueue } from "../latestInvokeQueue";
 import { profileLog } from "../profileLog";
 import {
   canChromeMerge,
@@ -199,6 +200,8 @@ class AppStore {
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
   private tabCache = new TabSnapshotCache();
+  /** Serialize tab-change invokes so a later click cannot apply before an earlier one. */
+  private tabChangeInvokeQueue = createLatestInvokeQueue();
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -695,7 +698,14 @@ class AppStore {
         await invoke<void>(command, args);
         return;
       }
-      const snapshot = await invoke<AppSnapshot>(command, args);
+      const snapshot =
+        isTabChange && myTabChangeGen != null
+          ? await this.tabChangeInvokeQueue.enqueue(
+              () => myTabChangeGen === this.tabChangeGeneration,
+              () => invoke<AppSnapshot>(command, args),
+            )
+          : await invoke<AppSnapshot>(command, args);
+      if (snapshot === LATEST_INVOKE_SKIPPED) return;
       const tInvokeDone = performance.now();
       const applied = this.ingestCommandSnapshot(snapshot, {
         allowTabChange: isTabChange,
