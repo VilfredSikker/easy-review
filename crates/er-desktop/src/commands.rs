@@ -2219,6 +2219,7 @@ pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // ── Threads ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_comment(
     file: String,
     hunk_idx: usize,
@@ -2256,6 +2257,7 @@ pub async fn add_comment(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_question(
     file: String,
     hunk_idx: usize,
@@ -2292,6 +2294,7 @@ pub async fn add_question(
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn add_note(
     file: String,
     hunk_idx: usize,
