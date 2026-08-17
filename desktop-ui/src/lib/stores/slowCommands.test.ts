@@ -15,4 +15,11 @@ describe("SLOW_COMMANDS", () => {
       expect(block.includes(`"${command}"`)).toBe(false);
     }
   });
+
+  it("routes add-thread commands through the optimistic writer", () => {
+    expect(src).toContain("if (isAddThreadCommand(command))");
+    expect(src).toContain("return this.cmdAddThread(command, args ?? {});");
+    expect(src).toContain("applyOptimisticThread(snap, pending);");
+    expect(src).toContain("removeOptimisticThread(this.snapshot, pending);");
+  });
 });

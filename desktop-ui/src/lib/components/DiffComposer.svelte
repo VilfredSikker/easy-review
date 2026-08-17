@@ -47,7 +47,7 @@
     return idx === -1 ? 0 : idx;
   }
 
-  async function submit() {
+  function submit() {
     if (!canSubmit || diffSel.file === null || diffSel.start === null) return;
     const command =
       diffSel.kind === "comment"
@@ -67,8 +67,8 @@
     if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
-    await app.cmd(command, cmdArgs);
     diffSel.clear();
+    void app.cmd(command, cmdArgs);
   }
 
   function handleKeydown(e: KeyboardEvent) {

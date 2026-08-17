@@ -8,6 +8,15 @@ import {
 } from "../commentVisibility";
 import { profileLog } from "../profileLog";
 import {
+  applyOptimisticThread,
+  buildOptimisticThread,
+  isAddThreadCommand,
+  parseAddThreadArgs,
+  reapplyOptimisticThreads,
+  removeOptimisticThread,
+  type OptimisticThread,
+} from "../optimisticComment";
+import {
   canChromeMerge,
   canChromeMergeTakingNextAi,
   isStaleSnapshotGeneration,
@@ -161,6 +170,8 @@ class AppStore {
   private pollInFlight = false;
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
+  /** Local add-thread cards shown before the sidecar write returns. */
+  private pendingThreads: OptimisticThread[] = [];
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -301,6 +312,7 @@ class AppStore {
       const snap = await invoke<AppSnapshot>("get_snapshot");
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
+      this.keepOptimisticThreads();
       this.syncSnapshotToast(this.snapshot);
       this.lastPollRevision = null;
       this.lastPollContentRevision = null;
@@ -398,6 +410,7 @@ class AppStore {
                 trigger,
               });
             }
+            this.keepOptimisticThreads();
             this.syncSnapshotToast(this.snapshot);
           }
         }
@@ -451,6 +464,7 @@ class AppStore {
       const snap = await invoke<AppSnapshot>("toggle_panel", { panel });
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
+      this.keepOptimisticThreads();
       this.syncSnapshotToast(this.snapshot);
     } catch (e) {
       console.error("togglePanel failed:", e);
@@ -474,11 +488,70 @@ class AppStore {
     }
     resolveOmittedHunks(this.snapshot, snapshot);
     this.snapshot = snapshot;
+    this.keepOptimisticThreads();
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
     this.lastPollRevision = null;
     this.lastPollContentRevision = null;
     this.lastPollChromeRevision = null;
+  }
+
+  private keepOptimisticThreads() {
+    if (!this.snapshot || this.pendingThreads.length === 0) return;
+    reapplyOptimisticThreads(this.snapshot, this.pendingThreads);
+  }
+
+  private dropPendingThread(id: string) {
+    this.pendingThreads = this.pendingThreads.filter((p) => p.id !== id);
+  }
+
+  private reportCmdError(command: string, e: unknown) {
+    console.error(`${command} failed:`, e);
+    this.pushLog("error", command, String(e));
+    this.error = `${command}: ${e}`;
+    this.showToast("error", `${command}: ${e}`);
+    setTimeout(() => {
+      if (this.error?.startsWith(`${command}:`)) this.error = null;
+    }, 5000);
+  }
+
+  /**
+   * Paint the new thread immediately, then write the sidecar in the
+   * background. Rollback only if IPC fails. Apply happens before the first
+   * await so the composer can close without waiting.
+   */
+  private async cmdAddThread(command: string, args: Record<string, unknown>): Promise<void> {
+    const parsed = parseAddThreadArgs(command, args);
+    const snap = this.snapshot;
+    if (!parsed || !snap || !isAddThreadCommand(command)) {
+      try {
+        const snapshot = await invoke<AppSnapshot>(command, args);
+        this.ingestCommandSnapshot(snapshot);
+      } catch (e) {
+        this.reportCmdError(command, e);
+      }
+      return;
+    }
+
+    const viewAtStart = snapshotViewIdentity(snap);
+    const filePath = parsed.file || snap.files[snap.selected_file]?.path || "";
+    const pending = buildOptimisticThread(command, parsed, viewAtStart, filePath);
+    this.pendingThreads = [...this.pendingThreads, pending];
+    applyOptimisticThread(snap, pending);
+
+    try {
+      const returned = await invoke<AppSnapshot>(command, args);
+      this.dropPendingThread(pending.id);
+      if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+        this.ingestCommandSnapshot(returned);
+      }
+    } catch (e) {
+      this.dropPendingThread(pending.id);
+      if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+        removeOptimisticThread(this.snapshot, pending);
+      }
+      this.reportCmdError(command, e);
+    }
   }
 
   /**
@@ -539,6 +612,9 @@ class AppStore {
       const path = (args as { path?: string } | undefined)?.path;
       if (path) return this.cmdReviewed(command, path);
     }
+    if (isAddThreadCommand(command)) {
+      return this.cmdAddThread(command, args ?? {});
+    }
 
     const tStart = performance.now();
     const isSlow = SLOW_COMMANDS.has(command);
@@ -577,13 +653,7 @@ class AppStore {
         ).catch(() => {});
       }
     } catch (e) {
-      console.error(`${command} failed:`, e);
-      this.pushLog("error", command, String(e));
-      this.error = `${command}: ${e}`;
-      this.showToast("error", `${command}: ${e}`);
-      setTimeout(() => {
-        if (this.error?.startsWith(`${command}:`)) this.error = null;
-      }, 5000);
+      this.reportCmdError(command, e);
     } finally {
       if (isSlow) {
         this.switching = false;
