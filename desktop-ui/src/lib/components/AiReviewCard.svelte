@@ -13,8 +13,10 @@
     agentPillStyle,
     filterByAgent,
     findingAgentLabel,
+    EMPTY_FINDINGS_STATUS,
     resolveAgentSummary,
     reviewFindingCounts,
+    showEmptyFindingsStatus,
     uniqueAgentLabels,
     useAgentScopedSummary,
   } from "$lib/aiReviewAgents";
@@ -91,6 +93,9 @@
   );
   const summary = $derived(resolvedSummary.text);
   const summaryIsMarkdown = $derived(resolvedSummary.markdown);
+  const emptyFindingsStatus = $derived(
+    showEmptyFindingsStatus(isEmpty, resolvedSummary),
+  );
   const staleReason = $derived(ai.stale_reason ?? "Review artifacts are stale.");
 
   const branchArenaRuns = $derived(arena.branchSummaries);
@@ -267,9 +272,12 @@
   {/if}
   {#if summaryOpen || isEmpty || agentSummaryOnly}
     <div class="summary-expanded mb-3">
+      {#if emptyFindingsStatus}
+        <p class="mb-2 text-sm font-medium text-add-fg">{EMPTY_FINDINGS_STATUS}</p>
+      {/if}
       {#if summaryIsMarkdown}
         <MarkdownText text={summary} className="text-sm text-fg-2 leading-relaxed" />
-      {:else}
+      {:else if summary !== EMPTY_FINDINGS_STATUS}
         <p class="text-sm text-fg-2 leading-relaxed">{summary}</p>
       {/if}
     </div>

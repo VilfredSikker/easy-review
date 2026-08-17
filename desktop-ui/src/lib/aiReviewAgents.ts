@@ -141,24 +141,40 @@ export function agentScopedSummaryLine(
 
 export type ResolvedSummary = { text: string; markdown: boolean };
 
+/** Completed review with zero findings. Distinct from missing sidecar output. */
+export const EMPTY_FINDINGS_STATUS = "No findings.";
+
+const MISSING_REVIEW_OUTPUT =
+  "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill.";
+
+export type ReviewSummarySource = Pick<
+  AiSnapshot,
+  "summary_markdown" | "agent_summaries"
+> &
+  Partial<Pick<AiSnapshot, "has_review_json">>;
+
+/** True when the summary block should lead with EMPTY_FINDINGS_STATUS. */
+export function showEmptyFindingsStatus(
+  isEmpty: boolean,
+  summary: ResolvedSummary,
+): boolean {
+  return isEmpty && (summary.markdown || summary.text === EMPTY_FINDINGS_STATUS);
+}
+
 /** Summary text for the AI Review card for the current agent filter. */
 export function resolveAgentSummary(
-  ai: Pick<AiSnapshot, "summary_markdown" | "agent_summaries">,
+  ai: ReviewSummarySource,
   agentFilter: AgentFilter,
   counts: { high: number; med: number; low: number },
   fileCount: number,
   isEmpty: boolean,
 ): ResolvedSummary {
-  if (isEmpty) {
-    return {
-      text: "No findings written. Inspect the `.er/` folder to see raw review output, or re-run the review skill.",
-      markdown: false,
-    };
-  }
-
   if (useAgentScopedSummary(agentFilter)) {
     const scoped = ai.agent_summaries?.[agentFilter]?.trim();
     if (scoped) return { text: scoped, markdown: true };
+    if (isEmpty) {
+      return { text: `No findings from ${agentFilter}.`, markdown: false };
+    }
     return {
       text: agentScopedSummaryLine(agentFilter, counts),
       markdown: false,
@@ -167,6 +183,13 @@ export function resolveAgentSummary(
 
   if (ai.summary_markdown?.trim()) {
     return { text: ai.summary_markdown.trim(), markdown: true };
+  }
+
+  if (isEmpty) {
+    if (ai.has_review_json) {
+      return { text: EMPTY_FINDINGS_STATUS, markdown: false };
+    }
+    return { text: MISSING_REVIEW_OUTPUT, markdown: false };
   }
 
   const total = counts.high + counts.med + counts.low;
