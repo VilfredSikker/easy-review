@@ -18,10 +18,15 @@ fn mint_comment_id(prefix: &str) -> String {
 }
 
 fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
-    if let Some(id) = tab.comment_id_override.take() {
-        if !id.is_empty() && id.starts_with(prefix) {
-            return id;
-        }
+    let usable = tab
+        .comment_id_override
+        .as_deref()
+        .is_some_and(|id| !id.is_empty() && id.starts_with(prefix));
+    if usable {
+        return tab
+            .comment_id_override
+            .take()
+            .unwrap_or_else(|| mint_comment_id(prefix));
     }
     mint_comment_id(prefix)
 }
@@ -229,6 +234,7 @@ impl App {
         let tab = self.tab();
         let text = tab.comment_text();
         if text.is_empty() {
+            self.tab_mut().comment_id_override = None;
             self.input_mode = InputMode::Normal;
             return Ok(());
         }

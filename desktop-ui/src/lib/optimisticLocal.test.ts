@@ -504,5 +504,9 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(op?.type).toBe("delete-root");
     applyOptimisticOp(view, op!);
     expect(view.files[0].hunks[0].threads).toEqual([]);
+    expect(view.files[0].comment_count).toBe(0);
+    rollbackOptimisticOp(view, op!);
+    expect(view.files[0].hunks[0].threads.map((t) => t.id)).toEqual(["hunk-only"]);
+    expect(view.files[0].comment_count).toBe(1);
   });
 });

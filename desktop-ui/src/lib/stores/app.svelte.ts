@@ -676,6 +676,10 @@ class AppStore {
     const invokeArgs = optimisticInvokeArgs(command, args, op);
 
     await this.enqueueOptimistic(async () => {
+      if (!this.snapshot || snapshotViewIdentity(this.snapshot) !== viewAtStart) {
+        this.dropPendingOp(op.id);
+        return;
+      }
       try {
         const returned = await invoke<AppSnapshot>(command, invokeArgs);
         this.dropPendingOp(op.id);
@@ -780,6 +784,7 @@ class AppStore {
         aiReviewFilter.reset();
       }
       this.snapshot = painted;
+      this.keepOptimisticOps();
       this.initialLoadDone = true;
       // Drop in-flight poll revisions from the previous tab.
       this.lastPollRevision = null;

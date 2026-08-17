@@ -36,9 +36,9 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
     expect(src).toContain("applyOptimisticOp(snap, op);");
     expect(src).toContain("rollbackOptimisticOp(this.snapshot, op);");
-    expect(src).toContain("optimisticInvokeArgs(command, args, op)");
+    expect(src).toContain("this.keepOptimisticOps();");
     expect(src).toContain("if (!snap || this.pendingTabSwitch) return;");
-    expect(src).toContain("if (!op) return;");
+    expect(src).toContain("if (!this.snapshot || snapshotViewIdentity(this.snapshot) !== viewAtStart)");
   });
 });
 

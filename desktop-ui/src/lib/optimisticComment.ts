@@ -162,13 +162,17 @@ export function applyOptimisticThread(snap: AppSnapshot, pending: OptimisticThre
 }
 
 export function removeOptimisticThread(snap: AppSnapshot, pending: OptimisticThread): void {
-  const existed = snap.ai.threads.some((t) => t.id === pending.id);
-  if (existed) {
-    snap.ai.threads = snap.ai.threads.filter((t) => t.id !== pending.id);
-    bumpAiCounts(snap, pending.thread.kind, -1);
-  }
-
+  const inAi = snap.ai.threads.some((t) => t.id === pending.id);
   const file = fileForPending(snap, pending);
+  const inHunk = Boolean(
+    file?.hunks[pending.hunkIdx]?.threads.some((t) => t.id === pending.id),
+  );
+  const existed = inAi || inHunk;
+  if (inAi) {
+    snap.ai.threads = snap.ai.threads.filter((t) => t.id !== pending.id);
+  }
+  if (existed) bumpAiCounts(snap, pending.thread.kind, -1);
+
   if (!file) return;
   if (existed) bumpFileCounts(file, pending.thread.kind, -1);
 

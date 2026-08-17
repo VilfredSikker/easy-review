@@ -9152,6 +9152,13 @@ pub async fn add_ui_annotation(
                     .unwrap_or(0)
             )
         });
+        if !id.starts_with("ui-")
+            || id.contains(['/', '\\'])
+            || id.contains("..")
+            || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err("invalid annotation id".to_string());
+        }
 
         // If a screenshot data URL was provided, decode and persist it under
         // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
