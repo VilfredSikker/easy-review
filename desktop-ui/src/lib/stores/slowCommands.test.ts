@@ -35,10 +35,12 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("if (isOptimisticCommand(command))");
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
     expect(src).toContain("applyOptimisticOp(snap, op);");
-    expect(src).toContain("rollbackOptimisticOp(this.snapshot, op);");
+    expect(src).toContain("rollbackOptimisticOp(originSnap, op);");
     expect(src).toContain("this.keepOptimisticOps();");
     expect(src).toContain("if (!this.canPaintOptimistic()) return;");
-    expect(src).toContain("if (!this.snapshot || snapshotViewIdentity(this.snapshot) !== viewAtStart)");
+    expect(src).toContain("!this.pendingTabSwitch && !this.switching");
+    expect(src).toContain("snapshotViewParts(snap)");
+    expect(src).toContain("const stillHere =");
   });
 });
 
@@ -106,5 +108,19 @@ describe("optimistic local-write call sites", () => {
     expect(finding.indexOf('void app.cmd("update_thread_message"')).toBeLessThan(
       finding.indexOf("editMessageId = null;"),
     );
+
+    const annotation = component("AnnotationComposer.svelte");
+    const saveFn = annotation.slice(
+      annotation.indexOf("function saveComposer"),
+      annotation.indexOf("async function captureScreenshot"),
+    );
+    expect(saveFn).toContain("if (!app.canPaintOptimistic()) return;");
+    expect(saveFn.indexOf("onSave(")).toBeGreaterThan(
+      saveFn.indexOf("if (!app.canPaintOptimistic()) return;"),
+    );
+    expect(saveFn.lastIndexOf("composer = null;")).toBeGreaterThan(saveFn.indexOf("onSave("));
+
+    const browser = component("BrowserView.svelte");
+    expect(browser).toContain("if (!app.canPaintOptimistic()) return;");
   });
 });

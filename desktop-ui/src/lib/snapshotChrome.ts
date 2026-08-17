@@ -1,21 +1,37 @@
 import type { AppSnapshot } from "./types";
 
+/** Fields the backend uses to refuse an optimistic write on a switched view. */
+export type SnapshotViewParts = {
+  active_tab: number;
+  repo_root: string;
+  pr_number: number | null;
+  branch: string;
+  mode: string;
+};
+
 /**
  * Identity of the review view a snapshot belongs to. Chrome-only polls must not
  * keep `prev.ai` across a change here — that leaves Branch/Review/Notes badges
  * stuck on the previous PR while the card shows the new one (or vice versa).
  */
-export function snapshotViewIdentity(snap: AppSnapshot): string {
+export function snapshotViewParts(snap: AppSnapshot): SnapshotViewParts {
   const tab =
     snap.tabs?.find((t) => t.is_active) ??
     (typeof snap.active_tab === "number" ? snap.tabs?.[snap.active_tab] : undefined);
   // Tab fields only. `github.number` / `detected_pr_number` arriving later
   // must not look like a view change (that deferred chrome and stuck status).
-  const pr = tab?.pr_number ?? null;
-  const root = tab?.repo_root ?? "";
-  const branch = snap.branch ?? tab?.branch ?? "";
-  const mode = snap.mode ?? "";
-  return `${snap.active_tab}|${root}|${pr ?? ""}|${branch}|${mode}`;
+  return {
+    active_tab: snap.active_tab,
+    repo_root: tab?.repo_root ?? "",
+    pr_number: tab?.pr_number ?? null,
+    branch: snap.branch ?? tab?.branch ?? "",
+    mode: snap.mode ?? "",
+  };
+}
+
+export function snapshotViewIdentity(snap: AppSnapshot): string {
+  const p = snapshotViewParts(snap);
+  return `${p.active_tab}|${p.repo_root}|${p.pr_number ?? ""}|${p.branch}|${p.mode}`;
 }
 
 export type ChromeMergeAiSource = "prev" | "next";

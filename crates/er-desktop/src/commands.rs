@@ -289,6 +289,23 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     )
 }
 
+/// Skip the sidecar write when the active view is no longer the one the
+/// frontend painted. Returns a snapshot of the *current* view and does not
+/// toast; the client rolls back the origin paint.
+fn abort_wrong_view(
+    app: &App,
+    state: &AppState,
+    view: Option<&crate::snapshot::OptimisticView>,
+) -> Option<Result<AppSnapshot, String>> {
+    let Some(expected) = view else {
+        return None;
+    };
+    if crate::snapshot::optimistic_view_matches(app, expected) {
+        return None;
+    }
+    Some(Ok(snap_from(app, state)))
+}
+
 /// Build a full snapshot for a tab-switch / open command and invalidate poll
 /// `last_sent_*` so the next poll emits a clean full content snapshot for the
 /// new view (does not merely align to the current revision).
@@ -1090,11 +1107,15 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
 #[tauri::command]
 pub async fn bulk_review_pillar(
     pillar_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         {
             let tab = app.tab_mut();
             let paths = pillar_file_paths(tab, &pillar_id);
@@ -1125,11 +1146,15 @@ pub async fn bulk_review_pillar(
 #[tauri::command]
 pub async fn unbulk_review_pillar(
     pillar_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         {
             let tab = app.tab_mut();
             let paths = pillar_file_paths(tab, &pillar_id);
@@ -2228,11 +2253,15 @@ pub async fn add_comment(
     text: String,
     side: Option<String>,
     id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         // Set side before submit so submit_github_comment can consume it
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
@@ -2266,11 +2295,15 @@ pub async fn add_question(
     text: String,
     side: Option<String>,
     id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
         }
@@ -2303,11 +2336,15 @@ pub async fn add_note(
     text: String,
     side: Option<String>,
     id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         if let Some(ref s) = side {
             app.tab_mut().comment_side = Some(s.clone());
         }
@@ -2334,11 +2371,15 @@ pub async fn add_note(
 pub async fn reply_to_thread(
     parent_id: String,
     text: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         let (file, hunk_idx, line_num, comment_type) = {
             let tab = app.tab();
             if parent_id.starts_with("q-") {
@@ -2405,10 +2446,17 @@ pub async fn reply_to_thread(
 }
 
 #[tauri::command]
-pub async fn delete_thread(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+pub async fn delete_thread(
+    id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
         if let Ok(mut p) = state.pending_ai_replies.lock() {
             p.remove(&id);
@@ -2529,10 +2577,17 @@ fn mark_thread_resolved_in_files(
 }
 
 #[tauri::command]
-pub async fn resolve_thread(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+pub async fn resolve_thread(
+    id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
         let tab = app.tab();
         let q_path = format!("{}/questions.json", tab.er_dir());
@@ -4332,11 +4387,15 @@ fn build_promoted_body(root_text: &str, replies: &[(&str, &str)]) -> String {
 pub async fn promote_to_comment(
     id: String,
     body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
         // 1. Resolve the source question or note + already-promoted guard.
         let (file, hunk_idx, line_start, default_body, side) = {
@@ -4442,11 +4501,15 @@ pub async fn promote_to_comment(
 pub async fn promote_to_note(
     id: String,
     body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
         let (file, hunk_idx, line_start, default_body, side) = {
             let tab = app.tab();
@@ -8143,11 +8206,15 @@ pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<Ap
 #[tauri::command]
 pub async fn dismiss_finding(
     finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
         let er_dir = app.tab().er_dir();
         let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
@@ -8403,6 +8470,7 @@ pub fn reply_to_finding(
 pub async fn update_thread_message(
     id: String,
     body: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let text = body.trim().to_string();
@@ -8413,6 +8481,9 @@ pub async fn update_thread_message(
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         let author = {
             let tab = app.tab();
             if id.starts_with("q-") {
@@ -9139,11 +9210,15 @@ pub async fn add_ui_annotation(
     elementContext: Option<String>,
     domContext: Option<serde_json::Value>,
     id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         let dir = app.tab().comments_dir();
         let mut anns = er_engine::ai::load_ui_annotations(&dir);
         let id = id.filter(|s| !s.is_empty()).unwrap_or_else(|| {
@@ -9320,11 +9395,15 @@ fn base64_encode(input: &[u8]) -> String {
 #[tauri::command]
 pub async fn delete_ui_annotation(
     id: String,
+    view: Option<crate::snapshot::OptimisticView>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
         let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
         let dir = app.tab().comments_dir();
         let mut anns = er_engine::ai::load_ui_annotations(&dir);
         anns.retain(|a| a.id != id);
@@ -11077,6 +11156,28 @@ mod tests {
             };
             if !body.contains("run_blocking") {
                 failures.push(format!("{name} is async but its body has no run_blocking"));
+            }
+            if matches!(
+                name,
+                "add_comment"
+                    | "add_question"
+                    | "add_note"
+                    | "reply_to_thread"
+                    | "delete_thread"
+                    | "resolve_thread"
+                    | "update_thread_message"
+                    | "dismiss_finding"
+                    | "promote_to_comment"
+                    | "promote_to_note"
+                    | "bulk_review_pillar"
+                    | "unbulk_review_pillar"
+                    | "add_ui_annotation"
+                    | "delete_ui_annotation"
+            ) && !body.contains("abort_wrong_view")
+            {
+                failures.push(format!(
+                    "{name} must abort when the optimistic view no longer matches"
+                ));
             }
         }
         for name in wrappers {

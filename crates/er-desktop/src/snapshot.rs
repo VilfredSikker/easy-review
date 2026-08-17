@@ -157,6 +157,30 @@ fn mode_str(mode: DiffMode) -> &'static str {
     }
 }
 
+/// View the frontend painted before an optimistic sidecar write. Must match
+/// `snapshotViewParts` in `desktop-ui/src/lib/snapshotChrome.ts`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptimisticView {
+    pub active_tab: usize,
+    pub repo_root: String,
+    pub pr_number: Option<u64>,
+    pub branch: String,
+    pub mode: String,
+}
+
+pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
+    let tab = app.tab();
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    app.active_tab == expected.active_tab
+        && tab.repo_root == expected.repo_root
+        && tab.pr_number == expected.pr_number
+        && branch == expected.branch
+        && mode_str(tab.mode) == expected.mode
+}
+
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
 pub(crate) fn record_sent_file(

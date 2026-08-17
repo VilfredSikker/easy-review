@@ -482,6 +482,7 @@
     }
 
     if ((data as { __er_composer_submit?: boolean }).__er_composer_submit) {
+      if (!app.canPaintOptimistic()) return;
       composerOpenInPage = false;
       const box = (data as { box?: number[] }).box;
       const bbox: [number, number, number, number] = Array.isArray(box) && box.length >= 4
@@ -636,6 +637,7 @@
     elementContext: string | null,
     domContext: UiDomContext | null,
   ) {
+    if (!app.canPaintOptimistic()) return;
     void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
       selector,

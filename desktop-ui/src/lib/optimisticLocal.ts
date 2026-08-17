@@ -7,7 +7,7 @@ import {
   removeOptimisticThread,
   type OptimisticThread,
 } from "./optimisticComment";
-import { snapshotViewIdentity } from "./snapshotChrome";
+import { snapshotViewIdentity, type SnapshotViewParts } from "./snapshotChrome";
 import type {
   AppSnapshot,
   FlatFinding,
@@ -585,8 +585,10 @@ export function optimisticInvokeArgs(
   command: string,
   args: Record<string, unknown>,
   op: OptimisticOp,
+  view?: SnapshotViewParts,
 ): Record<string, unknown> {
-  if (op.type === "add-thread") return { ...args, id: op.pending.id };
-  if (op.type === "add-annotation") return { ...args, id: op.annotation.id };
-  return args;
+  const withView = view ? { ...args, view } : { ...args };
+  if (op.type === "add-thread") return { ...withView, id: op.pending.id };
+  if (op.type === "add-annotation") return { ...withView, id: op.annotation.id };
+  return withView;
 }

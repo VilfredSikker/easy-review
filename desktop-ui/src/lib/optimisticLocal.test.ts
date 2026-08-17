@@ -480,6 +480,19 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(optimisticInvokeArgs("add_comment", { text: "hi" }, comment).id).toBe(
       comment.pending.id,
     );
+    const commentArgs = optimisticInvokeArgs(
+      "add_comment",
+      { text: "hi" },
+      comment,
+      { active_tab: 0, repo_root: "/repo", pr_number: null, branch: "feat", mode: "branch" },
+    );
+    expect(commentArgs.view).toEqual({
+      active_tab: 0,
+      repo_root: "/repo",
+      pr_number: null,
+      branch: "feat",
+      mode: "branch",
+    });
 
     const ann = buildOptimisticOp(
       "add_ui_annotation",

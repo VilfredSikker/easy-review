@@ -23,6 +23,7 @@ import {
   mergeChromeSnapshot,
   shouldDeferChromeIdentityChange,
   snapshotViewIdentity,
+  snapshotViewParts,
 } from "../snapshotChrome";
 import { resolveOmittedHunks } from "../snapshotDelta";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
@@ -663,7 +664,7 @@ class AppStore {
    * is in flight. Composers that clear drafts must check this first.
    */
   canPaintOptimistic(): boolean {
-    return this.snapshot !== null && !this.pendingTabSwitch;
+    return this.snapshot !== null && !this.pendingTabSwitch && !this.switching;
   }
 
   /**
@@ -680,12 +681,16 @@ class AppStore {
     if (!op) return;
 
     const viewAtStart = op.viewIdentity;
+    const originSnap = snap;
     this.pendingOps = [...this.pendingOps, op];
     applyOptimisticOp(snap, op);
-    const invokeArgs = optimisticInvokeArgs(command, args, op);
+    const invokeArgs = optimisticInvokeArgs(command, args, op, snapshotViewParts(snap));
 
     await this.enqueueOptimistic(async () => {
-      if (!this.snapshot || snapshotViewIdentity(this.snapshot) !== viewAtStart) {
+      const stillHere =
+        this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
+      if (!stillHere) {
+        rollbackOptimisticOp(originSnap, op);
         this.dropPendingOp(op.id);
         return;
       }
@@ -694,13 +699,15 @@ class AppStore {
         this.dropPendingOp(op.id);
         if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
           this.ingestCommandSnapshot(returned);
+        } else {
+          rollbackOptimisticOp(originSnap, op);
         }
       } catch (e) {
         this.dropPendingOp(op.id);
+        rollbackOptimisticOp(originSnap, op);
         if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
-          rollbackOptimisticOp(this.snapshot, op);
+          this.reportCmdError(command, e);
         }
-        this.reportCmdError(command, e);
       }
     });
   }
