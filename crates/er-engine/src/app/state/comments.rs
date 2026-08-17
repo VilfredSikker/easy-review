@@ -329,9 +329,10 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &questions_path)?;
 
+        self.tab_mut().ai.questions = Some(questions);
+        self.tab_mut().ai.rebuild_comment_index();
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Question" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -438,9 +439,10 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &notes_path)?;
 
+        self.tab_mut().ai.notes = Some(notes);
+        self.tab_mut().ai.rebuild_comment_index();
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Note" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -546,15 +548,13 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &comments_path)?;
 
+        // Keep the in-memory copy. `reload_ai_state()` re-reads every sidecar
+        // (review/experts/tour/…) and is what made each local inline comment
+        // feel like a GitHub round-trip. The comment is local and unpushed.
+        self.tab_mut().ai.github_comments = Some(gh_comments);
+        self.tab_mut().ai.rebuild_comment_index();
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        let is_remote = self.tab().is_remote();
-        if !is_remote {
-            self.tab_mut().reload_ai_state();
-        } else {
-            // In remote mode, manually reload github comments from the cache file
-            self.tab_mut().reload_remote_comments();
-        }
         let label = if is_reply { "Reply" } else { "Comment" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())

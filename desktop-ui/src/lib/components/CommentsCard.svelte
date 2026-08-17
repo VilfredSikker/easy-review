@@ -11,6 +11,7 @@
     toggleCommentFilter,
     visibleCommentThreads as filterVisibleComments,
   } from "$lib/commentVisibility";
+  import { githubCommentsAutoPullKey } from "$lib/commentAutoPull";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import InlineThread from "$lib/components/InlineThread.svelte";
@@ -40,16 +41,7 @@
   );
 
   function currentAutoPullKey(): string | null {
-    const snapshot = app.snapshot;
-    if (!snapshot) return null;
-    const pr = snapshot.github?.number ?? snapshot.pr?.number ?? null;
-    if (!pr || !snapshot.branch) return null;
-
-    const activeTab = snapshot.tabs?.find((t) => t.is_active || t.idx === snapshot.active_tab);
-    const repoKey = snapshot.github
-      ? `${snapshot.github.owner}/${snapshot.github.repo}`
-      : (activeTab?.repo_root ?? "unknown");
-    return `${repoKey}:${snapshot.branch}:${pr}`;
+    return githubCommentsAutoPullKey(app.snapshot);
   }
 
   function rememberAutoPull(key: string) {

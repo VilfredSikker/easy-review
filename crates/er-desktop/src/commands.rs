@@ -2205,150 +2205,166 @@ pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // ── Threads ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn add_comment(
+pub async fn add_comment(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // Set side before submit so submit_github_comment can consume it
-    if let Some(ref s) = side {
-        app.tab_mut().comment_side = Some(s.clone());
-    }
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // Set side before submit so submit_github_comment can consume it
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_question(
+pub async fn add_question(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::Question,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::Question,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_note(
+pub async fn add_note(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::Note,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::Note,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reply_to_thread(
+pub async fn reply_to_thread(
     parent_id: String,
     text: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let (file, hunk_idx, line_num, comment_type) = {
-        let tab = app.tab();
-        if parent_id.starts_with("q-") {
-            let q = tab
-                .ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
-                .map(|q| {
-                    (
-                        q.file.clone(),
-                        q.hunk_index.unwrap_or(0),
-                        q.line_start,
-                        CommentType::Question,
-                    )
-                });
-            q.ok_or_else(|| "Question not found".to_string())?
-        } else if parent_id.starts_with("n-") {
-            let n = tab
-                .ai
-                .notes
-                .as_ref()
-                .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
-                .map(|n| {
-                    (
-                        n.file.clone(),
-                        n.hunk_index.unwrap_or(0),
-                        n.line_start,
-                        CommentType::Note,
-                    )
-                });
-            n.ok_or_else(|| "Note not found".to_string())?
-        } else {
-            let c = tab
-                .ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
-                .map(|c| {
-                    (
-                        c.file.clone(),
-                        c.hunk_index.unwrap_or(0),
-                        c.line_start,
-                        CommentType::GitHubComment,
-                    )
-                });
-            c.ok_or_else(|| "Comment not found".to_string())?
-        }
-    };
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        None,
-        text,
-        comment_type,
-        Some(parent_id),
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let (file, hunk_idx, line_num, comment_type) = {
+            let tab = app.tab();
+            if parent_id.starts_with("q-") {
+                let q = tab
+                    .ai
+                    .questions
+                    .as_ref()
+                    .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
+                    .map(|q| {
+                        (
+                            q.file.clone(),
+                            q.hunk_index.unwrap_or(0),
+                            q.line_start,
+                            CommentType::Question,
+                        )
+                    });
+                q.ok_or_else(|| "Question not found".to_string())?
+            } else if parent_id.starts_with("n-") {
+                let n = tab
+                    .ai
+                    .notes
+                    .as_ref()
+                    .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
+                    .map(|n| {
+                        (
+                            n.file.clone(),
+                            n.hunk_index.unwrap_or(0),
+                            n.line_start,
+                            CommentType::Note,
+                        )
+                    });
+                n.ok_or_else(|| "Note not found".to_string())?
+            } else {
+                let c = tab
+                    .ai
+                    .github_comments
+                    .as_ref()
+                    .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
+                    .map(|c| {
+                        (
+                            c.file.clone(),
+                            c.hunk_index.unwrap_or(0),
+                            c.line_start,
+                            CommentType::GitHubComment,
+                        )
+                    });
+                c.ok_or_else(|| "Comment not found".to_string())?
+            }
+        };
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            None,
+            text,
+            comment_type,
+            Some(parent_id),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -10909,6 +10925,14 @@ mod tests {
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
+            // Local-first thread writes used to be sync Tauri commands: they
+            // locked App, reloaded every AI sidecar, and rebuilt the snapshot
+            // on the main thread — freeze + spinner per inline comment even
+            // though the comment is unpushed.
+            "add_comment",
+            "add_question",
+            "add_note",
+            "reply_to_thread",
         ];
         let wrappers = [
             "run_ai_triage_review",

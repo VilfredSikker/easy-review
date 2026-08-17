@@ -497,6 +497,47 @@ describe("getFileBlock — caching", () => {
     expect(a).not.toBe(b);
     expect(a.modelKey).not.toBe(b.modelKey);
   });
+
+  it("a new thread on one file does not rebuild an unrelated file's block", () => {
+    const untouched = file({
+      path: "keep.ts",
+      cache_key: "keep",
+      hunks: [hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1, text: "k" })] })],
+    });
+    const target = file({
+      path: "edit.ts",
+      cache_key: "edit",
+      hunks: [
+        hunk({
+          lines: [line({ kind: "add", new_num: 2, text: "x" })],
+        }),
+      ],
+    });
+    const before = getFileBlock(
+      mkInputs(untouched, [untouched, target], emptyAi(), "unified", VIS_DEFAULT, "branch", 0),
+    );
+
+    const t = thread("c-new", "edit.ts", 2);
+    target.hunks[0].threads = [t];
+    const afterUntouched = getFileBlock(
+      mkInputs(
+        untouched,
+        [untouched, target],
+        emptyAi([t]),
+        "unified",
+        VIS_DEFAULT,
+        "branch",
+        0,
+      ),
+    );
+    const afterTarget = getFileBlock(
+      mkInputs(target, [untouched, target], emptyAi([t]), "unified", VIS_DEFAULT, "branch", 1),
+    );
+
+    expect(afterUntouched).toBe(before);
+    expect(afterUntouched.modelKey).toBe(before.modelKey);
+    expect(afterTarget.rows.some((r) => r.type === "inline-thread")).toBe(true);
+  });
 });
 
 // ---------------- Step B: cross-file model tests ----------------

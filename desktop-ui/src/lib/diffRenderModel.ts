@@ -406,10 +406,40 @@ function contentRowHeight(text: string, wrapCols: number | null): number {
   return wrappedLineCount(text, wrapCols) * LINE_HEIGHT;
 }
 
+/** Fingerprint of inline threads + findings that belong to one file.
+ *  Used in the per-file block cache key so adding a comment on file A does
+ *  not rebuild file B (the global `annotationIndex.version` would). */
+export function fileAnnotationFingerprint(
+  file: FileSnapshot,
+  annotationIndex: AnnotationIndex,
+): number {
+  let h = 17;
+  for (const hunk of file.hunks) {
+    h = (h * 31 + hunk.threads.length) | 0;
+    for (const t of hunk.threads) {
+      h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0) + t.replies.length) | 0;
+    }
+  }
+  for (const f of annotationIndex.findingMap.values()) {
+    if (f.file !== file.path) continue;
+    h = (h * 31 + hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0)) | 0;
+  }
+  return h;
+}
+
+function hashStr(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h * 33) ^ s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
   const wrapCols = input.wrapCols ?? null;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
+  const annFp = fileAnnotationFingerprint(file, annotationIndex);
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
