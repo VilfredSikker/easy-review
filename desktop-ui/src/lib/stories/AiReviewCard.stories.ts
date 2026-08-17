@@ -6,7 +6,6 @@ import {
   aiEmptyWithSummary,
   aiProfessorOnly,
   aiMultiAgent,
-  aiFileRisksOnly,
 } from "./fixtures";
 
 const meta = {
@@ -22,7 +21,6 @@ export const Fresh: Story = { args: { ai: aiWithFindings } };
 export const Stale: Story = { args: { ai: { ...aiWithFindings, fresh: false } } };
 export const NoFindings: Story = { args: { ai: aiEmpty } };
 export const NoFindingsWithSummary: Story = { args: { ai: aiEmptyWithSummary } };
-export const FileRisksOnly: Story = { args: { ai: aiFileRisksOnly } };
 export const LongSummaryCollapsed: Story = {
   args: {
     ai: {
