@@ -123,19 +123,20 @@
 
   function submitEdit(body: string) {
     if (!editMessageId || !editOrigin) return;
+    if (!app.canPaintOptimistic()) return;
     const id = editMessageId;
     const origin = editOrigin;
-    editMessageId = null;
-    editOrigin = null;
     if (origin === "finding_response") {
       void app.cmd("update_finding_response", {
         findingId: finding.id,
         responseId: id,
         body,
       });
-      return;
+    } else {
+      void app.cmd("update_thread_message", { id, body });
     }
-    void app.cmd("update_thread_message", { id, body });
+    editMessageId = null;
+    editOrigin = null;
   }
 
   async function validateWithAi() {

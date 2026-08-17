@@ -659,13 +659,22 @@ class AppStore {
   }
 
   /**
+   * Local sidecar writes skip when there is no snapshot or a tab switch
+   * is in flight. Composers that clear drafts must check this first.
+   */
+  canPaintOptimistic(): boolean {
+    return this.snapshot !== null && !this.pendingTabSwitch;
+  }
+
+  /**
    * Paint a local sidecar write immediately, then run IPC in the
    * background. Rollback only if the write fails. Apply happens before
    * the first await so composers can close without waiting.
    */
   private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
+    if (!this.canPaintOptimistic()) return;
     const snap = this.snapshot;
-    if (!snap || this.pendingTabSwitch) return;
+    if (!snap) return;
 
     const op = buildOptimisticOp(command, args, snap);
     if (!op) return;

@@ -37,7 +37,7 @@ describe("SLOW_COMMANDS", () => {
     expect(src).toContain("applyOptimisticOp(snap, op);");
     expect(src).toContain("rollbackOptimisticOp(this.snapshot, op);");
     expect(src).toContain("this.keepOptimisticOps();");
-    expect(src).toContain("if (!snap || this.pendingTabSwitch) return;");
+    expect(src).toContain("if (!this.canPaintOptimistic()) return;");
     expect(src).toContain("if (!this.snapshot || snapshotViewIdentity(this.snapshot) !== viewAtStart)");
   });
 });
@@ -81,5 +81,30 @@ describe("optimistic local-write call sites", () => {
     const anns = component("UiAnnotationsCard.svelte");
     expect(anns).toContain('void app.cmd("delete_ui_annotation"');
     expect(anns).not.toContain('await app.cmd("delete_ui_annotation"');
+  });
+
+  it("keeps composer drafts until an optimistic write can paint", () => {
+    const composer = component("DiffComposer.svelte");
+    expect(composer).toContain("if (!app.canPaintOptimistic()) return;");
+    const cmdIdx = composer.indexOf("void app.cmd(command, cmdArgs)");
+    const clearIdx = composer.indexOf("diffSel.clear();");
+    expect(cmdIdx).toBeGreaterThan(-1);
+    expect(clearIdx).toBeGreaterThan(cmdIdx);
+
+    const thread = component("InlineThread.svelte");
+    const replyFn = thread.slice(
+      thread.indexOf("function submitReply"),
+      thread.indexOf("function buildPromoteBody"),
+    );
+    expect(replyFn).toContain("if (!app.canPaintOptimistic()) return;");
+    expect(replyFn.indexOf('void app.cmd("reply_to_thread"')).toBeLessThan(
+      replyFn.indexOf('replyText = "";'),
+    );
+
+    const finding = component("InlineFinding.svelte");
+    expect(finding).toContain("if (!app.canPaintOptimistic()) return;");
+    expect(finding.indexOf('void app.cmd("update_thread_message"')).toBeLessThan(
+      finding.indexOf("editMessageId = null;"),
+    );
   });
 });

@@ -111,9 +111,10 @@
   function submitReply() {
     const text = replyText.trim();
     if (!text) return;
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd("reply_to_thread", { parentId: thread.id, text });
     replyText = "";
     showReply = false;
-    void app.cmd("reply_to_thread", { parentId: thread.id, text });
   }
 
   function buildPromoteBody(): string {
@@ -129,8 +130,9 @@
   }
 
   function submitPromote(body: string) {
-    showPromote = false;
+    if (!app.canPaintOptimistic()) return;
     void app.cmd("promote_to_comment", { id: thread.id, body });
+    showPromote = false;
   }
 
   function promoteToNote() {
@@ -183,9 +185,10 @@
 
   function submitEdit(body: string) {
     if (!editMessageId) return;
+    if (!app.canPaintOptimistic()) return;
     const id = editMessageId;
-    editMessageId = null;
     void app.cmd("update_thread_message", { id, body });
+    editMessageId = null;
   }
 
   const targetLineLabel = $derived(

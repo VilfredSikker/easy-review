@@ -67,8 +67,9 @@
     if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
-    diffSel.clear();
+    if (!app.canPaintOptimistic()) return;
     void app.cmd(command, cmdArgs);
+    diffSel.clear();
   }
 
   function handleKeydown(e: KeyboardEvent) {
