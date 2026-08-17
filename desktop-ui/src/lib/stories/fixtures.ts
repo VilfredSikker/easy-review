@@ -358,6 +358,14 @@ export const aiEmpty: AiSnapshot = {
   diagram_presets: diagramPresetsFixture,
 };
 
+/** Completed review that wrote summary.md but no findings. */
+export const aiEmptyWithSummary: AiSnapshot = {
+  ...aiEmpty,
+  has_review_json: true,
+  summary_markdown:
+    "No actionable findings were identified. JSON files were validated successfully.\n\nThe plates page was removed and templates now live under Settings. Behavior matches the previous page for the cases covered by tests.",
+};
+
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
   return {
     id,

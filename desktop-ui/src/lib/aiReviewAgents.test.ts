@@ -4,7 +4,9 @@ import {
   ALL_REVIEWERS,
   agentScopedSummaryLine,
   coerceAgentFilter,
+  EMPTY_FINDINGS_STATUS,
   resolveAgentSummary,
+  showEmptyFindingsStatus,
   countBySeverity,
   defaultAgentFilter,
   filterByAgent,
@@ -207,6 +209,107 @@ describe("resolveAgentSummary", () => {
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("1 finding from Security");
+  });
+
+  const emptyCounts = { high: 0, med: 0, low: 0 };
+
+  it("keeps summary.md when a completed review has no findings", () => {
+    const r = resolveAgentSummary(
+      {
+        summary_markdown:
+          "No actionable findings were identified. JSON files were validated successfully.",
+        agent_summaries: {},
+      },
+      ALL_REVIEWERS,
+      emptyCounts,
+      0,
+      true,
+    );
+    expect(r.markdown).toBe(true);
+    expect(r.text).toContain("No actionable findings were identified");
+    expect(r.text).not.toContain("Inspect the `.er/` folder");
+  });
+
+  it("keeps an expert summary when that agent reported no findings", () => {
+    const r = resolveAgentSummary(
+      {
+        summary_markdown: "General overview",
+        agent_summaries: {
+          Testing: "Coverage looks complete for the moved settings page.",
+        },
+      },
+      "Testing",
+      emptyCounts,
+      0,
+      true,
+    );
+    expect(r.markdown).toBe(true);
+    expect(r.text).toContain("Coverage looks complete");
+  });
+
+  it("says no findings when review.json exists but there is no summary", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {}, has_review_json: true },
+      ALL_REVIEWERS,
+      emptyCounts,
+      0,
+      true,
+    );
+    expect(r.markdown).toBe(false);
+    expect(r.text).toBe("No findings.");
+  });
+
+  it("asks to inspect artifacts only when nothing was written", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      ALL_REVIEWERS,
+      emptyCounts,
+      0,
+      true,
+    );
+    expect(r.markdown).toBe(false);
+    expect(r.text).toContain("Inspect the `.er/` folder");
+  });
+
+  it("names the agent when a scoped filter has no findings or summary", () => {
+    const r = resolveAgentSummary(
+      { summary_markdown: null, agent_summaries: {} },
+      "Security",
+      emptyCounts,
+      0,
+      true,
+    );
+    expect(r.markdown).toBe(false);
+    expect(r.text).toBe("No findings from Security.");
+  });
+});
+
+describe("showEmptyFindingsStatus", () => {
+  it("is true when findings are empty and a markdown summary exists", () => {
+    expect(
+      showEmptyFindingsStatus(true, { text: "done", markdown: true }),
+    ).toBe(true);
+  });
+
+  it("is true when findings are empty and the status line is the whole summary", () => {
+    expect(
+      showEmptyFindingsStatus(true, {
+        text: EMPTY_FINDINGS_STATUS,
+        markdown: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("is false when findings exist or the empty state is missing output", () => {
+    expect(
+      showEmptyFindingsStatus(false, { text: "done", markdown: true }),
+    ).toBe(false);
+    expect(
+      showEmptyFindingsStatus(true, {
+        text: "Inspect the `.er/` folder",
+        markdown: false,
+      }),
+    ).toBe(false);
   });
 });
 
