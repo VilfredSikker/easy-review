@@ -4,6 +4,7 @@ import {
   commentThreads,
   hiddenCommentsHint,
   toggleCommentFilter,
+  unpushedLocalCommentThreads,
   visibleCommentThreads,
 } from "./commentVisibility";
 import type { ThreadSnapshot } from "./types";
@@ -104,6 +105,37 @@ describe("visibleCommentThreads", () => {
     ];
     const visible = visibleCommentThreads(aiStale, DEFAULT_COMMENT_VISIBILITY, files);
     expect(visible.map((t) => t.id)).toEqual(["gh-1", "gh-2"]);
+  });
+});
+
+describe("unpushedLocalCommentThreads", () => {
+  it("counts own unpushed comments, not GitHub threads already on the PR", () => {
+    // Symptom: Push as review showed "7 comments" when the user had 3 local
+    // drafts and 4 existing GitHub comments.
+    const mixed = [
+      thread({ id: "l1", kind: "comment", source: "local", synced: false }),
+      thread({ id: "l2", kind: "comment", source: "local", synced: false }),
+      thread({ id: "l3", kind: "comment", source: "local", synced: false }),
+      thread({ id: "g1", kind: "comment", source: "github", synced: true }),
+      thread({ id: "g2", kind: "comment", source: "github", synced: true }),
+      thread({ id: "g3", kind: "comment", source: "github", synced: true }),
+      thread({ id: "g4", kind: "comment", source: "github", synced: true }),
+    ];
+    expect(commentThreads(mixed)).toHaveLength(7);
+    expect(unpushedLocalCommentThreads(mixed).map((t) => t.id)).toEqual([
+      "l1",
+      "l2",
+      "l3",
+    ]);
+  });
+
+  it("does not count local comments that are already synced", () => {
+    const mixed = [
+      thread({ id: "draft", kind: "comment", source: "local", synced: false }),
+      thread({ id: "pushed", kind: "comment", source: "local", synced: true }),
+      thread({ id: "gh", kind: "comment", source: "github", synced: true }),
+    ];
+    expect(unpushedLocalCommentThreads(mixed).map((t) => t.id)).toEqual(["draft"]);
   });
 });
 

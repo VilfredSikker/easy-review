@@ -36,6 +36,7 @@
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
   import { startWindowDrag } from "$lib/windowDrag";
   import { applyTheme } from "$lib/themes";
+  import { snapshotViewIdentity } from "$lib/snapshotChrome";
   const panels = $derived(app.snapshot?.panels);
 
   // Follow the configured theme (`display.theme`, same as the TUI): override
@@ -359,21 +360,23 @@
     </main>
 
     {#if showDiff && app.mainView === "diff"}
-      {#if rightRail.collapsed}
-        <CollapsedRightRail
-          ai={app.snapshot?.ai ?? null}
-          onExpand={expandRightPanelToTab}
-        />
-      {:else}
-        <RightPanel
-          ai={app.snapshot?.ai ?? null}
-          pr={app.snapshot?.pr ?? null}
-          width={rightPanelWidth}
-          dragging={resizingRightPanel}
-          onResizeStart={onRightPanelResizeStart}
-          onCollapseToggle={rightRail.toggle}
-        />
-      {/if}
+      {#key app.snapshot ? snapshotViewIdentity(app.snapshot) : "none"}
+        {#if rightRail.collapsed}
+          <CollapsedRightRail
+            ai={app.snapshot?.ai ?? null}
+            onExpand={expandRightPanelToTab}
+          />
+        {:else}
+          <RightPanel
+            ai={app.snapshot?.ai ?? null}
+            pr={app.snapshot?.pr ?? null}
+            width={rightPanelWidth}
+            dragging={resizingRightPanel}
+            onResizeStart={onRightPanelResizeStart}
+            onCollapseToggle={rightRail.toggle}
+          />
+        {/if}
+      {/key}
     {/if}
   </div>
 

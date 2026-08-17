@@ -3,7 +3,7 @@
   import type { AiSnapshot, PrSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
-  import { resolveActivePrUrl } from "$lib/prUrl";
+  import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
   import { visibleCommentThreads } from "$lib/commentVisibility";
   import { totalReviewFindings } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
@@ -86,13 +86,18 @@
   );
 
   const activeAppTab = $derived(app.snapshot?.tabs?.find((t) => t.is_active) ?? null);
-  const displayPrNumber = $derived(
-    currentWorktree?.pr_number ?? app.snapshot?.github?.number ?? pr?.number ?? activeAppTab?.pr_number ?? null,
-  );
+  const displayPrNumber = $derived(resolveActivePrNumber(app.snapshot));
   const displayPrUrl = $derived(resolveActivePrUrl(app.snapshot));
+  const githubForTab = $derived(githubStatusForActiveTab(app.snapshot));
+  const tabOwnsPr = $derived(activeAppTab?.pr_number != null);
+  const isPr = $derived(displayPrNumber !== null);
+  const isMerged = $derived(
+    githubForTab?.state === "MERGED" ||
+      (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
+  );
 
   const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
-    const checks = app.snapshot?.github?.checks;
+    const checks = githubForTab?.checks;
     if (!checks || checks.length === 0) return null;
     if (checks.some((c) => c.conclusion === "FAILURE" || c.conclusion === "fail")) return "failure";
     if (checks.some((c) => c.status === "PENDING")) return "pending";
@@ -310,11 +315,11 @@
             additions={totalAdds}
             deletions={totalDels}
             checks_status={checksStatus}
-            is_pr={(currentWorktree?.is_pr ?? false) || displayPrNumber !== null}
+            is_pr={isPr}
             pr_number={displayPrNumber}
-            is_merged={currentWorktree?.is_merged ?? false}
+            is_merged={isMerged}
             github_url={displayPrUrl}
-            github={app.snapshot?.github ?? null}
+            github={githubForTab}
           />
         {/if}
         {#if ai}

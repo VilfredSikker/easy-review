@@ -1,4 +1,4 @@
-import type { AppSnapshot } from "$lib/types";
+import type { AppSnapshot, GithubStatusSnapshot, TabSummary } from "./types";
 
 /** Parse `owner/repo` from a GitHub git remote URL (HTTPS or SSH). */
 export function parseGithubSlug(remote: string): string | null {
@@ -19,39 +19,82 @@ export function parseGithubSlug(remote: string): string | null {
   return `${parts[0]}/${parts[1]}`;
 }
 
+function activeTab(snapshot: AppSnapshot): TabSummary | undefined {
+  return snapshot.tabs.find((t) => t.is_active) ?? snapshot.tabs[snapshot.active_tab];
+}
+
+/**
+ * PR number for the active review tab. Tab identity wins over the current
+ * worktree (two PR tabs on one checkout must not share the checkout's PR).
+ */
+export function resolveActivePrNumber(snapshot: AppSnapshot | null): number | null {
+  if (!snapshot) return null;
+
+  const tab = activeTab(snapshot);
+  if (tab?.pr_number != null) return tab.pr_number;
+  if (snapshot.pr?.number != null) return snapshot.pr.number;
+  if (snapshot.detected_pr_number != null) return snapshot.detected_pr_number;
+
+  const github = snapshot.github?.number ?? null;
+  if (github != null) return github;
+
+  const currentWorktree = snapshot.worktrees.find((w) => w.is_current) ?? null;
+  return currentWorktree?.pr_number ?? null;
+}
+
+/**
+ * Live GitHub status for the Branch card. Dropped when `github.number` is a
+ * different PR than the active tab (stale cache / worktree collision).
+ */
+export function githubStatusForActiveTab(
+  snapshot: AppSnapshot | null,
+): GithubStatusSnapshot | null {
+  if (!snapshot?.github) return null;
+  const resolved = resolveActivePrNumber(snapshot);
+  if (resolved != null && snapshot.github.number !== resolved) return null;
+  return snapshot.github;
+}
+
 /** PR URL for the active tab — same resolution as the right-panel Branch card. */
 export function resolveActivePrUrl(snapshot: AppSnapshot | null): string | null {
   if (!snapshot) return null;
 
-  const direct = snapshot.github?.url ?? snapshot.pr?.url;
-  if (direct) return direct;
-
-  const activeTab = snapshot.tabs.find((t) => t.is_active) ?? snapshot.tabs[snapshot.active_tab];
-  const currentWorktree = snapshot.worktrees.find((w) => w.is_current) ?? null;
-
-  const prNumber =
-    snapshot.github?.number ??
-    snapshot.pr?.number ??
-    activeTab?.pr_number ??
-    currentWorktree?.pr_number ??
-    null;
+  const prNumber = resolveActivePrNumber(snapshot);
+  const github = githubStatusForActiveTab(snapshot);
+  if (github?.url) return github.url;
+  if (
+    snapshot.pr?.url &&
+    (prNumber == null || snapshot.pr.number === prNumber)
+  ) {
+    return snapshot.pr.url;
+  }
 
   if (prNumber == null) return null;
 
-  // Resolve the repo from the tab's own remote first — a project may point at
-  // a different repo than the branch/PR actually being viewed (e.g. a project
-  // registered under the EasyReview repo reviewing a PR from another repo).
-  // Fall back to the current worktree's remote, then the active project's.
+  const tab = activeTab(snapshot);
   const worktreeRemote = snapshot.worktrees.find((w) => w.is_current)?.remote ?? null;
   const remote =
-    activeTab?.remote ??
+    tab?.remote ??
     worktreeRemote ??
     snapshot.projects.find((p) => p.is_active)?.remote ??
     null;
   if (!remote) return null;
 
-  const slug = parseGithubSlug(remote);
+  const slug = parseGithubSlug(remote) ?? (remote.includes("/") && !remote.includes(":") ? remote : null);
   if (!slug) return null;
 
   return `https://github.com/${slug}/pull/${prNumber}`;
+}
+
+/**
+ * Auto-pull key for GitHub comments. Tab idx + tab PR, not the worktree or a
+ * mismatched github.number — otherwise switching PRs skips the new pull.
+ */
+export function commentAutoPullKey(snapshot: AppSnapshot | null): string | null {
+  if (!snapshot) return null;
+  const tab = activeTab(snapshot);
+  const pr = tab?.pr_number ?? resolveActivePrNumber(snapshot);
+  if (pr == null) return null;
+  const repo = tab?.remote ?? tab?.repo_root ?? "unknown";
+  return `${snapshot.active_tab}:${repo}:${pr}`;
 }
