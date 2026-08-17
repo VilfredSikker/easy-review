@@ -549,6 +549,16 @@ class AppStore {
     return this.tabCache.get(tabSnapshotCacheKeyFromTab(tab), tab.change_token);
   }
 
+  private spliceAndConfirmSnapshot(snapshot: AppSnapshot): void {
+    const incomingKey = tabSnapshotCacheKey(snapshot);
+    const hunkPrev =
+      this.snapshot !== null && tabSnapshotCacheKey(this.snapshot) === incomingKey
+        ? this.snapshot
+        : this.tabCache.peek(incomingKey);
+    resolveOmittedHunks(hunkPrev, snapshot);
+    this.lastConfirmedSnapshot = snapshot;
+  }
+
   /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
   ingestCommandSnapshot(
     snapshot: AppSnapshot,
@@ -558,6 +568,9 @@ class AppStore {
       opts?.tabChangeGen != null &&
       isStaleSnapshotGeneration(opts.tabChangeGen, this.tabChangeGeneration)
     ) {
+      if (opts.allowTabChange) {
+        this.spliceAndConfirmSnapshot(snapshot);
+      }
       profileLog("snapshot_ingest_stale_tab_change", {
         captured: opts.tabChangeGen,
         current: this.tabChangeGeneration,
@@ -577,15 +590,9 @@ class AppStore {
     ) {
       aiReviewFilter.reset();
     }
-    const incomingKey = tabSnapshotCacheKey(snapshot);
-    const hunkPrev =
-      this.snapshot !== null && tabSnapshotCacheKey(this.snapshot) === incomingKey
-        ? this.snapshot
-        : this.tabCache.peek(incomingKey);
-    resolveOmittedHunks(hunkPrev, snapshot);
+    this.spliceAndConfirmSnapshot(snapshot);
     this.snapshot = snapshot;
     this.rememberSnapshot(snapshot);
-    this.lastConfirmedSnapshot = snapshot;
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
     this.lastPollRevision = null;
@@ -734,9 +741,6 @@ class AppStore {
               )
             : await invoke<AppSnapshot>(command, args);
       if (snapshot === LATEST_INVOKE_SKIPPED) return;
-      if (isTabChange) {
-        this.lastConfirmedSnapshot = snapshot;
-      }
       const tInvokeDone = performance.now();
       const applied = this.ingestCommandSnapshot(snapshot, {
         allowTabChange: isTabChange,
