@@ -12,10 +12,16 @@ import {
   canChromeMergeTakingNextAi,
   isStaleSnapshotGeneration,
   mergeChromeSnapshot,
+  shouldDeferChromeIdentityChange,
   snapshotViewIdentity,
 } from "../snapshotChrome";
 import { resolveOmittedHunks } from "../snapshotDelta";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
+import {
+  TabSnapshotCache,
+  openTabCacheKeys,
+  tabSnapshotCacheKeyFromTab,
+} from "../tabSnapshotCache";
 import type { AppSnapshot, PollResponse } from "../types";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 
@@ -159,8 +165,11 @@ class AppStore {
   private lastPollChromeRevision: number | null = null;
   private revisionUnlisten: UnlistenFn | null = null;
   private pollInFlight = false;
+  /** Set when a revision event arrived while a poll was already in flight. */
+  private pollPending = false;
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
+  private tabCache = new TabSnapshotCache();
 
   /** Cycle unified → split → unified. Persists the choice. */
   toggleDiffViewMode() {
@@ -301,6 +310,7 @@ class AppStore {
       const snap = await invoke<AppSnapshot>("get_snapshot");
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
+      this.rememberSnapshot(snap);
       this.syncSnapshotToast(this.snapshot);
       this.lastPollRevision = null;
       this.lastPollContentRevision = null;
@@ -328,7 +338,10 @@ class AppStore {
     this.pollIntervalMs = intervalMs;
 
     const doPoll = async (trigger: "revision_event" | "safety_timer" | "unknown" = "unknown") => {
-      if (this.pollInFlight) return;
+      if (this.pollInFlight) {
+        this.pollPending = true;
+        return;
+      }
       this.pollInFlight = true;
       const generation = this.snapshotGeneration;
       const t0 = performance.now();
@@ -351,54 +364,69 @@ class AppStore {
         const chromeChanged =
           this.lastPollChromeRevision !== next.chrome_revision;
         if (contentChanged || chromeChanged) {
-          this.lastPollRevision = next.revision;
-          this.lastPollContentRevision = next.content_revision;
-          this.lastPollChromeRevision = next.chrome_revision;
           if (next.snapshot !== null) {
             const mergeOpts = {
               chromeOnly: next.chrome_only,
               contentChanged,
             };
-            if (canChromeMerge(this.snapshot, next.snapshot, mergeOpts)) {
-              this.snapshot = mergeChromeSnapshot(
-                this.snapshot!,
-                next.snapshot,
-                "prev",
-              );
-              profileLog("snapshot_chrome_merge", {
-                invoke_ms: invokeMs,
-                revision: next.revision,
-                chrome_only: next.chrome_only ? 1 : 0,
-                trigger,
-              });
-            } else if (
-              canChromeMergeTakingNextAi(this.snapshot, next.snapshot, mergeOpts)
+            if (
+              shouldDeferChromeIdentityChange(this.snapshot, next.snapshot, mergeOpts)
             ) {
-              // View identity changed: take next.ai/pr so badges cannot stick
-              // on the previous PR (chrome stubs carry empty AI).
-              this.snapshot = mergeChromeSnapshot(
-                this.snapshot!,
-                next.snapshot,
-                "next",
-              );
-              profileLog("snapshot_chrome_merge_next_ai", {
+              profileLog("snapshot_chrome_identity_deferred", {
                 invoke_ms: invokeMs,
                 revision: next.revision,
                 trigger,
               });
             } else {
-              const delta = resolveOmittedHunks(this.snapshot, next.snapshot);
-              this.snapshot = next.snapshot;
-              profileLog("snapshot_replace", {
-                invoke_ms: invokeMs,
-                revision: next.revision,
-                files: next.snapshot.files.length,
-                delta_reused: delta.reused,
-                delta_refetch: delta.refetch,
-                trigger,
-              });
+              this.lastPollRevision = next.revision;
+              this.lastPollContentRevision = next.content_revision;
+              this.lastPollChromeRevision = next.chrome_revision;
+              if (canChromeMerge(this.snapshot, next.snapshot, mergeOpts)) {
+                this.snapshot = mergeChromeSnapshot(
+                  this.snapshot!,
+                  next.snapshot,
+                  "prev",
+                );
+                profileLog("snapshot_chrome_merge", {
+                  invoke_ms: invokeMs,
+                  revision: next.revision,
+                  chrome_only: next.chrome_only ? 1 : 0,
+                  trigger,
+                });
+              } else if (
+                canChromeMergeTakingNextAi(this.snapshot, next.snapshot, mergeOpts)
+              ) {
+                // View identity changed: take next.ai/pr so badges cannot stick
+                // on the previous PR (chrome stubs carry empty AI).
+                this.snapshot = mergeChromeSnapshot(
+                  this.snapshot!,
+                  next.snapshot,
+                  "next",
+                );
+                profileLog("snapshot_chrome_merge_next_ai", {
+                  invoke_ms: invokeMs,
+                  revision: next.revision,
+                  trigger,
+                });
+              } else {
+                const delta = resolveOmittedHunks(this.snapshot, next.snapshot);
+                this.snapshot = next.snapshot;
+                profileLog("snapshot_replace", {
+                  invoke_ms: invokeMs,
+                  revision: next.revision,
+                  files: next.snapshot.files.length,
+                  delta_reused: delta.reused,
+                  delta_refetch: delta.refetch,
+                  trigger,
+                });
+              }
+              this.rememberSnapshot(this.snapshot);
+              this.syncSnapshotToast(this.snapshot);
             }
-            this.syncSnapshotToast(this.snapshot);
+          } else {
+            this.lastPollRevision = next.revision;
+            this.lastPollContentRevision = next.content_revision;
+            this.lastPollChromeRevision = next.chrome_revision;
           }
         }
         profileLog("poll_invoke_done", {
@@ -411,6 +439,10 @@ class AppStore {
         // Silently ignore poll errors (window may be closing).
       } finally {
         this.pollInFlight = false;
+        if (this.pollPending) {
+          this.pollPending = false;
+          void doPoll("revision_event");
+        }
       }
     };
 
@@ -463,6 +495,20 @@ class AppStore {
     this.mainView = mode;
   }
 
+  private rememberSnapshot(snapshot: AppSnapshot | null): void {
+    if (!snapshot) return;
+    this.tabCache.put(snapshot);
+    this.tabCache.retain(openTabCacheKeys(snapshot));
+  }
+
+  private cachedSnapshotForTabIdx(idx: number): AppSnapshot | null {
+    const current = this.snapshot;
+    if (!current) return null;
+    const tab = current.tabs.find((t) => t.idx === idx) ?? current.tabs[idx];
+    if (!tab) return null;
+    return this.tabCache.get(tabSnapshotCacheKeyFromTab(tab), tab.change_token);
+  }
+
   /** Apply snapshot from a Tauri command and show `notification` once (deduped). */
   ingestCommandSnapshot(snapshot: AppSnapshot) {
     this.snapshotGeneration += 1;
@@ -474,6 +520,7 @@ class AppStore {
     }
     resolveOmittedHunks(this.snapshot, snapshot);
     this.snapshot = snapshot;
+    this.rememberSnapshot(snapshot);
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
     this.lastPollRevision = null;
@@ -514,6 +561,7 @@ class AppStore {
       // with the kept files' reviewed flags).
       if (this.snapshot) {
         this.snapshot = mergeChromeSnapshot(this.snapshot, returned);
+        this.rememberSnapshot(this.snapshot);
       }
     } catch (e) {
       // Roll back optimistic mutation.
@@ -541,7 +589,22 @@ class AppStore {
     }
 
     const tStart = performance.now();
-    const isSlow = SLOW_COMMANDS.has(command);
+    const cachedTab =
+      command === "select_tab" && typeof args?.idx === "number"
+        ? this.cachedSnapshotForTabIdx(args.idx)
+        : null;
+    if (cachedTab) {
+      this.snapshotGeneration += 1;
+      if (
+        this.snapshot === null ||
+        snapshotViewIdentity(this.snapshot) !== snapshotViewIdentity(cachedTab)
+      ) {
+        aiReviewFilter.reset();
+      }
+      this.snapshot = cachedTab;
+      this.initialLoadDone = true;
+    }
+    const isSlow = SLOW_COMMANDS.has(command) && cachedTab === null;
     const isForceRefresh = command === "force_refresh_diff";
     const tSwitchingSet = performance.now();
     if (isSlow) {

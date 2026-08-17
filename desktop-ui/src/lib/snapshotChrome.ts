@@ -10,7 +10,7 @@ export function snapshotViewIdentity(snap: AppSnapshot): string {
     snap.tabs?.find((t) => t.is_active) ??
     (typeof snap.active_tab === "number" ? snap.tabs?.[snap.active_tab] : undefined);
   const pr =
-    snap.pr?.number ?? tab?.pr_number ?? snap.github?.number ?? null;
+    tab?.pr_number ?? snap.pr?.number ?? snap.detected_pr_number ?? snap.github?.number ?? null;
   const root = tab?.repo_root ?? "";
   const branch = snap.branch ?? tab?.branch ?? "";
   const mode = snap.mode ?? "";
@@ -44,8 +44,8 @@ export function mergeChromeSnapshot(
     total_count: prev.total_count,
     ai: aiSource === "next" ? next.ai : prev.ai,
     pr: aiSource === "next" ? next.pr : prev.pr,
-    ui_annotations: prev.ui_annotations,
-    browser: prev.browser,
+    ui_annotations: aiSource === "next" ? next.ui_annotations : prev.ui_annotations,
+    browser: aiSource === "next" ? next.browser : prev.browser,
     filter_suggestions: prev.filter_suggestions,
     commits: prev.commits,
     selected_commit_sha: prev.selected_commit_sha,
@@ -75,6 +75,19 @@ export function canChromeMergeTakingNextAi(
   if (prev === null) return false;
   if (!(opts.chromeOnly || !opts.contentChanged)) return false;
   return snapshotViewIdentity(prev) !== snapshotViewIdentity(next);
+}
+
+/**
+ * Chrome-only poll for a *different* view: skip applying it. Chrome stubs
+ * carry empty AI/annotations; merging them would wipe Branch/Review/Notes
+ * or keep the previous tab's panels. Wait for the full content snapshot.
+ */
+export function shouldDeferChromeIdentityChange(
+  prev: AppSnapshot | null,
+  next: AppSnapshot,
+  opts: { chromeOnly: boolean; contentChanged: boolean },
+): boolean {
+  return opts.chromeOnly && canChromeMergeTakingNextAi(prev, next, opts);
 }
 
 /** Pure helper so poll generation discard is unit-testable. */

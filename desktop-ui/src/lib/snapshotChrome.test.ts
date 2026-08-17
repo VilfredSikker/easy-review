@@ -4,9 +4,10 @@ import {
   canChromeMergeTakingNextAi,
   isStaleSnapshotGeneration,
   mergeChromeSnapshot,
+  shouldDeferChromeIdentityChange,
   snapshotViewIdentity,
 } from "./snapshotChrome";
-import type { AiSnapshot, AppSnapshot, TabSummary } from "./types";
+import type { AiSnapshot, AppSnapshot, TabSummary, UiAnnotation } from "./types";
 
 function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
   return {
@@ -115,6 +116,38 @@ describe("snapshotViewIdentity", () => {
     });
     expect(snapshotViewIdentity(a)).not.toBe(snapshotViewIdentity(b));
   });
+
+  it("keys off the tab PR, not a mismatched github.number", () => {
+    const a = snap({
+      active_tab: 0,
+      github: {
+        owner: "o",
+        repo: "r",
+        number: 1473,
+        url: "https://github.com/o/r/pull/1473",
+        state: "OPEN",
+        is_draft: false,
+        title: "t",
+        body: "",
+        author: "u",
+        head_ref: "h",
+        base_ref: "main",
+        review_decision: null,
+        mergeable: null,
+        labels: [],
+        checks: [],
+        comments_count: 0,
+        reviews_count: 0,
+        recent_comments: [],
+        recent_reviews: [],
+        last_updated: null,
+        is_authored_by_me: false,
+      },
+      tabs: [tab({ idx: 0, label: "pr-1469", pr_number: 1469, is_active: true })],
+    });
+    expect(snapshotViewIdentity(a)).toContain("|1469|");
+    expect(snapshotViewIdentity(a)).not.toContain("|1473|");
+  });
 });
 
 describe("isStaleSnapshotGeneration", () => {
@@ -212,5 +245,105 @@ describe("mergeChromeSnapshot", () => {
     expect(merged.ai.summary_markdown).toBeNull();
     expect(merged.pr?.number).toBe(1434);
     expect(merged.notification).toBe("opened 1434");
+  });
+
+  it("takes next annotations and browser when identity crosses PRs", () => {
+    const prevAnn: UiAnnotation[] = [
+      {
+        id: "old",
+        url: "https://old",
+        selector: null,
+        box_x: 0,
+        box_y: 0,
+        box_w: 1,
+        box_h: 1,
+        viewport_w: 1,
+        viewport_h: 1,
+        text: "old",
+        timestamp: "",
+        author: "",
+        screenshot_path: null,
+        stale: false,
+      },
+    ];
+    const nextAnn: UiAnnotation[] = [];
+    const prev = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "pr-1427", pr_number: 1427, is_active: true })],
+      ui_annotations: prevAnn,
+      browser: { url: "https://old.example", layout: "split", split_ratio: 0.4, annotate_mode: false, show_tooltips: false },
+    });
+    const next = snap({
+      active_tab: 1,
+      tabs: [tab({ idx: 1, label: "pr-1434", pr_number: 1434, is_active: true })],
+      ui_annotations: nextAnn,
+      browser: { url: "https://new.example", layout: "hidden", split_ratio: 0.45, annotate_mode: false, show_tooltips: false },
+    });
+    const merged = mergeChromeSnapshot(prev, next, "next");
+    expect(merged.ui_annotations).toBe(nextAnn);
+    expect(merged.browser?.url).toBe("https://new.example");
+  });
+
+  it("keeps previous annotations/browser when aiSource is prev", () => {
+    const prevAnn: UiAnnotation[] = [
+      {
+        id: "keep",
+        url: "https://keep",
+        selector: null,
+        box_x: 0,
+        box_y: 0,
+        box_w: 1,
+        box_h: 1,
+        viewport_w: 1,
+        viewport_h: 1,
+        text: "keep",
+        timestamp: "",
+        author: "",
+        screenshot_path: null,
+        stale: false,
+      },
+    ];
+    const prev = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "pr-1434", pr_number: 1434, is_active: true })],
+      ui_annotations: prevAnn,
+      browser: { url: "https://old.example", layout: "split", split_ratio: 0.4, annotate_mode: false, show_tooltips: false },
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "pr-1434", pr_number: 1434, is_active: true })],
+      ui_annotations: [],
+      browser: { url: "", layout: "hidden", split_ratio: 0.45, annotate_mode: false, show_tooltips: false },
+    });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.ui_annotations).toBe(prevAnn);
+    expect(merged.browser?.url).toBe("https://old.example");
+  });
+});
+
+describe("shouldDeferChromeIdentityChange", () => {
+  it("defers chrome-only polls when the view identity changed", () => {
+    const prev = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "pr-1427", pr_number: 1427, is_active: true })],
+      pr: { ...pr1427 },
+    });
+    const next = snap({
+      active_tab: 1,
+      tabs: [tab({ idx: 1, label: "pr-1434", pr_number: 1434, is_active: true })],
+      pr: { ...pr1434 },
+    });
+    expect(
+      shouldDeferChromeIdentityChange(prev, next, {
+        chromeOnly: true,
+        contentChanged: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldDeferChromeIdentityChange(prev, next, {
+        chromeOnly: false,
+        contentChanged: false,
+      }),
+    ).toBe(false);
   });
 });

@@ -7,6 +7,7 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToThread } from "$lib/dom";
   import { copyToClipboard } from "$lib/clipboard";
+  import { resolveActivePrNumber } from "$lib/prUrl";
 
   interface Props {
     thread: ThreadSnapshot;
@@ -162,10 +163,7 @@
     if (pushing || thread.synced || isLocal) return;
     pushing = true;
     try {
-      const activeTab = app.snapshot?.tabs?.find((t) => t.is_active) ?? null;
-      const currentWorktree = app.snapshot?.worktrees.find((w) => w.is_current) ?? null;
-      const prNumber =
-        activeTab?.pr_number ?? currentWorktree?.pr_number ?? app.snapshot?.github?.number ?? app.snapshot?.pr?.number ?? null;
+      const prNumber = resolveActivePrNumber(app.snapshot);
       await app.cmd("push_github_comment_thread", { id: thread.id, prNumber });
     } finally {
       pushing = false;

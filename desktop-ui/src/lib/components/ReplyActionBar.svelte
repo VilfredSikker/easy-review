@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
+  import { resolveActivePrNumber } from "$lib/prUrl";
   import type { FindingResponseSnapshot, ThreadMessage } from "$lib/types";
 
   type ReplyLike = (ThreadMessage | FindingResponseSnapshot) & { synced?: boolean };
@@ -73,14 +74,7 @@
     if (!reply.id || pushing) return;
     pushing = true;
     try {
-      const activeTab = app.snapshot?.tabs?.find((t) => t.is_active) ?? null;
-      const currentWorktree = app.snapshot?.worktrees.find((w) => w.is_current) ?? null;
-      const prNumber =
-        activeTab?.pr_number ??
-        currentWorktree?.pr_number ??
-        app.snapshot?.github?.number ??
-        app.snapshot?.pr?.number ??
-        null;
+      const prNumber = resolveActivePrNumber(app.snapshot);
       await app.cmd("push_github_comment_reply", { replyId: reply.id, prNumber });
     } finally {
       pushing = false;
