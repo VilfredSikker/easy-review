@@ -3612,11 +3612,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         vec![]
     };
 
-    let file_risks: Vec<FileRiskSnapshot> = ai
-        .review
-        .as_ref()
-        .map(build_file_risks)
-        .unwrap_or_default();
+    let file_risks: Vec<FileRiskSnapshot> =
+        ai.review.as_ref().map(build_file_risks).unwrap_or_default();
 
     let er_dir = tab.er_dir();
     let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();

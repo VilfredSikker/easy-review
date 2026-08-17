@@ -2234,7 +2234,8 @@ mod tests {
 
     #[test]
     fn review_rules_preamble_default_capture_uses_output_dir_not_repo_er() {
-        let preamble = review_rules_preamble("/tmp/managed-er", false, FindingCaps::general(), None);
+        let preamble =
+            review_rules_preamble("/tmp/managed-er", false, FindingCaps::general(), None);
         assert!(preamble.contains("'/tmp/managed-er'/diff-tmp"));
         assert!(!preamble.contains("> .er/diff-tmp"));
         assert!(!preamble.contains("sha256sum .er/diff-tmp"));
