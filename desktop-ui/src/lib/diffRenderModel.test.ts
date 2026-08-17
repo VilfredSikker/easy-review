@@ -378,6 +378,46 @@ describe("getFileBlock — thread/finding injection", () => {
       expect(last.threadId).toBe("t1");
     }
   });
+
+  it("does not also fallback-render a thread already inline on an earlier hunk", () => {
+    // Backend used to attach the same lined comment to two hunks: the one
+    // containing the new-side line, and a later hunk whose old-side range
+    // happened to include that number. Result: inline on the real line and
+    // again as a fallback at end of file.
+    const t = thread("t1", "pipeline.py", 222);
+    const h0 = hunk({
+      header: "@@ -140,20 +218,20 @@",
+      old_start: 140,
+      old_count: 20,
+      new_start: 218,
+      new_count: 20,
+      lines: [
+        line({ kind: "add", old_num: null, new_num: 222, text: "count_over_time" }),
+      ],
+      threads: [t],
+    });
+    const h1 = hunk({
+      header: "@@ -200,50 +250,26 @@",
+      old_start: 200,
+      old_count: 50,
+      new_start: 250,
+      new_count: 26,
+      lines: [
+        line({ kind: "add", old_num: null, new_num: 265, text: "def run_time_series" }),
+      ],
+      threads: [t],
+    });
+    const f = file({ path: "pipeline.py", hunks: [h0, h1] });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    const threadRows = block.rows.filter(
+      (r) => r.type === "inline-thread" || r.type === "fallback-thread",
+    );
+    expect(threadRows).toHaveLength(1);
+    expect(threadRows[0].type).toBe("inline-thread");
+    if (threadRows[0].type === "inline-thread") {
+      expect(threadRows[0].threadId).toBe("t1");
+    }
+  });
 });
 
 describe("getFileBlock — geometry & invariants", () => {

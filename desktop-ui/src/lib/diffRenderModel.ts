@@ -337,6 +337,20 @@ function lineNumOf(line: LineSnapshot): number | null {
   return line.new_num ?? line.old_num;
 }
 
+/** Line numbers actually drawn in this file (skips fold rows). Used so a
+ *  thread rendered inline on one hunk is not also a fallback on another. */
+function fileRenderedLineNums(file: FileSnapshot): Set<number> {
+  const nums = new Set<number>();
+  for (const hunk of file.hunks) {
+    for (const line of hunk.lines) {
+      if (line.kind === "fold") continue;
+      const ln = lineNumOf(line);
+      if (ln !== null) nums.add(ln);
+    }
+  }
+  return nums;
+}
+
 function visBits(v: CommentVisibility): number {
   return (
     (v.hideAll ? 1 : 0) |
@@ -494,6 +508,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       renamed: file.status === "renamed",
     });
   } else {
+    const renderedInFile = fileRenderedLineNums(file);
+    const placedThreadIds = new Set<string>();
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
       const hunk = file.hunks[hunkIdx];
       rows.push({
@@ -505,7 +521,6 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         identity: `hh:${file.path}:${hunkIdx}`,
       });
 
-      const renderedLineNums = new Set<number>();
       const side: "unified" | "split" = viewMode === "split" ? "split" : "unified";
 
       if (viewMode === "unified") {
@@ -533,7 +548,6 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           });
           const ln = lineNumOf(line);
           if (ln !== null) {
-            renderedLineNums.add(ln);
             const skipDel =
               line.kind === "del" && hunk.lines.some((l) => l.new_num === ln);
             const findings = findingsForLine(
@@ -570,6 +584,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
               return true;
             });
             for (const t of threads) {
+              if (placedThreadIds.has(t.id)) continue;
+              placedThreadIds.add(t.id);
               rows.push({
                 type: "inline-thread",
                 filePath: file.path,
@@ -600,8 +616,6 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           });
           const leftLn = r.left ? lineNumOf(r.left) : null;
           const rightLn = r.right ? lineNumOf(r.right) : null;
-          if (leftLn !== null) renderedLineNums.add(leftLn);
-          if (rightLn !== null) renderedLineNums.add(rightLn);
 
           const findings = findingsForSplitRow(
             annotationIndex,
@@ -643,6 +657,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             }
           }
           for (const t of collected) {
+            if (placedThreadIds.has(t.id)) continue;
+            placedThreadIds.add(t.id);
             rows.push({
               type: "inline-thread",
               filePath: file.path,
@@ -693,10 +709,12 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         file.path,
         hunkIdx,
         hunk,
-        renderedLineNums,
+        renderedInFile,
         commentVisibility,
       );
       for (const t of fbThreads) {
+        if (placedThreadIds.has(t.id)) continue;
+        placedThreadIds.add(t.id);
         rows.push({
           type: "fallback-thread",
           filePath: file.path,
