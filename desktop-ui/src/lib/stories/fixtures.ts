@@ -370,22 +370,10 @@ export const aiEmptyWithSummary: AiSnapshot = {
 
 /** Completed review with file risk assessments but no line findings. */
 export const aiFileRisksOnly: AiSnapshot = {
-  fresh: true,
-  stale_reason: null,
+  ...aiEmpty,
+  has_review_json: true,
   summary_markdown:
     "No correctness, security, or reliability findings were identified on changed lines. The checklist records the key manual verification points.",
-  agent_summaries: {},
-  high: 0,
-  med: 0,
-  low: 0,
-  local_comment_count: 0,
-  github_comment_count: 0,
-  comments: 0,
-  questions: 0,
-  notes: 0,
-  unpushed: 0,
-  threads: [],
-  findings: [],
   file_risks: [
     {
       path: "packages/discovery-platform/src/lib/components/editor/embeddable/buildEmbedRef.ts",
@@ -415,9 +403,6 @@ export const aiFileRisksOnly: AiSnapshot = {
       summary: "Tests source visibility, title editing, and renderer errors.",
     },
   ],
-  has_review_json: true,
-  eligible_comment_count: 0,
-  triage: null,
 };
 
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
