@@ -453,6 +453,35 @@ describe("getFileBlock — thread/finding injection", () => {
       expect(threadRows[0].threadId).toBe("t1");
     }
   });
+
+  it("places a LEFT thread on the delete row of a modify hunk, not the add row", () => {
+    const t = thread("t-left", "a.ts", 10, { side: "LEFT" });
+    const h = hunk({
+      old_start: 10,
+      old_count: 1,
+      new_start: 10,
+      new_count: 1,
+      lines: [
+        line({ kind: "del", old_num: 10, new_num: null, text: "old" }),
+        line({ kind: "add", old_num: null, new_num: 10, text: "new" }),
+      ],
+      threads: [t],
+    });
+    const f = file({ path: "a.ts", hunks: [h] });
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t])));
+    const contentIdx = block.rows.findIndex((r) => r.type === "content-unified");
+    expect(contentIdx).toBeGreaterThanOrEqual(0);
+    expect(block.rows[contentIdx + 1]?.type).toBe("inline-thread");
+    if (block.rows[contentIdx + 1]?.type === "inline-thread") {
+      expect(block.rows[contentIdx + 1].threadId).toBe("t-left");
+    }
+    const laterContent = block.rows.slice(contentIdx + 2).find((r) => r.type === "content-unified");
+    expect(laterContent).toBeDefined();
+    const threadRows = block.rows.filter(
+      (r) => r.type === "inline-thread" || r.type === "fallback-thread",
+    );
+    expect(threadRows).toHaveLength(1);
+  });
 });
 
 describe("getFileBlock — geometry & invariants", () => {

@@ -335,11 +335,13 @@ export function threadsForLine(
   line: number,
   _hunkLines: LineSnapshot[],
   vis: CommentVisibility = ALL_VISIBLE,
+  side: "old" | "new" | null = null,
 ): ThreadSnapshot[] {
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
-  return visibleThreads(threads, idx.findingThreadIds, vis).filter(
-    (t) => threadAnchorEnd(t) === line,
-  );
+  return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => {
+    if (side !== null && threadReviewSide(t) !== side) return false;
+    return threadAnchorEnd(t) === line;
+  });
 }
 
 export function lineHasAnchorRangeHighlight(

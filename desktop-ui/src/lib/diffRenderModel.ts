@@ -8,6 +8,7 @@ import {
   findingsForLine,
   findingsForSplitRow,
   hunkLevelFindings,
+  threadReviewSide,
   threadsForLine,
   type AnnotationIndex,
   type CommentVisibility,
@@ -348,6 +349,38 @@ function visBits(v: CommentVisibility): number {
   );
 }
 
+/** Threads whose review side matches this diff line (LEFT↔old_num, RIGHT↔new_num). */
+function threadsForDiffLine(
+  annotationIndex: AnnotationIndex,
+  filePath: string,
+  hunkIdx: number,
+  line: LineSnapshot,
+  hunkLines: LineSnapshot[],
+  commentVisibility: CommentVisibility,
+): ThreadSnapshot[] {
+  const out: ThreadSnapshot[] = [];
+  const seen = new Set<string>();
+  const take = (num: number | null, side: "old" | "new") => {
+    if (num === null) return;
+    for (const t of threadsForLine(
+      annotationIndex,
+      filePath,
+      hunkIdx,
+      num,
+      hunkLines,
+      commentVisibility,
+      side,
+    )) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(t);
+    }
+  };
+  take(line.old_num, "old");
+  take(line.new_num, "new");
+  return out;
+}
+
 /** Line count for cache invalidation when hunks grow (lazy load, poll refresh). */
 export function diffLineCount(file: FileSnapshot): number {
   let n = 0;
@@ -534,8 +567,9 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             identity: `cu:${file.path}:${hunkIdx}:${lineIdx}`,
           });
           const ln = lineNumOf(line);
+          if (line.old_num !== null) renderedLineNums.add(line.old_num);
+          if (line.new_num !== null) renderedLineNums.add(line.new_num);
           if (ln !== null) {
-            renderedLineNums.add(ln);
             const skipDel =
               line.kind === "del" && hunk.lines.some((l) => l.new_num === ln);
             const findings = findingsForLine(
@@ -558,14 +592,15 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
                 identity: `if:${f.id}`,
               });
             }
-            const threads = threadsForLine(
+            const threads = threadsForDiffLine(
               annotationIndex,
               file.path,
               hunkIdx,
-              ln,
+              line,
               hunk.lines,
               commentVisibility,
             ).filter((t) => {
+              if (threadReviewSide(t) === "old") return true;
               if (line.kind === "del" && hunk.lines.some((l) => l.new_num === t.line)) {
                 return false;
               }
@@ -630,7 +665,10 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           // Threads: dedup across left/right by id, prefer right (matches findingsForSplitRow pattern).
           const seenThreads = new Set<string>();
           const collected: ThreadSnapshot[] = [];
-          for (const ln of [rightLn, leftLn]) {
+          for (const [ln, rowSide] of [
+            [rightLn, "new"],
+            [leftLn, "old"],
+          ] as const) {
             if (ln === null) continue;
             const ts = threadsForLine(
               annotationIndex,
@@ -639,6 +677,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
               ln,
               hunk.lines,
               commentVisibility,
+              rowSide,
             );
             for (const t of ts) {
               if (seenThreads.has(t.id)) continue;

@@ -366,6 +366,31 @@ describe("threadsForLine", () => {
     expect(lineHasAnchorRangeHighlight(idx, FILE, 12, "new", VIS_OFF)).toBe(true);
     expect(lineHasAnchorRangeHighlight(idx, FILE, 10, "new", VIS_OFF)).toBe(false);
   });
+
+  it("side=old returns only LEFT threads; side=new returns only RIGHT", () => {
+    const left = mkThread({ id: "t-left", file: FILE, line: 13, side: "LEFT" });
+    const right = mkThread({ id: "t-right", file: FILE, line: 13, side: "RIGHT" });
+    const hunkWithSides: HunkSnapshot = { ...hunk, threads: [left, right] };
+    const file: FileSnapshot = {
+      path: FILE,
+      status: "modified",
+      additions: 1,
+      deletions: 1,
+      reviewed: false,
+      compacted: false,
+      risk: null,
+      finding_count: 0,
+      comment_count: 2,
+      question_count: 0,
+      hunks: [hunkWithSides],
+      source_index: 0,
+      cache_key: `${FILE}#0`,
+    };
+    const ai = { threads: [left, right], findings: [] as FlatFinding[] };
+    const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
+    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "old").map((t) => t.id)).toEqual(["t-left"]);
+    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "new").map((t) => t.id)).toEqual(["t-right"]);
+  });
 });
 
 describe("fallbackThreadsForHunk", () => {

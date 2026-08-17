@@ -863,8 +863,7 @@ impl AiState {
     /// New-side comments (`side != LEFT`) match `line_start` against the new range
     /// only. LEFT comments store an old-side number in `line_start` and match the
     /// old range. Lined comments do not also attach via `hunk_index` to a hunk
-    /// that does not contain the line. Deleted hunks (`new_count == 0`) still
-    /// accept a new-side `line_start` against the old range.
+    /// that does not contain the line.
     /// Returns both top-level comments and their replies (same contract as `comments_for_hunk`).
     pub fn comments_for_hunk_or_line_range(
         &self,
