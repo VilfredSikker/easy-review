@@ -1,3 +1,32 @@
+# Easy Review v0.4.12
+
+## In plain terms
+
+- **What changed.** Drag sidebar projects to reorder them. The order sticks across restarts. GitHub releases now ship a macOS desktop `.dmg`. Docs match ⌘K AI shortcuts and the Context tab.
+- **TL;DR.** Sidebar reorder, release DMG, docs sync.
+
+## Highlights
+
+- **Sidebar reorder.** Drag projects in the left sidebar. Order persists in `projects.json` and survives relaunch.
+- **Release DMG.** CI attaches the macOS Apple Silicon desktop `.dmg` to GitHub releases.
+- **Docs.** Guide and landing page use ⌘K for AI actions. Context tab and Mermaid diagram presets documented.
+
+## What's Changed
+
+### Features
+- Drag to reorder sidebar repositories. (#175)
+
+### Fixes
+- Persist sidebar reorder by project id, not snapshot index. (#175)
+
+### CI
+- Attach macOS desktop DMG to GitHub releases.
+
+### Docs
+- Sync desktop AI hub shortcuts and document Context tab. (#174)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.11...v0.4.12
+
 # Easy Review v0.4.11
 
 ## In plain terms

@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp"]
 
 [workspace.package]
-version = "0.4.11"
+version = "0.4.12"
 edition = "2021"
 rust-version = "1.88"
 license = "MIT"
