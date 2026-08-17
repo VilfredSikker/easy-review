@@ -57,8 +57,14 @@
     if (!key) return;
     if (autoPulledFor === key || autoPulledKeys.has(key)) return;
     autoPulledFor = key;
-    rememberAutoPull(key);
-    void app.cmd("pull_github_comments");
+    void (async () => {
+      await app.cmd("pull_github_comments");
+      if (app.pendingTabSwitch || currentAutoPullKey() !== key) {
+        if (autoPulledFor === key) autoPulledFor = null;
+        return;
+      }
+      rememberAutoPull(key);
+    })();
   });
 
   async function onRefresh() {

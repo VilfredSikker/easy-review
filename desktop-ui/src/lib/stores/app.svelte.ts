@@ -202,6 +202,8 @@ class AppStore {
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
   private tabCache = new TabSnapshotCache();
+  /** Last snapshot the backend confirmed. Cache paints are not confirmed. */
+  private lastConfirmedSnapshot: AppSnapshot | null = null;
   /** Serialize tab-change invokes so a later click cannot apply before an earlier one. */
   private tabChangeInvokeQueue = createLatestInvokeQueue();
 
@@ -345,6 +347,7 @@ class AppStore {
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
       this.rememberSnapshot(snap);
+      this.lastConfirmedSnapshot = snap;
       this.syncSnapshotToast(this.snapshot);
       this.lastPollRevision = null;
       this.lastPollContentRevision = null;
@@ -582,12 +585,22 @@ class AppStore {
     resolveOmittedHunks(hunkPrev, snapshot);
     this.snapshot = snapshot;
     this.rememberSnapshot(snapshot);
+    this.lastConfirmedSnapshot = snapshot;
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
     this.lastPollRevision = null;
     this.lastPollContentRevision = null;
     this.lastPollChromeRevision = null;
     return true;
+  }
+
+  private restoreConfirmedSnapshot(): void {
+    if (!this.lastConfirmedSnapshot) return;
+    this.snapshot = this.lastConfirmedSnapshot;
+    this.snapshotGeneration += 1;
+    this.lastPollRevision = null;
+    this.lastPollContentRevision = null;
+    this.lastPollChromeRevision = null;
   }
 
   /**
@@ -654,13 +667,15 @@ class AppStore {
 
     const tStart = performance.now();
     const isTabChange = TAB_CHANGE_COMMANDS.has(command);
-    if (this.pendingTabSwitch && !isTabChange) return;
+    const isSetMode = command === "set_mode";
+    if (this.pendingTabSwitch && !isTabChange && !isSetMode) return;
+    const startedGen = this.tabChangeGeneration;
     const myTabChangeGen = isTabChange ? ++this.tabChangeGeneration : null;
+    const modeTabIdx = isSetMode ? this.snapshot?.active_tab : undefined;
     const selectIdx =
       command === "select_tab" && typeof args?.idx === "number" ? args.idx : null;
     const cachedTab =
       selectIdx !== null ? this.cachedSnapshotForTabIdx(selectIdx) : null;
-    const previousSnap = this.snapshot;
     if (isTabChange) {
       this.inflightTabChanges += 1;
       this.pendingTabSwitch = true;
@@ -696,17 +711,27 @@ class AppStore {
       if (myTabChangeGen !== null && myTabChangeGen !== this.tabChangeGeneration) {
         return;
       }
+      if (isSetMode && startedGen !== this.tabChangeGeneration) {
+        return;
+      }
       if (VOID_COMMANDS.has(command)) {
         await invoke<void>(command, args);
         return;
       }
+      const invokeArgs =
+        isSetMode && modeTabIdx != null ? { ...args, tabIdx: modeTabIdx } : args;
       const snapshot =
         isTabChange && myTabChangeGen != null
           ? await this.tabChangeInvokeQueue.enqueue(
               () => myTabChangeGen === this.tabChangeGeneration,
-              () => invoke<AppSnapshot>(command, args),
+              () => invoke<AppSnapshot>(command, invokeArgs),
             )
-          : await invoke<AppSnapshot>(command, args);
+          : isSetMode
+            ? await this.tabChangeInvokeQueue.enqueue(
+                () => startedGen === this.tabChangeGeneration,
+                () => invoke<AppSnapshot>(command, invokeArgs),
+              )
+            : await invoke<AppSnapshot>(command, args);
       if (snapshot === LATEST_INVOKE_SKIPPED) return;
       const tInvokeDone = performance.now();
       const applied = this.ingestCommandSnapshot(snapshot, {
@@ -729,13 +754,8 @@ class AppStore {
         ).catch(() => {});
       }
     } catch (e) {
-      if (
-        cachedTab &&
-        previousSnap &&
-        myTabChangeGen !== null &&
-        myTabChangeGen === this.tabChangeGeneration
-      ) {
-        this.snapshot = previousSnap;
+      if (isTabChange && myTabChangeGen === this.tabChangeGeneration) {
+        this.restoreConfirmedSnapshot();
       }
       console.error(`${command} failed:`, e);
       this.pushLog("error", command, String(e));
