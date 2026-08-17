@@ -148,6 +148,39 @@ describe("snapshotViewIdentity", () => {
     expect(snapshotViewIdentity(a)).toContain("|1469|");
     expect(snapshotViewIdentity(a)).not.toContain("|1473|");
   });
+
+  it("does not change when github.number arrives on a tab with no PR", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: null, is_active: true })];
+    const before = snap({ active_tab: 0, tabs, github: undefined });
+    const after = snap({
+      active_tab: 0,
+      tabs,
+      github: {
+        owner: "o",
+        repo: "r",
+        number: 1473,
+        url: "https://github.com/o/r/pull/1473",
+        state: "OPEN",
+        is_draft: false,
+        title: "t",
+        body: "",
+        author: "u",
+        head_ref: "h",
+        base_ref: "main",
+        review_decision: null,
+        mergeable: null,
+        labels: [],
+        checks: [],
+        comments_count: 0,
+        reviews_count: 0,
+        recent_comments: [],
+        recent_reviews: [],
+        last_updated: null,
+        is_authored_by_me: false,
+      },
+    });
+    expect(snapshotViewIdentity(before)).toBe(snapshotViewIdentity(after));
+  });
 });
 
 describe("isStaleSnapshotGeneration", () => {

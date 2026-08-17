@@ -52,6 +52,7 @@
 
   $effect(() => {
     if (!active) return;
+    if (app.pendingTabSwitch) return;
     const key = currentAutoPullKey();
     if (!key) return;
     if (autoPulledFor === key || autoPulledKeys.has(key)) return;
