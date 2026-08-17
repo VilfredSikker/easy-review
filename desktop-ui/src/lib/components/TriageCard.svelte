@@ -98,16 +98,16 @@
   }
 </script>
 
-<Card class="triage-card group">
-  <div class="flex items-center justify-between gap-2">
+<Card class="triage-card group flex max-h-[360px] min-w-0 flex-col overflow-hidden">
+  <div class="flex shrink-0 items-center justify-between gap-2">
     <button
       type="button"
-      class="flex-1 flex items-center justify-between gap-2 text-left min-w-0"
+      class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
       onclick={() => (open = !open)}
     >
       <SectionLabel>Triage</SectionLabel>
-      <span class="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border
-        {triage.fresh ? 'text-info border-info/30 bg-info/10' : 'text-warning border-warning/30 bg-warning/10'}">
+      <span class="rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide
+        {triage.fresh ? 'border-info/30 bg-info/10 text-info' : 'border-warning/30 bg-warning/10 text-warning'}">
         {triage.fresh ? verdictLabel : "stale"}
       </span>
     </button>
@@ -115,7 +115,7 @@
   </div>
 
   {#if open}
-    <div class="mt-3 space-y-3 text-[12px] leading-relaxed">
+    <div class="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden text-[12px] leading-relaxed">
       {#if triage.first_impression}
         <MarkdownText text={triage.first_impression} />
       {/if}
@@ -132,9 +132,9 @@
         {/if}
       </div>
 
-      <div class="rounded-md border border-info/20 bg-info/5 px-3 py-2.5 space-y-1.5">
+      <div class="space-y-1.5 rounded-md border border-info/20 bg-info/5 px-3 py-2.5">
         <SectionLabel size="sm">Verdict</SectionLabel>
-        <p class="text-fg-1 font-medium">{verdictSummary}</p>
+        <p class="font-medium text-fg-1">{verdictSummary}</p>
         {#if triage.verdict_primary === "expert" && triage.experts.length > 0}
           <p class="text-[11px] text-muted">
             Recommended experts: {triage.experts.join(", ")}
@@ -146,19 +146,22 @@
       </div>
 
       {#if triage.priority_files.length > 0}
-        <div>
-          <p class="text-[10px] uppercase tracking-wide text-muted mb-1">Priority files</p>
+        <div class="min-w-0">
+          <p class="mb-1 text-[10px] uppercase tracking-wide text-muted">Priority files</p>
           <ul class="space-y-1">
             {#each triage.priority_files as pf (pf.path)}
-              <li>
+              <li class="min-w-0">
                 <button
                   type="button"
-                  class="text-left w-full hover:text-accent transition-colors"
+                  class="block w-full min-w-0 overflow-hidden text-left hover:text-accent transition-colors"
+                  title={pf.reason ? `${pf.path} · ${pf.reason}` : pf.path}
                   onclick={() => navigateToPath(pf.path)}
                 >
-                  <span class="font-mono text-[11px]">{pf.path}</span>
+                  <span class="truncate-start block font-mono text-[11px]">
+                    <span class="truncate-start-inner">{pf.path}</span>
+                  </span>
                   {#if pf.reason}
-                    <span class="text-muted"> — {pf.reason}</span>
+                    <span class="block truncate text-muted">{pf.reason}</span>
                   {/if}
                 </button>
               </li>
@@ -166,19 +169,19 @@
           </ul>
         </div>
       {/if}
+    </div>
 
-      <div class="flex flex-wrap gap-2 pt-1">
-        {#if showFollowUp}
-          <Button size="sm" variant="primary" onclick={runFollowUp}>
-            Run {verdictLabel}
-          </Button>
-        {/if}
-        {#if reviewScope}
-          <Button size="sm" variant="ghost" onclick={runTriageAgain}>
-            Re-triage
-          </Button>
-        {/if}
-      </div>
+    <div class="flex shrink-0 flex-wrap gap-2 pt-3">
+      {#if showFollowUp}
+        <Button size="sm" variant="primary" onclick={runFollowUp}>
+          Run {verdictLabel}
+        </Button>
+      {/if}
+      {#if reviewScope}
+        <Button size="sm" variant="ghost" onclick={runTriageAgain}>
+          Re-triage
+        </Button>
+      {/if}
     </div>
   {/if}
 </Card>
