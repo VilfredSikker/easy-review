@@ -151,12 +151,14 @@ class AppStore {
   /** True while a slow tab-switch or branch-open command is in flight. */
   switching = $state(false);
   /**
-   * True while `select_tab` is in flight (including cache-hit paints that skip
-   * the Switching overlay). Comments auto-pull must wait so it does not hit
-   * the previous tab.
+   * True while any tab-changing command is in flight (including cache-hit
+   * `select_tab` that skips the Switching overlay). Comments auto-pull and
+   * lazy fetches wait so they cannot hit the previous backend tab. Covers
+   * `open_pr_review` and friends, not just `select_tab`, because a later
+   * tab-change can skip an earlier `select_tab` invoke.
    */
   pendingTabSwitch = $state(false);
-  private inflightSelects = 0;
+  private inflightTabChanges = 0;
   private inflightSlow = 0;
   /** Bumped on every tab-changing command so a slower earlier switch cannot ingest last. */
   private tabChangeGeneration = 0;
@@ -659,8 +661,8 @@ class AppStore {
     const cachedTab =
       selectIdx !== null ? this.cachedSnapshotForTabIdx(selectIdx) : null;
     const previousSnap = this.snapshot;
-    if (selectIdx !== null) {
-      this.inflightSelects += 1;
+    if (isTabChange) {
+      this.inflightTabChanges += 1;
       this.pendingTabSwitch = true;
     }
     if (cachedTab && this.snapshot && selectIdx !== null) {
@@ -743,9 +745,9 @@ class AppStore {
         if (this.error?.startsWith(`${command}:`)) this.error = null;
       }, 5000);
     } finally {
-      if (selectIdx !== null) {
-        this.inflightSelects = Math.max(0, this.inflightSelects - 1);
-        this.pendingTabSwitch = this.inflightSelects > 0;
+      if (isTabChange) {
+        this.inflightTabChanges = Math.max(0, this.inflightTabChanges - 1);
+        this.pendingTabSwitch = this.inflightTabChanges > 0;
       }
       if (isSlow) {
         this.inflightSlow = Math.max(0, this.inflightSlow - 1);
