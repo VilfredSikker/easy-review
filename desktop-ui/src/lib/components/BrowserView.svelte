@@ -482,6 +482,7 @@
     }
 
     if ((data as { __er_composer_submit?: boolean }).__er_composer_submit) {
+      if (!app.canPaintOptimistic()) return;
       composerOpenInPage = false;
       const box = (data as { box?: number[] }).box;
       const bbox: [number, number, number, number] = Array.isArray(box) && box.length >= 4
@@ -628,7 +629,7 @@
     handleBrowserPayload(data);
   }
 
-  async function submitAnnotation(
+  function submitAnnotation(
     bbox: [number, number, number, number],
     selector: string | null,
     text: string,
@@ -636,7 +637,8 @@
     elementContext: string | null,
     domContext: UiDomContext | null,
   ) {
-    await app.cmd("add_ui_annotation", {
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
       selector,
       bbox,

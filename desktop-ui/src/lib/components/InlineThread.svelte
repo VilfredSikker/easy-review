@@ -92,7 +92,7 @@
   let confirmingDelete = $state(false);
   let confirmDeleteTimer: ReturnType<typeof setTimeout> | undefined;
 
-  async function deleteThread() {
+  function deleteThread() {
     if (thread.replies.length > 0 && !confirmingDelete) {
       confirmingDelete = true;
       clearTimeout(confirmDeleteTimer);
@@ -101,16 +101,18 @@
     }
     clearTimeout(confirmDeleteTimer);
     confirmingDelete = false;
-    await app.cmd("delete_thread", { id: thread.id });
+    void app.cmd("delete_thread", { id: thread.id });
   }
 
-  async function deleteReply(replyId: string) {
-    await app.cmd("delete_thread", { id: replyId });
+  function deleteReply(replyId: string) {
+    void app.cmd("delete_thread", { id: replyId });
   }
 
-  async function submitReply() {
-    if (!replyText.trim()) return;
-    await app.cmd("reply_to_thread", { parentId: thread.id, text: replyText.trim() });
+  function submitReply() {
+    const text = replyText.trim();
+    if (!text) return;
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd("reply_to_thread", { parentId: thread.id, text });
     replyText = "";
     showReply = false;
   }
@@ -127,13 +129,14 @@
     return parts.join("\n\n");
   }
 
-  async function submitPromote(body: string) {
-    await app.cmd("promote_to_comment", { id: thread.id, body });
+  function submitPromote(body: string) {
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd("promote_to_comment", { id: thread.id, body });
     showPromote = false;
   }
 
-  async function promoteToNote() {
-    await app.cmd("promote_to_note", { id: thread.id, body: buildPromoteBody() });
+  function promoteToNote() {
+    void app.cmd("promote_to_note", { id: thread.id, body: buildPromoteBody() });
   }
 
   async function submitAskAi() {
@@ -170,9 +173,9 @@
     }
   }
 
-  async function resolveThread() {
+  function resolveThread() {
     if (thread.resolved) return;
-    await app.cmd("resolve_thread", { id: thread.id });
+    void app.cmd("resolve_thread", { id: thread.id });
   }
 
   function openEdit(messageId: string, body: string) {
@@ -180,9 +183,11 @@
     editInitialBody = body;
   }
 
-  async function submitEdit(body: string) {
+  function submitEdit(body: string) {
     if (!editMessageId) return;
-    await app.cmd("update_thread_message", { id: editMessageId, body });
+    if (!app.canPaintOptimistic()) return;
+    const id = editMessageId;
+    void app.cmd("update_thread_message", { id, body });
     editMessageId = null;
   }
 

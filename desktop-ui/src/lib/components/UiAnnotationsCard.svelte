@@ -77,11 +77,11 @@
     browser.scrollToId = id;
   }
 
-  async function remove(id: string) {
+  function remove(id: string) {
     if (browser.highlightPinId === id) browser.highlightPinId = null;
     if (browser.scrollToId === id) browser.scrollToId = null;
     dismissBrowserAnnotationComposerNow();
-    await app.cmd("delete_ui_annotation", { id });
+    void app.cmd("delete_ui_annotation", { id });
   }
 </script>
 

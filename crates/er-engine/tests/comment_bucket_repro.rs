@@ -250,3 +250,117 @@ fn fresh_comment_is_anchored_to_diff_hash_and_survives_relocate() {
         "fresh comment must stay non-stale after relocate"
     );
 }
+
+/// Adding a local (unpushed) GitHub comment must not call `reload_ai_state`,
+/// which re-reads every sidecar from disk and drops in-memory-only AI state.
+/// That reload is what made each inline comment feel like a full review sync.
+#[test]
+fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
+    use er_engine::ai::ErReview;
+    use std::collections::HashMap;
+
+    let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let base = std::env::temp_dir().join(format!(
+        "er-comment-no-reload-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let repo = base.join("repo");
+    let storage = base.join("storage");
+    std::fs::create_dir_all(&repo).unwrap();
+    std::fs::create_dir_all(&storage).unwrap();
+
+    std::env::set_var("ER_STORAGE_ROOT", &storage);
+    std::env::remove_var("ER_REPO_LOCAL");
+
+    git(&repo, &["init", "-q", "-b", "main"]);
+    git(&repo, &["config", "user.email", "t@example.com"]);
+    git(&repo, &["config", "user.name", "Test"]);
+    std::fs::write(repo.join("f.txt"), "line1\nline2\nline3\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "base"]);
+    git(&repo, &["checkout", "-q", "-b", "feature"]);
+    std::fs::write(repo.join("f.txt"), "line1\nCHANGED\nline3\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "change"]);
+
+    let mut app = App::new_with_args(&[repo.to_string_lossy().to_string()]).expect("app");
+    let file = app.tab().files[0].path.clone();
+
+    // Plant a review that exists only in memory (no review.json on disk).
+    app.tab_mut().ai.review = Some(ErReview {
+        version: 1,
+        diff_hash: "memory-only".to_string(),
+        created_at: String::new(),
+        base_branch: String::new(),
+        head_branch: String::new(),
+        files: HashMap::new(),
+        file_hashes: HashMap::new(),
+    });
+
+    app.submit_comment_text(
+        file,
+        0,
+        Some(2),
+        None,
+        "local only".to_string(),
+        CommentType::GitHubComment,
+        None,
+        None,
+    )
+    .unwrap();
+
+    let review_hash = app
+        .tab()
+        .ai
+        .review
+        .as_ref()
+        .map(|r| r.diff_hash.as_str())
+        .unwrap_or("")
+        .to_string();
+    let comment_count = app
+        .tab()
+        .ai
+        .github_comments
+        .as_ref()
+        .map(|gc| gc.comments.len())
+        .unwrap_or(0);
+    let synced = app
+        .tab()
+        .ai
+        .github_comments
+        .as_ref()
+        .and_then(|gc| gc.comments.last())
+        .map(|c| c.synced)
+        .unwrap_or(true);
+
+    assert_eq!(
+        review_hash, "memory-only",
+        "adding a local GH comment must not reload_ai_state (would drop in-memory review)"
+    );
+    assert_eq!(comment_count, 1, "the new local comment must be visible");
+    assert!(!synced, "new comments stay local until the user pushes");
+
+    let reloaded = app.tab_mut().check_ai_files_changed();
+    assert!(
+        !reloaded,
+        "the next poll must not treat our own sidecar write as an AI reload"
+    );
+    let review_hash_after_poll = app
+        .tab()
+        .ai
+        .review
+        .as_ref()
+        .map(|r| r.diff_hash.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(
+        review_hash_after_poll, "memory-only",
+        "in-memory review must survive the poll after a local comment write"
+    );
+
+    std::fs::remove_dir_all(&base).ok();
+}

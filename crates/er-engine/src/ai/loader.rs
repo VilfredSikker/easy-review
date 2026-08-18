@@ -363,6 +363,13 @@ pub fn load_diagrams(er_dir: &str, current_diff_hash: &str) -> Vec<ErDiagram> {
 
 /// Get the mtime of the most recently modified .er-* file
 pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
+    latest_er_mtime_skipping(er_dir, None)
+}
+
+pub(crate) fn latest_er_mtime_skipping(
+    er_dir: &str,
+    skip: Option<&Path>,
+) -> Option<std::time::SystemTime> {
     let er_dir = Path::new(er_dir);
     let files = [
         "review.json",
@@ -377,10 +384,15 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
         "professor.json",
     ];
 
+    let skip_eq = |path: &Path| skip.is_some_and(|s| s == path);
+
     let mut latest = files
         .iter()
         .filter_map(|name| {
             let path = er_dir.join(name);
+            if skip_eq(&path) {
+                return None;
+            }
             std::fs::metadata(&path).ok()?.modified().ok()
         })
         .max();

@@ -233,6 +233,41 @@ describe("commentAutoPullKey", () => {
     });
     expect(commentAutoPullKey(snap)).toBe("1:org/discovery:1469");
   });
+
+  it("is stable whether the live GitHub status cache is present", () => {
+    const withGithub = commentAutoPullKey(
+      minimalSnapshot({
+        github: githubSnap(1469, "https://github.com/org/discovery/pull/1469"),
+        tabs: [
+          tab({
+            idx: 0,
+            label: "discovery#1469",
+            pr_number: 1469,
+            remote: "org/discovery",
+            is_active: true,
+          }),
+        ],
+        active_tab: 0,
+      }),
+    );
+    const withoutGithub = commentAutoPullKey(
+      minimalSnapshot({
+        github: null,
+        tabs: [
+          tab({
+            idx: 0,
+            label: "discovery#1469",
+            pr_number: 1469,
+            remote: "org/discovery",
+            is_active: true,
+          }),
+        ],
+        active_tab: 0,
+      }),
+    );
+    expect(withGithub).toBe("0:org/discovery:1469");
+    expect(withoutGithub).toBe(withGithub);
+  });
 });
 
 describe("resolveActivePrUrl", () => {

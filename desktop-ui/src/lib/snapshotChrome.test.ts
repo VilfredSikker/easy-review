@@ -6,6 +6,7 @@ import {
   mergeChromeSnapshot,
   shouldDeferChromeIdentityChange,
   snapshotViewIdentity,
+  snapshotViewParts,
 } from "./snapshotChrome";
 import type { AiSnapshot, AppSnapshot, TabSummary, UiAnnotation } from "./types";
 
@@ -103,6 +104,18 @@ const pr1434 = {
 } as const;
 
 describe("snapshotViewIdentity", () => {
+  it("joins the same fields snapshotViewParts exposes", () => {
+    const a = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "pr-1427", pr_number: 1427, is_active: true })],
+      pr: { ...pr1427 },
+    });
+    const p = snapshotViewParts(a);
+    expect(snapshotViewIdentity(a)).toBe(
+      `${p.active_tab}|${p.repo_root}|${p.pr_number ?? ""}|${p.branch}|${p.mode}`,
+    );
+  });
+
   it("changes when PR number changes", () => {
     const a = snap({
       active_tab: 0,

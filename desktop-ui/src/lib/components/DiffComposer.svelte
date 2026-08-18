@@ -47,7 +47,7 @@
     return idx === -1 ? 0 : idx;
   }
 
-  async function submit() {
+  function submit() {
     if (!canSubmit || diffSel.file === null || diffSel.start === null) return;
     const command =
       diffSel.kind === "comment"
@@ -64,10 +64,11 @@
       lineNumEnd: lineStart !== lineEnd ? lineEnd : null,
       text: diffSel.text.trim(),
     };
-    if (command === "add_comment" && diffSel.side !== null) {
+    if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
-    await app.cmd(command, cmdArgs);
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd(command, cmdArgs);
     diffSel.clear();
   }
 

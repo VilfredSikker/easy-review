@@ -712,9 +712,14 @@ pub struct TabState {
     /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
     pub comment_author_override: Option<String>,
 
-    /// Transient: selection side for the next GitHub comment ("LEFT"/"RIGHT").
-    /// Consumed by submit_github_comment. Defaults to "RIGHT".
+    /// Transient: selection side for the next comment/question/note ("LEFT"/"RIGHT").
+    /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
+
+    /// Transient: client-minted id for the next comment/question/note. Consumed
+    /// by submit. Lets the desktop paint a thread and persist the same id so a
+    /// follow-up reply/delete before ingest still hits the backend row.
+    pub comment_id_override: Option<String>,
 
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
@@ -1389,6 +1394,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits,
             pr_head_ref: None,
@@ -1513,6 +1519,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -1631,6 +1638,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -1749,6 +1757,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -3584,6 +3593,35 @@ impl TabState {
             return true;
         }
         false
+    }
+
+    /// Record that we wrote `sidecar_path` so the next poll does not treat that
+    /// write as an external AI update. If some other watched sidecar is newer
+    /// than this file, leave `last_ai_check` alone so that write still reloads.
+    ///
+    /// No-op when the file is outside `er_dir()` (GitHub comments live in the
+    /// PR bucket on a local PR Branch view). Stamping from that path would make
+    /// `last_ai_check` Some while `latest_er_mtime` on an empty view bucket is
+    /// None, and the next poll would take the "files deleted" reload path.
+    pub fn mark_sidecar_written(&mut self, sidecar_path: &str) {
+        let sidecar = std::path::Path::new(sidecar_path);
+        let watched_dir = self.er_dir();
+        if !sidecar.starts_with(&watched_dir) {
+            return;
+        }
+        let written = std::fs::metadata(sidecar)
+            .ok()
+            .and_then(|m| m.modified().ok());
+        let Some(written) = written else {
+            return;
+        };
+        let others = ai::latest_er_mtime_skipping(&self.er_dir(), Some(sidecar));
+        if let (Some(others), Some(prev)) = (others, self.last_ai_check) {
+            if others > prev {
+                return;
+            }
+        }
+        self.last_ai_check = Some(written);
     }
 
     // ── Layer toggles ──
@@ -7751,6 +7789,7 @@ mod tests {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
@@ -9586,6 +9625,99 @@ mod tests {
     }
 
     #[test]
+    fn start_comment_on_add_line_sets_right_side() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![make_line(LineType::Add, "line", Some(1))])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::GitHubComment);
+        assert_eq!(app.tab().comment_side.as_deref(), Some("RIGHT"));
+    }
+
+    #[test]
+    fn start_comment_on_delete_line_sets_left_side() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![DiffLine {
+                line_type: LineType::Delete,
+                content: "gone".to_string(),
+                old_num: Some(12),
+                new_num: None,
+            }])],
+            0,
+            1,
+        )];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::GitHubComment);
+        assert_eq!(app.tab().comment_side.as_deref(), Some("LEFT"));
+        assert_eq!(app.tab().comment_line_num, Some(12));
+    }
+
+    #[test]
+    fn start_comment_split_old_focus_sets_left_side() {
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![DiffLine {
+                line_type: LineType::Context,
+                content: "keep".to_string(),
+                old_num: Some(4),
+                new_num: Some(4),
+            }])],
+            0,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        tab.current_line = Some(0);
+        tab.split_focus = SplitSide::Old;
+        let mut app = make_test_app(tab);
+        app.config.display.split_diff = true;
+        app.start_comment(CommentType::Question);
+        assert_eq!(app.tab().comment_side.as_deref(), Some("LEFT"));
+        assert_eq!(app.tab().comment_line_num, Some(4));
+    }
+
+    #[test]
+    fn submit_comment_from_delete_line_persists_left_side() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_string_lossy().into_owned();
+        let files = vec![make_file(
+            "src/main.rs",
+            vec![make_hunk(vec![DiffLine {
+                line_type: LineType::Delete,
+                content: "gone".to_string(),
+                old_num: Some(12),
+                new_num: None,
+            }])],
+            0,
+            1,
+        )];
+        let mut tab = make_test_tab(files);
+        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.repo_root = root.clone();
+        tab.current_line = Some(0);
+        let mut app = make_test_app(tab);
+        app.start_comment(CommentType::GitHubComment);
+        app.tab_mut().comment_textarea = TextArea::new(vec!["why delete this".to_string()]);
+        app.submit_comment().unwrap();
+        let comments = app
+            .tab()
+            .ai
+            .github_comments
+            .as_ref()
+            .expect("github comments sidecar");
+        assert_eq!(comments.comments.len(), 1);
+        assert_eq!(comments.comments[0].side, "LEFT");
+        assert_eq!(comments.comments[0].line_start, Some(12));
+    }
+
+    #[test]
     fn start_comment_github_type() {
         let files = vec![make_file(
             "src/lib.rs",
@@ -9754,6 +9886,7 @@ mod tests {
                 context_before: Vec::new(),
                 context_after: Vec::new(),
                 old_line_start: None,
+                side: "RIGHT".to_string(),
                 hunk_header: String::new(),
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),
@@ -11697,6 +11830,97 @@ mod tests {
         assert!(
             !tab.check_ai_files_changed(),
             "settled after reload — no redundant full re-read"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn mark_sidecar_written_does_not_swallow_a_newer_review() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+        tab.apply_managed_root();
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+
+        std::fs::write(er_dir.join("questions.json"), "[]").unwrap();
+        tab.reload_ai_state();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+
+        std::fs::write(er_dir.join("review.json"), r#"{"head_branch":"feature"}"#).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(
+            er_dir.join("questions.json"),
+            r#"{"version":1,"diff_hash":"x","questions":[]}"#,
+        )
+        .unwrap();
+        tab.mark_sidecar_written(er_dir.join("questions.json").to_str().unwrap());
+
+        assert!(
+            tab.check_ai_files_changed(),
+            "a newer review.json must still reload after marking our questions write"
+        );
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn mark_sidecar_written_ignores_github_comments_outside_view_bucket() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        run_git_for_history_test(root, &["init", "-q"]);
+        run_git_for_history_test(
+            root,
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/acme/widget.git",
+            ],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = root.to_string_lossy().to_string();
+        tab.current_branch = "feat/foo".to_string();
+        tab.local_branch_view = Some("feat/foo".to_string());
+        tab.pr_number = Some(99);
+        tab.remote_repo = None;
+        tab.mode = DiffMode::Branch;
+        tab.apply_managed_root();
+
+        let view = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&view).unwrap();
+        tab.last_ai_check = None;
+
+        let gh_dir = std::path::PathBuf::from(tab.github_comments_dir());
+        assert!(
+            !gh_dir.starts_with(&view),
+            "github comments must live in the PR bucket, not the Branch view bucket"
+        );
+        std::fs::create_dir_all(&gh_dir).unwrap();
+        let gh_path = gh_dir.join("github-comments.json");
+        std::fs::write(&gh_path, "{}").unwrap();
+        tab.mark_sidecar_written(gh_path.to_str().unwrap());
+
+        assert!(
+            tab.last_ai_check.is_none(),
+            "must not stamp last_ai_check from a sidecar outside er_dir"
+        );
+        assert!(
+            !tab.check_ai_files_changed(),
+            "empty view bucket plus a PR-bucket write must not take the deleted-files reload path"
         );
         std::env::remove_var("ER_STORAGE_ROOT");
     }

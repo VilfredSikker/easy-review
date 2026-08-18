@@ -9,11 +9,21 @@ import {
 import { LATEST_INVOKE_SKIPPED, createLatestInvokeQueue } from "../latestInvokeQueue";
 import { profileLog } from "../profileLog";
 import {
+  applyOptimisticOp,
+  buildOptimisticOp,
+  isOptimisticCommand,
+  optimisticInvokeArgs,
+  reapplyOptimisticOps,
+  rollbackOptimisticOp,
+  type OptimisticOp,
+} from "../optimisticLocal";
+import {
   canChromeMerge,
   isStaleSnapshotGeneration,
   mergeChromeSnapshot,
   shouldDeferChromeIdentityChange,
   snapshotViewIdentity,
+  snapshotViewParts,
 } from "../snapshotChrome";
 import { resolveOmittedHunks } from "../snapshotDelta";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
@@ -201,6 +211,8 @@ class AppStore {
   private pollPending = false;
   /** Bumped on every command snapshot so in-flight polls cannot clobber a newer view. */
   private snapshotGeneration = 0;
+  /** Local sidecar writes shown before IPC returns. */
+  private pendingOps: OptimisticOp[] = [];
   private tabCache = new TabSnapshotCache();
   /** Last snapshot the backend confirmed. Cache paints are not confirmed. */
   private lastConfirmedSnapshot: AppSnapshot | null = null;
@@ -346,6 +358,7 @@ class AppStore {
       const snap = await invoke<AppSnapshot>("get_snapshot");
       resolveOmittedHunks(this.snapshot, snap);
       this.snapshot = snap;
+      this.keepOptimisticOps();
       this.rememberSnapshot(snap);
       this.lastConfirmedSnapshot = snap;
       this.syncSnapshotToast(this.snapshot);
@@ -464,6 +477,7 @@ class AppStore {
               }
               this.rememberSnapshot(this.snapshot);
               this.lastConfirmedSnapshot = this.snapshot;
+              this.keepOptimisticOps();
               this.syncSnapshotToast(this.snapshot);
             }
           } else {
@@ -593,6 +607,7 @@ class AppStore {
     }
     this.spliceAndConfirmSnapshot(snapshot);
     this.snapshot = snapshot;
+    this.keepOptimisticOps();
     this.rememberSnapshot(snapshot);
     this.initialLoadDone = true;
     this.syncSnapshotToast(snapshot);
@@ -605,11 +620,110 @@ class AppStore {
   private restoreConfirmedSnapshot(): void {
     if (!this.lastConfirmedSnapshot) return;
     this.snapshot = this.lastConfirmedSnapshot;
+    this.keepOptimisticOps();
     this.rememberSnapshot(this.snapshot);
     this.snapshotGeneration += 1;
     this.lastPollRevision = null;
     this.lastPollContentRevision = null;
     this.lastPollChromeRevision = null;
+  }
+
+  private keepOptimisticOps() {
+    if (!this.snapshot || this.pendingOps.length === 0) return;
+    reapplyOptimisticOps(this.snapshot, this.pendingOps);
+  }
+
+  private dropPendingOp(id: string) {
+    this.pendingOps = this.pendingOps.filter((p) => p.id !== id);
+  }
+
+  private reportCmdError(command: string, e: unknown) {
+    console.error(`${command} failed:`, e);
+    this.pushLog("error", command, String(e));
+    this.error = `${command}: ${e}`;
+    this.showToast("error", `${command}: ${e}`);
+    setTimeout(() => {
+      if (this.error?.startsWith(`${command}:`)) this.error = null;
+    }, 5000);
+  }
+
+  /** Serializes optimistic IPC so add-then-reply/delete hit the same id. */
+  private optimisticChain: Promise<void> = Promise.resolve();
+
+  private enqueueOptimistic(task: () => Promise<void>): Promise<void> {
+    const run = this.optimisticChain.then(task, task);
+    this.optimisticChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+
+  /**
+   * Local sidecar writes skip when there is no snapshot or a tab switch
+   * is in flight. Composers that clear drafts must check this first.
+   */
+  canPaintOptimistic(): boolean {
+    return this.snapshot !== null && !this.pendingTabSwitch && !this.switching;
+  }
+
+  /**
+   * Paint a local sidecar write immediately, then run IPC in the
+   * background. Rollback only if the write fails. Apply happens before
+   * the first await so composers can close without waiting.
+   */
+  private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
+    if (!this.canPaintOptimistic()) return;
+    const snap = this.snapshot;
+    if (!snap) return;
+
+    const op = buildOptimisticOp(command, args, snap);
+    if (!op) return;
+
+    const viewAtStart = op.viewIdentity;
+    const originSnap = snap;
+    this.pendingOps = [...this.pendingOps, op];
+    applyOptimisticOp(snap, op);
+    const invokeArgs = optimisticInvokeArgs(command, args, op, snapshotViewParts(snap));
+
+    await this.enqueueOptimistic(async () => {
+      const rollbackPaintedView = () => {
+        rollbackOptimisticOp(originSnap, op);
+        if (
+          this.snapshot &&
+          this.snapshot !== originSnap &&
+          snapshotViewIdentity(this.snapshot) === viewAtStart
+        ) {
+          rollbackOptimisticOp(this.snapshot, op);
+        }
+      };
+      const stillHere =
+        this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
+      if (!stillHere) {
+        rollbackPaintedView();
+        this.dropPendingOp(op.id);
+        return;
+      }
+      try {
+        const returned = await invoke<AppSnapshot>(command, invokeArgs);
+        this.dropPendingOp(op.id);
+        if (
+          this.snapshot &&
+          snapshotViewIdentity(this.snapshot) === viewAtStart &&
+          snapshotViewIdentity(returned) === viewAtStart
+        ) {
+          this.ingestCommandSnapshot(returned);
+        } else {
+          rollbackPaintedView();
+        }
+      } catch (e) {
+        this.dropPendingOp(op.id);
+        rollbackPaintedView();
+        if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+          this.reportCmdError(command, e);
+        }
+      }
+    });
   }
 
   /**
@@ -674,6 +788,9 @@ class AppStore {
       const path = (args as { path?: string } | undefined)?.path;
       if (path) return this.cmdReviewed(command, path);
     }
+    if (isOptimisticCommand(command)) {
+      return this.cmdOptimistic(command, args ?? {});
+    }
 
     const tStart = performance.now();
     const isTabChange = TAB_CHANGE_COMMANDS.has(command);
@@ -697,6 +814,7 @@ class AppStore {
         aiReviewFilter.reset();
       }
       this.snapshot = painted;
+      this.keepOptimisticOps();
       this.initialLoadDone = true;
       // Drop in-flight poll revisions from the previous tab.
       this.lastPollRevision = null;
@@ -767,13 +885,7 @@ class AppStore {
       if (isTabChange && myTabChangeGen === this.tabChangeGeneration) {
         this.restoreConfirmedSnapshot();
       }
-      console.error(`${command} failed:`, e);
-      this.pushLog("error", command, String(e));
-      this.error = `${command}: ${e}`;
-      this.showToast("error", `${command}: ${e}`);
-      setTimeout(() => {
-        if (this.error?.startsWith(`${command}:`)) this.error = null;
-      }, 5000);
+      this.reportCmdError(command, e);
     } finally {
       if (isTabChange) {
         this.inflightTabChanges = Math.max(0, this.inflightTabChanges - 1);

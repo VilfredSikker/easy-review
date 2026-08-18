@@ -157,6 +157,30 @@ fn mode_str(mode: DiffMode) -> &'static str {
     }
 }
 
+/// View the frontend painted before an optimistic sidecar write. Must match
+/// `snapshotViewParts` in `desktop-ui/src/lib/snapshotChrome.ts`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptimisticView {
+    pub active_tab: usize,
+    pub repo_root: String,
+    pub pr_number: Option<u64>,
+    pub branch: String,
+    pub mode: String,
+}
+
+pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
+    let tab = app.tab();
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    app.active_tab == expected.active_tab
+        && tab.repo_root == expected.repo_root
+        && tab.pr_number == expected.pr_number
+        && branch == expected.branch
+        && mode_str(tab.mode) == expected.mode
+}
+
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
 pub(crate) fn record_sent_file(
@@ -1156,10 +1180,10 @@ fn comment_ref_to_thread(
         CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
     };
     let line_end = c.line_end();
-    let side = match c {
-        CommentRef::GitHubComment(gc) => gc.side.clone(),
-        _ => default_thread_side(),
-    };
+    let side = c
+        .side()
+        .map(str::to_string)
+        .unwrap_or_else(default_thread_side);
     let author_kind = if c.author() == "You" { "you" } else { "human" };
     ThreadSnapshot {
         id: c.id().to_string(),
@@ -3382,7 +3406,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         file: q.file.clone(),
                         line: q.line_start.unwrap_or(0),
                         line_end: q.line_end,
-                        side: default_thread_side(),
+                        side: q.side.clone(),
                         source: "local".to_string(),
                         synced: false,
                         stale: q.stale,
@@ -3415,7 +3439,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         file: n.file.clone(),
                         line: n.line_start.unwrap_or(0),
                         line_end: n.line_end,
-                        side: default_thread_side(),
+                        side: n.side.clone(),
                         source: "local".to_string(),
                         synced: false,
                         stale: n.stale,

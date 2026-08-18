@@ -81,9 +81,9 @@
     }
   }
 
-  async function resolveThread() {
+  function resolveThread() {
     if (!rootThreadId) return;
-    await app.cmd("resolve_thread", { id: rootThreadId });
+    void app.cmd("resolve_thread", { id: rootThreadId });
   }
 </script>
 
