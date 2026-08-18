@@ -3886,6 +3886,8 @@ mod tests {
     #[test]
     fn context_identity_falls_back_to_pr_data_when_tab_names_empty() {
         let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch.clear();
+        tab.base_branch.clear();
         tab.pr_data = Some(er_engine::github::PrOverviewData {
             number: 1425,
             title: "t".into(),
@@ -3905,7 +3907,9 @@ mod tests {
 
     #[test]
     fn context_identity_falls_back_to_pr_list_cache() {
-        let tab = TabState::new_for_test(vec![]);
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch.clear();
+        tab.base_branch.clear();
         let mut pr = minimal_pr_info(1425, "t");
         pr.head_ref = "feat/from-fork".into();
         pr.base_ref = "main".into();
