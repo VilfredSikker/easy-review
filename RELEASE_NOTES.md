@@ -1,3 +1,37 @@
+# Easy Review v0.4.13
+
+## In plain terms
+
+- **What changed.** File-level risks show in their own card, even when a review has no line findings. Local GitHub comments no longer freeze, spin, or duplicate. Right-side panels stay bound to the active tab. Remote TUI reviews use the prepared PR diff. The embedded browser no longer crashes on external sites.
+- **TL;DR.** File-risks card, comment/panel freeze fixes, TUI prepared-diff reviews, browser crash fix.
+
+## Highlights
+
+- **File risks.** Reviews with file-level risks show them in a dedicated card when there are no line findings. (#155)
+- **Local comments.** Optimistic local GitHub writes no longer freeze the UI, spin forever, or duplicate inline. (#180)
+- **Tab panels.** Right-side panels load from the active tab instead of mixing PR and branch state. (#178)
+- **Remote TUI review.** `pr_open` feeds the prepared PR diff to remote review instead of `gh pr diff`. GitHub comments stay visible across lazy diffs. (#177)
+- **Embedded browser.** External sites no longer crash the app. (#115)
+
+## What's Changed
+
+### Features
+- Show file risks in their own card when a review has no line findings. (#155)
+
+### Fixes
+- Stop local GitHub comments from freezing, spinning, or duplicating. (#180)
+- Bind right-side panels to the active tab. (#178)
+- Count only unpushed local comments when pushing a review. (#181)
+- Cap triage card height and truncate long paths. (#179)
+- Feed remote TUI review the prepared PR diff; keep GitHub comments visible across lazy diffs. (#177)
+- Show review summary when a run finds nothing. (#176)
+- Stop the embedded browser from crashing the app on external sites. (#115)
+
+### Chore
+- Add CODEOWNERS so required reviews come from admins. (#182)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.12...v0.4.13
+
 # Easy Review v0.4.12
 
 ## In plain terms
