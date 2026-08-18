@@ -232,7 +232,6 @@
       <button
         role="tab"
         aria-selected={!prActive}
-        disabled={!prActive}
         onclick={() => void app.cmd("set_mode", { mode: "branch" })}
         class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
       >
@@ -241,7 +240,6 @@
       <button
         role="tab"
         aria-selected={prActive}
-        disabled={prActive}
         onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber: prNumber })}
         class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
       >

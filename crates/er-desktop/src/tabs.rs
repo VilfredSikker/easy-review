@@ -235,7 +235,9 @@ fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Tab
     tab.local_branch_view = d.branch.clone().or_else(|| Some(format!("pr/{}", number)));
     tab.pr_number = Some(number);
     tab.pr_head_ref = d.pr_head_ref.clone();
-    tab.mode = er_engine::app::DiffMode::Branch;
+    // Match `new_stub_pr_tab`. Restored PR tabs open on PR Diff; Branch is a
+    // click away once the head checkout is attached.
+    tab.mode = er_engine::app::DiffMode::PrDiff;
     // Reloads AI sidecars so Review/Notes/Context have this tab's data on
     // first select, without waiting for the deferred git diff.
     tab.sync_managed_storage();
@@ -532,6 +534,11 @@ mod tests {
             browser_layout: None,
         };
         let tab = rebuild_local_pr(&d, true).expect("stub");
+        assert_eq!(
+            tab.mode,
+            er_engine::app::DiffMode::PrDiff,
+            "restored PR stubs open on PR Diff, matching new_stub_pr_tab"
+        );
         assert!(tab.needs_initial_refresh, "lazy stub still defers git diff");
         let qs = tab
             .ai

@@ -1430,11 +1430,7 @@ fn main() {
                     // Mirror checkout root onto the active tab so refresh_diff
                     // uses the working-tree helper.
                     if let Ok(mut g) = watcher_app.lock() {
-                        let checkout_root = desired.as_ref().map(|(_, r)| r.clone());
-                        let desired_branch = desired.as_ref().map(|(b, _)| b.clone());
-                        if active_tab_watched_branch(&g) == desired_branch {
-                            g.tab_mut().local_branch_checkout_root = checkout_root;
-                        }
+                        apply_watch_checkout_root(g.tab_mut(), desired.clone());
                     }
                     current_key = desired;
                     profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
@@ -2038,30 +2034,11 @@ fn main() {
     });
 }
 
-/// Checkout root + branch for the active tab when that branch is checked out
-/// (project root HEAD or a linked worktree). Returns None for remote tabs or
-/// tabs whose branch isn't checked out anywhere. PR tabs are allowed: if their
-/// head branch happens to be checked out, the watcher attaches a checkout root
-/// so Unstaged/Staged/working-tree Branch views become available (matching the
-/// Tracked-branch entry point).
-fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
-    let tab = app.tab();
-    if tab.remote_repo.is_some() {
-        return None;
-    }
-
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
-    let root = commands::resolve_head_checkout(&tab.repo_root, &branch)?;
-    Some((branch, root))
-}
-
-/// Branch name the active tab is reviewing (for watch refresh guard).
-fn active_tab_watched_branch(app: &App) -> Option<String> {
-    let tab = app.tab();
-    if tab.remote_repo.is_some() {
+/// Branch the active-branch watcher should follow. Remote-only tabs have no
+/// local checkout. Local PR tabs store a GitHub slug for status keys; they
+/// still watch when the head branch is checked out.
+fn watch_branch_for_tab(tab: &er_engine::app::TabState) -> Option<String> {
+    if tab.is_remote() {
         return None;
     }
     let branch = tab
@@ -2072,6 +2049,37 @@ fn active_tab_watched_branch(app: &App) -> Option<String> {
         None
     } else {
         Some(branch)
+    }
+}
+
+/// Checkout root + branch for the active tab when that branch is checked out
+/// (project root HEAD or a linked worktree). Returns None for remote-only tabs
+/// or tabs whose branch isn't checked out anywhere. Local PR tabs are allowed:
+/// if their head branch is checked out, the watcher attaches a checkout root
+/// so Unstaged/Staged/working-tree Branch views become available.
+fn desired_local_branch_watch(app: &App) -> Option<(String, String)> {
+    let tab = app.tab();
+    let branch = watch_branch_for_tab(tab)?;
+    let root = commands::resolve_head_checkout(&tab.repo_root, &branch)?;
+    Some((branch, root))
+}
+
+/// Branch name the active tab is reviewing (for watch refresh guard).
+fn active_tab_watched_branch(app: &App) -> Option<String> {
+    watch_branch_for_tab(app.tab())
+}
+
+/// Mirror the watcher target onto the tab. Local PR tabs with a GitHub slug
+/// must not treat `desired = None` as "clear checkout" — that used to fire
+/// because `remote_repo` made both sides `None`, which hid Local Branch and
+/// made Branch/PR Diff load the same `gh pr diff`.
+fn apply_watch_checkout_root(
+    tab: &mut er_engine::app::TabState,
+    desired: Option<(String, String)>,
+) {
+    let desired_branch = desired.as_ref().map(|(b, _)| b.clone());
+    if watch_branch_for_tab(tab) == desired_branch {
+        tab.local_branch_checkout_root = desired.as_ref().map(|(_, r)| r.clone());
     }
 }
 
@@ -2153,6 +2161,67 @@ mod tests {
             Instant::now(),
             Duration::from_secs(300),
         ));
+    }
+
+    // ── local-PR slug vs remote-only watch ──
+    // Local PR tabs store `remote_repo` for GitHub status keys. Treating that
+    // as remote-only made both watch sides `None`, which cleared a just-attached
+    // checkout root. Local Branch then loaded the same `gh pr diff` as PR Diff.
+
+    fn local_pr_tab_with_slug() -> er_engine::app::TabState {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = Some("feat/x".into());
+        tab.pr_number = Some(42);
+        tab
+    }
+
+    #[test]
+    fn watch_branch_skips_remote_only_tabs() {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = None;
+        tab.current_branch.clear();
+        assert_eq!(watch_branch_for_tab(&tab), None);
+    }
+
+    #[test]
+    fn watch_branch_follows_local_pr_with_github_slug() {
+        let tab = local_pr_tab_with_slug();
+        assert_eq!(
+            watch_branch_for_tab(&tab).as_deref(),
+            Some("feat/x"),
+            "a GitHub slug must not hide the local PR head from the watcher"
+        );
+    }
+
+    #[test]
+    fn apply_watch_checkout_root_keeps_local_pr_checkout_when_desired_is_none() {
+        let mut tab = local_pr_tab_with_slug();
+        tab.local_branch_checkout_root = Some("/worktree".into());
+        apply_watch_checkout_root(&mut tab, None);
+        assert_eq!(
+            tab.local_branch_checkout_root.as_deref(),
+            Some("/worktree"),
+            "desired=None used to clear checkout because both watch sides were None"
+        );
+    }
+
+    #[test]
+    fn apply_watch_checkout_root_sets_root_when_desired_matches() {
+        let mut tab = local_pr_tab_with_slug();
+        apply_watch_checkout_root(&mut tab, Some(("feat/x".into(), "/wt".into())));
+        assert_eq!(tab.local_branch_checkout_root.as_deref(), Some("/wt"));
+    }
+
+    #[test]
+    fn apply_watch_checkout_root_clears_remote_only_when_desired_is_none() {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = None;
+        tab.local_branch_checkout_root = Some("/stale".into());
+        apply_watch_checkout_root(&mut tab, None);
+        assert!(tab.local_branch_checkout_root.is_none());
     }
 
     // ── probe_recently_done (finding 3 throttle) ──

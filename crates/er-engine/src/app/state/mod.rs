@@ -1170,6 +1170,10 @@ impl TabState {
         self.pr_data = pr_data;
         self.pr_commits = pr_commits;
         self.last_diff_head_oid = head_oid;
+        // Lazy local-PR stubs start in Branch. This payload is `gh pr diff`,
+        // so land in PR Diff. Leaving Branch selected made the header toggle
+        // look stuck (clicking Local Branch was a no-op on already-branch).
+        self.mode = DiffMode::PrDiff;
         self.needs_initial_refresh = false;
         self.apply_managed_root();
         self.reload_ai_state();
@@ -2181,11 +2185,13 @@ impl TabState {
     }
 
     /// Whether the current view's guided tour belongs to the PR diff (vs the
-    /// local branch diff). Remote tabs and PR Diff mode are always PR-scoped;
-    /// Tour mode follows whichever view it was entered from (`tour_is_pr`).
-    /// All other modes (Branch/Unstaged/Staged/History) are branch-scoped.
+    /// local branch diff). Remote-only tabs and PR Diff mode are always
+    /// PR-scoped; Tour mode follows whichever view it was entered from
+    /// (`tour_is_pr`). Local PR tabs store a GitHub slug for status keys; that
+    /// does not make Branch/Unstaged/Staged PR-scoped. All other modes are
+    /// branch-scoped.
     pub fn tour_context_is_pr(&self) -> bool {
-        if self.remote_repo.is_some() {
+        if self.is_remote() {
             return true;
         }
         match self.mode {
@@ -2578,12 +2584,18 @@ impl TabState {
         {
             return None;
         }
-        if let Some(ref repo_slug) = self.remote_repo {
-            let parts: Vec<&str> = repo_slug.split('/').collect();
-            if parts.len() == 2 {
-                return Some(crate::github::gh_pr_diff_remote(
-                    parts[0], parts[1], pr_number,
-                ));
+        // Remote-only tabs (`gh pr diff --repo`). Local PR tabs also store a
+        // GitHub slug for status keys; they still have a clone, so they use
+        // local `gh pr diff` below. Using the remote path here made Branch
+        // and PR Diff load the same network diff.
+        if self.is_remote() {
+            if let Some(ref repo_slug) = self.remote_repo {
+                let parts: Vec<&str> = repo_slug.split('/').collect();
+                if parts.len() == 2 {
+                    return Some(crate::github::gh_pr_diff_remote(
+                        parts[0], parts[1], pr_number,
+                    ));
+                }
             }
             return Some(Err(anyhow::anyhow!(
                 "Remote tab missing owner/repo for PR diff"
@@ -4101,9 +4113,10 @@ impl TabState {
 
             // Entering Tour: remember whether the originating view was the PR diff
             // so the guide stays attached to the PR (vs the local branch) and the
-            // Diff toggle returns to the right view. Remote tabs are always PR.
+            // Diff toggle returns to the right view. Remote-only tabs are always PR.
+            // Local PR tabs store a GitHub slug; Branch origin stays branch-scoped.
             if mode == DiffMode::Tour {
-                self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.remote_repo.is_some();
+                self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.is_remote();
             }
 
             self.mode = mode;
@@ -10172,6 +10185,22 @@ mod tests {
     }
 
     #[test]
+    fn populate_pr_tab_switches_to_pr_diff_from_branch() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(7);
+        tab.local_branch_view = Some("feat/x".into());
+        tab.remote_repo = Some("owner/repo".into());
+        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        tab.populate_pr_tab(raw, None, Vec::new(), "main".to_string(), None);
+        assert_eq!(
+            tab.mode,
+            DiffMode::PrDiff,
+            "populated payload is gh pr diff; landing in Branch made Local Branch look stuck"
+        );
+    }
+
+    #[test]
     fn deferred_enter_pr_diff_preloaded_defers_ai_reload() {
         // Two-phase open contract (first-paint plan step 2): with
         // `defer_ai_reload = true` the PR-bucket routing + reviewed set apply
@@ -11426,6 +11455,22 @@ mod tests {
             "non-checked-out PR tab in Branch must use the parity diff (Some)"
         );
     }
+
+    /// A checked-out local PR still skips the parity diff when it also stores
+    /// a GitHub slug. The slug is for status keys, not the remote-only path.
+    #[test]
+    fn fetch_pr_diff_for_review_skips_working_tree_when_local_pr_has_github_slug() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(42);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = Some("feat/x".into());
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
+        assert!(
+            tab.fetch_pr_diff_for_review("branch").is_none(),
+            "checked-out local PR with a slug must use the working tree, not gh_pr_diff_remote"
+        );
+    }
     /// We can't call the real constructors (network I/O), so we verify via
     /// new_for_test with remote_repo set and mode manually set — and separately
     /// verify the review_bucket() short-circuit still routes to Pr.
@@ -11473,6 +11518,19 @@ mod tests {
         remote.remote_repo = Some("owner/repo".into());
         remote.mode = DiffMode::PrDiff;
         assert!(remote.tour_context_is_pr());
+
+        // Local PR tabs store a GitHub slug; Branch stays branch-scoped.
+        let mut local_pr = make_test_tab(vec![]);
+        local_pr.remote_repo = Some("owner/repo".into());
+        local_pr.local_branch_view = Some("feat/x".into());
+        local_pr.pr_number = Some(1);
+        local_pr.mode = DiffMode::Branch;
+        assert!(
+            !local_pr.tour_context_is_pr(),
+            "local PR Branch view must not inherit PR tour context from the slug"
+        );
+        local_pr.mode = DiffMode::PrDiff;
+        assert!(local_pr.tour_context_is_pr());
     }
 
     /// `tour_bucket_er_dir` (the single write+read tour bucket) follows the context,
@@ -11671,6 +11729,21 @@ mod tests {
             "Tour entered from the local branch must be branch-scoped"
         );
         assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
+    }
+
+    #[test]
+    fn set_mode_tour_from_local_pr_branch_ignores_github_slug() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(1);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = Some("feat/x".into());
+        tab.tour_is_pr = true;
+        tab.set_mode(DiffMode::Tour);
+        assert!(
+            !tab.tour_is_pr,
+            "Tour from local PR Branch must stay branch-scoped even when a slug is set"
+        );
     }
 
     /// pr_refs_fetched starts false on all non-remote constructors and on test tabs.
