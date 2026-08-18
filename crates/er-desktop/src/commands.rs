@@ -6,7 +6,10 @@ use std::sync::{Arc, Condvar, Mutex};
 use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
-use crate::inbox::{InboxHandle, InboxItem, InboxTarget};
+use crate::inbox::{
+    inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
+    InboxItem, InboxNotification, InboxTarget, NotificationInboxCtx, PrInboxView, PrTransitionCtx,
+};
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
@@ -61,7 +64,10 @@ const REQUESTED_KINDS: &[&str] = &[
     "ci_failed",
     "review_requested",
     "review_rerequested",
-    "pr_comment_or_mention",
+    "pr_comment",
+    "pr_comment_reply",
+    "pr_review_received",
+    "mention",
     "pr_merged",
     "pr_closed",
     "github_refresh_failed",
@@ -1676,144 +1682,26 @@ pub fn process_inbox_after_pr_refresh(
             let is_my_pr = pr.author == gh_user;
             let prev = inbox.observed_pr.get(&key).cloned();
 
-            if let Some(prev_state) = &prev {
-                if is_my_pr {
-                    if pr.review_decision.as_deref() == Some("APPROVED")
-                        && prev_state.review_decision.as_deref() != Some("APPROVED")
-                    {
-                        new_items.push(InboxItem {
-                            id: format!("inbox-pr-approved-{remote}-{}-{now}", pr.number),
-                            kind: "pr_review_approved".to_string(),
-                            severity: "success".to_string(),
-                            title: format!("PR #{} approved", pr.number),
-                            body: pr.title.clone(),
-                            source: "github".to_string(),
-                            target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                                repo_root: project_by_remote
-                                    .get(&remote)
-                                    .map(|p| p.root_path.clone()),
-                                remote: Some(remote.clone()),
-                                pr_number: Some(pr.number),
-                                branch: Some(pr.head_ref.clone()),
-                                url: None,
-                            },
-                            created_at_ms: now,
-                            read_at_ms: None,
-                            dedupe_key: format!(
-                                "github:{remote}:{}:review_decision:APPROVED",
-                                pr.number
-                            ),
-                        });
-                    }
-                    if pr.review_decision.as_deref() == Some("CHANGES_REQUESTED")
-                        && prev_state.review_decision.as_deref() != Some("CHANGES_REQUESTED")
-                    {
-                        new_items.push(InboxItem {
-                            id: format!("inbox-pr-changes-{remote}-{}-{now}", pr.number),
-                            kind: "pr_review_changes_requested".to_string(),
-                            severity: "warning".to_string(),
-                            title: format!("Changes requested on PR #{}", pr.number),
-                            body: pr.title.clone(),
-                            source: "github".to_string(),
-                            target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                                repo_root: project_by_remote
-                                    .get(&remote)
-                                    .map(|p| p.root_path.clone()),
-                                remote: Some(remote.clone()),
-                                pr_number: Some(pr.number),
-                                branch: Some(pr.head_ref.clone()),
-                                url: None,
-                            },
-                            created_at_ms: now,
-                            read_at_ms: None,
-                            dedupe_key: format!(
-                                "github:{remote}:{}:review_decision:CHANGES_REQUESTED",
-                                pr.number
-                            ),
-                        });
-                    }
-                }
-                if !is_my_pr {
-                    let prev_requested =
-                        prev_state.requested_reviewers.iter().any(|r| r == &gh_user);
-                    if requested_me && !prev_requested {
-                        let kind = if prev_state.requested_reviewers.contains(&gh_user) {
-                            "review_rerequested"
-                        } else {
-                            "review_requested"
-                        };
-                        new_items.push(InboxItem {
-                            id: format!("inbox-{kind}-{remote}-{}-{now}", pr.number),
-                            kind: kind.to_string(),
-                            severity: "info".to_string(),
-                            title: format!("Review requested: PR #{}", pr.number),
-                            body: pr.title.clone(),
-                            source: "github".to_string(),
-                            target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                                repo_root: project_by_remote
-                                    .get(&remote)
-                                    .map(|p| p.root_path.clone()),
-                                remote: Some(remote.clone()),
-                                pr_number: Some(pr.number),
-                                branch: Some(pr.head_ref.clone()),
-                                url: None,
-                            },
-                            created_at_ms: now,
-                            read_at_ms: None,
-                            dedupe_key: format!("github:{remote}:{}:{kind}", pr.number),
-                        });
-                    }
-                }
-                if prev_state.pr_state != pr.state {
-                    if pr.state == "MERGED" {
-                        new_items.push(InboxItem {
-                            id: format!("inbox-pr-merged-{remote}-{}-{now}", pr.number),
-                            kind: "pr_merged".to_string(),
-                            severity: "success".to_string(),
-                            title: format!("PR #{} merged", pr.number),
-                            body: pr.title.clone(),
-                            source: "github".to_string(),
-                            target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                                repo_root: project_by_remote
-                                    .get(&remote)
-                                    .map(|p| p.root_path.clone()),
-                                remote: Some(remote.clone()),
-                                pr_number: Some(pr.number),
-                                branch: Some(pr.head_ref.clone()),
-                                url: None,
-                            },
-                            created_at_ms: now,
-                            read_at_ms: None,
-                            dedupe_key: format!("github:{remote}:{}:merged", pr.number),
-                        });
-                    } else if pr.state == "CLOSED" {
-                        new_items.push(InboxItem {
-                            id: format!("inbox-pr-closed-{remote}-{}-{now}", pr.number),
-                            kind: "pr_closed".to_string(),
-                            severity: "info".to_string(),
-                            title: format!("PR #{} closed", pr.number),
-                            body: pr.title.clone(),
-                            source: "github".to_string(),
-                            target: InboxTarget {
-                                project_id: project_by_remote.get(&remote).map(|p| p.id.clone()),
-                                repo_root: project_by_remote
-                                    .get(&remote)
-                                    .map(|p| p.root_path.clone()),
-                                remote: Some(remote.clone()),
-                                pr_number: Some(pr.number),
-                                branch: Some(pr.head_ref.clone()),
-                                url: None,
-                            },
-                            created_at_ms: now,
-                            read_at_ms: None,
-                            dedupe_key: format!("github:{remote}:{}:closed", pr.number),
-                        });
-                    }
-                }
+            if prev.is_some() {
+                let view = PrInboxView {
+                    number: pr.number,
+                    title: pr.title.clone(),
+                    head_ref: pr.head_ref.clone(),
+                    state: pr.state.clone(),
+                    author: pr.author.clone(),
+                    requested_reviewers: requested_reviewers.clone(),
+                    review_decision: pr.review_decision.clone(),
+                    latest_reviewer_states: pr.latest_reviewer_states.clone(),
+                };
+                let project = project_by_remote.get(&remote);
+                let ctx = PrTransitionCtx {
+                    remote: &remote,
+                    gh_user: &gh_user,
+                    now_ms: now,
+                    project_id: project.map(|p| p.id.clone()),
+                    repo_root: project.map(|p| p.root_path.clone()),
+                };
+                new_items.extend(inbox_items_from_pr_transition(prev.as_ref(), &view, &ctx));
             }
 
             if is_my_pr && pr.state == "OPEN" {
@@ -1881,6 +1769,7 @@ pub fn process_inbox_after_pr_refresh(
                     } else {
                         triaged_head_oid
                     },
+                    latest_reviewer_states: pr.latest_reviewer_states.clone(),
                 },
             );
         }
@@ -1941,6 +1830,12 @@ pub fn process_inbox_after_pr_refresh(
         }
     }
 
+    let skip_review_prs: HashSet<(String, u64)> = new_items
+        .iter()
+        .filter(|i| is_review_edge_kind(&i.kind))
+        .filter_map(|i| Some((i.target.remote.clone()?, i.target.pr_number?)))
+        .collect();
+
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = inbox_handle.lock() {
@@ -1958,10 +1853,83 @@ pub fn process_inbox_after_pr_refresh(
     if emitted_any {
         crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_items");
     }
+    ingest_github_notifications(
+        inbox_handle,
+        &project_by_remote,
+        &skip_review_prs,
+        now,
+        desktop_revision,
+        app_handle_state,
+    );
     if let Some(ctx) = auto_triage {
         if !auto_triage_requests.is_empty() {
             crate::auto_triage::dispatch_auto_triage(ctx, auto_triage_requests);
         }
+    }
+}
+
+fn ingest_github_notifications(
+    inbox_handle: &InboxHandle,
+    project_by_remote: &HashMap<String, projects::ProjectRecord>,
+    skip_review_prs: &HashSet<(String, u64)>,
+    now: u64,
+    desktop_revision: &Arc<AtomicU64>,
+    app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+) {
+    let notes = match er_engine::github::gh_list_participating_notifications() {
+        Ok(n) => n,
+        Err(e) => {
+            log::warn!("[inbox] GitHub notifications unavailable: {e}");
+            return;
+        }
+    };
+    let allowed_remotes: HashSet<String> = project_by_remote.keys().cloned().collect();
+    let mut emitted_any = false;
+    let mut remembered_any = false;
+    let mut just_added: Vec<InboxItem> = Vec::new();
+    if let Ok(mut inbox) = inbox_handle.lock() {
+        for gh_note in notes {
+            if inbox.has_seen_notification(&gh_note.id) {
+                continue;
+            }
+            let remote = gh_note.repository.full_name.clone();
+            if !allowed_remotes.contains(&remote) {
+                continue;
+            }
+            inbox.remember_notification(gh_note.id.clone());
+            remembered_any = true;
+            let project = project_by_remote.get(&remote);
+            let note = InboxNotification {
+                id: gh_note.id,
+                reason: gh_note.reason,
+                title: gh_note.subject.title,
+                remote,
+                pr_number: er_engine::github::pr_number_from_notification_url(&gh_note.subject.url),
+                subject_type: gh_note.subject.subject_type,
+            };
+            let ctx = NotificationInboxCtx {
+                now_ms: now,
+                allowed_remotes: &allowed_remotes,
+                project_id: project.map(|p| p.id.clone()),
+                repo_root: project.map(|p| p.root_path.clone()),
+                skip_review_prs,
+            };
+            if let Some(item) = inbox_item_from_notification(&note, &ctx) {
+                if inbox.add_item(item.clone()) {
+                    emitted_any = true;
+                    just_added.push(item);
+                }
+            }
+        }
+    }
+    for item in &just_added {
+        maybe_send_native_notification(inbox_handle, app_handle_state, item);
+    }
+    if emitted_any || remembered_any {
+        crate::inbox::save_inbox_state(inbox_handle);
+    }
+    if emitted_any {
+        crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_notifications");
     }
 }
 
