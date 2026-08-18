@@ -9,6 +9,7 @@
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
+  import FileRisksCard from "./FileRisksCard.svelte";
   import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
@@ -333,6 +334,9 @@
         {#if ai}
           {#if ai.triage}
             <TriageCard triage={ai.triage} />
+          {/if}
+          {#if (ai.file_risks ?? []).length > 0}
+            <FileRisksCard risks={ai.file_risks} />
           {/if}
           <AiReviewCard {ai} />
         {/if}

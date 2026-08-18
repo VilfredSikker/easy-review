@@ -11,7 +11,7 @@ This directory contains Desktop feature components. Most components are thin vie
 - `FileTree.svelte`: file index, reviewed toggles, continuous diff jump-to-file behavior; optional `pickerMode` with checkboxes for multi-select (used by `AiReviewFilesModal`).
 - `DiffView.svelte`: continuous diff rendering, split/unified modes, windowed file bodies, inline findings/threads, diff selection and composers.
 - `InlineThread.svelte`, `InlineFinding.svelte`, `DiffComposer.svelte`, `PromoteModal.svelte`: comments, questions, replies, finding promotion, and line selection composition.
-- `AiReviewCard.svelte`, `AiReviewFilesModal.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls (current-view scope, file-picker subset review), active model actions, per-tab logs, app-level background tasks.
+- `AiReviewCard.svelte`, `FileRisksCard.svelte`, `AiReviewFilesModal.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls (current-view scope, file-picker subset review), per-file risk list, active model actions, per-tab logs, app-level background tasks.
 - `BrowserView.svelte`, `AnnotationOverlay.svelte`, `UiAnnotationsCard.svelte`: embedded browser, DOM annotation capture, re-anchor, visibility, and annotation list actions.
 - `CommandPalette.svelte`: global command discovery and command execution.
 - `ExportModal.svelte`: Markdown export preview/copy/write flow.

@@ -41,6 +41,8 @@
     uniqueAgentLabels(ai.findings, Object.keys(ai.agent_summaries ?? {})),
   );
 
+  const fileRisks = $derived(ai.file_risks ?? []);
+
   $effect(() => {
     ai.findings;
     ai.agent_summaries;
@@ -79,7 +81,10 @@
   );
 
   const hasReviewContent = $derived(
-    !isEmpty || !!ai.summary_markdown || ai.has_review_json,
+    !isEmpty ||
+      !!ai.summary_markdown ||
+      ai.has_review_json ||
+      fileRisks.length > 0,
   );
 
   const resolvedSummary = $derived(
@@ -89,6 +94,7 @@
       scopedCounts,
       new Set(agentScopedFindings.map((f) => f.file)).size,
       isEmpty,
+      fileRisks.length,
     ),
   );
   const summary = $derived(resolvedSummary.text);

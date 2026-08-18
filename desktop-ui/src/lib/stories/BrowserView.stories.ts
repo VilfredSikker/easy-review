@@ -64,6 +64,7 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       unpushed: 0,
       threads: [],
       findings: [],
+      file_risks: [],
       has_review_json: false,
       eligible_comment_count: 0,
       triage: null,
