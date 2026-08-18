@@ -753,6 +753,61 @@ pub struct Panels {
     pub right: bool,
 }
 
+fn first_non_empty<'a, I>(vals: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    vals.into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn pr_info_for_tab<'a>(
+    tab: &TabState,
+    cache: &'a HashMap<String, Vec<PrInfo>>,
+) -> Option<&'a PrInfo> {
+    let number = tab.pr_number?;
+    if let Some(slug) = tab.remote_repo.as_deref() {
+        if let Some(pr) = cache
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(slug))
+            .and_then(|(_, prs)| prs.iter().find(|p| p.number == number))
+        {
+            return Some(pr);
+        }
+    }
+    cache
+        .values()
+        .flat_map(|prs| prs.iter())
+        .find(|p| p.number == number)
+}
+
+/// Branch title + base ref for the context bar. Remote stubs and restored
+/// tabs often have empty `current_branch`/`base_branch` even after the diff
+/// loads; fall back to PR overview, GitHub status, then the PR-list cache.
+pub(crate) fn resolve_context_identity(
+    tab: &TabState,
+    github: Option<&GithubStatusSnapshot>,
+    cached_pr: Option<&PrInfo>,
+) -> (String, String) {
+    let pr_data = tab.pr_data.as_ref();
+    let branch = first_non_empty([
+        tab.local_branch_view.as_deref().unwrap_or(""),
+        tab.current_branch.as_str(),
+        pr_data.map(|p| p.head_branch.as_str()).unwrap_or(""),
+        github.map(|g| g.head_ref.as_str()).unwrap_or(""),
+        cached_pr.map(|p| p.head_ref.as_str()).unwrap_or(""),
+    ]);
+    let base = first_non_empty([
+        tab.base_branch.as_str(),
+        pr_data.map(|p| p.base_branch.as_str()).unwrap_or(""),
+        github.map(|g| g.base_ref.as_str()).unwrap_or(""),
+        cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
+    ]);
+    (branch, base)
+}
+
 /// Resolve the `(owner, repo, pr_number)` GitHub-status key for a tab.
 ///
 /// The key drives both the live `github` card in the snapshot and the
@@ -2153,6 +2208,12 @@ fn build_snapshot_inner(
             status
         });
 
+    let (branch, base) = {
+        let guard = pr_cache.and_then(|pc| pc.lock().ok());
+        let cached = guard.as_ref().and_then(|cache| pr_info_for_tab(tab, cache));
+        resolve_context_identity(tab, github.as_ref(), cached)
+    };
+
     // Detected PR number for the active branch — taken straight from the PR-list
     // cache (the same branch→PR match the sidebar badge uses). Unlike `github`,
     // this does NOT require a gh-status fetch to have run, so the Local|PR Diff
@@ -2258,11 +2319,8 @@ fn build_snapshot_inner(
 
     let out = AppSnapshot {
         mode: mode.to_string(),
-        branch: tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone()),
-        base: tab.base_branch.clone(),
+        branch,
+        base,
         input_mode: input_mode.to_string(),
         files,
         selected_file,
@@ -3812,6 +3870,80 @@ mod tests {
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
             .expect("differing oids must be stale");
         assert_eq!(pr_stale.kind, "pr_head");
+    }
+
+    #[test]
+    fn context_identity_prefers_local_branch_view() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some("feat/a".into());
+        tab.current_branch = "other".into();
+        tab.base_branch = "origin/main".into();
+        let (branch, base) = resolve_context_identity(&tab, None, None);
+        assert_eq!(branch, "feat/a");
+        assert_eq!(base, "origin/main");
+    }
+
+    #[test]
+    fn context_identity_falls_back_to_pr_data_when_tab_names_empty() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_data = Some(er_engine::github::PrOverviewData {
+            number: 1425,
+            title: "t".into(),
+            body: String::new(),
+            state: "OPEN".into(),
+            author: "u".into(),
+            url: String::new(),
+            base_branch: "main".into(),
+            head_branch: "feat/from-fork".into(),
+            checks: Vec::new(),
+            reviewers: Vec::new(),
+        });
+        let (branch, base) = resolve_context_identity(&tab, None, None);
+        assert_eq!(branch, "feat/from-fork");
+        assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn context_identity_falls_back_to_pr_list_cache() {
+        let tab = TabState::new_for_test(vec![]);
+        let mut pr = minimal_pr_info(1425, "t");
+        pr.head_ref = "feat/from-fork".into();
+        pr.base_ref = "main".into();
+        let (branch, base) = resolve_context_identity(&tab, None, Some(&pr));
+        assert_eq!(branch, "feat/from-fork");
+        assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn pr_info_for_tab_prefers_matching_remote_slug() {
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        let mut own = minimal_pr_info(1425, "own");
+        own.head_ref = "feat/own".into();
+        own.base_ref = "main".into();
+        let mut other = minimal_pr_info(1425, "other");
+        other.head_ref = "feat/other".into();
+        cache.insert("reshapebiotech/discovery".into(), vec![own]);
+        cache.insert("other/repo".into(), vec![other]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(1425);
+        tab.remote_repo = Some("reshapebiotech/discovery".into());
+        let hit = pr_info_for_tab(&tab, &cache).expect("hit");
+        assert_eq!(hit.head_ref, "feat/own");
+    }
+
+    #[test]
+    fn pr_info_for_tab_matches_remote_slug_case_insensitively() {
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        let mut own = minimal_pr_info(1425, "own");
+        own.head_ref = "feat/own".into();
+        cache.insert("ReshapeBiotech/Discovery".into(), vec![own]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(1425);
+        tab.remote_repo = Some("reshapebiotech/discovery".into());
+        let hit = pr_info_for_tab(&tab, &cache).expect("hit");
+        assert_eq!(hit.head_ref, "feat/own");
     }
 
     fn pr_with(number: u64, head_ref: &str, state: &str) -> PrInfo {

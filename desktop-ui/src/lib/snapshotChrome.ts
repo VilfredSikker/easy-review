@@ -20,11 +20,13 @@ export function snapshotViewParts(snap: AppSnapshot): SnapshotViewParts {
     (typeof snap.active_tab === "number" ? snap.tabs?.[snap.active_tab] : undefined);
   // Tab fields only. `github.number` / `detected_pr_number` arriving later
   // must not look like a view change (that deferred chrome and stuck status).
+  // Same for `snapshot.branch`/`base` filling in on a remote stub after gh
+  // status lands — that is chrome, not a different review view.
   return {
     active_tab: snap.active_tab,
     repo_root: tab?.repo_root ?? "",
     pr_number: tab?.pr_number ?? null,
-    branch: snap.branch ?? tab?.branch ?? "",
+    branch: tab?.branch ?? "",
     mode: snap.mode ?? "",
   };
 }
@@ -50,8 +52,8 @@ export function mergeChromeSnapshot(
   return {
     ...next,
     mode: prev.mode,
-    branch: prev.branch,
-    base: prev.base,
+    branch: prev.branch.trim() ? prev.branch : next.branch,
+    base: prev.base.trim() ? prev.base : next.base,
     input_mode: prev.input_mode,
     files: prev.files,
     selected_file: prev.selected_file,

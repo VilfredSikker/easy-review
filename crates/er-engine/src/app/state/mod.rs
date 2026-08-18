@@ -1157,6 +1157,13 @@ impl TabState {
             crate::git::compact_files(&mut self.files, &self.compaction_config);
         }
         self.base_branch = base_branch;
+        if let Some(head) = pr_data
+            .as_ref()
+            .map(|p| p.head_branch.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            self.current_branch = head.to_string();
+        }
         let hash = crate::ai::compute_diff_hash(raw);
         self.diff_hash = hash.clone();
         self.branch_diff_hash = hash;
@@ -1867,9 +1874,14 @@ impl TabState {
             .collect()
     }
 
-    /// Whether this tab is reviewing a remote PR (no local git repo).
+    /// Whether this tab is reviewing a remote-only PR (no local clone).
+    ///
+    /// Local PR tabs also store `remote_repo` (the `owner/repo` slug used for
+    /// GitHub status keys) but they have a clone and `local_branch_view`.
+    /// Treating those as remote hid the branch title/base chrome and collapsed
+    /// the tab to PR Diff only.
     pub fn is_remote(&self) -> bool {
-        self.remote_repo.is_some()
+        self.remote_repo.is_some() && self.local_branch_view.is_none()
     }
 
     /// Whether this tab is a read-only local-branch view.
@@ -1925,9 +1937,11 @@ impl TabState {
     /// Return the list of DiffMode tabs currently visible, based on feature flags,
     /// remote status, and data availability. Used for dynamic tab numbering.
     ///
-    /// - Remote tab (`remote_repo.is_some()`): only `[PrDiff]` — no local working tree.
+    /// - Remote-only tab (`is_remote()`, GitHub slug and no local-branch view):
+    ///   only `[PrDiff]` — no local working tree.
     /// - Local tab with a PR (`pr_number.is_some()`): working-tree modes + `PrDiff`
-    ///   inserted after Staged and before History.
+    ///   inserted after Staged and before History. Local PRs may also store a
+    ///   GitHub slug for status keys; that does not make them remote-only.
     /// - Local tab without a PR: working-tree modes only, no PrDiff.
     pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
         // Remote tabs have no local working tree — PR Diff is the only view.
@@ -9925,6 +9939,18 @@ mod tests {
     }
 
     #[test]
+    fn is_remote_returns_false_for_local_pr_with_remote_slug() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("reshapebiotech/discovery".to_string());
+        tab.local_branch_view = Some("feat/delete-plates".to_string());
+        tab.pr_number = Some(1425);
+        assert!(
+            !tab.is_remote(),
+            "a local PR tab stores remote_repo for gh-status keys; it is not remote-only"
+        );
+    }
+
+    #[test]
     fn enter_pr_diff_preloaded_trusts_cached_diff_without_refetch() {
         // A tab whose diff is already loaded from the desktop open-diff cache:
         // files + raw_diff + diff_hash populated, mode still Branch (as
@@ -11261,6 +11287,27 @@ mod tests {
     fn visible_modes_local_pr_tab_includes_pr_diff() {
         let mut tab = make_test_tab(vec![]);
         tab.pr_number = Some(7);
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
+        let config = ErConfig::default();
+        let modes = tab.visible_modes(&config);
+        assert_eq!(
+            modes,
+            vec![
+                DiffMode::Branch,
+                DiffMode::Unstaged,
+                DiffMode::Staged,
+                DiffMode::PrDiff,
+                DiffMode::History,
+            ]
+        );
+    }
+
+    #[test]
+    fn visible_modes_local_pr_with_remote_slug_keeps_working_tree_views() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        tab.local_branch_view = Some("feat/x".into());
+        tab.remote_repo = Some("owner/repo".into());
         tab.local_branch_checkout_root = Some("/tmp/test".into());
         let config = ErConfig::default();
         let modes = tab.visible_modes(&config);
