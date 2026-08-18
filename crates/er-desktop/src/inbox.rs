@@ -44,6 +44,7 @@ impl InboxCategory {
         }
     }
 
+    #[cfg(test)]
     pub fn label(self) -> &'static str {
         match self {
             Self::PrComment => "Comment on your PR",
