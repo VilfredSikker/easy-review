@@ -4,6 +4,12 @@ Orientation for coding agents working in this repo. `CLAUDE.md` is the full
 architecture and conventions reference; this file covers build/test commands,
 environment gotchas, and a map of the desktop app, which spans three layers.
 
+## Branching
+
+- **Bug fixes:** PRs to `main`.
+- **Everything else:** PRs to **`release/v0.4.14`**.
+- Release branches include release notes.
+
 ## Build / Test / Lint / Run
 
 A [`just`](https://just.systems) front-end wraps these (`just` to list, e.g.
