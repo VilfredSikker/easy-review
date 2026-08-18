@@ -297,9 +297,7 @@ fn abort_wrong_view(
     state: &AppState,
     view: Option<&crate::snapshot::OptimisticView>,
 ) -> Option<Result<AppSnapshot, String>> {
-    let Some(expected) = view else {
-        return None;
-    };
+    let expected = view?;
     if crate::snapshot::optimistic_view_matches(app, expected) {
         return None;
     }
