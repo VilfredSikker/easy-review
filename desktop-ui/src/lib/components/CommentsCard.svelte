@@ -6,12 +6,16 @@
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import {
-    commentThreads as allCommentThreads,
+    commentThreadsFromDiff,
+    hiddenCommentsHint,
+    toggleCommentFilter,
+    unpushedLocalCommentThreads,
     visibleCommentThreads as filterVisibleComments,
   } from "$lib/commentVisibility";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import InlineThread from "$lib/components/InlineThread.svelte";
+  import { commentAutoPullKey } from "$lib/prUrl";
 
   interface Props {
     ai: AiSnapshot;
@@ -28,26 +32,18 @@
   let summary = $state("");
   let submitting = $state(false);
 
-  const commentThreads = $derived(allCommentThreads(ai.threads));
-  const visibleCommentThreads = $derived(
-    filterVisibleComments(ai.threads, app.commentVisibility),
-  );
+  const files = $derived(app.snapshot?.files);
+  const commentThreads = $derived(commentThreadsFromDiff(ai.threads, files));
+  const pushCommentThreads = $derived(unpushedLocalCommentThreads(ai.threads, files));
+  const vis = $derived(app.commentVisibility);
+  const visibleCommentThreads = $derived(filterVisibleComments(ai.threads, vis, files));
   const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
   const refreshing = $derived(
     manualRefreshing || (app.snapshot?.bg_loading?.gh_comments ?? false),
   );
 
   function currentAutoPullKey(): string | null {
-    const snapshot = app.snapshot;
-    if (!snapshot) return null;
-    const pr = snapshot.github?.number ?? snapshot.pr?.number ?? null;
-    if (!pr || !snapshot.branch) return null;
-
-    const activeTab = snapshot.tabs?.find((t) => t.is_active || t.idx === snapshot.active_tab);
-    const repoKey = snapshot.github
-      ? `${snapshot.github.owner}/${snapshot.github.repo}`
-      : (activeTab?.repo_root ?? "unknown");
-    return `${repoKey}:${snapshot.branch}:${pr}`;
+    return commentAutoPullKey(app.snapshot);
   }
 
   function rememberAutoPull(key: string) {
@@ -60,19 +56,25 @@
 
   $effect(() => {
     if (!active) return;
+    if (app.pendingTabSwitch) return;
     const key = currentAutoPullKey();
     if (!key) return;
     if (autoPulledFor === key || autoPulledKeys.has(key)) return;
     autoPulledFor = key;
-    rememberAutoPull(key);
-    void app.cmd("pull_github_comments");
+    void (async () => {
+      await app.cmd("pull_github_comments");
+      if (app.pendingTabSwitch || currentAutoPullKey() !== key) {
+        if (autoPulledFor === key) autoPulledFor = null;
+        return;
+      }
+      rememberAutoPull(key);
+    })();
   });
 
   async function onRefresh() {
     manualRefreshing = true;
     try {
-      await app.cmd("pull_github_comments");
-      app.showToast("success", "Comments refreshed");
+      await app.cmd("pull_github_comments", { force: true });
     } finally {
       manualRefreshing = false;
     }
@@ -145,21 +147,24 @@
   <div class="flex flex-wrap items-center gap-1.5 mb-3">
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideOutdated: !app.commentVisibility.hideOutdated })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideOutdated ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideOutdated"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideOutdated ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide outdated GitHub comments in the side panel and inline diff"
+      aria-pressed={vis.hideOutdated}
     >Hide outdated</button>
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideResolved: !app.commentVisibility.hideResolved })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideResolved ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideResolved"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideResolved ? 'bg-hover border-border text-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide resolved GitHub comments in the side panel and inline diff"
+      aria-pressed={vis.hideResolved}
     >Hide resolved</button>
     <button
       type="button"
-      onclick={() => app.setCommentVisibility({ hideAll: !app.commentVisibility.hideAll })}
-      class="px-2 py-1 rounded text-[10px] border {app.commentVisibility.hideAll ? 'bg-del-bg border-del-fg/30 text-del-fg' : 'border-hairline text-muted hover:text-fg-2'}"
+      onclick={() => app.setCommentVisibility(toggleCommentFilter(vis, "hideAll"))}
+      class="px-2 py-1 rounded text-[10px] border {vis.hideAll ? 'bg-del-bg border-del-fg/30 text-del-fg' : 'border-hairline text-muted hover:text-fg-2'}"
       title="Hide every GitHub comment in the side panel and inline diff"
+      aria-pressed={vis.hideAll}
     >Hide all</button>
     {#if visibleCommentThreads.length !== commentThreads.length}
       <span class="text-[10px] text-muted mono">{visibleCommentThreads.length}/{commentThreads.length} shown</span>
@@ -174,8 +179,7 @@
         {#if refreshing}
           Fetching comments from GitHub…
         {:else if commentThreads.length > 0}
-          {commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"} hidden
-          (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.
+          {hiddenCommentsHint(commentThreads.length, vis)}
         {:else}
           No comments on this diff
         {/if}
@@ -222,7 +226,7 @@
         <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-add-fg"><path d="M9 11l3 3L22 4"/></svg>
           <span class="text-fg-2 font-medium">Push as review</span>
-          <span class="text-muted">· {commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"}</span>
+          <span class="text-muted">· {pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span>
           <button onclick={() => pushMode = null} aria-label="Cancel push" title="Cancel" class="ml-auto text-muted hover:text-fg-2">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
@@ -279,7 +283,7 @@
       <div class="rounded-lg border border-border bg-surface p-3">
         <div class="flex items-start gap-2 mb-3">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mt-0.5 shrink-0 text-ai"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-          <div class="text-sm text-fg-2 leading-snug">Push <span class="text-fg font-medium">{commentThreads.length} comment{commentThreads.length === 1 ? "" : "s"}</span> as a standalone GitHub comment? It won't be tied to a review submission.</div>
+          <div class="text-sm text-fg-2 leading-snug">Push <span class="text-fg font-medium">{pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span> as a standalone GitHub comment? It won't be tied to a review submission.</div>
         </div>
         <div class="flex items-center gap-2">
           <button onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>

@@ -6,12 +6,12 @@ This directory contains Desktop feature components. Most components are thin vie
 
 - `TabStrip.svelte`: open tab list, select/close/reorder tabs, panel toggles (left/tree/right). Backend commands: `new_tab`, `select_tab`, `close_tab`, `reorder_tabs`.
 - `BranchContextBar.svelte`: active branch chip, base label, copy branch/path actions (row below tab strip).
-- `LeftSidebar.svelte`: projects, tracked branches, PR buckets, refresh/dismiss/track actions.
+- `LeftSidebar.svelte`: projects, tracked branches, PR buckets, refresh/dismiss/track actions, drag-reorder projects (`reorder_projects`).
 - `BranchCard.svelte`: active branch/PR summary, GitHub status, checks/reviews, watcher state, GitHub refresh.
 - `FileTree.svelte`: file index, reviewed toggles, continuous diff jump-to-file behavior; optional `pickerMode` with checkboxes for multi-select (used by `AiReviewFilesModal`).
 - `DiffView.svelte`: continuous diff rendering, split/unified modes, windowed file bodies, inline findings/threads, diff selection and composers.
 - `InlineThread.svelte`, `InlineFinding.svelte`, `DiffComposer.svelte`, `PromoteModal.svelte`: comments, questions, replies, finding promotion, and line selection composition.
-- `AiReviewCard.svelte`, `AiActionPalette.svelte`, `AiReviewFilesModal.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls (current-view scope, file-picker subset review), active model actions, per-tab logs, app-level background tasks.
+- `AiReviewCard.svelte`, `FileRisksCard.svelte`, `AiReviewFilesModal.svelte`, `AgentOutputCard.svelte`, `BackgroundTasks.svelte`: AI review controls (current-view scope, file-picker subset review), per-file risk list, active model actions, per-tab logs, app-level background tasks.
 - `BrowserView.svelte`, `AnnotationOverlay.svelte`, `UiAnnotationsCard.svelte`: embedded browser, DOM annotation capture, re-anchor, visibility, and annotation list actions.
 - `CommandPalette.svelte`: global command discovery and command execution.
 - `ExportModal.svelte`: Markdown export preview/copy/write flow.

@@ -13,10 +13,12 @@ mod frame_script;
 mod gh_status_cache;
 mod inbox;
 mod main_webview_policy;
+mod persist;
 mod pr_cache;
 mod pr_open_cache;
 mod profile_log;
 mod projects;
+mod remote_pr_open_cache;
 mod snapshot;
 mod tabs;
 mod terminal;
@@ -426,17 +428,51 @@ fn proxied_response(
     })
 }
 
+/// Panic-isolated wrapper around [`proxied_response`].
+///
+/// The `erp(s)://` handlers run synchronously inside the native webview's
+/// URI-scheme callback. A panic there unwinds into non-Rust (objc/glib) frames,
+/// which is undefined behaviour and aborts the entire app — so a single bad
+/// upstream response (e.g. a header value the `http` crate rejects) would crash
+/// Easy Review rather than failing just the page load. Catch any panic and turn
+/// it into a 500 so the embedded browser can never take the app down with it.
+fn safe_proxied_response(
+    request: &tauri::http::Request<Vec<u8>>,
+    upstream_scheme: &str,
+) -> tauri::http::Response<Vec<u8>> {
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        proxied_response(request, upstream_scheme)
+    }));
+    match result {
+        Ok(resp) => resp,
+        Err(_) => {
+            eprintln!("[erp] proxy handler panicked; returning 500 instead of crashing");
+            tauri::http::Response::builder()
+                .status(500)
+                .header("Content-Type", "text/html")
+                .body(
+                    b"<html><body><p>The embedded browser hit an internal error loading this page.</p></body></html>".to_vec(),
+                )
+                .unwrap_or_else(|_| {
+                    tauri::http::Response::builder()
+                        .status(500)
+                        .body(Vec::new())
+                        .unwrap()
+                })
+        }
+    }
+}
+
 /// Install a custom application menu. Mirrors Tauri's default menu but defines
-/// Select All as a custom item with no accelerator, so ⌘A is no longer claimed
-/// by macOS at the menu-bar level and can reach desktop-ui's JS handler
-/// (which opens the AI palette).
+/// Select All as a custom item with a native ⌘A accelerator — restoring
+/// macOS's default Select All behavior (desktop-ui no longer claims ⌘A).
 fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let pkg = app.package_info();
     let app_name = pkg.name.clone();
 
-    // Select All without an accelerator. Wired in `on_menu_event` below.
+    // Select All with the native accelerator. Wired in `on_menu_event` below.
     let select_all = MenuItemBuilder::with_id("er.select_all", "Select All")
-        .accelerator("")
+        .accelerator("CmdOrCtrl+A")
         .build(app)?;
 
     let edit_menu = Submenu::with_items(
@@ -820,7 +856,11 @@ fn main() {
         gh_status_cache: Arc::clone(&gh_status_cache),
         loading: Arc::clone(&loading),
         gh_status_in_flight: Arc::clone(&gh_status_in_flight),
-        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pr_open_prefetch_in_flight: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        branch_preload_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        pr_ref_fetch_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
+        remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
+        remote_pr_open_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         desktop_revision: Arc::clone(&desktop_revision),
         last_sent_content_revision: Arc::clone(&last_sent_content_revision),
         last_sent_chrome_revision: Arc::clone(&last_sent_chrome_revision),
@@ -911,9 +951,8 @@ fn main() {
     // consistency: it auto-swapped the live diff for remote tabs only, while
     // local-PR tabs required manual Sync. Now BOTH require manual Sync, and
     // the 30s PR-head probe (above, "pr_head_probe") lights the stale pill
-    // quickly for both. The underlying fetch/apply plumbing is retained in
-    // crates/er-engine/src/app/state/remote_diff_sync.rs and crates/er-engine/src/sync.rs
-    // for the manual Sync path (force_refresh_diff / refetch_and_refresh_diff).
+    // quickly for both. The old fetch/apply plumbing was deleted — the manual
+    // Sync path (refetch_and_refresh_diff) fetches head/base/diff directly.
 
     // Background base-branch staleness probe on a 60s cadence. The ONLY new
     // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
@@ -1219,9 +1258,10 @@ fn main() {
             // comment-panel latency on a push-idle PR — NOT a "nothing changed"
             // guarantee. A push changes head_oid (via the pr-head-probe loop,
             // itself throttled to ~60s), so a fresh push resyncs within ~1-2 min
-            // instead of waiting out `ttl`. Manual sync (`G` key →
-            // `pull_github_comments` → `App::sync_github_comments`) is a separate
-            // synchronous path that never touches this loop or map, unaffected.
+            // instead of waiting out `ttl`. Manual sync (`G` key / Comments
+            // re-fetch) uses the same three-phase fetch as this loop
+            // (`pull_github_comments` → `fetch_comment_sync_data_cached`) and
+            // never consults this map.
             let mut last_synced: HashMap<(String, String, u64), (String, std::time::Instant)> =
                 HashMap::new();
             loop {
@@ -1295,6 +1335,10 @@ fn main() {
                     }
                     let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
                         Ok(result) => {
+                            // The fetched data supersedes any cached bundle —
+                            // a manual pull within the bundle TTL must not
+                            // regress this fresher file (review-fix-loop F2).
+                            er_engine::github::invalidate_pr_comments_cache();
                             // Phase 3: brief lock — apply pre-fetched results to the correct tab.
                             match comments_app.lock() {
                                 Ok(mut g) => {
@@ -1664,8 +1708,12 @@ fn main() {
         .manage(BrowserWebviewState::default())
         // `erp://host/path` proxies `http://host/path`; `erps://host/path`
         // proxies `https://host/path`. HTML responses get the annotation script.
-        .register_uri_scheme_protocol("erp", |_app, request| proxied_response(&request, "http"))
-        .register_uri_scheme_protocol("erps", |_app, request| proxied_response(&request, "https"))
+        .register_uri_scheme_protocol("erp", |_app, request| {
+            safe_proxied_response(&request, "http")
+        })
+        .register_uri_scheme_protocol("erps", |_app, request| {
+            safe_proxied_response(&request, "https")
+        })
         .on_window_event(move |window, event| {
             if window.label() != "main" {
                 return;
@@ -1806,6 +1854,8 @@ fn main() {
             commands::bulk_review_pillar,
             commands::unbulk_review_pillar,
             commands::generate_tour,
+            commands::generate_diagram,
+            commands::delete_diagram,
             commands::open_in_editor,
             commands::open_in_vscode,
             commands::open_source,
@@ -1901,6 +1951,7 @@ fn main() {
             commands::open_pr_branch,
             commands::open_pr_review,
             commands::prefetch_pr_open,
+            commands::prefetch_remote_pr_open,
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,
             commands::open_inbox_item,
@@ -1925,6 +1976,7 @@ fn main() {
             commands::remove_tracked_branch,
             commands::list_available_branches,
             commands::delete_project,
+            commands::reorder_projects,
             commands::open_project_branch,
             commands::new_tab,
             commands::close_tab,

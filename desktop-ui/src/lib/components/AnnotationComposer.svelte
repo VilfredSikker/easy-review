@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { app } from "$lib/stores/app.svelte";
   import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
   import type { UiDomContext } from "$lib/types";
 
@@ -87,6 +88,7 @@
       composer = null;
       return;
     }
+    if (!app.canPaintOptimistic()) return;
     onSave(
       [composer.x, composer.y, composer.w, composer.h],
       composer.selector,

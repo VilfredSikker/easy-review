@@ -170,6 +170,15 @@ impl<'a> CommentRef<'a> {
         }
     }
 
+    /// GitHub review side. `LEFT` means `line_start` is an old-side number.
+    pub fn side(&self) -> Option<&str> {
+        match self {
+            CommentRef::GitHubComment(c) => Some(c.side.as_str()),
+            CommentRef::Question(q) | CommentRef::Note(q) => Some(q.side.as_str()),
+            CommentRef::Legacy(_) => None,
+        }
+    }
+
     #[allow(dead_code)]
     pub fn anchor_status(&self) -> &str {
         match self {
@@ -256,6 +265,9 @@ pub struct ReviewQuestion {
     /// Old-side line number from diff at creation time
     #[serde(default)]
     pub old_line_start: Option<usize>,
+    /// "LEFT" for old-side (deleted lines) or "RIGHT" for new-side/unified (default)
+    #[serde(default = "default_review_side")]
+    pub side: String,
     /// Hunk header string at creation time
     #[serde(default)]
     pub hunk_header: String,
@@ -538,6 +550,7 @@ mod tests {
             context_before: vec![],
             context_after: vec![],
             old_line_start: None,
+            side: "RIGHT".to_string(),
             hunk_header: String::new(),
             anchor_status: "original".into(),
             relocated_at_hash: String::new(),

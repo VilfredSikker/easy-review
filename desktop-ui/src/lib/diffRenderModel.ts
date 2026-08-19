@@ -8,6 +8,7 @@ import {
   findingsForLine,
   findingsForSplitRow,
   hunkLevelFindings,
+  threadReviewSide,
   threadsForLine,
   type AnnotationIndex,
   type CommentVisibility,
@@ -348,6 +349,38 @@ function visBits(v: CommentVisibility): number {
   );
 }
 
+/** Threads whose review side matches this diff line (LEFT↔old_num, RIGHT↔new_num). */
+function threadsForDiffLine(
+  annotationIndex: AnnotationIndex,
+  filePath: string,
+  hunkIdx: number,
+  line: LineSnapshot,
+  hunkLines: LineSnapshot[],
+  commentVisibility: CommentVisibility,
+): ThreadSnapshot[] {
+  const out: ThreadSnapshot[] = [];
+  const seen = new Set<string>();
+  const take = (num: number | null, side: "old" | "new") => {
+    if (num === null) return;
+    for (const t of threadsForLine(
+      annotationIndex,
+      filePath,
+      hunkIdx,
+      num,
+      hunkLines,
+      commentVisibility,
+      side,
+    )) {
+      if (seen.has(t.id)) continue;
+      seen.add(t.id);
+      out.push(t);
+    }
+  };
+  take(line.old_num, "old");
+  take(line.new_num, "new");
+  return out;
+}
+
 /** Line count for cache invalidation when hunks grow (lazy load, poll refresh). */
 export function diffLineCount(file: FileSnapshot): number {
   let n = 0;
@@ -406,10 +439,41 @@ function contentRowHeight(text: string, wrapCols: number | null): number {
   return wrappedLineCount(text, wrapCols) * LINE_HEIGHT;
 }
 
+/** Fingerprint of inline threads + findings that belong to one file.
+ *  Used in the per-file block cache key so adding a comment on file A does
+ *  not rebuild file B (the global `annotationIndex.version` would). */
+export function fileAnnotationFingerprint(
+  file: FileSnapshot,
+  annotationIndex: AnnotationIndex,
+): number {
+  let h = 17;
+  for (const hunk of file.hunks) {
+    h = (h * 31 + hunk.threads.length) | 0;
+    for (const t of hunk.threads) {
+      h = (h * 31 + hashStr(t.id) + hashStr(t.root.body_markdown) + hashStr(t.side ?? "") + t.line + (t.line_end ?? 0) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0) + t.replies.length) | 0;
+      for (const r of t.replies) h = (h * 31 + hashStr(r.body_markdown)) | 0;
+    }
+  }
+  for (const f of annotationIndex.findingMap.values()) {
+    if (f.file !== file.path) continue;
+    h = (h * 31 + hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0)) | 0;
+  }
+  return h;
+}
+
+function hashStr(s: string): number {
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h * 33) ^ s.charCodeAt(i)) | 0;
+  }
+  return h;
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
   const wrapCols = input.wrapCols ?? null;
-  const modelKey = `${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
+  const annFp = fileAnnotationFingerprint(file, annotationIndex);
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -464,6 +528,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       renamed: file.status === "renamed",
     });
   } else {
+    const placedThreadIds = new Set<string>();
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
       const hunk = file.hunks[hunkIdx];
       rows.push({
@@ -502,8 +567,9 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             identity: `cu:${file.path}:${hunkIdx}:${lineIdx}`,
           });
           const ln = lineNumOf(line);
+          if (line.old_num !== null) renderedLineNums.add(line.old_num);
+          if (line.new_num !== null) renderedLineNums.add(line.new_num);
           if (ln !== null) {
-            renderedLineNums.add(ln);
             const skipDel =
               line.kind === "del" && hunk.lines.some((l) => l.new_num === ln);
             const findings = findingsForLine(
@@ -526,20 +592,23 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
                 identity: `if:${f.id}`,
               });
             }
-            const threads = threadsForLine(
+            const threads = threadsForDiffLine(
               annotationIndex,
               file.path,
               hunkIdx,
-              ln,
+              line,
               hunk.lines,
               commentVisibility,
             ).filter((t) => {
+              if (threadReviewSide(t) === "old") return true;
               if (line.kind === "del" && hunk.lines.some((l) => l.new_num === t.line)) {
                 return false;
               }
               return true;
             });
             for (const t of threads) {
+              if (placedThreadIds.has(t.id)) continue;
+              placedThreadIds.add(t.id);
               rows.push({
                 type: "inline-thread",
                 filePath: file.path,
@@ -568,8 +637,12 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             ),
             identity: `cs:${file.path}:${hunkIdx}:${splitRowIdx}`,
           });
+          const leftOld = r.left?.old_num ?? null;
+          const rightNew = r.right?.new_num ?? null;
           const leftLn = r.left ? lineNumOf(r.left) : null;
           const rightLn = r.right ? lineNumOf(r.right) : null;
+          if (leftOld !== null) renderedLineNums.add(leftOld);
+          if (rightNew !== null) renderedLineNums.add(rightNew);
           if (leftLn !== null) renderedLineNums.add(leftLn);
           if (rightLn !== null) renderedLineNums.add(rightLn);
 
@@ -596,7 +669,10 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           // Threads: dedup across left/right by id, prefer right (matches findingsForSplitRow pattern).
           const seenThreads = new Set<string>();
           const collected: ThreadSnapshot[] = [];
-          for (const ln of [rightLn, leftLn]) {
+          for (const [ln, rowSide] of [
+            [rightNew, "new"],
+            [leftOld, "old"],
+          ] as const) {
             if (ln === null) continue;
             const ts = threadsForLine(
               annotationIndex,
@@ -605,6 +681,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
               ln,
               hunk.lines,
               commentVisibility,
+              rowSide,
             );
             for (const t of ts) {
               if (seenThreads.has(t.id)) continue;
@@ -613,6 +690,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
             }
           }
           for (const t of collected) {
+            if (placedThreadIds.has(t.id)) continue;
+            placedThreadIds.add(t.id);
             rows.push({
               type: "inline-thread",
               filePath: file.path,
@@ -667,6 +746,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         commentVisibility,
       );
       for (const t of fbThreads) {
+        if (placedThreadIds.has(t.id)) continue;
+        placedThreadIds.add(t.id);
         rows.push({
           type: "fallback-thread",
           filePath: file.path,
@@ -763,7 +844,11 @@ function emptyCrossFileModel(identity: string): CrossFileModel {
 export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const { files, viewMode, mode, annotationIndex, commentVisibility, snapshotKey } = input;
   const wrapCols = input.wrapCols ?? null;
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
+  let annFp = 17;
+  for (const f of files) {
+    annFp = (annFp * 31 + fileAnnotationFingerprint(f, annotationIndex)) | 0;
+  }
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {

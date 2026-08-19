@@ -6,7 +6,7 @@ Easy Review no longer ships the external `/er-*` Claude Code skills. Both apps a
 the same review agents internally through the **AI Hub**, so the docs now send users there
 instead of telling them to type slash commands in a separate Claude Code pane:
 
-- **Open the AI Hub** with <kbd>a</kbd> in the terminal app or <kbd>Cmd</kbd>+<kbd>A</kbd> in
+- **Open the AI Hub** with <kbd>a</kbd> in the terminal app or <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> in
   the desktop app, then run a review, a specialized (expert) review, triage, or the professor.
 - **Removed** all 21 `/er-*` skill directories under `skills/`, `skills/README.md`, and the
   18 `.claude/commands/*.md` symlinks that exposed them as slash commands.

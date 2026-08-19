@@ -64,11 +64,15 @@ impl BackgroundTaskTarget {
 /// identical (e.g. a security pass and a professor pass running side by side).
 ///
 /// Accepts the raw `BackgroundTask::kind` string: `"review"`/`"general"`,
-/// `"expert:<id>"`, `"professor"`, `"triage"`, or `"tour"`.
+/// `"expert:<id>"`, `"professor"`, `"triage"`, `"tour"`, or `"diagram:<kind>"`.
 pub fn kind_label(kind: &str) -> String {
     match kind {
         "" | "review" | "general" => "Review".to_string(),
         "tour" => "Guide".to_string(),
+        other if other.starts_with("diagram:") => {
+            let sub = other.trim_start_matches("diagram:");
+            format!("Diagram ({})", crate::ai::diagram_kind_label(sub))
+        }
         other => {
             // expert:<id>, professor, and triage all resolve through the
             // shared finding-agent label map.
@@ -128,10 +132,22 @@ pub(crate) struct PendingBackgroundTask {
     pub command_name: String,
     pub prompt: String,
     pub prepared_diff: bool,
+    /// When set, the agent runs read-only and this sidecar is written by the
+    /// host from stdout (diagram confinement against prompt injection).
+    pub host_write_diagram: Option<HostWriteDiagram>,
     /// Optional action-bound provider/model/effort selection. This is captured
     /// when a TUI action is queued so it cannot leak into later actions or be
     /// replaced by a changed global default before launch.
     pub ai_selection: Option<crate::config::AiSelection>,
+}
+
+/// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
+#[derive(Debug, Clone)]
+pub struct HostWriteDiagram {
+    pub output_path: std::path::PathBuf,
+    pub kind: String,
+    pub diff_hash: String,
+    pub custom_prompt: Option<String>,
 }
 
 /// In-flight + recently finished background task channels. The `App` owns
@@ -278,6 +294,8 @@ mod tests {
         assert_eq!(kind_label("triage"), "Triage");
         assert_eq!(kind_label("expert:security"), "Security");
         assert_eq!(kind_label("expert:performance"), "Performance");
+        assert_eq!(kind_label("diagram:mental-model"), "Diagram (Mental model)");
+        assert_eq!(kind_label("diagram:custom"), "Diagram (Custom)");
     }
 
     #[test]

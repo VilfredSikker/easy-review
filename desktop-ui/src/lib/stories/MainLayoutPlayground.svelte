@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import type { RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
   import BranchContextBar from "$lib/components/BranchContextBar.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
@@ -112,7 +113,7 @@
     // no-op in playground — rightRail state is driven by Storybook args
   }
 
-  function expandRightPanelToTab(_tab: "branch" | "review" | "notes") {
+  function expandRightPanelToTab(_tab: RightPanelTab) {
     // no-op in playground — use Storybook Controls to change rightRail
   }
 

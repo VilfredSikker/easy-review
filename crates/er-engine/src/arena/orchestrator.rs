@@ -682,7 +682,9 @@ fn run_round2_parallel(
     let effort = effort.map(|s| s.to_string());
     let repo_root = repo_root.to_string();
     let patch_path = patch_path.to_string();
-    let findings_json = findings_json.to_string();
+    // One copy of the round findings payload, shared across all reviewer
+    // threads (previously cloned per reviewer — O4).
+    let findings_json = Arc::new(findings_json.to_string());
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
     let ok: Arc<Mutex<Vec<(String, super::schema::Round2Output)>>> =
@@ -699,7 +701,7 @@ fn run_round2_parallel(
         let effort = effort.clone();
         let repo_root = repo_root.clone();
         let patch_path = patch_path.clone();
-        let findings_json = findings_json.clone();
+        let findings_json = Arc::clone(&findings_json);
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
@@ -734,7 +736,7 @@ fn run_round2_parallel(
                 }
             };
             let prompt =
-                build_arena_round2_prompt(&patch_path, &reviewer.id, round, &findings_json);
+                build_arena_round2_prompt(&patch_path, &reviewer.id, round, findings_json.as_str());
             match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
                 Ok(v) => match super::schema::validate_round2_output(&v) {
                     Ok(out) => {

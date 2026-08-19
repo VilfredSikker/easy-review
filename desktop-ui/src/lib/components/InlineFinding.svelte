@@ -92,8 +92,8 @@
     replyInputEl?.focus();
   }
 
-  async function dismiss() {
-    await app.cmd("dismiss_finding", { findingId: finding.id });
+  function dismiss() {
+    void app.cmd("dismiss_finding", { findingId: finding.id });
   }
   async function reply() {
     if (!replyText.trim()) return;
@@ -121,16 +121,19 @@
     editInitialBody = reply.body_markdown;
   }
 
-  async function submitEdit(body: string) {
+  function submitEdit(body: string) {
     if (!editMessageId || !editOrigin) return;
-    if (editOrigin === "finding_response") {
-      await app.cmd("update_finding_response", {
+    if (!app.canPaintOptimistic()) return;
+    const id = editMessageId;
+    const origin = editOrigin;
+    if (origin === "finding_response") {
+      void app.cmd("update_finding_response", {
         findingId: finding.id,
-        responseId: editMessageId,
+        responseId: id,
         body,
       });
     } else {
-      await app.cmd("update_thread_message", { id: editMessageId, body });
+      void app.cmd("update_thread_message", { id, body });
     }
     editMessageId = null;
     editOrigin = null;

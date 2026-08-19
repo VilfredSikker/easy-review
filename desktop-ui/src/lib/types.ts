@@ -173,6 +173,14 @@ export interface FlatFinding {
   responses?: FindingResponseSnapshot[];
 }
 
+/** Per-file risk assessment from review.json — distinct from line findings. */
+export interface FileRiskSnapshot {
+  path: string;
+  risk: "high" | "med" | "low";
+  risk_reason: string;
+  summary: string;
+}
+
 export interface TriagePriorityFileSnapshot {
   path: string;
   reason: string;
@@ -192,6 +200,28 @@ export interface TriageSnapshot {
   domains: string[];
 }
 
+export interface DiagramPresetSnapshot {
+  /** "mental-model" | "subsystems" | "flows" */
+  kind: string;
+  label: string;
+  description: string;
+}
+
+export interface DiagramSnapshot {
+  /** File-stem id (`diagrams/<id>.json`) — delete/regenerate target. */
+  id: string;
+  /** "mental-model" | "subsystems" | "flows" | "custom" */
+  kind: string;
+  title: string;
+  /** User prompt for custom diagrams (empty for presets). */
+  prompt: string;
+  /** Bare mermaid source. */
+  mermaid: string;
+  /** True when the diagram's diff hash matches the current diff. */
+  fresh: boolean;
+  created_at: string;
+}
+
 export interface AiSnapshot {
   fresh: boolean;
   stale_reason: string | null;
@@ -209,11 +239,17 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Per-file risk assessments from review.json (not counted as findings). */
+  file_risks: FileRiskSnapshot[];
   /** Whether `{er_dir}/review.json` exists (batch validate target). */
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
   triage: TriageSnapshot | null;
+  /** Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab. */
+  diagrams: DiagramSnapshot[];
+  /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
+  diagram_presets: DiagramPresetSnapshot[];
 }
 
 export interface PrSnapshot {
@@ -239,6 +275,8 @@ export interface WorktreeSnapshot {
   is_pr: boolean;
   pr_number: number | null;
   is_merged: boolean;
+  /** Repo (owner/repo slug) this worktree belongs to, from its own git remote. */
+  remote: string | null;
 }
 
 export interface BranchInfo {
@@ -324,6 +362,8 @@ export interface TabSummary {
   kind: "working" | "local_branch" | "remote_pr";
   branch: string | null;
   pr_number: number | null;
+  /** Repo (owner/repo slug) this tab actually views — may differ from the active project's remote. */
+  remote: string | null;
   repo_root: string;
   is_active: boolean;
   change_token: string;

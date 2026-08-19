@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -72,7 +73,7 @@
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
 
-  const COMPOSER_APPROX_HEIGHT_PX = 160;
+  const COMPOSER_APPROX_HEIGHT_PX = 220;
 
   /** Empty scroll space below the last row so the last file's final lines clear
    *  the bottom chrome. Render-only — added to the .hscroll height, never to the
@@ -778,10 +779,12 @@
   // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
   // that reveals several stubs is one call, not N full-snapshot serializations.
   async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
+    if (app.pendingTabSwitch) return;
     const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
     if (fresh.length === 0) return;
     for (const i of fresh) _requestingFiles.add(i);
     const reqSnap = app.snapshot;
+    const reqTabKey = reqSnap ? tabSnapshotCacheKey(reqSnap) : null;
     const reqTab = reqSnap?.active_tab;
     const reqMode = reqSnap?.mode;
     const reqBase = reqSnap?.base;
@@ -791,8 +794,10 @@
         sourceIndices: fresh,
       });
       if (!files || !app.snapshot) return;
+      if (app.pendingTabSwitch) return;
       // Drop stale responses: the view changed while the round-trip was in flight.
       if (
+        (reqTabKey !== null && tabSnapshotCacheKey(app.snapshot) !== reqTabKey) ||
         app.snapshot.active_tab !== reqTab ||
         app.snapshot.mode !== reqMode ||
         app.snapshot.base !== reqBase ||
@@ -861,6 +866,7 @@
   }
 
   $effect(() => {
+    if (app.pendingTabSwitch) return;
     const pending: number[] = [];
     const seen = new Set<number>();
 
@@ -1223,6 +1229,22 @@
     return undefined;
   });
 
+  /** Left edge + width of the composer. In split mode it matches the selected
+   *  column (old → left panel, new → right panel); otherwise full-width. */
+  const composerGeometry = $derived.by(() => {
+    const railOffset = tourActive ? RAIL_W : 0;
+    if (viewMode === "split" && diffSel.side !== null && bandWidthPx > 0) {
+      const panelW = bandWidthPx / 2;
+      const left = diffSel.side === "old"
+        ? railOffset + GUTTER_PX
+        : railOffset + panelW + GUTTER_PX;
+      const width = panelW - GUTTER_PX - 8; // 8px right breathing room
+      return { leftPx: left, widthPx: width };
+    }
+    // Unmeasured band or unified mode → full-width (DiffComposer uses left/right).
+    return { leftPx: railOffset, widthPx: bandWidthPx > 0 ? bandWidthPx : undefined };
+  });
+
   // ── Composer scroll: one-shot into view on open; free scroll afterward ───
   let composerAutoScrolledKey = $state<string | null>(null);
 
@@ -1242,7 +1264,9 @@
     if (top === undefined || !scrollEl) return;
     const LINE_H = 20;
     const selectedLineTop = top - LINE_H;
-    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.25));
+    // Place the anchor line at 15% of the viewport height — comfortably above
+    // the card (which starts at `top`), so the clicked/selected line stays visible.
+    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.15));
   }
 
   $effect(() => {
@@ -2209,7 +2233,12 @@
       </div>
 
       {#if diffSel.composerOpen}
-        <DiffComposer topPx={composerTopPx} offsetLeftPx={tourActive ? RAIL_W : 0} />
+        <DiffComposer
+          topPx={composerTopPx}
+          leftPx={composerGeometry.leftPx}
+          widthPx={composerGeometry.widthPx}
+          offsetLeftPx={tourActive ? RAIL_W : 0}
+        />
       {/if}
     {/if}
   </div>

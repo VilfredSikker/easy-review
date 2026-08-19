@@ -53,22 +53,43 @@ fn load_ui_annotations_cached(comments_dir: &str) -> Vec<er_engine::ai::UiAnnota
 // the frontend can't match the key it downgrades the file to a lazy stub and
 // re-fetches via `request_file_content` — the protocol self-heals.
 
+/// Cap of remembered views. Matches the frontend tab snapshot cache.
+const SENT_FILES_VIEW_CAP: usize = 8;
+
 /// Per-view memory of what file content the frontend currently holds.
+///
+/// Keys are kept **per view token** so switching away and back can omit hunks
+/// the frontend cache already has, instead of clearing on every switch.
 #[derive(Default)]
 pub struct SentFilesState {
-    /// Identifies the (tab, mode, branch, filter…) the keys belong to.
-    /// A mismatch clears the map — never omit across view switches.
-    view_token: u64,
-    /// path → `delta_key` of the full hunks last sent for that path.
-    keys: HashMap<String, u64>,
+    /// view_token → (path → `delta_key` of the full hunks last sent).
+    views: HashMap<u64, HashMap<String, u64>>,
+    /// LRU order, front is oldest.
+    order: Vec<u64>,
 }
 
 impl SentFilesState {
     /// Forget everything — next snapshot sends full content (used when the
     /// frontend re-fetches from scratch via `get_snapshot`).
     pub fn reset(&mut self) {
-        self.view_token = 0;
-        self.keys.clear();
+        self.views.clear();
+        self.order.clear();
+    }
+
+    /// Touch `token` as most-recent, creating an empty map if needed. Drops the
+    /// oldest view when the cap is exceeded.
+    fn activate(&mut self, token: u64) -> &mut HashMap<String, u64> {
+        if let Some(i) = self.order.iter().position(|&t| t == token) {
+            self.order.remove(i);
+        }
+        self.order.push(token);
+        while self.order.len() > SENT_FILES_VIEW_CAP {
+            let old = self.order.remove(0);
+            if old != token {
+                self.views.remove(&old);
+            }
+        }
+        self.views.entry(token).or_default()
     }
 }
 
@@ -136,9 +157,32 @@ fn mode_str(mode: DiffMode) -> &'static str {
     }
 }
 
+/// View the frontend painted before an optimistic sidecar write. Must match
+/// `snapshotViewParts` in `desktop-ui/src/lib/snapshotChrome.ts`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct OptimisticView {
+    pub active_tab: usize,
+    pub repo_root: String,
+    pub pr_number: Option<u64>,
+    pub branch: String,
+    pub mode: String,
+}
+
+pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
+    let tab = app.tab();
+    let branch = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    app.active_tab == expected.active_tab
+        && tab.repo_root == expected.repo_root
+        && tab.pr_number == expected.pr_number
+        && branch == expected.branch
+        && mode_str(tab.mode) == expected.mode
+}
+
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
-/// No-op when the sent-files map belongs to a different view.
 pub(crate) fn record_sent_file(
     app: &App,
     tab: &TabState,
@@ -151,11 +195,9 @@ pub(crate) fn record_sent_file(
     let Ok(mut guard) = sent_files.lock() else {
         return;
     };
-    if guard.view_token != snapshot_view_token(app, tab, mode_str(tab.mode)) {
-        return;
-    }
+    let token = snapshot_view_token(app, tab, mode_str(tab.mode));
     if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
-        guard.keys.insert(snap.path.clone(), key);
+        guard.activate(token).insert(snap.path.clone(), key);
     }
 }
 
@@ -167,6 +209,22 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
     tab.repo_root.hash(&mut h);
+    // Tour mode displays the source view's diff — the same files, hunks, and
+    // per-file delta_keys (the pillar arrangement is carried by the `tour`
+    // snapshot field, not by the hunks). Share the source view's token so
+    // Guide↔Diff toggles reuse the differential map instead of clearing it
+    // and resending every hunk (a full ~200–400 ms snapshot + large IPC
+    // payload on big PRs — see review-fix-loop follow-up).
+    let mode = match mode {
+        "tour" => {
+            if tab.tour_context_is_pr() {
+                "pr"
+            } else {
+                "branch"
+            }
+        }
+        m => m,
+    };
     mode.hash(&mut h);
     tab.current_branch.hash(&mut h);
     tab.base_branch.hash(&mut h);
@@ -579,6 +637,10 @@ pub struct TabSummary {
     pub kind: String, // "working" | "local_branch" | "remote_pr"
     pub branch: Option<String>,
     pub pr_number: Option<u64>,
+    /// The repo (owner/repo slug) this tab actually views — may differ from
+    /// the active project's remote (worktrees/branches from other repos).
+    #[serde(default)]
+    pub remote: Option<String>,
     pub repo_root: String,
     pub is_active: bool,
     pub change_token: String,
@@ -723,13 +785,31 @@ pub(crate) fn resolve_github_status_key(
         .unwrap_or(&tab.current_branch);
 
     // 2. Local PR tab: trust the tab's own pr_number; only resolve the slug.
+    //    When the tab knows its own remote (local PR tabs resolve it from the
+    //    repo's git remote), restrict the slug search to that repo — otherwise
+    //    a PR number that exists in several repos (e.g. #73 in both easy-review
+    //    and design-system) matches an arbitrary repo's PR.
     if let Some(number) = tab.pr_number {
+        let matches = |slug: &str, prs: &[PrInfo]| {
+            let in_repo = tab
+                .remote_repo
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case(slug))
+                .unwrap_or(true);
+            in_repo && prs.iter().any(|p| p.number == number)
+        };
         return pr_cache
             .iter()
-            .find(|(_, prs)| prs.iter().any(|p| p.number == number))
+            .find(|(slug, prs)| matches(slug, prs))
             .or_else(|| {
                 pr_cache
                     .iter()
+                    .filter(|(slug, _)| {
+                        tab.remote_repo
+                            .as_deref()
+                            .map(|r| r.eq_ignore_ascii_case(slug))
+                            .unwrap_or(true)
+                    })
                     .find(|(_, prs)| prs.iter().any(|p| p.head_ref == branch))
             })
             .and_then(|(slug, _)| {
@@ -738,16 +818,28 @@ pub(crate) fn resolve_github_status_key(
             });
     }
 
-    // 3. Plain branch / working tab: match by head_ref, prefer an OPEN PR.
-    pr_cache.iter().find_map(|(slug, prs)| {
-        prs.iter()
-            .filter(|p| p.head_ref == branch)
-            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-            .and_then(|p| {
-                slug.split_once('/')
-                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-            })
-    })
+    // 3. Plain branch / working tab: match by head_ref, preferring an OPEN PR.
+    //    When the tab knows its own remote (branch tabs resolve it from the
+    //    repo's git remote), restrict the match to that repo — otherwise a
+    //    branch name that exists in several repos matches an arbitrary PR in
+    //    the wrong one.
+    pr_cache
+        .iter()
+        .filter(|(slug, _)| {
+            tab.remote_repo
+                .as_deref()
+                .map(|r| r.eq_ignore_ascii_case(slug))
+                .unwrap_or(true)
+        })
+        .find_map(|(slug, prs)| {
+            prs.iter()
+                .filter(|p| p.head_ref == branch)
+                .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+                .and_then(|p| {
+                    slug.split_once('/')
+                        .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+                })
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -900,6 +992,17 @@ pub struct FlatFinding {
     pub responses: Vec<FindingResponseSnapshot>,
 }
 
+/// Per-file risk assessment from `review.json` (`ErFileReview`), distinct from
+/// line-anchored findings. Shown in the AI Review card as assessment metadata.
+#[derive(Debug, Clone, Serialize)]
+pub struct FileRiskSnapshot {
+    pub path: String,
+    /// "high" | "med" | "low"
+    pub risk: String,
+    pub risk_reason: String,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AiSnapshot {
     pub fresh: bool,
@@ -918,11 +1021,45 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Per-file risk assessments from review.json (not counted as findings).
+    #[serde(default)]
+    pub file_risks: Vec<FileRiskSnapshot>,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
     pub triage: Option<TriageSnapshot>,
+    /// Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab.
+    pub diagrams: Vec<DiagramSnapshot>,
+    /// Built-in diagram generate presets (mental-model / subsystems / flows).
+    /// Always populated from the engine catalog so the UI never hand-rolls
+    /// a parallel list that can drift from `prompts.rs` / kind validation.
+    #[serde(default)]
+    pub diagram_presets: Vec<DiagramPresetSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagramPresetSnapshot {
+    /// `mental-model` | `subsystems` | `flows`.
+    pub kind: String,
+    pub label: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DiagramSnapshot {
+    /// File-stem id (`diagrams/<id>.json`) — delete/regenerate target.
+    pub id: String,
+    /// `mental-model` | `subsystems` | `flows` | `custom`.
+    pub kind: String,
+    pub title: String,
+    /// User prompt for custom diagrams (empty for presets).
+    pub prompt: String,
+    /// Bare mermaid source.
+    pub mermaid: String,
+    /// True when the diagram's diff hash matches the current diff.
+    pub fresh: bool,
+    pub created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1015,6 +1152,10 @@ pub struct WorktreeSnapshot {
     pub is_pr: bool,
     pub pr_number: Option<u64>,
     pub is_merged: bool,
+    /// The repo (owner/repo slug) this worktree belongs to, from its own git
+    /// remote — may differ from the active project's remote.
+    #[serde(default)]
+    pub remote: Option<String>,
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -1029,6 +1170,33 @@ fn severity_str(r: &RiskLevel) -> &'static str {
         RiskLevel::Medium => "med",
         RiskLevel::Low | RiskLevel::Info => "low",
     }
+}
+
+fn risk_sort_ord(r: &RiskLevel) -> u8 {
+    match r {
+        RiskLevel::High => 0,
+        RiskLevel::Medium => 1,
+        RiskLevel::Low => 2,
+        RiskLevel::Info => 3,
+    }
+}
+
+fn build_file_risks(review: &er_engine::ai::ErReview) -> Vec<FileRiskSnapshot> {
+    let mut entries: Vec<_> = review.files.iter().collect();
+    entries.sort_by(|(pa, fa), (pb, fb)| {
+        risk_sort_ord(&fa.risk)
+            .cmp(&risk_sort_ord(&fb.risk))
+            .then_with(|| pa.cmp(pb))
+    });
+    entries
+        .into_iter()
+        .map(|(path, fr)| FileRiskSnapshot {
+            path: path.clone(),
+            risk: severity_str(&fr.risk).to_string(),
+            risk_reason: fr.risk_reason.clone(),
+            summary: fr.summary.clone(),
+        })
+        .collect()
 }
 
 fn comment_ref_to_thread(
@@ -1053,10 +1221,10 @@ fn comment_ref_to_thread(
         CommentRef::Legacy(lc) => lc.line_start.unwrap_or(0),
     };
     let line_end = c.line_end();
-    let side = match c {
-        CommentRef::GitHubComment(gc) => gc.side.clone(),
-        _ => default_thread_side(),
-    };
+    let side = c
+        .side()
+        .map(str::to_string)
+        .unwrap_or_else(default_thread_side);
     let author_kind = if c.author() == "You" { "you" } else { "human" };
     ThreadSnapshot {
         id: c.id().to_string(),
@@ -1424,6 +1592,21 @@ pub(crate) fn build_file_snapshot(
     pending_ai: Option<&PendingAiReplies>,
     include_hunks: bool,
 ) -> FileSnapshot {
+    build_file_snapshot_with_keys(source_index, f, tab, pending_ai, include_hunks, None)
+}
+
+/// Like [`build_file_snapshot`], but accepts precomputed `(lines_key, delta_key)`.
+/// The differential omitted-file path already hashed the file to compare against
+/// the sent-files map; passing the keys through avoids a second full hunk hash +
+/// thread build for every unchanged file on every snapshot.
+fn build_file_snapshot_with_keys(
+    source_index: usize,
+    f: &DiffFile,
+    tab: &TabState,
+    pending_ai: Option<&PendingAiReplies>,
+    include_hunks: bool,
+    precomputed: Option<(u64, u64)>,
+) -> FileSnapshot {
     let budget_omitted = !f.compacted && !include_hunks;
     let hunks = if include_hunks {
         build_hunks(f, tab, pending_ai)
@@ -1452,8 +1635,14 @@ pub(crate) fn build_file_snapshot(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(&fr.risk).to_string());
 
-    let lines_key = file_lines_key(f);
-    let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+    let (lines_key, delta_key) = match precomputed {
+        Some(keys) => keys,
+        None => {
+            let lines_key = file_lines_key(f);
+            let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
+            (lines_key, delta_key)
+        }
+    };
 
     FileSnapshot {
         path: f.path.clone(),
@@ -1769,10 +1958,7 @@ fn build_snapshot_inner(
     };
     if let Some(guard) = sent_guard.as_mut() {
         let token = snapshot_view_token(app, tab, mode);
-        if guard.view_token != token {
-            guard.keys.clear();
-            guard.view_token = token;
-        }
+        guard.activate(token);
     }
     let files: Vec<FileSnapshot> = if chrome_only {
         Vec::new()
@@ -1790,9 +1976,17 @@ fn build_snapshot_inner(
                         let lines_key = file_lines_key(f);
                         let delta_key =
                             file_delta_key(lines_key, &build_hunk_threads(f, tab, pending_ai));
-                        if guard.keys.get(&f.path) == Some(&delta_key) {
-                            let mut snap =
-                                build_file_snapshot(source_index, f, tab, pending_ai, false);
+                        let token = snapshot_view_token(app, tab, mode);
+                        if guard.views.get(&token).and_then(|m| m.get(&f.path)) == Some(&delta_key)
+                        {
+                            let mut snap = build_file_snapshot_with_keys(
+                                source_index,
+                                f,
+                                tab,
+                                pending_ai,
+                                false,
+                                Some((lines_key, delta_key)),
+                            );
                             snap.is_lazy_stub = false;
                             snap.hunks_omitted = true;
                             return snap;
@@ -1809,13 +2003,15 @@ fn build_snapshot_inner(
                 }
                 let snap = build_file_snapshot(source_index, f, tab, pending_ai, include_hunks);
                 if let Some(guard) = sent_guard.as_mut() {
+                    let token = snapshot_view_token(app, tab, mode);
+                    let keys = guard.activate(token);
                     // Track only paths the frontend now holds full hunks for.
                     if include_hunks && !snap.hunks.is_empty() {
                         if let Ok(key) = u64::from_str_radix(&snap.delta_key, 16) {
-                            guard.keys.insert(snap.path.clone(), key);
+                            keys.insert(snap.path.clone(), key);
                         }
                     } else {
-                        guard.keys.remove(&snap.path);
+                        keys.remove(&snap.path);
                     }
                 }
                 snap
@@ -1893,6 +2089,7 @@ fn build_snapshot_inner(
                 kind: kind.to_string(),
                 branch: t.local_branch_view.clone(),
                 pr_number: t.pr_number,
+                remote: t.remote_repo.clone(),
                 repo_root: t.repo_root.clone(),
                 is_active: i == active_tab,
                 change_token: t.branch_diff_hash.clone(),
@@ -2243,10 +2440,24 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
+        diagrams: Vec::new(),
+        diagram_presets: diagram_preset_snapshots(),
     }
+}
+
+fn diagram_preset_snapshots() -> Vec<DiagramPresetSnapshot> {
+    er_engine::ai::diagram_presets()
+        .into_iter()
+        .map(|p| DiagramPresetSnapshot {
+            kind: p.kind,
+            label: p.label,
+            description: p.description,
+        })
+        .collect()
 }
 
 /// Load the most recent 10 commits for the file viewer's commit history
@@ -2348,8 +2559,8 @@ struct WorktreesMetaKey {
     fingerprint: u64,
 }
 
-/// Per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by worktree path.
-type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool)>;
+/// Per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed by worktree path.
+type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool, Option<String>)>;
 
 /// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
 ///
@@ -2409,18 +2620,20 @@ fn build_worktrees(
     let meta = worktrees_meta_cached(key, || {
         wts.iter()
             .map(|wt| {
-                (
-                    wt.path.clone(),
-                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged),
-                )
+                let (is_pr, pr_number, is_merged) =
+                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
+                let remote = crate::projects::resolve_repo_remote(&wt.path);
+                (wt.path.clone(), (is_pr, pr_number, is_merged, remote))
             })
             .collect()
     });
 
     wts.into_iter()
         .map(|wt| {
-            let (is_pr, pr_number, is_merged) =
-                meta.get(&wt.path).copied().unwrap_or((false, None, false));
+            let (is_pr, pr_number, is_merged, remote) = meta
+                .get(&wt.path)
+                .cloned()
+                .unwrap_or((false, None, false, None));
             WorktreeSnapshot {
                 is_current: wt.path == current_root,
                 branch: wt.branch,
@@ -2428,6 +2641,7 @@ fn build_worktrees(
                 is_pr,
                 pr_number,
                 is_merged,
+                remote,
             }
         })
         .collect()
@@ -2710,6 +2924,7 @@ fn build_projects(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ProjectsCacheKey {
     projects_mtime_ns: u128,
+    projects_gen: u64,
     pr_cache_fingerprint: u64,
     meta_cache_fingerprint: u64,
     active_root: String,
@@ -2781,6 +2996,7 @@ fn build_projects_cache_key(
 
     ProjectsCacheKey {
         projects_mtime_ns,
+        projects_gen: projects::content_generation(),
         pr_cache_fingerprint,
         meta_cache_fingerprint,
         active_root: tab.repo_root.clone(),
@@ -3232,7 +3448,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         file: q.file.clone(),
                         line: q.line_start.unwrap_or(0),
                         line_end: q.line_end,
-                        side: default_thread_side(),
+                        side: q.side.clone(),
                         source: "local".to_string(),
                         synced: false,
                         stale: q.stale,
@@ -3265,7 +3481,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         file: n.file.clone(),
                         line: n.line_start.unwrap_or(0),
                         line_end: n.line_end,
-                        side: default_thread_side(),
+                        side: n.side.clone(),
                         source: "local".to_string(),
                         synced: false,
                         stale: n.stale,
@@ -3420,6 +3636,9 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         vec![]
     };
 
+    let file_risks: Vec<FileRiskSnapshot> =
+        ai.review.as_ref().map(build_file_risks).unwrap_or_default();
+
     let er_dir = tab.er_dir();
     let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
     let eligible_comment_count = ai
@@ -3452,6 +3671,24 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         }
     });
 
+    // A diagram is fresh when it was generated against the diff it is viewed
+    // with: branch bucket diagrams hash the branch diff, PR bucket diagrams
+    // hash the PR diff (`tab.diff_hash` after a full refresh) — accept either.
+    let diagrams = ai
+        .diagrams
+        .iter()
+        .map(|d| DiagramSnapshot {
+            id: d.id.clone(),
+            kind: d.kind.clone(),
+            title: d.title.clone(),
+            prompt: d.prompt.clone(),
+            mermaid: d.mermaid.clone(),
+            fresh: d.diff_hash == tab.branch_diff_hash
+                || (!tab.diff_hash.is_empty() && d.diff_hash == tab.diff_hash),
+            created_at: d.created_at.clone(),
+        })
+        .collect();
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -3468,13 +3705,16 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        file_risks,
         has_review_json,
         eligible_comment_count,
         triage,
+        diagrams,
+        diagram_presets: diagram_preset_snapshots(),
     }
 }
 
-fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
+pub(crate) fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;
     Some(PrSnapshot {
         number: pr.number,
@@ -3581,6 +3821,41 @@ mod tests {
         p
     }
 
+    /// Guide↔Diff toggles must reuse the differential map: Tour mode displays
+    /// the source view's diff (same files/hunks/delta_keys), so its view token
+    /// must equal the source view's token — otherwise every toggle resends all
+    /// hunks (~200–400 ms snapshots on big PRs).
+    #[test]
+    fn tour_token_shares_source_view_token() {
+        let app = er_engine::app::App::new_for_test(vec![]);
+        let mut tab = TabState::new_for_test(vec![]);
+
+        // Guide opened from PR Diff → tour token == pr token.
+        tab.mode = DiffMode::PrDiff;
+        tab.tour_is_pr = false;
+        let pr_token = snapshot_view_token(&app, &tab, "pr");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            pr_token,
+            "tour from PR Diff must share the pr token"
+        );
+
+        // Guide opened from Branch → tour token == branch token, and the
+        // pr/branch tokens differ from each other.
+        tab.mode = DiffMode::Branch;
+        let branch_token = snapshot_view_token(&app, &tab, "branch");
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = false;
+        assert_eq!(
+            snapshot_view_token(&app, &tab, "tour"),
+            branch_token,
+            "tour from Branch must share the branch token"
+        );
+        assert_ne!(pr_token, branch_token, "pr and branch views differ");
+    }
+
     /// A local PR tab (pr_number set, no remote) must key its GitHub status off
     /// its OWN pr_number — even when the same head branch carries a second open
     /// PR. Regression test for the "Branch view shows another PR entirely" bug.
@@ -3603,6 +3878,39 @@ mod tests {
             key,
             Some(("octo".to_string(), "cat".to_string(), 117)),
             "must resolve the opened PR (#117), not the head_ref collision (#1308)"
+        );
+    }
+
+    /// A local PR tab that knows its own remote must not resolve the slug from
+    /// a DIFFERENT repo that happens to have the same PR number — the exact
+    /// "opens easy-review#73 while reviewing design-system#73" bug.
+    #[test]
+    fn github_key_local_pr_tab_restricts_slug_to_own_remote() {
+        let branch = "feat/floating-toolbar-design-system";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        // Same PR number in two repos: the tab's own repo and another.
+        cache.insert(
+            "reshapebiotech/design-system".to_string(),
+            vec![pr_with(73, branch, "OPEN")],
+        );
+        cache.insert(
+            "VilfredSikker/easy-review".to_string(),
+            vec![pr_with(73, "claude/issue-69-reference-highlight", "MERGED")],
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = Some(73);
+        tab.remote_repo = Some("reshapebiotech/design-system".to_string());
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some((
+                "reshapebiotech".to_string(),
+                "design-system".to_string(),
+                73
+            )),
+            "must resolve the PR in the tab's own repo, not the colliding easy-review#73"
         );
     }
 
@@ -3656,6 +3964,28 @@ mod tests {
         assert_eq!(
             resolve_github_status_key(&tab, &cache),
             Some(("octo".to_string(), "cat".to_string(), 11))
+        );
+    }
+
+    /// A branch tab that knows its own remote must not match a PR in a
+    /// different repo, even when the head branch name collides there.
+    #[test]
+    fn github_key_branch_tab_restricts_to_own_remote() {
+        let branch = "feature/x";
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        cache.insert("octo/cat".to_string(), vec![pr_with(11, branch, "OPEN")]);
+        // Same branch name exists in a different repo.
+        cache.insert("other/repo".to_string(), vec![pr_with(99, branch, "OPEN")]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some(branch.to_string());
+        tab.pr_number = None;
+        tab.remote_repo = Some("octo/cat".to_string());
+
+        assert_eq!(
+            resolve_github_status_key(&tab, &cache),
+            Some(("octo".to_string(), "cat".to_string(), 11)),
+            "must match the PR in the tab's own repo, not the colliding repo"
         );
     }
 
@@ -3748,6 +4078,85 @@ mod tests {
 
         assert_eq!(snapshot.threads.len(), 1);
         assert!(snapshot.threads[0].stale);
+    }
+
+    #[test]
+    fn ai_snapshot_includes_diagram_presets_from_engine_catalog() {
+        let tab = TabState::new_for_test(vec![]);
+        let snapshot = build_ai_snapshot(&tab, None);
+        let kinds: Vec<&str> = snapshot
+            .diagram_presets
+            .iter()
+            .map(|p| p.kind.as_str())
+            .collect();
+        assert_eq!(kinds, vec!["mental-model", "subsystems", "flows"]);
+        assert!(snapshot
+            .diagram_presets
+            .iter()
+            .all(|p| !p.label.is_empty() && !p.description.is_empty()));
+    }
+
+    #[test]
+    fn ai_snapshot_includes_sorted_file_risks_without_findings() {
+        use er_engine::ai::{ErFileReview, ErReview, RiskLevel};
+        use std::collections::HashMap;
+
+        let mut files = HashMap::new();
+        files.insert(
+            "z_low.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: "minor".into(),
+                summary: "low file".into(),
+                findings: vec![],
+            },
+        );
+        files.insert(
+            "a_high.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::High,
+                risk_reason: "critical path".into(),
+                summary: "high file".into(),
+                findings: vec![],
+            },
+        );
+        files.insert(
+            "m_med.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Medium,
+                risk_reason: "touches API".into(),
+                summary: "med file".into(),
+                findings: vec![],
+            },
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files,
+            file_hashes: HashMap::new(),
+        });
+        tab.ai.summary = Some("No line findings.".into());
+
+        let snapshot = build_ai_snapshot(&tab, None);
+
+        assert!(snapshot.findings.is_empty());
+        assert_eq!(snapshot.high + snapshot.med + snapshot.low, 0);
+        assert_eq!(snapshot.file_risks.len(), 3);
+        assert_eq!(snapshot.file_risks[0].path, "a_high.rs");
+        assert_eq!(snapshot.file_risks[0].risk, "high");
+        assert_eq!(snapshot.file_risks[1].path, "m_med.rs");
+        assert_eq!(snapshot.file_risks[1].risk, "med");
+        assert_eq!(snapshot.file_risks[2].path, "z_low.rs");
+        assert_eq!(snapshot.file_risks[2].risk, "low");
+        assert_eq!(
+            snapshot.summary_markdown.as_deref(),
+            Some("No line findings.")
+        );
     }
 
     #[test]
@@ -4111,6 +4520,35 @@ mod tests {
     }
 
     #[test]
+    fn projects_snapshot_preserves_file_order() {
+        let tab = TabState::new_for_test(vec![]);
+        let record = |id: &str| projects::ProjectRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: format!("/tmp/{id}"),
+            remote: None,
+            dismissed_prs: Vec::new(),
+            tracked_prs: Vec::new(),
+            tracked_branches: Vec::new(),
+            dismissed_branches: Vec::new(),
+            recent_prs: Vec::new(),
+            saved_prs: Vec::new(),
+            auto_triage: false,
+            auto_triage_own_prs: false,
+            auto_triage_when: "new-and-push".to_string(),
+            auto_triage_max_diff_kb: 0,
+            review_ignore_globs: Vec::new(),
+        };
+        let file = projects::ProjectsFile {
+            projects: vec![record("zeta"), record("alpha")],
+            active_id: None,
+        };
+        let snaps = build_projects_from_file(&file, &tab, None, None, None, None);
+        let ids: Vec<&str> = snaps.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, vec!["zeta", "alpha"]);
+    }
+
+    #[test]
     fn projects_snapshot_includes_review_settings_fields() {
         let tab = TabState::new_for_test(vec![]);
         let file = projects::ProjectsFile {
@@ -4167,6 +4605,40 @@ mod tests {
 
     const DELTA_FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n fn baz() {}\n";
     const DELTA_FIXTURE_DIFF_V2: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..2222222 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,4 @@\n fn foo() {}\n+fn bar() {}\n+fn qux() {}\n fn baz() {}\n";
+
+    #[test]
+    fn precomputed_keys_produce_identical_snapshot() {
+        // The differential omitted-file path passes the keys it hashed for the
+        // delta comparison into the snapshot builder; the result must be byte
+        // identical to a fresh build (same cache_key, delta_key, hunks).
+        let files = er_engine::git::parse_diff(DELTA_FIXTURE_DIFF);
+        let app = er_engine::app::App::new_for_test(files);
+        let tab = app.tab();
+        let f = &tab.files[0];
+        let fresh = build_file_snapshot(0, f, tab, None, true);
+        let lines_key = file_lines_key(f);
+        let delta_key = file_delta_key(lines_key, &build_hunk_threads(f, tab, None));
+        let precomputed =
+            build_file_snapshot_with_keys(0, f, tab, None, true, Some((lines_key, delta_key)));
+        assert_eq!(fresh.cache_key, precomputed.cache_key);
+        assert_eq!(fresh.delta_key, precomputed.delta_key);
+        assert_eq!(fresh.hunks.len(), precomputed.hunks.len());
+        for (a, b) in fresh.hunks.iter().zip(precomputed.hunks.iter()) {
+            assert_eq!(a.header, b.header);
+            assert_eq!(a.old_start, b.old_start);
+            assert_eq!(a.old_count, b.old_count);
+            assert_eq!(a.new_start, b.new_start);
+            assert_eq!(a.new_count, b.new_count);
+            assert_eq!(a.lines.len(), b.lines.len());
+            for (la, lb) in a.lines.iter().zip(b.lines.iter()) {
+                assert_eq!(la.old_num, lb.old_num);
+                assert_eq!(la.new_num, lb.new_num);
+                assert_eq!(la.kind, lb.kind);
+                assert_eq!(la.text, lb.text);
+            }
+        }
+        assert_eq!(fresh.is_lazy_stub, precomputed.is_lazy_stub);
+    }
 
     #[test]
     fn differential_snapshot_omits_unchanged_hunks() {
@@ -4257,11 +4729,21 @@ mod tests {
         let _ = delta_snap(&app, &sent);
         assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
 
-        // View switch (mode change) busts the view token — full resend.
+        // View switch (mode change) — first visit of the new token resends.
         app.tab_mut().mode = DiffMode::Unstaged;
         let s3 = delta_snap(&app, &sent);
-        assert!(!s3.files[0].hunks_omitted, "view switch must resend hunks");
+        assert!(
+            !s3.files[0].hunks_omitted,
+            "new view token must resend hunks"
+        );
         assert!(delta_snap(&app, &sent).files[0].hunks_omitted);
+
+        // Switch back to the original view — keys for that token are kept.
+        app.tab_mut().mode = DiffMode::Branch;
+        assert!(
+            delta_snap(&app, &sent).files[0].hunks_omitted,
+            "revisit of a remembered view must omit unchanged hunks"
+        );
 
         // Reset (frontend re-fetches from scratch) — full resend.
         sent.lock().unwrap().reset();
@@ -4276,7 +4758,7 @@ mod tests {
         let compute = || {
             calls.set(calls.get() + 1);
             let mut m = HashMap::new();
-            m.insert("/wt".to_string(), (true, Some(7u64), false));
+            m.insert("/wt".to_string(), (true, Some(7u64), false, None));
             m
         };
         let key = || WorktreesMetaKey {
@@ -4290,7 +4772,7 @@ mod tests {
         // First call: cache miss → compute runs once, value flows through.
         let v1 = worktrees_meta_cached(key(), compute);
         assert_eq!(calls.get(), 1);
-        assert_eq!(v1.get("/wt").copied(), Some((true, Some(7), false)));
+        assert_eq!(v1.get("/wt").cloned(), Some((true, Some(7), false, None)));
 
         // Same key within TTL: cache hit → no recompute, same value.
         let v2 = worktrees_meta_cached(key(), compute);
@@ -4299,7 +4781,7 @@ mod tests {
             1,
             "same worktree set within TTL must reuse cached meta, not respawn git subprocesses"
         );
-        assert_eq!(v2.get("/wt").copied(), Some((true, Some(7), false)));
+        assert_eq!(v2.get("/wt").cloned(), Some((true, Some(7), false, None)));
 
         // Changed fingerprint (worktree added/removed/switched): miss → recompute.
         let changed = WorktreesMetaKey {

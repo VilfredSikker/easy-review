@@ -272,7 +272,7 @@ cargo clippy -p er-engine -p er-tui --all-targets -- -D warnings
 
 ## Releasing the TUI (`er`)
 
-Published releases are **terminal `er` only**, built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push.
+Published releases are **terminal `er`**, **er-mcp**, and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. The CI DMG is ad-hoc signed (right-click → Open the first time). For a Developer ID signed + notarized build, use [`just sign`](#macos-signed-release-developer-id--notarization) locally and upload the DMG to the GitHub release if needed.
 
 **Maintainer flow:**
 

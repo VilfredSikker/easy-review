@@ -8,7 +8,7 @@
 - `src/snapshot.rs`: Rust wire contract for `desktop-ui/src/lib/types.ts`.
 - `src/main.rs`: Tauri setup, browser proxy/content script, background loops, command registration.
 - `src/tabs.rs`: persisted desktop tab descriptors and tab reconstruction (`tabs.json` under the platform config dir).
-- `src/projects.rs`: persisted project list, tracked branches, tracked/dismissed PRs.
+- `src/projects.rs`: persisted project list (Vec order is the sidebar order), tracked branches, tracked/dismissed PRs. `reorder_projects` rewrites that Vec.
 - `src/pr_cache.rs`: GitHub PR list fetching/caching helpers.
 - `src/export.rs`: pure Markdown renderer for comments, questions, findings, and UI annotations.
 - `src/er_storage.rs`: re-exports `er_engine::storage` (managed review storage under app data).

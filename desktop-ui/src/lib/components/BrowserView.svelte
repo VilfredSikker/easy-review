@@ -20,11 +20,9 @@
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
-  import { closeAiActionPalette } from "$lib/components/AiActionPalette.svelte";
   import {
     dismissBrowserAnnotationComposerNow,
     registerBrowserAnnotationComposerDismiss,
-    triggerAiPalette,
   } from "$lib/stores/keyboard";
   import { overlay } from "$lib/stores/overlay.svelte";
 
@@ -484,6 +482,7 @@
     }
 
     if ((data as { __er_composer_submit?: boolean }).__er_composer_submit) {
+      if (!app.canPaintOptimistic()) return;
       composerOpenInPage = false;
       const box = (data as { box?: number[] }).box;
       const bbox: [number, number, number, number] = Array.isArray(box) && box.length >= 4
@@ -509,10 +508,6 @@
     const shortcut = typeof (data as { __er_shortcut?: unknown }).__er_shortcut === "string"
       ? (data as { __er_shortcut: string }).__er_shortcut
       : null;
-    if (shortcut === "ai-hub") {
-      triggerAiPalette();
-      return;
-    }
     if (shortcut === "browser-cycle") {
       void browser.cycleLayout();
       return;
@@ -527,7 +522,6 @@
       return;
     }
     if (shortcut === "dismiss-overlay") {
-      closeAiActionPalette();
       dismissBrowserAnnotationComposerNow();
       return;
     }
@@ -635,7 +629,7 @@
     handleBrowserPayload(data);
   }
 
-  async function submitAnnotation(
+  function submitAnnotation(
     bbox: [number, number, number, number],
     selector: string | null,
     text: string,
@@ -643,7 +637,8 @@
     elementContext: string | null,
     domContext: UiDomContext | null,
   ) {
-    await app.cmd("add_ui_annotation", {
+    if (!app.canPaintOptimistic()) return;
+    void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
       selector,
       bbox,

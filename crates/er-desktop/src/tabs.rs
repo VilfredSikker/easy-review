@@ -65,18 +65,12 @@ fn tabs_path() -> Option<PathBuf> {
 /// tmp file + rename so a crash mid-save never produces a truncated file.
 pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
     let path = tabs_path().context("no config dir")?;
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
-    }
     let file = TabsFile {
         tabs: tabs.to_vec(),
         active_idx,
     };
-    let json = serde_json::to_string_pretty(&file)?;
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, json).with_context(|| format!("write {}", tmp.display()))?;
-    std::fs::rename(&tmp, &path).with_context(|| format!("rename to {}", path.display()))?;
-    Ok(())
+    crate::persist::save_json_atomic(&path, &file)
+        .with_context(|| format!("persist {}", path.display()))
 }
 
 /// Serialize the live tab list and active index to disk.
@@ -204,6 +198,8 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
     let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
     tab.local_branch_view = Some(branch);
     tab.mode = er_engine::app::DiffMode::Branch;
+    // Reloads AI sidecars so Review/Notes/Context have this tab's data on
+    // first select, without waiting for the deferred git diff.
     tab.sync_managed_storage();
     if lazy {
         tab.needs_initial_refresh = true;
@@ -229,6 +225,8 @@ fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Tab
     tab.pr_number = Some(number);
     tab.pr_head_ref = d.pr_head_ref.clone();
     tab.mode = er_engine::app::DiffMode::Branch;
+    // Reloads AI sidecars so Review/Notes/Context have this tab's data on
+    // first select, without waiting for the deferred git diff.
     tab.sync_managed_storage();
     tab.needs_initial_refresh = true;
     Ok(tab)
@@ -422,6 +420,50 @@ mod tests {
         assert_eq!(d.pr_number, Some(42));
         assert!(d.pr_head_ref.is_none());
         assert_eq!(d.branch.as_deref(), Some("dependabot/cargo-abc"));
+    }
+
+    #[test]
+    fn lazy_local_pr_stub_loads_ai_sidecars() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        init_git_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+
+        let mut probe =
+            er_engine::app::TabState::new_with_base_unloaded(root.clone(), "main".to_string())
+                .expect("probe");
+        probe.pr_number = Some(99);
+        probe.local_branch_view = Some("feat-ai-stub".to_string());
+        probe.sync_managed_storage_light();
+        let er = probe.er_dir();
+        std::fs::create_dir_all(&er).expect("er dir");
+        std::fs::write(
+            std::path::Path::new(&er).join("questions.json"),
+            r#"{"version":1,"diff_hash":"","questions":[{"id":"q-1","file":"a.rs","hunk_index":0,"line_start":1,"line_content":"c","text":"why","resolved":false}]}"#,
+        )
+        .expect("write questions");
+
+        let d = TabDescriptor {
+            kind: TabKind::LocalPr,
+            repo_root: root,
+            branch: Some("feat-ai-stub".to_string()),
+            pr_owner: None,
+            pr_repo: None,
+            pr_number: Some(99),
+            pr_head_ref: None,
+            base_ref: Some("main".to_string()),
+            browser_url: None,
+            browser_layout: None,
+        };
+        let tab = rebuild_local_pr(&d, true).expect("stub");
+        assert!(tab.needs_initial_refresh, "lazy stub still defers git diff");
+        let qs = tab
+            .ai
+            .questions
+            .as_ref()
+            .expect("questions sidecar loaded without refresh_diff");
+        assert_eq!(qs.questions.len(), 1);
+        assert_eq!(qs.questions[0].id, "q-1");
     }
 
     #[test]

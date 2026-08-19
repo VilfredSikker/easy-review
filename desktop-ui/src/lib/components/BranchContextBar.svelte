@@ -4,7 +4,7 @@
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { copyToClipboard } from "$lib/clipboard";
-  import { resolveActivePrUrl } from "$lib/prUrl";
+  import { resolveActivePrUrl, resolveActivePrNumber } from "$lib/prUrl";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
 
@@ -20,18 +20,7 @@
   const deletions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.deletions, 0));
 
   // Resolve the PR number for the badge.
-  const currentWorktree = $derived(snapshot?.worktrees?.find((w) => w.is_current) ?? null);
-  // Mirror resolveActivePrUrl's resolution exactly, so the toggle appears
-  // whenever the header's #NNNN PR button does (incl. the worktree's pr_number,
-  // which is the source for branches whose PR isn't in the bulk pr_cache).
-  const prNumber = $derived(
-    snapshot?.detected_pr_number ??
-    snapshot?.github?.number ??
-    snapshot?.pr?.number ??
-    activeTab?.pr_number ??
-    currentWorktree?.pr_number ??
-    null
-  );
+  const prNumber = $derived(resolveActivePrNumber(snapshot));
 
   const mode = $derived(snapshot?.mode ?? "branch");
   /** PR Diff is "active" in PR mode, and also in Guide mode when the guide is

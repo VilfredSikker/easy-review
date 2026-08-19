@@ -4,6 +4,7 @@
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { openExternalUrl } from "$lib/openExternalUrl";
+  import { resolveActivePrNumber } from "$lib/prUrl";
 
   interface Props {
     branch: string;
@@ -148,7 +149,7 @@
 
   const activeProject = $derived(app.snapshot?.projects?.find((p) => p.is_active) ?? null);
   const effectivePrNumber = $derived(
-    pr_number ?? app.snapshot?.github?.number ?? pr?.number ?? null,
+    pr_number ?? resolveActivePrNumber(app.snapshot),
   );
   const isSaved = $derived(
     effectivePrNumber !== null &&

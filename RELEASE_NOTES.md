@@ -22,6 +22,138 @@
 
 ---
 
+# Easy Review v0.4.13
+
+## In plain terms
+
+- **What changed.** File-level risks show in their own card, even when a review has no line findings. Local GitHub comments no longer freeze, spin, or duplicate. Right-side panels stay bound to the active tab. Remote TUI reviews use the prepared PR diff. The embedded browser no longer crashes on external sites.
+- **TL;DR.** File-risks card, comment/panel freeze fixes, TUI prepared-diff reviews, browser crash fix.
+
+## Highlights
+
+- **File risks.** Reviews with file-level risks show them in a dedicated card when there are no line findings. (#155)
+- **Local comments.** Optimistic local GitHub writes no longer freeze the UI, spin forever, or duplicate inline. (#180)
+- **Tab panels.** Right-side panels load from the active tab instead of mixing PR and branch state. (#178)
+- **Remote TUI review.** `pr_open` feeds the prepared PR diff to remote review instead of `gh pr diff`. GitHub comments stay visible across lazy diffs. (#177)
+- **Embedded browser.** External sites no longer crash the app. (#115)
+
+## What's Changed
+
+### Features
+- Show file risks in their own card when a review has no line findings. (#155)
+
+### Fixes
+- Stop local GitHub comments from freezing, spinning, or duplicating. (#180)
+- Bind right-side panels to the active tab. (#178)
+- Count only unpushed local comments when pushing a review. (#181)
+- Cap triage card height and truncate long paths. (#179)
+- Feed remote TUI review the prepared PR diff; keep GitHub comments visible across lazy diffs. (#177)
+- Show review summary when a run finds nothing. (#176)
+- Stop the embedded browser from crashing the app on external sites. (#115)
+
+### Chore
+- Add CODEOWNERS so required reviews come from admins. (#182)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.12...v0.4.13
+
+# Easy Review v0.4.12
+
+## In plain terms
+
+- **What changed.** Drag sidebar projects to reorder them. The order sticks across restarts. GitHub releases now ship a macOS desktop `.dmg`. Docs match ⌘K AI shortcuts and the Context tab.
+- **TL;DR.** Sidebar reorder, release DMG, docs sync.
+
+## Highlights
+
+- **Sidebar reorder.** Drag projects in the left sidebar. Order persists in `projects.json` and survives relaunch.
+- **Release DMG.** CI attaches the macOS Apple Silicon desktop `.dmg` to GitHub releases.
+- **Docs.** Guide and landing page use ⌘K for AI actions. Context tab and Mermaid diagram presets documented.
+
+## What's Changed
+
+### Features
+- Drag to reorder sidebar repositories. (#175)
+
+### Fixes
+- Persist sidebar reorder by project id, not snapshot index. (#175)
+
+### CI
+- Attach macOS desktop DMG to GitHub releases.
+
+### Docs
+- Sync desktop AI hub shortcuts and document Context tab. (#174)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.11...v0.4.12
+
+# Easy Review v0.4.11
+
+## In plain terms
+
+- **What changed.** ⌘K AI actions no longer freeze the desktop UI. The Context tab can render Mermaid diagrams from an AI command. The TUI no longer spills `pr_open` debug output over the diff.
+- **TL;DR.** ⌘K freeze fix, Mermaid Context tab, TUI pr_open noise fix.
+
+## Highlights
+
+- **⌘K AI actions.** Background review commands run off the main thread again so the palette stays responsive.
+- **Mermaid in Context.** New AI command generates diagrams; Context tab renders them.
+- **TUI pr_open.** Stops phase `eprintln` spillover corrupting the diff view during PR open.
+
+## What's Changed
+
+### Features
+- Mermaid diagram AI command and Context tab rendering. (#172)
+
+### Fixes
+- Stop ⌘K AI actions from freezing the desktop UI. (#171)
+- Stop `pr_open` phase eprintln spillover over the TUI diff. (#173)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.10...v0.4.11
+
+# Easy Review v0.4.10
+
+## In plain terms
+
+- **What changed.** Desktop ⌘K is now the single command hub — AI review actions moved into nested menus, ⌘A is free for select-all again, and PR/GitHub links respect each tab's own repo. The `@easy-review/skills` installer got an interactive wizard and reliable `bunx`/`npx` routing.
+- **TL;DR.** Nested ⌘K palette, per-tab PR repo fix, skills installer wizard + bunx fixes.
+
+## Highlights
+
+- **Nested ⌘K command palette.** AI actions (triage, review, reviewers, professor, tour, validate, file scope, agent output, copy context, provider/model picker) live under nested menus with letter shortcuts, arrow navigation, and searchable submenus.
+- **⌘A restored.** Native select-all works again in the embedded browser; the old AI action palette is removed.
+- **Per-tab PR repo.** Local PR and branch tabs carry `remote_repo` so PR links, GitHub status, and approval resolve the correct repo when the same PR number exists in multiple projects.
+- **`@easy-review/skills` wizard.** Interactive TTY installer (agents, skills, paths); `--yes`/`--force` for scripts. Fixes `bunx`/`npx` bin shadowing and non-interactive stdin.
+
+## What's Changed
+
+### Features
+- Consolidate desktop command palette into nested ⌘K menus with AI review actions. (#170)
+- Interactive skills installer wizard for `@easy-review/skills`.
+
+### Fixes
+- Key PR links and GitHub status to the tab's own repo. (#169)
+- Route `bunx @easy-review/skills` to our CLI; TTY wizard under bunx.
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.9...v0.4.10
+
+# Easy Review v0.4.9
+
+## In plain terms
+
+- **What changed.** Agent skills install only via npm (`bunx @easy-review/skills`); sources live under `npm/skills/source/`. Bumps `easy-review-mcp` and `@easy-review/skills` to v0.4.9 for release CI npm publish (includes MCP 2026-07-28 upgrade from v0.4.8).
+- **TL;DR.** npm-only skills installer + version bump for MCP/skills npm packages.
+
+## Highlights
+
+- **`@easy-review/skills`** — `bunx @easy-review/skills` installs all ER agent skills; repo-root `skills/er-*` removed (prompt canon `skills/REVIEW_*.md` kept).
+- **Release CI** — publishes `@easy-review/skills` alongside `easy-review-mcp` on `v*` tags.
+
+## What's Changed
+
+### Features
+- npm skills installer package with `source/` → bundled `skills/` sync and tests (`just test-skills-npm`).
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.8...v0.4.9
+
 # Easy Review v0.4.8
 
 ## In plain terms

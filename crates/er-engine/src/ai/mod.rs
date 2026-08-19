@@ -1,8 +1,10 @@
 pub mod comments;
+pub mod diagrams;
 pub mod experts;
 pub mod finding_cleanup;
 pub mod finding_responses;
 mod loader;
+pub mod prepared_diff;
 pub mod professor;
 pub mod prompts;
 mod relocate;
@@ -11,6 +13,7 @@ pub mod scoped_merge;
 pub mod triage;
 
 pub use comments::*;
+pub use diagrams::*;
 pub use experts::*;
 pub use finding_cleanup::*;
 pub use finding_responses::*;

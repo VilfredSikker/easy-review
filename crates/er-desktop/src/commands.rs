@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::hash::Hash;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
@@ -125,10 +125,25 @@ pub struct AppState {
     pub loading: LoadingState,
     /// Keys with an in-flight gh_status fetch. Prevents duplicate concurrent fetches.
     pub gh_status_in_flight: Arc<Mutex<HashSet<(String, String, u64)>>>,
-    /// Keys (project_id, pr_number) with an in-flight PR-open prefetch.
-    /// Prevents duplicate background `gh` invocations when the user hovers
-    /// the same row repeatedly.
-    pub pr_open_prefetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Keys (project_id, pr_number) with an in-flight PR-open prefetch,
+    /// mapped to a claim the open path can wait on. Prevents duplicate
+    /// background `gh` invocations when the user hovers the same row
+    /// repeatedly, and lets a click during a hover-prefetch join the
+    /// in-flight fetch instead of running a duplicate `gh pr diff`.
+    pub pr_open_prefetch_in_flight: Arc<Mutex<PrOpenPrefetchMap>>,
+    /// Keys (repo-or-slug, pr_number) with an in-flight branch-scope preload
+    /// (`kick_branch_preload`). Prevents duplicate background `gh`/git calls
+    /// when the same PR is opened repeatedly.
+    pub branch_preload_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Keys (repo-root, pr_number) with an in-flight background PR ref fetch
+    /// (`kick_pr_ref_fetch`). Prevents duplicate `git fetch` pairs when the
+    /// same PR is opened repeatedly.
+    pub pr_ref_fetch_in_flight: Arc<Mutex<HashSet<(String, u64)>>>,
+    /// Remote-only PR open cache + in-flight claims (see remote_pr_open_cache.rs).
+    /// Warms on sidebar hover (`prefetch_remote_pr_open`); a hit opens the PR
+    /// with zero `gh` calls.
+    pub remote_pr_open_cache: crate::remote_pr_open_cache::RemotePrOpenCache,
+    pub remote_pr_open_in_flight: crate::remote_pr_open_cache::RemotePrOpenInFlight,
     /// Monotonic counter bumped whenever background-owned durable state changes
     /// so that poll() can detect changes not visible in App state.
     pub desktop_revision: Arc<AtomicU64>,
@@ -179,6 +194,19 @@ pub struct PrOpenCacheEntry {
     /// Older persisted entries deserialize to 0 (treated as least-recent).
     #[serde(default)]
     pub(crate) last_touched: u64,
+}
+
+/// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
+/// waits on `cv` (bounded) when the claim's freshness matches its own, so a
+/// click during a hover-prefetch consumes the prefetched cache entry instead
+/// of running a duplicate `gh pr diff`. `freshness` is the prefetch's own, so
+/// a waiter whose hint changed mid-flight skips the wait entirely.
+pub type PrOpenPrefetchMap = HashMap<(String, u64), Arc<PrOpenPrefetchClaim>>;
+
+pub struct PrOpenPrefetchClaim {
+    pub freshness: PrOpenFreshness,
+    pub done: Mutex<bool>,
+    pub cv: Condvar,
 }
 
 #[derive(Debug, Clone)]
@@ -261,6 +289,21 @@ pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     )
 }
 
+/// Skip the sidecar write when the active view is no longer the one the
+/// frontend painted. Returns a snapshot of the *current* view and does not
+/// toast; the client rolls back the origin paint.
+fn abort_wrong_view(
+    app: &App,
+    state: &AppState,
+    view: Option<&crate::snapshot::OptimisticView>,
+) -> Option<Result<AppSnapshot, String>> {
+    let expected = view?;
+    if crate::snapshot::optimistic_view_matches(app, expected) {
+        return None;
+    }
+    Some(Ok(snap_from(app, state)))
+}
+
 /// Build a full snapshot for a tab-switch / open command and invalidate poll
 /// `last_sent_*` so the next poll emits a clean full content snapshot for the
 /// new view (does not merely align to the current revision).
@@ -280,6 +323,34 @@ pub(crate) fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
         .last_sent_reviewed_revision
         .store(app.tab().reviewed_revision, Ordering::Relaxed);
     snap
+}
+
+/// First-paint snapshot for hot open paths (two-phase open, first-paint plan
+/// step 2): full chrome (tabs/projects/mode/branch/base) + PR card, but no
+/// diff files, AI, or annotations, with `bg_loading.tab_diff` set so the
+/// frontend renders the "Loading diff…" pane. The background offload worker
+/// ([`kick_post_open_offload`]) then bumps the revision and the poll delivers
+/// the full snapshot within ~40–120 ms.
+pub(crate) fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
+    let mut snap = chrome_snap_from(app, state);
+    snap.pr = crate::snapshot::build_pr_snapshot(app.tab());
+    snap.bg_loading.tab_diff = true;
+    snap_from_command_invalidate(app, state);
+    snap
+}
+
+fn snap_from_command_invalidate(app: &App, state: &AppState) {
+    let content = compute_content_revision(app);
+    let chrome = compute_chrome_revision(state);
+    state
+        .last_sent_content_revision
+        .store(content.wrapping_add(1), Ordering::Relaxed);
+    state
+        .last_sent_chrome_revision
+        .store(chrome.wrapping_add(1), Ordering::Relaxed);
+    state
+        .last_sent_reviewed_revision
+        .store(app.tab().reviewed_revision, Ordering::Relaxed);
 }
 
 fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
@@ -902,6 +973,7 @@ fn feature_allows_mode_str(features: &er_engine::config::FeatureFlags, mode: &st
 pub async fn set_mode(
     mode: String,
     pr_number: Option<u64>,
+    tab_idx: Option<usize>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -909,6 +981,11 @@ pub async fn set_mode(
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         if !feature_allows_mode_str(&app.config.features, mode.as_str()) {
             return Err(format!("'{mode}' view is disabled in settings"));
+        }
+        if let Some(idx) = tab_idx {
+            if app.active_tab != idx {
+                return Ok(snap_from_command(&app, &state));
+            }
         }
         if matches!(mode.as_str(), "pr" | "pr_diff") {
             // Only enter PrDiff when not already there (avoids re-fetching refs
@@ -1026,57 +1103,73 @@ fn pillar_file_paths(tab: &er_engine::app::TabState, pillar_id: &str) -> Vec<Str
 }
 
 #[tauri::command]
-pub fn bulk_review_pillar(
+pub async fn bulk_review_pillar(
     pillar_id: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        let paths = pillar_file_paths(tab, &pillar_id);
-        let mut changed = false;
-        for path in paths {
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
-            tab.reviewed.insert(path, hash);
-            changed = true;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
         }
-        if changed {
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
+        {
+            let tab = app.tab_mut();
+            let paths = pillar_file_paths(tab, &pillar_id);
+            let mut changed = false;
+            for path in paths {
+                let hash = tab
+                    .current_per_file_hashes
+                    .get(&path)
+                    .cloned()
+                    .unwrap_or_default();
+                tab.reviewed.insert(path, hash);
+                changed = true;
+            }
+            if changed {
+                tab.reviewed_revision += 1;
+                let _ = tab.save_reviewed_files();
+            }
         }
-    }
-    // Full snapshot (not chrome-only): this command is invoked via the generic
-    // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
-    // carries `files: []`, which would blank the diff. snap_from keeps files
-    // (hunks differential-omitted + spliced by the frontend).
-    Ok(snap_from(&app, &state))
+        // Full snapshot (not chrome-only): this command is invoked via the generic
+        // `app.cmd` path, which replaces the whole snapshot. A chrome-only snapshot
+        // carries `files: []`, which would blank the diff. snap_from keeps files
+        // (hunks differential-omitted + spliced by the frontend).
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn unbulk_review_pillar(
+pub async fn unbulk_review_pillar(
     pillar_id: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        let paths = pillar_file_paths(tab, &pillar_id);
-        let mut changed = false;
-        for path in paths {
-            if tab.reviewed.remove(&path).is_some() {
-                changed = true;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        {
+            let tab = app.tab_mut();
+            let paths = pillar_file_paths(tab, &pillar_id);
+            let mut changed = false;
+            for path in paths {
+                if tab.reviewed.remove(&path).is_some() {
+                    changed = true;
+                }
+            }
+            if changed {
+                tab.reviewed_revision += 1;
+                let _ = tab.save_reviewed_files();
             }
         }
-        if changed {
-            tab.reviewed_revision += 1;
-            let _ = tab.save_reviewed_files();
-        }
-    }
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Editor ────────────────────────────────────────────────────────────────────
@@ -2149,163 +2242,229 @@ pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // ── Threads ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn add_comment(
+#[allow(clippy::too_many_arguments)]
+pub async fn add_comment(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
     side: Option<String>,
-    state: State<AppState>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // Set side before submit so submit_github_comment can consume it
-    if let Some(ref s) = side {
-        app.tab_mut().comment_side = Some(s.clone());
-    }
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        // Set side before submit so submit_github_comment can consume it
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
+        }
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_question(
+#[allow(clippy::too_many_arguments)]
+pub async fn add_question(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
-    state: State<AppState>,
+    side: Option<String>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::Question,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
+        }
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::Question,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn add_note(
+#[allow(clippy::too_many_arguments)]
+pub async fn add_note(
     file: String,
     hunk_idx: usize,
     line_num: Option<usize>,
     line_num_end: Option<usize>,
     text: String,
-    state: State<AppState>,
+    side: Option<String>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        line_num_end,
-        text,
-        CommentType::Note,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        if let Some(ref s) = side {
+            app.tab_mut().comment_side = Some(s.clone());
+        }
+        if let Some(id) = id {
+            app.tab_mut().comment_id_override = Some(id);
+        }
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+            text,
+            CommentType::Note,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn reply_to_thread(
+pub async fn reply_to_thread(
     parent_id: String,
     text: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let (file, hunk_idx, line_num, comment_type) = {
-        let tab = app.tab();
-        if parent_id.starts_with("q-") {
-            let q = tab
-                .ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
-                .map(|q| {
-                    (
-                        q.file.clone(),
-                        q.hunk_index.unwrap_or(0),
-                        q.line_start,
-                        CommentType::Question,
-                    )
-                });
-            q.ok_or_else(|| "Question not found".to_string())?
-        } else if parent_id.starts_with("n-") {
-            let n = tab
-                .ai
-                .notes
-                .as_ref()
-                .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
-                .map(|n| {
-                    (
-                        n.file.clone(),
-                        n.hunk_index.unwrap_or(0),
-                        n.line_start,
-                        CommentType::Note,
-                    )
-                });
-            n.ok_or_else(|| "Note not found".to_string())?
-        } else {
-            let c = tab
-                .ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
-                .map(|c| {
-                    (
-                        c.file.clone(),
-                        c.hunk_index.unwrap_or(0),
-                        c.line_start,
-                        CommentType::GitHubComment,
-                    )
-                });
-            c.ok_or_else(|| "Comment not found".to_string())?
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
         }
-    };
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_num,
-        None,
-        text,
-        comment_type,
-        Some(parent_id),
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+        let (file, hunk_idx, line_num, comment_type) = {
+            let tab = app.tab();
+            if parent_id.starts_with("q-") {
+                let q = tab
+                    .ai
+                    .questions
+                    .as_ref()
+                    .and_then(|qs| qs.questions.iter().find(|q| q.id == parent_id))
+                    .map(|q| {
+                        (
+                            q.file.clone(),
+                            q.hunk_index.unwrap_or(0),
+                            q.line_start,
+                            CommentType::Question,
+                        )
+                    });
+                q.ok_or_else(|| "Question not found".to_string())?
+            } else if parent_id.starts_with("n-") {
+                let n = tab
+                    .ai
+                    .notes
+                    .as_ref()
+                    .and_then(|ns| ns.notes.iter().find(|n| n.id == parent_id))
+                    .map(|n| {
+                        (
+                            n.file.clone(),
+                            n.hunk_index.unwrap_or(0),
+                            n.line_start,
+                            CommentType::Note,
+                        )
+                    });
+                n.ok_or_else(|| "Note not found".to_string())?
+            } else {
+                let c = tab
+                    .ai
+                    .github_comments
+                    .as_ref()
+                    .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
+                    .map(|c| {
+                        (
+                            c.file.clone(),
+                            c.hunk_index.unwrap_or(0),
+                            c.line_start,
+                            CommentType::GitHubComment,
+                        )
+                    });
+                c.ok_or_else(|| "Comment not found".to_string())?
+            }
+        };
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_num,
+            None,
+            text,
+            comment_type,
+            Some(parent_id),
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.remove(&id);
-    }
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn delete_thread(
+    id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        if let Ok(mut p) = state.pending_ai_replies.lock() {
+            p.remove(&id);
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Remove all question/github threads linked to a finding (`finding_ref`), keeping the finding.
@@ -2416,19 +2575,30 @@ fn mark_thread_resolved_in_files(
 }
 
 #[tauri::command]
-pub fn resolve_thread(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn resolve_thread(
+    id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
-    let tab = app.tab();
-    let q_path = format!("{}/questions.json", tab.er_dir());
-    let notes_path = format!("{}/notes.json", tab.er_dir());
-    let gc_path = tab.github_comments_path();
-    let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
-    if !changed {
-        return Err(format!("Thread not found or already resolved: {id}"));
-    }
-    app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
+        let tab = app.tab();
+        let q_path = format!("{}/questions.json", tab.er_dir());
+        let notes_path = format!("{}/notes.json", tab.er_dir());
+        let gc_path = tab.github_comments_path();
+        let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
+        if !changed {
+            return Err(format!("Thread not found or already resolved: {id}"));
+        }
+        app.tab_mut().reload_ai_state();
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 fn validate_review_submission(
@@ -2467,11 +2637,17 @@ fn anchor_range_in_current_diff(
 
 // ── GitHub sync ───────────────────────────────────────────────────────────────
 
+// Sync commands run on the main thread; `refresh_diff` shells out to git and
+// rebuilds the snapshot — heavy enough to freeze the window from ⌘K.
 #[tauri::command]
-pub fn refresh_diff(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().refresh_diff().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
@@ -2561,11 +2737,110 @@ pub fn refresh_github_status(state: State<AppState>) -> Result<AppSnapshot, Stri
     snap!(state)
 }
 
+/// Pull GitHub review comments for the active tab.
+///
+/// Runs off the main thread and does not hold the App mutex during `gh`
+/// (same three-phase pattern as the background 45s comment sync). Pass
+/// `force: true` to bypass the 60s hover-prefetch cache (the Comments
+/// panel re-fetch button); auto-pull omits it so a warm cache stays instant.
 #[tauri::command]
-pub fn pull_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_github_comments().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn pull_github_comments(
+    force: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    let force = force.unwrap_or(false);
+    run_blocking(move || pull_github_comments_blocking(&state, force)).await
+}
+
+fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSnapshot, String> {
+    // Identity + files + comments_path must come from one lock. Re-reading
+    // `app.tab()` after `local_pr_target` (git/gh) can mix PR A's comments
+    // into tab B's sidecar if the user switched tabs mid-resolve.
+    let (mut ctx, remote_repo, explicit_pr) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let remote_repo = tab.remote_repo.clone();
+        let explicit_pr = tab.pr_number;
+        let ctx = app.snapshot_for_comment_sync(String::new(), String::new(), 0);
+        (ctx, remote_repo, explicit_pr)
+    };
+
+    let identity = if ctx.is_remote {
+        match (remote_repo.as_deref(), explicit_pr) {
+            (Some(slug), Some(n)) => {
+                let mut parts = slug.split('/');
+                match (parts.next(), parts.next(), parts.next()) {
+                    (Some(owner), Some(repo), None) if !owner.is_empty() && !repo.is_empty() => {
+                        Some((owner.to_string(), repo.to_string(), n))
+                    }
+                    _ => {
+                        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                        app.notify("Invalid remote repo slug");
+                        return Ok(snap_from(&app, state));
+                    }
+                }
+            }
+            _ => {
+                let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                app.notify("No PR info for remote mode");
+                return Ok(snap_from(&app, state));
+            }
+        }
+    } else {
+        match er_engine::sync::local_pr_target(&ctx.repo_root, explicit_pr) {
+            Ok(info) => Some(info),
+            Err(_) => {
+                let mut app = state.app.lock().map_err(|e| e.to_string())?;
+                app.notify("No PR found for current branch");
+                return Ok(snap_from(&app, state));
+            }
+        }
+    };
+
+    let Some((owner, repo, number)) = identity else {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        return Ok(snap_from(&app, state));
+    };
+    ctx.owner = owner;
+    ctx.repo_name = repo;
+    ctx.pr_number = number;
+
+    if force {
+        er_engine::github::invalidate_pr_comments_cache();
+    }
+
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = true;
+    }
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, "gh_comments_pull_start");
+
+    // `force` already cleared the cache above so this misses and refills;
+    // auto-pull hits the hover-prefetch bundle when it is still warm.
+    let result = er_engine::app::fetch_comment_sync_data_cached(&ctx);
+
+    if let Ok(mut flags) = state.loading.lock() {
+        flags.gh_comments = false;
+    }
+
+    match result {
+        Ok(sync) => {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.apply_comment_sync_result(sync);
+            Ok(snap_from(&app, state))
+        }
+        Err(e) => {
+            log::error!(
+                "pull_github_comments: {}/{}#{} force={force} err={e}",
+                ctx.owner,
+                ctx.repo_name,
+                ctx.pr_number
+            );
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.notify(&format!("GitHub sync error: {e}"));
+            Ok(snap_from(&app, state))
+        }
+    }
 }
 
 #[tauri::command]
@@ -3128,115 +3403,99 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
         .collect())
 }
 
+// ⌘K / AI Hub: may shell out for the review diff and writes artifacts, then
+// rebuilds a snapshot — must not run on the main thread. Hold the App lock
+// only to capture tab context / spawn; do artifact IO with the lock released.
 #[tauri::command]
-pub fn run_ai_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
-
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
+pub async fn run_ai_review(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let (
+            scope,
+            repo_root,
             branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
+            base_branch,
+            er_dir,
+            pr_number,
+            remote_repo,
+            is_remote,
+            mut raw,
+        ) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let scope = resolve_review_scope(&scope, app.tab())?;
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            let raw = tab.raw_diff_for_review(&scope).map_err(|e| e.to_string())?;
+            (
+                scope,
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+                raw,
+            )
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    spawn_ai_review_with_diff(
-        &mut app,
-        &state,
-        &scope,
-        &er_dir,
-        repo_root,
-        branch_label,
-        base_branch,
-        pr_number,
-        remote_repo,
-        is_remote,
-        raw,
-    )?;
-    Ok(snap_from(&app, &state))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn spawn_ai_review_with_diff(
-    app: &mut er_engine::app::App,
-    state: &AppState,
-    scope: &str,
-    er_dir: &str,
-    repo_root: String,
-    branch_label: String,
-    base_branch: String,
-    pr_number: Option<u64>,
-    remote_repo: Option<String>,
-    is_remote: bool,
-    raw: String,
-) -> Result<(), String> {
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-    std::fs::write(std::path::Path::new(er_dir).join("diff-tmp"), &raw)
-        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
-
-    let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
-        scope,
-        er_dir,
-        &base_branch,
-        &branch_label,
-    );
-
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.to_string(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-
-    app.spawn_background_review(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-
-    let debug_bg = er_engine::app::debug_bg_enabled();
-    if debug_bg {
-        eprintln!(
-            "[bg] run_ai_review post-spawn snapshots={}",
-            app.background_task_snapshots().len()
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
+            &scope,
+            &er_dir,
+            &base_branch,
+            &branch_label,
+            &diff_hash,
         );
-    }
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope: scope.clone(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if debug_bg {
-        let snap = snap_from(app, state);
-        eprintln!(
-            "[bg] run_ai_review snapshot.background_tasks.len()={}",
-            snap.background_tasks.len()
-        );
-    }
-    Ok(())
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.spawn_background_review(target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        let debug_bg = er_engine::app::debug_bg_enabled();
+        if debug_bg {
+            eprintln!(
+                "[bg] run_ai_review post-spawn snapshots={}",
+                app.background_task_snapshots().len()
+            );
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if debug_bg {
+            let snap = snap_from(&app, &state);
+            eprintln!(
+                "[bg] run_ai_review snapshot.background_tasks.len()={}",
+                snap.background_tasks.len()
+            );
+        }
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Generate a guided Tour with AI: captures the active view's diff and spawns the
@@ -3245,81 +3504,219 @@ fn spawn_ai_review_with_diff(
 /// tour the branch diff (branch bucket). The mtime poll reloads it automatically on
 /// completion, surfacing the Guide tab.
 #[tauri::command]
-pub fn generate_tour(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    // `raw_diff_for_review("branch")` returns the active view's diff (the PR
-    // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
-    let scope = "branch".to_string();
+pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // `raw_diff_for_review("branch")` returns the active view's diff (the PR
+        // head-vs-base diff in PrDiff mode), so only the destination bucket differs.
+        let scope = "branch".to_string();
 
-    let (
-        repo_root,
-        branch_label,
-        base_branch,
-        er_dir,
-        pr_number,
-        remote_repo,
-        is_remote,
-        tour_file,
-        is_pr,
-    ) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        // Route to the active context's tour bucket (PR vs branch), matching where
-        // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
-        let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
-        (
-            tab.repo_root.clone(),
+        let (
+            repo_root,
             branch_label,
-            tab.base_branch.clone(),
+            base_branch,
             er_dir,
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-            // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
-            "tour.json".to_string(),
-            tab.tour_context_is_pr(),
-        )
-    };
+            pr_number,
+            remote_repo,
+            is_remote,
+            tour_file,
+            is_pr,
+        ) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            // Route to the active context's tour bucket (PR vs branch), matching where
+            // `resolve_view_tour` reads — including a PR guide regenerated from the Guide tab.
+            let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                er_dir,
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+                // Per-view buckets disambiguate, so the sidecar is always `tour.json`.
+                "tour.json".to_string(),
+                tab.tour_context_is_pr(),
+            )
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    if raw.trim().is_empty() {
-        return Err("Nothing to tour".to_string());
-    }
-    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
-        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to tour".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
 
-    let scope_label = if is_pr { "PR diff" } else { "branch diff" };
-    let prompt =
-        er_engine::ai::prompts::build_tour_prompt_prepared_diff(scope_label, &er_dir, &tour_file);
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope,
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-    app.spawn_background_tour(target, prompt, true)
-        .map_err(|e| e.to_string())?;
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+        let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &tour_file,
+            &diff_hash,
+        );
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        app.spawn_background_tour(target, prompt, true)
+            .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Generate a mermaid diagram of the active view's diff (`kind` =
+/// `mental-model` | `subsystems` | `flows` | `custom`). The agent writes one
+/// sidecar, `{er_dir}/diagrams/<kind>.json` (presets overwrite on re-run;
+/// customs get a timestamped id and accumulate). Diagrams are per-view-bucket,
+/// like triage: the active bucket is both write target and (via
+/// `load_ai_state`) read source. The mtime poll picks up the result.
+#[tauri::command]
+pub async fn generate_diagram(
+    kind: String,
+    custom_prompt: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !er_engine::ai::is_valid_diagram_kind(&kind) {
+            return Err(format!("Unknown diagram kind: {kind}"));
+        }
+        let custom_prompt = custom_prompt
+            .map(|p| p.trim().to_string())
+            .filter(|p| !p.is_empty());
+        if kind == er_engine::ai::DIAGRAM_KIND_CUSTOM && custom_prompt.is_none() {
+            return Err("A custom diagram needs a prompt".to_string());
+        }
+
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = "branch".to_string();
+
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        let diagrams_dir = format!("{er_dir}/diagrams");
+        std::fs::create_dir_all(&diagrams_dir)
+            .map_err(|e| format!("Failed to create diagrams directory: {e}"))?;
+
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to diagram".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+
+        // Presets regenerate in place (`mental-model.json`, …); each custom
+        // prompt produces a new timestamped diagram so they accumulate.
+        let output_file = er_engine::ai::diagram_output_file(&kind);
+
+        let scope_label = if app.tab().tour_context_is_pr() {
+            "PR diff"
+        } else {
+            "branch diff"
+        };
+        let prompt = er_engine::ai::prompts::build_diagram_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &output_file,
+            &diff_hash,
+            &kind,
+            custom_prompt.as_deref(),
+        );
+        let output_path = er_engine::ai::diagram_sidecar_path(&er_dir, &output_file)
+            .ok_or_else(|| format!("Invalid diagram output file: {output_file}"))?;
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        let host_write = er_engine::app::HostWriteDiagram {
+            output_path,
+            kind: kind.clone(),
+            diff_hash,
+            custom_prompt,
+        };
+        app.spawn_background_diagram(&kind, target, prompt, true, host_write)
+            .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Delete one diagram sidecar (`{er_dir}/diagrams/<id>.json`) from the active
+/// view bucket.
+#[tauri::command]
+pub async fn delete_diagram(id: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !er_engine::ai::is_safe_diagram_id(&id) {
+            return Err(format!("Invalid diagram id: {id}"));
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let path = std::path::Path::new(&app.tab().er_dir())
+            .join("diagrams")
+            .join(format!("{id}.json"));
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| format!("Failed to delete diagram: {e}"))?;
+        }
+        app.tab_mut().reload_ai_state();
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 pub use er_engine::ai::{ExpertInfo, ReviewerInfo};
@@ -3335,80 +3732,83 @@ pub fn list_ai_reviewers() -> Vec<ReviewerInfo> {
 }
 
 #[tauri::command]
-pub fn run_ai_expert_review(
+pub async fn run_ai_expert_review(
     scope: String,
     expert_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    if er_engine::ai::expert_by_id(&expert_id).is_none() {
-        return Err(format!("Unknown expert: {expert_id}"));
-    }
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if er_engine::ai::expert_by_id(&expert_id).is_none() {
+            return Err(format!("Unknown expert: {expert_id}"));
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
 
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+
+        let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
+            &scope, &er_dir, &expert_id, &diff_hash,
+        );
+
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
             branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
+            base_branch,
+            scope: scope.to_string(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
 
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        app.spawn_background_expert_review(&expert_id, target, prompt, true)
+            .map_err(|e| e.to_string())?;
 
-    let mut raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-    let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-    if !ignore.is_empty() {
-        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
-    }
-    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
-        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
-
-    let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
-        &scope, &er_dir, &expert_id,
-    );
-
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
-
-    app.spawn_background_expert_review(&expert_id, target, prompt, true)
-        .map_err(|e| e.to_string())?;
-
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn run_ai_professor_review(
+pub async fn run_ai_professor_review(
     scope: String,
     focus_prompt: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     run_ai_scoped_review(
         scope,
@@ -3417,157 +3817,166 @@ pub fn run_ai_professor_review(
         focus_prompt,
         state,
     )
+    .await
 }
 
 #[tauri::command]
-pub fn run_ai_triage_review(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state)
+pub async fn run_ai_triage_review(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    run_ai_scoped_review(scope, vec![], vec!["triage".to_string()], None, state).await
 }
 
 #[tauri::command]
-pub fn run_ai_review_files(
+pub async fn run_ai_review_files(
     scope: String,
     paths: Vec<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    run_ai_scoped_review(scope, paths, vec!["general".to_string()], None, state)
+    run_ai_scoped_review(scope, paths, vec!["general".to_string()], None, state).await
 }
 
 #[tauri::command]
-pub fn run_ai_scoped_review(
+pub async fn run_ai_scoped_review(
     scope: String,
     paths: Vec<String>,
     reviewer_kinds: Vec<String>,
     focus_prompt: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    if reviewer_kinds.is_empty() {
-        return Err("No reviewers selected".to_string());
-    }
-
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
-
-    let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
-        let tab = app.tab();
-        let branch_label = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        (
-            tab.repo_root.clone(),
-            branch_label,
-            tab.base_branch.clone(),
-            tab.er_dir(),
-            tab.pr_number,
-            tab.remote_repo.clone(),
-            tab.remote_repo.is_some(),
-        )
-    };
-
-    std::fs::create_dir_all(&er_dir)
-        .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-
-    let raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to review".to_string());
-    }
-
-    let scoped_files = !paths.is_empty();
-    let file_count = paths.len();
-    let er_path = std::path::Path::new(&er_dir);
-    let diff_body = if scoped_files {
-        let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
-        if filtered.trim().is_empty() {
-            return Err("No diff for selected files".to_string());
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if reviewer_kinds.is_empty() {
+            return Err("No reviewers selected".to_string());
         }
-        let mut sorted_paths = paths;
-        sorted_paths.sort();
-        let manifest = sorted_paths.join("\n");
-        std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
-            .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
-        // Keep prior findings for files outside this selection: snapshot
-        // before the agent overwrites the sidecars, then merge on exit.
-        er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
-            .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
-        filtered
-    } else {
-        // Full-diff multi-reviewer run: no file manifest / no merge.
-        er_engine::ai::clear_scoped_review_snapshots(er_path);
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
-        if ignore.is_empty() {
-            raw
+
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
+
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = app.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+
+        let raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        if raw.trim().is_empty() {
+            return Err("Nothing to review".to_string());
+        }
+
+        let scoped_files = !paths.is_empty();
+        let file_count = paths.len();
+        let er_path = std::path::Path::new(&er_dir);
+        let diff_body = if scoped_files {
+            let filtered = er_engine::git::filter_raw_diff_by_paths(&raw, &paths);
+            if filtered.trim().is_empty() {
+                return Err("No diff for selected files".to_string());
+            }
+            let mut sorted_paths = paths;
+            sorted_paths.sort();
+            let manifest = sorted_paths.join("\n");
+            std::fs::write(er_path.join("review-files.txt"), format!("{manifest}\n"))
+                .map_err(|e| format!("Failed to write review-files.txt: {e}"))?;
+            // Keep prior findings for files outside this selection: snapshot
+            // before the agent overwrites the sidecars, then merge on exit.
+            er_engine::ai::snapshot_before_scoped_review(er_path, &reviewer_kinds)
+                .map_err(|e| format!("Failed to snapshot review for merge: {e}"))?;
+            filtered
         } else {
-            er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+            // Full-diff multi-reviewer run: no file manifest / no merge.
+            er_engine::ai::clear_scoped_review_snapshots(er_path);
+            let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+            if ignore.is_empty() {
+                raw
+            } else {
+                er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore)
+            }
+        };
+
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+
+        let target = er_engine::app::BackgroundTaskTarget {
+            repo_root,
+            er_dir: er_dir.clone(),
+            branch_label,
+            base_branch,
+            scope: scope.to_string(),
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+
+        let (started, skipped) = spawn_scoped_reviewers(
+            &mut app,
+            &scope,
+            &er_dir,
+            target,
+            &reviewer_kinds,
+            focus_prompt.as_deref(),
+            scoped_files,
+            &diff_hash,
+        )?;
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+        if started.is_empty() && !skipped.is_empty() {
+            return Err(format!(
+                "All selected reviewers already running: {}",
+                skipped.join(", ")
+            ));
         }
-    };
 
-    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &diff_body)
-        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
+        let file_note = if scoped_files {
+            format!(
+                " for {file_count} file{}",
+                if file_count == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        };
 
-    let target = er_engine::app::BackgroundTaskTarget {
-        repo_root,
-        er_dir: er_dir.clone(),
-        branch_label,
-        base_branch,
-        scope: scope.to_string(),
-        pr_number,
-        remote_repo,
-        managed_local: !is_remote,
-    };
+        let msg = if skipped.is_empty() {
+            format!(
+                "Started {} reviewer(s){file_note}: {}",
+                started.len(),
+                started.join(", ")
+            )
+        } else {
+            format!(
+                "Started {} reviewer(s){file_note}: {} (skipped: {})",
+                started.len(),
+                started.join(", "),
+                skipped.join(", ")
+            )
+        };
+        app.notify(&msg);
 
-    let (started, skipped) = spawn_scoped_reviewers(
-        &mut app,
-        &scope,
-        &er_dir,
-        target,
-        &reviewer_kinds,
-        focus_prompt.as_deref(),
-        scoped_files,
-    )?;
-
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-    if started.is_empty() && !skipped.is_empty() {
-        return Err(format!(
-            "All selected reviewers already running: {}",
-            skipped.join(", ")
-        ));
-    }
-
-    let file_note = if scoped_files {
-        format!(
-            " for {file_count} file{}",
-            if file_count == 1 { "" } else { "s" }
-        )
-    } else {
-        String::new()
-    };
-
-    let msg = if skipped.is_empty() {
-        format!(
-            "Started {} reviewer(s){file_note}: {}",
-            started.len(),
-            started.join(", ")
-        )
-    } else {
-        format!(
-            "Started {} reviewer(s){file_note}: {} (skipped: {})",
-            started.len(),
-            started.join(", "),
-            skipped.join(", ")
-        )
-    };
-    app.notify(&msg);
-
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_scoped_reviewers(
     app: &mut er_engine::app::App,
     scope: &str,
@@ -3576,6 +3985,7 @@ fn spawn_scoped_reviewers(
     reviewer_kinds: &[String],
     focus_prompt: Option<&str>,
     scoped_files: bool,
+    diff_hash: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     use er_engine::ai::{prompts, ReviewerKind};
 
@@ -3593,7 +4003,8 @@ fn spawn_scoped_reviewers(
 
         let spawn_result = match &parsed {
             ReviewerKind::Triage => {
-                let prompt = prompts::build_triage_review_prompt_prepared_diff(scope, er_dir);
+                let prompt =
+                    prompts::build_triage_review_prompt_prepared_diff(scope, er_dir, diff_hash);
                 app.spawn_background_triage_review(target.clone(), prompt, true)
             }
             ReviewerKind::General => {
@@ -3602,6 +4013,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     &target.base_branch,
                     &target.branch_label,
+                    diff_hash,
                 );
                 if scoped_files {
                     prompt = prompts::append_file_scope_if_present(prompt, er_dir);
@@ -3610,7 +4022,7 @@ fn spawn_scoped_reviewers(
             }
             ReviewerKind::Expert(id) => {
                 let mut prompt =
-                    prompts::build_expert_review_prompt_prepared_diff(scope, er_dir, id);
+                    prompts::build_expert_review_prompt_prepared_diff(scope, er_dir, id, diff_hash);
                 if scoped_files {
                     prompt = prompts::append_file_scope_if_present(prompt, er_dir);
                 }
@@ -3622,6 +4034,7 @@ fn spawn_scoped_reviewers(
                     er_dir,
                     focus_prompt,
                     scoped_files,
+                    diff_hash,
                 );
                 app.spawn_background_professor_review(target.clone(), prompt, true)
             }
@@ -3657,68 +4070,89 @@ fn eligible_github_comment_count(tab: &er_engine::app::TabState) -> usize {
 }
 
 #[tauri::command]
-pub fn run_ai_validate(scope: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let scope = resolve_review_scope(&scope, app.tab())?;
+pub async fn run_ai_validate(
+    scope: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = resolve_review_scope(&scope, app.tab())?;
 
-    if app.tab().is_remote() {
-        return Err("Validate review is local-only. Check out the PR locally first.".to_string());
-    }
+        if app.tab().is_remote() {
+            return Err(
+                "Validate review is local-only. Check out the PR locally first.".to_string(),
+            );
+        }
 
-    let er_dir = app.tab().er_dir();
-    let review_path = std::path::Path::new(&er_dir).join("review.json");
-    let has_review = review_path.exists();
-    let comment_count = eligible_github_comment_count(app.tab());
-    if !has_review && comment_count == 0 {
-        return Err("Nothing to validate. Run AI review or add GitHub comments first.".to_string());
-    }
+        let er_dir = app.tab().er_dir();
+        let review_path = std::path::Path::new(&er_dir).join("review.json");
+        let has_review = review_path.exists();
+        let comment_count = eligible_github_comment_count(app.tab());
+        if !has_review && comment_count == 0 {
+            return Err(
+                "Nothing to validate. Run AI review or add GitHub comments first.".to_string(),
+            );
+        }
 
-    let raw = app
-        .tab()
-        .raw_diff_for_review(&scope)
-        .map_err(|e| e.to_string())?;
-    if raw.trim().is_empty() {
-        return Err("Nothing to validate".to_string());
-    }
-    std::fs::write(std::path::Path::new(&er_dir).join("diff-tmp"), &raw)
-        .map_err(|e| format!("Failed to write diff-tmp: {e}"))?;
-
-    app.tab_mut().relocate_all_comments();
-
-    if has_review {
-        let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(&scope, &er_dir);
-        app.spawn_agent_prompt("validate", &prompt)
+        let raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
             .map_err(|e| e.to_string())?;
-    }
-    if comment_count > 0 {
-        let prompt =
-            er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(&er_dir);
-        app.spawn_agent_prompt("validate-comments", &prompt)
-            .map_err(|e| e.to_string())?;
-    }
+        if raw.trim().is_empty() {
+            return Err("Nothing to validate".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
 
-    let msg = match (has_review, comment_count) {
-        (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
-        (true, _) => "Validation started (review)".to_string(),
-        (false, n) => format!("Validation started ({n} comments)"),
-    };
-    app.notify(&msg);
+        app.tab_mut().relocate_all_comments();
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        if has_review {
+            let prompt = er_engine::ai::prompts::build_validate_prompt_prepared_diff(
+                &scope, &er_dir, &diff_hash,
+            );
+            app.spawn_agent_prompt("validate", &prompt)
+                .map_err(|e| e.to_string())?;
+        }
+        if comment_count > 0 {
+            let prompt =
+                er_engine::ai::prompts::build_validate_github_comments_prompt_prepared_diff(
+                    &er_dir, &diff_hash,
+                );
+            app.spawn_agent_prompt("validate-comments", &prompt)
+                .map_err(|e| e.to_string())?;
+        }
+
+        let msg = match (has_review, comment_count) {
+            (true, n) if n > 0 => format!("Validation started (review + {n} comments)"),
+            (true, _) => "Validation started (review)".to_string(),
+            (false, n) => format!("Validation started ({n} comments)"),
+        };
+        app.notify(&msg);
+
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_model(model: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn set_ai_model(
+    model: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
 
-    let mut cfg = er_engine::config::load_global_config();
-    cfg.agent.model = model;
-    er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
+        let mut cfg = er_engine::config::load_global_config();
+        cfg.agent.model = model;
+        er_engine::config::save_config(&cfg).map_err(|e| e.to_string())?;
 
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── AI provider / model selection ───────────────────────────────────────────
@@ -3805,116 +4239,128 @@ pub(crate) fn map_ai_providers(
 }
 
 #[tauri::command]
-pub fn list_ai_providers(state: State<AppState>) -> Result<Vec<AiProviderInfo>, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.sync_config_from_active_tab();
-    let hub = &app.config.ai_hub;
-    // Palette / session highlight: use live current_* (not persisted defaults).
-    let current_provider = app.current_ai_provider.as_deref();
-    let current_model = app.current_ai_model.as_deref();
-    let resolved_provider = hub.resolve_provider_id(current_provider);
-    let resolved_model = resolved_provider
-        .as_deref()
-        .and_then(|pid| hub.resolve_model_id(pid, current_model));
-    Ok(map_ai_providers(
-        hub,
-        resolved_provider.as_deref(),
-        resolved_model.as_deref(),
-    ))
+pub async fn list_ai_providers(state: State<'_, AppState>) -> Result<Vec<AiProviderInfo>, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.sync_config_from_active_tab();
+        let hub = &app.config.ai_hub;
+        // Palette / session highlight: use live current_* (not persisted defaults).
+        let current_provider = app.current_ai_provider.as_deref();
+        let current_model = app.current_ai_model.as_deref();
+        let resolved_provider = hub.resolve_provider_id(current_provider);
+        let resolved_model = resolved_provider
+            .as_deref()
+            .and_then(|pid| hub.resolve_model_id(pid, current_model));
+        Ok(map_ai_providers(
+            hub,
+            resolved_provider.as_deref(),
+            resolved_model.as_deref(),
+        ))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_selection(
+pub async fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
     persist: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let persist = persist.unwrap_or(false);
-    let agent = app.config.agent.clone();
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let persist = persist.unwrap_or(false);
+        let agent = app.config.agent.clone();
 
-    let selection = if persist {
-        let selection = app
-            .config
-            .ai_hub
-            .set_default_selection(&provider_id, model_id.as_deref(), &agent)
-            .map_err(|e| e.to_string())?;
-        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-        selection
-    } else {
-        // Session-only: keep current effort when the new model still supports it.
-        let runtime_effort = app.current_ai_effort.clone();
-        app.config
-            .ai_hub
-            .resolve_selection(
-                &provider_id,
-                model_id.as_deref(),
-                &agent,
-                runtime_effort.as_deref(),
-            )
-            .map_err(|e| e.to_string())?
-    };
-    app.current_ai_provider = selection.provider_id;
-    app.current_ai_model = selection.model_id;
-    app.current_ai_effort = selection.effort;
+        let selection = if persist {
+            let selection = app
+                .config
+                .ai_hub
+                .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+                .map_err(|e| e.to_string())?;
+            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+            selection
+        } else {
+            // Session-only: keep current effort when the new model still supports it.
+            let runtime_effort = app.current_ai_effort.clone();
+            app.config
+                .ai_hub
+                .resolve_selection(
+                    &provider_id,
+                    model_id.as_deref(),
+                    &agent,
+                    runtime_effort.as_deref(),
+                )
+                .map_err(|e| e.to_string())?
+        };
+        app.current_ai_provider = selection.provider_id;
+        app.current_ai_model = selection.model_id;
+        app.current_ai_effort = selection.effort;
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn set_ai_effort(
+pub async fn set_ai_effort(
     effort: Option<String>,
     persist: Option<bool>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let persist = persist.unwrap_or(false);
-    let default_selection = app
-        .config
-        .ai_hub
-        .resolve_default_selection(&app.config.agent);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let persist = persist.unwrap_or(false);
+        let default_selection = app
+            .config
+            .ai_hub
+            .resolve_default_selection(&app.config.agent);
 
-    let (provider_id, model_id) = if persist {
-        // Settings: normalize against persisted defaults, not a session palette pick.
-        (default_selection.provider_id, default_selection.model_id)
-    } else {
-        (
-            app.current_ai_provider
-                .clone()
-                .or(default_selection.provider_id),
-            app.current_ai_model.clone().or(default_selection.model_id),
-        )
-    };
+        let (provider_id, model_id) = if persist {
+            // Settings: normalize against persisted defaults, not a session palette pick.
+            (default_selection.provider_id, default_selection.model_id)
+        } else {
+            (
+                app.current_ai_provider
+                    .clone()
+                    .or(default_selection.provider_id),
+                app.current_ai_model.clone().or(default_selection.model_id),
+            )
+        };
 
-    let normalized = er_engine::config::normalize_effort(
-        &app.config.ai_hub,
-        provider_id.as_deref(),
-        model_id.as_deref(),
-        effort.as_deref(),
-    );
-    if effort.is_some() && normalized.is_none() {
-        return Err("Effort is unsupported for the selected model".into());
-    }
+        let normalized = er_engine::config::normalize_effort(
+            &app.config.ai_hub,
+            provider_id.as_deref(),
+            model_id.as_deref(),
+            effort.as_deref(),
+        );
+        if effort.is_some() && normalized.is_none() {
+            return Err("Effort is unsupported for the selected model".into());
+        }
 
-    if persist {
-        app.config.ai_hub.default_effort = normalized.clone();
-        // Keep session aligned with the defaults being edited in Settings.
-        app.current_ai_provider = provider_id;
-        app.current_ai_model = model_id;
-        app.current_ai_effort = normalized;
-        er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
-    } else {
-        app.current_ai_effort = normalized;
-    }
+        if persist {
+            app.config.ai_hub.default_effort = normalized.clone();
+            // Keep session aligned with the defaults being edited in Settings.
+            app.current_ai_provider = provider_id;
+            app.current_ai_model = model_id;
+            app.current_ai_effort = normalized;
+            er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
+        } else {
+            app.current_ai_effort = normalized;
+        }
 
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Promote question to GitHub comment ──────────────────────────────────────
@@ -3936,34 +4382,135 @@ fn build_promoted_body(root_text: &str, replies: &[(&str, &str)]) -> String {
 }
 
 #[tauri::command]
-pub fn promote_to_comment(
+pub async fn promote_to_comment(
     id: String,
     body: Option<String>,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
-    // 1. Resolve the source question or note + already-promoted guard.
-    let (file, hunk_idx, line_start, default_body) = {
-        let tab = app.tab();
-        // Both questions and notes use the `ReviewQuestion` shape; pick the
-        // collection by id prefix so notes can be promoted too.
-        let (items, item): (
-            &[er_engine::ai::ReviewQuestion],
-            &er_engine::ai::ReviewQuestion,
-        ) = if id.starts_with("n-") {
-            let ns = tab
-                .ai
-                .notes
-                .as_ref()
-                .ok_or_else(|| "No notes loaded".to_string())?;
-            let n = ns
-                .notes
+        // 1. Resolve the source question or note + already-promoted guard.
+        let (file, hunk_idx, line_start, default_body, side) = {
+            let tab = app.tab();
+            // Both questions and notes use the `ReviewQuestion` shape; pick the
+            // collection by id prefix so notes can be promoted too.
+            let (items, item): (
+                &[er_engine::ai::ReviewQuestion],
+                &er_engine::ai::ReviewQuestion,
+            ) = if id.starts_with("n-") {
+                let ns = tab
+                    .ai
+                    .notes
+                    .as_ref()
+                    .ok_or_else(|| "No notes loaded".to_string())?;
+                let n = ns
+                    .notes
+                    .iter()
+                    .find(|n| n.id == id)
+                    .ok_or_else(|| format!("Note not found: {id}"))?;
+                (ns.notes.as_slice(), n)
+            } else {
+                let qs = tab
+                    .ai
+                    .questions
+                    .as_ref()
+                    .ok_or_else(|| "No questions loaded".to_string())?;
+                let q = qs
+                    .questions
+                    .iter()
+                    .find(|q| q.id == id)
+                    .ok_or_else(|| format!("Question not found: {id}"))?;
+                (qs.questions.as_slice(), q)
+            };
+
+            let replies: Vec<(&str, &str)> = items
                 .iter()
-                .find(|n| n.id == id)
-                .ok_or_else(|| format!("Note not found: {id}"))?;
-            (ns.notes.as_slice(), n)
-        } else {
+                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
+                .map(|r| (r.author.as_str(), r.text.as_str()))
+                .collect();
+            let default = build_promoted_body(&item.text, &replies);
+
+            (
+                item.file.clone(),
+                item.hunk_index.unwrap_or(0),
+                item.line_start,
+                default,
+                item.side.clone(),
+            )
+        };
+
+        let text = body.unwrap_or(default_body);
+
+        // 2. Snapshot existing comment ids to detect the new one.
+        let existing_ids: std::collections::HashSet<String> = {
+            let tab = app.tab();
+            tab.ai
+                .github_comments
+                .as_ref()
+                .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        // 3. Create the new comment on the same review side as the source.
+        app.tab_mut().comment_side = Some(side);
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_start,
+            None,
+            text,
+            CommentType::GitHubComment,
+            None,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+
+        // 4. Find the new comment id (anything not in the pre-existing set).
+        let new_id: Option<String> = {
+            let tab = app.tab();
+            tab.ai.github_comments.as_ref().and_then(|gc| {
+                gc.comments
+                    .iter()
+                    .find(|c| !existing_ids.contains(&c.id))
+                    .map(|c| c.id.clone())
+            })
+        };
+
+        // 5. Remove the source question thread (replaced by the new GitHub comment).
+        if new_id.is_some() {
+            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        }
+
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Promote a question to a local note. Notes are still private but framed as
+/// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
+/// target is `notes.json`. The source question (and its replies) is removed.
+#[tauri::command]
+pub async fn promote_to_note(
+    id: String,
+    body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+
+        let (file, hunk_idx, line_start, default_body, side) = {
+            let tab = app.tab();
             let qs = tab
                 .ai
                 .questions
@@ -3974,144 +4521,63 @@ pub fn promote_to_comment(
                 .iter()
                 .find(|q| q.id == id)
                 .ok_or_else(|| format!("Question not found: {id}"))?;
-            (qs.questions.as_slice(), q)
+            let replies: Vec<(&str, &str)> = qs
+                .questions
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(&id))
+                .map(|r| (r.author.as_str(), r.text.as_str()))
+                .collect();
+            let default = build_promoted_body(&q.text, &replies);
+            (
+                q.file.clone(),
+                q.hunk_index.unwrap_or(0),
+                q.line_start,
+                default,
+                q.side.clone(),
+            )
         };
 
-        let replies: Vec<(&str, &str)> = items
-            .iter()
-            .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-            .map(|r| (r.author.as_str(), r.text.as_str()))
-            .collect();
-        let default = build_promoted_body(&item.text, &replies);
+        let text = body.unwrap_or(default_body);
 
-        (
-            item.file.clone(),
-            item.hunk_index.unwrap_or(0),
-            item.line_start,
-            default,
+        let existing_ids: std::collections::HashSet<String> = {
+            let tab = app.tab();
+            tab.ai
+                .notes
+                .as_ref()
+                .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
+                .unwrap_or_default()
+        };
+
+        app.tab_mut().comment_side = Some(side);
+        app.submit_comment_text(
+            file,
+            hunk_idx,
+            line_start,
+            None,
+            text,
+            CommentType::Note,
+            None,
+            None,
         )
-    };
+        .map_err(|e| e.to_string())?;
 
-    let text = body.unwrap_or(default_body);
+        let new_id: Option<String> = {
+            let tab = app.tab();
+            tab.ai.notes.as_ref().and_then(|ns| {
+                ns.notes
+                    .iter()
+                    .find(|n| !existing_ids.contains(&n.id))
+                    .map(|n| n.id.clone())
+            })
+        };
 
-    // 2. Snapshot existing comment ids to detect the new one.
-    let existing_ids: std::collections::HashSet<String> = {
-        let tab = app.tab();
-        tab.ai
-            .github_comments
-            .as_ref()
-            .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
-            .unwrap_or_default()
-    };
+        if new_id.is_some() {
+            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        }
 
-    // 3. Create the new comment.
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
-        text,
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-
-    // 4. Find the new comment id (anything not in the pre-existing set).
-    let new_id: Option<String> = {
-        let tab = app.tab();
-        tab.ai.github_comments.as_ref().and_then(|gc| {
-            gc.comments
-                .iter()
-                .find(|c| !existing_ids.contains(&c.id))
-                .map(|c| c.id.clone())
-        })
-    };
-
-    // 5. Remove the source question thread (replaced by the new GitHub comment).
-    if new_id.is_some() {
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    }
-
-    Ok(snap_from(&app, &state))
-}
-
-/// Promote a question to a local note. Notes are still private but framed as
-/// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
-/// target is `notes.json`. The source question (and its replies) is removed.
-#[tauri::command]
-pub fn promote_to_note(
-    id: String,
-    body: Option<String>,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-
-    let (file, hunk_idx, line_start, default_body) = {
-        let tab = app.tab();
-        let qs = tab
-            .ai
-            .questions
-            .as_ref()
-            .ok_or_else(|| "No questions loaded".to_string())?;
-        let q = qs
-            .questions
-            .iter()
-            .find(|q| q.id == id)
-            .ok_or_else(|| format!("Question not found: {id}"))?;
-        let replies: Vec<(&str, &str)> = qs
-            .questions
-            .iter()
-            .filter(|r| r.in_reply_to.as_deref() == Some(&id))
-            .map(|r| (r.author.as_str(), r.text.as_str()))
-            .collect();
-        let default = build_promoted_body(&q.text, &replies);
-        (
-            q.file.clone(),
-            q.hunk_index.unwrap_or(0),
-            q.line_start,
-            default,
-        )
-    };
-
-    let text = body.unwrap_or(default_body);
-
-    let existing_ids: std::collections::HashSet<String> = {
-        let tab = app.tab();
-        tab.ai
-            .notes
-            .as_ref()
-            .map(|ns| ns.notes.iter().map(|n| n.id.clone()).collect())
-            .unwrap_or_default()
-    };
-
-    app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
-        text,
-        CommentType::Note,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
-
-    let new_id: Option<String> = {
-        let tab = app.tab();
-        tab.ai.notes.as_ref().and_then(|ns| {
-            ns.notes
-                .iter()
-                .find(|n| !existing_ids.contains(&n.id))
-                .map(|n| n.id.clone())
-        })
-    };
-
-    if new_id.is_some() {
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
-    }
-
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Finding promotions sidecar ───────────────────────────────────────────────
@@ -4734,10 +5200,17 @@ pub(crate) fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<Str
 
 /// Place `tab` into the app: replace the active slot when `replace` is true
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
-pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: bool) {
+pub(crate) fn place_tab(
+    app: &mut App,
+    tab: er_engine::app::TabState,
+    replace: bool,
+    skip_storage_sync: bool,
+) {
     let mut tab = tab;
     if replace && !app.tabs.is_empty() {
-        tab.sync_managed_storage();
+        if !skip_storage_sync {
+            tab.sync_managed_storage();
+        }
         if let Some(msg) = tab.storage_notice.take() {
             app.notify(&msg);
         }
@@ -4756,33 +5229,277 @@ pub(crate) fn place_tab(app: &mut App, tab: er_engine::app::TabState, replace: b
 
 /// Internal helper: open a remote PR view. If the same PR is already open,
 /// just focus it. Otherwise place it via `replace` semantics.
-fn do_open_remote_pr(
-    app: &mut App,
+/// Everything [`build_remote_pr_tab`] needs from the network, fetched once and
+/// reused for both the tab and the cache entry.
+struct RemotePrOpenInputs {
+    base_branch: String,
+    head_branch: String,
+    raw_diff: String,
+    pr_commits: Vec<er_engine::git::CommitInfo>,
+    pr_data: Option<er_engine::github::PrOverviewData>,
+    head_oid: Option<String>,
+}
+
+fn fetch_remote_pr_open_inputs(
     owner: &str,
     repo: &str,
     number: u64,
-    replace: bool,
-) -> Result<(), String> {
-    let slug = format!("{owner}/{repo}");
-    for (i, t) in app.tabs.iter().enumerate() {
-        if t.remote_repo.as_deref() == Some(&slug) && t.pr_number == Some(number) {
-            app.active_tab = i;
-            return Ok(());
-        }
+) -> Result<RemotePrOpenInputs, String> {
+    // Five independent gh calls — run them in parallel (same pattern as the
+    // local PR-open prefetch) so hover-warm latency ≈ one call, not five.
+    let (metadata, diff, commits, overview, head_oid) = std::thread::scope(|s| {
+        let (owner_a, repo_a) = (owner.to_string(), repo.to_string());
+        let metadata_h = s.spawn(move || {
+            er_engine::github::gh_pr_metadata_remote(&owner_a, &repo_a, number)
+                .map_err(|e| e.to_string())
+        });
+        let (owner_b, repo_b) = (owner.to_string(), repo.to_string());
+        let diff_h = s.spawn(move || {
+            er_engine::github::gh_pr_diff_remote(&owner_b, &repo_b, number)
+                .map_err(|e| e.to_string())
+        });
+        let (owner_c, repo_c) = (owner.to_string(), repo.to_string());
+        let commits_h = s
+            .spawn(move || er_engine::github::gh_pr_commits_remote(&owner_c, &repo_c, number, 250));
+        let overview_h =
+            s.spawn(move || er_engine::github::gh_pr_overview_remote(owner, repo, number));
+        let (owner_d, repo_d) = (owner.to_string(), repo.to_string());
+        let oid_h = s.spawn(move || {
+            er_engine::github::gh_pr_head_oid_remote(&owner_d, &repo_d, number)
+                .map_err(|e| e.to_string())
+        });
+        (
+            metadata_h
+                .join()
+                .unwrap_or_else(|_| Err("gh pr metadata thread panicked".to_string())),
+            diff_h
+                .join()
+                .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string())),
+            commits_h.join().unwrap_or_default(),
+            overview_h.join().unwrap_or_default(),
+            oid_h.join().ok().and_then(|r| r.ok()),
+        )
+    });
+    let (base_branch, head_branch) = metadata?;
+    let raw_diff = diff?;
+    Ok(RemotePrOpenInputs {
+        base_branch,
+        head_branch,
+        raw_diff,
+        pr_commits: commits,
+        pr_data: overview,
+        head_oid,
+    })
+}
+
+/// Build a remote PR tab from a cached open entry — no network, no subprocess.
+/// Pure (only disk reads for managed storage), so it is unit-testable. Seeds
+/// the tab's branch preload from the entry (for remote tabs the branch-scope
+/// diff IS `raw_diff`), so the first Branch-view switch needs no `gh` call.
+fn remote_pr_tab_from_entry(
+    pr_ref: &er_engine::github::PrRef,
+    entry: crate::remote_pr_open_cache::RemotePrOpenEntry,
+) -> Result<er_engine::app::TabState, String> {
+    let mut tab = er_engine::app::TabState::new_remote_with_data(
+        pr_ref,
+        entry.base_branch,
+        entry.head_branch,
+        entry.raw_diff.clone(),
+        entry.pr_commits,
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(data) = entry.pr_data {
+        tab.pr_data = Some(data);
     }
+    // Staleness baseline = the oid the cached diff was fetched at
+    // (review-fix-loop R1); `build_remote_pr_tab` falls back to the PR-list
+    // cache when the entry has no oid (pre-upgrade / failed fetch).
+    tab.last_diff_head_oid = entry.head_oid.clone();
+    tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+        raw: entry.raw_diff,
+        base_branch: tab.base_branch.clone(),
+        pr_number: Some(pr_ref.number),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+        pr_head_ref: None,
+        parity: true,
+    });
+    tab.reload_remote_comments();
+    Ok(tab)
+}
+
+/// Build a remote PR tab outside the App lock: cache hit → zero `gh` calls;
+/// miss → fetch metadata/diff/commits/overview, then warm the cache so the
+/// next open (or a hover prefetch landing later) is instant.
+fn build_remote_pr_tab(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    state: &AppState,
+) -> Result<er_engine::app::TabState, String> {
     let pr_ref = er_engine::github::PrRef {
         owner: owner.to_string(),
         repo: repo.to_string(),
         number,
     };
-    let mut tab = er_engine::app::TabState::new_remote(&pr_ref).map_err(|e| e.to_string())?;
-    let pr_data = er_engine::github::gh_pr_overview_remote(owner, repo, number);
-    if let Some(data) = pr_data {
+    if let Some(entry) = crate::remote_pr_open_cache::get_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        owner,
+        repo,
+        number,
+    ) {
+        let mut tab = remote_pr_tab_from_entry(&pr_ref, entry.clone())?;
+        // Seed the staleness probe's baseline with the oid the cached diff was
+        // fetched at (review-fix-loop R1): equal oid ⇒ pill stays off;
+        // advanced ⇒ it lights. Fall back to the PR-list cache only when the
+        // entry has no oid (pre-upgrade entries / failed oid fetch).
+        tab.last_diff_head_oid = match entry.head_oid {
+            Some(oid) => Some(oid),
+            None => {
+                if let Ok(guard) = state.pr_cache.lock() {
+                    if let Some(prs) = guard.get(&format!("{owner}/{repo}")) {
+                        if let Some(pr) = prs.iter().find(|p| p.number == number) {
+                            if !pr.head_oid.is_empty() {
+                                Some(pr.head_oid.clone())
+                            } else {
+                                None
+                            }
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+        };
+        log::info!("remote_pr_open {owner}/{repo}#{number} cache=hit");
+        return Ok(tab);
+    }
+    let inputs = fetch_remote_pr_open_inputs(owner, repo, number)?;
+    let mut tab = er_engine::app::TabState::new_remote_with_data(
+        &pr_ref,
+        inputs.base_branch.clone(),
+        inputs.head_branch.clone(),
+        inputs.raw_diff.clone(),
+        inputs.pr_commits.clone(),
+    )
+    .map_err(|e| e.to_string())?;
+    if let Some(data) = inputs.pr_data.clone() {
         tab.pr_data = Some(data);
     }
+    // Seed the branch preload from the diff we just fetched (branch scope ==
+    // raw_diff for remote tabs) so `kick_branch_preload` skips its refetch.
+    tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+        raw: inputs.raw_diff.clone(),
+        base_branch: tab.base_branch.clone(),
+        pr_number: Some(number),
+        local_branch_view: tab.local_branch_view.clone(),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+        pr_head_ref: None,
+        parity: true,
+    });
     tab.reload_remote_comments();
-    place_tab(app, tab, replace);
-    Ok(())
+    // Seed the staleness baseline with the oid the freshly fetched diff was
+    // computed at (review-fix-loop R1).
+    tab.last_diff_head_oid = inputs.head_oid.clone();
+    crate::remote_pr_open_cache::insert_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        owner,
+        repo,
+        number,
+        crate::remote_pr_open_cache::RemotePrOpenEntry {
+            base_branch: inputs.base_branch,
+            head_branch: inputs.head_branch,
+            raw_diff: inputs.raw_diff,
+            pr_data: inputs.pr_data,
+            pr_commits: inputs.pr_commits,
+            head_oid: inputs.head_oid,
+            last_touched: 0,
+        },
+    );
+    log::info!("remote_pr_open {owner}/{repo}#{number} cache=miss");
+    Ok(tab)
+}
+
+/// Open (or activate, if already open) a remote-only PR. The heavy path
+/// (`gh` calls + diff parse) runs WITHOUT the App lock — previously
+/// `new_remote` ran three network calls while holding the app mutex, blocking
+/// every other command. On a cache hit there is no network at all.
+fn activate_or_open_remote_pr(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    replace: bool,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let remote = format!("{owner}/{repo}");
+    // Fast path: PR already open — activate without any network.
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(idx) = app
+            .tabs
+            .iter()
+            .position(|t| t.remote_repo.as_deref() == Some(&remote) && t.pr_number == Some(number))
+        {
+            app.active_tab = idx;
+            kick_meta_refresh(state, app.tab().repo_root.clone());
+            kick_github_status_refresh(
+                state.gh_status_cache.clone(),
+                Arc::clone(&state.gh_status_in_flight),
+                Arc::clone(&state.desktop_revision),
+                Some(Arc::clone(&state.loading)),
+                owner.to_string(),
+                repo.to_string(),
+                number,
+            );
+            kick_branch_preload(&mut app, state);
+            return Ok(snap_from_command(&app, state));
+        }
+    }
+    // Build outside the lock (network on miss, cache on hit).
+    let tab = build_remote_pr_tab(owner, repo, number, state)?;
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    // Re-check under the lock: a concurrent open of the same PR may have
+    // landed while we were fetching — activate it instead of placing a
+    // duplicate tab.
+    if let Some(idx) = app
+        .tabs
+        .iter()
+        .position(|t| t.remote_repo.as_deref() == Some(&remote) && t.pr_number == Some(number))
+    {
+        app.active_tab = idx;
+        kick_meta_refresh(state, app.tab().repo_root.clone());
+        kick_github_status_refresh(
+            state.gh_status_cache.clone(),
+            Arc::clone(&state.gh_status_in_flight),
+            Arc::clone(&state.desktop_revision),
+            Some(Arc::clone(&state.loading)),
+            owner.to_string(),
+            repo.to_string(),
+            number,
+        );
+        kick_branch_preload(&mut app, state);
+        return Ok(snap_from_command(&app, state));
+    }
+    place_tab(&mut app, tab, replace, false);
+    app.tab_mut().needs_initial_refresh = false;
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner.to_string(),
+        repo.to_string(),
+        number,
+    );
+    kick_branch_preload(&mut app, state);
+    Ok(snap_from_command(&app, state))
 }
 
 fn find_project_id_for_remote(file: &projects::ProjectsFile, remote_slug: &str) -> Option<String> {
@@ -4908,6 +5625,17 @@ fn cache_single_pr_for_remote(
     remote: &str,
     pr_number: u64,
 ) -> Result<PrInfo, String> {
+    // Cache hit → reuse without a gh round-trip. The sidebar PR list comes
+    // from this same pr_cache, so a hover-prefetched remote open pays zero
+    // network on the click path (freshness parity is exact at open time).
+    if let Ok(cache) = state.pr_cache.lock() {
+        if let Some(pr) = cache
+            .get(remote)
+            .and_then(|prs| prs.iter().find(|p| p.number == pr_number))
+        {
+            return Ok(pr.clone());
+        }
+    }
     let fetched_pr = fetch_single_pr_for_remote(remote, pr_number)?;
     if let Ok(mut cache) = state.pr_cache.lock() {
         let entry = cache.entry(remote.to_string()).or_default();
@@ -4957,19 +5685,7 @@ fn open_remote_pr_impl(
 ) -> Result<AppSnapshot, String> {
     let remote = format!("{owner}/{repo}");
     let _project_id = record_remote_recent_pr(state, &remote, number)?;
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    do_open_remote_pr(&mut app, &owner, &repo, number, replace.unwrap_or(false))?;
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        owner,
-        repo,
-        number,
-    );
-    Ok(snap_from_command(&app, state))
+    activate_or_open_remote_pr(&owner, &repo, number, replace.unwrap_or(false), state)
 }
 
 #[tauri::command]
@@ -5007,25 +5723,13 @@ fn open_pr_url_impl(
     }
 
     let _project_id = record_remote_recent_pr(state, &remote, pr_ref.number)?;
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    do_open_remote_pr(
-        &mut app,
+    activate_or_open_remote_pr(
         &pr_ref.owner,
         &pr_ref.repo,
         pr_ref.number,
         replace.unwrap_or(false),
-    )?;
-    kick_meta_refresh(state, app.tab().repo_root.clone());
-    kick_github_status_refresh(
-        state.gh_status_cache.clone(),
-        Arc::clone(&state.gh_status_in_flight),
-        Arc::clone(&state.desktop_revision),
-        Some(Arc::clone(&state.loading)),
-        pr_ref.owner,
-        pr_ref.repo,
-        pr_ref.number,
-    );
-    Ok(snap_from(&app, state))
+        state,
+    )
 }
 
 // ── Worktree picker (stub — no dialog dep) ──────────────────────────────────
@@ -5090,6 +5794,12 @@ fn build_local_branch_tab(
 
     new_tab.local_branch_view = Some(name);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    // The tab's own remote is the repo actually being viewed — NOT the active
+    // project's remote (a project may point at a different repo than the
+    // worktree/branch it reviews). Resolve it from this repo's git remote so
+    // PR links, the GitHub status card, and the PR-list cache all key on the
+    // right repo.
+    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
     new_tab.sync_managed_storage();
     let t_local_refresh = std::time::Instant::now();
     match new_tab.refresh_diff_without_remote_fetch_quick() {
@@ -5226,7 +5936,7 @@ fn open_local_branch_impl(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     log_branch_open_phase(&project_id, &branch_name, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
-    place_tab(&mut app, new_tab, replace.unwrap_or(false));
+    place_tab(&mut app, new_tab, replace.unwrap_or(false), false);
     log_branch_open_phase(&project_id, &branch_name, "tab_place", t_place_tab);
     let open_path_label = match open_path {
         LocalBranchOpenPath::LocalFirst => "local_first",
@@ -5563,6 +6273,82 @@ fn pr_open_hint_is_complete(hint: &PrOpenHint) -> bool {
         && !hint.head_oid.trim().is_empty()
 }
 
+/// If a hover-prefetch is in flight for `(project_id, pr_number)` with a
+/// freshness matching `freshness`, wait (bounded) for it to populate the
+/// cache and return the fresh entry. Returns `None` when there is nothing to
+/// join (no claim, freshness mismatch, or the wait timed out) — the caller
+/// falls back to fetching the diff itself.
+fn join_in_flight_pr_prefetch(
+    state: &AppState,
+    project_id: &str,
+    pr_number: u64,
+    key: &PrOpenCacheKey,
+    freshness: &PrOpenFreshness,
+) -> Option<CachedPrOpenEntry> {
+    let claim = {
+        let guard = state.pr_open_prefetch_in_flight.lock().ok()?;
+        guard.get(&(project_id.to_string(), pr_number)).cloned()
+    };
+    let claim = match claim {
+        Some(c) if c.freshness == *freshness => c,
+        _ => return None,
+    };
+    // Bounded wait: the prefetch typically completes in ~1s; give it 3s.
+    // The worker notifies on success *and* failure, so a failed prefetch
+    // wakes us to fall through to our own fetch rather than sleeping out the
+    // timeout.
+    let mut done = claim.done.lock().ok()?;
+    // Re-check `done` after acquiring the lock: the worker may have set it and
+    // notified before we locked, in which case `wait_timeout` would otherwise
+    // sleep out the full 3 s (lost wakeup). Bounded: each wait_timeout has its
+    // own 3 s budget and the predicate is re-checked on every wakeup.
+    let mut timed_out = false;
+    while !*done {
+        let (guard, timeout) = claim
+            .cv
+            .wait_timeout(done, std::time::Duration::from_secs(3))
+            .ok()?;
+        done = guard;
+        if timeout.timed_out() {
+            timed_out = true;
+            break;
+        }
+    }
+    drop(done);
+    if timed_out {
+        // Narrow race: the worker may have finished exactly as the budget
+        // expired — one final check before falling back to our own fetch.
+        if !*claim.done.lock().ok()? {
+            return None;
+        }
+    }
+    // The prefetch populated the cache with its own freshness — serve it when
+    // the base branch still matches (head/`updated_at` drift is allowed, same
+    // as the hint-miss path). A freshness mismatch mid-flight re-fetches.
+    cached_pr_open_entry(&state.pr_open_cache, key, freshness)
+}
+
+/// Cheap pre-check: does the PR-open cache already hold a fresh-enough entry
+/// for this PR (complete hint + matching base)? Lets `open_pr_review_impl`
+/// branch hit (inputs are in memory — the existing fast flow) vs miss (place
+/// a stub, fetch in the offload worker) BEFORE touching the network.
+fn pr_open_cache_is_hit(
+    project_id: &str,
+    pr_number: u64,
+    hint: Option<&PrOpenHint>,
+    state: &AppState,
+) -> bool {
+    let Some(hint) = hint.filter(|h| pr_open_hint_is_complete(h)) else {
+        return false;
+    };
+    let file = projects::load();
+    let Some(proj) = file.projects.iter().find(|p| p.id == project_id) else {
+        return false;
+    };
+    let key = pr_open_cache_key(project_id, &proj.root_path, pr_number);
+    cached_pr_open_entry(&state.pr_open_cache, &key, &freshness_from_hint(hint)).is_some()
+}
+
 fn load_pr_open_inputs(
     project_id: &str,
     pr_number: u64,
@@ -5638,6 +6424,51 @@ fn load_pr_open_inputs(
         // Cache miss with hint: run `gh pr diff` and `ensure_base_ref_available`
         // in parallel. Skip `gh pr view` — overview is rendered from the hint
         // and a background refresh can fill in body/reviews later.
+        // First try to join an in-flight hover-prefetch (a click landing
+        // mid-prefetch should consume its result, not run a duplicate
+        // `gh pr diff`). Bounded wait — on timeout or a freshness change we
+        // fall through to the parallel fetch below.
+        if let Some((raw_diff, entry_freshness, cached_pr_data, cached_pr_commits)) =
+            join_in_flight_pr_prefetch(state, project_id, pr_number, &key, &freshness)
+        {
+            log::info!(
+                "branch_open project={} branch={} phase=gh_pr_diff ms=0 cache=joined_prefetch",
+                project_id,
+                branch_label
+            );
+            let t_base = std::time::Instant::now();
+            let resolved_base = er_engine::github::ensure_base_ref_available(
+                &repo_root,
+                &entry_freshness.base_branch,
+            )
+            .map_err(|e| e.to_string())?;
+            log_branch_open_phase(project_id, &branch_label, "base_ref_check", t_base);
+            let pr_data = cached_pr_data
+                .unwrap_or_else(|| pr_overview_from_hint(hint, pr_number, repo_slug.as_deref()));
+            let pr_commits = cached_pr_commits
+                .unwrap_or_else(|| run_gh_pr_commits_for_open(&repo_root, pr_number));
+            // Re-write with the entry's own freshness so the diff↔oid pairing
+            // is preserved; remember_pr_open_entry keeps existing pr_data.
+            remember_pr_open_entry(
+                &state.pr_open_cache,
+                key,
+                entry_freshness.clone(),
+                raw_diff.clone(),
+                None,
+                Some(pr_commits.clone()),
+            );
+            return Ok(PrOpenInputs {
+                repo_root,
+                metadata: PrOpenMetadata {
+                    freshness: entry_freshness,
+                    pr_data,
+                    pr_commits,
+                },
+                resolved_base,
+                raw_diff,
+                cache_hit: true,
+            });
+        }
         let (diff_res, base_res, commits, diff_ms, base_ms) = std::thread::scope(|s| {
             let diff_root = repo_root.clone();
             let base_root = repo_root.clone();
@@ -5897,6 +6728,22 @@ fn open_pr_review_impl(
 ) -> Result<AppSnapshot, String> {
     let t_total = std::time::Instant::now();
     let branch_label = format!("pr-{}", pr_number);
+    // Fast-path decision BEFORE any network: cache hit → the inputs are in
+    // memory and the existing two-phase flow applies (~150–250 ms command).
+    // Miss → place a stub instantly and let the offload worker run the
+    // network phase (gh pr view + gh pr diff + commits, ~1.5–2.5 s) outside
+    // the command; the full diff arrives via the revision-event poll.
+    if !pr_open_cache_is_hit(&project_id, pr_number, hint.as_ref(), state) {
+        return open_pr_review_miss_async(
+            &project_id,
+            pr_number,
+            hint.as_ref(),
+            replace,
+            state,
+            &branch_label,
+            t_total,
+        );
+    }
     let t_tab_build = std::time::Instant::now();
     let inputs =
         load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), state).map_err(|e| {
@@ -5904,6 +6751,14 @@ fn open_pr_review_impl(
             e
         })?;
     let cache_hit = inputs.cache_hit;
+    // Branch-view preload seed for the miss path: the diff was just fetched,
+    // and for a local PR tab without a local checkout the branch scope IS the
+    // same `gh pr diff` — seed it so the first Branch switch needs no network.
+    let raw_diff_for_preload = if cache_hit {
+        None
+    } else {
+        Some(inputs.raw_diff.clone())
+    };
     let recent_title = hint
         .as_ref()
         .map(|h| h.title.trim())
@@ -5957,7 +6812,10 @@ fn open_pr_review_impl(
     let app_lock_ms = t_app_lock.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
-    place_tab(&mut app, new_tab, replace.unwrap_or(false));
+    // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
+    // apply_managed_root + AI reload for the PR bucket (first-paint plan
+    // step 1: three full reloads per open → one).
+    place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
     let tab_place_ms = t_place_tab.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
@@ -5966,22 +6824,59 @@ fn open_pr_review_impl(
         app.tab_mut().local_branch_checkout_root = Some(root);
     }
     let t_pr_diff = std::time::Instant::now();
-    // On a fresh cache hit the tab already holds the exact `gh pr diff` output
-    // (placed by `new_local_pr_from_github_diff` from `inputs.raw_diff`), so trust
-    // it and skip the redundant `gh pr diff` that `enter_pr_diff()` would run via
-    // `refresh_diff()`. A miss — or a hit whose head oid is unknown (empty), where
-    // seeding it would mislead the staleness probe — still skips the redundant
-    // refetch via `enter_pr_diff_freshly_loaded()`: `new_local_pr_from_github_diff`
-    // (above) already parsed `inputs.raw_diff` into `tab.files`/`raw_diff`/
-    // `diff_hash`, the exact content a plain `enter_pr_diff()` would re-fetch.
-    if cache_hit && !head_oid_for_preload.trim().is_empty() {
+    // The tab already holds the exact `gh pr diff` output (placed by
+    // `new_local_pr_from_github_diff` from `inputs.raw_diff`), so trust it and
+    // skip the redundant `gh pr diff` that `enter_pr_diff()` would run via
+    // `refresh_diff()`. When the diff's head oid is known — cache hit, or a
+    // miss with a complete hint / fresh `gh pr view` — `enter_pr_diff_preloaded`
+    // also seeds the staleness baseline from that oid and skips the two
+    // sequential network ref-fetches (`fetch_pr_head` + `fetch_base_branch_ref`)
+    // that `enter_pr_diff_freshly_loaded()` would run on first entry; those
+    // refs only serve the local Branch view and are fetched in the background
+    // by `kick_pr_ref_fetch` below. Fall back to `enter_pr_diff_freshly_loaded`
+    // (which still skips the redundant refresh, but does the first-entry ref
+    // fetch and falls back to a full refresh when `files` is empty) for a
+    // 0-file PR or an unknown head oid, where seeding would mislead the probe.
+    let has_loaded_files = !app.tab().files.is_empty();
+    let two_phase;
+    if !head_oid_for_preload.trim().is_empty() && has_loaded_files {
+        // Two-phase open (first-paint plan step 2): enter PR Diff without the
+        // AI sidecar reload — `kick_post_open_offload` performs the single
+        // authoritative reload right after the command returns, and the
+        // chrome-only snapshot below paints immediately with "Loading diff…".
         app.tab_mut()
-            .enter_pr_diff_preloaded(head_oid_for_preload)
+            .enter_pr_diff_preloaded(head_oid_for_preload, true)
             .map_err(|e| e.to_string())?;
+        app.tab_mut().needs_initial_refresh = false;
+        two_phase = true;
     } else {
+        // Rare fallback (0-file PR / unknown head oid): keep the synchronous
+        // first-entry ref fetch + reload — correctness first, the diff fetch
+        // dominates anyway and the overlay already paints during it.
         app.tab_mut()
             .enter_pr_diff_freshly_loaded()
             .map_err(|e| e.to_string())?;
+        app.tab_mut().needs_initial_refresh = false;
+        two_phase = false;
+    }
+    // Seed the branch preload from the freshly fetched diff (miss only — a
+    // cache hit may predate the current head, so kick_branch_preload below
+    // re-fetches fresh content in the background instead). Skipped when the
+    // head branch is checked out locally (working-tree scope, staleness-prone).
+    if let Some(raw) = raw_diff_for_preload {
+        if app.tab().local_branch_checkout_root.is_none() {
+            let tab = app.tab_mut();
+            tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+                raw,
+                base_branch: tab.base_branch.clone(),
+                pr_number: tab.pr_number,
+                local_branch_view: tab.local_branch_view.clone(),
+                checkout_root: None,
+                remote_repo: None,
+                pr_head_ref: tab.pr_head_ref.clone(),
+                parity: true,
+            });
+        }
     }
     let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
@@ -5990,11 +6885,24 @@ fn open_pr_review_impl(
     let record_recent_ms = t_recent.elapsed().as_millis();
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
-    let snapshot = snap_from_command(&app, state);
+    let snapshot = if two_phase {
+        // Offload the full snapshot + AI reload to the background worker; the
+        // poll delivers it via the revision event in ~40–120 ms.
+        kick_post_open_offload(&mut app, state);
+        lite_snap_from_command(&app, state)
+    } else {
+        snap_from_command(&app, state)
+    };
     let snap_build_ms = t_snapshot.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, state);
+    // Background-preload the Branch-view diff so the first switch to the
+    // Branch view doesn't run `gh pr diff` synchronously under the App lock.
+    kick_branch_preload(&mut app, state);
+    // Background-fetch the PR's local git refs (skipped by the fast
+    // `enter_pr_diff_preloaded` path) so later local-ref consumers find them.
+    kick_pr_ref_fetch(&mut app, state);
     // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
     // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
     // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
@@ -6016,6 +6924,233 @@ fn open_pr_review_impl(
         t_total.elapsed().as_millis(),
     );
     Ok(snapshot)
+}
+
+/// Async-miss PR open: place a stub tab (chrome-only, "Loading diff…") and
+/// return immediately; `kick_miss_open_offload` fetches the inputs and
+/// populates the tab in the background. Mirrors the cache-hit two-phase flow
+/// so misses get the same instant-command behavior — the network phase
+/// (~1.5–2.5 s for `gh pr view` + `gh pr diff` + commits) leaves the command.
+fn open_pr_review_miss_async(
+    project_id: &str,
+    pr_number: u64,
+    hint: Option<&PrOpenHint>,
+    replace: Option<bool>,
+    state: &AppState,
+    branch_label: &str,
+    t_total: std::time::Instant,
+) -> Result<AppSnapshot, String> {
+    let t_tab_build = std::time::Instant::now();
+    let file = projects::load();
+    let proj = file
+        .projects
+        .iter()
+        .find(|p| p.id == project_id)
+        .ok_or_else(|| format!("Project not found: {project_id}"))?
+        .clone();
+    let base = hint
+        .map(|h| h.base_ref.clone())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "main".to_string());
+    let head = hint.map(|h| h.head_ref.clone());
+    let head_oid = hint.map(|h| h.head_oid.clone());
+    let pr_data = hint.map(|h| pr_overview_from_hint(h, pr_number, proj.remote.as_deref()));
+    let recent_title = hint
+        .map(|h| h.title.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| format!("#{pr_number}"));
+    let stub = er_engine::app::TabState::new_stub_pr_tab(
+        proj.root_path.clone(),
+        pr_number,
+        base,
+        head,
+        pr_data,
+        head_oid,
+    )
+    .map_err(|e| e.to_string())?;
+    let tab_build_ms = t_tab_build.elapsed().as_millis();
+    log_branch_open_phase(project_id, branch_label, "pr_tab_build", t_tab_build);
+    log::info!(
+        "branch_open project={} branch={} phase=pr_open_cache hit=false",
+        project_id,
+        branch_label
+    );
+
+    let t_app_lock = std::time::Instant::now();
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    let app_lock_ms = t_app_lock.elapsed().as_millis();
+    log_branch_open_phase(project_id, branch_label, "app_lock", t_app_lock);
+    let t_place_tab = std::time::Instant::now();
+    place_tab(&mut app, stub, replace.unwrap_or(false), true);
+    let tab_place_ms = t_place_tab.elapsed().as_millis();
+    log_branch_open_phase(project_id, branch_label, "tab_place", t_place_tab);
+    log_branch_open_phase(
+        project_id,
+        branch_label,
+        "pr_diff_enter",
+        std::time::Instant::now(),
+    );
+    let t_recent = std::time::Instant::now();
+    let _ = projects::record_recent_pr(project_id, pr_number, &recent_title);
+    let record_recent_ms = t_recent.elapsed().as_millis();
+    kick_meta_refresh(state, app.tab().repo_root.clone());
+    let t_snapshot = std::time::Instant::now();
+    let stub_idx = app.active_tab;
+    let expect_local_view = app.tab().local_branch_view.clone();
+    kick_miss_open_offload(
+        state,
+        project_id,
+        pr_number,
+        hint.cloned(),
+        proj.root_path.clone(),
+        stub_idx,
+        expect_local_view,
+    );
+    let snapshot = lite_snap_from_command(&app, state);
+    let snap_build_ms = t_snapshot.elapsed().as_millis();
+    log_branch_open_phase(project_id, branch_label, "snapshot_build", t_snapshot);
+    log_branch_open_phase(project_id, branch_label, "total", t_total);
+    kick_active_gh_status(&app, state);
+    // No `kick_branch_preload` here: the offload worker seeds the branch
+    // preload from the freshly fetched parity diff — a second `gh pr diff`
+    // would duplicate the network call.
+    kick_pr_ref_fetch(&mut app, state);
+    let t_ser = std::time::Instant::now();
+    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
+    log::info!(
+        "open_pr_review pr={} phase=summary cache_hit=false files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms=0 record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
+        pr_number,
+        snapshot.files.len(),
+        app_lock_ms,
+        tab_build_ms,
+        tab_place_ms,
+        record_recent_ms,
+        snap_build_ms,
+        ser_bytes,
+        t_ser.elapsed().as_millis(),
+        t_total.elapsed().as_millis(),
+    );
+    Ok(snapshot)
+}
+
+/// Background offload for the async-miss PR open: runs the network phase
+/// (`load_pr_open_inputs` — parallel `gh pr view` + `gh pr diff` + commits)
+/// WITHOUT the app lock, populates the stub under a brief lock (parse + AI
+/// reload), seeds the branch preload from the fetched parity diff, and bumps
+/// `desktop_revision` so the poll delivers the full diff. On failure the tab
+/// stays `needs_initial_refresh = true` with a notify — a later click on the
+/// tab retries via the deferred-refresh worker.
+fn kick_miss_open_offload(
+    state: &AppState,
+    project_id: &str,
+    pr_number: u64,
+    hint: Option<PrOpenHint>,
+    expect_root: String,
+    expect_idx: usize,
+    expect_local_view: Option<String>,
+) {
+    if let Ok(mut l) = state.loading.lock() {
+        l.tab_diff = true;
+    }
+    let project_id = project_id.to_string();
+    let app_arc = Arc::clone(&state.app);
+    let loading = Arc::clone(&state.loading);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    let state_ref = state.clone();
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        match load_pr_open_inputs(&project_id, pr_number, hint.as_ref(), &state_ref) {
+            Ok(inputs) => {
+                let head_branch = inputs.metadata.freshness.head_branch.clone();
+                let checkout_root = if head_branch.is_empty() {
+                    None
+                } else {
+                    resolve_head_checkout(&inputs.repo_root, &head_branch)
+                };
+                if let Ok(mut app) = app_arc.lock() {
+                    // Re-resolve the stub by index + identity (sibling worker
+                    // pattern); if a tab closed during the fetch window
+                    // shifted the index, fall back to a scan so the populated
+                    // diff still lands (mirrors the error path).
+                    let target = match app.tabs.get_mut(expect_idx).filter(|t| {
+                        t.repo_root == expect_root
+                            && t.pr_number == Some(pr_number)
+                            && t.local_branch_view == expect_local_view
+                    }) {
+                        Some(tab) => Some(tab),
+                        None => app.tabs.iter_mut().find(|t| {
+                            t.repo_root == expect_root
+                                && t.pr_number == Some(pr_number)
+                                && t.needs_initial_refresh
+                        }),
+                    };
+                    if let Some(tab) = target {
+                        tab.populate_pr_tab(
+                            &inputs.raw_diff,
+                            Some(inputs.metadata.pr_data),
+                            inputs.metadata.pr_commits,
+                            inputs.resolved_base.clone(),
+                            Some(inputs.metadata.freshness.head_oid.clone()),
+                        );
+                        if let Some(root) = checkout_root {
+                            tab.local_branch_checkout_root = Some(root);
+                        }
+                        // Seed the branch preload (parity) so the first Branch
+                        // switch needs no network.
+                        if tab.local_branch_checkout_root.is_none() {
+                            tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+                                raw: inputs.raw_diff,
+                                base_branch: inputs.resolved_base,
+                                pr_number: Some(pr_number),
+                                local_branch_view: tab.local_branch_view.clone(),
+                                checkout_root: None,
+                                remote_repo: None,
+                                pr_head_ref: tab.pr_head_ref.clone(),
+                                parity: true,
+                            });
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                log::error!(
+                    "er-desktop: async PR open failed pr={pr_number} project={project_id}: {e}"
+                );
+                if let Ok(mut app) = app_arc.lock() {
+                    // Re-resolve by index + identity; if a tab closed during
+                    // the fetch window shifted the index, fall back to a scan
+                    // so the notify + retry flag still land on the stub.
+                    let target = if let Some(tab) = app.tabs.get_mut(expect_idx).filter(|t| {
+                        t.repo_root == expect_root
+                            && t.pr_number == Some(pr_number)
+                            && t.local_branch_view == expect_local_view
+                    }) {
+                        Some(tab)
+                    } else {
+                        // Narrow to un-populated stubs so the retry flag lands
+                        // on a stub, not on a populated duplicate tab.
+                        app.tabs.iter_mut().find(|t| {
+                            t.repo_root == expect_root
+                                && t.pr_number == Some(pr_number)
+                                && t.needs_initial_refresh
+                        })
+                    };
+                    if let Some(tab) = target {
+                        tab.needs_initial_refresh = true;
+                        app.notify(&format!("Failed to open PR #{pr_number}: {e}"));
+                    }
+                }
+            }
+        }
+        if let Ok(mut l) = loading.lock() {
+            l.tab_diff = false;
+        }
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
+        crate::profile_log::profile_log(
+            "miss_open_offload",
+            &[("ms", t.elapsed().as_millis().to_string())],
+        );
+    });
 }
 
 /// Kept for backwards compatibility — delegates to the no-checkout PR review flow.
@@ -6058,22 +7193,45 @@ pub fn prefetch_pr_open(
 
     // Dedupe: claim the in-flight slot atomically.
     let claim_key = (project_id.clone(), pr_number);
-    {
+    let claim = {
         let mut guard = state
             .pr_open_prefetch_in_flight
             .lock()
             .map_err(|e| e.to_string())?;
-        if guard.contains(&claim_key) {
+        if guard.contains_key(&claim_key) {
             return Ok(());
         }
-        guard.insert(claim_key.clone());
-    }
+        let claim = Arc::new(PrOpenPrefetchClaim {
+            freshness: freshness.clone(),
+            done: Mutex::new(false),
+            cv: Condvar::new(),
+        });
+        guard.insert(claim_key.clone(), Arc::clone(&claim));
+        claim
+    };
 
     let cache = Arc::clone(&state.pr_open_cache);
     let in_flight = Arc::clone(&state.pr_open_prefetch_in_flight);
     let branch_label = format!("pr-{}", pr_number);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
+        // Warm the PR comment sync cache (first-paint plan step 3): detached so
+        // the in-flight claim is released as soon as the diff is cached; the
+        // post-open `pull_github_comments` (~2.5–3 s of gh calls) is served
+        // from memory when the user clicks within the 60 s TTL.
+        {
+            let warm_root = repo_root.clone();
+            std::thread::spawn(move || {
+                if let Ok(owner_repo) = er_engine::github::get_repo_info(&warm_root) {
+                    let _ = er_engine::github::gh_pr_comment_bundle_cached(
+                        &owner_repo.0,
+                        &owner_repo.1,
+                        pr_number,
+                        Some(&warm_root),
+                    );
+                }
+            });
+        }
         let diff_root = repo_root.clone();
         let base_root = repo_root.clone();
         let commits_root = repo_root.clone();
@@ -6121,9 +7279,97 @@ pub fn prefetch_pr_open(
                 );
             }
         }
+        // Signal completion (success or failure) so a waiting open can stop
+        // blocking and re-check the cache, then release the claim.
+        if let Ok(mut done) = claim.done.lock() {
+            *done = true;
+        }
+        claim.cv.notify_all();
         if let Ok(mut guard) = in_flight.lock() {
             guard.remove(&claim_key);
         }
+    });
+    Ok(())
+}
+
+/// Fire-and-forget background warmup of the remote-only PR open cache.
+/// Invoked from the sidebar's `onmouseenter` (after a short debounce) for
+/// remote-only projects, whose open path (`open_remote_pr`) has no local git
+/// clone to fall back on — a cache hit opens with zero `gh` calls.
+#[tauri::command]
+pub fn prefetch_remote_pr_open(
+    owner: String,
+    repo: String,
+    number: u64,
+    state: State<AppState>,
+) -> Result<(), String> {
+    // Skip when already cached or already in flight.
+    if crate::remote_pr_open_cache::get_remote_pr_open_entry(
+        &state.remote_pr_open_cache,
+        &owner,
+        &repo,
+        number,
+    )
+    .is_some()
+    {
+        return Ok(());
+    }
+    if !crate::remote_pr_open_cache::claim_remote_pr_open(
+        &state.remote_pr_open_in_flight,
+        &owner,
+        &repo,
+        number,
+    ) {
+        return Ok(());
+    }
+
+    let cache = Arc::clone(&state.remote_pr_open_cache);
+    let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        // Warm the PR comment sync cache (first-paint plan step 3) — detached,
+        // like the local prefetch; the remote variant needs no local clone.
+        {
+            let warm_owner = owner.clone();
+            let warm_repo = repo.clone();
+            std::thread::spawn(move || {
+                let _ = er_engine::github::gh_pr_comment_bundle_cached(
+                    &warm_owner,
+                    &warm_repo,
+                    number,
+                    None,
+                );
+            });
+        }
+        let result = fetch_remote_pr_open_inputs(&owner, &repo, number);
+        match result {
+            Ok(inputs) => {
+                crate::remote_pr_open_cache::insert_remote_pr_open_entry(
+                    &cache,
+                    &owner,
+                    &repo,
+                    number,
+                    crate::remote_pr_open_cache::RemotePrOpenEntry {
+                        base_branch: inputs.base_branch,
+                        head_branch: inputs.head_branch,
+                        raw_diff: inputs.raw_diff,
+                        pr_data: inputs.pr_data,
+                        pr_commits: inputs.pr_commits,
+                        head_oid: inputs.head_oid,
+                        last_touched: 0,
+                    },
+                );
+                log::info!(
+                    "remote_pr_prefetch {owner}/{repo}#{number} ok ms={}",
+                    t.elapsed().as_millis()
+                );
+            }
+            Err(e) => log::warn!(
+                "remote_pr_prefetch {owner}/{repo}#{number} failed ms={} err={e}",
+                t.elapsed().as_millis()
+            ),
+        }
+        crate::remote_pr_open_cache::release_remote_pr_open(&in_flight, &owner, &repo, number);
     });
     Ok(())
 }
@@ -6516,6 +7762,23 @@ pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppS
 }
 
 #[tauri::command]
+#[allow(non_snake_case)]
+pub fn reorder_projects(
+    orderedIds: Vec<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    if let Err(e) = projects::reorder_projects(&orderedIds) {
+        log::error!(
+            "reorder_projects failed id_count={} err={e}",
+            orderedIds.len()
+        );
+        return Err(e.to_string());
+    }
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
 pub fn open_project_branch(
     project_id: String,
     branch: String,
@@ -6537,11 +7800,15 @@ pub fn open_project_branch(
     .map_err(|e| e.to_string())?;
     new_tab.local_branch_view = Some(branch);
     new_tab.mode = er_engine::app::DiffMode::Branch;
+    // The tab's own remote is the repo actually being viewed, not the active
+    // project's remote — resolve it from this repo's git remote (see
+    // `build_local_branch_tab`).
+    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
     new_tab.sync_managed_storage();
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    place_tab(&mut app, new_tab, replace.unwrap_or(false));
+    place_tab(&mut app, new_tab, replace.unwrap_or(false), false);
     projects::set_active(&project_id);
     kick_meta_refresh(&state, app.tab().repo_root.clone());
     kick_active_gh_status(&app, &state);
@@ -6636,7 +7903,17 @@ pub async fn sync_pr(
                             // repo_root is the launch CWD, not the checkout) — and
                             // the remote open path doesn't read the cache yet, so
                             // only local PR tabs are worth persisting here.
-                            if !tab.is_remote() && refreshed_local_diff_oid.is_none() {
+                            if tab.is_remote() {
+                                // Realign the stale-pill baseline after a legit
+                                // sync: refetch_and_refresh_diff's remote branch
+                                // never updates last_diff_head_oid, so without
+                                // this the pill stays lit forever (P4-1).
+                                if let Some(pr_number) = tab.pr_number {
+                                    if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
+                                        tab.last_diff_head_oid = Some(oid);
+                                    }
+                                }
+                            } else if refreshed_local_diff_oid.is_none() {
                                 refreshed_local_diff_oid = Some(tab.last_diff_head_oid.clone());
                             }
                         }
@@ -6925,27 +8202,38 @@ pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<Ap
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
 
 #[tauri::command]
-pub fn dismiss_finding(finding_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+pub async fn dismiss_finding(
+    finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
 
-    let er_dir = app.tab().er_dir();
-    let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
-        .map_err(|e| format!("Failed to remove finding: {e}"))?;
-    if !removed {
-        return Err(format!("Finding not found: {finding_id}"));
-    }
+        let er_dir = app.tab().er_dir();
+        let removed = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
+            .map_err(|e| format!("Failed to remove finding: {e}"))?;
+        if !removed {
+            return Err(format!("Finding not found: {finding_id}"));
+        }
 
-    let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+        let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
 
-    let mut promotions = load_finding_promotions(&er_dir);
-    if promotions.remove(&finding_id).is_some() {
-        save_finding_promotions(&er_dir, &promotions)
-            .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
-    }
+        let mut promotions = load_finding_promotions(&er_dir);
+        if promotions.remove(&finding_id).is_some() {
+            save_finding_promotions(&er_dir, &promotions)
+                .map_err(|e| format!("Failed to update finding promotions: {e}"))?;
+        }
 
-    app.tab_mut().reload_ai_state();
+        app.tab_mut().reload_ai_state();
 
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -7177,50 +8465,58 @@ pub fn reply_to_finding(
 }
 
 #[tauri::command]
-pub fn update_thread_message(
+pub async fn update_thread_message(
     id: String,
     body: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let text = body.trim();
+    let text = body.trim().to_string();
     if text.is_empty() {
         return Err("Message cannot be empty".to_string());
     }
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let author = {
-        let tab = app.tab();
-        if id.starts_with("q-") {
-            tab.ai
-                .questions
-                .as_ref()
-                .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
-                .map(|q| q.author.clone())
-        } else if id.starts_with("n-") {
-            tab.ai
-                .notes
-                .as_ref()
-                .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
-                .map(|n| n.author.clone())
-        } else {
-            tab.ai
-                .github_comments
-                .as_ref()
-                .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
-                .map(|c| c.author.clone())
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
         }
-    };
-    let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
-    if author == "ai" {
-        return Err("Cannot edit AI-generated text".to_string());
-    }
-    if !author.is_empty() && author != "You" {
-        return Err("Can only edit your own messages".to_string());
-    }
+        let author = {
+            let tab = app.tab();
+            if id.starts_with("q-") {
+                tab.ai
+                    .questions
+                    .as_ref()
+                    .and_then(|qs| qs.questions.iter().find(|q| q.id == id))
+                    .map(|q| q.author.clone())
+            } else if id.starts_with("n-") {
+                tab.ai
+                    .notes
+                    .as_ref()
+                    .and_then(|ns| ns.notes.iter().find(|n| n.id == id))
+                    .map(|n| n.author.clone())
+            } else {
+                tab.ai
+                    .github_comments
+                    .as_ref()
+                    .and_then(|gc| gc.comments.iter().find(|c| c.id == id))
+                    .map(|c| c.author.clone())
+            }
+        };
+        let author = author.ok_or_else(|| format!("Thread message not found: {id}"))?;
+        if author == "ai" {
+            return Err("Cannot edit AI-generated text".to_string());
+        }
+        if !author.is_empty() && author != "You" {
+            return Err("Can only edit your own messages".to_string());
+        }
 
-    app.update_comment_text(&id, text)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+        app.update_comment_text(&id, &text)
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Review export (markdown) ─────────────────────────────────────────────────
@@ -7260,21 +8556,25 @@ pub fn export_review_to_file(
 /// Back-compat shim: delegate to `export_review_to_file` with all-defaults
 /// opts. Kept so older bindings / CommandPalette entries don't break.
 #[tauri::command]
-pub fn export_to_agent(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let opts = ExportOpts::default();
-    let path = {
+pub async fn export_to_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let opts = ExportOpts::default();
+        let path = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let tab = app.tab();
+            let body = render_markdown(tab, &opts);
+            let dir = tab.comments_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
+            let path = format!("{dir}/export.md");
+            std::fs::write(&path, body).map_err(|e| format!("Failed to write {path}: {e}"))?;
+            path
+        };
+        let _ = path;
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        let tab = app.tab();
-        let body = render_markdown(tab, &opts);
-        let dir = tab.comments_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-        let path = format!("{dir}/export.md");
-        std::fs::write(&path, body).map_err(|e| format!("Failed to write {path}: {e}"))?;
-        path
-    };
-    let _ = path;
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Commit composer ──────────────────────────────────────────────────────────
@@ -7353,14 +8653,40 @@ pub async fn select_tab(
     let state = state.inner().clone();
     run_blocking(move || {
         use tauri::Manager;
+        let t_total = std::time::Instant::now();
         let browser_state = app_handle.state::<crate::browser_webview::BrowserWebviewState>();
+        let t_lock = std::time::Instant::now();
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let app_lock_ms = t_lock.elapsed().as_millis();
+        let idx_before = app.active_tab;
         app.select_tab(idx);
+        let deferred = app.tab().needs_initial_refresh;
         kick_deferred_tab_refresh(&mut app, &state);
         kick_active_gh_status(&app, &state);
+        let t_webview = std::time::Instant::now();
         crate::browser_webview::on_tab_selected(&app_handle, &browser_state, &app, idx)?;
+        let webview_ms = t_webview.elapsed().as_millis();
+        let t_persist = std::time::Instant::now();
         crate::tabs::persist_app_tabs(&app);
-        Ok(snap_from_command(&app, &state))
+        let persist_ms = t_persist.elapsed().as_millis();
+        let t_snap = std::time::Instant::now();
+        let snapshot = snap_from_command(&app, &state);
+        let snap_build_ms = t_snap.elapsed().as_millis();
+        crate::profile_log::profile_log(
+            "select_tab",
+            &[
+                ("idx", idx.to_string()),
+                ("from_idx", idx_before.to_string()),
+                ("files", snapshot.files.len().to_string()),
+                ("needs_initial_refresh", deferred.to_string()),
+                ("app_lock_ms", app_lock_ms.to_string()),
+                ("webview_ms", webview_ms.to_string()),
+                ("persist_ms", persist_ms.to_string()),
+                ("snap_build_ms", snap_build_ms.to_string()),
+                ("total_ms", t_total.elapsed().as_millis().to_string()),
+            ],
+        );
+        Ok(snapshot)
     })
     .await
 }
@@ -7411,6 +8737,383 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
             "lazy_tab_refresh",
             &[("ms", t.elapsed().as_millis().to_string())],
         );
+    });
+}
+
+/// Background offload for the two-phase PR open (first-paint plan step 2).
+///
+/// Phase 1 (`open_pr_review_impl`) returns a chrome-only snapshot with
+/// `bg_loading.tab_diff` set; this worker then performs the deferred work the
+/// full snapshot needs — the single authoritative AI reload (or the deferred
+/// first diff fetch when the fallback path flagged `needs_initial_refresh`),
+/// tab persistence, clearing the loading flag — and bumps `desktop_revision`
+/// so the revision-event poll delivers the full snapshot in ~40–120 ms.
+/// Mirrors `kick_deferred_tab_refresh`: never holds the app lock during the
+/// slow part beyond the re-resolution, and re-checks tab identity.
+pub(crate) fn kick_post_open_offload(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
+    let tab = app.tab();
+    let expect_root = tab.repo_root.clone();
+    let expect_pr = tab.pr_number;
+    let expect_local_view = tab.local_branch_view.clone();
+    if let Ok(mut l) = state.loading.lock() {
+        l.tab_diff = true;
+    }
+    let app_arc = Arc::clone(&state.app);
+    let loading = Arc::clone(&state.loading);
+    let desktop_revision = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        if let Ok(mut app) = app_arc.lock() {
+            // Re-resolve the tab by index + identity in case tabs changed while
+            // the worker waited for the lock.
+            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                t.repo_root == expect_root
+                    && t.pr_number == expect_pr
+                    && t.local_branch_view == expect_local_view
+            }) {
+                let result = if tab.needs_initial_refresh {
+                    // Fallback path (no head oid / 0-file PR): the diff was not
+                    // loaded synchronously — fetch it here, same as the
+                    // deferred-tab-refresh worker.
+                    tab.needs_initial_refresh = false;
+                    if tab.pr_number.is_some() && !tab.is_remote() {
+                        tab.refetch_and_refresh_diff()
+                    } else {
+                        tab.refresh_diff()
+                    }
+                } else {
+                    // Common cache-hit path: the diff is already loaded; only
+                    // the AI sidecar reload was deferred.
+                    tab.reload_ai_state();
+                    Ok(())
+                };
+                if let Err(e) = result {
+                    log::error!(
+                        "er-desktop: post-open offload failed for pr={:?} root={}: {e}",
+                        expect_pr,
+                        expect_root
+                    );
+                }
+                // No persist here: `place_tab` already wrote tabs.json on the
+                // open critical path and the reload changes no persisted field
+                // (TabDescriptor has no mode/AI state).
+            }
+        }
+        if let Ok(mut l) = loading.lock() {
+            l.tab_diff = false;
+        }
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
+        crate::profile_log::profile_log(
+            "post_open_offload",
+            &[("ms", t.elapsed().as_millis().to_string())],
+        );
+    });
+}
+
+/// Decide whether tab `idx` is a PR tab whose branch-scope diff is worth
+/// prefetching in the background. Returns the captured fetch inputs, or `None`.
+///
+/// Rules:
+/// - Requires a PR number (local PR tab or remote tab).
+/// - Local PR tabs whose head branch is checked out locally are skipped: the
+///   working-tree diff is a local `git` call (fast) and preloading it would
+///   risk serving a stale diff after the user edits the working tree.
+/// - Remote tabs are eligible — their branch scope is `gh pr diff --repo`, a
+///   network call with no cache.
+pub(crate) fn branch_preload_target(
+    app: &App,
+    idx: usize,
+) -> Option<er_engine::app::BranchScopeFetchInputs> {
+    let tab = app.tabs.get(idx)?;
+    let pr_number = tab.pr_number?;
+    if tab.local_branch_view.is_none() && tab.remote_repo.is_none() {
+        return None;
+    }
+    if tab.local_branch_checkout_root.is_some() {
+        return None;
+    }
+    // A seeded preload (open-time cache raw) still triggers the worker: it
+    // skips the fetch but preloads the branch-view AI sidecars so the first
+    // Branch click is instant even when the view was collapsed at open.
+    Some(er_engine::app::BranchScopeFetchInputs {
+        repo_root: tab.repo_root.clone(),
+        base_branch: tab.base_branch.clone(),
+        local_branch_view: tab.local_branch_view.clone(),
+        pr_head_ref: tab.pr_head_ref.clone(),
+        pr_number: Some(pr_number),
+        checkout_root: None,
+        remote_repo: tab.remote_repo.clone(),
+    })
+}
+
+/// Kick a background fetch of the active tab's branch-scope raw diff so the
+/// first switch to the Branch view consumes the preload (`TabState`'s
+/// `preloaded_branch_raw`) instead of running `gh pr diff` / `git diff`
+/// synchronously under the App lock.
+///
+/// Invisible to the frontend: no revision bump, no loading flag. The preload
+/// is consumed one-shot by the next branch-scope refresh, and dropped if any
+/// input moved (base, PR, branch, checkout, remote). Errors are logged and
+/// otherwise ignored; a second kick for the same PR while one is in flight is
+/// a no-op.
+pub(crate) fn kick_branch_preload(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
+    let Some(inputs) = branch_preload_target(app, idx) else {
+        return;
+    };
+    let key = inputs.dedupe_key();
+    {
+        let Ok(mut g) = state.branch_preload_in_flight.lock() else {
+            return;
+        };
+        if !g.insert(key.clone()) {
+            return; // already in flight for this PR
+        }
+    }
+    let app_arc = Arc::clone(&state.app);
+    let in_flight = Arc::clone(&state.branch_preload_in_flight);
+    std::thread::spawn(move || {
+        // The worker decides whether a fetch is needed: a seeded raw (the
+        // open-time cache/entry diff) skips the fetch — but the branch-view
+        // AI sidecar preload always runs, so the first Branch click is fast
+        // even when the view was collapsed at open.
+        let seeded_raw = app_arc.lock().ok().and_then(|app| {
+            app.tabs
+                .get(idx)
+                .filter(|t| {
+                    t.repo_root == inputs.repo_root
+                        && t.pr_number == inputs.pr_number
+                        && t.remote_repo == inputs.remote_repo
+                        && t.local_branch_view == inputs.local_branch_view
+                        && t.local_branch_checkout_root == inputs.checkout_root
+                })
+                .and_then(|t| t.preloaded_branch_raw.as_ref().map(|p| p.raw.clone()))
+        });
+        let raw = match seeded_raw {
+            Some(raw) => Some(raw),
+            None => match er_engine::app::fetch_branch_scope_raw("branch", &inputs) {
+                Ok(raw) => Some(raw),
+                Err(e) => {
+                    log::warn!(
+                        "er-desktop: branch preload failed for pr={:?}: {e}",
+                        inputs.pr_number
+                    );
+                    None
+                }
+            },
+        };
+        // Branch-view AI sidecar preload (local PR tabs — their Branch view is
+        // reachable; remote tabs are PrDiff-only and their bucket is the PR
+        // bucket, already loaded). Inputs captured under a brief lock, sidecar
+        // disk reads run OUTSIDE it, write-back under a fresh lock.
+        let ai_preload = raw.as_ref().and_then(|raw| {
+            // Brief lock: capture the load inputs only.
+            let captured = {
+                let app = app_arc.lock().ok()?;
+                let tab = app.tabs.get(idx).filter(|t| {
+                    t.repo_root == inputs.repo_root
+                        && t.pr_number == inputs.pr_number
+                        && t.remote_repo == inputs.remote_repo
+                        && t.local_branch_view == inputs.local_branch_view
+                        && t.local_branch_checkout_root == inputs.checkout_root
+                })?;
+                tab.local_branch_view.as_ref()?;
+                let bucket_dir = tab.branch_bucket_er_dir()?;
+                // Skip when an existing slot already targets this bucket (it
+                // may be fresher); a slot for a DIFFERENT bucket is a dead
+                // letter (branch moved) and will be replaced on write-back.
+                if let Some(existing) = &tab.preloaded_branch_ai {
+                    if existing.bucket_dir == bucket_dir {
+                        return None;
+                    }
+                }
+                Some((bucket_dir, tab.storage_branch_scope().map(str::to_string)))
+            };
+            let (bucket_dir, scope) = captured?;
+            // Outside the lock: pure CPU + sidecar disk reads.
+            let hash = er_engine::ai::compute_diff_hash(raw);
+            let ai = er_engine::ai::load_ai_state(&bucket_dir, &hash, scope.as_deref());
+            Some((bucket_dir, hash, ai))
+        });
+        if let Some((bucket_dir, hash, ai)) = ai_preload {
+            if let Ok(mut app) = app_arc.lock() {
+                if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                    t.repo_root == inputs.repo_root
+                        && t.pr_number == inputs.pr_number
+                        && t.remote_repo == inputs.remote_repo
+                        && t.local_branch_view == inputs.local_branch_view
+                        && t.local_branch_checkout_root == inputs.checkout_root
+                }) {
+                    // The capture guaranteed no same-bucket slot exists; the
+                    // write-back installs only when the slot is absent or is a
+                    // dead letter (branch moved between capture and write-back).
+                    let can_install = match &tab.preloaded_branch_ai {
+                        None => true,
+                        Some(existing) => existing.bucket_dir != bucket_dir,
+                    };
+                    if can_install {
+                        tab.preloaded_branch_ai = Some(er_engine::app::BranchAiPreload {
+                            bucket_dir,
+                            diff_hash: hash,
+                            ai,
+                        });
+                    }
+                }
+            }
+        }
+        if let Some(raw) = raw {
+            if let Ok(mut app) = app_arc.lock() {
+                // Re-resolve the tab by index + identity in case tabs
+                // changed while the worker waited for the lock. Remote
+                // tabs share repo_root (current dir), so include the
+                // distinguishing fields; base_branch/pr_head_ref drift is
+                // still caught by consume-side validation (the
+                // authoritative gate, tested).
+                if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                    t.repo_root == inputs.repo_root
+                        && t.pr_number == inputs.pr_number
+                        && t.remote_repo == inputs.remote_repo
+                        && t.local_branch_view == inputs.local_branch_view
+                        && t.local_branch_checkout_root == inputs.checkout_root
+                }) {
+                    if tab.preloaded_branch_raw.is_none() {
+                        tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
+                            raw,
+                            base_branch: inputs.base_branch.clone(),
+                            pr_number: inputs.pr_number,
+                            local_branch_view: inputs.local_branch_view.clone(),
+                            checkout_root: inputs.checkout_root.clone(),
+                            remote_repo: inputs.remote_repo.clone(),
+                            pr_head_ref: inputs.pr_head_ref.clone(),
+                            parity: true,
+                        });
+                    }
+                }
+            }
+        }
+        if let Ok(mut g) = in_flight.lock() {
+            g.remove(&key);
+        }
+    });
+}
+
+/// Kick a background fetch of a local PR tab's git refs
+/// (`refs/er/pr/<n>/head` and a fresh `origin/<base>`) so a tab opened via the
+/// fast `enter_pr_diff_preloaded` path — which deliberately skips the two
+/// sequential network ref-fetches on the open critical path — ends up with
+/// real local refs shortly after placement. The PR Diff view renders from the
+/// already-fetched `gh pr diff` text and never needs these refs; they serve
+/// local-ref consumers: the Branch-scope staged diff for `committed_unpushed`,
+/// History-mode commit diffs, `refetch_and_refresh_diff`, and the TUI.
+///
+/// Applying the results under a brief lock replicates exactly the state the
+/// synchronous first-entry block of `enter_pr_diff_impl` would have set
+/// (`pr_head_ref`, `base_branch`, `last_diff_head_oid`, `pr_refs_fetched`), so
+/// behavior is identical whether the refs land on the critical path or in the
+/// background. Invisible to the frontend until applied: no loading flag; a
+/// `desktop_revision` bump on success so the next poll reflects the applied
+/// refs. Errors are logged and otherwise ignored — every consumer that needs
+/// the refs either fetches on demand (History mode) or re-fetches anyway
+/// (sync). Skipped when the refs already exist locally (e.g. an earlier sync
+/// materialized them). Deduped via `pr_ref_fetch_in_flight`; a second kick for
+/// the same PR while one is in flight is a no-op.
+pub(crate) fn kick_pr_ref_fetch(app: &mut App, state: &AppState) {
+    let idx = app.active_tab;
+    let Some(tab) = app.tabs.get(idx) else {
+        return;
+    };
+    let Some(pr_number) = tab.pr_number else {
+        return;
+    };
+    if tab.is_remote() {
+        return; // remote-only tabs have no local clone to fetch into
+    }
+    if tab.local_branch_checkout_root.is_some() {
+        return; // working-tree views; the local PR refs are not on the diff path
+    }
+    let repo_root = tab.repo_root.clone();
+    let base_branch = tab.base_branch.clone();
+    let head_ref = format!("refs/er/pr/{}/head", pr_number);
+    if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
+        return; // refs already materialized (e.g. by an earlier sync)
+    }
+    let key = (repo_root.clone(), pr_number);
+    {
+        let Ok(mut g) = state.pr_ref_fetch_in_flight.lock() else {
+            return;
+        };
+        if !g.insert(key.clone()) {
+            return; // already in flight for this PR
+        }
+    }
+    let app_arc = Arc::clone(&state.app);
+    let in_flight = Arc::clone(&state.pr_ref_fetch_in_flight);
+    let desktop_rev = Arc::clone(&state.desktop_revision);
+    std::thread::spawn(move || {
+        let t = std::time::Instant::now();
+        // Independent fetches — run them in parallel like the open path does.
+        let (head_res, base_res) = std::thread::scope(|s| {
+            let head_root = repo_root.clone();
+            let base_root = repo_root.clone();
+            let base_branch = base_branch.clone();
+            let head_h = s.spawn(move || {
+                er_engine::github::fetch_pr_head(pr_number, &head_root).map_err(|e| e.to_string())
+            });
+            let base_h = s.spawn(move || {
+                er_engine::github::fetch_base_branch_ref(
+                    &base_root,
+                    base_branch.trim_start_matches("origin/"),
+                )
+                .map_err(|e| e.to_string())
+            });
+            let head_res = head_h
+                .join()
+                .unwrap_or_else(|_| Err("pr head fetch thread panicked".to_string()));
+            let base_res = base_h
+                .join()
+                .unwrap_or_else(|_| Err("base ref fetch thread panicked".to_string()));
+            (head_res, base_res)
+        });
+        match (head_res, base_res) {
+            (Ok(head_ref), Ok(base_ref)) => {
+                if let Ok(mut app) = app_arc.lock() {
+                    // Re-resolve the tab by index + identity in case tabs
+                    // changed while the worker waited for the lock.
+                    if let Some(tab) = app
+                        .tabs
+                        .get_mut(idx)
+                        .filter(|t| t.repo_root == repo_root && t.pr_number == Some(pr_number))
+                    {
+                        tab.pr_head_ref = Some(head_ref);
+                        tab.base_branch = base_ref;
+                        // Deliberately NOT updating `last_diff_head_oid`: the
+                        // two-phase open serves the open-time diff, and this
+                        // background fetch would otherwise suppress the stale
+                        // pill while the displayed diff is at an older head
+                        // (review-fix-loop A2). Manual Sync realigns it.
+                        tab.pr_refs_fetched = true;
+                        desktop_rev.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+                log::info!(
+                    "pr_ref_fetch repo={} pr={} ok ms={}",
+                    repo_root,
+                    pr_number,
+                    t.elapsed().as_millis()
+                );
+            }
+            (Err(e), _) | (_, Err(e)) => log::warn!(
+                "pr_ref_fetch repo={} pr={} failed ms={} err={}",
+                repo_root,
+                pr_number,
+                t.elapsed().as_millis(),
+                e
+            ),
+        }
+        if let Ok(mut g) = in_flight.lock() {
+            g.remove(&key);
+        }
     });
 }
 
@@ -7495,7 +9198,7 @@ pub fn reorder_tabs(
 
 #[tauri::command]
 #[allow(non_snake_case, clippy::too_many_arguments)]
-pub fn add_ui_annotation(
+pub async fn add_ui_annotation(
     url: String,
     selector: Option<String>,
     bbox: [f64; 4],
@@ -7504,50 +9207,68 @@ pub fn add_ui_annotation(
     screenshotDataUrl: Option<String>,
     elementContext: Option<String>,
     domContext: Option<serde_json::Value>,
-    state: State<AppState>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let mut anns = er_engine::ai::load_ui_annotations(&dir);
-    let id = format!(
-        "ui-{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0)
-    );
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        let dir = app.tab().comments_dir();
+        let mut anns = er_engine::ai::load_ui_annotations(&dir);
+        let id = id.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+            format!(
+                "ui-{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis())
+                    .unwrap_or(0)
+            )
+        });
+        if !id.starts_with("ui-")
+            || id.contains(['/', '\\'])
+            || id.contains("..")
+            || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+        {
+            return Err("invalid annotation id".to_string());
+        }
 
-    // If a screenshot data URL was provided, decode and persist it under
-    // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
-    // the annotation is still saved without a screenshot path.
-    let screenshot_path = match screenshotDataUrl.as_deref() {
-        Some(data_url) => decode_data_url_png(data_url)
-            .and_then(|bytes| save_screenshot_bytes(&dir, &id, &bytes).ok()),
-        None => None,
-    };
+        // If a screenshot data URL was provided, decode and persist it under
+        // `<comments_dir>/screenshots/<id>.png`. Failure to decode is non-fatal:
+        // the annotation is still saved without a screenshot path.
+        let screenshot_path = match screenshotDataUrl.as_deref() {
+            Some(data_url) => decode_data_url_png(data_url)
+                .and_then(|bytes| save_screenshot_bytes(&dir, &id, &bytes).ok()),
+            None => None,
+        };
 
-    let ts = chrono_like_timestamp();
-    anns.push(er_engine::ai::UiAnnotation {
-        id,
-        url,
-        selector,
-        box_x: bbox[0],
-        box_y: bbox[1],
-        box_w: bbox[2],
-        box_h: bbox[3],
-        viewport_w: viewport[0],
-        viewport_h: viewport[1],
-        text,
-        timestamp: ts,
-        author: "You".to_string(),
-        screenshot_path,
-        stale: false,
-        element_context: elementContext,
-        dom_context: domContext,
-    });
-    er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        let ts = chrono_like_timestamp();
+        anns.push(er_engine::ai::UiAnnotation {
+            id,
+            url,
+            selector,
+            box_x: bbox[0],
+            box_y: bbox[1],
+            box_w: bbox[2],
+            box_h: bbox[3],
+            viewport_w: viewport[0],
+            viewport_h: viewport[1],
+            text,
+            timestamp: ts,
+            author: "You".to_string(),
+            screenshot_path,
+            stale: false,
+            element_context: elementContext,
+            dom_context: domContext,
+        });
+        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Decode a `data:image/png;base64,<payload>` URL into raw PNG bytes. Returns
@@ -7670,14 +9391,25 @@ fn base64_encode(input: &[u8]) -> String {
 }
 
 #[tauri::command]
-pub fn delete_ui_annotation(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let dir = app.tab().comments_dir();
-    let mut anns = er_engine::ai::load_ui_annotations(&dir);
-    anns.retain(|a| a.id != id);
-    er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn delete_ui_annotation(
+    id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        let dir = app.tab().comments_dir();
+        let mut anns = er_engine::ai::load_ui_annotations(&dir);
+        anns.retain(|a| a.id != id);
+        er_engine::ai::save_ui_annotations(&dir, &anns).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -7791,8 +9523,9 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     // Drain pending agent log entries and check for completed commands.
     app.drain_agent_log();
     // Consume completed command receivers — updates command_status to done/failed
-    // and emits completion log entries; also resets last_ai_check on successful
-    // review so the .er reload below picks up freshly written files.
+    // and emits completion log entries. Agent-written sidecars have newer mtimes
+    // than the last check, so the .er reload below picks them up via the mtime
+    // comparison (no forced last_ai_check reset — O5).
     app.check_commands();
     // Same lifecycle for app-level background tasks (cross-tab reviews).
     // Only log poll diagnostics when there's actually a task in flight to avoid
@@ -8030,7 +9763,15 @@ fn compute_content_revision(app: &App) -> u64 {
             last.timestamp.hash(&mut h);
             last.synced.hash(&mut h);
             last.resolved.hash(&mut h);
+            last.outdated.hash(&mut h);
+            last.stale.hash(&mut h);
+            last.anchor_status.hash(&mut h);
         }
+        gc.comments
+            .iter()
+            .filter(|c| c.stale || c.outdated)
+            .count()
+            .hash(&mut h);
     }
     if let Some(review) = &tab.ai.review {
         review.diff_hash.hash(&mut h);
@@ -8785,6 +10526,7 @@ mod tests {
                 context_before: vec![],
                 context_after: vec![],
                 old_line_start: None,
+                side: "RIGHT".to_string(),
                 hunk_header: String::new(),
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),
@@ -8988,7 +10730,7 @@ mod tests {
 
         let mut incoming = TabState::new_for_test(vec![]);
         incoming.repo_root = "new".into();
-        place_tab(&mut app, incoming, true);
+        place_tab(&mut app, incoming, true, false);
 
         assert_eq!(app.tabs.len(), 2, "replace must not grow tabs");
         assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
@@ -9005,11 +10747,149 @@ mod tests {
 
         let mut incoming = TabState::new_for_test(vec![]);
         incoming.repo_root = "new".into();
-        place_tab(&mut app, incoming, false);
+        place_tab(&mut app, incoming, false, false);
 
         assert_eq!(app.tabs.len(), 2, "append grows tabs by one");
         assert_eq!(app.active_tab, 1, "new tab is focused");
         assert_eq!(app.tabs[1].repo_root, "new");
+    }
+
+    #[test]
+    fn place_tab_skip_storage_sync_still_places_and_focuses() {
+        use er_engine::app::TabState;
+
+        // The PR-open hot path skips the storage sync (first-paint plan
+        // step 1): `enter_pr_diff_*` performs the authoritative reload right
+        // after, so placement must still work and focus the tab.
+        let mut app = make_app_with_n_tabs(1);
+        app.active_tab = 0;
+
+        let mut incoming = TabState::new_for_test(vec![]);
+        incoming.repo_root = "new".into();
+        place_tab(&mut app, incoming, true, true);
+
+        assert_eq!(app.tabs.len(), 1, "replace must not grow tabs");
+        assert_eq!(app.active_tab, 0, "active stays on the replaced slot");
+        assert_eq!(app.tabs[0].repo_root, "new", "slot got the new tab");
+    }
+
+    #[test]
+    fn branch_preload_target_skips_non_pr_tabs() {
+        let app = make_app_with_n_tabs(1);
+        assert!(branch_preload_target(&app, 0).is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_skips_pr_without_number() {
+        let mut app = make_app_with_n_tabs(1);
+        app.tab_mut().local_branch_view = Some("feature".into());
+        assert!(branch_preload_target(&app, 0).is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_local_pr_without_checkout_is_eligible() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.local_branch_view = Some("feature-x".into());
+        tab.pr_number = Some(42);
+        tab.pr_head_ref = Some("refs/er/pr/42/head".into());
+        tab.base_branch = "main".into();
+        let inputs = branch_preload_target(&app, 0).expect("eligible");
+        assert_eq!(inputs.pr_number, Some(42));
+        assert_eq!(inputs.local_branch_view.as_deref(), Some("feature-x"));
+        assert_eq!(inputs.base_branch, "main");
+        assert!(inputs.remote_repo.is_none());
+        assert!(inputs.checkout_root.is_none());
+    }
+
+    #[test]
+    fn branch_preload_target_skips_checked_out_pr() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.local_branch_view = Some("feature-x".into());
+        tab.pr_number = Some(42);
+        tab.local_branch_checkout_root = Some("/worktree".into());
+        assert!(
+            branch_preload_target(&app, 0).is_none(),
+            "working-tree scope is local + staleness-prone — no preload"
+        );
+    }
+
+    #[test]
+    fn branch_preload_target_remote_pr_is_eligible() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(7);
+        let inputs = branch_preload_target(&app, 0).expect("eligible");
+        assert_eq!(inputs.remote_repo.as_deref(), Some("owner/repo"));
+        assert_eq!(inputs.pr_number, Some(7));
+        assert_eq!(inputs.dedupe_key(), ("owner/repo".to_string(), 7));
+    }
+
+    #[test]
+    fn remote_pr_tab_from_entry_builds_without_network() {
+        use crate::remote_pr_open_cache::RemotePrOpenEntry;
+        let tmp = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let pr_ref = er_engine::github::PrRef {
+            owner: "o".to_string(),
+            repo: "r".to_string(),
+            number: 9,
+        };
+        const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
+        let tab = remote_pr_tab_from_entry(
+            &pr_ref,
+            RemotePrOpenEntry {
+                base_branch: "main".into(),
+                head_branch: "feature".into(),
+                raw_diff: DIFF.into(),
+                pr_data: None,
+                pr_commits: Vec::new(),
+                head_oid: Some("oid-1".into()),
+                last_touched: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(tab.remote_repo.as_deref(), Some("o/r"));
+        assert_eq!(tab.pr_number, Some(9));
+        assert_eq!(tab.base_branch, "main");
+        assert_eq!(
+            tab.last_diff_head_oid.as_deref(),
+            Some("oid-1"),
+            "staleness baseline = the oid the cached diff was fetched at (R1)"
+        );
+        assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.files[0].path, "f.rs");
+        assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
+        assert!(
+            tab.preloaded_branch_raw.is_some(),
+            "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
+        );
+    }
+
+    #[test]
+    fn branch_preload_target_stays_eligible_when_preload_already_seeded() {
+        use er_engine::app::PreloadedBranchRaw;
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("owner/repo".into());
+        tab.pr_number = Some(7);
+        tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
+            raw: "diff".into(),
+            base_branch: "main".into(),
+            pr_number: Some(7),
+            local_branch_view: None,
+            checkout_root: None,
+            remote_repo: Some("owner/repo".into()),
+            pr_head_ref: None,
+            parity: true,
+        });
+        assert!(
+            branch_preload_target(&app, 0).is_some(),
+            "seeded tabs stay eligible: the worker skips the refetch but still \
+             preloads the branch-view AI sidecars (collapsed-view fix)"
+        );
     }
 
     #[test]
@@ -9202,5 +11082,149 @@ mod tests {
         assert!(!version_is_newer("0.4.6", "0.4.7"));
         assert!(version_is_newer("0.4.7", "0.4"));
         assert!(!version_is_newer("not-a-version", "0.4.7"));
+    }
+
+    /// ⌘K / AI Hub actions (run review, change model, triage, …) used to be
+    /// sync Tauri commands: they locked `App`, rebuilt a full snapshot (and for
+    /// reviews also shelled out to git / wrote diff artifacts) on the **main
+    /// thread**, freezing the window for a noticeable stretch — the same class
+    /// of bug as the file-filter freeze (`set_filter` → `run_blocking`).
+    ///
+    /// Guard: every palette-hot leaf command must be `pub async fn` whose body
+    /// contains `run_blocking`. Thin `.await` wrappers (triage / files /
+    /// professor → scoped_review) must stay async and lock-free.
+    #[test]
+    fn cmdk_ai_actions_must_run_off_main_thread() {
+        let src = include_str!("commands.rs");
+        let must_run_blocking = [
+            "set_ai_selection",
+            "set_ai_model",
+            "set_ai_effort",
+            "list_ai_providers",
+            "run_ai_review",
+            "run_ai_scoped_review",
+            "run_ai_validate",
+            "run_ai_expert_review",
+            "generate_tour",
+            "export_to_agent",
+            "refresh_diff",
+            "force_refresh_diff",
+            // Local-first thread writes used to be sync Tauri commands: they
+            // locked App, reloaded every AI sidecar, and rebuilt the snapshot
+            // on the main thread — freeze + spinner per inline comment even
+            // though the comment is unpushed.
+            "add_comment",
+            "add_question",
+            "add_note",
+            "reply_to_thread",
+            "delete_thread",
+            "resolve_thread",
+            "update_thread_message",
+            "dismiss_finding",
+            "promote_to_comment",
+            "promote_to_note",
+            "bulk_review_pillar",
+            "unbulk_review_pillar",
+            "add_ui_annotation",
+            "delete_ui_annotation",
+        ];
+        let wrappers = [
+            "run_ai_triage_review",
+            "run_ai_review_files",
+            "run_ai_professor_review",
+        ];
+
+        fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
+            let sig = format!("pub async fn {name}");
+            let start = src.find(&sig)?;
+            let rest = &src[start + 1..];
+            let next = [
+                "\n#[tauri::command]",
+                "\npub async fn ",
+                "\npub fn ",
+                "\npub use ",
+            ]
+            .iter()
+            .filter_map(|m| rest.find(m).map(|i| i + 1))
+            .min()
+            .unwrap_or(rest.len());
+            Some(&src[start..start + 1 + next])
+        }
+
+        let mut failures = Vec::new();
+        for name in must_run_blocking {
+            let async_sig = format!("pub async fn {name}");
+            let sync_sig = format!("pub fn {name}");
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` (sync / main-thread) — must be `pub async fn` + run_blocking"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
+                continue;
+            }
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains("run_blocking") {
+                failures.push(format!("{name} is async but its body has no run_blocking"));
+            }
+            if matches!(
+                name,
+                "add_comment"
+                    | "add_question"
+                    | "add_note"
+                    | "reply_to_thread"
+                    | "delete_thread"
+                    | "resolve_thread"
+                    | "update_thread_message"
+                    | "dismiss_finding"
+                    | "promote_to_comment"
+                    | "promote_to_note"
+                    | "bulk_review_pillar"
+                    | "unbulk_review_pillar"
+                    | "add_ui_annotation"
+                    | "delete_ui_annotation"
+            ) && !body.contains("abort_wrong_view")
+            {
+                failures.push(format!(
+                    "{name} must abort when the optimistic view no longer matches"
+                ));
+            }
+        }
+        for name in wrappers {
+            let async_sig = format!("pub async fn {name}");
+            let sync_sig = format!("pub fn {name}");
+            if !src.contains(&async_sig) {
+                if src.contains(&sync_sig) {
+                    failures.push(format!(
+                        "{name} is still `pub fn` — must be `pub async fn` wrapper"
+                    ));
+                } else {
+                    failures.push(format!("{name} signature not found in commands.rs"));
+                }
+                continue;
+            }
+            let Some(body) = body_of(src, name) else {
+                failures.push(format!("{name} body could not be extracted"));
+                continue;
+            };
+            if !body.contains(".await") {
+                failures.push(format!("{name} wrapper body has no .await"));
+            }
+            if body.contains("state.app.lock") {
+                failures.push(format!(
+                    "{name} should stay a thin .await wrapper (no App lock)"
+                ));
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "⌘K/AI actions would freeze the UI:\n{}",
+            failures.join("\n")
+        );
     }
 }

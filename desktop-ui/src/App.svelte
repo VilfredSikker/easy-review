@@ -13,7 +13,6 @@
   import Toast from "$lib/components/Toast.svelte";
   import BackgroundTasks from "$lib/components/BackgroundTasks.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
-  import AiActionPalette from "$lib/components/AiActionPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
   import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
@@ -26,6 +25,7 @@
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
+  import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
@@ -36,6 +36,7 @@
   import { installExternalLinkGuard } from "$lib/openExternalUrl";
   import { startWindowDrag } from "$lib/windowDrag";
   import { applyTheme } from "$lib/themes";
+  import { snapshotViewIdentity } from "$lib/snapshotChrome";
   const panels = $derived(app.snapshot?.panels);
 
   // Follow the configured theme (`display.theme`, same as the TUI): override
@@ -74,11 +75,9 @@
   let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
   let resizingRightPanel = $state(false);
 
-  function expandRightPanelToTab(tab: "branch" | "review" | "notes") {
+  function expandRightPanelToTab(tab: RightPanelTab) {
     rightRail.expand();
-    try {
-      localStorage.setItem("rightPanelActiveTab", tab);
-    } catch { /* ignore */ }
+    rightPanelTab.set(tab);
   }
 
   function clampRightPanelWidth(w: number): number {
@@ -361,21 +360,23 @@
     </main>
 
     {#if showDiff && app.mainView === "diff"}
-      {#if rightRail.collapsed}
-        <CollapsedRightRail
-          ai={app.snapshot?.ai ?? null}
-          onExpand={expandRightPanelToTab}
-        />
-      {:else}
-        <RightPanel
-          ai={app.snapshot?.ai ?? null}
-          pr={app.snapshot?.pr ?? null}
-          width={rightPanelWidth}
-          dragging={resizingRightPanel}
-          onResizeStart={onRightPanelResizeStart}
-          onCollapseToggle={rightRail.toggle}
-        />
-      {/if}
+      {#key app.snapshot ? snapshotViewIdentity(app.snapshot) : "none"}
+        {#if rightRail.collapsed}
+          <CollapsedRightRail
+            ai={app.snapshot?.ai ?? null}
+            onExpand={expandRightPanelToTab}
+          />
+        {:else}
+          <RightPanel
+            ai={app.snapshot?.ai ?? null}
+            pr={app.snapshot?.pr ?? null}
+            width={rightPanelWidth}
+            dragging={resizingRightPanel}
+            onResizeStart={onRightPanelResizeStart}
+            onCollapseToggle={rightRail.toggle}
+          />
+        {/if}
+      {/key}
     {/if}
   </div>
 
@@ -418,7 +419,6 @@
     </div>
   {/if}
   <CommandPalette />
-  <AiActionPalette />
   <AiReviewFilesModal />
   <ProfessorFocusModal />
 

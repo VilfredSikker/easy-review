@@ -4,7 +4,6 @@ pub mod ai;
 pub mod app;
 #[cfg(feature = "ui")]
 pub mod arena;
-pub mod cache;
 pub mod config;
 #[allow(unused_imports)]
 pub use config::{
@@ -13,6 +12,7 @@ pub use config::{
 };
 pub mod agent_runtime;
 pub mod dev_log;
+pub mod diagram_upload;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
@@ -22,6 +22,8 @@ pub mod github;
 pub mod highlight;
 pub mod model_discovery;
 pub mod paths;
+pub mod pr_resolve;
+pub mod pr_review_feedback;
 pub mod projects_pins;
 pub mod review_queue;
 pub mod sidecar_specs;

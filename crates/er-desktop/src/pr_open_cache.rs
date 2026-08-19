@@ -100,15 +100,11 @@ pub fn save_persisted_pr_open_cache(cache: &Arc<Mutex<HashMap<PrOpenCacheKey, Pr
         version: PR_OPEN_CACHE_SCHEMA_VERSION,
         entries: build_persisted_entries(&cache_map),
     };
-    let Ok(json) = serde_json::to_string_pretty(&payload) else {
-        return;
-    };
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, json).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
+    if let Err(e) = crate::persist::save_json_atomic(&path, &payload) {
+        log::error!(
+            "[pr-open-cache] failed to persist open-diff cache at {}: {e}",
+            path.display()
+        );
     }
 }
 

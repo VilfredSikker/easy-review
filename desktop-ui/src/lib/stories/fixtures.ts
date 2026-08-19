@@ -218,6 +218,27 @@ export const filePageTest: FileSnapshot = {
 
 // ─── AI snapshots ───────────────────────────────────────────────────────────
 
+/** Mirrors `diagram_presets()` in er-engine for Storybook (no live snapshot).
+ *  Production UI reads `ai.diagram_presets` from the snapshot wire contract;
+ *  fixtures can't import the Rust catalog, so keep this list aligned manually. */
+export const diagramPresetsFixture = [
+  {
+    kind: "mental-model",
+    label: "Mental model",
+    description: "High-level map of the areas this diff touches and how they relate",
+  },
+  {
+    kind: "subsystems",
+    label: "Subsystems",
+    description: "Changed files grouped by subsystem, with interactions",
+  },
+  {
+    kind: "flows",
+    label: "Flows",
+    description: "Runtime flow through the changed code for the main scenarios",
+  },
+];
+
 export const aiWithFindings: AiSnapshot = {
   fresh: true,
   stale_reason: null,
@@ -288,9 +309,31 @@ export const aiWithFindings: AiSnapshot = {
       agent_label: "General",
     },
   ],
+  file_risks: [],
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [
+    {
+      id: "mental-model",
+      kind: "mental-model",
+      title: "Variant warning copy flow",
+      prompt: "",
+      mermaid: "flowchart TD\n  checkout[\"Checkout page\"]\n  copy[\"variant-warning-copy.ts\"]\n  resolution[\"experiment-template-resolution.ts\"]\n  checkout -->|\"renders warnings\"| copy\n  copy -->|\"resolves template\"| resolution",
+      fresh: true,
+      created_at: "2026-08-11T10:00:00Z",
+    },
+    {
+      id: "flows",
+      kind: "flows",
+      title: "Warning resolution flow",
+      prompt: "",
+      mermaid: "sequenceDiagram\n  participant UI as Checkout\n  participant Lib as WarningCopy\n  UI->>Lib: getWarning(variant)\n  Lib-->>UI: message",
+      fresh: false,
+      created_at: "2026-08-11T09:00:00Z",
+    },
+  ],
+  diagram_presets: diagramPresetsFixture,
 };
 
 export const aiEmpty: AiSnapshot = {
@@ -309,9 +352,57 @@ export const aiEmpty: AiSnapshot = {
   unpushed: 0,
   threads: [],
   findings: [],
+  file_risks: [],
   has_review_json: false,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [],
+  diagram_presets: diagramPresetsFixture,
+};
+
+/** Completed review that wrote summary.md but no findings. */
+export const aiEmptyWithSummary: AiSnapshot = {
+  ...aiEmpty,
+  has_review_json: true,
+  summary_markdown:
+    "No actionable findings were identified. JSON files were validated successfully.\n\nThe plates page was removed and templates now live under Settings. Behavior matches the previous page for the cases covered by tests.",
+};
+
+/** Completed review with file risk assessments but no line findings. */
+export const aiFileRisksOnly: AiSnapshot = {
+  ...aiEmpty,
+  has_review_json: true,
+  summary_markdown:
+    "No correctness, security, or reliability findings were identified on changed lines. The checklist records the key manual verification points.",
+  file_risks: [
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/embeddable/buildEmbedRef.ts",
+      risk: "high",
+      risk_reason:
+        "Defines the persisted embed wire format and validates hrefs before they reach rendered links.",
+      summary: "Adds safe relative source metadata to embed serialization and parsing.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/extensions/ReportEmbed.svelte.ts",
+      risk: "high",
+      risk_reason:
+        "Replaces the report node view and adds editor transactions for persisted title changes.",
+      summary: "Uses the report card node view, persists titles, and handles input/link events.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/ReportEmbedCard.svelte",
+      risk: "med",
+      risk_reason:
+        "Introduces persisted title editing and source-link rendering in the report node UI.",
+      summary: "Renders report embeds in a card with fallback titles and a source link.",
+    },
+    {
+      path: "packages/discovery-platform/src/lib/components/editor/ReportEmbedCard.test.ts",
+      risk: "low",
+      risk_reason: "Adds focused component coverage for the new card interactions.",
+      summary: "Tests source visibility, title editing, and renderer errors.",
+    },
+  ],
 };
 
 function professorFinding(id: string, file: string, line: number, title: string): AiSnapshot["findings"][0] {
@@ -362,9 +453,12 @@ export const aiProfessorOnly: AiSnapshot = {
       severity: "med",
     },
   ],
+  file_risks: [],
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
+  diagrams: [],
+  diagram_presets: diagramPresetsFixture,
 };
 
 /** General + Professor + Security for multi-agent dropdown. */
@@ -413,9 +507,9 @@ export const prDraft: PrSnapshot = {
 // ─── worktrees + commits ────────────────────────────────────────────────────
 
 export const worktreesMulti: WorktreeSnapshot[] = [
-  { path: "/Users/vilfred/Projects/discovery-platform", branch: "show-experiment-params", is_current: true, is_pr: false, pr_number: null, is_merged: false },
-  { path: "/Users/vilfred/Projects/discovery-platform/.worktrees/fix-forward-button", branch: "fix-forward-button", is_current: false, is_pr: true, pr_number: 142, is_merged: false },
-  { path: "/Users/vilfred/Projects/.codex/worktrees/c175", branch: "c175", is_current: false, is_pr: false, pr_number: null, is_merged: true },
+  { path: "/Users/vilfred/Projects/discovery-platform", branch: "show-experiment-params", is_current: true, is_pr: false, pr_number: null, is_merged: false, remote: "Vilfred/discovery-platform" },
+  { path: "/Users/vilfred/Projects/discovery-platform/.worktrees/fix-forward-button", branch: "fix-forward-button", is_current: false, is_pr: true, pr_number: 142, is_merged: false, remote: "Vilfred/discovery-platform" },
+  { path: "/Users/vilfred/Projects/.codex/worktrees/c175", branch: "c175", is_current: false, is_pr: false, pr_number: null, is_merged: true, remote: "Vilfred/discovery-platform" },
 ];
 
 const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
@@ -435,6 +529,7 @@ export const tabsWorkingActive: TabSummary[] = [
     kind: "working",
     branch: "show-experiment-params",
     pr_number: 142,
+    remote: "Vilfred/discovery-platform",
     repo_root: "/Users/vilfred/Projects/discovery-platform",
     is_active: true,
     change_token: "",
@@ -551,6 +646,7 @@ export const remoteOnlyProjectSnapshot: AppSnapshot = {
       kind: "remote_pr",
       branch: null,
       pr_number: 123,
+      remote: "owner/repo",
       repo_root: "",
       is_active: true,
       change_token: "",

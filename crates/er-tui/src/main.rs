@@ -731,6 +731,7 @@ mod tests {
                 context_before: vec![],
                 context_after: vec![],
                 old_line_start: None,
+                side: "RIGHT".to_string(),
                 hunk_header: String::new(),
                 anchor_status: "original".to_string(),
                 relocated_at_hash: String::new(),

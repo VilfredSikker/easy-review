@@ -1,6 +1,7 @@
 //! Read Easy Review desktop project config (`~/.config/er/projects.json`).
 
 use anyhow::{Context, Result};
+use er_engine::pr_resolve::{self, ProjectHint, ResolvePrRefInput, ResolvedPrRef};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -35,6 +36,18 @@ pub fn load_projects() -> ProjectsFile {
     serde_json::from_str(&content).unwrap_or_default()
 }
 
+pub fn project_hints(file: &ProjectsFile) -> Vec<ProjectHint> {
+    file.projects
+        .iter()
+        .map(|p| ProjectHint {
+            id: p.id.clone(),
+            name: p.name.clone(),
+            root_path: p.root_path.clone(),
+            remote: p.remote.clone(),
+        })
+        .collect()
+}
+
 /// Normalize `owner/repo` or a GitHub URL into `(owner, repo)`.
 pub fn parse_repo_slug(remote: &str) -> Result<(String, String)> {
     er_engine::github::parse_remote_url(remote)
@@ -53,16 +66,42 @@ pub fn parse_repo_slug(remote: &str) -> Result<(String, String)> {
         .with_context(|| format!("invalid repo slug: {remote}"))
 }
 
+/// Resolved PR target for MCP tools.
+pub type ResolvedPr = ResolvedPrRef;
+
+#[derive(Debug, Clone, Default)]
+pub struct PrTargetInput<'a> {
+    pub ref_str: Option<&'a str>,
+    pub pr_url: Option<&'a str>,
+    pub repo: Option<&'a str>,
+    pub project_id: Option<&'a str>,
+    pub number: Option<u64>,
+}
+
+pub fn resolve_pr_target(input: &PrTargetInput<'_>) -> Result<ResolvedPr> {
+    let file = load_projects();
+    let hints = project_hints(&file);
+    pr_resolve::resolve_pr_ref(&ResolvePrRefInput {
+        ref_str: input.ref_str,
+        pr_url: input.pr_url,
+        repo: input.repo,
+        project_id: input.project_id,
+        number: input.number,
+        projects: &hints,
+        active_project_id: file.active_id.as_deref(),
+    })
+}
+
 /// Resolve `(owner, repo)` from explicit slug, project id, or active project.
 pub fn resolve_repo(
     repo: Option<&str>,
     project_id: Option<&str>,
 ) -> Result<(String, String, Option<String>)> {
+    let file = load_projects();
     if let Some(slug) = repo {
         let (o, r) = parse_repo_slug(slug)?;
         return Ok((o, r, None));
     }
-    let file = load_projects();
     let project = if let Some(id) = project_id {
         file.projects
             .iter()
@@ -96,5 +135,30 @@ mod tests {
         assert_eq!((o, r), ("acme".into(), "widgets".into()));
         let (o, r) = parse_repo_slug("https://github.com/acme/widgets.git").unwrap();
         assert_eq!((o.as_str(), r.as_str()), ("acme", "widgets"));
+    }
+
+    #[test]
+    fn resolve_pr_from_url() {
+        let pr = resolve_pr_target(&PrTargetInput {
+            pr_url: Some("https://github.com/acme/widgets/pull/42/files"),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(pr.owner, "acme");
+        assert_eq!(pr.repo, "widgets");
+        assert_eq!(pr.number, 42);
+        assert!(pr.bucket_path.contains("prs/pr-42"));
+    }
+
+    #[test]
+    fn resolve_pr_from_repo_and_number() {
+        let pr = resolve_pr_target(&PrTargetInput {
+            repo: Some("acme/widgets"),
+            number: Some(7),
+            ..Default::default()
+        })
+        .unwrap();
+        assert_eq!(pr.number, 7);
+        assert!(pr.bucket_path.contains("prs/pr-7"));
     }
 }

@@ -151,7 +151,7 @@ Reuse **concepts** from `desktop-ui` (flat rows, virtual scroll, inline `Finding
 
 ### 6. Background sync and freshness (medium)
 
-Desktop loops (`er-desktop/src/main.rs`): ~45s comment sync, ~60s remote diff refresh (`head_oid` dedup in `remote_diff_sync.rs`).
+Desktop loops (`er-desktop/src/main.rs`): ~45s comment sync, ~60s PR-head probe (stale pill; remote diff refresh is manual Sync only).
 
 Mobile constraints:
 

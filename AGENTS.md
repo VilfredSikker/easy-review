@@ -4,6 +4,12 @@ Orientation for coding agents working in this repo. `CLAUDE.md` is the full
 architecture and conventions reference; this file covers build/test commands,
 environment gotchas, and a map of the desktop app, which spans three layers.
 
+## Branching
+
+- **Bug fixes:** PRs to `main`.
+- **Everything else:** PRs to **`release/v0.4.14`**.
+- Release branches include release notes.
+
 ## Build / Test / Lint / Run
 
 A [`just`](https://just.systems) front-end wraps these (`just` to list, e.g.
@@ -20,7 +26,8 @@ scripts/aliases below, so either form works.
 | Test desktop backend | `cargo test -p er-desktop` |
 | Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; setup: `docs/guide/mcp.html`) |
 | npm MCP launcher | `npm/er-mcp` — `npx -y easy-review-mcp` (downloads release binary) |
-| Install ER agent skill | `npx skills add VilfredSikker/easy-review -s er-review -g` — see `skills/er-review/` |
+| Install ER agent skills | `bunx @easy-review/skills` or `npx @easy-review/skills` — see `npm/skills/` |
+| Test skills installer | `just test-skills-npm` |
 | Desktop dev | `./scripts/tauri-dev.sh` |
 | Desktop release (local/ad-hoc) | `./scripts/tauri-build.sh` or `cargo desktop-release` |
 | Desktop signed release | `just sign` (or `just sign-release-desktop`) — guide: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) (`.env.signing`) |
@@ -34,7 +41,7 @@ scripts/aliases below, so either form works.
 ## Environment Gotchas
 
 - **`target/` bloat**: `cargo test` / `cargo build` without `-p` compile **er-desktop** (Tauri) into shared `target/`, which can grow to tens of GB. Use `./scripts/er-tui.sh` for TUI work (`target/tui`), `./scripts/tauri-dev.sh` for desktop (`target/desktop`). Run `./scripts/cargo-gc.sh` to prune.
-- **Rust toolchain**: needs Rust **1.85+** (`edition2024`). The cloud install hook [`scripts/cloud-agent-install.sh`](scripts/cloud-agent-install.sh) runs `rustup update stable` **only when** `rustc` is missing or < 1.85 — unconditional `rustup update` fails on overlayfs (EXDEV) when updating a baked system toolchain.
+- **Rust toolchain**: needs Rust **1.88+** (`rmcp` 3 / MCP 2026-07-28). The cloud install hook [`scripts/cloud-agent-install.sh`](scripts/cloud-agent-install.sh) runs `rustup update stable` **only when** `rustc` is missing or < 1.88 — unconditional `rustup update` fails on overlayfs (EXDEV) when updating a baked system toolchain.
 - **TUI requires a terminal**: `er` renders via crossterm/ratatui, so it must run inside a real terminal (e.g. a tmux session), not a headless pipe.
 - **No external services**: no databases, Docker, or network services. The only runtime dependency is `git` (and optionally `gh` for GitHub PR features).
 - **Review sidecars**: AI sidecar files live in managed app data by default (see "Managed review storage" in `CLAUDE.md`). Set `ER_REPO_LOCAL=1` to use repo-local `.er/` instead.

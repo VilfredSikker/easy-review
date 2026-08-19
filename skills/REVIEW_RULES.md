@@ -9,7 +9,7 @@ See also: [`REVIEW_PHILOSOPHY.md`](REVIEW_PHILOSOPHY.md) for severity model and 
 - **Two-dot diff only:** `git diff <base>` — never `main...HEAD` (staleness mismatch with `er`)
 - Always **`--unified=20 --no-color --no-ext-diff`** (matches desktop engine)
 - **Prepared-diff path (desktop):** hash `{output_dir}/diff-tmp`; agent must **not** re-run `git diff`
-- **TUI / skill path:** `git diff … > .er/diff-tmp` (or `{output_dir}/diff-tmp`), then hash that file
+- **Agent capture path:** `git diff … > {output_dir}/diff-tmp`, then hash that file — always the managed review bucket, never a repo-local `.er/`
 
 ## Annotate and anchor
 

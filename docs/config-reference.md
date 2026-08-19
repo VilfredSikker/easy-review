@@ -60,7 +60,7 @@ args = ["--print", "-p", "{prompt}"]    # Arguments ({prompt} is replaced)
 
 ### `[ai_hub]`
 
-Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, Cursor, and OpenCode. Desktop Settings persists the selected default immediately; the AI action palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
+Optional runtime provider/model presets for the AI Hub. When present, AI Hub actions can switch between providers such as Claude, Codex, Cursor, and OpenCode. Desktop Settings persists the selected default immediately; the ⌘K command palette keeps mid-session picks session-only. The TUI persists defaults when you save General settings.
 
 ```toml
 [ai_hub]

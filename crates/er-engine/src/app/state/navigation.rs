@@ -331,6 +331,33 @@ impl TabState {
         diff_line.new_num.or(diff_line.old_num)
     }
 
+    /// GitHub/question/note `side` for the current cursor line.
+    ///
+    /// Deleted lines (no new number) and split-view old-side focus store `"LEFT"`.
+    /// Everything else is `"RIGHT"` (GitHub default).
+    pub fn comment_side_for_cursor(&self, split_active: bool) -> String {
+        if split_active && self.split_focus == SplitSide::Old {
+            return "LEFT".to_string();
+        }
+        let Some(file) = self.selected_diff_file() else {
+            return "RIGHT".to_string();
+        };
+        let Some(hunk) = file.hunks.get(self.current_hunk) else {
+            return "RIGHT".to_string();
+        };
+        let Some(line_idx) = self.current_line else {
+            return "RIGHT".to_string();
+        };
+        let Some(diff_line) = hunk.lines.get(line_idx) else {
+            return "RIGHT".to_string();
+        };
+        if diff_line.new_num.is_none() {
+            "LEFT".to_string()
+        } else {
+            "RIGHT".to_string()
+        }
+    }
+
     /// Get the line number for the focused side in split diff view
     pub fn current_line_number_for_split(&self, side: SplitSide) -> Option<usize> {
         let file = self.selected_diff_file()?;

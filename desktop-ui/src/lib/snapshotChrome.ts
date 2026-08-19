@@ -1,20 +1,37 @@
 import type { AppSnapshot } from "./types";
 
+/** Fields the backend uses to refuse an optimistic write on a switched view. */
+export type SnapshotViewParts = {
+  active_tab: number;
+  repo_root: string;
+  pr_number: number | null;
+  branch: string;
+  mode: string;
+};
+
 /**
  * Identity of the review view a snapshot belongs to. Chrome-only polls must not
  * keep `prev.ai` across a change here — that leaves Branch/Review/Notes badges
  * stuck on the previous PR while the card shows the new one (or vice versa).
  */
-export function snapshotViewIdentity(snap: AppSnapshot): string {
+export function snapshotViewParts(snap: AppSnapshot): SnapshotViewParts {
   const tab =
     snap.tabs?.find((t) => t.is_active) ??
     (typeof snap.active_tab === "number" ? snap.tabs?.[snap.active_tab] : undefined);
-  const pr =
-    snap.pr?.number ?? tab?.pr_number ?? snap.github?.number ?? null;
-  const root = tab?.repo_root ?? "";
-  const branch = snap.branch ?? tab?.branch ?? "";
-  const mode = snap.mode ?? "";
-  return `${snap.active_tab}|${root}|${pr ?? ""}|${branch}|${mode}`;
+  // Tab fields only. `github.number` / `detected_pr_number` arriving later
+  // must not look like a view change (that deferred chrome and stuck status).
+  return {
+    active_tab: snap.active_tab,
+    repo_root: tab?.repo_root ?? "",
+    pr_number: tab?.pr_number ?? null,
+    branch: snap.branch ?? tab?.branch ?? "",
+    mode: snap.mode ?? "",
+  };
+}
+
+export function snapshotViewIdentity(snap: AppSnapshot): string {
+  const p = snapshotViewParts(snap);
+  return `${p.active_tab}|${p.repo_root}|${p.pr_number ?? ""}|${p.branch}|${p.mode}`;
 }
 
 export type ChromeMergeAiSource = "prev" | "next";
@@ -44,8 +61,8 @@ export function mergeChromeSnapshot(
     total_count: prev.total_count,
     ai: aiSource === "next" ? next.ai : prev.ai,
     pr: aiSource === "next" ? next.pr : prev.pr,
-    ui_annotations: prev.ui_annotations,
-    browser: prev.browser,
+    ui_annotations: aiSource === "next" ? next.ui_annotations : prev.ui_annotations,
+    browser: aiSource === "next" ? next.browser : prev.browser,
     filter_suggestions: prev.filter_suggestions,
     commits: prev.commits,
     selected_commit_sha: prev.selected_commit_sha,
@@ -64,8 +81,8 @@ export function canChromeMerge(
 }
 
 /**
- * Chrome-style poll (chrome_only or content unchanged) for a *different* view:
- * merge chrome but take `next.ai` / `next.pr` so badges cannot stick on the old PR.
+ * Chrome-style poll whose view identity differs. Never merge files across
+ * views (that poisons the tab cache with the other tab's diff).
  */
 export function canChromeMergeTakingNextAi(
   prev: AppSnapshot | null,
@@ -75,6 +92,19 @@ export function canChromeMergeTakingNextAi(
   if (prev === null) return false;
   if (!(opts.chromeOnly || !opts.contentChanged)) return false;
   return snapshotViewIdentity(prev) !== snapshotViewIdentity(next);
+}
+
+/**
+ * Chrome-only poll for a *different* view (including Branch vs PR Diff):
+ * skip applying it. Chrome stubs carry empty AI/files; merging them would
+ * keep the previous view's diff. Wait for the full content snapshot.
+ */
+export function shouldDeferChromeIdentityChange(
+  prev: AppSnapshot | null,
+  next: AppSnapshot,
+  opts: { chromeOnly: boolean; contentChanged: boolean },
+): boolean {
+  return opts.chromeOnly && canChromeMergeTakingNextAi(prev, next, opts);
 }
 
 /** Pure helper so poll generation discard is unit-testable. */

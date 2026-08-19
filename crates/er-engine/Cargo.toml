@@ -2,6 +2,7 @@
 name = "er-engine"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 description = "UI-agnostic engine for easy-review (git diffs, watching, AI sidecars, GitHub)"
 
@@ -22,6 +23,7 @@ sha1.workspace = true
 glob.workspace = true
 toml.workspace = true
 dirs.workspace = true
+tempfile = "3"
 notify = { workspace = true, optional = true }
 notify-debouncer-mini = { workspace = true, optional = true }
 tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"], optional = true }

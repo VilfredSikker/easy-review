@@ -3,6 +3,7 @@
   import { tabSeen } from "$lib/stores/tabSeen.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import type { TabSummary } from "$lib/types";
+  import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
   import { startWindowDrag } from "$lib/windowDrag";
 
   interface Props {
@@ -73,12 +74,9 @@
     }
   }
 
-  // Compute the drop slot relative to a tab element: left half → before, right
-  // half → after. Returns the insertion index (0..tabs.length).
   function dropSlotFor(e: DragEvent, idx: number, el: HTMLElement): number {
     const rect = el.getBoundingClientRect();
-    const after = e.clientX > rect.left + rect.width / 2;
-    return after ? idx + 1 : idx;
+    return dropSlot(e.clientX, rect.left, rect.width, idx);
   }
 
   function handleDragOver(e: DragEvent, idx: number) {
@@ -92,9 +90,7 @@
     if (dragFrom === null) return;
     e.preventDefault();
     const slot = dropSlotFor(e, idx, e.currentTarget as HTMLElement);
-    // Removal happens before insertion on the backend, so if dropping past the
-    // source we must subtract one to land at the visually-intended spot.
-    const toIdx = slot > dragFrom ? slot - 1 : slot;
+    const toIdx = destIndexAfterRemove(dragFrom, slot);
     const fromIdx = dragFrom;
     dragFrom = null;
     dropAt = null;

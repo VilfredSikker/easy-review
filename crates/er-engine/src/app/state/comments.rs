@@ -6,6 +6,31 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+fn mint_comment_id(prefix: &str) -> String {
+    let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!(
+        "{prefix}{}-{seq}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    )
+}
+
+fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
+    let usable = tab
+        .comment_id_override
+        .as_deref()
+        .is_some_and(|id| !id.is_empty() && id.starts_with(prefix));
+    if usable {
+        return tab
+            .comment_id_override
+            .take()
+            .unwrap_or_else(|| mint_comment_id(prefix));
+    }
+    mint_comment_id(prefix)
+}
+
 impl App {
     // ── Comment System ──
 
@@ -29,6 +54,8 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
+        let side = tab.comment_side_for_cursor(split_active);
+        tab.comment_side = Some(side);
         self.input_mode = InputMode::Comment;
     }
 
@@ -207,6 +234,7 @@ impl App {
         let tab = self.tab();
         let text = tab.comment_text();
         if text.is_empty() {
+            self.tab_mut().comment_id_override = None;
             self.input_mode = InputMode::Normal;
             return Ok(());
         }
@@ -282,15 +310,7 @@ impl App {
             questions.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "q-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "q-");
 
         let is_reply = reply_to.is_some();
         let finding_ref = self.tab().comment_finding_ref.clone();
@@ -299,6 +319,11 @@ impl App {
             .comment_author_override
             .take()
             .unwrap_or_else(|| "You".to_string());
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
         questions.questions.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -313,6 +338,7 @@ impl App {
             context_before: anchor.context_before,
             context_after: anchor.context_after,
             old_line_start: anchor.old_line_start,
+            side,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
@@ -329,9 +355,11 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &questions_path)?;
 
+        self.tab_mut().ai.questions = Some(questions);
+        self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&questions_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Question" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -391,15 +419,7 @@ impl App {
             notes.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "n-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "n-");
 
         let is_reply = reply_to.is_some();
         let finding_ref = self.tab().comment_finding_ref.clone();
@@ -408,6 +428,11 @@ impl App {
             .comment_author_override
             .take()
             .unwrap_or_else(|| "You".to_string());
+        let side = self
+            .tab_mut()
+            .comment_side
+            .take()
+            .unwrap_or_else(|| "RIGHT".to_string());
         notes.notes.push(ai::ReviewQuestion {
             id,
             timestamp: chrono_now(),
@@ -422,6 +447,7 @@ impl App {
             context_before: anchor.context_before,
             context_after: anchor.context_after,
             old_line_start: anchor.old_line_start,
+            side,
             hunk_header: anchor.hunk_header,
             anchor_status: "original".to_string(),
             relocated_at_hash: self.tab().diff_hash.clone(),
@@ -438,9 +464,11 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &notes_path)?;
 
+        self.tab_mut().ai.notes = Some(notes);
+        self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&notes_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
         let label = if is_reply { "Reply" } else { "Note" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -490,15 +518,7 @@ impl App {
             gh_comments.diff_hash = diff_hash;
         }
 
-        let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
-        let id = format!(
-            "c-{}-{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0),
-            seq
-        );
+        let id = take_comment_id(self.tab_mut(), "c-");
 
         let is_reply = reply_to.is_some();
         let author = self
@@ -546,15 +566,14 @@ impl App {
         std::fs::write(&tmp_path, json)?;
         std::fs::rename(&tmp_path, &comments_path)?;
 
+        // Keep the in-memory copy. `reload_ai_state()` re-reads every sidecar
+        // (review/experts/tour/…) and is what made each local inline comment
+        // feel like a GitHub round-trip. The comment is local and unpushed.
+        self.tab_mut().ai.github_comments = Some(gh_comments);
+        self.tab_mut().ai.rebuild_comment_index();
+        self.tab_mut().mark_sidecar_written(&comments_path);
         self.tab_mut().comment_textarea = TextArea::default();
         self.input_mode = InputMode::Normal;
-        let is_remote = self.tab().is_remote();
-        if !is_remote {
-            self.tab_mut().reload_ai_state();
-        } else {
-            // In remote mode, manually reload github comments from the cache file
-            self.tab_mut().reload_remote_comments();
-        }
         let label = if is_reply { "Reply" } else { "Comment" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
@@ -2550,6 +2569,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2570,6 +2590,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2580,7 +2601,35 @@ impl App {
         prompt: String,
         prepared_diff: bool,
     ) -> Result<()> {
-        self.spawn_background_agent_task("tour".to_string(), "tour", target, prompt, prepared_diff)
+        self.spawn_background_agent_task(
+            "tour".to_string(),
+            "tour",
+            target,
+            prompt,
+            prepared_diff,
+            None,
+        )
+    }
+
+    /// Spawn diagram generation (`kind` = `diagram:<diagram-kind>`). The agent
+    /// runs read-only and emits JSON; the harness atomically writes
+    /// `diagrams/<file>.json` only (prompt-injection write confinement).
+    pub fn spawn_background_diagram(
+        &mut self,
+        diagram_kind: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+        host_write: super::background::HostWriteDiagram,
+    ) -> Result<()> {
+        self.spawn_background_agent_task(
+            crate::ai::diagram_task_kind(diagram_kind),
+            "diagram",
+            target,
+            prompt,
+            prepared_diff,
+            Some(host_write),
+        )
     }
 
     /// Spawn the Professor learning agent (`kind` = `professor`).
@@ -2596,6 +2645,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2612,6 +2662,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
         )
     }
 
@@ -2633,6 +2684,7 @@ impl App {
         target: super::background::BackgroundTaskTarget,
         prompt: String,
         prepared_diff: bool,
+        host_write_diagram: Option<super::background::HostWriteDiagram>,
     ) -> Result<()> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
@@ -2661,6 +2713,7 @@ impl App {
                 command_name: command_name.to_string(),
                 prompt,
                 prepared_diff,
+                host_write_diagram,
                 // Snapshot at enqueue so a mid-queue palette change cannot retarget
                 // an already-queued job.
                 ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(
@@ -2701,6 +2754,7 @@ impl App {
             command_name,
             prompt,
             prepared_diff,
+            host_write_diagram,
             ai_selection,
         } = pending;
         let command_name = command_name.as_str();
@@ -2805,11 +2859,21 @@ impl App {
             &mut config_args,
             Some(target.er_dir.as_str()),
         );
-        let opencode_env = crate::config::apply_opencode_spawn(
-            family,
-            &mut config_args,
-            Some(target.er_dir.as_str()),
-        );
+        // Diagrams: host writes the sidecar — deny agent edit tools. Still allow
+        // reading the managed bucket (diff-tmp) via external_directory allow.
+        let opencode_env = if host_write_diagram.is_some() {
+            crate::config::apply_opencode_readonly_storage_spawn(
+                family,
+                &mut config_args,
+                Some(target.er_dir.as_str()),
+            )
+        } else {
+            crate::config::apply_opencode_spawn(
+                family,
+                &mut config_args,
+                Some(target.er_dir.as_str()),
+            )
+        };
 
         std::fs::create_dir_all(&target.er_dir)?;
 
@@ -2865,7 +2929,17 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed: &[&str] = if prepared_diff {
+                    let allowed: &[&str] = if host_write_diagram.is_some() {
+                        // Read-only: harness persists the diagram JSON from stdout.
+                        &[
+                            "Read",
+                            "Bash(grep *)",
+                            "Bash(rg *)",
+                            "Bash(git grep*)",
+                            "Bash(git show*)",
+                            "Bash(git log*)",
+                        ]
+                    } else if prepared_diff {
                         &[
                             "Read",
                             "Write",
@@ -3039,6 +3113,21 @@ impl App {
                     }
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
+                // Host-owned diagram write: agent had no Write/Edit; persist
+                // only the validated diagrams/<id>.json from stdout.
+                if let Some(hw) = &host_write_diagram {
+                    crate::ai::persist_diagram_from_agent_stdout(
+                        &stdout_lines.join("\n"),
+                        is_stream_json,
+                        &hw.kind,
+                        &hw.diff_hash,
+                        hw.custom_prompt.as_deref(),
+                        &hw.output_path,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail}: failed to persist diagram sidecar")
+                    })?;
+                }
                 // Selected-file reviews overwrite sidecars with a subset —
                 // merge back into the pre-scoped snapshot when present.
                 if let Err(e) = crate::ai::apply_scoped_sidecar_merge(
@@ -3167,12 +3256,13 @@ impl App {
             handle.task.finished_at_ms = Some(now);
             handle.task.error = error.clone();
 
-            // Force reload only on matching tabs.
+            // Force reload only on matching tabs. No `last_ai_check = None`
+            // reset here (O5): the agent's freshly written sidecars have
+            // newer mtimes than the previous check, so `check_ai_files_changed`
+            // fires the reload naturally — while a tab whose poll already
+            // loaded the final files skips the redundant full re-read.
             for tab in self.tabs.iter_mut() {
                 if tab.matches_target(&target) {
-                    if matches!(status, CommandStatus::Done) {
-                        tab.last_ai_check = None;
-                    }
                     tab.push_synthetic_log("review", status_msg.clone(), AgentLogSource::Status);
                 }
             }

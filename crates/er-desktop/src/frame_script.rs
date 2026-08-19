@@ -36,8 +36,9 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     },50);
   }
 
-  // Forward host-level keyboard shortcuts (e.g. ⌘A for the AI palette) that
+  // Forward host-level keyboard shortcuts (e.g. ⌘B for browser layout) that
   // Desktop shortcuts while focus is in this native child webview (not parent UI).
+  // ⌘A is intentionally NOT forwarded — it selects text inside the page.
   document.addEventListener('keydown',function(ev){
     if(!(ev.metaKey||ev.ctrlKey)||ev.altKey)return;
     var k=ev.key;
@@ -54,11 +55,6 @@ pub const FRAME_SCRIPT: &str = r#"(function(){
     if(!ev.shiftKey&&(k==='b'||k==='B')){
       ev.preventDefault();ev.stopPropagation();
       reportToHost({__er_shortcut:'browser-cycle'});
-      return;
-    }
-    if(!ev.shiftKey&&(k==='a'||k==='A')){
-      ev.preventDefault();ev.stopPropagation();
-      reportToHost({__er_shortcut:'ai-hub'});
     }
   },true);
 

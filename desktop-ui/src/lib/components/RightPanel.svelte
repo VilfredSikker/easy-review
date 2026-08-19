@@ -3,17 +3,20 @@
   import type { AiSnapshot, PrSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
-  import { resolveActivePrUrl } from "$lib/prUrl";
+  import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
   import { visibleCommentThreads } from "$lib/commentVisibility";
   import { totalReviewFindings } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
+  import FileRisksCard from "./FileRisksCard.svelte";
   import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
   import AgentOutputCard from "./AgentOutputCard.svelte";
+  import DiagramsCard from "./DiagramsCard.svelte";
   import InlineThread from "./InlineThread.svelte";
+  import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -33,26 +36,14 @@
     onCollapseToggle,
   }: Props = $props();
 
-  // ── Tab state (persisted to localStorage) ──────────────────────────────────
-  const TAB_STORAGE_KEY = "rightPanelActiveTab";
-
-  type Tab = "branch" | "review" | "notes";
-
-  function readStoredTab(): Tab {
-    try {
-      const raw = localStorage.getItem(TAB_STORAGE_KEY);
-      if (raw === "branch" || raw === "review" || raw === "notes") return raw;
-    } catch { /* ignore */ }
-    return "branch";
-  }
-
-  let activeTab = $state<Tab>(readStoredTab());
+  // ── Tab state (shared store, persisted to localStorage) ───────────────────
+  // The store lets the command palette and collapsed rail switch the tab even
+  // while the panel is already mounted.
+  type Tab = RightPanelTab;
+  const activeTab = $derived(rightPanelTab.active);
 
   function setTab(t: Tab) {
-    activeTab = t;
-    try {
-      localStorage.setItem(TAB_STORAGE_KEY, t);
-    } catch { /* ignore */ }
+    rightPanelTab.set(t);
   }
 
   // ── Derived counts for tab badges ──────────────────────────────────────────
@@ -96,13 +87,18 @@
   );
 
   const activeAppTab = $derived(app.snapshot?.tabs?.find((t) => t.is_active) ?? null);
-  const displayPrNumber = $derived(
-    currentWorktree?.pr_number ?? app.snapshot?.github?.number ?? pr?.number ?? activeAppTab?.pr_number ?? null,
-  );
+  const displayPrNumber = $derived(resolveActivePrNumber(app.snapshot));
   const displayPrUrl = $derived(resolveActivePrUrl(app.snapshot));
+  const githubForTab = $derived(githubStatusForActiveTab(app.snapshot));
+  const tabOwnsPr = $derived(activeAppTab?.pr_number != null);
+  const isPr = $derived(displayPrNumber !== null);
+  const isMerged = $derived(
+    githubForTab?.state === "MERGED" ||
+      (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
+  );
 
   const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
-    const checks = app.snapshot?.github?.checks;
+    const checks = githubForTab?.checks;
     if (!checks || checks.length === 0) return null;
     if (checks.some((c) => c.conclusion === "FAILURE" || c.conclusion === "fail")) return "failure";
     if (checks.some((c) => c.status === "PENDING")) return "pending";
@@ -124,13 +120,16 @@
   }
 
   const commentCount = $derived(
-    visibleCommentThreads(ai?.threads, app.commentVisibility).length
+    visibleCommentThreads(ai?.threads, app.commentVisibility, app.snapshot?.files).length
   );
+
+  const diagramCount = $derived(ai?.diagrams?.length ?? 0);
 
   const tabs: TabDef[] = $derived([
     { id: "branch", label: "Branch", badge: commentCount > 0 ? commentCount : null },
     { id: "review", label: "Review", badge: totalFindings > 0 ? totalFindings : null },
     { id: "notes",  label: "Notes",  badge: noteCount + questionCount > 0 ? noteCount + questionCount : null },
+    { id: "context", label: "Context", badge: diagramCount > 0 ? diagramCount : null },
   ]);
 
   // ── Per-tab export ───────────────────────────────────────────────────────────
@@ -169,6 +168,10 @@
         return { ...NO_SECTIONS, includeComments: true };
       case "review":
         return { ...NO_SECTIONS, includeFindings: true };
+      case "context":
+        // Handled client-side in copyTabToClipboard (mermaid fences, not the
+        // export_review sections).
+        return NO_SECTIONS;
       case "notes":
         switch (notesSubTab) {
           case "notes":
@@ -193,7 +196,13 @@
     copying = true;
     const label = exportLabel();
     try {
-      const body = await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
+      // The Context tab has no `export_review` section — build its markdown
+      // (title + mermaid fence per diagram) client-side.
+      const body = activeTab === "context"
+        ? (ai?.diagrams ?? [])
+            .map((d) => `## ${d.title || d.kind}\n\n\`\`\`mermaid\n${d.mermaid}\n\`\`\``)
+            .join("\n\n")
+        : await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
       if (!body.trim()) {
         app.showToast("info", `Nothing to export from the ${label} tab`);
         return;
@@ -246,6 +255,11 @@
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
             class={isActive ? "text-accent" : "text-fg-3"}>
             <path d="M12 2l2.4 7.2H22l-6.2 4.5 2.4 7.2L12 17l-6.2 3.9 2.4-7.2L2 9.2h7.6z"/>
+          </svg>
+        {:else if tab.id === "context"}
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            class={isActive ? "text-accent" : "text-fg-3"}>
+            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5a2 2 0 0 1 2 2V14"/>
           </svg>
         {:else}
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -302,11 +316,11 @@
             additions={totalAdds}
             deletions={totalDels}
             checks_status={checksStatus}
-            is_pr={(currentWorktree?.is_pr ?? false) || displayPrNumber !== null}
+            is_pr={isPr}
             pr_number={displayPrNumber}
-            is_merged={currentWorktree?.is_merged ?? false}
+            is_merged={isMerged}
             github_url={displayPrUrl}
-            github={app.snapshot?.github ?? null}
+            github={githubForTab}
           />
         {/if}
         {#if ai}
@@ -320,6 +334,9 @@
         {#if ai}
           {#if ai.triage}
             <TriageCard triage={ai.triage} />
+          {/if}
+          {#if (ai.file_risks ?? []).length > 0}
+            <FileRisksCard risks={ai.file_risks} />
           {/if}
           <AiReviewCard {ai} />
         {/if}
@@ -379,6 +396,14 @@
             <UiAnnotationsCard />
           {/if}
         </div>
+      </div>
+
+    <!-- Context tab (mermaid diagrams of the diff) -->
+    {:else if activeTab === "context"}
+      <div class="p-4 space-y-4 pb-8">
+        {#if ai}
+          <DiagramsCard {ai} />
+        {/if}
       </div>
     {/if}
   </div>
