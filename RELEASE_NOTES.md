@@ -89,8 +89,8 @@
 
 ## In plain terms
 
-- **What changed.** Desktop ⌘K is now the single command hub — AI review actions moved into nested menus, ⌘A is free for select-all again, and PR/GitHub links respect each tab's own repo. The `@easy-review/skills` installer got an interactive wizard and reliable `bunx`/`npx` routing.
-- **TL;DR.** Nested ⌘K palette, per-tab PR repo fix, skills installer wizard + bunx fixes.
+- **What changed.** Desktop ⌘K is now the single command hub — AI review actions moved into nested menus, ⌘A is free for select-all again, and PR/GitHub links respect each tab's own repo. The `@easy-review/skills` installer got an interactive wizard and reliable `bunx`/`npx` routing. A Herdr plugin opens `er` inside Herdr workspaces — Review tab for the checked-out branch, auto-open on new worktrees, and Ctrl-click GitHub PR links via `er --remote`.
+- **TL;DR.** Nested ⌘K palette, per-tab PR repo fix, skills installer wizard + bunx fixes, and official Herdr plugin for branch review / worktree hooks / PR links.
 
 ## Highlights
 
@@ -98,16 +98,29 @@
 - **⌘A restored.** Native select-all works again in the embedded browser; the old AI action palette is removed.
 - **Per-tab PR repo.** Local PR and branch tabs carry `remote_repo` so PR links, GitHub status, and approval resolve the correct repo when the same PR number exists in multiple projects.
 - **`@easy-review/skills` wizard.** Interactive TTY installer (agents, skills, paths); `--yes`/`--force` for scripts. Fixes `bunx`/`npx` bin shadowing and non-interactive stdin.
+- **Herdr plugin** (`tools/herdr-easy-review/`) — manifest + shell entrypoints; install with `herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review`.
+- **Review tab** — `er` runs in the workspace cwd so the branch checkout is what you review.
+- **worktree.created hook** — opens Review in the background (`--no-focus`) when Herdr creates a worktree.
+- **GitHub PR link handler** — Ctrl-click `github.com/…/pull/N` → `er --remote <url>`.
+- **Tests** — `just test-herdr-plugin` / `npm test` in `tools/herdr-easy-review` (mocked `herdr` + `er`).
 
 ## What's Changed
 
 ### Features
 - Consolidate desktop command palette into nested ⌘K menus with AI review actions. (#170)
 - Interactive skills installer wizard for `@easy-review/skills`.
+- Add Herdr plugin for workspace branch review, worktree auto-open, and PR link handling.
 
 ### Fixes
 - Key PR links and GitHub status to the tab's own repo. (#169)
 - Route `bunx @easy-review/skills` to our CLI; TTY wizard under bunx.
+
+### Docs
+- New guide: `docs/guide/herdr.html`; nav + installation cross-links.
+
+## Contributors
+
+- @VilfredSikker
 
 **Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.9...v0.4.10
 

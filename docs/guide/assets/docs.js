@@ -14,7 +14,8 @@
       { file: 'index.html', title: 'Introduction' },
       { file: 'installation.html', title: 'Installation' },
       { file: 'quick-start.html', title: 'Quick Start' },
-      { file: 'mcp.html', title: 'MCP Server Setup' }
+      { file: 'mcp.html', title: 'MCP Server Setup' },
+      { file: 'herdr.html', title: 'Herdr Integration' }
     ]},
     { section: 'Core Concepts', pages: [
       { file: 'concepts.html', title: 'How er Works' },
