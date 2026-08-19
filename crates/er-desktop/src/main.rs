@@ -1552,7 +1552,7 @@ fn main() {
                 &bg_inbox,
                 &bg_desktop_rev,
                 &bg_handle,
-                Some(active_remote),
+                None,
                 None,
             );
             if let Ok(mut f) = bg_loading.lock() {

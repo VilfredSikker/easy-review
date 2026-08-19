@@ -128,8 +128,10 @@ pub struct ObservedPrState {
     #[serde(default)]
     pub triaged_head_oid: Option<String>,
     /// Latest review state per reviewer login.
+    /// `None` means this field was missing on disk (pre-upgrade). Do not treat
+    /// that as "no reviews".
     #[serde(default)]
-    pub latest_reviewer_states: Vec<(String, String)>,
+    pub latest_reviewer_states: Option<Vec<(String, String)>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -207,15 +209,23 @@ impl InboxState {
         self.items.iter().filter(|i| i.read_at_ms.is_none()).count()
     }
 
-    pub fn has_seen_notification(&self, id: &str) -> bool {
-        self.seen_notification_ids.iter().any(|s| s == id)
+    pub fn notification_seen_key(id: &str, updated_at: &str) -> String {
+        format!("{id}@{updated_at}")
     }
 
-    pub fn remember_notification(&mut self, id: String) {
-        if self.has_seen_notification(&id) {
+    pub fn has_seen_notification(&self, id: &str, updated_at: &str) -> bool {
+        let key = Self::notification_seen_key(id, updated_at);
+        self.seen_notification_ids
+            .iter()
+            .any(|s| s == &key || s == id)
+    }
+
+    pub fn remember_notification(&mut self, id: &str, updated_at: &str) {
+        let key = Self::notification_seen_key(id, updated_at);
+        if self.seen_notification_ids.iter().any(|s| s == &key) {
             return;
         }
-        self.seen_notification_ids.push(id);
+        self.seen_notification_ids.push(key);
         if self.seen_notification_ids.len() > MAX_SEEN_NOTIFICATIONS {
             let drop_n = self.seen_notification_ids.len() - MAX_SEEN_NOTIFICATIONS;
             self.seen_notification_ids.drain(0..drop_n);
@@ -283,23 +293,14 @@ pub fn inbox_items_from_pr_transition(
             .iter()
             .any(|r| r == ctx.gh_user);
         if requested_me && !prev_requested {
-            let kind = if prev_state
-                .requested_reviewers
-                .iter()
-                .any(|r| r == ctx.gh_user)
-            {
-                "review_rerequested"
-            } else {
-                "review_requested"
-            };
             items.push(pr_item(
-                kind,
+                "review_requested",
                 "info",
                 format!("Review requested: PR #{}", pr.number),
                 pr.title.clone(),
                 ctx,
                 pr,
-                format!("github:{}:{}:{kind}", ctx.remote, pr.number),
+                format!("github:{}:{}:review_requested", ctx.remote, pr.number),
                 None,
             ));
         }
@@ -350,8 +351,10 @@ fn reviewer_state_items(
     pr: &PrInboxView,
     ctx: &PrTransitionCtx<'_>,
 ) -> Vec<InboxItem> {
-    let prev_map: HashMap<&str, &str> = prev_state
-        .latest_reviewer_states
+    let Some(prev_states) = &prev_state.latest_reviewer_states else {
+        return Vec::new();
+    };
+    let prev_map: HashMap<&str, &str> = prev_states
         .iter()
         .map(|(login, state)| (login.as_str(), state.as_str()))
         .collect();
@@ -362,6 +365,13 @@ fn reviewer_state_items(
         }
         if prev_map.get(login.as_str()) == Some(&state.as_str()) {
             continue;
+        }
+        if state == "COMMENTED" {
+            if let Some(&prev) = prev_map.get(login.as_str()) {
+                if prev == "APPROVED" || prev == "CHANGES_REQUESTED" {
+                    continue;
+                }
+            }
         }
         let (kind, severity, title) = match state.as_str() {
             "APPROVED" => (
@@ -487,17 +497,23 @@ pub fn inbox_item_from_notification(
     if !note.subject_type.eq_ignore_ascii_case("PullRequest") {
         return None;
     }
-    if !ctx.allowed_remotes.contains(&note.remote) {
-        return None;
-    }
-    let pr_number = note.pr_number?;
-    if ctx
-        .skip_review_prs
-        .contains(&(note.remote.clone(), pr_number))
+    if !ctx
+        .allowed_remotes
+        .iter()
+        .any(|r| r.eq_ignore_ascii_case(&note.remote))
     {
         return None;
     }
+    let pr_number = note.pr_number?;
     let reason = note.reason.to_ascii_lowercase();
+    if reason == "author"
+        && ctx
+            .skip_review_prs
+            .iter()
+            .any(|(remote, n)| *n == pr_number && remote.eq_ignore_ascii_case(&note.remote))
+    {
+        return None;
+    }
     let (kind, title) = match reason.as_str() {
         "author" => ("pr_comment", format!("Comment on your PR #{pr_number}")),
         "comment" => ("pr_comment_reply", format!("Reply on PR #{pr_number}")),
@@ -628,7 +644,7 @@ mod tests {
             failing_checks: vec![],
             head_oid: String::new(),
             triaged_head_oid: None,
-            latest_reviewer_states: vec![],
+            latest_reviewer_states: Some(vec![]),
         }
     }
 
@@ -707,7 +723,7 @@ mod tests {
     #[test]
     fn unchanged_reviewer_state_emits_nothing() {
         let mut previous = prev();
-        previous.latest_reviewer_states = vec![("alex".into(), "COMMENTED".into())];
+        previous.latest_reviewer_states = Some(vec![("alex".into(), "COMMENTED".into())]);
         let mut current = pr("me");
         current.latest_reviewer_states = vec![("alex".into(), "COMMENTED".into())];
         let items = inbox_items_from_pr_transition(Some(&previous), &current, &ctx());
@@ -807,12 +823,62 @@ mod tests {
     }
 
     #[test]
-    fn notification_skips_pr_with_review_edge_this_cycle() {
+    fn unknown_reviewer_states_seed_without_spam() {
+        let mut previous = prev();
+        previous.latest_reviewer_states = None;
+        previous.review_decision = Some("APPROVED".into());
+        let mut current = pr("me");
+        current.review_decision = Some("APPROVED".into());
+        current.latest_reviewer_states = vec![
+            ("alex".into(), "APPROVED".into()),
+            ("sam".into(), "COMMENTED".into()),
+        ];
+        let items = inbox_items_from_pr_transition(Some(&previous), &current, &ctx());
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn commented_after_approved_does_not_emit_review_received() {
+        let mut previous = prev();
+        previous.latest_reviewer_states = Some(vec![("alex".into(), "APPROVED".into())]);
+        let mut current = pr("me");
+        current.latest_reviewer_states = vec![("alex".into(), "COMMENTED".into())];
+        let items = inbox_items_from_pr_transition(Some(&previous), &current, &ctx());
+        assert!(items.is_empty());
+    }
+
+    #[test]
+    fn notification_seen_key_reemits_when_updated_at_advances() {
+        let mut inbox = InboxState::default();
+        inbox.remember_notification("n1", "2026-01-01T00:00:00Z");
+        assert!(inbox.has_seen_notification("n1", "2026-01-01T00:00:00Z"));
+        assert!(!inbox.has_seen_notification("n1", "2026-01-02T00:00:00Z"));
+        inbox.seen_notification_ids.push("legacy".into());
+        assert!(inbox.has_seen_notification("legacy", "2026-01-02T00:00:00Z"));
+    }
+
+    #[test]
+    fn notification_skips_author_on_review_edge_but_keeps_mention() {
         let remotes = HashSet::from(["org/repo".into()]);
         let skip = HashSet::from([("org/repo".into(), 42)]);
         assert!(
             inbox_item_from_notification(&note("author"), &note_ctx(&remotes, &skip)).is_none()
         );
+        assert!(
+            inbox_item_from_notification(&note("mention"), &note_ctx(&remotes, &skip)).is_some()
+        );
+        assert!(
+            inbox_item_from_notification(&note("comment"), &note_ctx(&remotes, &skip)).is_some()
+        );
+    }
+
+    #[test]
+    fn notification_allows_mixed_case_remote() {
+        let remotes = HashSet::from(["Org/Repo".into()]);
+        let skip = HashSet::new();
+        let mut n = note("author");
+        n.remote = "org/repo".into();
+        assert!(inbox_item_from_notification(&n, &note_ctx(&remotes, &skip)).is_some());
     }
 
     #[test]

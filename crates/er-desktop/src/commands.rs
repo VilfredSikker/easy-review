@@ -1648,6 +1648,7 @@ pub fn process_inbox_after_pr_refresh(
         Err(_) => return,
     };
 
+    let should_ingest_notifications = refresh_failed_remote.is_none();
     if let Some(remote) = refresh_failed_remote {
         let last = inbox.refresh_error_at_ms.get(&remote).copied().unwrap_or(0);
         if now.saturating_sub(last) >= crate::inbox::REFRESH_ERROR_TTL_MS {
@@ -1769,7 +1770,7 @@ pub fn process_inbox_after_pr_refresh(
                     } else {
                         triaged_head_oid
                     },
-                    latest_reviewer_states: pr.latest_reviewer_states.clone(),
+                    latest_reviewer_states: Some(pr.latest_reviewer_states.clone()),
                 },
             );
         }
@@ -1853,14 +1854,16 @@ pub fn process_inbox_after_pr_refresh(
     if emitted_any {
         crate::profile_log::bump_desktop_revision(desktop_revision, "inbox_items");
     }
-    ingest_github_notifications(
-        inbox_handle,
-        &project_by_remote,
-        &skip_review_prs,
-        now,
-        desktop_revision,
-        app_handle_state,
-    );
+    if should_ingest_notifications {
+        ingest_github_notifications(
+            inbox_handle,
+            &project_by_remote,
+            &skip_review_prs,
+            now,
+            desktop_revision,
+            app_handle_state,
+        );
+    }
     if let Some(ctx) = auto_triage {
         if !auto_triage_requests.is_empty() {
             crate::auto_triage::dispatch_auto_triage(ctx, auto_triage_requests);
@@ -1879,28 +1882,37 @@ fn ingest_github_notifications(
     let notes = match er_engine::github::gh_list_participating_notifications() {
         Ok(n) => n,
         Err(e) => {
-            log::warn!("[inbox] GitHub notifications unavailable: {e}");
+            log::error!("[inbox] GitHub notifications unavailable: {e}");
             return;
         }
     };
-    let allowed_remotes: HashSet<String> = project_by_remote.keys().cloned().collect();
+    let allowed_remotes: HashSet<String> = project_by_remote
+        .keys()
+        .map(|r| projects::normalize_remote_slug(r))
+        .collect();
     let mut emitted_any = false;
     let mut remembered_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = inbox_handle.lock() {
         for gh_note in notes {
-            if inbox.has_seen_notification(&gh_note.id) {
+            if inbox.has_seen_notification(&gh_note.id, &gh_note.updated_at) {
                 continue;
             }
-            let remote = gh_note.repository.full_name.clone();
+            let remote = projects::normalize_remote_slug(&gh_note.repository.full_name);
             if !allowed_remotes.contains(&remote) {
                 continue;
             }
-            inbox.remember_notification(gh_note.id.clone());
-            remembered_any = true;
-            let project = project_by_remote.get(&remote);
+            let project = project_by_remote.get(&remote).or_else(|| {
+                project_by_remote.iter().find_map(|(key, p)| {
+                    if projects::normalize_remote_slug(key) == remote {
+                        Some(p)
+                    } else {
+                        None
+                    }
+                })
+            });
             let note = InboxNotification {
-                id: gh_note.id,
+                id: gh_note.id.clone(),
                 reason: gh_note.reason,
                 title: gh_note.subject.title,
                 remote,
@@ -1915,6 +1927,8 @@ fn ingest_github_notifications(
                 skip_review_prs,
             };
             if let Some(item) = inbox_item_from_notification(&note, &ctx) {
+                inbox.remember_notification(&gh_note.id, &gh_note.updated_at);
+                remembered_any = true;
                 if inbox.add_item(item.clone()) {
                     emitted_any = true;
                     just_added.push(item);

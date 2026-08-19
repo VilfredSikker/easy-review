@@ -30,12 +30,37 @@ export const INBOX_CATEGORY_LABELS: Record<InboxCategoryId, string> = {
   other: "Other",
 };
 
+const KIND_TO_CATEGORY: Record<string, InboxCategoryId> = {
+  pr_comment: "pr_comment",
+  new_comment: "pr_comment",
+  comment: "pr_comment",
+  pr_review_received: "review_received",
+  pr_comment_reply: "comment_reply",
+  pr_review_approved: "approved",
+  pr_review_changes_requested: "changes_requested",
+  review_requested: "review_requested",
+  review_rerequested: "review_requested",
+  review: "review_requested",
+  mention: "mention",
+  ci_failed: "ci",
+  "ci-fail": "ci",
+  check_failed: "ci",
+  pr_merged: "lifecycle",
+  pr_closed: "lifecycle",
+  merged: "lifecycle",
+  ai_review_done: "ai",
+  ai_review_failed: "ai",
+  ai_triage_done: "ai",
+  ai_triage_failed: "ai",
+  ai_review_cancelled: "ai",
+};
+
 export function inboxItemCategory(item: InboxItemSnapshot): InboxCategoryId {
   const raw = item.category;
   if (raw && (INBOX_CATEGORY_ORDER as readonly string[]).includes(raw)) {
     return raw as InboxCategoryId;
   }
-  return "other";
+  return KIND_TO_CATEGORY[item.kind] ?? "other";
 }
 
 export function inboxCategoryLabel(category: string): string {
@@ -108,6 +133,33 @@ export function sortInboxItems(items: InboxItemSnapshot[]): InboxItemSnapshot[] 
     const bUnread = b.read_at_ms == null ? 0 : 1;
     if (aUnread !== bUnread) return aUnread - bUnread;
     return b.created_at_ms - a.created_at_ms;
+  });
+}
+
+export const INBOX_POPOVER_LIMIT = 20;
+
+export function applyInboxFilters(
+  items: InboxItemSnapshot[],
+  opts: {
+    projects: ProjectSnapshot[];
+    projectId: "all" | string;
+    read: "all" | "unread" | "read";
+    category: "all" | InboxCategoryId;
+  },
+): InboxItemSnapshot[] {
+  return items.filter((item) => {
+    if (
+      opts.projectId !== "all" &&
+      inboxItemProjectId(item, opts.projects) !== opts.projectId
+    ) {
+      return false;
+    }
+    if (opts.read === "unread" && item.read_at_ms != null) return false;
+    if (opts.read === "read" && item.read_at_ms == null) return false;
+    if (opts.category !== "all" && inboxItemCategory(item) !== opts.category) {
+      return false;
+    }
+    return true;
   });
 }
 

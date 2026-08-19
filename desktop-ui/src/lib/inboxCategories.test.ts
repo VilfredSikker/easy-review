@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
 import {
+  applyInboxFilters,
   formatInboxAge,
   groupInboxItems,
   inboxCategoryChips,
   inboxItemCategory,
   inboxItemProjectId,
   inboxKindMeta,
+  INBOX_POPOVER_LIMIT,
   sortInboxItems,
 } from "./inboxCategories";
 
@@ -33,8 +35,9 @@ describe("inboxItemCategory", () => {
     );
   });
 
-  it("falls back to other when category is missing", () => {
-    expect(inboxItemCategory(item({ id: "1", kind: "pr_comment" }))).toBe("other");
+  it("falls back to kind when category is missing", () => {
+    expect(inboxItemCategory(item({ id: "1", kind: "pr_comment" }))).toBe("pr_comment");
+    expect(inboxItemCategory(item({ id: "2", kind: "mystery" }))).toBe("other");
   });
 });
 
@@ -152,5 +155,34 @@ describe("formatInboxAge", () => {
     expect(formatInboxAge(now - 10_000, now)).toBe("now");
     expect(formatInboxAge(now - 120_000, now)).toBe("2m");
     expect(formatInboxAge(now - 7_200_000, now)).toBe("2h");
+  });
+});
+
+describe("applyInboxFilters", () => {
+  it("filters the full list then callers can cap", () => {
+    const items = Array.from({ length: 25 }, (_, i) =>
+      item({
+        id: `n${i}`,
+        kind: "pr_comment",
+        category: "pr_comment",
+        created_at_ms: i,
+      }),
+    );
+    items.push(
+      item({
+        id: "ci-old",
+        kind: "ci_failed",
+        category: "ci",
+        created_at_ms: 0,
+      }),
+    );
+    const filtered = applyInboxFilters(items, {
+      projects: [],
+      projectId: "all",
+      read: "all",
+      category: "ci",
+    });
+    expect(filtered.map((i) => i.id)).toEqual(["ci-old"]);
+    expect(filtered.slice(0, INBOX_POPOVER_LIMIT)).toHaveLength(1);
   });
 });
