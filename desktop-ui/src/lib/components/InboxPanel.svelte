@@ -6,7 +6,9 @@
     formatInboxAge,
     formatInboxUpdated,
     groupInboxItems,
+    INBOX_POPOVER_LIMIT,
     inboxCategoryChips,
+    inboxItemCategory,
     inboxItemProjectId,
     inboxKindMeta,
     sortInboxItems,
@@ -25,8 +27,8 @@
   let inboxCategoryFilterChoice = $state<"all" | InboxCategoryId>("all");
   let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
 
-  const inboxVisible = $derived(sortInboxItems(inboxItems).slice(0, 20));
-  const inboxTeaser = $derived(sortInboxItems(inboxItems).slice(0, 2));
+  const sortedInbox = $derived(sortInboxItems(inboxItems));
+  const inboxTeaser = $derived(sortedInbox.slice(0, 2));
 
   function openInboxPopover() {
     inboxPopoverOpen = true;
@@ -60,8 +62,8 @@
 
   const inboxByProject = $derived(
     inboxProjectFilter === "all"
-      ? inboxVisible
-      : inboxVisible.filter((i) => inboxItemProjectId(i, projects) === inboxProjectFilter),
+      ? sortedInbox
+      : sortedInbox.filter((i) => inboxItemProjectId(i, projects) === inboxProjectFilter),
   );
 
   const inboxByRead = $derived(
@@ -82,9 +84,10 @@
   );
 
   const inboxFiltered = $derived(
-    inboxCategoryFilter === "all"
+    (inboxCategoryFilter === "all"
       ? inboxByRead
-      : inboxByRead.filter((i) => (i.category ?? "other") === inboxCategoryFilter),
+      : inboxByRead.filter((i) => inboxItemCategory(i) === inboxCategoryFilter)
+    ).slice(0, INBOX_POPOVER_LIMIT),
   );
 
   const inboxGroups = $derived(groupInboxItems(inboxFiltered));
