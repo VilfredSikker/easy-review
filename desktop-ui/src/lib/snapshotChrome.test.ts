@@ -195,6 +195,29 @@ describe("snapshotViewIdentity", () => {
     });
     expect(snapshotViewIdentity(before)).toBe(snapshotViewIdentity(after));
   });
+
+  it("does not change when snapshot.branch fills in on a remote PR tab", () => {
+    const tabs = [
+      tab({ idx: 0, label: "discovery#1425", pr_number: 1425, is_active: true, branch: null }),
+    ];
+    const before = snap({ active_tab: 0, tabs, branch: "", base: "" });
+    const after = snap({
+      active_tab: 0,
+      tabs,
+      branch: "feat/from-fork",
+      base: "main",
+    });
+    expect(snapshotViewIdentity(before)).toBe(snapshotViewIdentity(after));
+    expect(
+      canChromeMerge(before, after, { chromeOnly: true, contentChanged: false }),
+    ).toBe(true);
+    expect(
+      shouldDeferChromeIdentityChange(before, after, {
+        chromeOnly: true,
+        contentChanged: false,
+      }),
+    ).toBe(false);
+  });
 });
 
 describe("isStaleSnapshotGeneration", () => {
@@ -365,6 +388,46 @@ describe("mergeChromeSnapshot", () => {
     const merged = mergeChromeSnapshot(prev, next, "prev");
     expect(merged.ui_annotations).toBe(prevAnn);
     expect(merged.browser?.url).toBe("https://old.example");
+  });
+
+  it("fills empty prev branch/base from next chrome", () => {
+    const tabs = [tab({ idx: 0, label: "discovery#1425", pr_number: 1425, is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      branch: "",
+      base: "",
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      branch: "feat/from-fork",
+      base: "main",
+      notification: "gh status landed",
+    });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.branch).toBe("feat/from-fork");
+    expect(merged.base).toBe("main");
+    expect(merged.notification).toBe("gh status landed");
+  });
+
+  it("keeps a populated prev branch when next chrome is empty", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "local_branch", is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      branch: "feat/keep",
+      base: "origin/main",
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      branch: "",
+      base: "",
+    });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.branch).toBe("feat/keep");
+    expect(merged.base).toBe("origin/main");
   });
 });
 
