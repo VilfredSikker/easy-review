@@ -6,10 +6,11 @@
 #   and opens WITHOUT stealing focus so the user stays on the worktree pane.
 set -euo pipefail
 
+plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/json-field.sh
-source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/json-field.sh"
-
-herdr_bin="${HERDR_BIN_PATH:-herdr}"
+source "$plugin_root/lib/json-field.sh"
+# shellcheck source=lib/open-review-pane.sh
+source "$plugin_root/lib/open-review-pane.sh"
 
 is_event=0
 if [[ -n "${HERDR_PLUGIN_EVENT:-}" ]]; then
@@ -32,18 +33,10 @@ if [[ "$is_event" -eq 1 ]]; then
   focus_flag="--no-focus"
 fi
 
-args=(plugin pane open --plugin easy-review --entrypoint review --placement tab "$focus_flag")
+extra=()
 if [[ -n "$workspace_id" ]]; then
-  args+=(--workspace "$workspace_id")
+  extra+=(--workspace "$workspace_id")
 fi
 
-out="$("$herdr_bin" "${args[@]}" 2>&1 || true)"
-
-# Rename the created tab to "Review". herdr lowercases the manifest pane title,
-# so set the exact case explicitly via the returned tab_id.
-tab_id="$(json_field_string tab_id "$out")"
-if [[ -n "$tab_id" ]]; then
-  "$herdr_bin" tab rename "$tab_id" "Review" >/dev/null 2>&1 || true
-fi
-
+open_review_pane "$focus_flag" "${extra[@]}"
 exit 0

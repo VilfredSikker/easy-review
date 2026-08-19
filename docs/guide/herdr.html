@@ -47,8 +47,8 @@ herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
         <tr>
           <td><strong>Review tab</strong></td>
           <td>
-            Opens <code>er</code> in a Herdr tab. The pane cwd is the workspace checkout, so you review the
-            branch checked out there.
+            Opens <code>er</code> in a Herdr tab. The pane process cds to the workspace checkout
+            before launching <code>er</code>, so you review the branch checked out there.
             <pre><code>herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
           </td>
         </tr>
@@ -70,8 +70,9 @@ herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
           <td><strong>Review a PR link</strong></td>
           <td>
             <strong>Ctrl-click</strong> (Control on all platforms, including macOS) a
-            <code>https://github.com/…/pull/N</code> URL in the terminal. Herdr routes it to
-            <code>er --remote &lt;url&gt;</code> so you can review without a local clone of that repo.
+            <code>https://github.com/…/pull/N</code> URL in the terminal. Herdr opens a
+            Review tab that runs <code>er --remote &lt;url&gt;</code> so you can review
+            without a local clone of that repo.
           </td>
         </tr>
       </tbody>
@@ -91,6 +92,9 @@ description = "Review branch in Easy Review"</code></pre>
       <code>PATH</code> inside Herdr panes (same shell profile as your terminal).</li>
       <li><strong>Plugin not listed.</strong> — Run <code>herdr plugin list</code>. Re-link or reinstall if the
       manifest path moved.</li>
+      <li><strong>Review always opens the plugin's own repo.</strong> Relink this plugin after updating.
+      Pane commands start in the plugin directory; <code>open.sh</code> cds to the workspace checkout
+      from Herdr's context JSON before launching <code>er</code>.</li>
       <li><strong>PR link does nothing.</strong> — Link handlers require a modified click (Ctrl+click). Plain
       clicks still open the browser.</li>
       <li><strong>Logs.</strong> — <code>herdr plugin log list --plugin easy-review</code></li>

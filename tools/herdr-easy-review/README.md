@@ -33,7 +33,7 @@ cargo tui-install   # from an easy-review clone
 | **Review** pane | `herdr plugin pane open --plugin easy-review --entrypoint review` | Runs `er` in the workspace cwd (reviews the checked-out branch). |
 | **worktree.created** event | New worktree | Opens a Review tab for the new workspace (`--no-focus`). |
 | **review-branch** action | Workspace context menu / keybinding | Opens Review tab for the current workspace (`--focus`). |
-| **review-pr** action / link handler | Ctrl-click a `github.com/.../pull/N` URL | Opens Review tab, then `er --remote <url>`. |
+| **review-pr** action / link handler | Ctrl-click a `github.com/.../pull/N` URL | Opens Review tab running `er --remote <url>` (URL passed into the pane via `--env`). |
 
 ## Optional keybinding
 

@@ -12,8 +12,8 @@ placement = "tab"
 command = ["bash", "open.sh"]
 
 # Open the Review tab automatically whenever a new worktree is created.
-# The event hook runs in the context of the new workspace, so the pane's
-# cwd is the worktree checkout — `er` picks up the checked-out branch.
+# The event hook targets the new workspace; open.sh cds to that checkout
+# before exec'ing `er` (Herdr starts pane commands in the plugin directory).
 [[events]]
 on = "worktree.created"
 command = ["bash", "open-branch.sh"]

@@ -38,6 +38,7 @@ function makeMockEr(binDir, logFile) {
     script,
     `#!/usr/bin/env bash
 set -euo pipefail
+printf 'cwd=%s\\n' "$PWD" >> "${logFile}"
 printf 'er %s\\n' "$*" >> "${logFile}"
 exit 0
 `,
@@ -45,10 +46,11 @@ exit 0
   return script;
 }
 
-function runBash(scriptName, env = {}) {
+function runBash(scriptName, env = {}, opts = {}) {
   const result = spawnSync("bash", [path.join(PLUGIN_ROOT, scriptName)], {
     env: { ...process.env, ...env },
     encoding: "utf8",
+    cwd: opts.cwd ?? PLUGIN_ROOT,
   });
   return {
     stdout: result.stdout ?? "",
@@ -61,6 +63,16 @@ function readLog(logFile) {
   return fs.existsSync(logFile) ? fs.readFileSync(logFile, "utf8").trim() : "";
 }
 
+function readErLog(logFile) {
+  const lines = readLog(logFile).split("\n").filter(Boolean);
+  const cwdLine = lines.find((line) => line.startsWith("cwd="));
+  const cmdLine = lines.find((line) => line.startsWith("er"));
+  return {
+    cwd: cwdLine ? cwdLine.slice("cwd=".length) : "",
+    args: cmdLine ?? "",
+  };
+}
+
 module.exports = {
   PLUGIN_ROOT,
   SAFE_PATH,
@@ -69,4 +81,5 @@ module.exports = {
   makeMockEr,
   runBash,
   readLog,
+  readErLog,
 };

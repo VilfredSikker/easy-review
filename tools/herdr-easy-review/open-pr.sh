@@ -1,7 +1,14 @@
 #!/usr/bin/env bash
 # Link-handler action: open a clicked GitHub PR URL in Easy Review.
-# Uses `er --remote <url>` so no local clone of that repo is required.
+# Opens the Review pane with HERDR_PLUGIN_CLICKED_URL so open.sh runs
+# `er --remote <url>` inside the tab (actions are not pane processes).
 set -euo pipefail
+
+plugin_root="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/json-field.sh
+source "$plugin_root/lib/json-field.sh"
+# shellcheck source=lib/open-review-pane.sh
+source "$plugin_root/lib/open-review-pane.sh"
 
 url="${HERDR_PLUGIN_CLICKED_URL:-}"
 if [[ -z "$url" ]]; then
@@ -9,19 +16,7 @@ if [[ -z "$url" ]]; then
   exit 0
 fi
 
-herdr_bin="${HERDR_BIN_PATH:-herdr}"
-
-# Open the plugin's Review pane (creates the tab if needed)…
-"$herdr_bin" plugin pane open \
-  --plugin easy-review \
-  --entrypoint review \
-  --placement tab \
-  --focus || true
-
-# …then launch er on the PR. er --remote reviews without a local clone.
-if command -v er >/dev/null 2>&1; then
-  exec er --remote "$url"
-else
-  echo "Easy Review (er) is not installed." >&2
-  exit 0
-fi
+# Pass the clicked URL into the pane process. Herdr does not treat
+# HERDR_PLUGIN_CLICKED_URL as a managed override, so --env reaches open.sh.
+open_review_pane --focus --env "HERDR_PLUGIN_CLICKED_URL=${url}"
+exit 0
