@@ -1770,7 +1770,10 @@ pub fn process_inbox_after_pr_refresh(
                     } else {
                         triaged_head_oid
                     },
-                    latest_reviewer_states: Some(pr.latest_reviewer_states.clone()),
+                    latest_reviewer_states: crate::inbox::merge_reviewer_states(
+                        prev.as_ref(),
+                        pr.latest_reviewer_states.clone(),
+                    ),
                 },
             );
         }
@@ -1933,6 +1936,9 @@ fn ingest_github_notifications(
                     emitted_any = true;
                     just_added.push(item);
                 }
+            } else if crate::inbox::should_remember_skipped_author(&note, skip_review_prs) {
+                inbox.remember_notification(&gh_note.id, &gh_note.updated_at);
+                remembered_any = true;
             }
         }
     }

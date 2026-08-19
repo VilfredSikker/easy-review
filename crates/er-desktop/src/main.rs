@@ -1542,7 +1542,7 @@ fn main() {
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = true;
             }
-            rt.block_on(async {
+            let success = rt.block_on(async {
                 pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
                     .await
             });
@@ -1552,7 +1552,7 @@ fn main() {
                 &bg_inbox,
                 &bg_desktop_rev,
                 &bg_handle,
-                None,
+                if success { None } else { Some(active_remote) },
                 None,
             );
             if let Ok(mut f) = bg_loading.lock() {

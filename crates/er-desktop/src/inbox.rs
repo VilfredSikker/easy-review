@@ -408,6 +408,19 @@ fn reviewer_state_items(
     items
 }
 
+/// Disk-backed `PrInfo` skips `latest_reviewer_states`, so an empty current
+/// list is not "no reviews". Keep the last known map until a non-empty fetch.
+pub fn merge_reviewer_states(
+    prev: Option<&ObservedPrState>,
+    current: Vec<(String, String)>,
+) -> Option<Vec<(String, String)>> {
+    if current.is_empty() {
+        prev.and_then(|p| p.latest_reviewer_states.clone())
+    } else {
+        Some(current)
+    }
+}
+
 fn aggregate_review_decision_items(
     prev_state: &ObservedPrState,
     pr: &PrInboxView,
@@ -506,12 +519,7 @@ pub fn inbox_item_from_notification(
     }
     let pr_number = note.pr_number?;
     let reason = note.reason.to_ascii_lowercase();
-    if reason == "author"
-        && ctx
-            .skip_review_prs
-            .iter()
-            .any(|(remote, n)| *n == pr_number && remote.eq_ignore_ascii_case(&note.remote))
-    {
+    if reason == "author" && notification_matches_skip_pr(note, pr_number, ctx.skip_review_prs) {
         return None;
     }
     let (kind, title) = match reason.as_str() {
@@ -545,6 +553,29 @@ pub fn inbox_item_from_notification(
             note.remote, note.id
         ),
     })
+}
+
+pub fn notification_matches_skip_pr(
+    note: &InboxNotification,
+    pr_number: u64,
+    skip_review_prs: &HashSet<(String, u64)>,
+) -> bool {
+    skip_review_prs
+        .iter()
+        .any(|(remote, n)| *n == pr_number && remote.eq_ignore_ascii_case(&note.remote))
+}
+
+pub fn should_remember_skipped_author(
+    note: &InboxNotification,
+    skip_review_prs: &HashSet<(String, u64)>,
+) -> bool {
+    if !note.reason.eq_ignore_ascii_case("author") {
+        return false;
+    }
+    let Some(pr_number) = note.pr_number else {
+        return false;
+    };
+    notification_matches_skip_pr(note, pr_number, skip_review_prs)
 }
 
 fn inbox_path() -> Option<PathBuf> {
@@ -869,6 +900,23 @@ mod tests {
         );
         assert!(
             inbox_item_from_notification(&note("comment"), &note_ctx(&remotes, &skip)).is_some()
+        );
+        assert!(should_remember_skipped_author(&note("author"), &skip));
+        assert!(!should_remember_skipped_author(&note("mention"), &skip));
+    }
+
+    #[test]
+    fn merge_reviewer_states_keeps_prev_when_current_empty() {
+        let mut previous = prev();
+        previous.latest_reviewer_states = Some(vec![("alex".into(), "APPROVED".into())]);
+        assert_eq!(
+            merge_reviewer_states(Some(&previous), vec![]),
+            Some(vec![("alex".into(), "APPROVED".into())])
+        );
+        assert_eq!(merge_reviewer_states(None, vec![]), None);
+        assert_eq!(
+            merge_reviewer_states(Some(&previous), vec![("sam".into(), "COMMENTED".into())]),
+            Some(vec![("sam".into(), "COMMENTED".into())])
         );
     }
 
