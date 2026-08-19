@@ -514,6 +514,8 @@ export interface InboxItemSnapshot {
   created_at_ms: number;
   read_at_ms?: number | null;
   dedupe_key: string;
+  /** Derived from kind at snapshot time. Missing on older snapshots. */
+  category?: string;
 }
 
 export interface BackgroundTaskSnapshot {

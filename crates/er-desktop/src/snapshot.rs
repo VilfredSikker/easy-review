@@ -545,6 +545,8 @@ pub struct InboxItemSnapshot {
     pub created_at_ms: u64,
     pub read_at_ms: Option<u64>,
     pub dedupe_key: String,
+    /// Derived from `kind` at snapshot time. Not persisted.
+    pub category: String,
 }
 
 /// Wire representation of an app-level background task.
@@ -2356,7 +2358,7 @@ fn build_snapshot_inner(
             .into_iter()
             .map(|i| InboxItemSnapshot {
                 id: i.id,
-                kind: i.kind,
+                kind: i.kind.clone(),
                 severity: i.severity,
                 title: i.title,
                 body: i.body,
@@ -2365,6 +2367,9 @@ fn build_snapshot_inner(
                 created_at_ms: i.created_at_ms,
                 read_at_ms: i.read_at_ms,
                 dedupe_key: i.dedupe_key,
+                category: crate::inbox::category_for_kind(&i.kind)
+                    .as_str()
+                    .to_string(),
             })
             .collect(),
         inbox_unread_count: inbox

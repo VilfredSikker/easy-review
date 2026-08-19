@@ -260,6 +260,64 @@ pub fn ensure_gh_installed() -> Result<()> {
     Ok(())
 }
 
+/// A GitHub notification thread from `GET /notifications`.
+#[derive(Debug, Clone, Deserialize)]
+pub struct GhNotification {
+    pub id: String,
+    pub reason: String,
+    #[serde(default)]
+    pub unread: bool,
+    #[serde(default)]
+    pub updated_at: String,
+    pub subject: GhNotificationSubject,
+    pub repository: GhNotificationRepo,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GhNotificationSubject {
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default, rename = "type")]
+    pub subject_type: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct GhNotificationRepo {
+    #[serde(default)]
+    pub full_name: String,
+}
+
+/// Participating unread notifications (not the full watched-repo firehose).
+pub fn gh_list_participating_notifications() -> Result<Vec<GhNotification>> {
+    let output = Command::new("gh")
+        .args(["api", "notifications?participating=true&per_page=50"])
+        .output()
+        .context("Failed to fetch GitHub notifications")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to fetch GitHub notifications: {}", stderr.trim());
+    }
+
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+/// Pull request number from a notification subject URL.
+///
+/// Handles both `/pulls/N` and `/issues/N` (PR comments use the issues path).
+pub fn pr_number_from_notification_url(url: &str) -> Option<u64> {
+    let path = url.split('?').next().unwrap_or(url);
+    let mut parts = path.rsplit('/');
+    let last = parts.next()?;
+    let kind = parts.next()?;
+    if kind != "pulls" && kind != "issues" && kind != "pull" {
+        return None;
+    }
+    last.parse().ok()
+}
+
 /// Get the base branch for a PR using `gh pr view`
 pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
     let output = Command::new("gh")
@@ -3849,5 +3907,25 @@ mod tests {
             .output()
             .expect("git remote add");
         assert!(out.status.success());
+    }
+
+    #[test]
+    fn pr_number_from_notification_url_parses_pulls_and_issues() {
+        assert_eq!(
+            pr_number_from_notification_url("https://api.github.com/repos/org/repo/pulls/42"),
+            Some(42)
+        );
+        assert_eq!(
+            pr_number_from_notification_url("https://api.github.com/repos/org/repo/issues/99"),
+            Some(99)
+        );
+        assert_eq!(
+            pr_number_from_notification_url("https://github.com/org/repo/pull/7"),
+            Some(7)
+        );
+        assert_eq!(
+            pr_number_from_notification_url("https://api.github.com/repos/org/repo/commits/abc"),
+            None
+        );
     }
 }
