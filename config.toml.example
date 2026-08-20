@@ -219,3 +219,17 @@ diff_mode = "content"     # "content" (show file contents) or "snapshot" (diff a
 # lint      = "cargo clippy"
 # typecheck = "cargo check"
 # security  = "cargo audit"
+
+# ── Inbox (desktop) ────────────────────────────────────────────────────
+# Which events appear in the sidebar inbox, and which fire OS notifications.
+# Omitted keys default to true. Settings → Inbox / Inbox notifications.
+#
+# Known kinds include review_requested, pr_review_approved,
+# pr_review_changes_requested, ci_failed, pr_merged, pr_closed,
+# github_refresh_failed, ai_review_done, ai_review_failed, ai_triage_done,
+# and ai_triage_failed.
+[inbox.show]
+# ci_failed = false
+
+[inbox.notify]
+# github_refresh_failed = false

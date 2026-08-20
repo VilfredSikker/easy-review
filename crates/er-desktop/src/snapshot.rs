@@ -547,6 +547,35 @@ pub struct InboxItemSnapshot {
     pub dedupe_key: String,
 }
 
+fn snapshot_inbox(
+    inbox: Option<&InboxHandle>,
+    prefs: &er_engine::config::InboxConfig,
+) -> (Vec<InboxItemSnapshot>, usize, u64) {
+    let Some(guard) = inbox.and_then(|h| h.lock().ok()) else {
+        return (Vec::new(), 0, 0);
+    };
+    let last_refresh_ms = guard.last_refresh_ms;
+    let items: Vec<InboxItemSnapshot> = guard
+        .items
+        .iter()
+        .filter(|i| prefs.shows(&i.kind))
+        .map(|i| InboxItemSnapshot {
+            id: i.id.clone(),
+            kind: i.kind.clone(),
+            severity: i.severity.clone(),
+            title: i.title.clone(),
+            body: i.body.clone(),
+            source: i.source.clone(),
+            target: serde_json::to_value(&i.target).unwrap_or(serde_json::Value::Null),
+            created_at_ms: i.created_at_ms,
+            read_at_ms: i.read_at_ms,
+            dedupe_key: i.dedupe_key.clone(),
+        })
+        .collect();
+    let unread = items.iter().filter(|i| i.read_at_ms.is_none()).count();
+    (items, unread, last_refresh_ms)
+}
+
 /// Wire representation of an app-level background task.
 #[derive(Debug, Clone, Serialize)]
 pub struct BackgroundTaskSnapshotWire {
@@ -2256,6 +2285,9 @@ fn build_snapshot_inner(
         (ScopeStat::default(), ScopeStat::default())
     };
 
+    let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
+        snapshot_inbox(inbox, &app.config.inbox);
+
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch: tab
@@ -2350,29 +2382,9 @@ fn build_snapshot_inner(
                 finished_at_ms: t.finished_at_ms,
             })
             .collect(),
-        inbox_items: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.items.clone()))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|i| InboxItemSnapshot {
-                id: i.id,
-                kind: i.kind,
-                severity: i.severity,
-                title: i.title,
-                body: i.body,
-                source: i.source,
-                target: serde_json::to_value(i.target).unwrap_or(serde_json::Value::Null),
-                created_at_ms: i.created_at_ms,
-                read_at_ms: i.read_at_ms,
-                dedupe_key: i.dedupe_key,
-            })
-            .collect(),
-        inbox_unread_count: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.unread_count()))
-            .unwrap_or(0),
-        inbox_last_refresh_ms: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
-            .unwrap_or(0),
+        inbox_items,
+        inbox_unread_count,
+        inbox_last_refresh_ms,
         arena_enabled: true,
         active_arena_run: app.active_arena_run(),
         arena_runs: {
@@ -3783,6 +3795,63 @@ fn status_str(status: &FileStatus) -> String {
 mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+
+    #[test]
+    fn snapshot_inbox_hides_disabled_kinds_and_drops_them_from_unread() {
+        use crate::inbox::{InboxItem, InboxTarget};
+
+        let mut state = crate::inbox::InboxState {
+            last_refresh_ms: 42,
+            ..Default::default()
+        };
+        state.items.push(InboxItem {
+            id: "ci".into(),
+            kind: "ci_failed".into(),
+            severity: "warning".into(),
+            title: "CI failed".into(),
+            body: "fail".into(),
+            source: "github".into(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 1,
+            read_at_ms: None,
+            dedupe_key: "ci".into(),
+        });
+        state.items.push(InboxItem {
+            id: "merged".into(),
+            kind: "pr_merged".into(),
+            severity: "success".into(),
+            title: "PR merged".into(),
+            body: "ok".into(),
+            source: "github".into(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 2,
+            read_at_ms: None,
+            dedupe_key: "merged".into(),
+        });
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(state));
+        let mut prefs = er_engine::config::InboxConfig::default();
+        prefs.show.ci_failed = false;
+
+        let (items, unread, last) = snapshot_inbox(Some(&handle), &prefs);
+        assert_eq!(last, 42);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "pr_merged");
+        assert_eq!(unread, 1);
+    }
 
     #[test]
     fn compute_oid_staleness_rules() {

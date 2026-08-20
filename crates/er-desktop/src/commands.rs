@@ -21,6 +21,7 @@ use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
     BrowserLayout, CardAiContextParams, DiffMode, InputMode,
 };
+use er_engine::config::InboxConfig;
 
 const DEFAULT_ASK_AI_PROMPT: &str = "Elaborate on this and answer any question directly.";
 
@@ -50,23 +51,6 @@ Reply in markdown with:
 3. **Follow-ups**: Anything the reviewer should double-check or decide.
 
 Be concise and concrete."#;
-const REQUESTED_KINDS: &[&str] = &[
-    "ai_review_done",
-    "ai_review_failed",
-    "ai_triage_done",
-    "ai_triage_failed",
-    "ai_review_cancelled",
-    "pr_review_approved",
-    "pr_review_changes_requested",
-    "ci_failed",
-    "review_requested",
-    "review_rerequested",
-    "pr_comment_or_mention",
-    "pr_merged",
-    "pr_closed",
-    "github_refresh_failed",
-    "pr_cache_stale",
-];
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
@@ -390,11 +374,20 @@ fn now_ms() -> u64 {
     crate::inbox::now_epoch_ms()
 }
 
+/// Clone inbox prefs from the live `App`. Callers must not hold the inbox lock.
+pub(crate) fn clone_inbox_prefs(app: &Arc<Mutex<App>>) -> InboxConfig {
+    app.lock()
+        .ok()
+        .map(|g| g.config.inbox.clone())
+        .unwrap_or_default()
+}
+
 /// Show native notifications for inbox items that were created before the Tauri
 /// `AppHandle` was stored (startup PR refresh races setup in release builds).
 pub fn flush_pending_native_notifications(
     inbox_handle: &InboxHandle,
     app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    prefs: &InboxConfig,
 ) {
     let pending: Vec<InboxItem> = {
         let Ok(inbox) = inbox_handle.lock() else {
@@ -404,16 +397,13 @@ pub fn flush_pending_native_notifications(
             .items
             .iter()
             .filter(|item| {
-                (REQUESTED_KINDS.contains(&item.kind.as_str())
-                    || item.severity == "warning"
-                    || item.severity == "error")
-                    && !inbox.notified_item_ids.contains(&item.id)
+                prefs.notifies(&item.kind) && !inbox.notified_item_ids.contains(&item.id)
             })
             .cloned()
             .collect()
     };
     for item in &pending {
-        maybe_send_native_notification(inbox_handle, app_handle_state, item);
+        maybe_send_native_notification(inbox_handle, app_handle_state, prefs, item);
     }
 }
 
@@ -439,12 +429,10 @@ pub fn prepare_macos_notifications(_app: &tauri::AppHandle) {}
 fn maybe_send_native_notification(
     inbox_handle: &InboxHandle,
     app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    prefs: &InboxConfig,
     item: &InboxItem,
 ) {
-    if !REQUESTED_KINDS.contains(&item.kind.as_str())
-        && item.severity != "warning"
-        && item.severity != "error"
-    {
+    if !prefs.notifies(&item.kind) {
         return;
     }
     let Ok(mut inbox) = inbox_handle.lock() else {
@@ -611,6 +599,9 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
                 ),
                 _ => continue,
             };
+            if !app.config.inbox.stores(&kind) {
+                continue;
+            }
             let item = InboxItem {
                 id: format!("inbox-ai-{}-{}", task.id, task.status),
                 kind,
@@ -637,7 +628,12 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
         }
     }
     for item in &just_added {
-        maybe_send_native_notification(&state.inbox, &state.tauri_app_handle, item);
+        maybe_send_native_notification(
+            &state.inbox,
+            &state.tauri_app_handle,
+            &app.config.inbox,
+            item,
+        );
     }
     if emitted_any {
         crate::inbox::save_inbox_state(&state.inbox);
@@ -1575,12 +1571,14 @@ fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec
     }
 }
 
+#[allow(clippy::too_many_arguments)] // prefs must come from App; adding it exceeds the 7-arg cap
 pub fn process_inbox_after_pr_refresh(
     pr_cache: &Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     gh_user_state: &GhUser,
     inbox_handle: &InboxHandle,
     desktop_revision: &Arc<AtomicU64>,
     app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    prefs: &InboxConfig,
     refresh_failed_remote: Option<String>,
     auto_triage: Option<&crate::auto_triage::AutoTriageContext>,
 ) {
@@ -1597,25 +1595,27 @@ pub fn process_inbox_after_pr_refresh(
             };
             let last = inbox.refresh_error_at_ms.get(&remote).copied().unwrap_or(0);
             if now.saturating_sub(last) >= crate::inbox::REFRESH_ERROR_TTL_MS {
-                let _ = inbox.add_item(InboxItem {
-                    id: format!("inbox-gh-refresh-failed-{remote}-{now}"),
-                    kind: "github_refresh_failed".to_string(),
-                    severity: "info".to_string(),
-                    title: format!("GitHub refresh failed for {remote}"),
-                    body: "Could not refresh PR data; using stale cache.".to_string(),
-                    source: "github".to_string(),
-                    target: InboxTarget {
-                        project_id: None,
-                        repo_root: None,
-                        remote: Some(remote.clone()),
-                        pr_number: None,
-                        branch: None,
-                        url: None,
-                    },
-                    created_at_ms: now,
-                    read_at_ms: None,
-                    dedupe_key: format!("github:{remote}:refresh_failed"),
-                });
+                if prefs.stores("github_refresh_failed") {
+                    let _ = inbox.add_item(InboxItem {
+                        id: format!("inbox-gh-refresh-failed-{remote}-{now}"),
+                        kind: "github_refresh_failed".to_string(),
+                        severity: "info".to_string(),
+                        title: format!("GitHub refresh failed for {remote}"),
+                        body: "Could not refresh PR data; using stale cache.".to_string(),
+                        source: "github".to_string(),
+                        target: InboxTarget {
+                            project_id: None,
+                            repo_root: None,
+                            remote: Some(remote.clone()),
+                            pr_number: None,
+                            branch: None,
+                            url: None,
+                        },
+                        created_at_ms: now,
+                        read_at_ms: None,
+                        dedupe_key: format!("github:{remote}:refresh_failed"),
+                    });
+                }
                 inbox.refresh_error_at_ms.insert(remote, now);
             }
             drop(inbox);
@@ -1945,6 +1945,9 @@ pub fn process_inbox_after_pr_refresh(
     let mut just_added: Vec<InboxItem> = Vec::new();
     if let Ok(mut inbox) = inbox_handle.lock() {
         for item in new_items {
+            if !prefs.stores(&item.kind) {
+                continue;
+            }
             if inbox.add_item(item.clone()) {
                 emitted_any = true;
                 just_added.push(item);
@@ -1952,7 +1955,7 @@ pub fn process_inbox_after_pr_refresh(
         }
     }
     for item in &just_added {
-        maybe_send_native_notification(inbox_handle, app_handle_state, item);
+        maybe_send_native_notification(inbox_handle, app_handle_state, prefs, item);
     }
     crate::inbox::save_inbox_state(inbox_handle);
     if emitted_any {
@@ -7399,6 +7402,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
+        let app = Arc::clone(&state.app);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -7408,6 +7412,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 rt.block_on(
                     async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await },
                 );
+            let prefs = clone_inbox_prefs(&app);
             for remote in failed {
                 process_inbox_after_pr_refresh(
                     &pr_cache,
@@ -7415,6 +7420,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                     &inbox,
                     &desktop_rev,
                     &app_handle_state,
+                    &prefs,
                     Some(remote),
                     None,
                 );
@@ -7425,6 +7431,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                 &inbox,
                 &desktop_rev,
                 &app_handle_state,
+                &prefs,
                 None,
                 None,
             );
@@ -7475,6 +7482,7 @@ pub fn refresh_project_pr_list(
         let gh_user = Arc::clone(&state.gh_user);
         let inbox = Arc::clone(&state.inbox);
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
+        let app = Arc::clone(&state.app);
         std::thread::spawn(move || {
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -7485,6 +7493,7 @@ pub fn refresh_project_pr_list(
                 crate::pr_cache::refresh_pr_cache_for_remote(&remote_clone, &cache, &fetched_at)
                     .await
             });
+            let prefs = clone_inbox_prefs(&app);
             if !success {
                 process_inbox_after_pr_refresh(
                     &pr_cache,
@@ -7492,6 +7501,7 @@ pub fn refresh_project_pr_list(
                     &inbox,
                     &desktop_rev,
                     &app_handle_state,
+                    &prefs,
                     Some(remote),
                     None,
                 );
@@ -7502,6 +7512,7 @@ pub fn refresh_project_pr_list(
                 &inbox,
                 &desktop_rev,
                 &app_handle_state,
+                &prefs,
                 None,
                 None,
             );
@@ -11047,7 +11058,12 @@ mod tests {
                 }
             }
             for added in &just_added {
-                maybe_send_native_notification(&inbox_thread, &handle_thread, added);
+                maybe_send_native_notification(
+                    &inbox_thread,
+                    &handle_thread,
+                    &InboxConfig::default(),
+                    added,
+                );
             }
             let _ = tx.send(());
         });
@@ -11055,6 +11071,82 @@ mod tests {
         rx.recv_timeout(Duration::from_millis(500))
             .expect("inbox notify path deadlocked (re-entrant lock on ai_review_done)");
         assert_eq!(inbox.lock().unwrap().items.len(), 1);
+    }
+
+    #[test]
+    fn disabled_notify_kind_is_not_marked_notified() {
+        let inbox: InboxHandle = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
+        let app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
+        let mut prefs = InboxConfig::default();
+        prefs.notify.ai_review_done = false;
+        let item = InboxItem {
+            id: "inbox-ai-skip".to_string(),
+            kind: "ai_review_done".to_string(),
+            severity: "success".to_string(),
+            title: "AI review completed".to_string(),
+            body: "done".to_string(),
+            source: "ai".to_string(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 0,
+            read_at_ms: None,
+            dedupe_key: "ai:skip:done".to_string(),
+        };
+
+        maybe_send_native_notification(&inbox, &app_handle, &prefs, &item);
+        assert!(
+            !inbox.lock().unwrap().notified_item_ids.contains(&item.id),
+            "disabled notify kinds must not be marked notified"
+        );
+    }
+
+    #[test]
+    fn clone_inbox_prefs_reads_app_config() {
+        let mut app = make_app_with_n_tabs(1);
+        app.config.inbox.notify.ai_review_done = false;
+        let prefs = clone_inbox_prefs(&Arc::new(Mutex::new(app)));
+        assert!(!prefs.notify.ai_review_done);
+        assert!(prefs.show.ai_review_done);
+    }
+
+    #[test]
+    fn flush_pending_respects_passed_prefs() {
+        let inbox: InboxHandle = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
+        let app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
+        let item = InboxItem {
+            id: "inbox-flush-skip".to_string(),
+            kind: "ai_review_done".to_string(),
+            severity: "success".to_string(),
+            title: "AI review completed".to_string(),
+            body: "done".to_string(),
+            source: "ai".to_string(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 0,
+            read_at_ms: None,
+            dedupe_key: "ai:flush-skip:done".to_string(),
+        };
+        assert!(inbox.lock().unwrap().add_item(item.clone()));
+
+        let mut prefs = InboxConfig::default();
+        prefs.notify.ai_review_done = false;
+        flush_pending_native_notifications(&inbox, &app_handle, &prefs);
+        assert!(
+            !inbox.lock().unwrap().notified_item_ids.contains(&item.id),
+            "flush must honor the App prefs it was given, not disk defaults"
+        );
     }
 
     #[test]
