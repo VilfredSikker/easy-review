@@ -3272,18 +3272,10 @@ fn build_hunk_threads(
         .iter()
         .enumerate()
         .map(|(hunk_idx, hunk)| {
-            let (old_count, new_count) = hunk_line_counts(hunk);
-            // Collect threads for this hunk (also matches comments whose hunk_index is
-            // missing or stale, by falling back to line-range matching)
+            // Header span, not visible line count — folds hide context but the
+            // comment's line_start still sits in the @@ range.
             tab.ai
-                .comments_for_hunk_or_line_range(
-                    &file.path,
-                    hunk_idx,
-                    hunk.new_start,
-                    new_count,
-                    hunk.old_start,
-                    old_count,
-                )
+                .comments_for_diff_hunk(&file.path, hunk_idx, hunk)
                 .iter()
                 .filter(|c| {
                     c.in_reply_to().is_none()
