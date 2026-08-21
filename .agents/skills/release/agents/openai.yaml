@@ -1,0 +1,3 @@
+interface:
+  display_name: "Release"
+  short_description: "Bump versions, release notes, tag, and ship"

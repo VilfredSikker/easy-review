@@ -274,14 +274,17 @@ cargo clippy -p er-engine -p er-tui --all-targets -- -D warnings
 
 Published releases are **terminal `er`**, **er-mcp**, and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. The CI DMG is ad-hoc signed (right-click → Open the first time). For a Developer ID signed + notarized build, use [`just sign`](#macos-signed-release-developer-id--notarization) locally and upload the DMG to the GitHub release if needed.
 
-**Maintainer flow:**
+**Maintainer flow:** use the `/release` agent skill ([`.agents/skills/release/SKILL.md`](../.agents/skills/release/SKILL.md)) or follow it manually:
 
 ```bash
-# 1. Bump version in Cargo.toml ([workspace.package] version)
-# 2. Commit, tag, push
-git tag v0.3.0
+./scripts/bump-version.sh 0.4.N          # all version pins
+./scripts/er-tui.sh check -p er-engine -p er-tui -p er-mcp
+CARGO_TARGET_DIR=target/desktop cargo check -p er-desktop
+./scripts/verify-release-versions.sh 0.4.N
+# write RELEASE_NOTES.md, commit, then:
+git tag v0.4.N
 git push origin main
-git push origin v0.3.0
+git push origin v0.4.N
 ```
 
 CI builds `er-tui` for `x86_64-apple-darwin`, `aarch64-apple-darwin`, and `x86_64-unknown-linux-gnu`, packages `er-<target>.tar.gz`, and creates a GitHub Release.
