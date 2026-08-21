@@ -126,3 +126,23 @@ describe("optimistic local-write call sites", () => {
     expect(browser).toContain("if (!app.canPaintOptimistic()) return;");
   });
 });
+
+describe("panel chrome is local-first", () => {
+  it("paints layout before invoking toggle_panel", () => {
+    const fn = src.slice(src.indexOf("togglePanel("), src.indexOf("setMainView"));
+    expect(fn.indexOf("layoutPanels.toggle")).toBeGreaterThan(-1);
+    expect(fn.indexOf("rightRail.toggle()")).toBeGreaterThan(-1);
+    expect(fn.indexOf("layoutPanels.toggle")).toBeLessThan(fn.indexOf('invoke("toggle_panel"'));
+    expect(fn.indexOf("rightRail.toggle()")).toBeLessThan(fn.indexOf('invoke("toggle_panel"'));
+    expect(fn).not.toContain("ingestCommandSnapshot");
+    expect(fn).not.toContain("await invoke");
+  });
+
+  it("command palette toggles all three chrome panels through togglePanel", () => {
+    const palette = component("CommandPalette.svelte");
+    expect(palette).toContain('id: "toggle-tree"');
+    expect(palette).toContain('app.togglePanel("left")');
+    expect(palette).toContain('app.togglePanel("tree")');
+    expect(palette).toContain('app.togglePanel("right")');
+  });
+});

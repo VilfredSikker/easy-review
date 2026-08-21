@@ -38,6 +38,8 @@ import {
 } from "../tabSnapshotCache";
 import type { AppSnapshot, PollResponse } from "../types";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
+import { layoutPanels } from "./layoutPanels.svelte";
+import { rightRail } from "./rightRail.svelte";
 
 export type { CommentVisibility };
 
@@ -535,15 +537,18 @@ class AppStore {
     }
   }
 
-  async togglePanel(panel: "left" | "tree" | "right") {
-    try {
-      const snap = await invoke<AppSnapshot>("toggle_panel", { panel });
-      this.ingestCommandSnapshot(snap);
-    } catch (e) {
+  /** Paint chrome locally, then tell the backend. Do not wait on a snapshot. */
+  togglePanel(panel: "left" | "tree" | "right") {
+    if (panel === "right") {
+      rightRail.toggle();
+    } else {
+      layoutPanels.toggle(panel);
+    }
+    void invoke("toggle_panel", { panel }).catch((e) => {
       console.error("togglePanel failed:", e);
       this.pushLog("error", "toggle_panel", String(e));
       this.showToast("error", `toggle_panel: ${e}`);
-    }
+    });
   }
 
   setMainView(mode: MainViewMode) {

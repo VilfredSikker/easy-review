@@ -5,6 +5,7 @@
   import type { TabSummary } from "$lib/types";
   import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
   import { startWindowDrag } from "$lib/windowDrag";
+  import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
 
   interface Props {
     tabs?: TabSummary[];
@@ -35,7 +36,6 @@
   const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
   const active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
   const canClose = $derived(tabs.length > 1);
-  const panels = $derived(app.snapshot?.panels);
 
   // Drag state. `dragFrom` is the source tab idx; `dropAt` is the insertion
   // marker position (0..tabs.length, where `tabs.length` means after the last
@@ -141,7 +141,7 @@
   {#if showToolbar}
     <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300">
       <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.left ? 'text-accent bg-ink-700' : ''}"
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.left ? 'text-accent bg-ink-700' : ''}"
         onclick={() => app.togglePanel("left")}
         title="Toggle left panel [["
       >
@@ -258,7 +258,7 @@
         <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1" title="Watch active"></span>
       {/if}
       <button
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {panels?.tree ? 'text-accent bg-ink-700' : ''}"
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.tree ? 'text-accent bg-ink-700' : ''}"
         onclick={() => app.togglePanel("tree")}
         title="Toggle file tree [\]"
       >

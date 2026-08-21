@@ -812,10 +812,14 @@ pub async fn get_snapshot(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 }
 
 #[tauri::command]
-pub fn toggle_panel(panel: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.toggle_panel(&panel);
-    Ok(snap_from(&app, &state))
+pub async fn toggle_panel(panel: String, state: State<'_, AppState>) -> Result<(), String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.toggle_panel(&panel);
+        Ok(())
+    })
+    .await
 }
 
 // ── Navigation ────────────────────────────────────────────────────────────────
@@ -11110,6 +11114,9 @@ mod tests {
             "unbulk_review_pillar",
             "add_ui_annotation",
             "delete_ui_annotation",
+            // Panel chrome used to rebuild a full snapshot on the main thread,
+            // freezing the window before `[` / `\` / `]` took effect.
+            "toggle_panel",
         ];
         let wrappers = [
             "run_ai_triage_review",
@@ -11208,6 +11215,25 @@ mod tests {
             failures.is_empty(),
             "⌘K/AI actions would freeze the UI:\n{}",
             failures.join("\n")
+        );
+    }
+
+    #[test]
+    fn toggle_panel_does_not_build_a_snapshot() {
+        let src = include_str!("commands.rs");
+        let start = src
+            .find("pub async fn toggle_panel")
+            .expect("toggle_panel must be async");
+        let from = &src[start..];
+        let await_at = from
+            .find(".await")
+            .expect("toggle_panel awaits run_blocking");
+        let body = &from[..await_at];
+        assert!(body.contains("run_blocking"));
+        assert!(body.contains("Ok(())"));
+        assert!(
+            !body.contains("snap_from"),
+            "toggle_panel must not rebuild a snapshot"
         );
     }
 }

@@ -426,6 +426,13 @@
         run: () => { dismissLocal(() => { app.togglePanel("left"); }); },
       },
       {
+        id: "toggle-tree",
+        label: "Toggle file tree",
+        group: "View & Layout",
+        kbd: "\\",
+        run: () => { dismissLocal(() => { app.togglePanel("tree"); }); },
+      },
+      {
         id: "toggle-right",
         label: "Toggle right panel",
         group: "View & Layout",
