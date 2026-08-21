@@ -4671,10 +4671,12 @@ pub struct App {
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
 
-    /// Session-local AI Hub provider selection
+    /// Active AI Hub provider. Seeded from persisted defaults on launch.
+    /// Desktop palette picks write it back to global config.
     pub current_ai_provider: Option<String>,
 
-    /// Session-local AI Hub model selection
+    /// Active AI Hub model. Seeded from persisted defaults on launch.
+    /// Desktop palette picks write it back to global config.
     pub current_ai_model: Option<String>,
 
     /// Session-local Claude Code effort level (`low` … `max`).
@@ -5074,38 +5076,54 @@ impl App {
         self.current_ai_effort = selection.effort;
     }
 
-    pub fn active_ai_selection_label(&self) -> String {
-        if let Some(provider_id) = self
+    fn active_ai_selection_parts(&self) -> (Option<String>, Option<String>) {
+        let Some(provider_id) = self
             .config
             .ai_hub
             .resolve_provider_id(self.current_ai_provider.as_deref())
-        {
-            if let Some(provider) = self.config.ai_hub.providers.get(&provider_id) {
-                let provider_label = provider.display_name(&provider_id);
-                let model_label = self
-                    .config
-                    .ai_hub
-                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
-                    .and_then(|model_id| {
-                        provider
-                            .models
-                            .iter()
-                            .find(|m| m.id == model_id)
-                            .map(|m| m.display_name())
-                    });
-                let mut label = match model_label {
-                    Some(model) => format!("{provider_label} / {model}"),
-                    None => provider_label,
-                };
-                if let Some(effort) = self.current_ai_effort.as_deref() {
-                    label.push_str(" · ");
-                    label.push_str(effort);
-                }
-                return label;
-            }
-        }
+        else {
+            return (None, None);
+        };
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            return (None, None);
+        };
+        let provider_label = provider.display_name(&provider_id);
+        let model_label = self
+            .config
+            .ai_hub
+            .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+            .and_then(|model_id| {
+                provider
+                    .models
+                    .iter()
+                    .find(|m| m.id == model_id)
+                    .map(|m| m.display_name())
+            });
+        (Some(provider_label), model_label)
+    }
 
-        self.config.agent.display_name()
+    pub fn active_ai_provider_label(&self) -> Option<String> {
+        self.active_ai_selection_parts().0
+    }
+
+    pub fn active_ai_model_label(&self) -> Option<String> {
+        self.active_ai_selection_parts().1
+    }
+
+    pub fn active_ai_selection_label(&self) -> String {
+        let (provider_label, model_label) = self.active_ai_selection_parts();
+        let Some(provider_label) = provider_label else {
+            return self.config.agent.display_name();
+        };
+        let mut label = match model_label {
+            Some(model) => format!("{provider_label} / {model}"),
+            None => provider_label,
+        };
+        if let Some(effort) = self.current_ai_effort.as_deref() {
+            label.push_str(" · ");
+            label.push_str(effort);
+        }
+        label
     }
 
     pub fn open_ai_provider_picker(&mut self, action: Option<AiActionKind>) {
@@ -9209,6 +9227,32 @@ mod tests {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         }
+    }
+
+    #[test]
+    fn active_ai_selection_parts_use_provider_and_model_labels() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    label: Some("GPT-5.6 Luna".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("gpt-5.6-luna".into());
+
+        assert_eq!(app.active_ai_provider_label().as_deref(), Some("Codex"));
+        assert_eq!(
+            app.active_ai_model_label().as_deref(),
+            Some("GPT-5.6 Luna")
+        );
+        assert_eq!(app.active_ai_selection_label(), "Codex / GPT-5.6 Luna");
     }
 
     #[test]

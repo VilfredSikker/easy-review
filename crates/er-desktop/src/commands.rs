@@ -4194,7 +4194,7 @@ pub struct AiModelInfo {
 }
 
 /// Map hub providers to wire DTOs. `selected_*` are already-resolved highlight ids
-/// (session current for the palette; persisted defaults for Settings).
+/// (live current selection for the palette and title bar; persisted defaults for Settings).
 pub(crate) fn map_ai_providers(
     hub: &er_engine::config::AiHubConfig,
     selected_provider_id: Option<&str>,
@@ -4271,7 +4271,9 @@ pub async fn set_ai_selection(
     let state = state.inner().clone();
     run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        let persist = persist.unwrap_or(false);
+        // Palette and title-bar picks are the user's default. Settings also
+        // passes true. Session-only remains available via persist: false.
+        let persist = persist.unwrap_or(true);
         let agent = app.config.agent.clone();
 
         let selection = if persist {
@@ -11210,4 +11212,5 @@ mod tests {
             failures.join("\n")
         );
     }
+
 }

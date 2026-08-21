@@ -450,6 +450,12 @@ pub struct AppSnapshot {
     /// Human-readable label for the currently selected AI provider/model.
     #[serde(default)]
     pub active_ai_label: String,
+    /// Display name of the active AI Hub provider, if one is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_provider_label: Option<String>,
+    /// Display name of the active AI Hub model, if one is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_model_label: Option<String>,
     /// Claude Code effort level for the current session (`low` … `max`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_ai_effort: Option<String>,
@@ -2313,6 +2319,8 @@ fn build_snapshot_inner(
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
+        active_ai_provider_label: app.active_ai_provider_label(),
+        active_ai_model_label: app.active_ai_model_label(),
         active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,

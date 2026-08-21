@@ -594,6 +594,9 @@ const baseSnapshot: AppSnapshot = {
   active_tab: 0,
   bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
   commits: commitsRich,
+  active_ai_label: "Codex / GPT-5.6 Luna",
+  active_ai_provider_label: "Codex",
+  active_ai_model_label: "GPT-5.6 Luna",
 };
 
 /** Snapshot used for full-page mock recreation. */
