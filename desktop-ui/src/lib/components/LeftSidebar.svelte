@@ -1,9 +1,9 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
-  import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import AppMark from "$lib/components/AppMark.svelte";
-  import type { BackgroundTaskSnapshot, InboxItemSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
+  import InboxPanel from "$lib/components/InboxPanel.svelte";
+  import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
   import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
@@ -25,9 +25,6 @@
   const snapshot = $derived(app.snapshot);
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
-  const inboxItems = $derived<InboxItemSnapshot[]>(snapshot?.inbox_items ?? []);
-  const inboxUnreadCount = $derived<number>(snapshot?.inbox_unread_count ?? 0);
-  const inboxLastRefreshMs = $derived<number>(snapshot?.inbox_last_refresh_ms ?? 0);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
   const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
@@ -85,20 +82,6 @@
   );
 
   const pinned = $derived<PinnedItem[]>(pinnedOverride ?? []);
-  const inboxVisible = $derived(
-    [...inboxItems].sort((a, b) => {
-      const aUnread = a.read_at_ms == null ? 0 : 1;
-      const bUnread = b.read_at_ms == null ? 0 : 1;
-      if (aUnread !== bUnread) return aUnread - bUnread;
-      return b.created_at_ms - a.created_at_ms;
-    }).slice(0, 20),
-  );
-  const latestInboxMessage = $derived(inboxVisible[0] ?? null);
-
-  let inboxPopoverOpen = $state(false);
-  let inboxFilter = $state<"all" | "unread" | "read">("all");
-  let inboxProjectFilter = $state<"all" | string>("all");
-  let selectedInboxMessage = $state<InboxItemSnapshot | null>(null);
   let expandedProject = $state<string | null>(null);
   let pendingBranchKey = $state<string | null>(null);
   let pendingPrKey = $state<string | null>(null);
@@ -236,24 +219,6 @@
     branchPickerAnchor = null;
   }
 
-
-  function openInboxPopover() {
-    inboxPopoverOpen = true;
-  }
-
-  function closeInboxPopover() {
-    inboxPopoverOpen = false;
-  }
-
-  function openInboxMessageModal(item: InboxItemSnapshot) {
-    selectedInboxMessage = item;
-    app.cmd("mark_inbox_item_read", { id: item.id });
-  }
-
-  function closeInboxMessageModal() {
-    selectedInboxMessage = null;
-  }
-
   function projectBadge(p: ProjectSnapshot): number {
     return p.local_branches.length + p.my_prs.length + p.prs_to_review.length + (p.recent_prs?.length ?? 0) + p.recently_merged.length;
   }
@@ -267,16 +232,6 @@
     return `${hrs}h`;
   }
 
-  function formatInboxUpdated(ms: number): string {
-    if (!ms || ms <= 0) return "never";
-    const delta = Date.now() - ms;
-    if (delta < 60_000) return "just now";
-    const mins = Math.floor(delta / 60_000);
-    if (mins < 60) return `${mins}m ago`;
-    const hrs = Math.floor(mins / 60);
-    return `${hrs}h ago`;
-  }
-
   function prIconColor(pr: PrInfo): string {
     if (pr.state === "MERGED") return "text-periwinkle";
     if (pr.state === "CLOSED") return "text-del-fg";
@@ -286,96 +241,6 @@
     // Ready for review (open, not draft, no decision yet)
     return "text-fg-3";
   }
-
-  /** Map inbox item kind/severity to an SVG path + color class for the icon. */
-  interface InboxKindMeta { color: string; path: string; viewBox?: string }
-  function inboxKindMeta(item: InboxItemSnapshot): InboxKindMeta {
-    // Try kind-based mapping first
-    switch (item.kind) {
-      case "pr_merged":
-      case "merged":
-        return { color: "text-periwinkle", path: "M18 6 6 18M6 6l12 12M6 3v6h6" }; // git-merge simplified
-      case "ci_failed":
-      case "ci-fail":
-      case "check_failed":
-        return { color: "text-del-fg", path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
-      case "review_requested":
-      case "review":
-        return { color: "text-accent", path: "M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6z" };
-      case "new_comment":
-      case "comment":
-        return { color: "text-comment", path: "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" };
-      case "mention":
-        return { color: "text-warning", path: "M16 8a6 6 0 0 1-12 0 6 6 0 0 1 12 0zM16 8c0 3.3 1.7 6 4 6M20 8v4M20 8a8 8 0 1 0-8 8" };
-    }
-    // Fall back to severity
-    switch (item.severity) {
-      case "error":   return { color: "text-del-fg",    path: "M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zM15 9l-6 6M9 9l6 6" };
-      case "warning": return { color: "text-warning", path: "M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01" };
-      default:        return { color: "text-muted",     path: "M18 8h1a4 4 0 0 1 0 8h-1M2 8h16v9a4 4 0 0 1-4 4H6a4 4 0 0 1-4-4V8zM6 1v3M10 1v3M14 1v3" };
-    }
-  }
-
-  /** Top 2 unread items for the in-rail teaser. */
-  const inboxTeaser = $derived(
-    [...inboxItems]
-      .sort((a, b) => {
-        const aUnread = a.read_at_ms == null ? 0 : 1;
-        const bUnread = b.read_at_ms == null ? 0 : 1;
-        if (aUnread !== bUnread) return aUnread - bUnread;
-        return b.created_at_ms - a.created_at_ms;
-      })
-      .slice(0, 2),
-  );
-
-  /** Resolve which project an inbox item belongs to (explicit id or repo/remote match). */
-  function inboxItemProjectId(item: InboxItemSnapshot): string | null {
-    if (item.target.project_id) return item.target.project_id;
-    const root = item.target.repo_root;
-    if (root) {
-      const match = projects.find((p) => p.root_path && p.root_path === root);
-      if (match) return match.id;
-    }
-    const remote = item.target.remote;
-    if (remote) {
-      const match = projects.find((p) => p.remote && p.remote === remote);
-      if (match) return match.id;
-    }
-    return null;
-  }
-
-  /** Projects that have at least one inbox item, sorted by name. */
-  const inboxProjectOptions = $derived(
-    projects
-      .filter((p) => inboxItems.some((item) => inboxItemProjectId(item) === p.id))
-      .sort((a, b) => a.name.localeCompare(b.name)),
-  );
-
-  $effect(() => {
-    if (
-      inboxProjectFilter !== "all" &&
-      !inboxProjectOptions.some((p) => p.id === inboxProjectFilter)
-    ) {
-      inboxProjectFilter = "all";
-    }
-  });
-
-  /** Inbox items filtered by the selected project. */
-  const inboxByProject = $derived(
-    inboxProjectFilter === "all"
-      ? inboxVisible
-      : inboxVisible.filter((i) => inboxItemProjectId(i) === inboxProjectFilter),
-  );
-
-  /** Inbox items filtered by the popover tab selection. */
-  const inboxFiltered = $derived(
-    inboxByProject.filter((i) => {
-      if (inboxFilter === "unread") return i.read_at_ms == null;
-      if (inboxFilter === "read") return i.read_at_ms != null;
-      return true;
-    }),
-  );
-  const inboxUnreadCountAll = $derived(inboxByProject.filter((i) => i.read_at_ms == null).length);
 
   const hasExpandedProject = $derived(
     !sidebarSearchNeedle && expandedProject !== null,
@@ -1023,229 +888,7 @@
     </div>
   {/if}
 
-  <!-- Inbox -->
-  <div class="px-2 pt-3 pb-1">
-    <!-- Section eyebrow — 10px uppercase 0.06em font-semibold text-muted -->
-    <div class="flex items-center px-2 mb-1.5">
-      <button
-        type="button"
-        onclick={openInboxPopover}
-        class="text-[10px] font-semibold uppercase tracking-[0.06em] text-muted hover:text-fg-2 transition-colors"
-      >
-        Inbox
-      </button>
-      {#if inboxUnreadCount > 0}
-        <span class="ml-1.5 text-[9px] font-mono bg-ink-700 text-accent px-1 rounded-full">{inboxUnreadCount}</span>
-      {/if}
-      <button
-        type="button"
-        onclick={() => app.cmd("refresh_notifications")}
-        class="ml-auto text-[10px] text-muted hover:text-fg transition-colors"
-        title="Refresh notifications"
-        aria-label="Refresh notifications"
-      >↻</button>
-    </div>
-
-    <!-- Top 2 unread items inline teaser -->
-    <div class="space-y-0.5">
-      {#if inboxTeaser.length === 0}
-        <div class="px-2 py-1 text-[12px] text-muted">No notifications</div>
-      {:else}
-        {#each inboxTeaser as item (item.id)}
-          {@const meta = inboxKindMeta(item)}
-          {@const isUnread = item.read_at_ms == null}
-          <button
-            type="button"
-            onclick={openInboxPopover}
-            class="w-full text-left flex items-start gap-2 px-2 py-1.5 rounded-md hover:bg-hover relative group"
-          >
-            <!-- Unread orange tick on left edge -->
-            {#if isUnread}
-              <span class="absolute left-0 top-2 bottom-2 w-0.5 bg-accent rounded-r-sm"></span>
-            {/if}
-            <!-- Kind icon -->
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 mt-0.5 {meta.color}">
-              <path d={meta.path} />
-            </svg>
-            <div class="min-w-0 flex-1">
-              <div class="text-[12px] {isUnread ? 'font-medium text-fg-2' : 'text-fg-3'} truncate leading-tight">{item.title}</div>
-              {#if item.body}
-                <div class="text-[11px] text-muted truncate mt-0.5">{item.body}</div>
-              {/if}
-            </div>
-            <!-- Age derived from created_at_ms -->
-            <span class="text-[10px] text-muted shrink-0 mt-0.5">
-              {#if Date.now() - item.created_at_ms < 60_000}now{:else if Date.now() - item.created_at_ms < 3_600_000}{Math.floor((Date.now() - item.created_at_ms) / 60_000)}m{:else}{Math.floor((Date.now() - item.created_at_ms) / 3_600_000)}h{/if}
-            </span>
-          </button>
-        {/each}
-        {#if inboxUnreadCount > 2}
-          <button
-            type="button"
-            onclick={openInboxPopover}
-            class="w-full text-left flex items-center gap-1.5 px-2 py-1 text-[11px] text-muted hover:text-fg-2 transition-colors"
-          >
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M6 9l6 6 6-6"/></svg>
-            See {inboxUnreadCount - 2} more
-          </button>
-        {/if}
-      {/if}
-    </div>
-  </div>
-
-  {#if inboxPopoverOpen}
-    <!-- svelte-ignore a11y_click_events_have_key_events -->
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <div class="fixed inset-0 z-[200]" onclick={closeInboxPopover}></div>
-    <!-- Inbox popover — roomier layout with segmented filter tabs -->
-    <div
-      class="absolute left-2 top-28 z-[201] w-80 rounded-lg border border-border bg-ink-800 shadow-xl flex flex-col overflow-hidden"
-      style="max-height: calc(100vh - 120px);"
-    >
-      <!-- Header: tray icon + Inbox + updated + close -->
-      <div class="px-3 pt-2.5 pb-2 border-b border-hairline flex flex-col gap-2">
-        <div class="flex items-center gap-1.5">
-          <!-- Tray icon (orange) -->
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0">
-            <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
-            <path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
-          </svg>
-          <span class="text-[12px] font-semibold text-fg">Inbox</span>
-          <span class="text-[11px] text-muted">· Updated {formatInboxUpdated(inboxLastRefreshMs)}</span>
-          <div class="flex-1"></div>
-          <button
-            type="button"
-            onclick={closeInboxPopover}
-            title="Close"
-            aria-label="Close inbox"
-            class="w-5 h-5 rounded flex items-center justify-center text-muted hover:text-fg hover:bg-hover"
-          >
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M18 6 6 18M6 6l12 12"/></svg>
-          </button>
-        </div>
-        <!-- Segmented filter row -->
-        <div class="flex items-center gap-2">
-          <div class="inline-flex bg-surface border border-hairline rounded p-0.5">
-            <button
-              type="button"
-              onclick={() => (inboxFilter = "all")}
-              class="h-[22px] px-2 rounded-sm text-[11px] font-medium flex items-center gap-1 {inboxFilter === 'all' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
-            >All <span class="{inboxFilter === 'all' ? 'text-muted' : 'text-muted'} ml-0.5">{inboxByProject.length}</span></button>
-            <button
-              type="button"
-              onclick={() => (inboxFilter = "unread")}
-              class="h-[22px] px-2 rounded-sm text-[11px] font-medium flex items-center gap-1 {inboxFilter === 'unread' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
-            >Unread <span class="{inboxFilter === 'unread' ? 'text-accent' : 'text-muted'} ml-0.5">{inboxUnreadCountAll}</span></button>
-            <button
-              type="button"
-              onclick={() => (inboxFilter = "read")}
-              class="h-[22px] px-2 rounded-sm text-[11px] font-medium {inboxFilter === 'read' ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
-            >Read</button>
-          </div>
-          <div class="flex-1"></div>
-          <button
-            type="button"
-            onclick={() => { app.cmd("mark_all_inbox_read"); }}
-            title="Mark all read"
-            aria-label="Mark all read"
-            class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 7 17l-3-3"/><path d="m22 10-7.5 7.5L13 16"/></svg>
-          </button>
-          <button
-            type="button"
-            onclick={() => { app.cmd("clear_read_inbox_items"); }}
-            title="Clear read"
-            aria-label="Clear read"
-            class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-          </button>
-        </div>
-        {#if inboxProjectOptions.length > 0}
-          <div class="flex items-center gap-2">
-            <label for="inbox-project-filter" class="text-[11px] text-muted shrink-0">Project</label>
-            <select
-              id="inbox-project-filter"
-              bind:value={inboxProjectFilter}
-              class="flex-1 min-w-0 bg-surface border border-hairline rounded px-2 py-1 text-[11px] text-fg outline-none"
-            >
-              <option value="all">All</option>
-              {#each inboxProjectOptions as project (project.id)}
-                <option value={project.id}>{project.name}</option>
-              {/each}
-            </select>
-          </div>
-        {/if}
-      </div>
-      <!-- Item list -->
-      <div class="flex-1 overflow-y-auto p-1">
-        {#if inboxFiltered.length === 0}
-          <div class="px-3 py-6 text-center text-[12px] text-muted">No items</div>
-        {:else}
-          {#each inboxFiltered as item (item.id)}
-            {@const meta = inboxKindMeta(item)}
-            {@const isUnread = item.read_at_ms == null}
-            <button
-              type="button"
-              onclick={() => openInboxMessageModal(item)}
-              class="w-full text-left flex items-start gap-[10px] px-[10px] py-2 rounded-md hover:bg-hover relative"
-            >
-              <!-- Unread orange left tick -->
-              {#if isUnread}
-                <span class="absolute left-0 top-3 bottom-3 w-0.5 bg-accent rounded-r-sm"></span>
-              {/if}
-              <!-- Kind icon -->
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 mt-0.5 {meta.color}">
-                <path d={meta.path} />
-              </svg>
-              <div class="flex-1 min-w-0">
-                <div class="text-[12px] {isUnread ? 'font-medium text-fg-2' : 'text-fg-3'} truncate leading-snug">{item.title}</div>
-                {#if item.body}
-                  <div class="text-[11px] text-muted truncate mt-0.5">{item.body}</div>
-                {/if}
-              </div>
-              <span class="text-[10px] text-muted shrink-0 mt-0.5 whitespace-nowrap">
-                {#if Date.now() - item.created_at_ms < 60_000}now{:else if Date.now() - item.created_at_ms < 3_600_000}{Math.floor((Date.now() - item.created_at_ms) / 60_000)}m{:else}{Math.floor((Date.now() - item.created_at_ms) / 3_600_000)}h{/if}
-              </span>
-            </button>
-          {/each}
-        {/if}
-      </div>
-    </div>
-  {/if}
-
-  {#if selectedInboxMessage}
-    <ModalShell
-      open={true}
-      ariaLabel={selectedInboxMessage.title}
-      onClose={closeInboxMessageModal}
-      backdropClass="fixed inset-0 z-[250] bg-bg/60"
-      panelClass="fixed left-1/2 top-1/2 z-[251] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
-    >
-      <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
-        <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-warning" : "text-muted"}>●</span>
-        <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
-        <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
-      </div>
-      <div class="px-4 py-3 text-sm text-fg-2 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
-        {selectedInboxMessage.body || "(No message body)"}
-      </div>
-      <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
-        <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
-        <button
-          class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
-          onclick={() => {
-            if (!selectedInboxMessage) return;
-            app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
-            closeInboxMessageModal();
-          }}
-        >
-          Open target
-        </button>
-      </div>
-    </ModalShell>
-  {/if}
+  <InboxPanel />
 
   <!-- Projects -->
   <div class="px-2 pt-3 pb-2">

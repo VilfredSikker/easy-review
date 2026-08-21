@@ -4,6 +4,7 @@
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
+  import { resolveContextIdentity } from "$lib/contextIdentity";
   import { visibleCommentThreads } from "$lib/commentVisibility";
   import { totalReviewFindings } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
@@ -50,6 +51,7 @@
   const totalFindings = $derived(
     ai ? totalReviewFindings(ai, aiReviewFilter.filter) : 0,
   );
+  const identity = $derived(resolveContextIdentity(app.snapshot));
   const questionThreads = $derived(
     ai?.threads.filter((t) => t.kind === "question") ?? []
   );
@@ -308,8 +310,8 @@
       <div class="p-4 space-y-4 pb-8">
         {#if app.snapshot}
           <BranchCard
-            branch={app.snapshot.branch}
-            base={app.snapshot.base}
+            branch={identity.branch}
+            base={identity.base}
             {pr}
             reviewed_count={app.snapshot.reviewed_count}
             total_count={app.snapshot.total_count}

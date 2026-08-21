@@ -5,6 +5,7 @@
   import { terminal } from "$lib/stores/terminal.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl, resolveActivePrNumber } from "$lib/prUrl";
+  import { resolveContextIdentity } from "$lib/contextIdentity";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
 
@@ -21,6 +22,9 @@
 
   // Resolve the PR number for the badge.
   const prNumber = $derived(resolveActivePrNumber(snapshot));
+  const identity = $derived(resolveContextIdentity(snapshot));
+  const branchName = $derived(identity.branch);
+  const baseName = $derived(identity.base);
 
   const mode = $derived(snapshot?.mode ?? "branch");
   /** PR Diff is "active" in PR mode, and also in Guide mode when the guide is
@@ -55,7 +59,7 @@
   }
 
   async function copyBranchName() {
-    const name = snapshot?.branch ?? "";
+    const name = branchName;
     if (!name) return;
     await copyToClipboard(name);
     app.showToast("success", "Branch name copied");
@@ -97,25 +101,27 @@
   data-testid="branch-context-bar"
 >
   <!-- Branch identity: glyph (orange) + full branch name + base chip + +/- summary -->
-  <div class="flex items-center gap-1.5 min-w-0 shrink-0">
+  <div class="flex items-center gap-1.5 min-w-0 flex-1">
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-accent">
       <circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="12" r="2"/>
       <path d="M6 8v8M8 18h2a4 4 0 0 0 4-4v-2"/>
     </svg>
-    <span class="text-fg text-sm font-medium whitespace-nowrap">{snapshot?.branch ?? "—"}</span>
-    {#if snapshot?.base}
+    {#if branchName}
+      <span class="text-fg text-sm font-medium truncate min-w-0" data-testid="context-branch">{branchName}</span>
+    {/if}
+    {#if baseName}
       <span class="text-muted text-[11px]">·</span>
       <span class="text-muted text-[11px]">base</span>
-      <span class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap">{snapshot.base}</span>
+      <span class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap shrink-0" data-testid="context-base">{baseName}</span>
     {/if}
     {#if additions > 0 || deletions > 0}
-      <span class="font-mono text-[10px] text-add-fg">+{additions}</span>
-      <span class="font-mono text-[10px] text-del-fg">−{deletions}</span>
+      <span class="font-mono text-[10px] text-add-fg shrink-0">+{additions}</span>
+      <span class="font-mono text-[10px] text-del-fg shrink-0">−{deletions}</span>
     {/if}
   </div>
 
   <!-- Quick-action icon row -->
-  <div class="flex items-center gap-0.5 ml-1">
+  <div class="flex items-center gap-0.5 ml-1 shrink-0">
     <!-- Copy branch name -->
     <button
       class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
@@ -189,8 +195,6 @@
 
   </div>
 
-  <div class="flex-1 min-w-0"></div>
-
   <!-- Stale-diff pill + Sync (right side, before the source toggle) -->
   {#if diffStale}
     <div
@@ -228,7 +232,6 @@
       <button
         role="tab"
         aria-selected={!prActive}
-        disabled={!prActive}
         onclick={() => void app.cmd("set_mode", { mode: "branch" })}
         class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
       >
@@ -237,7 +240,6 @@
       <button
         role="tab"
         aria-selected={prActive}
-        disabled={prActive}
         onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber: prNumber })}
         class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
       >

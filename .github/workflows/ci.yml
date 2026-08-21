@@ -60,6 +60,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
+  herdr-plugin:
+    name: Herdr plugin
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd tools/herdr-easy-review && npm test
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
