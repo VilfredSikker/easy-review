@@ -1486,6 +1486,7 @@ fn main() {
     let bg_gh_user = Arc::clone(&gh_user);
     let bg_inbox = Arc::clone(&inbox);
     let bg_handle = Arc::clone(&tauri_app_handle);
+    let bg_app = Arc::clone(&app_arc);
     std::thread::spawn(move || {
         // Inbox native notifications need `tauri_app_handle`; setup stores it after
         // this thread starts (release builds are especially tight on timing).
@@ -1506,6 +1507,7 @@ fn main() {
             }
             let failed =
                 rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
+            let prefs = commands::clone_inbox_prefs(&bg_app);
             for remote in failed {
                 commands::process_inbox_after_pr_refresh(
                     &bg_cache,
@@ -1513,6 +1515,7 @@ fn main() {
                     &bg_inbox,
                     &bg_desktop_rev,
                     &bg_handle,
+                    &prefs,
                     Some(remote),
                     None,
                 );
@@ -1523,6 +1526,7 @@ fn main() {
                 &bg_inbox,
                 &bg_desktop_rev,
                 &bg_handle,
+                &prefs,
                 None,
                 None,
             );
@@ -1542,12 +1546,14 @@ fn main() {
                 pr_cache::refresh_pr_cache_for_remote(&active_remote, &bg_cache, &bg_fetched_at)
                     .await
             });
+            let prefs = commands::clone_inbox_prefs(&bg_app);
             commands::process_inbox_after_pr_refresh(
                 &bg_cache,
                 &bg_gh_user,
                 &bg_inbox,
                 &bg_desktop_rev,
                 &bg_handle,
+                &prefs,
                 if success { None } else { Some(active_remote) },
                 None,
             );
@@ -1748,7 +1754,12 @@ fn main() {
                     *h = Some(app.handle().clone());
                 }
                 commands::prepare_macos_notifications(app.handle());
-                commands::flush_pending_native_notifications(&state.inbox, &state.tauri_app_handle);
+                let prefs = commands::clone_inbox_prefs(&state.app);
+                commands::flush_pending_native_notifications(
+                    &state.inbox,
+                    &state.tauri_app_handle,
+                    &prefs,
+                );
                 // Revision watcher: emit a Tauri event whenever the backend's
                 // `desktop_revision` advances. The frontend listens and only
                 // calls `poll` on demand instead of every 2s — cuts idle
