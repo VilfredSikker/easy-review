@@ -2975,7 +2975,6 @@ impl TabState {
         // Compute diff hash for the current mode.
         // Use fast hash for quick refreshes (watch events), SHA-256 for full refreshes
         // (AI staleness needs SHA-256 to compare with .er-review.json).
-        let branch_raw_owned: Option<String>;
         if recompute_branch_hash {
             // Full refresh: compute SHA-256 for AI compatibility
             self.diff_hash = ai::compute_diff_hash(&raw);
@@ -2989,7 +2988,7 @@ impl TabState {
         // In other modes, only run the extra git diff on a full refresh when there's a
         // consumer — AI data, questions, or a tour (whose stale pill compares against it).
         // Skipping otherwise avoids a redundant git diff call with no consumer.
-        if self.mode == DiffMode::Branch {
+        let branch_raw_owned: Option<String> = if self.mode == DiffMode::Branch {
             // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
             // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
             // must always be SHA-256 for compatibility with external skills.
@@ -2998,7 +2997,7 @@ impl TabState {
             } else {
                 self.branch_diff_hash = ai::compute_diff_hash(&raw);
             }
-            branch_raw_owned = Some(raw.clone());
+            Some(raw.clone())
         } else if recompute_branch_hash
             && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
         {
@@ -3009,10 +3008,10 @@ impl TabState {
                 head_ref_owned.as_deref(),
             )?;
             self.branch_diff_hash = ai::compute_diff_hash(&br);
-            branch_raw_owned = Some(br);
+            Some(br)
         } else {
-            branch_raw_owned = None;
-        }
+            None
+        };
 
         // Compute per-file hashes from the raw diff output.
         // Used to detect when a reviewed file's diff changes since it was marked.
@@ -9275,10 +9274,7 @@ mod tests {
         app.current_ai_model = Some("gpt-5.6-luna".into());
 
         assert_eq!(app.active_ai_provider_label().as_deref(), Some("Codex"));
-        assert_eq!(
-            app.active_ai_model_label().as_deref(),
-            Some("GPT-5.6 Luna")
-        );
+        assert_eq!(app.active_ai_model_label().as_deref(), Some("GPT-5.6 Luna"));
         assert_eq!(app.active_ai_selection_label(), "Codex / GPT-5.6 Luna");
     }
 
