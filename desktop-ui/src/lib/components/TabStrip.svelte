@@ -36,6 +36,9 @@
   const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
   const active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
   const canClose = $derived(tabs.length > 1);
+  const aiProviderLabel = $derived(app.snapshot?.active_ai_provider_label ?? null);
+  const aiModelLabel = $derived(app.snapshot?.active_ai_model_label ?? null);
+  const aiLabel = $derived(app.snapshot?.active_ai_label ?? "");
 
   // Drag state. `dragFrom` is the source tab idx; `dropAt` is the insertion
   // marker position (0..tabs.length, where `tabs.length` means after the last
@@ -253,6 +256,21 @@
   {#if showToolbar}
     <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
 
+    {#if aiProviderLabel}
+      <button
+        type="button"
+        class="tabstrip-no-drag shrink-0 max-w-[16rem] h-7 px-2 rounded hover:bg-ink-700 flex items-center gap-1 text-xs transition-colors"
+        onclick={() => commandPalette.showAiProviders()}
+        title={aiLabel || "Change provider / model"}
+        aria-label={aiLabel ? `Active model ${aiLabel}` : "Change provider / model"}
+      >
+        <span class="text-ink-300 truncate">{aiProviderLabel}</span>
+        {#if aiModelLabel}
+          <span class="text-ink-500 shrink-0">/</span>
+          <span class="text-ink-100 truncate">{aiModelLabel}</span>
+        {/if}
+      </button>
+    {/if}
     <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300 border-l border-ink-650 pl-2 ml-1">
       {#if app.snapshot?.watch_active}
         <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1" title="Watch active"></span>
