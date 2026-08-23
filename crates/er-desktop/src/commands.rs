@@ -6835,8 +6835,7 @@ fn open_pr_review_impl(
     // fetch and falls back to a full refresh when `files` is empty) for a
     // 0-file PR or an unknown head oid, where seeding would mislead the probe.
     let has_loaded_files = !app.tab().files.is_empty();
-    let two_phase;
-    if !head_oid_for_preload.trim().is_empty() && has_loaded_files {
+    let two_phase = if !head_oid_for_preload.trim().is_empty() && has_loaded_files {
         // Two-phase open (first-paint plan step 2): enter PR Diff without the
         // AI sidecar reload — `kick_post_open_offload` performs the single
         // authoritative reload right after the command returns, and the
@@ -6845,7 +6844,7 @@ fn open_pr_review_impl(
             .enter_pr_diff_preloaded(head_oid_for_preload, true)
             .map_err(|e| e.to_string())?;
         app.tab_mut().needs_initial_refresh = false;
-        two_phase = true;
+        true
     } else {
         // Rare fallback (0-file PR / unknown head oid): keep the synchronous
         // first-entry ref fetch + reload — correctness first, the diff fetch
@@ -6854,8 +6853,8 @@ fn open_pr_review_impl(
             .enter_pr_diff_freshly_loaded()
             .map_err(|e| e.to_string())?;
         app.tab_mut().needs_initial_refresh = false;
-        two_phase = false;
-    }
+        false
+    };
     // Seed the branch preload from the freshly fetched diff (miss only — a
     // cache hit may predate the current head, so kick_branch_preload below
     // re-fetches fresh content in the background instead). Skipped when the
