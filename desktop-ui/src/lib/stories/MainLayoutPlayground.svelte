@@ -48,6 +48,7 @@
     {
       id: "inbox-1",
       kind: "review_requested",
+      category: "review_requested",
       severity: "info",
       title: "Review requested: DEV-5008 Show experiment params",
       body: "maria-c requested your review on PR #1090.",
@@ -59,9 +60,10 @@
     },
     {
       id: "inbox-2",
-      kind: "new_comment",
+      kind: "pr_comment",
+      category: "pr_comment",
       severity: "info",
-      title: "New comment on PR #1090",
+      title: "Comment on PR #1090",
       body: "AI: SchemaMediaProperties is a strict subset — just id, name, kind.",
       source: "github",
       target: { pr_number: 1090, project_id: "discovery-platform" },
@@ -72,6 +74,7 @@
     {
       id: "inbox-3",
       kind: "ci_failed",
+      category: "ci",
       severity: "error",
       title: "CI failed on show-experiment-params",
       body: "2 checks failed. Click to view the failing run.",

@@ -2,12 +2,6 @@ import type { Meta, StoryObj } from "@storybook/svelte";
 import InboxHarness from "$lib/stories/InboxHarness.svelte";
 import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
 
-// ─── fixture items covering all supported inbox kinds ───────────────────────
-// LeftSidebar.inboxKindMeta() switches on: "pr_merged"|"merged",
-// "ci_failed"|"ci-fail"|"check_failed", "review_requested"|"review",
-// "new_comment"|"comment", "mention". Anything else falls through to the
-// severity branch ("error"|"warning") or the default briefcase icon.
-
 const now = Date.now();
 
 const inboxProjects: ProjectSnapshot[] = [
@@ -42,59 +36,114 @@ const inboxProjects: ProjectSnapshot[] = [
 ];
 
 const allKindsItems: InboxItemSnapshot[] = [
-  // ── unread ──────────────────────────────────────────────────────────────
+  {
+    id: "inbox-comment-1",
+    kind: "pr_comment",
+    category: "pr_comment",
+    severity: "info",
+    title: "Comment on your PR #2041",
+    body: "This type is a strict subset — just id, name, kind.",
+    source: "github",
+    target: { pr_number: 2041, project_id: "discovery-platform" },
+    created_at_ms: now - 3 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "pr_comment:2041:msg-1",
+  },
+  {
+    id: "inbox-review-received-1",
+    kind: "pr_review_received",
+    category: "review_received",
+    severity: "info",
+    title: "alex-p reviewed PR #2041",
+    body: "feat/new-search",
+    source: "github",
+    target: { pr_number: 2041, project_id: "discovery-platform" },
+    created_at_ms: now - 8 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "pr_review_received:2041:alex",
+  },
+  {
+    id: "inbox-reply-1",
+    kind: "pr_comment_reply",
+    category: "comment_reply",
+    severity: "info",
+    title: "Reply on PR #1987",
+    body: "Agreed, let's ship the narrower type.",
+    source: "github",
+    target: { pr_number: 1987, project_id: "discovery-platform" },
+    created_at_ms: now - 12 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "pr_comment_reply:1987:cmt-44",
+  },
+  {
+    id: "inbox-approved-1",
+    kind: "pr_review_approved",
+    category: "approved",
+    severity: "success",
+    title: "sam approved PR #88",
+    body: "feat/button-variants",
+    source: "github",
+    target: { pr_number: 88, project_id: "design-system" },
+    created_at_ms: now - 18 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "pr_review_approved:88:sam",
+  },
+  {
+    id: "inbox-changes-1",
+    kind: "pr_review_changes_requested",
+    category: "changes_requested",
+    severity: "warning",
+    title: "jordan requested changes on PR #2041",
+    body: "feat/new-search",
+    source: "github",
+    target: { pr_number: 2041, project_id: "discovery-platform" },
+    created_at_ms: now - 22 * 60 * 1000,
+    read_at_ms: null,
+    dedupe_key: "pr_review_changes_requested:2041:jordan",
+  },
   {
     id: "inbox-review-1",
     kind: "review_requested",
+    category: "review_requested",
     severity: "info",
     title: "Review requested: feat/new-search",
     body: "alex-p requested your review on PR #2041.",
     source: "github",
     target: { pr_number: 2041, project_id: "discovery-platform" },
-    created_at_ms: now - 3 * 60 * 1000,
+    created_at_ms: now - 28 * 60 * 1000,
     read_at_ms: null,
     dedupe_key: "review_requested:2041",
   },
   {
-    id: "inbox-comment-1",
-    kind: "new_comment",
-    severity: "info",
-    title: "New comment on PR #2041",
-    body: "This type is a strict subset — just id, name, kind.",
-    source: "github",
-    target: { pr_number: 2041, project_id: "discovery-platform" },
-    created_at_ms: now - 8 * 60 * 1000,
-    read_at_ms: null,
-    dedupe_key: "new_comment:2041:msg-1",
-  },
-  {
     id: "inbox-mention-1",
     kind: "mention",
+    category: "mention",
     severity: "info",
     title: "You were mentioned in PR #1987",
     body: "@you what do you think about this approach?",
     source: "github",
     target: { pr_number: 1987, project_id: "discovery-platform" },
-    created_at_ms: now - 15 * 60 * 1000,
+    created_at_ms: now - 35 * 60 * 1000,
     read_at_ms: null,
     dedupe_key: "mention:1987:cmt-44",
   },
   {
     id: "inbox-ci-1",
     kind: "ci_failed",
+    category: "ci",
     severity: "error",
     title: "CI failed on feat/new-search",
     body: "3 checks failed. Click to view the failing run.",
     source: "github",
     target: { branch: "feat/new-search", project_id: "discovery-platform" },
-    created_at_ms: now - 28 * 60 * 1000,
+    created_at_ms: now - 40 * 60 * 1000,
     read_at_ms: null,
     dedupe_key: "ci_failed:feat-new-search:run-1120",
   },
-  // ── read ─────────────────────────────────────────────────────────────────
   {
     id: "inbox-merged-1",
     kind: "pr_merged",
+    category: "lifecycle",
     severity: "info",
     title: "PR #2030 merged",
     body: "feat/auth-refactor was merged into main.",
@@ -105,28 +154,17 @@ const allKindsItems: InboxItemSnapshot[] = [
     dedupe_key: "pr_merged:2030",
   },
   {
-    id: "inbox-comment-2",
-    kind: "comment",
-    severity: "info",
-    title: "Comment resolved on PR #2030",
-    body: "Thread marked as resolved.",
-    source: "github",
-    target: { pr_number: 2030, project_id: "discovery-platform" },
+    id: "inbox-ai-1",
+    kind: "ai_review_done",
+    category: "ai",
+    severity: "success",
+    title: "AI review completed",
+    body: "feat/new-search",
+    source: "ai",
+    target: { branch: "feat/new-search", project_id: "discovery-platform" },
     created_at_ms: now - 3 * 3_600_000,
     read_at_ms: now - 2 * 3_600_000,
-    dedupe_key: "comment:2030:thread-8",
-  },
-  {
-    id: "inbox-review-design-1",
-    kind: "review_requested",
-    severity: "info",
-    title: "Review requested: feat/button-variants",
-    body: "sam requested your review on PR #88.",
-    source: "github",
-    target: { pr_number: 88, project_id: "design-system" },
-    created_at_ms: now - 45 * 60 * 1000,
-    read_at_ms: null,
-    dedupe_key: "review_requested:88",
+    dedupe_key: "ai_review_done:feat-new-search",
   },
 ];
 
@@ -155,10 +193,7 @@ export const Teaser: Story = {
 };
 
 /**
- * Popover open: same data as Teaser. On mount the harness queries the DOM
- * for the "Inbox" eyebrow button and clicks it programmatically so the
- * popover opens. (@storybook/test is not installed in this project, so we
- * use autoOpenPopover=true instead of a play() function.)
+ * Popover open with category groups and quick-filter chips.
  */
 export const PopoverOpen: Story = {
   args: {

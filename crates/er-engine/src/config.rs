@@ -4,12 +4,16 @@ mod config_desktop_settings;
 #[path = "config_settings.rs"]
 mod config_settings;
 
+#[path = "config_inbox.rs"]
+mod config_inbox;
+
 use anyhow::Result;
 
 pub use config_desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot,
 };
+pub use config_inbox::{InboxConfig, InboxKindToggles};
 pub use config_settings::{
     agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
     settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
@@ -37,6 +41,8 @@ pub struct ErConfig {
     pub ai_hub: AiHubConfig,
     #[serde(default)]
     pub packages: PackagesConfig,
+    #[serde(default)]
+    pub inbox: InboxConfig,
 }
 
 /// [commands] section — configurable shell commands for hub actions.

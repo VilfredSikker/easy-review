@@ -122,20 +122,31 @@ pub fn apply_descriptor_browser(tab: &mut er_engine::app::TabState, d: &TabDescr
 /// Convert a live `TabState` into a persistable descriptor.
 pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
     let (browser_url, browser_layout) = browser_descriptor_fields(tab);
-    // Remote PR (no local clone)
-    if let (Some(slug), Some(num)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+    // Remote-only PR (GitHub slug, no local-branch view / clone).
+    if tab.is_remote() {
+        let slug = tab.remote_repo.as_deref().unwrap_or("");
         let mut parts = slug.splitn(2, '/');
         let owner = parts.next().unwrap_or("").to_string();
         let repo = parts.next().unwrap_or("").to_string();
+        let branch = if tab.current_branch.is_empty() {
+            None
+        } else {
+            Some(tab.current_branch.clone())
+        };
+        let base_ref = if tab.base_branch.is_empty() {
+            None
+        } else {
+            Some(tab.base_branch.clone())
+        };
         return TabDescriptor {
             kind: TabKind::RemotePr,
             repo_root: tab.repo_root.clone(),
-            branch: None,
+            branch,
             pr_owner: Some(owner),
             pr_repo: Some(repo),
-            pr_number: Some(num),
+            pr_number: tab.pr_number,
             pr_head_ref: None,
-            base_ref: None,
+            base_ref,
             browser_url: browser_url.clone(),
             browser_layout: browser_layout.clone(),
         };
@@ -224,7 +235,9 @@ fn rebuild_local_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Tab
     tab.local_branch_view = d.branch.clone().or_else(|| Some(format!("pr/{}", number)));
     tab.pr_number = Some(number);
     tab.pr_head_ref = d.pr_head_ref.clone();
-    tab.mode = er_engine::app::DiffMode::Branch;
+    // Match `new_stub_pr_tab`. Restored PR tabs open on PR Diff; Branch is a
+    // click away once the head checkout is attached.
+    tab.mode = er_engine::app::DiffMode::PrDiff;
     // Reloads AI sidecars so Review/Notes/Context have this tab's data on
     // first select, without waiting for the deferred git diff.
     tab.sync_managed_storage();
@@ -242,7 +255,14 @@ fn rebuild_remote_pr(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app::Ta
         number,
     };
     if lazy {
-        er_engine::app::TabState::new_remote_stub(&pr_ref)
+        let mut tab = er_engine::app::TabState::new_remote_stub(&pr_ref)?;
+        if let Some(branch) = d.branch.clone().filter(|s| !s.is_empty()) {
+            tab.current_branch = branch;
+        }
+        if let Some(base) = d.base_ref.clone().filter(|s| !s.is_empty()) {
+            tab.base_branch = base;
+        }
+        Ok(tab)
     } else {
         er_engine::app::TabState::new_remote(&pr_ref)
     }
@@ -423,6 +443,64 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_local_pr_with_remote_slug_is_not_remote() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(tmp.path());
+        let root = tmp.path().to_string_lossy().to_string();
+        let mut tab =
+            er_engine::app::TabState::new_with_base_unloaded(root, "origin/main".to_string())
+                .expect("tab");
+        tab.pr_number = Some(1425);
+        tab.local_branch_view = Some("feat/delete-plates".to_string());
+        tab.remote_repo = Some("reshapebiotech/discovery".to_string());
+        tab.base_branch = "origin/main".to_string();
+        let d = descriptor_from_tab(&tab);
+        assert_eq!(d.kind, TabKind::LocalPr);
+        assert_eq!(d.pr_number, Some(1425));
+        assert_eq!(d.branch.as_deref(), Some("feat/delete-plates"));
+        assert_eq!(d.base_ref.as_deref(), Some("origin/main"));
+        assert!(d.pr_owner.is_none());
+    }
+
+    #[test]
+    fn descriptor_remote_pr_persists_head_and_base() {
+        let mut tab = er_engine::app::TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("reshapebiotech/discovery".to_string());
+        tab.pr_number = Some(1425);
+        tab.current_branch = "feat/from-fork".to_string();
+        tab.base_branch = "main".to_string();
+        let d = descriptor_from_tab(&tab);
+        assert_eq!(d.kind, TabKind::RemotePr);
+        assert_eq!(d.pr_number, Some(1425));
+        assert_eq!(d.pr_owner.as_deref(), Some("reshapebiotech"));
+        assert_eq!(d.pr_repo.as_deref(), Some("discovery"));
+        assert_eq!(d.branch.as_deref(), Some("feat/from-fork"));
+        assert_eq!(d.base_ref.as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn rebuild_remote_pr_stub_restores_head_and_base() {
+        let d = TabDescriptor {
+            kind: TabKind::RemotePr,
+            repo_root: String::new(),
+            branch: Some("feat/from-fork".to_string()),
+            pr_owner: Some("reshapebiotech".to_string()),
+            pr_repo: Some("discovery".to_string()),
+            pr_number: Some(1425),
+            pr_head_ref: None,
+            base_ref: Some("main".to_string()),
+            browser_url: None,
+            browser_layout: None,
+        };
+        let tab = rebuild_remote_pr(&d, true).expect("stub");
+        assert_eq!(tab.current_branch, "feat/from-fork");
+        assert_eq!(tab.base_branch, "main");
+        assert_eq!(tab.pr_number, Some(1425));
+        assert!(tab.local_branch_view.is_none());
+        assert!(tab.is_remote());
+    }
+
+    #[test]
     fn lazy_local_pr_stub_loads_ai_sidecars() {
         let tmp = tempfile::tempdir().expect("tempdir");
         std::env::set_var("ER_STORAGE_ROOT", tmp.path());
@@ -456,6 +534,11 @@ mod tests {
             browser_layout: None,
         };
         let tab = rebuild_local_pr(&d, true).expect("stub");
+        assert_eq!(
+            tab.mode,
+            er_engine::app::DiffMode::PrDiff,
+            "restored PR stubs open on PR Diff, matching new_stub_pr_tab"
+        );
         assert!(tab.needs_initial_refresh, "lazy stub still defers git diff");
         let qs = tab
             .ai

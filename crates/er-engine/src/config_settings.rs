@@ -218,6 +218,8 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
         label: "Add pattern…".into(),
     });
 
+    fields.extend(super::config_inbox::inbox_settings_fields(config));
+
     fields
 }
 

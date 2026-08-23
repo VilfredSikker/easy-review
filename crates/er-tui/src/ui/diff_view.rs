@@ -121,35 +121,21 @@ fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
     visible && !(tab.layers.hide_resolved && comment.is_resolved())
 }
 
-fn hunk_new_line_count(hunk: &DiffHunk) -> usize {
-    hunk.lines
-        .iter()
-        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
-        .count()
-}
-
-fn hunk_old_line_count(hunk: &DiffHunk) -> usize {
-    hunk.lines
-        .iter()
-        .filter(|l| matches!(l.line_type, LineType::Context | LineType::Delete))
-        .count()
-}
-
 /// Resolve comments for a hunk using line-range fallback (matches desktop).
+///
+/// Uses the @@ header span (`hunk.new_count` / `hunk.old_count`), not the
+/// visible Context+Add count. j/k auto-expand refetches tiny files with
+/// full-file context; `fold_context_lines` then hides the long runs, so the
+/// visible count is much smaller than the header span. A GitHub comment on an
+/// add after the fold (still at its real `new_num`) would miss the hunk until
+/// the next refresh if we matched on visible lines.
 fn comments_for_hunk_resolved<'a>(
     tab: &'a TabState,
     path: &str,
     hunk_idx: usize,
     hunk: &DiffHunk,
 ) -> Vec<CommentRef<'a>> {
-    tab.ai.comments_for_hunk_or_line_range(
-        path,
-        hunk_idx,
-        hunk.new_start,
-        hunk_new_line_count(hunk),
-        hunk.old_start,
-        hunk_old_line_count(hunk),
-    )
+    tab.ai.comments_for_diff_hunk(path, hunk_idx, hunk)
 }
 
 fn hunk_level_comments<'a>(anchors: &'a [CommentRef<'a>]) -> Vec<&'a CommentRef<'a>> {
@@ -3348,6 +3334,131 @@ mod finding_dispatch_tests {
             assert!(line_findings_for_mode(&ai, mode, "src/a.rs", 1, 30).is_empty());
             assert!(hunk_findings_for_mode(&ai, mode, "src/a.rs", 100, 5, 2, 3).is_empty());
         }
+    }
+}
+
+/// j/k auto-expands tiny files to full-file context, then `fold_context_lines`
+/// hides the long context runs. Line-range matching must use the @@ header
+/// span (`hunk.new_count`), not the visible Context+Add count, or a GitHub
+/// comment on an add after the fold disappears until the next refresh.
+#[cfg(test)]
+mod github_comment_fold_tests {
+    use super::*;
+    use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
+    use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus};
+
+    fn line(lt: LineType, content: &str, old: Option<usize>, new: Option<usize>) -> DiffLine {
+        DiffLine {
+            line_type: lt,
+            content: content.to_string(),
+            old_num: old,
+            new_num: new,
+        }
+    }
+
+    fn visible_new_count(hunk: &DiffHunk) -> usize {
+        hunk.lines
+            .iter()
+            .filter(|l| matches!(l.line_type, LineType::Context | LineType::Add))
+            .count()
+    }
+
+    fn folded_full_file_hunk() -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1,300 +1,310 @@".to_string(),
+            old_start: 1,
+            old_count: 300,
+            new_start: 1,
+            new_count: 310,
+            lines: vec![
+                line(LineType::Context, "keep-start-1", Some(1), Some(1)),
+                line(LineType::Context, "keep-start-2", Some(2), Some(2)),
+                line(LineType::Context, "keep-start-3", Some(3), Some(3)),
+                line(LineType::Fold(280), "", None, None),
+                line(LineType::Context, "near-1", Some(284), Some(284)),
+                line(LineType::Context, "near-2", Some(285), Some(285)),
+                line(LineType::Context, "near-3", Some(286), Some(286)),
+                line(LineType::Add, "<Banner type=\"warning\">", None, Some(287)),
+                line(LineType::Add, "deprecated now", None, Some(288)),
+            ],
+        }
+    }
+
+    fn gh_comment_on_banner() -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: "gh-1".to_string(),
+            timestamp: String::new(),
+            file: "page.svelte".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(288),
+            line_end: None,
+            line_content: "deprecated now".to_string(),
+            comment: "technically it's being removed in 30 days".to_string(),
+            in_reply_to: None,
+            resolved: false,
+            source: "github".to_string(),
+            github_id: Some(1),
+            author: "martin-kr".to_string(),
+            synced: true,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: "@@ -180,20 +180,36 @@".to_string(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    #[test]
+    fn visible_new_count_excludes_folded_span_containing_the_comment_line() {
+        let hunk = folded_full_file_hunk();
+        let visible = visible_new_count(&hunk);
+        assert!(
+            visible < hunk.new_count,
+            "folds must shrink visible count below the header span"
+        );
+        assert!(
+            288 >= hunk.new_start + visible,
+            "comment line 288 sits past the visible-count range starting at {}",
+            hunk.new_start
+        );
+    }
+
+    #[test]
+    fn comments_for_hunk_resolved_keeps_comment_after_context_fold() {
+        let hunk = folded_full_file_hunk();
+        let file = DiffFile {
+            path: "page.svelte".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![hunk],
+            adds: 2,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 1,
+        };
+        let mut app = App::new_for_test(vec![file]);
+        app.tab_mut().ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "h".to_string(),
+            github: None,
+            comments: vec![gh_comment_on_banner()],
+        });
+
+        let tab = app.tab();
+        let path = tab.files[0].path.clone();
+        let hunk = tab.files[0].hunks[0].clone();
+        let found = comments_for_hunk_resolved(tab, &path, 0, &hunk);
+        assert_eq!(
+            found.len(),
+            1,
+            "GitHub comment on an add after a folded context run must still attach"
+        );
+        assert_eq!(found[0].id(), "gh-1");
+        assert_eq!(found[0].line_start(), Some(288));
     }
 }
 

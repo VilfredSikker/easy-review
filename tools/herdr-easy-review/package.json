@@ -1,0 +1,11 @@
+{
+  "name": "@easy-review/herdr-plugin",
+  "private": true,
+  "description": "Herdr plugin tests for Easy Review (er) integration",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
