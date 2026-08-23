@@ -2,6 +2,7 @@
   import { onMount, tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
+  import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
@@ -46,6 +47,10 @@
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
   import { MIN_WRAP_COLS } from "$lib/lineWrap";
+  import {
+    scheduleAfterPaint,
+    shouldCommitWrapColsImmediately,
+  } from "$lib/commitAfterPaint";
   import {
     windowFromScrollVariable,
     rowIndexAtOffset,
@@ -158,7 +163,7 @@
     return out;
   });
 
-  const treeHidden = $derived(!snapshot?.panels.tree);
+  const treeHidden = $derived(!layoutPanels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
   /** Guide/Diff toggle is offered once a tour exists for the current view
@@ -245,6 +250,23 @@
     return Math.max(MIN_WRAP_COLS, Math.floor(codeCellWidthPx / charWPx));
   });
 
+  /** Width fed to the render model. First measurement applies immediately;
+   *  later changes wait until after paint so panel collapse can hit the
+   *  previous `w{wrapCols}` cache identity. */
+  let committedWrapCols = $state<number | null>(null);
+  $effect(() => {
+    const next = wrapCols;
+    const committed = untrack(() => committedWrapCols);
+    if (shouldCommitWrapColsImmediately(next, committed)) {
+      committedWrapCols = next;
+      return;
+    }
+    if (next === committed) return;
+    return scheduleAfterPaint(() => {
+      committedWrapCols = next;
+    });
+  });
+
   // ── Cross-file model ───────────────────────────────────────────────────────
   const baseCrossFileModel = $derived(
     getCrossFileModel({
@@ -254,7 +276,7 @@
       annotationIndex,
       commentVisibility: app.commentVisibility,
       snapshotKey,
-      wrapCols,
+      wrapCols: committedWrapCols,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -323,7 +345,7 @@
   // next observe pass (ResizeObserver fires once per fresh observe()).
   let _lastWrapCols: number | null | undefined = undefined;
   $effect(() => {
-    const cols = wrapCols;
+    const cols = committedWrapCols;
     if (_lastWrapCols === cols) return;
     const first = _lastWrapCols === undefined;
     _lastWrapCols = cols;
@@ -1839,7 +1861,7 @@
         if (!row) continue;
         // Content rows are only fixed-height while word wrap is off.
         const isWrappedContent =
-          wrapCols !== null && (row.type === "content-unified" || row.type === "content-split");
+          committedWrapCols !== null && (row.type === "content-unified" || row.type === "content-split");
         if (FIXED_HEIGHT_ROW_TYPES.has(row.type) && !isWrappedContent) continue;
         const expected = overlayHeights.get(identity) ?? row.height;
         if (Math.abs(actual - expected) > 1) {
@@ -2189,7 +2211,7 @@
                   {rowIdx}
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
-                  {wrapCols}
+                  wrapCols={committedWrapCols}
                 />
               {/if}
             {:else if row.type === "content-split"}
@@ -2202,7 +2224,7 @@
                   {rowIdx}
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
-                  {wrapCols}
+                  wrapCols={committedWrapCols}
                 />
               {/if}
             {:else if row.type === "compacted-stub"}

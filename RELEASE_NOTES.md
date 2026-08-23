@@ -1,3 +1,14 @@
+# Easy Review v0.4.14
+
+## In plain terms
+
+- **What changed.** Collapsing the repo sidebar, file tree, or right rail with `[`, `\`, or `]` no longer freezes the window for a few seconds first.
+
+## What's Changed
+
+### Fixes
+- Collapse repo, file, and right panels immediately instead of waiting on a full snapshot.
+
 # Easy Review v0.4.13
 
 ## In plain terms
