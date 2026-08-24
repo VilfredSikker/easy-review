@@ -67,7 +67,7 @@ impl FileWatcher {
 
         debouncer.watcher().watch(root, RecursiveMode::Recursive)?;
 
-        Ok(FileWatcher {
+        Ok(Self {
             _watcher: debouncer,
         })
     }

@@ -110,19 +110,19 @@ fn hexa(s: &str) -> (Rgb, f32) {
     (hex(trimmed), a)
 }
 
-fn col(rgb: Rgb) -> Color {
+const fn col(rgb: Rgb) -> Color {
     Color::Rgb(rgb.0, rgb.1, rgb.2)
 }
 
 /// Composite `fg` at opacity `a` over opaque `bg`.
 fn over(fg: Rgb, a: f32, bg: Rgb) -> Rgb {
-    let f = |x: u8, y: u8| (x as f32 * a + y as f32 * (1.0 - a)).round() as u8;
+    let f = |x: u8, y: u8| (y as f32).mul_add(1.0 - a, x as f32 * a).round() as u8;
     (f(fg.0, bg.0), f(fg.1, bg.1), f(fg.2, bg.2))
 }
 
 /// Linear blend; t=0 → a, t=1 → b.
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
+    let f = |x: u8, y: u8| (y as f32 - x as f32).mul_add(t, x as f32).round() as u8;
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 
@@ -491,15 +491,21 @@ mod tests {
     #[test]
     fn available_themes_returns_all() {
         let names = available_themes();
-        assert_eq!(names.len(), 8);
-        assert!(names.contains(&"graphite"));
-        assert!(names.contains(&"slate"));
-        assert!(names.contains(&"midnight"));
-        assert!(names.contains(&"ember"));
-        assert!(names.contains(&"paper"));
-        assert!(names.contains(&"daylight"));
-        assert!(names.contains(&"contrast-dark"));
-        assert!(names.contains(&"contrast-light"));
+        // Exact ordered list from the const registry — a renamed or duplicated
+        // entry keeping the count at 8 would fail this.
+        assert_eq!(
+            names,
+            vec![
+                "graphite",
+                "slate",
+                "midnight",
+                "ember",
+                "paper",
+                "daylight",
+                "contrast-dark",
+                "contrast-light"
+            ]
+        );
     }
 
     #[test]

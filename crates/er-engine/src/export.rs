@@ -10,7 +10,7 @@ use serde::Deserialize;
 use crate::ai::{Confidence, Finding, GitHubReviewComment, ReviewQuestion, UiAnnotation};
 use crate::app::TabState;
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -32,7 +32,7 @@ pub struct ExportOpts {
 
 impl Default for ExportOpts {
     fn default() -> Self {
-        ExportOpts {
+        Self {
             include_comments: true,
             include_questions: true,
             include_notes: true,
@@ -353,7 +353,7 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
                 f.category.as_str()
             };
             let badges = if category.is_empty() {
-                severity.clone()
+                severity
             } else {
                 format!("{severity} · {category}")
             };
@@ -391,7 +391,7 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
 /// this helper exists only because `render_item` doesn't take the path as a
 /// separate arg. Returns an empty string — the file path is already in the
 /// `## <file>` group heading just above, so the per-item header can elide it.
-fn first_file_of_finding(_f: &Finding) -> &'static str {
+const fn first_file_of_finding(_f: &Finding) -> &'static str {
     ""
 }
 
@@ -400,12 +400,11 @@ fn push_blockquote(out: &mut String, body: &str, depth: usize) {
     for line in body.lines() {
         if line.is_empty() {
             out.push_str(prefix.trim_end());
-            out.push('\n');
         } else {
             out.push_str(&prefix);
             out.push_str(line);
-            out.push('\n');
         }
+        out.push('\n');
     }
     // Trailing blank line after blockquote — markdown renderers need this to
     // close the quote block cleanly.
@@ -414,7 +413,7 @@ fn push_blockquote(out: &mut String, body: &str, depth: usize) {
 
 /// Minimal "Xm ago" / "Xh ago" / "Xd ago" label from an ISO 8601 timestamp.
 /// Returns "" if parsing fails (we don't pull chrono just for this).
-fn ago_label(ts: &str) -> String {
+const fn ago_label(ts: &str) -> String {
     if ts.is_empty() {
         return String::new();
     }

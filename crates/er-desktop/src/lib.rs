@@ -1,3 +1,9 @@
+// Deliberate style decisions (same rationale as er-engine):
+// - option_if_let_else: if-let chains read better than map_or for these branches
+// - significant_drop_tightening: the App mutex guard is deliberately held across
+//   state work inside commands; dropping it earlier would be churn with no IO win
+#![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
+
 pub mod arena_commands;
 pub mod auto_triage;
 pub mod browser_webview;

@@ -18,6 +18,7 @@ pub const FULL_CONTEXT: usize = 99999;
 pub const CONTEXT_STEPS: &[usize] = &[DEFAULT_CONTEXT_LINES, 20, 40, 80, FULL_CONTEXT];
 
 /// Auto-expand size ladder: `(max_diff_lines, context_value)`. A file whose
+///
 /// total diff line count is `<= max_diff_lines` is auto-expanded to the
 /// matching `context_value`. Files larger than the last tier fall back to
 /// `DEFAULT_CONTEXT_LINES`. Ordered small → large.

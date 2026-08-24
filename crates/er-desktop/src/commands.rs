@@ -184,6 +184,7 @@ pub struct PrOpenCacheEntry {
 }
 
 /// In-flight PR-open prefetch claim. The open path (`load_pr_open_inputs`)
+///
 /// waits on `cv` (bounded) when the claim's freshness matches its own, so a
 /// click during a hover-prefetch consumes the prefetched cache entry instead
 /// of running a duplicate `gh pr diff`. `freshness` is the prefetch's own, so
@@ -240,7 +241,7 @@ pub fn start_window_drag(window: tauri::Window) -> Result<(), String> {
 /// with this helper so the main thread stays responsive; the bodies remain
 /// plain blocking code (`AppState` is all `Arc`s, so it is cloned into the
 /// closure).
-pub(crate) async fn run_blocking<T, F>(f: F) -> Result<T, String>
+pub async fn run_blocking<T, F>(f: F) -> Result<T, String>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, String> + Send + 'static,
@@ -259,7 +260,7 @@ macro_rules! snap {
 
 /// Build a snapshot using the lock guards directly (when callers already hold them).
 /// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
-pub(crate) fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
+pub fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     crate::snapshot::build_snapshot_with_delta(
         app,
         Some(&state.pr_cache),
@@ -292,9 +293,10 @@ fn abort_wrong_view(
 }
 
 /// Build a full snapshot for a tab-switch / open command and invalidate poll
+///
 /// `last_sent_*` so the next poll emits a clean full content snapshot for the
 /// new view (does not merely align to the current revision).
-pub(crate) fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
+pub fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
     let snap = snap_from(app, state);
     let content = compute_content_revision(app);
     let chrome = compute_chrome_revision(state);
@@ -313,12 +315,13 @@ pub(crate) fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
 }
 
 /// First-paint snapshot for hot open paths (two-phase open, first-paint plan
+///
 /// step 2): full chrome (tabs/projects/mode/branch/base) + PR card, but no
 /// diff files, AI, or annotations, with `bg_loading.tab_diff` set so the
 /// frontend renders the "Loading diff…" pane. The background offload worker
 /// ([`kick_post_open_offload`]) then bumps the revision and the poll delivers
 /// the full snapshot within ~40–120 ms.
-pub(crate) fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
+pub fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
     let mut snap = chrome_snap_from(app, state);
     snap.pr = crate::snapshot::build_pr_snapshot(app.tab());
     snap.bg_loading.tab_diff = true;
@@ -378,7 +381,7 @@ fn now_ms() -> u64 {
 }
 
 /// Clone inbox prefs from the live `App`. Callers must not hold the inbox lock.
-pub(crate) fn clone_inbox_prefs(app: &Arc<Mutex<App>>) -> InboxConfig {
+pub fn clone_inbox_prefs(app: &Arc<Mutex<App>>) -> InboxConfig {
     app.lock()
         .ok()
         .map(|g| g.config.inbox.clone())
@@ -460,6 +463,7 @@ fn maybe_send_native_notification(
 }
 
 /// Spawn a background fetch of the GitHub status for the given (owner, repo, number).
+///
 /// Returns immediately. The cache is updated on success; failures are logged.
 /// Deduplicates: if a fetch for the same key is already in-flight, this is a no-op.
 pub fn kick_github_status_refresh(
@@ -645,6 +649,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
 }
 
 /// Fetch all GitHub status data for a PR. Runs 2 gh calls in parallel: one
+///
 /// combined `gh pr view --json` for overview+comments+reviews, one `gh pr
 /// checks` for CI status (separate subcommand, can't be merged into `pr view`).
 /// Returns None when the overview/status-bundle fetch fails (e.g. no network,
@@ -824,6 +829,7 @@ pub async fn toggle_panel(panel: String, state: State<'_, AppState>) -> Result<(
 // ── Navigation ────────────────────────────────────────────────────────────────
 
 /// Parse one or more lazy-stub files and return *only those* `FileSnapshot`s
+///
 /// (not the full `AppSnapshot`), without changing the navigation selection. The
 /// frontend merges each returned file into its existing snapshot in place.
 ///
@@ -1286,7 +1292,7 @@ fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
     Some(tab.repo_root.as_str())
 }
 
-fn allows_local_open(
+const fn allows_local_open(
     is_remote: bool,
     has_local_branch_view: bool,
     has_checkout_root: bool,
@@ -3227,6 +3233,7 @@ pub fn submit_github_review(
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
+///
 /// the GitHub card. Unlike `submit_github_review`, this **does not** bundle any
 /// pending line-anchored comments — it sends only the body + event. This avoids
 /// HTTP 422s when local drafts have stale line anchors vs the remote PR head
@@ -3459,10 +3466,10 @@ pub async fn run_ai_review(
         );
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
-            er_dir: er_dir.clone(),
+            er_dir,
             branch_label,
             base_branch,
-            scope: scope.clone(),
+            scope,
             pr_number,
             remote_repo,
             managed_local: !is_remote,
@@ -3494,6 +3501,7 @@ pub async fn run_ai_review(
 }
 
 /// Generate a guided Tour with AI: captures the active view's diff and spawns the
+///
 /// er-tour agent, which writes `tour.json` into that view's bucket. The PR Diff view
 /// tours the PR head-vs-base diff (PR bucket); the Local branch / working-tree views
 /// tour the branch diff (branch bucket). The mtime poll reloads it automatically on
@@ -3565,7 +3573,7 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
         );
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
-            er_dir: er_dir.clone(),
+            er_dir,
             branch_label,
             base_branch,
             scope,
@@ -3584,6 +3592,7 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
 }
 
 /// Generate a mermaid diagram of the active view's diff (`kind` =
+///
 /// `mental-model` | `subsystems` | `flows` | `custom`). The agent writes one
 /// sidecar, `{er_dir}/diagrams/<kind>.json` (presets overwrite on re-run;
 /// customs get a timestamped id and accumulate). Diagrams are per-view-bucket,
@@ -3665,7 +3674,7 @@ pub async fn generate_diagram(
             .ok_or_else(|| format!("Invalid diagram output file: {output_file}"))?;
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
-            er_dir: er_dir.clone(),
+            er_dir,
             branch_label,
             base_branch,
             scope,
@@ -3779,10 +3788,10 @@ pub async fn run_ai_expert_review(
 
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
-            er_dir: er_dir.clone(),
+            er_dir,
             branch_label,
             base_branch,
-            scope: scope.to_string(),
+            scope,
             pr_number,
             remote_repo,
             managed_local: !is_remote,
@@ -4190,7 +4199,7 @@ pub struct AiModelInfo {
 
 /// Map hub providers to wire DTOs. `selected_*` are already-resolved highlight ids
 /// (live current selection for the palette and title bar; persisted defaults for Settings).
-pub(crate) fn map_ai_providers(
+pub fn map_ai_providers(
     hub: &er_engine::config::AiHubConfig,
     selected_provider_id: Option<&str>,
     selected_model_id: Option<&str>,
@@ -4490,6 +4499,7 @@ pub async fn promote_to_comment(
 }
 
 /// Promote a question to a local note. Notes are still private but framed as
+///
 /// actionable hand-offs to a coding agent. Mirrors `promote_to_comment` but the
 /// target is `notes.json`. The source question (and its replies) is removed.
 #[tauri::command]
@@ -4585,7 +4595,7 @@ fn finding_promotions_path(er_dir: &str) -> String {
     format!("{er_dir}/finding-promotions.json")
 }
 
-pub(crate) fn load_finding_promotions(er_dir: &str) -> std::collections::HashMap<String, String> {
+pub fn load_finding_promotions(er_dir: &str) -> std::collections::HashMap<String, String> {
     let path = finding_promotions_path(er_dir);
     std::fs::read_to_string(&path)
         .ok()
@@ -4632,6 +4642,7 @@ pub fn validate_with_ai(
 }
 
 /// Ask AI to elaborate on / answer a question thread — adds a local reply.
+///
 /// This is the question-flavored counterpart to `validate_with_ai`: questions
 /// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
 #[tauri::command]
@@ -4640,6 +4651,7 @@ pub fn elaborate_with_ai(thread_id: String, state: State<AppState>) -> Result<Ap
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
+///
 /// comment thread. The subprocess runs on a background thread so this command
 /// returns immediately — the reply is added asynchronously and picked up by
 /// the next snapshot poll. While the subprocess is running a synthetic
@@ -4854,7 +4866,7 @@ pub fn ask_ai(
     let meta_cache = state.meta_cache.clone();
     let desktop_revision = Arc::clone(&state.desktop_revision);
     let thread_id_for_thread = thread_id.clone();
-    let repo_root_for_thread = repo_root.clone();
+    let repo_root_for_thread = repo_root;
     let inv_for_thread = invocation;
     let model_for_thread = model_for_subprocess;
 
@@ -5064,7 +5076,7 @@ fn ask_ai_for_finding(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(pending_key.clone(), started_at);
+        p.insert(pending_key, started_at);
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
@@ -5077,9 +5089,9 @@ fn ask_ai_for_finding(
     let pending_arc = Arc::clone(&state.pending_ai_replies);
     let meta_cache = state.meta_cache.clone();
     let desktop_revision = Arc::clone(&state.desktop_revision);
-    let finding_id_for_thread = finding_id.clone();
-    let er_dir_for_thread = er_dir.clone();
-    let repo_root_for_thread = repo_root.clone();
+    let finding_id_for_thread = finding_id;
+    let er_dir_for_thread = er_dir;
+    let repo_root_for_thread = repo_root;
     let inv_for_thread = invocation;
     let model_for_thread = model_for_subprocess;
 
@@ -5166,6 +5178,7 @@ fn finding_fields_for_ref(
 // ── PR URL open ──────────────────────────────────────────────────────────────
 
 /// Resolve the working-tree path where `branch` is checked out: the project
+///
 /// root (if `git rev-parse --abbrev-ref HEAD` == `branch`) or a linked
 /// worktree. Returns `None` when the branch isn't checked out anywhere.
 ///
@@ -5173,7 +5186,7 @@ fn finding_fields_for_ref(
 /// active-branch watcher (`main.rs::desired_local_branch_watch`) so both
 /// attach a checkout root using the same logic — making Saved/My PRs/Recent
 /// behave like Tracked when the PR's head branch is checked out.
-pub(crate) fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<String> {
+pub fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<String> {
     if branch.is_empty() {
         return None;
     }
@@ -5197,7 +5210,7 @@ pub(crate) fn resolve_head_checkout(repo_root: &str, branch: &str) -> Option<Str
 
 /// Place `tab` into the app: replace the active slot when `replace` is true
 /// (Cmd-click / middle-click semantics), otherwise push a new tab.
-pub(crate) fn place_tab(
+pub fn place_tab(
     app: &mut App,
     tab: er_engine::app::TabState,
     replace: bool,
@@ -5454,7 +5467,7 @@ fn activate_or_open_remote_pr(
                 repo.to_string(),
                 number,
             );
-            kick_branch_preload(&mut app, state);
+            kick_branch_preload(&app, state);
             return Ok(snap_from_command(&app, state));
         }
     }
@@ -5480,7 +5493,7 @@ fn activate_or_open_remote_pr(
             repo.to_string(),
             number,
         );
-        kick_branch_preload(&mut app, state);
+        kick_branch_preload(&app, state);
         return Ok(snap_from_command(&app, state));
     }
     place_tab(&mut app, tab, replace, false);
@@ -5495,7 +5508,7 @@ fn activate_or_open_remote_pr(
         repo.to_string(),
         number,
     );
-    kick_branch_preload(&mut app, state);
+    kick_branch_preload(&app, state);
     Ok(snap_from_command(&app, state))
 }
 
@@ -5705,13 +5718,16 @@ fn open_pr_url_impl(
     let remote = format!("{}/{}", pr_ref.owner, pr_ref.repo);
     let file = projects::load();
     if let Some(project_id) = find_project_id_for_remote(&file, &remote) {
-        let mut has_cached = false;
-        if let Ok(cache) = state.pr_cache.lock() {
-            has_cached = cache
-                .get(&remote)
-                .map(|prs| prs.iter().any(|pr| pr.number == pr_ref.number))
-                .unwrap_or(false);
-        }
+        let has_cached = state
+            .pr_cache
+            .lock()
+            .map(|cache| {
+                cache
+                    .get(&remote)
+                    .map(|prs| prs.iter().any(|pr| pr.number == pr_ref.number))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
         if !has_cached {
             cache_single_pr_for_remote(state, &remote, pr_ref.number)?;
         }
@@ -5958,7 +5974,7 @@ fn open_local_branch_impl(
         Arc::clone(&state.app),
         Arc::clone(&state.desktop_revision),
         repo_root,
-        branch_name.clone(),
+        branch_name,
         base_branch,
     );
     Ok(snapshot)
@@ -6051,11 +6067,11 @@ fn pr_open_clock() -> u64 {
 
 /// Per-process cap on the open-diff cache. Over this, the least-recently-touched
 /// entry is evicted (LRU) so a hot PR survives a churn of one-off opens.
-pub(crate) const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
+pub const MAX_PR_OPEN_CACHE_ENTRIES: usize = 32;
 
 /// Evict the least-recently-touched entry when the map exceeds `MAX_PR_OPEN_CACHE_ENTRIES`.
 /// Pure (operates on the borrowed map) so the LRU policy is unit-testable without a lock.
-pub(crate) fn evict_lru(map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>) {
+pub fn evict_lru(map: &mut HashMap<PrOpenCacheKey, PrOpenCacheEntry>) {
     if map.len() <= MAX_PR_OPEN_CACHE_ENTRIES {
         return;
     }
@@ -6360,7 +6376,7 @@ fn load_pr_open_inputs(
         .ok_or_else(|| format!("Project not found: {project_id}"))?
         .clone();
     let repo_root = proj.root_path;
-    let repo_slug = proj.remote.clone();
+    let repo_slug = proj.remote;
     let branch_label = format!("pr-{}", pr_number);
     let key = pr_open_cache_key(project_id, &repo_root, pr_number);
     let hint = hint.filter(|h| pr_open_hint_is_complete(h));
@@ -6884,7 +6900,7 @@ fn open_pr_review_impl(
     let snapshot = if two_phase {
         // Offload the full snapshot + AI reload to the background worker; the
         // poll delivers it via the revision event in ~40–120 ms.
-        kick_post_open_offload(&mut app, state);
+        kick_post_open_offload(&app, state);
         lite_snap_from_command(&app, state)
     } else {
         snap_from_command(&app, state)
@@ -6895,10 +6911,10 @@ fn open_pr_review_impl(
     kick_active_gh_status(&app, state);
     // Background-preload the Branch-view diff so the first switch to the
     // Branch view doesn't run `gh pr diff` synchronously under the App lock.
-    kick_branch_preload(&mut app, state);
+    kick_branch_preload(&app, state);
     // Background-fetch the PR's local git refs (skipped by the fast
     // `enter_pr_diff_preloaded` path) so later local-ref consumers find them.
-    kick_pr_ref_fetch(&mut app, state);
+    kick_pr_ref_fetch(&app, state);
     // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
     // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
     // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
@@ -6998,7 +7014,7 @@ fn open_pr_review_miss_async(
         project_id,
         pr_number,
         hint.cloned(),
-        proj.root_path.clone(),
+        proj.root_path,
         stub_idx,
         expect_local_view,
     );
@@ -7010,7 +7026,7 @@ fn open_pr_review_miss_async(
     // No `kick_branch_preload` here: the offload worker seeds the branch
     // preload from the freshly fetched parity diff — a second `gh pr diff`
     // would duplicate the network call.
-    kick_pr_ref_fetch(&mut app, state);
+    kick_pr_ref_fetch(&app, state);
     let t_ser = std::time::Instant::now();
     let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
     log::info!(
@@ -7164,6 +7180,7 @@ pub async fn open_pr_branch(
 }
 
 /// Fire-and-forget background warmup of the PR-open cache. Invoked from the
+///
 /// sidebar's `onmouseenter` (after a short debounce). Returns immediately —
 /// the actual fetch runs on a worker thread. If the cache is already fresh
 /// for the hint or another prefetch is already in flight, this is a no-op.
@@ -7188,7 +7205,7 @@ pub fn prefetch_pr_open(
     }
 
     // Dedupe: claim the in-flight slot atomically.
-    let claim_key = (project_id.clone(), pr_number);
+    let claim_key = (project_id, pr_number);
     let claim = {
         let mut guard = state
             .pr_open_prefetch_in_flight
@@ -7289,6 +7306,7 @@ pub fn prefetch_pr_open(
 }
 
 /// Fire-and-forget background warmup of the remote-only PR open cache.
+///
 /// Invoked from the sidebar's `onmouseenter` (after a short debounce) for
 /// remote-only projects, whose open path (`open_remote_pr`) has no local git
 /// clone to fall back on — a cache hit opens with zero `gh` calls.
@@ -7439,6 +7457,7 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 /// Trigger a PR-list refresh scoped to a single project's remote. Returns the
+///
 /// current snapshot immediately (the refresh runs in the background).
 /// Deduplicates: if a full PR refresh is already running, this is a no-op.
 /// If the project has no remote configured, returns the current snapshot without error.
@@ -8383,7 +8402,7 @@ pub fn reply_to_finding(
             root
         } else {
             app.submit_comment_text(
-                file.clone(),
+                file,
                 hunk_idx,
                 line_start,
                 None,
@@ -8696,13 +8715,14 @@ pub async fn select_tab(
 }
 
 /// If the active tab was restored as a lazy stub, kick its first
+///
 /// `refresh_diff()` to a background thread and return immediately. The
 /// caller's snapshot shows the stub with `loading.tab_diff = true`; the
 /// loaded diff arrives via the revision-event poll when the worker finishes.
 /// (This used to run inline while holding the App lock — a tab switch onto a
 /// large stub tab serialized every other command behind a multi-second git
 /// diff + parse.)
-pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
+pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let idx = app.active_tab;
     let tab = app.tab_mut();
     if !tab.needs_initial_refresh {
@@ -8754,7 +8774,7 @@ pub(crate) fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
 /// so the revision-event poll delivers the full snapshot in ~40–120 ms.
 /// Mirrors `kick_deferred_tab_refresh`: never holds the app lock during the
 /// slow part beyond the re-resolution, and re-checks tab identity.
-pub(crate) fn kick_post_open_offload(app: &mut App, state: &AppState) {
+pub fn kick_post_open_offload(app: &App, state: &AppState) {
     let idx = app.active_tab;
     let tab = app.tab();
     let expect_root = tab.repo_root.clone();
@@ -8825,7 +8845,7 @@ pub(crate) fn kick_post_open_offload(app: &mut App, state: &AppState) {
 ///   risk serving a stale diff after the user edits the working tree.
 /// - Remote tabs are eligible — their branch scope is `gh pr diff --repo`, a
 ///   network call with no cache.
-pub(crate) fn branch_preload_target(
+pub fn branch_preload_target(
     app: &App,
     idx: usize,
 ) -> Option<er_engine::app::BranchScopeFetchInputs> {
@@ -8852,6 +8872,7 @@ pub(crate) fn branch_preload_target(
 }
 
 /// Kick a background fetch of the active tab's branch-scope raw diff so the
+///
 /// first switch to the Branch view consumes the preload (`TabState`'s
 /// `preloaded_branch_raw`) instead of running `gh pr diff` / `git diff`
 /// synchronously under the App lock.
@@ -8861,7 +8882,8 @@ pub(crate) fn branch_preload_target(
 /// input moved (base, PR, branch, checkout, remote). Errors are logged and
 /// otherwise ignored; a second kick for the same PR while one is in flight is
 /// a no-op.
-pub(crate) fn kick_branch_preload(app: &mut App, state: &AppState) {
+#[allow(clippy::suspicious_operation_groupings)] // t.local_branch_checkout_root vs inputs.checkout_root is intentional (matches preload slot field names)
+pub fn kick_branch_preload(app: &App, state: &AppState) {
     let idx = app.active_tab;
     let Some(inputs) = branch_preload_target(app, idx) else {
         return;
@@ -9003,6 +9025,7 @@ pub(crate) fn kick_branch_preload(app: &mut App, state: &AppState) {
 }
 
 /// Kick a background fetch of a local PR tab's git refs
+///
 /// (`refs/er/pr/<n>/head` and a fresh `origin/<base>`) so a tab opened via the
 /// fast `enter_pr_diff_preloaded` path — which deliberately skips the two
 /// sequential network ref-fetches on the open critical path — ends up with
@@ -9022,7 +9045,7 @@ pub(crate) fn kick_branch_preload(app: &mut App, state: &AppState) {
 /// (sync). Skipped when the refs already exist locally (e.g. an earlier sync
 /// materialized them). Deduped via `pr_ref_fetch_in_flight`; a second kick for
 /// the same PR while one is in flight is a no-op.
-pub(crate) fn kick_pr_ref_fetch(app: &mut App, state: &AppState) {
+pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let idx = app.active_tab;
     let Some(tab) = app.tabs.get(idx) else {
         return;
@@ -9291,7 +9314,7 @@ fn decode_data_url_png(data_url: &str) -> Option<Vec<u8>> {
 /// Minimal standard-base64 decoder (RFC 4648). Skips whitespace, requires the
 /// canonical alphabet. Avoids adding a base64 crate dep just for screenshots.
 fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
-    fn val(b: u8) -> Result<u8, &'static str> {
+    const fn val(b: u8) -> Result<u8, &'static str> {
         match b {
             b'A'..=b'Z' => Ok(b - b'A'),
             b'a'..=b'z' => Ok(b - b'a' + 26),
@@ -9461,7 +9484,7 @@ pub struct AnchorUpdate {
 
 /// Apply a list of anchor updates to the annotations file in `dir`. Pure I/O
 /// helper exposed for tests; the Tauri command is a thin wrapper.
-pub(crate) fn apply_anchor_updates(dir: &str, updates: &[AnchorUpdate]) -> std::io::Result<()> {
+pub fn apply_anchor_updates(dir: &str, updates: &[AnchorUpdate]) -> std::io::Result<()> {
     let mut anns = er_engine::ai::load_ui_annotations(dir);
     for upd in updates {
         if let Some(a) = anns.iter_mut().find(|a| a.id == upd.id) {
@@ -9842,8 +9865,8 @@ pub fn terminal_spawn(
         map.insert(session_id.clone(), session);
     }
 
-    let handle = app_handle.clone();
-    let sid = session_id.clone();
+    let handle = app_handle;
+    let sid = session_id;
     let terminals_for_thread = Arc::clone(&state.terminals);
     std::thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -11040,7 +11063,7 @@ mod tests {
 
         let inbox_thread = Arc::clone(&inbox);
         let handle_thread = Arc::clone(&app_handle);
-        let item_thread = item.clone();
+        let item_thread = item;
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {

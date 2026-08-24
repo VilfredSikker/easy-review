@@ -35,7 +35,7 @@ pub struct ProxyHeader {
     pub value: String,
 }
 
-pub fn is_redirect_status(status: u16) -> bool {
+pub const fn is_redirect_status(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
@@ -313,7 +313,11 @@ mod tests {
     fn handoff_rewrites_https_to_erps() {
         let resp = webview_navigation_handoff("https://auth.example.com/oauth?state=1");
         let body = String::from_utf8(resp.body().clone()).unwrap();
-        assert!(body.contains("erps://auth.example.com/oauth?state=1"));
+        assert_eq!(resp.status(), 200);
+        assert_eq!(
+            body,
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><script>location.replace(\"erps://auth.example.com/oauth?state=1\");</script></head><body></body></html>"
+        );
     }
 
     #[test]
@@ -339,8 +343,11 @@ mod tests {
         assert_eq!(resp.status(), 200);
         assert!(resp.headers().get("Location").is_none());
         let body = String::from_utf8(resp.body().clone()).unwrap();
-        assert!(body.contains("location.replace("));
-        assert!(body.contains("erps://tech-professor.com/"));
+        // Exact handoff body: the unsafe newline is JSON-escaped to \\n.
+        assert_eq!(
+            body,
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><script>location.replace(\"erps://tech-professor.com/a\\nb\");</script></head><body></body></html>"
+        );
     }
 
     #[test]

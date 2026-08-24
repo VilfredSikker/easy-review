@@ -101,7 +101,7 @@ fn pr_diff_hash(er_dir: &str) -> String {
     String::new()
 }
 
-fn severity_label(level: RiskLevel) -> &'static str {
+const fn severity_label(level: RiskLevel) -> &'static str {
     match level {
         RiskLevel::High => "high",
         RiskLevel::Medium => "medium",
@@ -225,9 +225,9 @@ fn append_question_reply(
 ) -> Result<String> {
     let mut questions = load_questions(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    if questions.diff_hash.is_empty() {
-        questions.diff_hash = diff_hash.clone();
-    } else if !diff_hash.is_empty() && questions.diff_hash != diff_hash {
+    // Record the new diff hash whenever we have one or none is stored yet
+    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+    if questions.diff_hash.is_empty() || !diff_hash.is_empty() {
         questions.diff_hash = diff_hash;
     }
 
@@ -269,9 +269,9 @@ fn append_note_reply(
 ) -> Result<String> {
     let mut notes = load_notes(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    if notes.diff_hash.is_empty() {
-        notes.diff_hash = diff_hash.clone();
-    } else if !diff_hash.is_empty() && notes.diff_hash != diff_hash {
+    // Record the new diff hash whenever we have one or none is stored yet
+    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+    if notes.diff_hash.is_empty() || !diff_hash.is_empty() {
         notes.diff_hash = diff_hash;
     }
 
@@ -522,7 +522,7 @@ mod tests {
                 created_at: String::new(),
                 base_branch: String::new(),
                 head_branch: String::new(),
-                files: [(
+                files: std::iter::once((
                     "a.rs".into(),
                     ErFileReview {
                         risk: RiskLevel::Low,
@@ -530,8 +530,7 @@ mod tests {
                         summary: String::new(),
                         findings: vec![finding],
                     },
-                )]
-                .into_iter()
+                ))
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };

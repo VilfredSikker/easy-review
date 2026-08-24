@@ -677,7 +677,7 @@ impl App {
     }
 
     /// Inclusive end line for a multi-line anchor; `None` when single-line or invalid.
-    pub(crate) fn normalize_line_end(
+    pub(crate) const fn normalize_line_end(
         line_start: Option<usize>,
         line_end: Option<usize>,
     ) -> Option<usize> {
@@ -928,7 +928,7 @@ impl App {
                         q.context_before = anchor.context_before.clone();
                         q.context_after = anchor.context_after.clone();
                         q.old_line_start = anchor.old_line_start;
-                        q.hunk_header = anchor.hunk_header.clone();
+                        q.hunk_header = anchor.hunk_header;
                         q.hunk_index = Some(hunk_index);
                         q.anchor_status = "original".to_string();
                         q.relocated_at_hash = diff_hash;
@@ -951,7 +951,7 @@ impl App {
                         n.context_before = anchor.context_before.clone();
                         n.context_after = anchor.context_after.clone();
                         n.old_line_start = anchor.old_line_start;
-                        n.hunk_header = anchor.hunk_header.clone();
+                        n.hunk_header = anchor.hunk_header;
                         n.hunk_index = Some(hunk_index);
                         n.anchor_status = "original".to_string();
                         n.relocated_at_hash = diff_hash;
@@ -974,7 +974,7 @@ impl App {
                         c.context_before = anchor.context_before.clone();
                         c.context_after = anchor.context_after.clone();
                         c.old_line_start = anchor.old_line_start;
-                        c.hunk_header = anchor.hunk_header.clone();
+                        c.hunk_header = anchor.hunk_header;
                         c.hunk_index = Some(hunk_index);
                         c.anchor_status = "original".to_string();
                         c.relocated_at_hash = diff_hash;
@@ -2013,6 +2013,7 @@ impl App {
     /// Spawn a shell command in the background under the given name.
     /// The command string is run via `sh -c` in the repo root.
     /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
+    #[allow(clippy::literal_string_with_formatting_args)] // {base}/{branch}/{repo}/{output} are template placeholders, not format args
     pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
         if self.tab().command_status.get(name) == Some(&CommandStatus::Running) {
             self.notify(&format!("{} already running", name));
@@ -2519,7 +2520,7 @@ impl App {
                     name_owned,
                     agent_cmd,
                     agent_args.join(" "),
-                    status.code().map_or("signal".to_string(), |c| c.to_string()),
+                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
                     stdout_lines.join("\n"),
                     stderr_lines.join("\n"),
                 );
@@ -2743,6 +2744,7 @@ impl App {
     /// Actually spawn the agent subprocess for an accepted task. Split from
     /// `spawn_background_agent_task` so the dispatch loop can launch queued
     /// tasks when capacity frees up.
+    #[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a template placeholder substituted via .replace()
     fn launch_background_agent_task(
         &mut self,
         pending: super::background::PendingBackgroundTask,
@@ -2897,7 +2899,7 @@ impl App {
             text: format!("{command_name} started ({})", target.display_label()),
         });
 
-        let log_tx_thread = log_tx.clone();
+        let log_tx_thread = log_tx;
         let command_name_stdout = command_name.to_string();
         let command_name_stderr = command_name.to_string();
         let command_name_fail = command_name.to_string();
@@ -3067,7 +3069,7 @@ impl App {
                     "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
                     agent_cmd,
                     agent_args.join(" "),
-                    status.code().map_or("signal".to_string(), |c| c.to_string()),
+                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
                     stdout_lines.join("\n"),
                     stderr_lines.join("\n"),
                 );

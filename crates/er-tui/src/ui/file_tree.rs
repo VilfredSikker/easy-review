@@ -691,7 +691,7 @@ fn render_pillar_list(f: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Shorten a file path to fit within max_width
-pub(crate) fn shorten_path(path: &str, max_width: usize) -> String {
+pub fn shorten_path(path: &str, max_width: usize) -> String {
     if path.len() <= max_width {
         return path.to_string();
     }

@@ -28,7 +28,7 @@ pub enum InboxCategory {
 }
 
 impl InboxCategory {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::PrComment => "pr_comment",
             Self::ReviewReceived => "review_received",
@@ -45,7 +45,7 @@ impl InboxCategory {
     }
 
     #[cfg(test)]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::PrComment => "Comment on your PR",
             Self::ReviewReceived => "Review received",

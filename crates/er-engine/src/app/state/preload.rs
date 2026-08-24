@@ -17,6 +17,7 @@
 use super::TabState;
 
 /// Branch-scope raw diff prefetched by the desktop in the background.
+///
 /// Consumed (one-shot) by the first Branch-view refresh; dropped when the
 /// captured inputs no longer match the tab (base/PR/checkout/branch moved).
 ///
@@ -68,6 +69,7 @@ impl BranchScopeFetchInputs {
 }
 
 /// Fetch the branch-scope raw diff — the same computation
+///
 /// `TabState::fetch_tab_raw_diff("branch")` performs, as a free function so a
 /// background thread can run it without holding the App lock. Handles both
 /// local PR tabs (working-tree diff when checked out, `gh pr diff` /
@@ -131,6 +133,7 @@ impl TabState {
     /// depended on has moved — base branch, PR number, branch name, checkout
     /// root, or remote slug. Callers then run the normal synchronous fetch.
     /// Only meaningful for `scope == "branch"` refreshes; callers guard that.
+    #[allow(clippy::suspicious_operation_groupings)] // pre.* fields vs self.* fields intentionally differ in name (e.g. checkout_root vs local_branch_checkout_root)
     pub fn take_preloaded_branch_raw(&mut self) -> Option<String> {
         let pre = self.preloaded_branch_raw.take()?;
         // `base_branch` may drift from its bare local name (e.g. "main") to
@@ -184,6 +187,7 @@ fn normalize_base(base: &str) -> &str {
 }
 
 /// Background-loaded AI sidecar state for the branch view bucket, so the
+///
 /// first switch to the Branch view doesn't re-read + re-parse every sidecar
 /// under the App lock (the diff itself is preloaded via
 /// [`PreloadedBranchRaw`]). Adopted by `reload_ai_state` only when the bucket
@@ -396,7 +400,7 @@ mod tests {
         let remote = BranchScopeFetchInputs {
             remote_repo: Some("owner/repo".to_string()),
             checkout_root: None,
-            ..local.clone()
+            ..local
         };
         assert_eq!(remote.dedupe_key(), ("owner/repo".to_string(), 7));
     }

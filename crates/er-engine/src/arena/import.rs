@@ -74,7 +74,7 @@ fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
     }
 }
 
-fn is_importable(f: &ArenaFinding, run: &ArenaRun) -> bool {
+const fn is_importable(f: &ArenaFinding, run: &ArenaRun) -> bool {
     match &f.verdict {
         Verdict::Kept | Verdict::Escalated | Verdict::Merged { .. } => true,
         // Single-round runs complete without arbiter (legacy runs stayed pending).
