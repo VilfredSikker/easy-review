@@ -164,7 +164,9 @@ describe("TabSnapshotCache", () => {
     );
     cache.retain(new Set(["1|/repo|remote_pr||2"]));
     expect(cache.get("0|/repo|remote_pr||1")).toBeNull();
-    expect(cache.get("1|/repo|remote_pr||2")).not.toBeNull();
+    const survivor = cache.get("1|/repo|remote_pr||2");
+    expect(survivor?.active_tab).toBe(1);
+    expect(survivor?.tabs).toHaveLength(2);
   });
 
   it("evicts when change_token moves", () => {
@@ -190,11 +192,11 @@ describe("TabSnapshotCache", () => {
     }
     expect(cache.size).toBe(TAB_SNAPSHOT_CACHE_CAP);
     expect(cache.get("0|/repo|remote_pr||0")).toBeNull();
-    expect(
-      cache.get(
-        `${TAB_SNAPSHOT_CACHE_CAP + 1}|/repo|remote_pr||${TAB_SNAPSHOT_CACHE_CAP + 1}`,
-      ),
-    ).not.toBeNull();
+    const survivor = cache.get(
+      `${TAB_SNAPSHOT_CACHE_CAP + 1}|/repo|remote_pr||${TAB_SNAPSHOT_CACHE_CAP + 1}`,
+    );
+    expect(survivor).not.toBeNull();
+    expect(survivor?.tabs[0].label).toBe(`t${TAB_SNAPSHOT_CACHE_CAP + 1}`);
   });
 
   it("does not cache a tab_diff stub", () => {
