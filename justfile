@@ -144,6 +144,11 @@ test-mcp-npm:
 test-skills-npm:
     cd npm/skills && npm test
 
+# Test the Herdr plugin shell entrypoints (Node 18+).
+[group('test')]
+test-herdr-plugin:
+    cd tools/herdr-easy-review && npm test
+
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:

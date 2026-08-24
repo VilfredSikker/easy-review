@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
@@ -248,7 +249,7 @@
       run: () => {
         if (p.models.length === 0) {
           void dismissAndRun(() =>
-            app.cmd("set_ai_selection", { providerId: p.id, modelId: null, persist: false }),
+            app.cmd("set_ai_selection", { providerId: p.id, modelId: null, persist: true }),
           );
         }
       },
@@ -260,7 +261,7 @@
             group: "AI" as const,
             run: () => {
               void dismissAndRun(() =>
-                app.cmd("set_ai_selection", { providerId: p.id, modelId: m.id, persist: false }),
+                app.cmd("set_ai_selection", { providerId: p.id, modelId: m.id, persist: true }),
               );
             },
           }))
@@ -424,6 +425,13 @@
         group: "View & Layout",
         kbd: "[",
         run: () => { dismissLocal(() => { app.togglePanel("left"); }); },
+      },
+      {
+        id: "toggle-tree",
+        label: "Toggle file tree",
+        group: "View & Layout",
+        kbd: "\\",
+        run: () => { dismissLocal(() => { app.togglePanel("tree"); }); },
       },
       {
         id: "toggle-right",
@@ -670,6 +678,18 @@
     }
     window.addEventListener("keydown", onGlobalKeydown);
     return () => window.removeEventListener("keydown", onGlobalKeydown);
+  });
+
+  $effect(() => {
+    if (!commandPalette.open) return;
+    if (commandPalette.pendingView !== "ai-providers") return;
+    untrack(() => {
+      commandPalette.consumePendingView();
+      submenuStack = [];
+      query = "";
+      selectedIdx = 0;
+      void openProviderPicker();
+    });
   });
 </script>
 

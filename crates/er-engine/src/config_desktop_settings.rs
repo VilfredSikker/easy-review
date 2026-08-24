@@ -84,6 +84,19 @@ pub fn validate_config_text_field(key: &str, value: &str) -> Option<String> {
 }
 
 pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldValue) -> bool {
+    if let Some(kind) = key.strip_prefix("inbox.show.") {
+        if let ConfigFieldValue::Bool(v) = value {
+            let _ = config.inbox.show.set(kind, v);
+        }
+        return false;
+    }
+    if let Some(kind) = key.strip_prefix("inbox.notify.") {
+        if let ConfigFieldValue::Bool(v) = value {
+            let _ = config.inbox.notify.set(kind, v);
+        }
+        return false;
+    }
+
     let mut watched_changed = false;
     match key {
         "features.view_branch" => {
@@ -307,6 +320,9 @@ mod tests {
 
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
         assert!(general.iter().any(|k| k == "features.model_discovery"));
+        assert!(general.iter().any(|k| k == "inbox.show.review_requested"));
+        assert!(general.iter().any(|k| k == "inbox.notify.ci_failed"));
+        assert!(!terminal.iter().any(|k| k == "inbox.show.review_requested"));
         assert!(!terminal.iter().any(|k| k == "features.model_discovery"));
         assert!(terminal.iter().any(|k| k == "display.line_numbers"));
 
@@ -314,6 +330,27 @@ mod tests {
             crate::config::desktop_settings_fields_for_scope(&config, SettingsScope::General).len(),
             grouped.general.len()
         );
+    }
+
+    #[test]
+    fn apply_config_field_inbox_show_and_notify_round_trip() {
+        let mut config = ErConfig::default();
+        assert!(config.inbox.shows("ci_failed"));
+        assert!(config.inbox.notifies("review_requested"));
+        apply_config_field(
+            &mut config,
+            "inbox.show.ci_failed",
+            ConfigFieldValue::Bool(false),
+        );
+        apply_config_field(
+            &mut config,
+            "inbox.notify.review_requested",
+            ConfigFieldValue::Bool(false),
+        );
+        assert!(!config.inbox.shows("ci_failed"));
+        assert!(config.inbox.shows("pr_merged"));
+        assert!(!config.inbox.notifies("review_requested"));
+        assert!(config.inbox.notifies("ci_failed"));
     }
 
     #[test]

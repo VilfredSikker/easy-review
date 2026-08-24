@@ -474,6 +474,10 @@ export interface AppSnapshot {
   agent_log?: AgentLogEntry[];
   /** Human-readable label for the currently selected AI provider/model. */
   active_ai_label?: string;
+  /** Display name of the active AI Hub provider, if one is selected. */
+  active_ai_provider_label?: string | null;
+  /** Display name of the active AI Hub model, if one is selected. */
+  active_ai_model_label?: string | null;
   /** Claude Code effort level (`low` … `max`). */
   active_ai_effort?: string | null;
   /** Filter presets + recent filter history for the active tab. */
@@ -514,6 +518,8 @@ export interface InboxItemSnapshot {
   created_at_ms: number;
   read_at_ms?: number | null;
   dedupe_key: string;
+  /** Derived from kind at snapshot time. Missing on older snapshots. */
+  category?: string;
 }
 
 export interface BackgroundTaskSnapshot {

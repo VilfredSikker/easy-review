@@ -23,10 +23,8 @@ pub enum LineType {
 pub struct DiffHunk {
     pub header: String,
     pub old_start: usize,
-    #[allow(dead_code)]
     pub old_count: usize,
     pub new_start: usize,
-    #[allow(dead_code)]
     pub new_count: usize,
     pub lines: Vec<DiffLine>,
 }

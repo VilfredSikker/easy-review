@@ -25,6 +25,7 @@
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
+  import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
   import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
@@ -37,7 +38,6 @@
   import { startWindowDrag } from "$lib/windowDrag";
   import { applyTheme } from "$lib/themes";
   import { snapshotViewIdentity } from "$lib/snapshotChrome";
-  const panels = $derived(app.snapshot?.panels);
 
   // Follow the configured theme (`display.theme`, same as the TUI): override
   // the CSS vars on the root element and switch the Shiki syntax theme.
@@ -313,7 +313,7 @@
     {/if}
 
     {#if showDiff}
-      <LeftSidebar collapsed={!panels?.left} />
+      <LeftSidebar collapsed={!layoutPanels.left} />
     {/if}
 
     <main class="flex-1 flex min-w-0 min-h-0">
@@ -328,7 +328,7 @@
           >
             {#if app.mainView === "diff"}
               {#if app.snapshot?.mode !== "tour"}
-                <FileTree collapsed={!panels?.tree} />
+                <FileTree collapsed={!layoutPanels.tree} />
               {/if}
               <DiffView />
             {:else if app.mainView === "agent-output"}

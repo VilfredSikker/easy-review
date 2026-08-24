@@ -450,6 +450,12 @@ pub struct AppSnapshot {
     /// Human-readable label for the currently selected AI provider/model.
     #[serde(default)]
     pub active_ai_label: String,
+    /// Display name of the active AI Hub provider, if one is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_provider_label: Option<String>,
+    /// Display name of the active AI Hub model, if one is selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub active_ai_model_label: Option<String>,
     /// Claude Code effort level for the current session (`low` … `max`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_ai_effort: Option<String>,
@@ -545,6 +551,40 @@ pub struct InboxItemSnapshot {
     pub created_at_ms: u64,
     pub read_at_ms: Option<u64>,
     pub dedupe_key: String,
+    /// Derived from `kind` at snapshot time. Not persisted.
+    pub category: String,
+}
+
+fn snapshot_inbox(
+    inbox: Option<&InboxHandle>,
+    prefs: &er_engine::config::InboxConfig,
+) -> (Vec<InboxItemSnapshot>, usize, u64) {
+    let Some(guard) = inbox.and_then(|h| h.lock().ok()) else {
+        return (Vec::new(), 0, 0);
+    };
+    let last_refresh_ms = guard.last_refresh_ms;
+    let items: Vec<InboxItemSnapshot> = guard
+        .items
+        .iter()
+        .filter(|i| prefs.shows(&i.kind))
+        .map(|i| InboxItemSnapshot {
+            id: i.id.clone(),
+            kind: i.kind.clone(),
+            severity: i.severity.clone(),
+            title: i.title.clone(),
+            body: i.body.clone(),
+            source: i.source.clone(),
+            target: serde_json::to_value(&i.target).unwrap_or(serde_json::Value::Null),
+            created_at_ms: i.created_at_ms,
+            read_at_ms: i.read_at_ms,
+            dedupe_key: i.dedupe_key.clone(),
+            category: crate::inbox::category_for_kind(&i.kind)
+                .as_str()
+                .to_string(),
+        })
+        .collect();
+    let unread = items.iter().filter(|i| i.read_at_ms.is_none()).count();
+    (items, unread, last_refresh_ms)
 }
 
 /// Wire representation of an app-level background task.
@@ -751,6 +791,61 @@ pub struct Panels {
     pub left: bool,
     pub tree: bool,
     pub right: bool,
+}
+
+fn first_non_empty<'a, I>(vals: I) -> String
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    vals.into_iter()
+        .find(|s| !s.is_empty())
+        .unwrap_or("")
+        .to_string()
+}
+
+fn pr_info_for_tab<'a>(
+    tab: &TabState,
+    cache: &'a HashMap<String, Vec<PrInfo>>,
+) -> Option<&'a PrInfo> {
+    let number = tab.pr_number?;
+    if let Some(slug) = tab.remote_repo.as_deref() {
+        if let Some(pr) = cache
+            .iter()
+            .find(|(s, _)| s.eq_ignore_ascii_case(slug))
+            .and_then(|(_, prs)| prs.iter().find(|p| p.number == number))
+        {
+            return Some(pr);
+        }
+    }
+    cache
+        .values()
+        .flat_map(|prs| prs.iter())
+        .find(|p| p.number == number)
+}
+
+/// Branch title + base ref for the context bar. Remote stubs and restored
+/// tabs often have empty `current_branch`/`base_branch` even after the diff
+/// loads; fall back to PR overview, GitHub status, then the PR-list cache.
+pub(crate) fn resolve_context_identity(
+    tab: &TabState,
+    github: Option<&GithubStatusSnapshot>,
+    cached_pr: Option<&PrInfo>,
+) -> (String, String) {
+    let pr_data = tab.pr_data.as_ref();
+    let branch = first_non_empty([
+        tab.local_branch_view.as_deref().unwrap_or(""),
+        tab.current_branch.as_str(),
+        pr_data.map(|p| p.head_branch.as_str()).unwrap_or(""),
+        github.map(|g| g.head_ref.as_str()).unwrap_or(""),
+        cached_pr.map(|p| p.head_ref.as_str()).unwrap_or(""),
+    ]);
+    let base = first_non_empty([
+        tab.base_branch.as_str(),
+        pr_data.map(|p| p.base_branch.as_str()).unwrap_or(""),
+        github.map(|g| g.base_ref.as_str()).unwrap_or(""),
+        cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
+    ]);
+    (branch, base)
 }
 
 /// Resolve the `(owner, repo, pr_number)` GitHub-status key for a tab.
@@ -2153,6 +2248,12 @@ fn build_snapshot_inner(
             status
         });
 
+    let (branch, base) = {
+        let guard = pr_cache.and_then(|pc| pc.lock().ok());
+        let cached = guard.as_ref().and_then(|cache| pr_info_for_tab(tab, cache));
+        resolve_context_identity(tab, github.as_ref(), cached)
+    };
+
     // Detected PR number for the active branch — taken straight from the PR-list
     // cache (the same branch→PR match the sidebar badge uses). Unlike `github`,
     // this does NOT require a gh-status fetch to have run, so the Local|PR Diff
@@ -2256,13 +2357,13 @@ fn build_snapshot_inner(
         (ScopeStat::default(), ScopeStat::default())
     };
 
+    let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
+        snapshot_inbox(inbox, &app.config.inbox);
+
     let out = AppSnapshot {
         mode: mode.to_string(),
-        branch: tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone()),
-        base: tab.base_branch.clone(),
+        branch,
+        base,
         input_mode: input_mode.to_string(),
         files,
         selected_file,
@@ -2313,6 +2414,8 @@ fn build_snapshot_inner(
         agent_commands: build_agent_commands(app, tab),
         agent_log: build_agent_log(tab),
         active_ai_label: app.active_ai_selection_label(),
+        active_ai_provider_label: app.active_ai_provider_label(),
+        active_ai_model_label: app.active_ai_model_label(),
         active_ai_effort: app.current_ai_effort.clone(),
         filter_suggestions,
         commits,
@@ -2350,29 +2453,9 @@ fn build_snapshot_inner(
                 finished_at_ms: t.finished_at_ms,
             })
             .collect(),
-        inbox_items: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.items.clone()))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|i| InboxItemSnapshot {
-                id: i.id,
-                kind: i.kind,
-                severity: i.severity,
-                title: i.title,
-                body: i.body,
-                source: i.source,
-                target: serde_json::to_value(i.target).unwrap_or(serde_json::Value::Null),
-                created_at_ms: i.created_at_ms,
-                read_at_ms: i.read_at_ms,
-                dedupe_key: i.dedupe_key,
-            })
-            .collect(),
-        inbox_unread_count: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.unread_count()))
-            .unwrap_or(0),
-        inbox_last_refresh_ms: inbox
-            .and_then(|h| h.lock().ok().map(|g| g.last_refresh_ms))
-            .unwrap_or(0),
+        inbox_items,
+        inbox_unread_count,
+        inbox_last_refresh_ms,
         arena_enabled: true,
         active_arena_run: app.active_arena_run(),
         arena_runs: {
@@ -3272,18 +3355,10 @@ fn build_hunk_threads(
         .iter()
         .enumerate()
         .map(|(hunk_idx, hunk)| {
-            let (old_count, new_count) = hunk_line_counts(hunk);
-            // Collect threads for this hunk (also matches comments whose hunk_index is
-            // missing or stale, by falling back to line-range matching)
+            // Header span, not visible line count — folds hide context but the
+            // comment's line_start still sits in the @@ range.
             tab.ai
-                .comments_for_hunk_or_line_range(
-                    &file.path,
-                    hunk_idx,
-                    hunk.new_start,
-                    new_count,
-                    hunk.old_start,
-                    old_count,
-                )
+                .comments_for_diff_hunk(&file.path, hunk_idx, hunk)
                 .iter()
                 .filter(|c| {
                     c.in_reply_to().is_none()
@@ -3785,6 +3860,64 @@ mod tests {
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
 
     #[test]
+    fn snapshot_inbox_hides_disabled_kinds_and_drops_them_from_unread() {
+        use crate::inbox::{InboxItem, InboxTarget};
+
+        let mut state = crate::inbox::InboxState {
+            last_refresh_ms: 42,
+            ..Default::default()
+        };
+        state.items.push(InboxItem {
+            id: "ci".into(),
+            kind: "ci_failed".into(),
+            severity: "warning".into(),
+            title: "CI failed".into(),
+            body: "fail".into(),
+            source: "github".into(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 1,
+            read_at_ms: None,
+            dedupe_key: "ci".into(),
+        });
+        state.items.push(InboxItem {
+            id: "merged".into(),
+            kind: "pr_merged".into(),
+            severity: "success".into(),
+            title: "PR merged".into(),
+            body: "ok".into(),
+            source: "github".into(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 2,
+            read_at_ms: None,
+            dedupe_key: "merged".into(),
+        });
+        let handle = std::sync::Arc::new(std::sync::Mutex::new(state));
+        let mut prefs = er_engine::config::InboxConfig::default();
+        prefs.show.ci_failed = false;
+
+        let (items, unread, last) = snapshot_inbox(Some(&handle), &prefs);
+        assert_eq!(last, 42);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].kind, "pr_merged");
+        assert_eq!(items[0].category, "lifecycle");
+        assert_eq!(unread, 1);
+    }
+
+    #[test]
     fn compute_oid_staleness_rules() {
         // Equal oids → up to date.
         assert!(compute_oid_staleness(Some("abc"), Some("abc"), "base", "m").is_none());
@@ -3812,6 +3945,84 @@ mod tests {
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
             .expect("differing oids must be stale");
         assert_eq!(pr_stale.kind, "pr_head");
+    }
+
+    #[test]
+    fn context_identity_prefers_local_branch_view() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.local_branch_view = Some("feat/a".into());
+        tab.current_branch = "other".into();
+        tab.base_branch = "origin/main".into();
+        let (branch, base) = resolve_context_identity(&tab, None, None);
+        assert_eq!(branch, "feat/a");
+        assert_eq!(base, "origin/main");
+    }
+
+    #[test]
+    fn context_identity_falls_back_to_pr_data_when_tab_names_empty() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch.clear();
+        tab.base_branch.clear();
+        tab.pr_data = Some(er_engine::github::PrOverviewData {
+            number: 1425,
+            title: "t".into(),
+            body: String::new(),
+            state: "OPEN".into(),
+            author: "u".into(),
+            url: String::new(),
+            base_branch: "main".into(),
+            head_branch: "feat/from-fork".into(),
+            checks: Vec::new(),
+            reviewers: Vec::new(),
+        });
+        let (branch, base) = resolve_context_identity(&tab, None, None);
+        assert_eq!(branch, "feat/from-fork");
+        assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn context_identity_falls_back_to_pr_list_cache() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch.clear();
+        tab.base_branch.clear();
+        let mut pr = minimal_pr_info(1425, "t");
+        pr.head_ref = "feat/from-fork".into();
+        pr.base_ref = "main".into();
+        let (branch, base) = resolve_context_identity(&tab, None, Some(&pr));
+        assert_eq!(branch, "feat/from-fork");
+        assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn pr_info_for_tab_prefers_matching_remote_slug() {
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        let mut own = minimal_pr_info(1425, "own");
+        own.head_ref = "feat/own".into();
+        own.base_ref = "main".into();
+        let mut other = minimal_pr_info(1425, "other");
+        other.head_ref = "feat/other".into();
+        cache.insert("reshapebiotech/discovery".into(), vec![own]);
+        cache.insert("other/repo".into(), vec![other]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(1425);
+        tab.remote_repo = Some("reshapebiotech/discovery".into());
+        let hit = pr_info_for_tab(&tab, &cache).expect("hit");
+        assert_eq!(hit.head_ref, "feat/own");
+    }
+
+    #[test]
+    fn pr_info_for_tab_matches_remote_slug_case_insensitively() {
+        let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
+        let mut own = minimal_pr_info(1425, "own");
+        own.head_ref = "feat/own".into();
+        cache.insert("ReshapeBiotech/Discovery".into(), vec![own]);
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(1425);
+        tab.remote_repo = Some("reshapebiotech/discovery".into());
+        let hit = pr_info_for_tab(&tab, &cache).expect("hit");
+        assert_eq!(hit.head_ref, "feat/own");
     }
 
     fn pr_with(number: u64, head_ref: &str, state: &str) -> PrInfo {

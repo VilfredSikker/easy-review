@@ -1157,12 +1157,23 @@ impl TabState {
             crate::git::compact_files(&mut self.files, &self.compaction_config);
         }
         self.base_branch = base_branch;
+        if let Some(head) = pr_data
+            .as_ref()
+            .map(|p| p.head_branch.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            self.current_branch = head.to_string();
+        }
         let hash = crate::ai::compute_diff_hash(raw);
         self.diff_hash = hash.clone();
         self.branch_diff_hash = hash;
         self.pr_data = pr_data;
         self.pr_commits = pr_commits;
         self.last_diff_head_oid = head_oid;
+        // Lazy local-PR stubs start in Branch. This payload is `gh pr diff`,
+        // so land in PR Diff. Leaving Branch selected made the header toggle
+        // look stuck (clicking Local Branch was a no-op on already-branch).
+        self.mode = DiffMode::PrDiff;
         self.needs_initial_refresh = false;
         self.apply_managed_root();
         self.reload_ai_state();
@@ -1867,9 +1878,14 @@ impl TabState {
             .collect()
     }
 
-    /// Whether this tab is reviewing a remote PR (no local git repo).
+    /// Whether this tab is reviewing a remote-only PR (no local clone).
+    ///
+    /// Local PR tabs also store `remote_repo` (the `owner/repo` slug used for
+    /// GitHub status keys) but they have a clone and `local_branch_view`.
+    /// Treating those as remote hid the branch title/base chrome and collapsed
+    /// the tab to PR Diff only.
     pub fn is_remote(&self) -> bool {
-        self.remote_repo.is_some()
+        self.remote_repo.is_some() && self.local_branch_view.is_none()
     }
 
     /// Whether this tab is a read-only local-branch view.
@@ -1925,9 +1941,11 @@ impl TabState {
     /// Return the list of DiffMode tabs currently visible, based on feature flags,
     /// remote status, and data availability. Used for dynamic tab numbering.
     ///
-    /// - Remote tab (`remote_repo.is_some()`): only `[PrDiff]` — no local working tree.
+    /// - Remote-only tab (`is_remote()`, GitHub slug and no local-branch view):
+    ///   only `[PrDiff]` — no local working tree.
     /// - Local tab with a PR (`pr_number.is_some()`): working-tree modes + `PrDiff`
-    ///   inserted after Staged and before History.
+    ///   inserted after Staged and before History. Local PRs may also store a
+    ///   GitHub slug for status keys; that does not make them remote-only.
     /// - Local tab without a PR: working-tree modes only, no PrDiff.
     pub fn visible_modes(&self, config: &crate::config::ErConfig) -> Vec<DiffMode> {
         // Remote tabs have no local working tree — PR Diff is the only view.
@@ -2167,11 +2185,13 @@ impl TabState {
     }
 
     /// Whether the current view's guided tour belongs to the PR diff (vs the
-    /// local branch diff). Remote tabs and PR Diff mode are always PR-scoped;
-    /// Tour mode follows whichever view it was entered from (`tour_is_pr`).
-    /// All other modes (Branch/Unstaged/Staged/History) are branch-scoped.
+    /// local branch diff). Remote-only tabs and PR Diff mode are always
+    /// PR-scoped; Tour mode follows whichever view it was entered from
+    /// (`tour_is_pr`). Local PR tabs store a GitHub slug for status keys; that
+    /// does not make Branch/Unstaged/Staged PR-scoped. All other modes are
+    /// branch-scoped.
     pub fn tour_context_is_pr(&self) -> bool {
-        if self.remote_repo.is_some() {
+        if self.is_remote() {
             return true;
         }
         match self.mode {
@@ -2564,12 +2584,18 @@ impl TabState {
         {
             return None;
         }
-        if let Some(ref repo_slug) = self.remote_repo {
-            let parts: Vec<&str> = repo_slug.split('/').collect();
-            if parts.len() == 2 {
-                return Some(crate::github::gh_pr_diff_remote(
-                    parts[0], parts[1], pr_number,
-                ));
+        // Remote-only tabs (`gh pr diff --repo`). Local PR tabs also store a
+        // GitHub slug for status keys; they still have a clone, so they use
+        // local `gh pr diff` below. Using the remote path here made Branch
+        // and PR Diff load the same network diff.
+        if self.is_remote() {
+            if let Some(ref repo_slug) = self.remote_repo {
+                let parts: Vec<&str> = repo_slug.split('/').collect();
+                if parts.len() == 2 {
+                    return Some(crate::github::gh_pr_diff_remote(
+                        parts[0], parts[1], pr_number,
+                    ));
+                }
             }
             return Some(Err(anyhow::anyhow!(
                 "Remote tab missing owner/repo for PR diff"
@@ -2949,7 +2975,6 @@ impl TabState {
         // Compute diff hash for the current mode.
         // Use fast hash for quick refreshes (watch events), SHA-256 for full refreshes
         // (AI staleness needs SHA-256 to compare with .er-review.json).
-        let branch_raw_owned: Option<String>;
         if recompute_branch_hash {
             // Full refresh: compute SHA-256 for AI compatibility
             self.diff_hash = ai::compute_diff_hash(&raw);
@@ -2963,7 +2988,7 @@ impl TabState {
         // In other modes, only run the extra git diff on a full refresh when there's a
         // consumer — AI data, questions, or a tour (whose stale pill compares against it).
         // Skipping otherwise avoids a redundant git diff call with no consumer.
-        if self.mode == DiffMode::Branch {
+        let branch_raw_owned: Option<String> = if self.mode == DiffMode::Branch {
             // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
             // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
             // must always be SHA-256 for compatibility with external skills.
@@ -2972,7 +2997,7 @@ impl TabState {
             } else {
                 self.branch_diff_hash = ai::compute_diff_hash(&raw);
             }
-            branch_raw_owned = Some(raw.clone());
+            Some(raw.clone())
         } else if recompute_branch_hash
             && (self.ai.has_data() || self.ai.has_questions() || self.ai.has_tour())
         {
@@ -2983,10 +3008,10 @@ impl TabState {
                 head_ref_owned.as_deref(),
             )?;
             self.branch_diff_hash = ai::compute_diff_hash(&br);
-            branch_raw_owned = Some(br);
+            Some(br)
         } else {
-            branch_raw_owned = None;
-        }
+            None
+        };
 
         // Compute per-file hashes from the raw diff output.
         // Used to detect when a reviewed file's diff changes since it was marked.
@@ -4087,9 +4112,10 @@ impl TabState {
 
             // Entering Tour: remember whether the originating view was the PR diff
             // so the guide stays attached to the PR (vs the local branch) and the
-            // Diff toggle returns to the right view. Remote tabs are always PR.
+            // Diff toggle returns to the right view. Remote-only tabs are always PR.
+            // Local PR tabs store a GitHub slug; Branch origin stays branch-scoped.
             if mode == DiffMode::Tour {
-                self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.remote_repo.is_some();
+                self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.is_remote();
             }
 
             self.mode = mode;
@@ -4671,10 +4697,12 @@ pub struct App {
     /// Application configuration (loaded from .er-config.toml)
     pub config: ErConfig,
 
-    /// Session-local AI Hub provider selection
+    /// Active AI Hub provider. Seeded from persisted defaults on launch.
+    /// Desktop palette picks write it back to global config.
     pub current_ai_provider: Option<String>,
 
-    /// Session-local AI Hub model selection
+    /// Active AI Hub model. Seeded from persisted defaults on launch.
+    /// Desktop palette picks write it back to global config.
     pub current_ai_model: Option<String>,
 
     /// Session-local Claude Code effort level (`low` … `max`).
@@ -5074,38 +5102,54 @@ impl App {
         self.current_ai_effort = selection.effort;
     }
 
-    pub fn active_ai_selection_label(&self) -> String {
-        if let Some(provider_id) = self
+    fn active_ai_selection_parts(&self) -> (Option<String>, Option<String>) {
+        let Some(provider_id) = self
             .config
             .ai_hub
             .resolve_provider_id(self.current_ai_provider.as_deref())
-        {
-            if let Some(provider) = self.config.ai_hub.providers.get(&provider_id) {
-                let provider_label = provider.display_name(&provider_id);
-                let model_label = self
-                    .config
-                    .ai_hub
-                    .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
-                    .and_then(|model_id| {
-                        provider
-                            .models
-                            .iter()
-                            .find(|m| m.id == model_id)
-                            .map(|m| m.display_name())
-                    });
-                let mut label = match model_label {
-                    Some(model) => format!("{provider_label} / {model}"),
-                    None => provider_label,
-                };
-                if let Some(effort) = self.current_ai_effort.as_deref() {
-                    label.push_str(" · ");
-                    label.push_str(effort);
-                }
-                return label;
-            }
-        }
+        else {
+            return (None, None);
+        };
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            return (None, None);
+        };
+        let provider_label = provider.display_name(&provider_id);
+        let model_label = self
+            .config
+            .ai_hub
+            .resolve_model_id(&provider_id, self.current_ai_model.as_deref())
+            .and_then(|model_id| {
+                provider
+                    .models
+                    .iter()
+                    .find(|m| m.id == model_id)
+                    .map(|m| m.display_name())
+            });
+        (Some(provider_label), model_label)
+    }
 
-        self.config.agent.display_name()
+    pub fn active_ai_provider_label(&self) -> Option<String> {
+        self.active_ai_selection_parts().0
+    }
+
+    pub fn active_ai_model_label(&self) -> Option<String> {
+        self.active_ai_selection_parts().1
+    }
+
+    pub fn active_ai_selection_label(&self) -> String {
+        let (provider_label, model_label) = self.active_ai_selection_parts();
+        let Some(provider_label) = provider_label else {
+            return self.config.agent.display_name();
+        };
+        let mut label = match model_label {
+            Some(model) => format!("{provider_label} / {model}"),
+            None => provider_label,
+        };
+        if let Some(effort) = self.current_ai_effort.as_deref() {
+            label.push_str(" · ");
+            label.push_str(effort);
+        }
+        label
     }
 
     pub fn open_ai_provider_picker(&mut self, action: Option<AiActionKind>) {
@@ -9212,6 +9256,29 @@ mod tests {
     }
 
     #[test]
+    fn active_ai_selection_parts_use_provider_and_model_labels() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    label: Some("GPT-5.6 Luna".into()),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("gpt-5.6-luna".into());
+
+        assert_eq!(app.active_ai_provider_label().as_deref(), Some("Codex"));
+        assert_eq!(app.active_ai_model_label().as_deref(), Some("GPT-5.6 Luna"));
+        assert_eq!(app.active_ai_selection_label(), "Codex / GPT-5.6 Luna");
+    }
+
+    #[test]
     fn get_line_anchor_finds_line_by_new_num() {
         let lines = vec![
             DiffLine {
@@ -9925,6 +9992,18 @@ mod tests {
     }
 
     #[test]
+    fn is_remote_returns_false_for_local_pr_with_remote_slug() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("reshapebiotech/discovery".to_string());
+        tab.local_branch_view = Some("feat/delete-plates".to_string());
+        tab.pr_number = Some(1425);
+        assert!(
+            !tab.is_remote(),
+            "a local PR tab stores remote_repo for gh-status keys; it is not remote-only"
+        );
+    }
+
+    #[test]
     fn enter_pr_diff_preloaded_trusts_cached_diff_without_refetch() {
         // A tab whose diff is already loaded from the desktop open-diff cache:
         // files + raw_diff + diff_hash populated, mode still Branch (as
@@ -10143,6 +10222,22 @@ mod tests {
             "PR-bucket AI sidecars loaded by populate"
         );
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn populate_pr_tab_switches_to_pr_diff_from_branch() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(7);
+        tab.local_branch_view = Some("feat/x".into());
+        tab.remote_repo = Some("owner/repo".into());
+        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        tab.populate_pr_tab(raw, None, Vec::new(), "main".to_string(), None);
+        assert_eq!(
+            tab.mode,
+            DiffMode::PrDiff,
+            "populated payload is gh pr diff; landing in Branch made Local Branch look stuck"
+        );
     }
 
     #[test]
@@ -11276,6 +11371,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn visible_modes_local_pr_with_remote_slug_keeps_working_tree_views() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        tab.local_branch_view = Some("feat/x".into());
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
+        let config = ErConfig::default();
+        let modes = tab.visible_modes(&config);
+        assert_eq!(
+            modes,
+            vec![
+                DiffMode::Branch,
+                DiffMode::Unstaged,
+                DiffMode::Staged,
+                DiffMode::PrDiff,
+                DiffMode::History,
+            ]
+        );
+    }
+
     /// A local PR tab whose head branch is NOT checked out exposes only PR
     /// Diff — Branch mode would just re-show `gh pr diff` (same as PrDiff), so
     /// there's no working tree to review. Matches a remote tab.
@@ -11379,6 +11495,22 @@ mod tests {
             "non-checked-out PR tab in Branch must use the parity diff (Some)"
         );
     }
+
+    /// A checked-out local PR still skips the parity diff when it also stores
+    /// a GitHub slug. The slug is for status keys, not the remote-only path.
+    #[test]
+    fn fetch_pr_diff_for_review_skips_working_tree_when_local_pr_has_github_slug() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(42);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = Some("feat/x".into());
+        tab.local_branch_checkout_root = Some("/tmp/test".into());
+        assert!(
+            tab.fetch_pr_diff_for_review("branch").is_none(),
+            "checked-out local PR with a slug must use the working tree, not gh_pr_diff_remote"
+        );
+    }
     /// We can't call the real constructors (network I/O), so we verify via
     /// new_for_test with remote_repo set and mode manually set — and separately
     /// verify the review_bucket() short-circuit still routes to Pr.
@@ -11426,6 +11558,19 @@ mod tests {
         remote.remote_repo = Some("owner/repo".into());
         remote.mode = DiffMode::PrDiff;
         assert!(remote.tour_context_is_pr());
+
+        // Local PR tabs store a GitHub slug; Branch stays branch-scoped.
+        let mut local_pr = make_test_tab(vec![]);
+        local_pr.remote_repo = Some("owner/repo".into());
+        local_pr.local_branch_view = Some("feat/x".into());
+        local_pr.pr_number = Some(1);
+        local_pr.mode = DiffMode::Branch;
+        assert!(
+            !local_pr.tour_context_is_pr(),
+            "local PR Branch view must not inherit PR tour context from the slug"
+        );
+        local_pr.mode = DiffMode::PrDiff;
+        assert!(local_pr.tour_context_is_pr());
     }
 
     /// `tour_bucket_er_dir` (the single write+read tour bucket) follows the context,
@@ -11624,6 +11769,21 @@ mod tests {
             "Tour entered from the local branch must be branch-scoped"
         );
         assert_eq!(tab.review_bucket(), ReviewBucket::Branch);
+    }
+
+    #[test]
+    fn set_mode_tour_from_local_pr_branch_ignores_github_slug() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Branch;
+        tab.pr_number = Some(1);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = Some("feat/x".into());
+        tab.tour_is_pr = true;
+        tab.set_mode(DiffMode::Tour);
+        assert!(
+            !tab.tour_is_pr,
+            "Tour from local PR Branch must stay branch-scoped even when a slug is set"
+        );
     }
 
     /// pr_refs_fetched starts false on all non-remote constructors and on test tabs.

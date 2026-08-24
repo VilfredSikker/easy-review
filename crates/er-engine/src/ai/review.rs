@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
+use crate::git::DiffHunk;
+
 // ── Inline layer visibility ──
 
 /// Inline annotation layer visibility (replaces ViewMode)
@@ -977,6 +979,29 @@ impl AiState {
         }
 
         result
+    }
+
+    /// Attach comments to a parsed hunk using the @@ header span.
+    ///
+    /// Prefer this over [`Self::comments_for_hunk_or_line_range`] when a
+    /// [`DiffHunk`] is in hand. The header's `new_count` / `old_count` cover
+    /// folded context runs; counting visible Context+Add/Delete lines does not,
+    /// and drops GitHub comments whose `line_start` sits after a fold (the TUI
+    /// j/k auto-expand path for tiny files).
+    pub fn comments_for_diff_hunk<'a>(
+        &'a self,
+        path: &str,
+        hunk_idx: usize,
+        hunk: &DiffHunk,
+    ) -> Vec<CommentRef<'a>> {
+        self.comments_for_hunk_or_line_range(
+            path,
+            hunk_idx,
+            hunk.new_start,
+            hunk.new_count,
+            hunk.old_start,
+            hunk.old_count,
+        )
     }
 
     /// Comments targeting a specific line within a hunk (top-level only, no replies)
@@ -2362,6 +2387,74 @@ mod tests {
         let results = state.comments_for_hunk_or_line_range("a.rs", 0, 20, 8, 8, 12);
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id(), "c1");
+    }
+
+    #[test]
+    fn comments_for_diff_hunk_uses_header_span_not_visible_line_count() {
+        // Tiny-file j/k auto-expand refetches unified=99999; parse_diff then
+        // folds the long context run. Visible Context+Add is 8, header new_count
+        // is 310. The comment sits at new_num 288, after the fold.
+        let mut c = make_github_comment("gh-1", "page.svelte", Some(0), None);
+        c.line_start = Some(288);
+        c.side = "RIGHT".to_string();
+        let mut state = AiState::default();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "h".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+
+        let hunk = crate::git::DiffHunk {
+            header: "@@ -1,300 +1,310 @@".to_string(),
+            old_start: 1,
+            old_count: 300,
+            new_start: 1,
+            new_count: 310,
+            lines: vec![
+                crate::git::DiffLine {
+                    line_type: crate::git::LineType::Context,
+                    content: "a".into(),
+                    old_num: Some(1),
+                    new_num: Some(1),
+                },
+                crate::git::DiffLine {
+                    line_type: crate::git::LineType::Context,
+                    content: "b".into(),
+                    old_num: Some(2),
+                    new_num: Some(2),
+                },
+                crate::git::DiffLine {
+                    line_type: crate::git::LineType::Context,
+                    content: "c".into(),
+                    old_num: Some(3),
+                    new_num: Some(3),
+                },
+                crate::git::DiffLine {
+                    line_type: crate::git::LineType::Fold(280),
+                    content: String::new(),
+                    old_num: None,
+                    new_num: None,
+                },
+                crate::git::DiffLine {
+                    line_type: crate::git::LineType::Add,
+                    content: "deprecated now".into(),
+                    old_num: None,
+                    new_num: Some(288),
+                },
+            ],
+        };
+
+        let found = state.comments_for_diff_hunk("page.svelte", 0, &hunk);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id(), "gh-1");
+        assert_eq!(found[0].line_start(), Some(288));
+
+        let by_visible = state.comments_for_hunk_or_line_range("page.svelte", 0, 1, 4, 1, 3);
+        assert!(
+            by_visible.is_empty(),
+            "visible-count matching is what dropped the comment after j/k auto-expand"
+        );
     }
 
     // ── AiState::comments_for_hunk_only ──
