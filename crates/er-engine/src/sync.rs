@@ -133,7 +133,10 @@ pub struct CommentSyncResult {
     pub tab_key: (String, Option<u64>, bool),
 }
 
-pub(crate) fn merged_outdated_state(thread_state: ReviewThreadState, rest_outdated: bool) -> bool {
+pub(crate) const fn merged_outdated_state(
+    thread_state: ReviewThreadState,
+    rest_outdated: bool,
+) -> bool {
     thread_state.outdated || rest_outdated
 }
 

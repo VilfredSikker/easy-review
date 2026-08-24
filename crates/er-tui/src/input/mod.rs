@@ -135,7 +135,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
+pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
     match action {
         HubAction::Noop => {}
         HubAction::PushToRemote => {
@@ -606,7 +606,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             let action = app.input_mode.clone();
             if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) = action {
                 app.confirm_delete_comment(&comment_id)?;
-            } else if let InputMode::Confirm(ConfirmAction::Push) = action {
+            } else if action == InputMode::Confirm(ConfirmAction::Push) {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 match git::git_push(&repo_root) {
@@ -680,7 +680,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.spawn_agent_prompt("notes", &prompt)?;
                 }
                 app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
+            } else if action == InputMode::Confirm(ConfirmAction::ApprovePR) {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 let remote = app.tab().remote_repo.clone();
@@ -692,13 +692,19 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('r') => {
-            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+            if matches!(
+                &app.input_mode,
+                InputMode::Confirm(ConfirmAction::PushComments)
+            ) {
                 app.input_mode = InputMode::Normal;
                 push_comments_as_review(app)?;
             }
         }
         KeyCode::Char('i') => {
-            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+            if matches!(
+                &app.input_mode,
+                InputMode::Confirm(ConfirmAction::PushComments)
+            ) {
                 app.input_mode = InputMode::Normal;
                 push_all_comments_to_github(app)?;
             }
@@ -757,11 +763,7 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Build the triage scan prompt (local diff modes only).
-pub(super) fn build_agent_triage_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_triage_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("Triage is local-only in v1 — checkout the PR first");
@@ -777,7 +779,7 @@ pub(super) fn build_agent_triage_prompt(
 }
 
 /// Build the Professor learning prompt (local diff modes only).
-pub(super) fn build_agent_professor_prompt(
+pub fn build_agent_professor_prompt(
     app: &mut App,
     er_dir: &str,
     diff_hash: &str,
@@ -806,7 +808,7 @@ pub(super) fn build_agent_professor_prompt(
 }
 
 /// Build a specialized expert review prompt (local diff modes only).
-pub(super) fn build_agent_expert_prompt(
+pub fn build_agent_expert_prompt(
     app: &mut App,
     expert_id: &str,
     er_dir: &str,
@@ -846,7 +848,7 @@ pub(super) fn build_agent_expert_prompt(
 /// findings. Remote tabs (`er --remote`) already hold the PR diff in memory
 /// (or can re-fetch it from this unsandboxed process); they use the same
 /// prepared-artifact path so the sandboxed agent does not call `gh`.
-pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
+pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
     let scope = app.tab().mode.fetch_scope();
     let er_dir = app.tab().er_dir();
     let raw = match app.tab().raw_diff_for_review(scope) {
@@ -880,11 +882,7 @@ fn start_agent_review(app: &mut App) -> anyhow::Result<()> {
 /// Build the review agent prompt from prepared-diff artifacts. Remote
 /// (`--remote`) and local tabs share this prompt — the caller pre-writes
 /// `diff-tmp`/`diff-annotated` so the agent never shells out to `gh`/`git`.
-pub(super) fn build_agent_review_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     let mode = tab.mode;
     let base = tab.base_branch.clone();
@@ -918,11 +916,7 @@ pub(super) fn build_agent_review_prompt(
 /// (O1 contract): the caller pre-writes `diff-tmp`/`diff-annotated` via
 /// `ensure_diff_artifacts`, so the agent anchors against the harness-computed hash instead
 /// of re-running `git diff` + `sha256sum` + awk (review-fix-loop P4-2).
-pub(super) fn build_agent_validate_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_validate_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("validate is local-only — checkout the PR first, then re-run review locally");
@@ -946,7 +940,7 @@ pub(super) fn build_agent_validate_prompt(
 }
 
 /// Build the questions agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -988,7 +982,7 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build the notes-addressing agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -1030,7 +1024,7 @@ pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build the summary generation agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -1189,7 +1183,7 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
 }
 
 /// Sync GitHub PR comments (pull)
-pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
+pub fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
     let explicit_pr_number = tab.pr_number;
@@ -1267,7 +1261,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
         }
         Err(_) => er_engine::ai::ErGitHubComments {
             version: 1,
-            diff_hash: diff_hash.clone(),
+            diff_hash,
             github: None,
             comments: Vec::new(),
         },

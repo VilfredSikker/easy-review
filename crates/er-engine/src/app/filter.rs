@@ -4,7 +4,7 @@ use glob::{MatchOptions, Pattern};
 
 // ── Types ──
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatusKind {
     Added,
     Modified,
@@ -12,7 +12,7 @@ pub enum StatusKind {
     Renamed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SizeOp {
     GreaterThan,
     LessThan,
@@ -76,13 +76,13 @@ pub const FILTER_PRESETS: &[FilterPreset] = &[
 ];
 
 impl FilterRule {
-    fn is_include(&self) -> bool {
+    const fn is_include(&self) -> bool {
         match self {
-            FilterRule::Glob { include, .. } => *include,
-            FilterRule::Substring { include, .. } => *include,
-            FilterRule::Status { include, .. } => *include,
-            FilterRule::Size { include, .. } => *include,
-            FilterRule::Risk { include, .. } => *include,
+            Self::Glob { include, .. } => *include,
+            Self::Substring { include, .. } => *include,
+            Self::Status { include, .. } => *include,
+            Self::Size { include, .. } => *include,
+            Self::Risk { include, .. } => *include,
         }
     }
 }
@@ -210,6 +210,7 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
 };
 
 /// Apply filter rules to a file. Returns true if the file should be visible.
+///
 /// Note: Risk rules are evaluated without review data (always include). Use
 /// `apply_filter_with_review` when review data is available.
 #[cfg_attr(not(test), allow(dead_code))]
@@ -309,7 +310,7 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
     }
 }
 
-fn matches_status(kind: StatusKind, file_status: &FileStatus) -> bool {
+const fn matches_status(kind: StatusKind, file_status: &FileStatus) -> bool {
     matches!(
         (kind, file_status),
         (StatusKind::Added, FileStatus::Added)

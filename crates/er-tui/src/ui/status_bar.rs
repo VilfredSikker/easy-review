@@ -15,7 +15,7 @@ fn spans_width(spans: &[Span]) -> usize {
 }
 
 /// Calculate how many rows the top bar needs
-pub fn top_bar_height(app: &App, _width: u16) -> u16 {
+pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
     if app.tabs.len() > 1 {
         3 // tabs row + branch info row + modes row
     } else {
@@ -399,7 +399,7 @@ impl Hint {
             label: label.to_string(),
         }
     }
-    fn width(&self) -> usize {
+    const fn width(&self) -> usize {
         self.key.len() + self.label.len()
     }
 }

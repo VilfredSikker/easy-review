@@ -24,28 +24,28 @@ pub enum SettingsScope {
 }
 
 impl SettingsScope {
-    pub const ALL: [SettingsScope; 2] = [SettingsScope::General, SettingsScope::Terminal];
+    pub const ALL: [Self; 2] = [Self::General, Self::Terminal];
 
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
-            SettingsScope::General => "General",
-            SettingsScope::App => "App",
-            SettingsScope::Terminal => "Terminal",
+            Self::General => "General",
+            Self::App => "App",
+            Self::Terminal => "Terminal",
         }
     }
 
-    pub fn from_tab_index(index: usize) -> Self {
+    pub const fn from_tab_index(index: usize) -> Self {
         match index {
-            1 => SettingsScope::Terminal,
-            _ => SettingsScope::General,
+            1 => Self::Terminal,
+            _ => Self::General,
         }
     }
 
-    pub fn tab_index(self) -> usize {
+    pub const fn tab_index(self) -> usize {
         match self {
-            SettingsScope::General => 0,
-            SettingsScope::Terminal => 1,
-            SettingsScope::App => 1,
+            Self::General => 0,
+            Self::Terminal => 1,
+            Self::App => 1,
         }
     }
 }

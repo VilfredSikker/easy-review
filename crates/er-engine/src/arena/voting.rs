@@ -91,7 +91,7 @@ fn majority_severity(votes: &[RiskLevel]) -> RiskLevel {
     best
 }
 
-fn severity_key(s: RiskLevel) -> u8 {
+const fn severity_key(s: RiskLevel) -> u8 {
     match s {
         RiskLevel::High => 3,
         RiskLevel::Medium => 2,
@@ -100,7 +100,7 @@ fn severity_key(s: RiskLevel) -> u8 {
     }
 }
 
-fn key_severity(k: u8) -> RiskLevel {
+const fn key_severity(k: u8) -> RiskLevel {
     match k {
         3 => RiskLevel::High,
         2 => RiskLevel::Medium,
@@ -109,7 +109,7 @@ fn key_severity(k: u8) -> RiskLevel {
     }
 }
 
-fn severity_rank(s: RiskLevel) -> u8 {
+const fn severity_rank(s: RiskLevel) -> u8 {
     severity_key(s)
 }
 
@@ -186,17 +186,6 @@ fn parse_verdict(s: &str, merged_into: Option<&str>) -> Verdict {
 mod tests {
     use super::*;
 
-    fn confidence_score(agreement_votes: usize, total_voters: usize, severity_stable: bool) -> f32 {
-        let agree = if total_voters == 0 {
-            0.5
-        } else {
-            agreement_votes as f32 / total_voters as f32
-        };
-        let stability = if severity_stable { 1.0 } else { 0.85 };
-        let bonus = 1.0 + (total_voters as f32 * 0.02).min(0.1);
-        (agree * stability * bonus).clamp(0.0, 1.0)
-    }
-
     #[test]
     fn tie_breaks_toward_higher_severity() {
         let votes = vec![RiskLevel::High, RiskLevel::Medium, RiskLevel::Medium];
@@ -243,10 +232,8 @@ mod tests {
         assert_eq!(findings[0].rounds[0].log[0].reviewer, "arbiter-1");
     }
 
-    #[test]
-    fn confidence_monotonic_with_agreement() {
-        let low = confidence_score(1, 5, true);
-        let high = confidence_score(4, 5, true);
-        assert!(high > low);
-    }
+    // NOTE: a previous `confidence_monotonic_with_agreement` test exercised a
+    // private re-implementation of a formula that does not exist in production
+    // (apply_round3_verdicts copies the arbiter's confidence verbatim), so it
+    // could never fail on a real regression. Removed rather than kept as dead weight.
 }

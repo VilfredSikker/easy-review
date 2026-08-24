@@ -20,24 +20,24 @@ impl ErRoot {
     /// The directory where review.json, order.json, questions.json, github-comments.json, etc. live.
     pub fn er_dir(&self) -> String {
         match self {
-            ErRoot::RepoLocal(repo_root) => format!("{repo_root}/.er"),
-            ErRoot::Managed { agent_dir, .. } => agent_dir.clone(),
+            Self::RepoLocal(repo_root) => format!("{repo_root}/.er"),
+            Self::Managed { agent_dir, .. } => agent_dir.clone(),
         }
     }
 
     /// Absolute path to session.json.
     pub fn session_path(&self) -> String {
         match self {
-            ErRoot::RepoLocal(repo_root) => format!("{repo_root}/.er/session.json"),
-            ErRoot::Managed { session_dir, .. } => format!("{session_dir}/session.json"),
+            Self::RepoLocal(repo_root) => format!("{repo_root}/.er/session.json"),
+            Self::Managed { session_dir, .. } => format!("{session_dir}/session.json"),
         }
     }
 
     /// Absolute path to the `reviewed` marker file.
     pub fn reviewed_path(&self) -> String {
         match self {
-            ErRoot::RepoLocal(repo_root) => format!("{repo_root}/.er/reviewed"),
-            ErRoot::Managed { session_dir, .. } => format!("{session_dir}/reviewed"),
+            Self::RepoLocal(repo_root) => format!("{repo_root}/.er/reviewed"),
+            Self::Managed { session_dir, .. } => format!("{session_dir}/reviewed"),
         }
     }
 

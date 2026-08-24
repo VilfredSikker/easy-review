@@ -49,7 +49,7 @@ fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
 /// Apply a freshly-fetched PR commit list, best-effort. An empty `fetched` is the
 /// failure signal for a real PR (which always has ≥1 commit), so it is dropped
 /// rather than clobbering a good existing list.
-pub(crate) fn apply_pr_commit_refresh(existing: &mut Vec<CommitInfo>, fetched: Vec<CommitInfo>) {
+pub fn apply_pr_commit_refresh(existing: &mut Vec<CommitInfo>, fetched: Vec<CommitInfo>) {
     if !fetched.is_empty() {
         *existing = fetched;
     }
@@ -84,7 +84,7 @@ fn tour_stale_for(
 
 /// Anchor data captured at comment creation time for later relocation
 #[derive(Default)]
-pub(crate) struct LineAnchor {
+pub struct LineAnchor {
     line_start: Option<usize>,
     line_content: String,
     context_before: Vec<String>,
@@ -96,7 +96,7 @@ pub(crate) struct LineAnchor {
 // ── Enums ──
 
 /// Which set of changes we're viewing
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DiffMode {
     Branch,
     Unstaged,
@@ -111,41 +111,41 @@ pub enum DiffMode {
 
 impl DiffMode {
     #[cfg(test)]
-    pub fn label(&self) -> &'static str {
+    pub const fn label(&self) -> &'static str {
         match self {
-            DiffMode::Branch => "BRANCH DIFF",
-            DiffMode::Unstaged => "UNSTAGED",
-            DiffMode::Staged => "STAGED",
-            DiffMode::History => "HISTORY",
-            DiffMode::Conflicts => "CONFLICTS",
-            DiffMode::Hidden => "HIDDEN",
-            DiffMode::PrDiff => "PR DIFF",
-            DiffMode::Tour => "TOUR",
+            Self::Branch => "BRANCH DIFF",
+            Self::Unstaged => "UNSTAGED",
+            Self::Staged => "STAGED",
+            Self::History => "HISTORY",
+            Self::Conflicts => "CONFLICTS",
+            Self::Hidden => "HIDDEN",
+            Self::PrDiff => "PR DIFF",
+            Self::Tour => "TOUR",
         }
     }
 
-    pub fn git_mode(&self) -> &'static str {
+    pub const fn git_mode(&self) -> &'static str {
         match self {
-            DiffMode::Branch => "branch",
-            DiffMode::Unstaged => "unstaged",
-            DiffMode::Staged => "staged",
-            DiffMode::History => "history",
-            DiffMode::Conflicts => "conflicts",
-            DiffMode::Hidden => "hidden",
+            Self::Branch => "branch",
+            Self::Unstaged => "unstaged",
+            Self::Staged => "staged",
+            Self::History => "history",
+            Self::Conflicts => "conflicts",
+            Self::Hidden => "hidden",
             // PrDiff uses branch-style git diff under the hood (PR head vs base).
             // "pr" is used as the session-persistence key and bucket identifier only.
-            DiffMode::PrDiff => "pr",
+            Self::PrDiff => "pr",
             // Tour reorders the branch diff; it shares the branch git scope/bucket.
-            DiffMode::Tour => "tour",
+            Self::Tour => "tour",
         }
     }
 
     /// The scope string passed to `git_diff_raw` / `fetch_tab_raw_diff`.
     /// PrDiff diffs against a PR head ref — same git mechanics as `branch`.
     /// Tour walks the branch diff, so it fetches with branch mechanics too.
-    pub fn fetch_scope(&self) -> &'static str {
+    pub const fn fetch_scope(&self) -> &'static str {
         match self {
-            DiffMode::PrDiff | DiffMode::Tour => "branch",
+            Self::PrDiff | Self::Tour => "branch",
             other => other.git_mode(),
         }
     }
@@ -193,7 +193,7 @@ pub struct DiffCache {
 }
 
 impl DiffCache {
-    pub fn new(max_size: usize) -> Self {
+    pub const fn new(max_size: usize) -> Self {
         Self {
             entries: VecDeque::new(),
             max_size,
@@ -288,7 +288,7 @@ impl TourState {
 }
 
 /// Whether we're navigating or typing in the search filter / comment
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum InputMode {
     Normal,
@@ -301,7 +301,7 @@ pub enum InputMode {
 }
 
 /// Actions that require user confirmation (y/n)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment {
@@ -416,7 +416,7 @@ pub enum AiActionKind {
 impl AiActionKind {}
 
 /// Which modal hub is open
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HubKind {
     Git,
     Ai,
@@ -431,18 +431,18 @@ pub enum HubKind {
 }
 
 impl HubKind {
-    pub fn title(&self) -> &'static str {
+    pub const fn title(&self) -> &'static str {
         match self {
-            HubKind::Git => "GIT",
-            HubKind::Ai => "AI",
-            HubKind::AiProvider => "AI PROVIDER",
-            HubKind::AiModel => "AI MODEL",
-            HubKind::AiExpert => "SPECIALIZED REVIEW",
-            HubKind::Verify => "VERIFY",
-            HubKind::VerifyPackage => "VERIFY",
-            HubKind::Help => "HELP",
-            HubKind::Open => "OPEN",
-            HubKind::Copy => "COPY",
+            Self::Git => "GIT",
+            Self::Ai => "AI",
+            Self::AiProvider => "AI PROVIDER",
+            Self::AiModel => "AI MODEL",
+            Self::AiExpert => "SPECIALIZED REVIEW",
+            Self::Verify => "VERIFY",
+            Self::VerifyPackage => "VERIFY",
+            Self::Help => "HELP",
+            Self::Open => "OPEN",
+            Self::Copy => "COPY",
         }
     }
 }
@@ -465,7 +465,7 @@ pub struct HubItem {
 }
 
 /// Actions dispatched from modal hub selections
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HubAction {
     Noop,
     // Git hub actions
@@ -902,7 +902,7 @@ pub enum BrowserLayout {
 }
 
 impl BrowserLayout {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Hidden => "hidden",
             Self::Split => "split",
@@ -918,7 +918,7 @@ impl BrowserLayout {
         }
     }
 
-    pub fn cycle(self) -> Self {
+    pub const fn cycle(self) -> Self {
         match self {
             Self::Hidden => Self::Split,
             Self::Split => Self::Fullscreen,
@@ -1183,7 +1183,7 @@ impl TabState {
     /// project's base branch. Runs `git diff <base>...<branch>` — never
     /// checks the branch out or mutates the working tree.
     pub fn new_local_branch(repo_root: String, branch: String) -> Result<Self> {
-        let mut tab = TabState::new(repo_root)?;
+        let mut tab = Self::new(repo_root)?;
         tab.local_branch_view = Some(branch);
         tab.mode = DiffMode::Branch;
         tab.sync_managed_storage();
@@ -1202,7 +1202,7 @@ impl TabState {
             crate::github::gh_pr_branch_names(pr_number, &repo_root)?;
         let resolved_base = crate::github::ensure_base_ref_available(&repo_root, &base_branch)?;
 
-        let mut tab = TabState::new_with_base_unloaded(repo_root, resolved_base)?;
+        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
             format!("pr/{}", pr_number)
         } else {
@@ -1233,7 +1233,7 @@ impl TabState {
         pr_data: Option<PrOverviewData>,
         pr_commits: Vec<CommitInfo>,
     ) -> Result<Self> {
-        let mut tab = TabState::new_with_base_unloaded(repo_root, resolved_base)?;
+        let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
             format!("pr/{}", pr_number)
         } else {
@@ -1352,7 +1352,7 @@ impl TabState {
         let repo_root_remote = std::env::current_dir()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
-        let mut tab = TabState {
+        let mut tab = Self {
             mode: DiffMode::PrDiff,
             base_branch,
             current_branch: head_branch,
@@ -1413,7 +1413,7 @@ impl TabState {
             history: None,
             tour: None,
             tour_is_pr: false,
-            watched_config: er_config.watched.clone(),
+            watched_config: er_config.watched,
             watched_files: Vec::new(),
             selected_watched: None,
             show_watched: false,
@@ -1477,7 +1477,7 @@ impl TabState {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_else(|_| ".".to_string());
 
-        let mut tab = TabState {
+        let mut tab = Self {
             mode: DiffMode::PrDiff,
             base_branch: String::new(),
             current_branch: String::new(),
@@ -1538,7 +1538,7 @@ impl TabState {
             history: None,
             tour: None,
             tour_is_pr: false,
-            watched_config: er_config.watched.clone(),
+            watched_config: er_config.watched,
             watched_files: Vec::new(),
             selected_watched: None,
             show_watched: false,
@@ -1591,12 +1591,12 @@ impl TabState {
     ) -> Result<Self> {
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         let er_config = config::load_global_config();
-        let watched_config = er_config.watched.clone();
+        let watched_config = er_config.watched;
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
         let er_root = ErRoot::RepoLocal(repo_root.clone());
 
-        let mut tab = TabState {
+        let mut tab = Self {
             mode: DiffMode::Branch,
             base_branch,
             current_branch,
@@ -1715,7 +1715,7 @@ impl TabState {
         use crate::git::CompactionConfig;
         use std::collections::HashSet;
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
-        TabState {
+        Self {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
             current_branch: "feature".to_string(),
@@ -1884,13 +1884,13 @@ impl TabState {
     /// GitHub status keys) but they have a clone and `local_branch_view`.
     /// Treating those as remote hid the branch title/base chrome and collapsed
     /// the tab to PR Diff only.
-    pub fn is_remote(&self) -> bool {
+    pub const fn is_remote(&self) -> bool {
         self.remote_repo.is_some() && self.local_branch_view.is_none()
     }
 
     /// Whether this tab is a read-only local-branch view.
     /// Like remote, only the Branch mode is offered and write commands are hidden.
-    pub fn is_local_branch_view(&self) -> bool {
+    pub const fn is_local_branch_view(&self) -> bool {
         self.local_branch_view.is_some()
     }
 
@@ -1907,7 +1907,7 @@ impl TabState {
     /// Tour mode follows the originating view via `tour_is_pr` so Guide stays on the
     /// same `review.json` as PR Diff / Local Branch (does not swap onto a stale
     /// branch-bucket review when opened from PR Diff).
-    pub fn review_bucket(&self) -> ReviewBucket {
+    pub const fn review_bucket(&self) -> ReviewBucket {
         if self.remote_repo.is_some() {
             return ReviewBucket::Pr;
         }
@@ -1929,7 +1929,7 @@ impl TabState {
 
     /// Sub-directory name for local view buckets (branch/unstaged/staged/history).
     /// Not used for the `Pr` bucket (which lives under `prs/pr-<N>/`).
-    fn review_bucket_name(&self) -> &'static str {
+    const fn review_bucket_name(&self) -> &'static str {
         match self.review_bucket() {
             ReviewBucket::Unstaged => "unstaged",
             ReviewBucket::Staged => "staged",
@@ -2190,7 +2190,7 @@ impl TabState {
     /// (`tour_is_pr`). Local PR tabs store a GitHub slug for status keys; that
     /// does not make Branch/Unstaged/Staged PR-scoped. All other modes are
     /// branch-scoped.
-    pub fn tour_context_is_pr(&self) -> bool {
+    pub const fn tour_context_is_pr(&self) -> bool {
         if self.is_remote() {
             return true;
         }
@@ -3651,19 +3651,19 @@ impl TabState {
 
     // ── Layer toggles ──
 
-    pub fn toggle_layer_questions(&mut self) {
+    pub const fn toggle_layer_questions(&mut self) {
         self.layers.show_questions = !self.layers.show_questions;
     }
 
-    pub fn toggle_layer_comments(&mut self) {
+    pub const fn toggle_layer_comments(&mut self) {
         self.layers.show_github_comments = !self.layers.show_github_comments;
     }
 
-    pub fn toggle_hide_resolved(&mut self) {
+    pub const fn toggle_hide_resolved(&mut self) {
         self.layers.hide_resolved = !self.layers.hide_resolved;
     }
 
-    pub fn toggle_layer_ai(&mut self) {
+    pub const fn toggle_layer_ai(&mut self) {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
@@ -3677,7 +3677,7 @@ impl TabState {
         PanelContent::AgentLog,
     ];
 
-    fn panel_available(&self, panel: PanelContent) -> bool {
+    const fn panel_available(&self, panel: PanelContent) -> bool {
         match panel {
             PanelContent::FileDetail | PanelContent::AgentLog => true,
             PanelContent::AiSummary => self.layers.show_ai_findings && self.ai.has_data(),
@@ -3750,13 +3750,13 @@ impl TabState {
         }
     }
 
-    pub fn review_prev(&mut self) {
+    pub const fn review_prev(&mut self) {
         if self.review_cursor > 0 {
             self.review_cursor -= 1;
         }
     }
 
-    pub fn review_toggle_focus(&mut self) {
+    pub const fn review_toggle_focus(&mut self) {
         self.review_focus = match self.review_focus {
             ReviewFocus::Files => ReviewFocus::Checklist,
             ReviewFocus::Checklist => ReviewFocus::Files,
@@ -4618,7 +4618,7 @@ impl TabState {
 // ── Main App State ──
 
 /// Status of a background command (generic, replaces SummaryAgentStatus)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandStatus {
     /// Command is currently running
     Running,
@@ -4652,7 +4652,7 @@ pub struct PanelsVisible {
 
 impl Default for PanelsVisible {
     fn default() -> Self {
-        PanelsVisible {
+        Self {
             left: true,
             tree: true,
             right: true,
@@ -4754,7 +4754,7 @@ pub struct App {
 
 impl App {
     fn default_arena_registry() -> Arc<crate::arena::ArenaRegistry> {
-        App::init_arena_registry(Arc::new(|| {}))
+        Self::init_arena_registry(Arc::new(|| {}))
     }
 
     fn initial_ai_selection(config: &ErConfig) -> (Option<String>, Option<String>) {
@@ -4875,9 +4875,9 @@ impl App {
         let er_config = config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        let arena_registry = App::init_arena_registry(Arc::new(|| {}));
+        let arena_registry = Self::init_arena_registry(Arc::new(|| {}));
 
-        let mut app = App {
+        let mut app = Self {
             tabs,
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -4900,7 +4900,7 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
-            arena_registry: arena_registry.clone(),
+            arena_registry,
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
@@ -4919,11 +4919,11 @@ impl App {
     /// last-active project's root.
     pub fn new_unloaded(repo_root: String) -> Result<Self> {
         let base = git::detect_base_branch_in(&repo_root)?;
-        let tab = TabState::new_with_base_unloaded(repo_root.clone(), base)?;
+        let tab = TabState::new_with_base_unloaded(repo_root, base)?;
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        let mut app = App {
+        let mut app = Self {
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -4963,7 +4963,7 @@ impl App {
         let er_config = crate::config::load_global_config();
         let (current_ai_provider, current_ai_model) = Self::initial_ai_selection(&er_config);
         let current_ai_effort = Self::initial_ai_effort(&er_config);
-        let mut app = App {
+        let mut app = Self {
             tabs: vec![tab],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -4998,7 +4998,7 @@ impl App {
     /// Construct an App with a single test tab. Intended for unit tests
     /// that need to exercise input handlers without spinning up git.
     pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
-        App {
+        Self {
             tabs: vec![TabState::new_for_test(files)],
             active_tab: 0,
             input_mode: InputMode::Normal,
@@ -5475,7 +5475,7 @@ impl App {
     }
 
     /// Switch focus to the tab at `idx`. No-op if out of bounds.
-    pub fn select_tab(&mut self, idx: usize) {
+    pub const fn select_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
         }
@@ -6015,7 +6015,7 @@ impl App {
                 description: security.as_deref().unwrap_or(not_configured).to_string(),
                 action: HubAction::RunPackageCommand {
                     command: "security".into(),
-                    package_id: package_id.clone(),
+                    package_id,
                 },
                 is_header: false,
                 enabled: security.is_some(),
@@ -6094,7 +6094,7 @@ impl App {
     }
 
     /// Toggle the checked state of the highlighted export picker row
-    pub fn export_picker_toggle_selected(&mut self) {
+    pub const fn export_picker_toggle_selected(&mut self) {
         if let Some(OverlayData::ExportPicker {
             include_comments,
             include_findings,
@@ -7666,6 +7666,7 @@ fn shorten_path(path: &str) -> String {
 pub use crate::sync::chrono_now;
 
 /// Delete personal questions sidecar files. Errors are ignored (files may not exist).
+///
 /// Remove the private local-draft sidecars: questions and notes. Both are
 /// user-authored, never-pushed drafts, so the `z` cleanup clears them together.
 pub fn cleanup_questions_and_notes(er_dir: &str) {
@@ -9767,7 +9768,7 @@ mod tests {
         )];
         let mut tab = make_test_tab(files);
         tab.er_root = ErRoot::RepoLocal(root.clone());
-        tab.repo_root = root.clone();
+        tab.repo_root = root;
         tab.current_line = Some(0);
         let mut app = make_test_app(tab);
         app.start_comment(CommentType::GitHubComment);
@@ -10086,7 +10087,7 @@ mod tests {
         // The slot itself survives (see the preload.rs keep-on-mismatch test).
         tab.branch_diff_hash = "hash-abc".to_string();
         tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
-            bucket_dir: er_dir.clone(),
+            bucket_dir: er_dir,
             diff_hash: "hash-other".to_string(),
             ai: crate::ai::AiState::default(),
         });

@@ -144,7 +144,7 @@ fn file_delta_key(lines_key: u64, threads_by_hunk: &[Vec<ThreadSnapshot>]) -> u6
     h.finish()
 }
 
-fn mode_str(mode: DiffMode) -> &'static str {
+const fn mode_str(mode: DiffMode) -> &'static str {
     match mode {
         DiffMode::Branch => "branch",
         DiffMode::Unstaged => "unstaged",
@@ -183,7 +183,7 @@ pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
 
 /// Record that the frontend now holds full hunks for `snap` (viewport-driven
 /// lazy loads bypass `build_snapshot`, so `request_file_content` calls this).
-pub(crate) fn record_sent_file(
+pub fn record_sent_file(
     app: &App,
     tab: &TabState,
     snap: &FileSnapshot,
@@ -824,9 +824,10 @@ fn pr_info_for_tab<'a>(
 }
 
 /// Branch title + base ref for the context bar. Remote stubs and restored
+///
 /// tabs often have empty `current_branch`/`base_branch` even after the diff
 /// loads; fall back to PR overview, GitHub status, then the PR-list cache.
-pub(crate) fn resolve_context_identity(
+pub fn resolve_context_identity(
     tab: &TabState,
     github: Option<&GithubStatusSnapshot>,
     cached_pr: Option<&PrInfo>,
@@ -863,7 +864,7 @@ pub(crate) fn resolve_context_identity(
 ///    head_ref returned an arbitrary one — often not the PR that was opened.
 /// 3. **Plain branch / working tab** (no `pr_number`) — match the viewed
 ///    branch's head_ref, preferring an OPEN PR.
-pub(crate) fn resolve_github_status_key(
+pub fn resolve_github_status_key(
     tab: &TabState,
     pr_cache: &HashMap<String, Vec<PrInfo>>,
 ) -> Option<(String, String, u64)> {
@@ -1259,7 +1260,7 @@ fn default_thread_side() -> String {
     "RIGHT".to_string()
 }
 
-fn severity_str(r: &RiskLevel) -> &'static str {
+const fn severity_str(r: &RiskLevel) -> &'static str {
     match r {
         RiskLevel::High => "high",
         RiskLevel::Medium => "med",
@@ -1267,7 +1268,7 @@ fn severity_str(r: &RiskLevel) -> &'static str {
     }
 }
 
-fn risk_sort_ord(r: &RiskLevel) -> u8 {
+const fn risk_sort_ord(r: &RiskLevel) -> u8 {
     match r {
         RiskLevel::High => 0,
         RiskLevel::Medium => 1,
@@ -1507,6 +1508,7 @@ pub fn refresh_meta_cache(active_root: &str, cache: &MetaCache) -> bool {
 }
 
 /// Variant that refreshes a single project (by id), leaving entries for other
+///
 /// projects untouched. Used at startup so the active project's branches show
 /// up immediately without paying for `git branch / worktree list / base
 /// detection` on every other registered project first.
@@ -1680,7 +1682,7 @@ pub fn pr_cache_fingerprint(
 /// budget (`budget_omitted`). Callers that need one file's content regardless of
 /// that budget — the viewport-driven lazy loader — pass `true`, which keeps the
 /// per-file lazy round-trip from re-serializing the entire diff.
-pub(crate) fn build_file_snapshot(
+pub fn build_file_snapshot(
     source_index: usize,
     f: &DiffFile,
     tab: &TabState,
@@ -3789,7 +3791,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     }
 }
 
-pub(crate) fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
+pub fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     let pr = tab.pr_data.as_ref()?;
     Some(PrSnapshot {
         number: pr.number,
@@ -4399,10 +4401,10 @@ mod tests {
         // include_hunks = true: the lazy-load command path delivers the file's
         // content, so it is no longer a stub.
         let with = build_file_snapshot(0, f, &tab, None, true);
-        assert!(
-            !with.hunks.is_empty(),
-            "requested file must carry its hunks"
-        );
+        // Pin the actual payload: 1 hunk, context + add + context.
+        assert_eq!(with.hunks.len(), 1, "fixture has exactly one hunk");
+        assert_eq!(with.hunks[0].lines.len(), 3, "context + add + context");
+        assert_eq!(with.hunks[0].lines[2].text, "fn baz() {}");
         assert!(!with.is_lazy_stub);
         assert_eq!(with.source_index, 0);
 
@@ -4623,7 +4625,7 @@ mod tests {
             vec![pr.clone()],
         )])));
 
-        let mut pr2 = pr.clone();
+        let mut pr2 = pr;
         pr2.head_oid = "head2".to_string();
         let cache_v2: PrCache = Arc::new(Mutex::new(HashMap::from([(
             "owner/repo".to_string(),

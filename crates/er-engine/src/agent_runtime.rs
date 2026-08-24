@@ -83,7 +83,7 @@ impl AgentAccessProfile {
         }
     }
 
-    fn claude_tools(&self) -> &'static [&'static str] {
+    const fn claude_tools(&self) -> &'static [&'static str] {
         const READ_ONLY: &[&str] = &[
             "Read",
             "Bash(grep *)",
@@ -361,6 +361,7 @@ pub struct AgentPrompt<'a> {
     pub user: &'a str,
 }
 
+#[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
 pub fn build_argv(invocation: &AgentInvocation, prompt: AgentPrompt<'_>) -> Vec<String> {
     let mut args = invocation.args.clone();
     let has_placeholder = args.iter().any(|arg| arg.contains("{prompt}"));
@@ -636,7 +637,7 @@ impl ArtifactContract {
         }
     }
 
-    fn requires_diff_hash(&self) -> bool {
+    const fn requires_diff_hash(&self) -> bool {
         !matches!(self, Self::None | Self::Summary)
     }
 }

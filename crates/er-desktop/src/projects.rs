@@ -216,6 +216,7 @@ pub fn delete_project(project_id: &str) -> anyhow::Result<()> {
 }
 
 /// Rewrite persisted project order to match `ordered_ids`. Unknown ids in the
+///
 /// payload are ignored; records missing from the payload keep their relative
 /// order at the end. Empty payloads are a no-op so a bad client cannot wipe
 /// the list.
@@ -306,6 +307,7 @@ pub fn invalidate_load_cache() {
 }
 
 /// Monotonic generation bumped on every successful [`save`]. Snapshot caching
+///
 /// keys off this so in-process reorders are visible even when filesystem mtime
 /// resolution would otherwise keep the old cache entry.
 pub fn content_generation() -> u64 {
@@ -573,11 +575,12 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
     // Upsert by root_path — an existing row here has `remote == None` (the fast
     // path returned otherwise), so save only when the remote is actually filled.
     if let Some(existing) = file.projects.iter_mut().find(|p| p.root_path == root_path) {
-        let mut changed = false;
-        if existing.remote.is_none() && remote.is_some() {
-            existing.remote = remote.clone();
-            changed = true;
-        }
+        let changed = if existing.remote.is_none() && remote.is_some() {
+            existing.remote = remote;
+            true
+        } else {
+            false
+        };
         let record = existing.clone();
         if changed {
             let _ = save(&file);
@@ -654,11 +657,12 @@ pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
         .iter_mut()
         .find(|p| p.id == project_id)
         .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let mut changed = false;
-    if !proj.tracked_prs.contains(&pr_number) {
+    let mut changed = if !proj.tracked_prs.contains(&pr_number) {
         proj.tracked_prs.push(pr_number);
-        changed = true;
-    }
+        true
+    } else {
+        false
+    };
     // Explicit tracking overrides a prior dismiss.
     let before = proj.dismissed_prs.len();
     proj.dismissed_prs.retain(|n| n != &pr_number);
@@ -687,11 +691,12 @@ pub fn untrack_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
 }
 
 fn add_tracked_branch_on_project(proj: &mut ProjectRecord, name: &str) -> bool {
-    let mut changed = false;
-    if !proj.tracked_branches.iter().any(|n| n == name) {
+    let mut changed = if !proj.tracked_branches.iter().any(|n| n == name) {
         proj.tracked_branches.push(name.to_string());
-        changed = true;
-    }
+        true
+    } else {
+        false
+    };
     let before = proj.dismissed_branches.len();
     proj.dismissed_branches.retain(|n| n != name);
     if proj.dismissed_branches.len() != before {
@@ -1011,8 +1016,8 @@ mod tests {
 
         assert!(add_tracked_branch_on_project(&mut project, "feature-a"));
 
-        assert!(project.dismissed_branches.iter().all(|n| n != "feature-a"));
-        assert!(project.tracked_branches.iter().any(|n| n == "feature-a"));
+        assert_eq!(project.dismissed_branches, Vec::<String>::new());
+        assert_eq!(project.tracked_branches, vec!["feature-a".to_string()]);
     }
 
     #[test]

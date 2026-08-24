@@ -5,7 +5,7 @@ use super::config_desktop_settings::ConfigHubFieldDto;
 use super::ErConfig;
 use serde::{Deserialize, Serialize};
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 

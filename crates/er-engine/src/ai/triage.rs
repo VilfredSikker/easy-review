@@ -92,7 +92,7 @@ pub fn triage_task_kind() -> String {
     TRIAGE_ID.to_string()
 }
 
-pub fn verdict_primary_str(v: &TriageVerdictPrimary) -> &'static str {
+pub const fn verdict_primary_str(v: &TriageVerdictPrimary) -> &'static str {
     match v {
         TriageVerdictPrimary::General => "general",
         TriageVerdictPrimary::Expert => "expert",

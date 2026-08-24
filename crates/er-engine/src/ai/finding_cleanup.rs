@@ -368,7 +368,7 @@ mod tests {
             created_at: String::new(),
             base_branch: String::new(),
             head_branch: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 crate::ai::review::ErFileReview {
                     risk: RiskLevel::Info,
@@ -376,8 +376,7 @@ mod tests {
                     summary: String::new(),
                     findings: vec![sample_finding("f-2")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect(),
             file_hashes: Default::default(),
         };
@@ -390,13 +389,12 @@ mod tests {
             diff_scope: String::new(),
             created_at: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".into(),
                 crate::ai::experts::ExpertFileReview {
                     findings: vec![sample_finding("f-1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect(),
         };
         write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();

@@ -147,8 +147,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: tab.pr_number,
             pr_head_ref: None,
             base_ref,
-            browser_url: browser_url.clone(),
-            browser_layout: browser_layout.clone(),
+            browser_url,
+            browser_layout,
         };
     }
     // Local PR review (fetched head ref, no checkout)
@@ -167,8 +167,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: Some(num),
             pr_head_ref: tab.pr_head_ref.clone(),
             base_ref,
-            browser_url: browser_url.clone(),
-            browser_layout: browser_layout.clone(),
+            browser_url,
+            browser_layout,
         };
     }
     // Plain local branch view
@@ -182,8 +182,8 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_number: None,
             pr_head_ref: None,
             base_ref: None,
-            browser_url: browser_url.clone(),
-            browser_layout: browser_layout.clone(),
+            browser_url,
+            browser_layout,
         };
     }
     TabDescriptor {

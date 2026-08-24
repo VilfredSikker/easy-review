@@ -13,7 +13,7 @@ pub struct FindingCaps {
 }
 
 impl FindingCaps {
-    pub fn general() -> Self {
+    pub const fn general() -> Self {
         Self {
             per_file: 4,
             total: 15,
@@ -21,7 +21,7 @@ impl FindingCaps {
         }
     }
 
-    pub fn expert() -> Self {
+    pub const fn expert() -> Self {
         Self {
             per_file: 2,
             total: 10,

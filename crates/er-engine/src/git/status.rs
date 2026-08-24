@@ -29,7 +29,7 @@ pub struct Worktree {
 }
 
 /// File change status in git
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileStatus {
     Added,
     Modified,
@@ -41,14 +41,14 @@ pub enum FileStatus {
 }
 
 impl FileStatus {
-    pub fn symbol(&self) -> &'static str {
+    pub const fn symbol(&self) -> &'static str {
         match self {
-            FileStatus::Added => "+",
-            FileStatus::Modified => "~",
-            FileStatus::Deleted => "-",
-            FileStatus::Renamed(_) => "R",
-            FileStatus::Copied(_) => "C",
-            FileStatus::Unmerged => "!",
+            Self::Added => "+",
+            Self::Modified => "~",
+            Self::Deleted => "-",
+            Self::Renamed(_) => "R",
+            Self::Copied(_) => "C",
+            Self::Unmerged => "!",
         }
     }
 }
@@ -140,6 +140,7 @@ pub fn detect_base_branch_in(repo_root: &str) -> Result<String> {
     detect_base_branch_impl(Some(repo_root))
 }
 
+#[allow(clippy::literal_string_with_formatting_args)] // "@{upstream}" is a literal git refspec, not a format arg
 fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
     // Helper: run a git command and return trimmed stdout on success
     let run = |args: &[&str]| -> Option<String> {
@@ -281,6 +282,7 @@ pub fn git_diff_raw(
 }
 
 /// Get the raw diff output for a single file.
+///
 /// `context_lines` overrides the default context (pass `None` for `DEFAULT_CONTEXT_LINES`).
 /// `head_ref` overrides the "HEAD" ref used in branch diffs (for no-checkout PR review).
 pub fn git_diff_raw_file(
@@ -638,6 +640,7 @@ pub fn git_diff_raw_range(from: &str, to: &str, repo_root: &str) -> Result<Strin
 }
 
 /// Diff the working tree of `root` (a checked-out branch) against its merge
+///
 /// base with `base`. Includes committed changes plus staged/unstaged tracked
 /// edits, so live edits in the checked-out branch surface immediately.
 /// Read-only; never mutates the working tree.
@@ -679,6 +682,7 @@ pub fn git_diff_checkout_against_base(root: &str, base: &str) -> Result<String> 
 }
 
 /// Get raw diff output between a base branch and a target branch using the
+///
 /// symmetric-difference range `base...branch` (everything on `branch` since
 /// it diverged from `base`). Read-only; never mutates the working tree.
 pub fn git_diff_against_branch(root: &str, base: &str, branch: &str) -> Result<String> {
@@ -754,6 +758,7 @@ pub fn git_log_branch(
 }
 
 /// Get the most recent commits on HEAD, no range filter. Used when the user is
+///
 /// sitting on the base branch itself (`base..HEAD` is empty) but we still want
 /// to show recent history in the file viewer's commit scroller.
 /// Log commits in the range `from..to` (e.g. `main..feature`). Used to list a
@@ -1048,6 +1053,7 @@ pub fn discover_watched_files(repo_root: &str, patterns: &[String]) -> Result<Ve
 }
 
 /// Return the subset of `paths` that git treats as ignored, resolved in a single
+///
 /// `git check-ignore -z --stdin` call rather than one subprocess per path (the
 /// former `verify_gitignored` spawned one `git` per watched file — ~15ms each, so
 /// a dozen watched files cost ~200ms on every tab open).
@@ -1238,6 +1244,66 @@ mod tests {
             .map(|i| &upstream[i + 1..])
             .unwrap_or(upstream);
         assert_eq!(branch, "user/feature/sub-task");
+    }
+
+    #[test]
+    fn detect_base_branch_in_uses_stripped_upstream() {
+        // Integration test through the REAL detect_base_branch_in: a slashed
+        // upstream ("origin/stack/foo-bar") must come back stripped.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init", "-b", "feature"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("f.txt"), "x\n").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "f.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .current_dir(root)
+            .output()
+            .unwrap();
+        // The stripped short name must resolve as a revision for the strip path to
+        // win (production requires it), so create the local branch too.
+        std::process::Command::new("git")
+            .args(["branch", "stack/foo-bar", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        // Real remote (provides the fetch refspec) + remote-tracking ref + upstream
+        // config so `@{upstream}` resolves to origin/stack/foo-bar.
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:x/y.git"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["update-ref", "refs/remotes/origin/stack/foo-bar", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "branch.feature.remote", "origin"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "branch.feature.merge", "refs/heads/stack/foo-bar"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let base = detect_base_branch_in(root.to_str().unwrap()).unwrap();
+        assert_eq!(base, "stack/foo-bar");
     }
 
     // ── parse_shortstat ──

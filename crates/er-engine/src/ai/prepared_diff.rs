@@ -24,6 +24,7 @@ use std::sync::Mutex;
 static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Write `diff-tmp` and `diff-annotated` under `er_dir` when their content
+///
 /// changed since the last command, and return the SHA-256 of `raw` — the
 /// `diff_hash` the agent must record (contract: SHA-256 of `diff-tmp`).
 ///
@@ -84,6 +85,7 @@ fn content_changed(dir: &Path, marker: &str, hash: &str, content_file: &str) -> 
 }
 
 /// Parent-side port of the agent's `awk` annotation step (prompts.rs
+///
 /// `annotate_diff_command`): each content line is prefixed with
 /// `[h<hunk> L<file_line>]` (`L-<old>` for deleted lines), hunk headers get
 /// `[h<hunk>] `, and `diff --git`/`---`/`+++`/fallback lines pass through
@@ -97,38 +99,26 @@ pub fn annotate_diff_raw(raw: &str) -> String {
     for line in raw.lines() {
         if line.starts_with("diff --git") {
             h = -1;
-            out.push_str(line);
-            out.push('\n');
         } else if line.starts_with("+++") || line.starts_with("---") {
-            out.push_str(line);
-            out.push('\n');
+            // header lines pass through unchanged
         } else if let Some(rest) = line.strip_prefix("@@ ") {
             h += 1;
             n = parse_hunk_new_start(rest).map(|v| v - 1).unwrap_or(0);
             o = parse_hunk_old_start(rest).map(|v| v - 1).unwrap_or(0);
             out.push_str(&format!("[h{h}] "));
-            out.push_str(line);
-            out.push('\n');
         } else if line.starts_with('+') {
             n += 1;
             out.push_str(&format!("[h{h} L{n}] "));
-            out.push_str(line);
-            out.push('\n');
         } else if line.starts_with('-') {
             o += 1;
             out.push_str(&format!("[h{h} L-{o}] "));
-            out.push_str(line);
-            out.push('\n');
         } else if line.starts_with(' ') {
             o += 1;
             n += 1;
             out.push_str(&format!("[h{h} L{n}] "));
-            out.push_str(line);
-            out.push('\n');
-        } else {
-            out.push_str(line);
-            out.push('\n');
         }
+        out.push_str(line);
+        out.push('\n');
     }
     out
 }

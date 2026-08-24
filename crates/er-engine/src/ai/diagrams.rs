@@ -133,6 +133,7 @@ pub fn diagram_sidecar_path(er_dir: &str, file_name: &str) -> Option<PathBuf> {
 }
 
 /// Output filename for a new diagram of `kind` — presets overwrite in place
+///
 /// (`<kind>.json`, one file per preset); `custom` gets a fresh timestamped id
 /// so custom diagrams accumulate instead of overwriting each other.
 pub fn diagram_output_file(kind: &str) -> String {
@@ -170,6 +171,7 @@ pub fn persist_diagram_from_agent_stdout(
 }
 
 /// Validate + atomically write a diagram JSON body an MCP client already
+///
 /// authored (plain JSON, not wrapped agent stdout — see
 /// [`persist_diagram_from_agent_stdout`] for the desktop host-owned-write
 /// variant). The MCP caller is the reviewing agent itself, so there is no
