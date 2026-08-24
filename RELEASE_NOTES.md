@@ -21,6 +21,25 @@
 - Record GitHub repo topics, description, and homepage for discovery.
 - Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
 
+# Easy Review (unreleased)
+
+## In plain terms
+
+- **What changed.** New code-quality tooling: an in-repo CRAP metric
+  (cyclomatic complexity × test coverage) with a CI gate, fixture-based
+  negative tests, and mutation testing via cargo-mutants.
+
+## Highlights
+
+- **CRAP metric.** `crates/er-crap` scores every Rust function from
+  `cargo llvm-cov` coverage; `just crap` runs it, `just crap-test` runs
+  the tool's own tests (including negative fixtures where crappy code must
+  fail the gate).
+- **Negative tests.** Documented convention (docs/quality-checks.md) plus
+  error-path and gate-failure fixtures for the CRAP tooling.
+- **Mutation testing.** `just mutants` runs cargo-mutants against
+  er-engine; a scheduled CI job uploads the report.
+
 # Easy Review v0.4.14
 
 ## In plain terms
