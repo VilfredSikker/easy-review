@@ -102,3 +102,23 @@ fn unparseable_rust_files_are_skipped_not_fatal() {
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
     assert_eq!(json["total"], 0, "broken file contributes no functions");
 }
+
+#[test]
+fn non_rust_files_are_not_analyzed() {
+    let dir = tempfile::tempdir().unwrap();
+    fs::write(dir.path().join("real.rs"), "fn real() {}\n").unwrap();
+    // A non-.rs file that would parse as Rust if it were analyzed.
+    fs::write(dir.path().join("notes.txt"), "fn not_counted() {}\n").unwrap();
+    let outcome = run(&er_crap::Opts {
+        lcov_path: None,
+        ..opts(dir.path(), "none.lcov", true)
+    })
+    .expect("run succeeds");
+    let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
+    assert_eq!(
+        json["total"], 1,
+        "only .rs files are analyzed:\n{}",
+        outcome.report
+    );
+    assert_eq!(json["entries"][0]["function"], "real");
+}
