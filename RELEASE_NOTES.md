@@ -38,7 +38,8 @@
 - **Negative tests.** Documented convention (docs/quality-checks.md) plus
   error-path and gate-failure fixtures for the CRAP tooling.
 - **Mutation testing.** `just mutants` runs cargo-mutants against
-  er-engine; a scheduled CI job uploads the report.
+  er-engine on demand and records the date in `quality/mutants-last-run.txt`;
+  `just mutants-stale` flags when the run log is old.
 
 # Easy Review v0.4.14
 

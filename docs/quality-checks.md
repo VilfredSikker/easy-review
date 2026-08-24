@@ -112,12 +112,15 @@ fraction of mutants killed.
 ```bash
 cargo binstall cargo-mutants   # once
 just mutants                   # mutate er-engine; HTML report in mutants.out/
+just mutants-stale [days]      # age of the last run; exits 1 when stale (default 30)
 ```
 
-The scheduled CI workflow (`.github/workflows/mutants.yml`, weekly +
-manual dispatch) runs `cargo mutants -p er-engine` and uploads the report
-artifact. It is informational today; ratchet a minimum mutation score in
-once the baseline is known (target ≥ 50%).
+Mutation testing is **deliberately not scheduled** — each run re-compiles the
+engine many times, so it is expensive. Instead, `just mutants` records the
+run date in `quality/mutants-last-run.txt`, and `just mutants-stale` (default
+threshold 30 days, override with a positional arg) reports the age and exits
+1 when the log has gone stale — the cue to run it again. The score is
+informational; ratchet a minimum once the baseline is known (target ≥ 50%).
 
 ## Alternatives
 
