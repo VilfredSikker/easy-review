@@ -230,12 +230,20 @@ crap-report:
     cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
     cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui
 
-# Mutation-test the engine (cargo-mutants; report lands in mutants.out/).
+# Mutation-test the engine on demand; stamps quality/mutants-last-run.txt (not scheduled — see docs/quality-checks.md).
 [group('quality')]
 mutants:
     @command -v cargo-mutants >/dev/null || { echo "missing cargo-mutants — install with: cargo binstall cargo-mutants"; exit 1; }
     cargo mutants -p er-engine
+    mkdir -p quality
+    date +%F > quality/mutants-last-run.txt
     @echo "HTML report: mutants.out/mutants.html"
+    @echo "Recorded last run in quality/mutants-last-run.txt"
+
+# Show the age of the last mutation run; exit 1 when stale (default 30 days).
+[group('quality')]
+mutants-stale *N:
+    @scripts/mutants-stale.sh {{N}}
 
 # ──────────────────────────────── maintenance ────────────────────────────────────
 

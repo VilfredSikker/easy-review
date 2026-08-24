@@ -39,7 +39,7 @@ scripts/aliases below, so either form works.
 | Format check | `cargo fmt --all -- --check` |
 | CRAP tool tests (positive + negative gate fixtures) | `just crap-test` |
 | CRAP metric (coverage + complexity, CI gate) | `just crap` (needs `cargo llvm-cov`; see `docs/quality-checks.md`) |
-| Mutation testing | `just mutants` (needs `cargo-mutants`) |
+| Mutation testing (on demand, not scheduled) | `just mutants` (stamps `quality/mutants-last-run.txt`); `just mutants-stale` shows the age — needs `cargo-mutants` |
 | Debug mode | `ER_DEBUG=1 er` (overwrites `/tmp/er_debug.log` each git diff) |
 
 ## Environment Gotchas
