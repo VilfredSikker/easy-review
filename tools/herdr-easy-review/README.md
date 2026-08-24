@@ -6,7 +6,7 @@ Requires [Herdr](https://herdr.dev) **0.7.0+** and the `er` CLI on `PATH`.
 
 ## Install
 
-From GitHub (after this ships):
+From GitHub, or from the [Herdr marketplace](https://herdr.dev/plugins/). This repository is tagged `herdr-plugin`.
 
 ```bash
 herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review --yes

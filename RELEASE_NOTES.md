@@ -8,11 +8,18 @@
 ## Highlights
 
 - **GitHub topics.** `VilfredSikker/easy-review` is tagged for git, code-review, tui, tauri, MCP, and related search terms. `herdr-plugin` stays so the Herdr marketplace can index it.
+- **What changed.** The Herdr plugin is documented on the Herdr marketplace. Search `easy-review` at herdr.dev/plugins after the index refresh.
+- **TL;DR.** Marketplace listing docs.
+
+## Highlights
+
+- **Herdr marketplace.** Easy Review is listed at [herdr.dev/plugins](https://herdr.dev/plugins/). The GitHub repo keeps the `herdr-plugin` topic so Herdr's index can pick it up.
 
 ## What's Changed
 
 ### Docs
 - Record GitHub repo topics, description, and homepage for discovery.
+- Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
 
 # Easy Review v0.4.14
 
