@@ -3,33 +3,16 @@
 
 use std::fs;
 
-use er_crap::report::OutputFormat;
-use er_crap::{run, Opts};
+use er_crap::run;
 
-fn base_opts(dir: &tempfile::TempDir) -> Opts {
-    Opts {
-        lcov_path: None,
-        path: dir.path().to_path_buf(),
-        threshold: 30.0,
-        fail_above: true,
-        format: OutputFormat::Json,
-        summary: false,
-    }
-}
+mod common;
+use common::opts;
 
 #[test]
 fn missing_lcov_file_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("a.rs"),
-        "fn f() {}
-",
-    )
-    .unwrap();
-    let opts = Opts {
-        lcov_path: Some(dir.path().join("missing.lcov")),
-        ..base_opts(&dir)
-    };
+    fs::write(dir.path().join("a.rs"), "fn f() {}\n").unwrap();
+    let opts = opts(dir.path(), "missing.lcov", true);
     let err = run(&opts).expect_err("missing LCOV file must be an error");
     assert!(
         err.to_string().contains("missing.lcov"),
@@ -40,31 +23,19 @@ fn missing_lcov_file_is_an_error() {
 #[test]
 fn malformed_lcov_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("a.rs"),
-        "fn f() {}
-",
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("bad.lcov"),
-        "DA:not-a-number,1
-",
-    )
-    .unwrap();
-    let opts = Opts {
-        lcov_path: Some(dir.path().join("bad.lcov")),
-        ..base_opts(&dir)
-    };
+    fs::write(dir.path().join("a.rs"), "fn f() {}\n").unwrap();
+    fs::write(dir.path().join("bad.lcov"), "DA:not-a-number,1\n").unwrap();
+    let opts = opts(dir.path(), "bad.lcov", true);
     assert!(run(&opts).is_err(), "malformed LCOV must be an error");
 }
 
 #[test]
 fn missing_source_path_is_an_error() {
     let dir = tempfile::tempdir().unwrap();
-    let opts = Opts {
-        path: dir.path().join("does-not-exist"),
-        ..base_opts(&dir)
+    let opts = er_crap::Opts {
+        path: vec![dir.path().join("does-not-exist")],
+        lcov_path: None,
+        ..opts(dir.path(), "nope.lcov", true)
     };
     let err = run(&opts).expect_err("missing source path must be an error");
     assert!(err.to_string().contains("does-not-exist"));
@@ -73,7 +44,11 @@ fn missing_source_path_is_an_error() {
 #[test]
 fn empty_directory_reports_zero_functions_and_passes() {
     let dir = tempfile::tempdir().unwrap();
-    let outcome = run(&base_opts(&dir)).expect("empty dir is a clean run");
+    let outcome = run(&er_crap::Opts {
+        lcov_path: None,
+        ..opts(dir.path(), "empty.lcov", true)
+    })
+    .expect("empty dir is a clean run");
     assert_eq!(outcome.exit_code, 0);
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
     assert_eq!(json["total"], 0);
@@ -83,15 +58,11 @@ fn empty_directory_reports_zero_functions_and_passes() {
 #[test]
 fn threshold_zero_flags_every_function() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("a.rs"),
-        "fn f() {}
-",
-    )
-    .unwrap();
-    let opts = Opts {
+    fs::write(dir.path().join("a.rs"), "fn f() {}\n").unwrap();
+    let opts = er_crap::Opts {
         threshold: 0.0,
-        ..base_opts(&dir)
+        lcov_path: None,
+        ..opts(dir.path(), "none.lcov", true)
     };
     let outcome = run(&opts).expect("run succeeds");
     assert_eq!(
@@ -106,13 +77,12 @@ fn threshold_zero_flags_every_function() {
 fn files_without_coverage_data_score_zero_coverage() {
     // No --lcov at all: every function is pessimistically 0% covered.
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("a.rs"),
-        "fn f() {}
-",
-    )
-    .unwrap();
-    let outcome = run(&base_opts(&dir)).expect("run succeeds without lcov");
+    fs::write(dir.path().join("a.rs"), "fn f() {}\n").unwrap();
+    let opts = er_crap::Opts {
+        lcov_path: None,
+        ..opts(dir.path(), "none.lcov", true)
+    };
+    let outcome = run(&opts).expect("run succeeds without lcov");
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
     let entry = &json["entries"][0];
     assert_eq!(entry["coverage"], 0.0);
@@ -122,13 +92,12 @@ fn files_without_coverage_data_score_zero_coverage() {
 #[test]
 fn unparseable_rust_files_are_skipped_not_fatal() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("broken.rs"),
-        "fn broken( {
-",
-    )
-    .unwrap();
-    let outcome = run(&base_opts(&dir)).expect("run succeeds on unparseable files");
+    fs::write(dir.path().join("broken.rs"), "fn broken( {\n").unwrap();
+    let outcome = run(&er_crap::Opts {
+        lcov_path: None,
+        ..opts(dir.path(), "none.lcov", true)
+    })
+    .expect("run succeeds on unparseable files");
     assert_eq!(outcome.exit_code, 0);
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
     assert_eq!(json["total"], 0, "broken file contributes no functions");

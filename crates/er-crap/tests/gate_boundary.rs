@@ -1,39 +1,21 @@
 //! Boundary gate test: a function scoring EXACTLY the threshold (30.0) must
-//! NOT be flagged — the gate uses strict \`>\` semantics. This closes the
-//! \`>\` vs \`>=\` mutation gap through the full pipeline.
+//! NOT be flagged — the gate uses strict `>` semantics. This closes the
+//! `>` vs `>=` mutation gap through the full pipeline.
 
-use std::fs;
+use er_crap::run;
 
-use er_crap::report::OutputFormat;
-use er_crap::{run, Opts};
+mod common;
+use common::{opts, write_fixture};
 
 #[test]
 fn exactly_threshold_is_not_crappy() {
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("boundary.rs"),
-        include_str!("fixtures/boundary.rs"),
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("boundary.lcov"),
-        include_str!("fixtures/boundary.lcov"),
-    )
-    .unwrap();
+    write_fixture(dir.path(), "boundary");
 
-    let opts = Opts {
-        lcov_path: Some(dir.path().join("boundary.lcov")),
-        path: dir.path().to_path_buf(),
-        threshold: 30.0,
-        fail_above: true,
-        format: OutputFormat::Json,
-        summary: false,
-    };
-    let outcome = run(&opts).expect("run succeeds");
+    let outcome = run(&opts(dir.path(), "boundary.lcov", true)).expect("run succeeds");
     assert_eq!(
         outcome.exit_code, 0,
-        "score of exactly 30.0 must pass the gate:
-{}",
+        "score of exactly 30.0 must pass the gate:\n{}",
         outcome.report
     );
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
@@ -52,31 +34,18 @@ fn exactly_threshold_is_not_crappy() {
 fn just_above_threshold_is_crappy() {
     // Same shape but with one extra decision: CC 6 at 0% → 42 > 30.
     let dir = tempfile::tempdir().unwrap();
-    fs::write(
+    std::fs::write(
         dir.path().join("above.rs"),
-        "pub fn above(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> bool {
-    a && b || c && d || e || f
-}
-",
+        "pub fn above(a: bool, b: bool, c: bool, d: bool, e: bool, f: bool) -> bool {\n    a && b || c && d || e || f\n}\n",
     )
     .unwrap();
-    fs::write(
+    std::fs::write(
         dir.path().join("above.lcov"),
-        "SF:above.rs
-end_of_record
-",
+        "SF:above.rs\nend_of_record\n",
     )
     .unwrap();
 
-    let opts = Opts {
-        lcov_path: Some(dir.path().join("above.lcov")),
-        path: dir.path().to_path_buf(),
-        threshold: 30.0,
-        fail_above: true,
-        format: OutputFormat::Json,
-        summary: false,
-    };
-    let outcome = run(&opts).expect("run succeeds");
+    let outcome = run(&opts(dir.path(), "above.lcov", true)).expect("run succeeds");
     assert_eq!(outcome.exit_code, 1, "CC 6 at 0% coverage is crappy");
     let json: serde_json::Value = serde_json::from_str(&outcome.report).unwrap();
     assert_eq!(json["crappy"], 1);

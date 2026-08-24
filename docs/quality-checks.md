@@ -66,13 +66,21 @@ just crap-test     # the tool's own tests, incl. negative gate fixtures
 
 Under the hood: `cargo llvm-cov -p er-engine -p er-tui --lcov` produces
 `lcov.info`, and `cargo run -p er-crap -- --lcov lcov.info` scores every
-function. Functions with **no coverage data score 0%** (pessimistic).
-`tests/`, `benches/`, `examples/`, `target/`, and `.git/` are never
-analyzed.
+function in those two crates. Functions with **no coverage data score 0%**
+(pessimistic). `tests/`, `benches/`, `examples/`, `target/`, and
+`.git/` are never analyzed. The `--path` flag is repeatable — the recipes
+scope it to the crates `llvm-cov` measured so untouched crates (desktop,
+mcp, tools) don't score pessimistic 0%.
 
-CI runs `cargo test -p er-crap` plus a report-only run in the `crap`
-job (`.github/workflows/ci.yml`). The `--fail-above` gate is ready to flip
-on once the current codebase is under the threshold.
+Gate status:
+
+- `just crap` runs the gate locally (`--fail-above`) and **will exit 1
+  today** — the coverage-based baseline is not yet under the threshold. It is
+  the "make it pass" command for the cleanup effort.
+- CI's `crap` job is **report-only** (`--summary`, no `--fail-above`):
+  it gates the tooling itself (`cargo test -p er-crap`) and publishes the
+  report, but never fails on CRAPpy functions. Flip `--fail-above` on in
+  `.github/workflows/ci.yml` once the baseline is under the threshold.
 
 ## Negative tests
 

@@ -221,14 +221,14 @@ crap-test:
 crap:
     @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
     cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
-    cargo run -p er-crap -- --lcov lcov.info --fail-above
+    cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui --fail-above
 
 # CRAP report without failing the gate (informational).
 [group('quality')]
 crap-report:
     @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
     cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
-    cargo run -p er-crap -- --lcov lcov.info
+    cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui
 
 # Mutation-test the engine (cargo-mutants; report lands in mutants.out/).
 [group('quality')]

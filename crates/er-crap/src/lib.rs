@@ -1,5 +1,9 @@
 //! CRAP (Change Risk Anti-Patterns) metric for Rust functions.
 //!
+//! Deliberate style decision (matches er-engine/er-tui/er-desktop): keep
+//! `match Some/None` / if-let chains over `Option::map_or[_else]`.
+#![allow(clippy::option_if_let_else)]
+//!
 //! CRAP combines a function's cyclomatic complexity with its unit-test
 //! coverage into a single risk score:
 //!
@@ -51,7 +55,7 @@ pub fn crap_score(cyclomatic: f64, coverage_pct: f64) -> f64 {
         0.0
     };
     let uncovered = (1.0 - cov / 100.0).clamp(0.0, 1.0);
-    cc * cc * uncovered.powi(3) + cc
+    (cc * cc).mul_add(uncovered.powi(3), cc)
 }
 
 /// Whether a score is CRAPpy, i.e. strictly above the threshold.
@@ -64,15 +68,16 @@ pub fn is_crappy(score: f64, threshold: f64) -> bool {
 pub struct Opts {
     /// Path to an LCOV coverage report (from `cargo llvm-cov --lcov`).
     pub lcov_path: Option<PathBuf>,
-    /// Root directory to walk for `.rs` files.
-    pub path: PathBuf,
+    /// Root directories to walk for `.rs` files (repeatable, e.g. scope to
+    /// exactly the crates a coverage run measured).
+    pub path: Vec<PathBuf>,
     /// Score above which a function is flagged (see [`DEFAULT_THRESHOLD`]).
     pub threshold: f64,
     /// Exit with code 1 when any function exceeds the threshold.
     pub fail_above: bool,
     /// Output format for the report.
     pub format: report::OutputFormat,
-    /// Print only the aggregate summary (human format only).
+    /// Print only the aggregate summary (human table / JSON entries are omitted).
     pub summary: bool,
 }
 
@@ -98,13 +103,15 @@ const SKIP_DIRS: &[&str] = &[
     "mutants.out",
 ];
 
-/// Walk `root` for `.rs` files and return `(relative_path, source)` pairs.
-fn walk_rs_files(root: &Path) -> anyhow::Result<Vec<(PathBuf, String)>> {
-    if !root.exists() {
-        anyhow::bail!("path does not exist: {}", root.display());
-    }
+/// Walk `roots` for `.rs` files and return `(relative_path, source)` pairs.
+fn walk_rs_files(roots: &[PathBuf]) -> anyhow::Result<Vec<(PathBuf, String)>> {
     let mut out = Vec::new();
-    walk(root, root, &mut out)?;
+    for root in roots {
+        if !root.exists() {
+            anyhow::bail!("path does not exist: {}", root.display());
+        }
+        walk(root, root, &mut out)?;
+    }
     Ok(out)
 }
 
@@ -112,15 +119,21 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) -> anyhow::Re
     let read =
         std::fs::read_dir(dir).with_context(|| format!("failed to read dir {}", dir.display()))?;
     for entry in read {
-        let entry = entry?;
+        let entry =
+            entry.with_context(|| format!("failed to read dir entry in {}", dir.display()))?;
         let path = entry.path();
         let name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() {
+        // Use the dirent file type (does not follow symlinks) so a link cycle
+        // cannot recurse forever; symlinked dirs/files are simply skipped.
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to stat dir entry {} in {}", name, dir.display()))?;
+        if file_type.is_dir() {
             if SKIP_DIRS.contains(&name.as_str()) {
                 continue;
             }
             walk(root, &path, out)?;
-        } else if name.ends_with(".rs") {
+        } else if file_type.is_file() && name.ends_with(".rs") {
             let rel = path.strip_prefix(root).unwrap_or(&path).to_path_buf();
             let source = std::fs::read_to_string(&path)
                 .with_context(|| format!("failed to read {}", path.display()))?;
@@ -131,6 +144,7 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<(PathBuf, String)>) -> anyhow::Re
 }
 
 /// Run a full analysis: walk source, compute complexity, merge coverage, and
+///
 /// render the report. Returns the process exit code and rendered report so
 /// both the binary and the in-process tests can share this entry point.
 pub fn run(opts: &Opts) -> anyhow::Result<RunOutcome> {
@@ -167,7 +181,7 @@ pub fn run(opts: &Opts) -> anyhow::Result<RunOutcome> {
     });
 
     let report = match opts.format {
-        report::OutputFormat::Json => report::render_json(&entries, opts.threshold),
+        report::OutputFormat::Json => report::render_json(&entries, opts.threshold, opts.summary)?,
         report::OutputFormat::Human => report::render_human(&entries, opts.threshold, opts.summary),
     };
     let crappy = entries

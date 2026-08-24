@@ -120,7 +120,7 @@ jobs:
       - run: cargo build -p er-engine --no-default-features --features highlight
 
   crap:
-    name: CRAP quality gate
+    name: CRAP tooling + report
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -139,5 +139,9 @@ jobs:
         run: cargo test -p er-crap
       - name: Coverage (er-engine + er-tui)
         run: cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
-      - name: CRAP report
-        run: cargo run -p er-crap -- --lcov lcov.info --summary
+      # Report-only on purpose: the coverage-based baseline is not yet
+      # under the threshold, so --fail-above stays off until it is (see
+      # docs/quality-checks.md). Paths are scoped to the crates llvm-cov
+      # measured so untouched crates don't score pessimistic 0% coverage.
+      - name: CRAP report (er-engine + er-tui)
+        run: cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui --summary

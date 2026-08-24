@@ -4,58 +4,34 @@
 //! tooling: the assertion is that exit code 1 is returned and the JSON report
 //! proves *why* (score above threshold, coverage as declared).
 
-use std::fs;
-
 use er_crap::report::OutputFormat;
 use er_crap::{run, Opts};
 
-fn setup() -> tempfile::TempDir {
-    let dir = tempfile::tempdir().unwrap();
-    fs::write(
-        dir.path().join("crappy.rs"),
-        include_str!("fixtures/crappy.rs"),
-    )
-    .unwrap();
-    fs::write(
-        dir.path().join("crappy.lcov"),
-        include_str!("fixtures/crappy.lcov"),
-    )
-    .unwrap();
-    dir
-}
-
-fn opts(dir: &tempfile::TempDir, fail_above: bool) -> Opts {
-    Opts {
-        lcov_path: Some(dir.path().join("crappy.lcov")),
-        path: dir.path().to_path_buf(),
-        threshold: 30.0,
-        fail_above,
-        format: OutputFormat::Json,
-        summary: false,
-    }
-}
+mod common;
+use common::{opts, write_fixture};
 
 #[test]
 fn crappy_fixtures_fail_the_gate() {
-    let dir = setup();
-    let outcome = run(&opts(&dir, true)).expect("run succeeds on crappy fixtures");
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), "crappy");
+    let outcome =
+        run(&opts(dir.path(), "crappy.lcov", true)).expect("run succeeds on crappy fixtures");
     assert_eq!(
         outcome.exit_code, 1,
-        "crappy code must fail the gate (exit 1):
-{}",
+        "crappy code must fail the gate (exit 1):\n{}",
         outcome.report
     );
 }
 
 #[test]
 fn crappy_fixtures_report_scores_above_threshold() {
-    let dir = setup();
-    let outcome = run(&opts(&dir, false)).expect("run succeeds");
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), "crappy");
+    let outcome = run(&opts(dir.path(), "crappy.lcov", false)).expect("run succeeds");
     let json: serde_json::Value = serde_json::from_str(&outcome.report).expect("valid JSON");
     assert_eq!(
         json["total"], 2,
-        "two functions expected:
-{}",
+        "two functions expected:\n{}",
         outcome.report
     );
     assert!(json["crappy"].as_u64().unwrap() >= 2);
@@ -85,8 +61,9 @@ fn crappy_fixtures_report_scores_above_threshold() {
 
 #[test]
 fn without_fail_above_the_gate_reports_but_passes() {
-    let dir = setup();
-    let outcome = run(&opts(&dir, false)).expect("run succeeds");
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), "crappy");
+    let outcome = run(&opts(dir.path(), "crappy.lcov", false)).expect("run succeeds");
     assert_eq!(
         outcome.exit_code, 0,
         "gate off → exit 0 even for crappy code"
@@ -95,41 +72,40 @@ fn without_fail_above_the_gate_reports_but_passes() {
 
 #[test]
 fn human_report_lists_crappy_functions_and_summary() {
-    let dir = setup();
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), "crappy");
     let outcome = run(&Opts {
         format: OutputFormat::Human,
         summary: false,
-        ..opts(&dir, false)
+        ..opts(dir.path(), "crappy.lcov", false)
     })
     .expect("run succeeds");
     assert!(
         outcome.report.contains("classify"),
-        "human table lists crappy fn:
-{}",
+        "human table lists crappy fn:\n{}",
         outcome.report
     );
     assert!(outcome.report.contains("evaluate"));
     assert!(
         outcome.report.contains("exceed the CRAP threshold of 30"),
-        "summary line present:
-{}",
+        "summary line present:\n{}",
         outcome.report
     );
 }
 
 #[test]
 fn summary_only_omits_the_table() {
-    let dir = setup();
+    let dir = tempfile::tempdir().unwrap();
+    write_fixture(dir.path(), "crappy");
     let outcome = run(&Opts {
         format: OutputFormat::Human,
         summary: true,
-        ..opts(&dir, false)
+        ..opts(dir.path(), "crappy.lcov", false)
     })
     .expect("run succeeds");
     assert!(
         !outcome.report.contains("classify"),
-        "summary mode has no table:
-{}",
+        "summary mode has no table:\n{}",
         outcome.report
     );
     assert!(outcome.report.contains("exceed the CRAP threshold of 30"));

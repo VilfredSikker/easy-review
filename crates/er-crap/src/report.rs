@@ -2,6 +2,7 @@
 
 use std::fmt;
 
+use anyhow::Context;
 use serde::Serialize;
 
 /// Output format for [`crate::run`].
@@ -40,12 +41,6 @@ pub struct Entry {
     pub crap: f64,
 }
 
-impl Entry {
-    fn is_crappy(&self, threshold: f64) -> bool {
-        self.crap > threshold
-    }
-}
-
 /// Render the human report. With `summary_only`, only the aggregate line is
 /// printed (the table is skipped).
 pub fn render_human(entries: &[Entry], threshold: f64, summary_only: bool) -> String {
@@ -68,7 +63,11 @@ pub fn render_human(entries: &[Entry], threshold: f64, summary_only: bool) -> St
             "CRAP", "CC", "COVERAGE", "FUNCTION", "LOCATION"
         ));
         for e in entries {
-            let flag = if e.is_crappy(threshold) { "✗" } else { "✓" };
+            let flag = if crate::is_crappy(e.crap, threshold) {
+                "✗"
+            } else {
+                "✓"
+            };
             s.push_str(&format!(
                 "{flag} {:>6.1} {:>5} {:>7.1}%  {:<w_fn$}  {:<w_loc$}\n",
                 e.crap,
@@ -79,7 +78,10 @@ pub fn render_human(entries: &[Entry], threshold: f64, summary_only: bool) -> St
             ));
         }
     }
-    let crappy = entries.iter().filter(|e| e.is_crappy(threshold)).count();
+    let crappy = entries
+        .iter()
+        .filter(|e| crate::is_crappy(e.crap, threshold))
+        .count();
     s.push_str(&format!(
         "\n{0}/{1} function(s) exceed the CRAP threshold of {threshold:.0}.\n",
         crappy,
@@ -88,23 +90,31 @@ pub fn render_human(entries: &[Entry], threshold: f64, summary_only: bool) -> St
     s
 }
 
-/// Render the JSON report.
-pub fn render_json(entries: &[Entry], threshold: f64) -> String {
+/// Render the JSON report. With `summary`, per-function entries are omitted
+///
+/// and only the envelope (`threshold`/`total`/`crappy`) is emitted, matching
+/// `--summary` behavior in the human format. Serialization failures bubble up
+/// as errors instead of being swallowed.
+pub fn render_json(entries: &[Entry], threshold: f64, summary: bool) -> anyhow::Result<String> {
     #[derive(Serialize)]
     struct Envelope<'a> {
         threshold: f64,
         total: usize,
         crappy: usize,
-        entries: &'a [Entry],
+        #[serde(skip_serializing_if = "Option::is_none")]
+        entries: Option<&'a [Entry]>,
     }
-    let crappy = entries.iter().filter(|e| e.is_crappy(threshold)).count();
+    let crappy = entries
+        .iter()
+        .filter(|e| crate::is_crappy(e.crap, threshold))
+        .count();
     let envelope = Envelope {
         threshold,
         total: entries.len(),
         crappy,
-        entries,
+        entries: if summary { None } else { Some(entries) },
     };
-    serde_json::to_string_pretty(&envelope).unwrap_or_else(|_| "{}".to_string())
+    serde_json::to_string_pretty(&envelope).context("failed to serialize CRAP report")
 }
 
 #[cfg(test)]
@@ -148,11 +158,24 @@ mod tests {
     #[test]
     fn json_report_counts_crappy_entries() {
         let entries = vec![entry(40.0), entry(5.0)];
-        let report = render_json(&entries, 30.0);
+        let report = render_json(&entries, 30.0, false).unwrap();
         let v: serde_json::Value = serde_json::from_str(&report).unwrap();
         assert_eq!(v["total"], 2);
         assert_eq!(v["crappy"], 1);
         assert_eq!(v["threshold"], 30.0);
         assert_eq!(v["entries"][0]["function"], "f");
+    }
+
+    #[test]
+    fn json_summary_omits_entries() {
+        let entries = vec![entry(40.0), entry(5.0)];
+        let report = render_json(&entries, 30.0, true).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(v["total"], 2);
+        assert_eq!(v["crappy"], 1);
+        assert!(
+            v.get("entries").is_none(),
+            "--summary json has no entries array: {report}"
+        );
     }
 }
