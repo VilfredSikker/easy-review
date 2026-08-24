@@ -1,7 +1,9 @@
 //! Cyclomatic complexity analysis for Rust source files.
 //!
-//! The analyzer is a [`syn`] AST walker that scores every top-level
-//! function, inherent/trait method, and trait default method in a file.
+//! The analyzer is a [`syn`] AST walker that scores every function in a
+//! file — inherent/trait methods, trait default methods, and nested `fn`
+//! items (each nested item gets its own entry and is excluded from the
+//! enclosing function's count, see below).
 //! The definition is deliberately McCabe-classic and documented so the
 //! numbers are reproducible:
 //!

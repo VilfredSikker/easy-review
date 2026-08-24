@@ -28,7 +28,14 @@ impl LcovCoverage {
         start: usize,
         end: usize,
     ) -> Option<(usize, usize)> {
-        let entry = self.files.iter().find(|(k, _)| paths_match(k, file_path))?;
+        // Multiple SF sections can suffix-match (e.g. two crates with a
+        // lib.rs); pick the longest (most specific) match so the attribution
+        // is deterministic regardless of HashMap iteration order.
+        let entry = self
+            .files
+            .iter()
+            .filter(|(k, _)| paths_match(k, file_path))
+            .max_by_key(|(k, _)| k.len())?;
         let (covered, total) = entry.1.iter().fold((0, 0), |(c, t), (line, hits)| {
             if *line >= start && *line <= end {
                 (c + usize::from(*hits > 0), t + 1)

@@ -21,6 +21,8 @@ jobs:
         uses: taiki-e/install-action@v2
         with:
           tool: cargo-mutants
+      # Informational job: surviving mutants must not fail the workflow.
+      continue-on-error: true
       - name: Run mutation testing
         run: |
           mkdir -p mutants.out

@@ -19,9 +19,11 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub lcov: Option<PathBuf>,
 
-    /// Root directory to walk for `.rs` files.
-    #[arg(long, default_value = ".")]
-    pub path: PathBuf,
+    /// Root directory(ies) to walk for `.rs` files (repeatable; default
+    /// `.`). Scope to the crates a coverage run measured so functions
+    /// outside it are not scored as pessimistically 0%-covered.
+    #[arg(long, value_name = "PATH", default_value = ".")]
+    pub path: Vec<PathBuf>,
 
     /// Score above which a function is flagged as CRAPpy.
     #[arg(long, default_value_t = DEFAULT_THRESHOLD)]
