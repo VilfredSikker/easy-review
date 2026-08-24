@@ -35,6 +35,14 @@ herdr plugin action list --plugin easy-review</code></pre>
       Use <code>--yes</code> to skip the interactive preview when you already trust the source.
     </p>
 
+    <h3>Marketplace</h3>
+    <p>
+      Browse it on
+      <a href="https://herdr.dev/plugins/" target="_blank" rel="noopener">herdr.dev/plugins</a>.
+      Herdr indexes public GitHub repos tagged <code>herdr-plugin</code> that have a
+      <code>herdr-plugin.toml</code> on the default branch. This repository is tagged that way.
+    </p>
+
     <h3>Local development (link)</h3>
     <p>While working on the plugin in a clone of this repository:</p>
     <pre><code>herdr plugin link /path/to/easy-review/tools/herdr-easy-review
@@ -92,6 +100,9 @@ description = "Review branch in Easy Review"</code></pre>
       <code>PATH</code> inside Herdr panes (same shell profile as your terminal).</li>
       <li><strong>Plugin not listed.</strong> — Run <code>herdr plugin list</code>. Re-link or reinstall if the
       manifest path moved.</li>
+      <li><strong>Missing from herdr.dev/plugins.</strong> The GitHub repo needs the
+      <code>herdr-plugin</code> topic, and <code>tools/herdr-easy-review/herdr-plugin.toml</code> must be on
+      <code>main</code>. The marketplace index refreshes every 30 minutes.</li>
       <li><strong>Review always opens the plugin's own repo.</strong> Relink this plugin after updating.
       Pane commands start in the plugin directory; <code>open.sh</code> cds to the workspace checkout
       from Herdr's context JSON before launching <code>er</code>.</li>
@@ -116,6 +127,7 @@ description = "Review branch in Easy Review"</code></pre>
     <ul>
       <li><a href="mcp.html">MCP server setup</a> — wire Claude / Cursor / Codex to Easy Review</li>
       <li><a href="github.html">GitHub &amp; pull requests</a> — PR diff modes and comment sync in <code>er</code></li>
+      <li><a href="https://herdr.dev/plugins/" target="_blank" rel="noopener">Herdr plugin marketplace</a></li>
       <li><a href="https://herdr.dev/docs/plugins/" target="_blank" rel="noopener">Herdr plugin docs</a></li>
     </ul>
   </main>

@@ -1,3 +1,19 @@
+# Easy Review v0.4.15
+
+## In plain terms
+
+- **What changed.** The Herdr plugin is documented on the Herdr marketplace. Search `easy-review` at herdr.dev/plugins after the index refresh.
+- **TL;DR.** Marketplace listing docs.
+
+## Highlights
+
+- **Herdr marketplace.** Easy Review is listed at [herdr.dev/plugins](https://herdr.dev/plugins/). The GitHub repo keeps the `herdr-plugin` topic so Herdr's index can pick it up.
+
+## What's Changed
+
+### Docs
+- Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
+
 # Easy Review v0.4.14
 
 ## In plain terms
