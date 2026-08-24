@@ -76,7 +76,7 @@ Skills installer: [`npm/skills`](npm/skills/) (`bunx @easy-review/skills`).
 
 ## Herdr plugin
 
-[Herdr](https://herdr.dev) users can install the Easy Review plugin to open `er` in a workspace tab, auto-open review on new worktrees, and Ctrl-click GitHub PR links (`er --remote`).
+[Herdr](https://herdr.dev) users can install the Easy Review plugin to open `er` in a workspace tab, auto-open review on new worktrees, and Ctrl-click GitHub PR links (`er --remote`). Listed on [herdr.dev/plugins](https://herdr.dev/plugins/).
 
 ```bash
 herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review --yes
