@@ -206,6 +206,37 @@ build-engine-headless:
 [group('ci')]
 verify: fmt clippy test
 
+# ──────────────────────────────── quality ──────────────────────────────────────
+# Code-quality tooling: CRAP metric (crates/er-crap) and mutation testing.
+# See docs/quality-checks.md for the metric definition and conventions.
+
+# CRAP tool tests (formula, complexity analyzer, LCOV parser, positive + negative gate fixtures).
+[group('quality')]
+crap-test:
+    cargo test -p er-crap
+
+# Compute the CRAP metric for er-engine + er-tui from real coverage and gate on the threshold.
+# Needs `cargo llvm-cov` (install: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview).
+[group('quality')]
+crap:
+    @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
+    cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
+    cargo run -p er-crap -- --lcov lcov.info --fail-above
+
+# CRAP report without failing the gate (informational).
+[group('quality')]
+crap-report:
+    @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
+    cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
+    cargo run -p er-crap -- --lcov lcov.info
+
+# Mutation-test the engine (cargo-mutants; report lands in mutants.out/).
+[group('quality')]
+mutants:
+    @command -v cargo-mutants >/dev/null || { echo "missing cargo-mutants — install with: cargo binstall cargo-mutants"; exit 1; }
+    cargo mutants -p er-engine
+    @echo "HTML report: mutants.out/mutants.html"
+
 # ──────────────────────────────── maintenance ────────────────────────────────────
 
 # Reclaim disk from bloated cargo target dirs. `just gc --force` also prunes target/desktop.
