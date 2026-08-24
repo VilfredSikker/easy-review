@@ -24,14 +24,17 @@
   $effect(() => {
     draft = value;
   });
+
+  const inputId = "settings-field-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
 </script>
 
 <div class="py-3">
-  <label class="block text-sm text-fg mb-0.5">{label}</label>
+  <label class="block text-sm text-fg mb-0.5" for={inputId}>{label}</label>
   {#if description}
     <p class="text-xs text-muted mb-1.5">{description}</p>
   {/if}
   <input
+    id={inputId}
     type="text"
     class="w-full bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm text-fg outline-none font-mono transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
     {placeholder}

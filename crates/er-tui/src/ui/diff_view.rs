@@ -113,7 +113,7 @@ fn build_split_rows(hunk: &er_engine::git::DiffHunk) -> Vec<TuiSplitRow<'_>> {
 }
 
 /// Whether a comment should render given layer visibility toggles.
-fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
+const fn comment_layer_visible(tab: &TabState, comment: &CommentRef<'_>) -> bool {
     let visible = match comment {
         CommentRef::Question(_) | CommentRef::Note(_) => tab.layers.show_questions,
         CommentRef::GitHubComment(_) | CommentRef::Legacy(_) => tab.layers.show_github_comments,
@@ -3417,15 +3417,9 @@ mod github_comment_fold_tests {
     fn visible_new_count_excludes_folded_span_containing_the_comment_line() {
         let hunk = folded_full_file_hunk();
         let visible = visible_new_count(&hunk);
-        assert!(
-            visible < hunk.new_count,
-            "folds must shrink visible count below the header span"
-        );
-        assert!(
-            288 >= hunk.new_start + visible,
-            "comment line 288 sits past the visible-count range starting at {}",
-            hunk.new_start
-        );
+        // Exact values: 3 Context + 3 Context + 2 Add visible lines; comment at 288.
+        assert_eq!(visible, 8);
+        assert_eq!(hunk.new_start + visible, 9);
     }
 
     #[test]

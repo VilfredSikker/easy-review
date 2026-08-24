@@ -40,6 +40,7 @@ pub fn compute_diff_hash(raw_diff: &str) -> String {
 }
 
 /// Compute a fast (non-cryptographic) hash for internal change detection.
+///
 /// Much faster than SHA-256 — used for detecting if the diff has changed
 /// between ticks without the overhead of a full cryptographic hash.
 // `DefaultHasher` has no stability guarantee across Rust releases or program runs,
@@ -315,6 +316,7 @@ pub fn load_tour_sidecar(dir: &str, name: &str) -> Option<ErTour> {
 }
 
 /// Load all mermaid diagrams from `{er_dir}/diagrams/*.json`. Each diagram is a
+///
 /// standalone file (written one-per-run by the diagram agent), so unreadable or
 /// malformed files are skipped rather than failing the whole set. The `id` is
 /// the file stem and `stale` is computed against the current diff hash.
@@ -366,7 +368,7 @@ pub fn latest_er_mtime(er_dir: &str) -> Option<std::time::SystemTime> {
     latest_er_mtime_skipping(er_dir, None)
 }
 
-pub(crate) fn latest_er_mtime_skipping(
+pub fn latest_er_mtime_skipping(
     er_dir: &str,
     skip: Option<&Path>,
 ) -> Option<std::time::SystemTime> {
@@ -613,7 +615,10 @@ mod tests {
         .unwrap();
 
         let state = load_ai_state(er_dir, "abc", Some("feature/x"));
-        assert!(state.review.is_some());
+        let r = state.review.expect("placeholder-head review should load");
+        assert_eq!(r.diff_hash, "abc");
+        assert!(r.files.is_empty());
+        assert!(!state.is_stale);
     }
 
     #[test]
@@ -797,8 +802,11 @@ mod tests {
     #[test]
     fn compute_diff_hash_non_empty_produces_64_char_hex() {
         let hash = compute_diff_hash("some diff content");
-        assert_eq!(hash.len(), 64);
-        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+        // Exact value pins the algorithm; a wrong but 64-char hex hash fails.
+        assert_eq!(
+            hash,
+            "b5949b4e084b58626df729a9e6df634b3dbe207d8234f62cec3f368b3b6b99f6"
+        );
     }
 
     // ── compute_per_file_hashes ──
@@ -814,8 +822,11 @@ mod tests {
         let diff = "diff --git a/src/main.rs b/src/main.rs\nindex abc..def 100644\n--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1,3 +1,4 @@\n+use std::io;\n fn main() {\n }\n";
         let hashes = compute_per_file_hashes(diff);
         assert_eq!(hashes.len(), 1);
-        assert!(hashes.contains_key("src/main.rs"));
-        assert_eq!(hashes["src/main.rs"].len(), 64);
+        // Exact hash of the single-file diff section; pins the hashing algorithm.
+        assert_eq!(
+            hashes["src/main.rs"],
+            "9792f1716d22c5c9c79af1d08e346e85ebd1970883114f21021ce834019ddf79"
+        );
     }
 
     #[test]

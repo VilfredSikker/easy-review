@@ -124,7 +124,7 @@ fn parse_verdict(s: &str) -> Verdict {
     }
 }
 
-pub fn wire_snapshot(snap: er_engine::arena::ArenaRunSnapshot) -> ArenaRunSnapshotWire {
+pub const fn wire_snapshot(snap: er_engine::arena::ArenaRunSnapshot) -> ArenaRunSnapshotWire {
     snap
 }
 

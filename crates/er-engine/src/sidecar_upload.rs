@@ -22,7 +22,7 @@ pub enum SidecarKind {
 }
 
 impl SidecarKind {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Triage => "triage",
             Self::Review => "review",

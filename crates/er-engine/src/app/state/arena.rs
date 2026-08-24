@@ -361,7 +361,7 @@ impl App {
             .ok_or_else(|| anyhow::anyhow!("finding not found"))?;
         f.override_ = Some(HumanOverride {
             verdict: verdict.clone(),
-            note: note.clone(),
+            note,
             at: super::chrono_now(),
         });
         f.verdict = verdict;
@@ -371,7 +371,7 @@ impl App {
         Ok(updated)
     }
 
-    pub fn diff_mode_to_arena_scope(mode: super::DiffMode) -> ArenaScope {
+    pub const fn diff_mode_to_arena_scope(mode: super::DiffMode) -> ArenaScope {
         match mode {
             super::DiffMode::Unstaged => ArenaScope::Unstaged,
             super::DiffMode::Staged => ArenaScope::Staged,

@@ -13,11 +13,11 @@ pub struct DiffKindStats {
 }
 
 impl DiffKindStats {
-    pub fn lines_changed(&self) -> usize {
+    pub const fn lines_changed(&self) -> usize {
         self.additions.saturating_add(self.deletions)
     }
 
-    fn absorb(&mut self, adds: usize, dels: usize) {
+    const fn absorb(&mut self, adds: usize, dels: usize) {
         self.files += 1;
         self.additions += adds;
         self.deletions += dels;

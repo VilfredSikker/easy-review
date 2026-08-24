@@ -115,6 +115,7 @@ pub fn apply_scoped_sidecar_merge(er_dir: &Path, command_name: &str) -> Result<(
 }
 
 /// Replace file entries for `scoped_paths` with those from `scoped`, keep the
+///
 /// rest from `previous`. Preserves `previous.diff_hash` so a partial re-review
 /// does not look stale against the full-tab diff the prior review targeted.
 pub fn merge_scoped_review(

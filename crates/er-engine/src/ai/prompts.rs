@@ -173,7 +173,7 @@ Short-circuit obvious issues. Read source files to verify, not to expand scope."
     )
 }
 
-fn general_review_instructions_read_analyze() -> &'static str {
+const fn general_review_instructions_read_analyze() -> &'static str {
     r#"4. Analyse every changed file. **Findings target only `+` or `-` lines** — context is for comprehension. Per file:
    - `risk`: "high" | "medium" | "low" | "info"
    - `risk_reason`: why this risk level
@@ -183,7 +183,7 @@ fn general_review_instructions_read_analyze() -> &'static str {
 6. Set `confidence` on every finding: `confirmed`, `informational`, or `tentative` (with `verification_plan`)."#
 }
 
-fn general_review_json_example() -> &'static str {
+const fn general_review_json_example() -> &'static str {
     r#"        {{
           "id": "f-1",
           "severity": "medium",
@@ -648,6 +648,7 @@ fn diagram_task_for_kind(kind: &str) -> &'static str {
 }
 
 /// Diagram generation when `{output_dir}/diff-tmp` is already prepared
+///
 /// (desktop "Generate diagram"). The agent emits JSON on stdout; the harness
 /// atomically writes `{output_dir}/diagrams/{output_file}` (no agent Write/Edit).
 /// Built with `push_str` instead of one `format!` so the mermaid examples and
@@ -728,6 +729,7 @@ Do NOT call Write, Edit, Bash redirects, or otherwise mutate the filesystem. Pri
 }
 
 /// Diagram generation for MCP clients. Unlike
+///
 /// [`build_diagram_prompt_prepared_diff`] (a restricted subprocess with no
 /// Write/Edit, so it must emit stdout for host-owned write), an MCP caller is
 /// the reviewing agent itself with full tool access — so it embeds the
@@ -1211,6 +1213,7 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
 }
 
 /// Build the validate prompt — validates and re-anchors existing findings.
+///
 /// Build the validate prompt with paths anchored at an absolute managed
 /// directory (`output_dir`). Use this for non-remote local-managed tabs so
 /// the agent updates the same `review.json` the UI loads from, rather than

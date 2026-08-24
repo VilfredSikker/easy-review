@@ -46,6 +46,7 @@ pub struct ErConfig {
 }
 
 /// [commands] section — configurable shell commands for hub actions.
+///
 /// Each command is a shell string run via `sh -c`. Placeholders:
 /// `{base}` (base branch), `{branch}` (current branch), `{repo}` (repo root),
 /// `{output}` (default output path, e.g. managed `{er_dir}/summary.md`).
@@ -198,7 +199,7 @@ pub struct AiSelection {
 
 impl AiHubConfig {
     /// Effective concurrency cap — configured value, or the default when unset.
-    pub fn effective_max_concurrent_reviews(&self) -> usize {
+    pub const fn effective_max_concurrent_reviews(&self) -> usize {
         if self.max_concurrent_reviews == 0 {
             DEFAULT_MAX_CONCURRENT_REVIEWS
         } else {
@@ -312,15 +313,15 @@ impl Default for HintConfig {
     }
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_tab_width() -> u8 {
+const fn default_tab_width() -> u8 {
     4
 }
 
-fn default_auto_context_threshold() -> usize {
+const fn default_auto_context_threshold() -> usize {
     100
 }
 
@@ -747,11 +748,11 @@ impl CliFamily {
         }
     }
 
-    pub fn supports_claude_stream_json(self) -> bool {
+    pub const fn supports_claude_stream_json(self) -> bool {
         matches!(self, Self::Claude | Self::Cursor)
     }
 
-    pub fn id(self) -> Option<&'static str> {
+    pub const fn id(self) -> Option<&'static str> {
         match self {
             Self::Claude => Some("claude"),
             Self::Codex => Some("codex"),
@@ -1303,7 +1304,7 @@ impl ErConfig {
 pub fn split_shell_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
-    let mut chars = s.chars().peekable();
+    let mut chars = s.chars(); // peek() is never used — a plain iterator suffices
     let mut in_single = false;
     let mut in_double = false;
 
@@ -1532,21 +1533,21 @@ pub enum ConfigItem {
 impl std::fmt::Debug for ConfigItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigItem::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
-            ConfigItem::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
-            ConfigItem::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
-            ConfigItem::DynamicStringCycle { label, .. } => {
+            Self::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
+            Self::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
+            Self::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
+            Self::DynamicStringCycle { label, .. } => {
                 write!(f, "DynamicStringCycle({:?})", label)
             }
-            ConfigItem::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
-            ConfigItem::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
-            ConfigItem::ListEntry { label, index } => {
+            Self::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
+            Self::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
+            Self::ListEntry { label, index } => {
                 write!(f, "ListEntry({:?}, {})", label, index)
             }
-            ConfigItem::ListAdd { label, section } => {
+            Self::ListAdd { label, section } => {
                 write!(f, "ListAdd({:?}, {:?})", label, section)
             }
-            ConfigItem::Action { label, .. } => write!(f, "Action({:?})", label),
+            Self::Action { label, .. } => write!(f, "Action({:?})", label),
         }
     }
 }
@@ -1919,7 +1920,9 @@ mod tests {
         let mut hub = AiHubConfig::default();
         assert!(hub.providers.is_empty());
         supplement_ai_hub(&mut hub);
-        assert!(!hub.providers.is_empty());
+        // Catalog is fixed: claude, codex, cursor, opencode.
+        assert_eq!(hub.providers.len(), 4);
+        assert!(hub.providers.contains_key("codex"));
     }
 
     #[test]
@@ -2165,6 +2168,15 @@ mod tests {
             "Expected at least 22 total items (with headers), got {}",
             items.len()
         );
+        // Concrete spot checks: specific known items must be present (not just a count).
+        assert!(items.iter().any(|i| matches!(
+            i,
+            ConfigItem::StringEdit { label, .. } if label == "Summary"
+        )));
+        assert!(items.iter().any(|i| matches!(
+            i,
+            ConfigItem::SectionHeader(title) if title == "Views"
+        )));
     }
 
     #[test]
@@ -3032,7 +3044,7 @@ mod tests {
                 default_provider: Some("codex".into()),
                 default_model: Some("gpt-5.6-luna".into()),
                 default_effort: Some("medium".into()),
-                providers: [(
+                providers: std::iter::once((
                     "codex".into(),
                     AiProviderConfig {
                         models: vec![
@@ -3049,8 +3061,7 @@ mod tests {
                         ],
                         ..Default::default()
                     },
-                )]
-                .into_iter()
+                ))
                 .collect(),
                 ..Default::default()
             },
@@ -3105,7 +3116,7 @@ mod tests {
     #[test]
     fn supplement_backfills_models_command_and_family() {
         let mut hub = AiHubConfig {
-            providers: [(
+            providers: std::iter::once((
                 "cursor".into(),
                 AiProviderConfig {
                     command: "agent".into(),
@@ -3116,8 +3127,7 @@ mod tests {
                     }],
                     ..Default::default()
                 },
-            )]
-            .into_iter()
+            ))
             .collect(),
             ..Default::default()
         };
@@ -3350,7 +3360,7 @@ mod tests {
         );
 
         let mut hub = AiHubConfig {
-            providers: [("cursor".into(), provider)].into_iter().collect(),
+            providers: std::iter::once(("cursor".into(), provider)).collect(),
             ..Default::default()
         };
         let agent = AgentConfig::default();

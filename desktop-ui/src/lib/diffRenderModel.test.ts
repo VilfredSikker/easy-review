@@ -213,9 +213,15 @@ describe("getFileBlock — split mode", () => {
     });
     const f = file({ path: "a.ts", hunks: [h1] });
     const block = getFileBlock(mkInputs(f, [f], emptyAi(), "split"));
-    const splitRowCount = block.splitRowsByHunk[0].length;
     const contentSplitRows = block.rows.filter((r) => r.type === "content-split");
-    expect(contentSplitRows.length).toBe(splitRowCount);
+    expect(contentSplitRows).toHaveLength(2);
+    // del "a" + add "A" pair into one row; the context line spans both sides.
+    const splitRows = block.splitRowsByHunk[0];
+    expect(splitRows).toHaveLength(2);
+    expect(splitRows[0].left?.text).toBe("a");
+    expect(splitRows[0].right?.text).toBe("A");
+    expect(splitRows[1].left?.text).toBe("b");
+    expect(splitRows[1].right?.text).toBe("b");
   });
 
   it("places a LEFT thread using old_num when split context old and new numbers differ", () => {
@@ -231,7 +237,7 @@ describe("getFileBlock — split mode", () => {
     const f = file({ path: "a.ts", hunks: [h] });
     const block = getFileBlock(mkInputs(f, [f], emptyAi([t]), "split"));
     const splitIdx = block.rows.findIndex((r) => r.type === "content-split");
-    expect(splitIdx).toBeGreaterThanOrEqual(0);
+    expect(splitIdx).toBe(2);
     expect(block.rows[splitIdx + 1]?.type).toBe("inline-thread");
     if (block.rows[splitIdx + 1]?.type === "inline-thread") {
       expect(block.rows[splitIdx + 1].threadId).toBe("t-left");
@@ -609,7 +615,8 @@ describe("getFileBlock — caching", () => {
     ];
     const b = getFileBlock(mkInputs(f, [f], emptyAi()));
     expect(a).not.toBe(b);
-    expect(b.rows.length).toBeGreaterThan(a.rows.length);
+    expect(a.rows.length).toBe(3); // file-header + hunk-header + 1 content
+    expect(b.rows.length).toBe(4); // file-header + hunk-header + 2 content
   });
 
   it("changing commentVisibility busts the cache", () => {
@@ -662,7 +669,10 @@ describe("getFileBlock — caching", () => {
 
     expect(afterUntouched).toBe(before);
     expect(afterUntouched.modelKey).toBe(before.modelKey);
-    expect(afterTarget.rows.some((r) => r.type === "inline-thread")).toBe(true);
+    expect(afterTarget.rows[3]?.type).toBe("inline-thread");
+    if (afterTarget.rows[3]?.type === "inline-thread") {
+      expect(afterTarget.rows[3].threadId).toBe("c-new");
+    }
   });
 
   it("editing a thread body busts that file's block cache", () => {
@@ -888,7 +898,8 @@ describe("getCrossFileModel — identity & cache invalidation", () => {
     ];
     const b = mkCross([f0], emptyAi(), { snapshotKey: "same-tab" });
     expect(a).not.toBe(b);
-    expect(b.rows.length).toBeGreaterThan(a.rows.length);
+    expect(a.rows.length).toBe(3); // file-header + hunk-header + 1 content
+    expect(b.rows.length).toBe(4); // file-header + hunk-header + 2 content
   });
 });
 
@@ -912,10 +923,10 @@ describe("getCrossFileModel — thread/finding lookups", () => {
     });
     const m = mkCross([f0], emptyAi([t]), { snapshotKey: "tr" });
     const idx = m.threadRowIndex("t1");
-    expect(idx).not.toBeNull();
-    if (idx !== null) {
-      const row = m.rows[idx];
-      expect(row.type === "inline-thread" || row.type === "fallback-thread").toBe(true);
+    expect(idx).toBe(3); // file-header, hunk-header, content-unified, inline-thread
+    expect(m.rows[idx].type).toBe("inline-thread");
+    if (m.rows[idx].type === "inline-thread") {
+      expect(m.rows[idx].threadId).toBe("t1");
     }
     expect(m.threadRowIndex("nope")).toBeNull();
   });
@@ -928,10 +939,10 @@ describe("getCrossFileModel — thread/finding lookups", () => {
     });
     const m = mkCross([f0], emptyAi([], [fnd]), { snapshotKey: "fr" });
     const idx = m.findingRowIndex("f1");
-    expect(idx).not.toBeNull();
-    if (idx !== null) {
-      const row = m.rows[idx];
-      expect(row.type === "inline-finding" || row.type === "fallback-finding").toBe(true);
+    expect(idx).toBe(3); // file-header, hunk-header, content-unified, inline-finding
+    expect(m.rows[idx].type).toBe("inline-finding");
+    if (m.rows[idx].type === "inline-finding") {
+      expect(m.rows[idx].findingId).toBe("f1");
     }
     expect(m.findingRowIndex("nope")).toBeNull();
   });
@@ -946,12 +957,19 @@ describe("applyCollapsedFiles", () => {
     expect(beforeRows).toBeGreaterThan(4);
 
     const collapsed = applyCollapsedFiles(model, new Set(["a.ts"]));
+    // a.ts body is dropped (file-header kept); b.ts keeps header + hunk + content.
+    expect(collapsed.rows.map((r) => r.type)).toEqual([
+      "file-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+    ]);
     const aHeader = collapsed.rows.filter((r) => r.filePath === "a.ts");
     expect(aHeader.every((r) => r.type === "file-header")).toBe(true);
     expect(aHeader).toHaveLength(1);
 
     const bRows = collapsed.rows.filter((r) => r.filePath === "b.ts");
-    expect(bRows.length).toBeGreaterThan(1);
+    expect(bRows).toHaveLength(3); // file-header + hunk-header + content
     expect(collapsed.totalHeight).toBeLessThan(model.totalHeight);
     expect(collapsed.rows.length).toBeLessThan(beforeRows);
   });

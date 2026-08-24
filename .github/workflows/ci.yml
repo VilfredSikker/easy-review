@@ -118,3 +118,30 @@ jobs:
       # build in a bare container.
       - run: cargo build -p er-engine --no-default-features
       - run: cargo build -p er-engine --no-default-features --features highlight
+
+  crap:
+    name: CRAP tooling + report
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov
+      # The CRAP tooling itself (formula, complexity analyzer, LCOV parser,
+      # and the positive/negative gate fixtures) must stay green. See
+      # docs/quality-checks.md.
+      - name: CRAP tool tests (incl. negative gate fixtures)
+        run: cargo test -p er-crap
+      - name: Coverage (er-engine + er-tui)
+        run: cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
+      # Report-only on purpose: the coverage-based baseline is not yet
+      # under the threshold, so --fail-above stays off until it is (see
+      # docs/quality-checks.md). Paths are scoped to the crates llvm-cov
+      # measured so untouched crates don't score pessimistic 0% coverage.
+      - name: CRAP report (er-engine + er-tui)
+        run: cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui --summary

@@ -29,7 +29,7 @@ pub struct GetConfigHubResponse {
     pub family_options: Vec<String>,
 }
 
-fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
+const fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
     match mode {
         DiffMode::Branch => features.view_branch,
         DiffMode::Unstaged => features.view_unstaged,

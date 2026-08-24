@@ -17,7 +17,7 @@ use std::path::Path;
 /// - On write or rename failure the tmp file is removed and the error is
 ///   returned, so callers can log with context. The previous contents at
 ///   `path` survive until the rename — a failed save never corrupts the cache.
-pub(crate) fn save_json_atomic(path: &Path, payload: &impl serde::Serialize) -> io::Result<()> {
+pub fn save_json_atomic(path: &Path, payload: &impl serde::Serialize) -> io::Result<()> {
     let json = serde_json::to_string_pretty(payload).map_err(|e| {
         io::Error::new(
             io::ErrorKind::InvalidData,

@@ -134,7 +134,7 @@ impl App {
             }
             Err(_) => ai::ErGitHubComments {
                 version: 1,
-                diff_hash: diff_hash.clone(),
+                diff_hash,
                 github: None,
                 comments: Vec::new(),
             },

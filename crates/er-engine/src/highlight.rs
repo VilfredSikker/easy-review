@@ -55,7 +55,7 @@ impl Highlighter {
             builder.add(def);
         }
 
-        Highlighter {
+        Self {
             syntax_set: builder.build(),
             theme_set,
             cache: HashMap::new(),

@@ -489,8 +489,8 @@ mod tests {
         // No context provided (empty vecs)
         let a = anchor(Some(4), "    let x = 1;", vec![], vec![]);
         let result = relocate_comment(&a, &file);
-        // Content found — should find it (may be Unchanged or Relocated)
-        assert!(!matches!(result, RelocationResult::Lost));
+        // Content found at the same line — deterministically Unchanged.
+        assert!(matches!(result, RelocationResult::Unchanged));
     }
 
     #[test]

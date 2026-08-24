@@ -233,8 +233,8 @@ fn ensure_project_for_remote_at(path: &Path, owner: &str, repo: &str) -> Result<
         "auto_triage_max_diff_kb": 0,
         "review_ignore_globs": [],
     });
-    let id = unique_id.clone();
-    let name = remote.clone();
+    let id = unique_id;
+    let name = remote;
     projects.push(record);
     save_value(path, &root)?;
     Ok((id, name))

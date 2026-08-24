@@ -371,7 +371,7 @@ impl TabState {
     }
 
     /// Increment the focused pane's horizontal scroll in split diff view
-    pub fn scroll_right_split(&mut self) {
+    pub const fn scroll_right_split(&mut self) {
         match self.split_focus {
             SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_add(1),
             SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_add(1),
@@ -379,7 +379,7 @@ impl TabState {
     }
 
     /// Decrement the focused pane's horizontal scroll in split diff view
-    pub fn scroll_left_split(&mut self) {
+    pub const fn scroll_left_split(&mut self) {
         match self.split_focus {
             SplitSide::Old => self.h_scroll_old = self.h_scroll_old.saturating_sub(1),
             SplitSide::New => self.h_scroll_new = self.h_scroll_new.saturating_sub(1),
@@ -426,11 +426,11 @@ impl TabState {
         self.sync_cursor_to_scroll();
     }
 
-    pub fn panel_scroll_down(&mut self, amount: u16) {
+    pub const fn panel_scroll_down(&mut self, amount: u16) {
         self.panel_scroll = self.panel_scroll.saturating_add(amount);
     }
 
-    pub fn panel_scroll_up(&mut self, amount: u16) {
+    pub const fn panel_scroll_up(&mut self, amount: u16) {
         self.panel_scroll = self.panel_scroll.saturating_sub(amount);
     }
 
@@ -480,11 +480,11 @@ impl TabState {
         self.current_line = Some(result.1);
     }
 
-    pub fn scroll_right(&mut self, amount: u16) {
+    pub const fn scroll_right(&mut self, amount: u16) {
         self.h_scroll = self.h_scroll.saturating_add(amount);
     }
 
-    pub fn scroll_left(&mut self, amount: u16) {
+    pub const fn scroll_left(&mut self, amount: u16) {
         self.h_scroll = self.h_scroll.saturating_sub(amount);
     }
 
@@ -1185,28 +1185,28 @@ impl TabState {
     }
 
     /// Scroll down in history mode
-    pub fn history_scroll_down(&mut self, amount: u16) {
+    pub const fn history_scroll_down(&mut self, amount: u16) {
         if let Some(ref mut h) = self.history {
             h.diff_scroll = h.diff_scroll.saturating_add(amount);
         }
     }
 
     /// Scroll up in history mode
-    pub fn history_scroll_up(&mut self, amount: u16) {
+    pub const fn history_scroll_up(&mut self, amount: u16) {
         if let Some(ref mut h) = self.history {
             h.diff_scroll = h.diff_scroll.saturating_sub(amount);
         }
     }
 
     /// Scroll right in history mode
-    pub fn history_scroll_right(&mut self, amount: u16) {
+    pub const fn history_scroll_right(&mut self, amount: u16) {
         if let Some(ref mut h) = self.history {
             h.h_scroll = h.h_scroll.saturating_add(amount);
         }
     }
 
     /// Scroll left in history mode
-    pub fn history_scroll_left(&mut self, amount: u16) {
+    pub const fn history_scroll_left(&mut self, amount: u16) {
         if let Some(ref mut h) = self.history {
             h.h_scroll = h.h_scroll.saturating_sub(amount);
         }
@@ -1453,14 +1453,14 @@ impl TabState {
     }
 
     /// Scroll the tour diff right.
-    pub fn tour_scroll_right(&mut self, amount: u16) {
+    pub const fn tour_scroll_right(&mut self, amount: u16) {
         if let Some(ref mut t) = self.tour {
             t.h_scroll = t.h_scroll.saturating_add(amount);
         }
     }
 
     /// Scroll the tour diff left.
-    pub fn tour_scroll_left(&mut self, amount: u16) {
+    pub const fn tour_scroll_left(&mut self, amount: u16) {
         if let Some(ref mut t) = self.tour {
             t.h_scroll = t.h_scroll.saturating_sub(amount);
         }

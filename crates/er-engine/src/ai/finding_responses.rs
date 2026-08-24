@@ -386,7 +386,7 @@ mod tests {
             created_at: String::new(),
             base_branch: String::new(),
             head_branch: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ErFileReview {
                     risk: RiskLevel::Low,
@@ -394,8 +394,7 @@ mod tests {
                     summary: String::new(),
                     findings: vec![finding],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
             file_hashes: HashMap::new(),
         };
@@ -454,13 +453,12 @@ mod tests {
             diff_scope: String::new(),
             created_at: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ExpertFileReview {
                     findings: vec![bare_finding("1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
         };
         write_json_atomic(&er.join("experts/api.json"), &expert).unwrap();
@@ -492,7 +490,7 @@ mod tests {
             created_at: String::new(),
             base_branch: String::new(),
             head_branch: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ErFileReview {
                     risk: RiskLevel::Low,
@@ -500,8 +498,7 @@ mod tests {
                     summary: String::new(),
                     findings: vec![bare_finding("f-1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
             file_hashes: HashMap::new(),
         };
@@ -514,13 +511,12 @@ mod tests {
             diff_scope: String::new(),
             created_at: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ExpertFileReview {
                     findings: vec![bare_finding("2")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
         };
         write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
@@ -564,13 +560,12 @@ mod tests {
             diff_scope: String::new(),
             created_at: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ExpertFileReview {
                     findings: vec![bare_finding("3")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
         };
         write_json_atomic(&er.join("experts/security.json"), &expert).unwrap();
@@ -603,13 +598,12 @@ mod tests {
             created_at: String::new(),
             focus_prompt: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ProfessorFileReview {
                     findings: vec![bare_finding("1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
         };
         write_json_atomic(&er.join("professor.json"), &prof).unwrap();
@@ -642,7 +636,7 @@ mod tests {
             created_at: String::new(),
             base_branch: String::new(),
             head_branch: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ErFileReview {
                     risk: RiskLevel::Low,
@@ -650,8 +644,7 @@ mod tests {
                     summary: String::new(),
                     findings: vec![bare_finding("1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
             file_hashes: HashMap::new(),
         };
@@ -665,13 +658,12 @@ mod tests {
             diff_scope: String::new(),
             created_at: String::new(),
             summary: String::new(),
-            files: [(
+            files: std::iter::once((
                 "a.rs".to_string(),
                 ExpertFileReview {
                     findings: vec![bare_finding("1")],
                 },
-            )]
-            .into_iter()
+            ))
             .collect::<HashMap<_, _>>(),
         };
         write_json_atomic(&er.join("experts/made-up.json"), &unknown).unwrap();

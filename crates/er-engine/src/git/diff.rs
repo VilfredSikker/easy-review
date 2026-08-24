@@ -9,7 +9,7 @@ pub struct DiffLine {
     pub new_num: Option<usize>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineType {
     Context,
     Add,
@@ -231,6 +231,7 @@ pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
 const MAX_EAGER_LAZY_PARSE_FILES: usize = 500;
 
 /// Build the file list for lazy mode (raw diff > 200KB): large files (≥ size
+///
 /// threshold or matching a compaction pattern) become compacted stubs to expand
 /// on demand; everything else is parsed eagerly so small files render without a
 /// lazy round-trip. `is_user_expanded` returns true for paths the user has
@@ -577,7 +578,7 @@ pub struct CompactionConfig {
 
 impl Default for CompactionConfig {
     fn default() -> Self {
-        CompactionConfig {
+        Self {
             enabled: true,
             patterns: DEFAULT_COMPACTION_PATTERNS
                 .iter()

@@ -236,7 +236,7 @@ describe("applyOptimisticThread", () => {
   it("still records ai.threads when the hunk is missing", () => {
     const view = snap({ files: [file({ hunks: [] })] });
     applyOptimisticThread(view, pendingFor("add_comment", view, commentArgs, "opt-1"));
-    expect(view.ai.threads).toHaveLength(1);
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["opt-1"]);
     expect(view.files[0].hunks).toEqual([]);
     expect(view.ai.comments).toBe(1);
     expect(view.files[0].comment_count).toBe(1);
@@ -246,9 +246,11 @@ describe("applyOptimisticThread", () => {
     const view = snap();
     const pending = pendingFor("add_comment", view, commentArgs, "opt-1");
     applyOptimisticThread(view, pending);
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["opt-1"]);
+    expect(view.files[0].hunks[0].threads.map((t) => t.id)).toEqual(["opt-1"]);
     applyOptimisticThread(view, pending);
-    expect(view.ai.threads).toHaveLength(1);
-    expect(view.files[0].hunks[0].threads).toHaveLength(1);
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["opt-1"]);
+    expect(view.files[0].hunks[0].threads.map((t) => t.id)).toEqual(["opt-1"]);
     expect(view.ai.comments).toBe(1);
     expect(view.files[0].comment_count).toBe(1);
   });
@@ -284,7 +286,7 @@ describe("reapplyOptimisticThreads", () => {
     const stale = snap();
     reapplyOptimisticThreads(stale, [pending]);
     expect(stale.ai.threads.map((t: ThreadSnapshot) => t.id)).toEqual(["opt-1"]);
-    expect(stale.files[0].hunks[0].threads).toHaveLength(1);
+    expect(stale.files[0].hunks[0].threads.map((t: ThreadSnapshot) => t.id)).toEqual(["opt-1"]);
     expect(stale.ai.comments).toBe(1);
   });
 
