@@ -138,8 +138,8 @@ describe("buildAnnotationIndex", () => {
     expect(idx.findingsByFileLine.get(`${FILE}:12`)?.length).toBe(1);
     expect(idx.findingsByFile.get(FILE)?.length).toBe(1); // f-hunk
 
-    expect(idx.threadMap.get("t1")).toBeDefined();
-    expect(idx.threadMap.get("tOwned")).toBeDefined();
+    expect(idx.threadMap.get("t1")?.line).toBe(13);
+    expect(idx.threadMap.get("tOwned")?.id).toBe("tOwned");
 
     expect(idx.findingThreadIds.has("tOwned")).toBe(true);
     expect(idx.findingThreadIds.has("t1")).toBe(false);

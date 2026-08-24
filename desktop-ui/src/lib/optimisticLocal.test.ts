@@ -368,6 +368,7 @@ describe("dismiss / promote / bulk / annotation", () => {
     );
     applyOptimisticOp(view, add!);
     expect(view.ui_annotations).toHaveLength(1);
+    expect(view.ui_annotations[0]).toMatchObject({ url: "https://ex/app", text: "pin" });
     const del = buildOptimisticOp(
       "delete_ui_annotation",
       { id: "opt-a" },
@@ -378,6 +379,7 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ui_annotations).toEqual([]);
     rollbackOptimisticOp(view, del!);
     expect(view.ui_annotations).toHaveLength(1);
+    expect(view.ui_annotations[0]).toMatchObject({ url: "https://ex/app", text: "pin" });
   });
 
   it("reapply skips a different view identity", () => {

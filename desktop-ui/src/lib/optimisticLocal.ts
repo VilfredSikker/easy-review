@@ -272,7 +272,7 @@ export function buildOptimisticOp(
   if (command === "resolve_thread") {
     const threadId = asString(args.id);
     const root = threadId ? locateRoot(snap, threadId) : null;
-    if (!root || root.thread.resolved) return null;
+    if (!threadId || !root || root.thread.resolved) return null;
     return { type: "resolve", id, viewIdentity, threadId, prevResolved: root.thread.resolved };
   }
 

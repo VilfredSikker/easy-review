@@ -16,8 +16,12 @@ function joinAll(spans: { text: string; changed: boolean }[]): string {
 describe("wordDiff", () => {
   it("identical lines → all spans unchanged", () => {
     const r = wordDiff("const foo = 1;", "const foo = 1;");
-    expect(r.old.every((s) => !s.changed)).toBe(true);
-    expect(r.new.every((s) => !s.changed)).toBe(true);
+    expect(r.old.map((s) => ({ text: s.text, changed: s.changed }))).toEqual([
+      { text: "const foo = 1;", changed: false },
+    ]);
+    expect(r.new.map((s) => ({ text: s.text, changed: s.changed }))).toEqual([
+      { text: "const foo = 1;", changed: false },
+    ]);
     expect(joinAll(r.old)).toBe("const foo = 1;");
     expect(joinAll(r.new)).toBe("const foo = 1;");
   });
@@ -35,16 +39,14 @@ describe("wordDiff", () => {
   it("empty old → everything on new side is changed", () => {
     const r = wordDiff("", "hello world");
     expect(r.old).toEqual([]);
-    expect(r.new.length).toBeGreaterThan(0);
-    expect(r.new.every((s) => s.changed)).toBe(true);
+    expect(r.new).toEqual([{ text: "hello world", changed: true }]);
     expect(joinAll(r.new)).toBe("hello world");
   });
 
   it("empty new → everything on old side is changed", () => {
     const r = wordDiff("hello world", "");
     expect(r.new).toEqual([]);
-    expect(r.old.length).toBeGreaterThan(0);
-    expect(r.old.every((s) => s.changed)).toBe(true);
+    expect(r.old).toEqual([{ text: "hello world", changed: true }]);
     expect(joinAll(r.old)).toBe("hello world");
   });
 
@@ -52,9 +54,17 @@ describe("wordDiff", () => {
     const r = wordDiff("a  b", "a b");
     expect(joinAll(r.old)).toBe("a  b");
     expect(joinAll(r.new)).toBe("a b");
-    // The whitespace token differs → at least one side has a changed span.
-    const anyChanged = r.old.some((s) => s.changed) || r.new.some((s) => s.changed);
-    expect(anyChanged).toBe(true);
+    // Only the whitespace token differs; the words on both sides are unchanged.
+    expect(r.old.map((s) => ({ text: s.text, changed: s.changed }))).toEqual([
+      { text: "a", changed: false },
+      { text: "  ", changed: true },
+      { text: "b", changed: false },
+    ]);
+    expect(r.new.map((s) => ({ text: s.text, changed: s.changed }))).toEqual([
+      { text: "a", changed: false },
+      { text: " ", changed: true },
+      { text: "b", changed: false },
+    ]);
   });
 
   it("string literal change marks only the literal", () => {

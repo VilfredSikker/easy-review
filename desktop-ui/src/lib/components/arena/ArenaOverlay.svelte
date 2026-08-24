@@ -77,6 +77,8 @@
     aria-modal="true"
     aria-label="AI Review Arena"
   >
+    <!-- Tauri window-drag region (platform chrome, mouse-only by design); parent dialog is aria-labelled -->
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
       class="titlebar-drag shrink-0 border-b border-[var(--arena-border)] bg-[var(--arena-bg-1)] py-3 pr-5 pl-5"
       style="padding-left: max(1.25rem, env(titlebar-area-x, 80px))"
