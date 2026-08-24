@@ -47,6 +47,14 @@ scripts/aliases below, so either form works.
 - **No external services**: no databases, Docker, or network services. The only runtime dependency is `git` (and optionally `gh` for GitHub PR features).
 - **Review sidecars**: AI sidecar files live in managed app data by default (see "Managed review storage" in `CLAUDE.md`). Set `ER_REPO_LOCAL=1` to use repo-local `.er/` instead.
 
+## GitHub repo metadata
+
+Topics, description, and homepage live on GitHub, not in git. `VilfredSikker/easy-review` must keep the `herdr-plugin` topic (Herdr marketplace) plus product topics for search:
+
+`ai-code-review`, `cli`, `code-review`, `desktop-app`, `developer-tools`, `diff`, `git`, `github`, `herdr`, `mcp`, `model-context-protocol`, `pull-requests`, `ratatui`, `rust`, `svelte`, `tauri`, `tui`.
+
+Set with `gh repo edit --add-topic …`. Description is the one-line GitHub blurb. Homepage points at the docs site.
+
 ## Desktop App Shape
 
 Three active surfaces:
