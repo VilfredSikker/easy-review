@@ -2,12 +2,33 @@
 
 ## In plain terms
 
-- **What changed.** Collapsing the repo sidebar, file tree, or right rail with `[`, `\`, or `]` no longer freezes the window for a few seconds first.
+- **What changed.** The inbox groups by category with new comment/reply/mention events and independent show vs notify settings. The title bar shows the active AI provider and model. A Herdr plugin opens `er` on the workspace branch. Collapsing side panels no longer freezes. GitHub comments survive context fold. Local PR tabs show branch identity and keep Local Branch distinct from PR Diff.
+- **TL;DR.** Inbox overhaul, title-bar model chip, Herdr plugin, panel-collapse and comment-fold fixes.
+
+## Highlights
+
+- **Inbox.** Category chips, comment/reply/mention events, and quick filters. Show and OS notify can be toggled per kind. (#185, #187)
+- **Title bar.** Active AI provider and model sit in the chrome. Click the chip to pick. Selection persists across relaunch. (#190)
+- **Herdr plugin.** Review tab for the workspace checkout, auto-open on new worktrees, Ctrl-click GitHub PR links via `er --remote`. (#186)
+- **Panel collapse.** `[`, `\`, and `]` paint immediately instead of waiting on a full snapshot. (#189)
+- **Comments after fold.** GitHub comments stay attached when context is folded. (#188)
+- **Local Branch.** PR tabs show head/base identity. Local Branch and PR Diff stay distinct. (#184)
 
 ## What's Changed
 
+### Features
+- Inbox categories, new events, and quick filters. (#185)
+- Independent inbox show and notify settings. (#187)
+- Show the active AI provider and model in the desktop title bar. (#190)
+- Add Herdr plugin for workspace branch review, worktree auto-open, and PR link handling. (#186)
+
 ### Fixes
-- Collapse repo, file, and right panels immediately instead of waiting on a full snapshot.
+- Collapse repo, file, and right panels immediately instead of waiting on a full snapshot. (#189)
+- Keep GitHub comments visible after context fold. (#188)
+- Show branch identity and keep Local Branch distinct from PR Diff. (#184)
+- Review the Herdr workspace checkout, not the plugin repo. (#186)
+
+**Full Changelog**: https://github.com/VilfredSikker/easy-review/compare/v0.4.13...v0.4.14
 
 # Easy Review v0.4.13
 
