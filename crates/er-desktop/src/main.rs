@@ -15,6 +15,7 @@ mod frame_script;
 mod gh_status_cache;
 mod inbox;
 mod main_webview_policy;
+mod native_notify;
 mod persist;
 mod pr_cache;
 mod pr_open_cache;
@@ -1755,7 +1756,7 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
-                commands::prepare_macos_notifications(app.handle());
+                native_notify::initialize(app.handle());
                 let prefs = commands::clone_inbox_prefs(&state.app);
                 commands::flush_pending_native_notifications(
                     &state.inbox,
@@ -1970,6 +1971,7 @@ fn main() {
             commands::clear_read_inbox_items,
             commands::clear_inbox_items,
             commands::refresh_notifications,
+            commands::test_native_notification,
             commands::dismiss_remote_pr,
             commands::undismiss_remote_pr,
             commands::sync_pr,
