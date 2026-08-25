@@ -243,6 +243,13 @@ body {
   min-width: 0;
   box-sizing: border-box;
 }
+/* Split view: pin comment/question/note cards to one code cell. Tracks match
+ * SplitContentRow (`40px 1fr 40px 1fr`); the slot sits in col 2 (old) or 4 (new),
+ * same half-width as DiffComposer. */
+.annotation-inline-row.annotation-split-row {
+  display: grid;
+  grid-template-columns: 40px minmax(0, 1fr) 40px minmax(0, 1fr);
+}
 /* In-flow file headers: viewport-wide + pinned left when scrolling long lines horizontally. */
 .file-header-viewport-row {
   position: sticky;

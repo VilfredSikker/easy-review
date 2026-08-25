@@ -60,6 +60,16 @@ export function threadReviewSide(t: ThreadSnapshot): "old" | "new" {
   return t.side === "LEFT" ? "old" : "new";
 }
 
+/**
+ * Split-view inline threads share SplitContentRow's 4-column grid
+ * (`40px minmax(0,1fr) 40px minmax(0,1fr)`). The card occupies the code cell
+ * of the review side — same half-width as DiffComposer (after the gutter,
+ * 8px trailing pad).
+ */
+export function splitThreadGridColumn(t: ThreadSnapshot): "2 / 3" | "4 / 5" {
+  return threadReviewSide(t) === "old" ? "2 / 3" : "4 / 5";
+}
+
 export function lineInThreadAnchorRange(
   t: ThreadSnapshot,
   line: number,

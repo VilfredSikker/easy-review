@@ -10,6 +10,7 @@ import {
   findingsForSplitRow,
   hunkLevelFindings,
   lineHasAnchorRangeHighlight,
+  splitThreadGridColumn,
   threadAnchorEnd,
   threadsForLine,
   type CommentVisibility,
@@ -390,6 +391,15 @@ describe("threadsForLine", () => {
     const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
     expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "old").map((t) => t.id)).toEqual(["t-left"]);
     expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "new").map((t) => t.id)).toEqual(["t-right"]);
+  });
+
+  it("splitThreadGridColumn puts LEFT in the left code cell and RIGHT in the right", () => {
+    const left = mkThread({ id: "t-left", file: FILE, line: 13, side: "LEFT" });
+    const right = mkThread({ id: "t-right", file: FILE, line: 13, side: "RIGHT" });
+    const unset = mkThread({ id: "t-default", file: FILE, line: 13 });
+    expect(splitThreadGridColumn(left)).toBe("2 / 3");
+    expect(splitThreadGridColumn(right)).toBe("4 / 5");
+    expect(splitThreadGridColumn(unset)).toBe("4 / 5");
   });
 });
 

@@ -26,10 +26,6 @@ export const Split: Story = {
 };
 
 /**
- * Split mode with an inline comment thread anchored to a line in the first
- * hunk. The thread row spans both sides.
- */
-/**
  * Word-diff highlights — a hunk with clear modify pairs (variable rename,
  * string-literal change, signature tweak). In split mode the differing
  * tokens get a darker background on each side; the rest of the line keeps
@@ -185,6 +181,10 @@ export const LongLinesHorizontalScroll: Story = {
   })(),
 };
 
+/**
+ * Split mode with an inline comment thread on an added line. The card sits
+ * in the right (new) pane, matching the composer width.
+ */
 export const SplitWithThreads: Story = {
   args: (() => {
     const snap: AppSnapshot = JSON.parse(JSON.stringify(richSnapshot));
@@ -194,7 +194,7 @@ export const SplitWithThreads: Story = {
     if (firstFile && firstFile.hunks[0]) {
       firstFile.hunks[0].threads = [
         ...firstFile.hunks[0].threads,
-        { ...commentThread, id: "thread-split-demo", line: 39 },
+        { ...commentThread, id: "thread-split-demo", line: 39, side: "RIGHT" },
       ];
     }
     return { snapshot: snap, viewModeOverride: "split" as const };

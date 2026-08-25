@@ -2236,7 +2236,7 @@
             {:else if row.type === "inline-thread" || row.type === "fallback-thread"}
               {@const thread = getThread(row.threadId)}
               {#if thread}
-                <ThreadRow {row} {thread} />
+                <ThreadRow {row} {thread} split={viewMode === "split"} />
               {/if}
             {:else if row.type === "inline-finding" || row.type === "fallback-finding"}
               {@const finding = getFinding(row.findingId)}
