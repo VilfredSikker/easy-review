@@ -6,6 +6,8 @@ import {
   LINE_HEIGHT,
   NO_CHANGES_HEIGHT,
   estimateLazyStubHeight,
+  estimateThreadHeight,
+  estimateFindingHeight,
   diffLineCount,
   filesRenderFingerprint,
   getFileBlock,
@@ -1090,5 +1092,43 @@ describe("getFileBlock / getCrossFileModel — max line columns", () => {
     const model = mkCross([f0, f1], emptyAi(), { snapshotKey: "maxcols-collapse" });
     const collapsed = applyCollapsedFiles(model, new Set(["a.ts"]));
     expect(collapsed.maxColsByFile).toBe(model.maxColsByFile);
+  });
+});
+
+describe("estimateThreadHeight", () => {
+  it("grows when body columns shrink (split pane)", () => {
+    const t = thread("t-wrap", "a.ts", 1, {
+      root: {
+        id: "t-wrap-root",
+        author: "me",
+        kind: "you",
+        timestamp: "",
+        body_markdown: "x".repeat(160),
+      },
+    });
+    const wide = estimateThreadHeight(t, 80);
+    const narrow = estimateThreadHeight(t, 40);
+    expect(narrow).toBeGreaterThan(wide);
+  });
+});
+
+describe("estimateFindingHeight", () => {
+  it("grows when body columns shrink (split pane)", () => {
+    const f: FlatFinding = {
+      id: "f-wrap",
+      file: "a.ts",
+      line: 1,
+      hunk_index: 0,
+      severity: "med",
+      expert_label: null,
+      agent_label: "General",
+      title: "t",
+      message_markdown: "x".repeat(160),
+      promoted_to: null,
+      thread_id: null,
+    };
+    const wide = estimateFindingHeight(f, 80);
+    const narrow = estimateFindingHeight(f, 40);
+    expect(narrow).toBeGreaterThan(wide);
   });
 });
