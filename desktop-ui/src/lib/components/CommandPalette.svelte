@@ -17,6 +17,7 @@
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
   import type { AiProviderInfo } from "$lib/types";
+  import { isPaletteSearchFocused, paletteQuickActionKey } from "$lib/commandPaletteKeys";
 
   type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "PR" | "Files in this diff";
 
@@ -477,6 +478,14 @@
     const aiItems = buildAiItems();
 
     const containers: CommandItem[] = [
+      {
+        id: "focus-search",
+        label: "Focus search",
+        description: "Type a command or jump to file",
+        group: "Actions",
+        kbd: "/",
+        run: () => { focusSearch(); },
+      },
       { id: "menu-actions", label: "Actions", description: "Export, settings, logs", group: "Actions", kbd: "s", run: () => {}, submenuItems: actionsItems },
       { id: "menu-navigate", label: "Navigate", description: "Refresh, terminal, agent output", group: "Navigate", kbd: "n", run: () => {}, submenuItems: navigateItems },
       { id: "menu-view", label: "View & Layout", description: "Diff mode, browser, panels", group: "View & Layout", kbd: "v", run: () => {}, submenuItems: viewItems },
@@ -513,14 +522,17 @@
     return qi === lowerQ.length;
   }
 
-  /** Push a submenu (a parent entry) onto the stack and reset nav/focus.
-   *  Records the current view's selected index + query so ← restores them. */
+  /** Push a submenu (a parent entry) onto the stack and reset nav.
+   *  Records the current view's selected index + query so ← restores them.
+   *  Search stays focused only if it already was — letter jumps do not steal
+   *  the filter, and opening a menu does not auto-focus the field. */
   function pushSubmenu(parent: CommandItem) {
+    const keepSearchFocus = document.activeElement === inputEl;
     submenuStack = [...submenuStack, { item: parent, selectedIdx, query }];
     query = "";
     selectedIdx = 0;
     if (parent.view === "reviewers") reviewerSelection = new Set();
-    queueMicrotask(() => inputEl?.focus());
+    if (keepSearchFocus) queueMicrotask(() => inputEl?.focus());
   }
 
   /** Open a list item: push a submenu if it has one, otherwise run it. */
@@ -536,7 +548,8 @@
     submenuStack = submenuStack.slice(0, -1);
     query = prev?.query ?? "";
     selectedIdx = prev?.selectedIdx ?? 0;
-    queueMicrotask(() => inputEl?.focus());
+    const keepSearchFocus = document.activeElement === inputEl;
+    if (keepSearchFocus) queueMicrotask(() => inputEl?.focus());
   }
 
   /** The top item of the submenu stack, or null when showing the root list. */
@@ -622,8 +635,15 @@
     commandPalette.show();
   }
 
+  function focusSearch() {
+    inputEl?.focus();
+  }
+
   function onModalKeydown(e: KeyboardEvent) {
     if (!commandPalette.open) return;
+
+    const searchFocused = isPaletteSearchFocused(e.target);
+    const unchorded = !e.metaKey && !e.ctrlKey && !e.altKey;
 
     if (activeSubmenu?.view === "reviewers") {
       if (e.key === "Escape") { e.preventDefault(); goBack(); return; }
@@ -636,35 +656,48 @@
 
     if (e.key === "Escape") {
       e.preventDefault();
+      if (searchFocused) {
+        if (query.trim() !== "") {
+          query = "";
+          selectedIdx = 0;
+        } else {
+          inputEl?.blur();
+        }
+        return;
+      }
       if (activeSubmenu) goBack();
       else close();
+      return;
     }
-    else if (e.key === "ArrowLeft" && activeSubmenu) {
+    if (!searchFocused && e.key === "ArrowLeft" && activeSubmenu) {
       e.preventDefault();
       goBack();
+      return;
     }
-    else if (e.key === "ArrowRight") {
+    if (!searchFocused && e.key === "ArrowRight") {
       e.preventDefault();
       const item = navList[selectedIdx];
       if (item && (item.submenuItems || item.view)) openItem(item);
+      return;
     }
-    else if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, navList.length - 1); }
-    else if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); }
-    else if (e.key === "Enter") { e.preventDefault(); const item = navList[selectedIdx]; if (item) openItem(item); }
-    else if (
-      !e.metaKey && !e.ctrlKey && !e.altKey &&
-      e.key.length === 1 && /^[a-zA-Z]$/.test(e.key)
-    ) {
-      // Letter keybinds: run the matching item in the current view. Only active
-      // at the root (empty query) or inside a submenu — otherwise it types into
-      // the filter.
-      if (activeSubmenu || query.trim() === "") {
-        const item = viewKeybinds.get(e.key.toLowerCase());
-        if (item) {
-          e.preventDefault();
-          openItem(item);
-        }
-      }
+    if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, navList.length - 1); return; }
+    if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); return; }
+    if (e.key === "Enter") { e.preventDefault(); const item = navList[selectedIdx]; if (item) openItem(item); return; }
+
+    const action = paletteQuickActionKey(e, searchFocused);
+    if (action === "search") {
+      e.preventDefault();
+      focusSearch();
+      return;
+    }
+    if (action === "letter") {
+      e.preventDefault();
+      const item = viewKeybinds.get(e.key.toLowerCase());
+      if (item) openItem(item);
+      return;
+    }
+    if (!searchFocused && unchorded && (e.key.length === 1 || e.key === "Backspace")) {
+      e.preventDefault();
     }
   }
 
@@ -699,7 +732,6 @@
   onClose={close}
   onKeydown={onModalKeydown}
   closeOnEscape={false}
-  focusSelector="input"
   backdropClass="fixed inset-0 z-[100] bg-bg/50"
   panelClass="fixed left-1/2 -translate-x-1/2 top-[12vh] w-[640px] z-[101] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none"
 >
@@ -715,12 +747,20 @@
       >←</button>
       <span class="text-sm text-fg-2 font-medium">{activeSubmenu.label}</span>
     {:else}
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      <button
+        type="button"
+        aria-label="Focus search"
+        onclick={focusSearch}
+        class="text-muted hover:text-fg-2"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+      </button>
     {/if}
     {#if activeSubmenu?.view !== "reviewers"}
       <input
         bind:this={inputEl}
         bind:value={query}
+        data-palette-search="true"
         class="flex-1 bg-transparent outline-none text-base placeholder:text-muted"
         placeholder={activeSubmenu ? "Filter…" : "Type a command or jump to file…"}
       />
@@ -812,8 +852,9 @@
     <span class="flex items-center gap-1"><span class="kbd">→</span> open</span>
     <span class="flex items-center gap-1"><span class="kbd">←</span> back</span>
     <span class="flex items-center gap-1"><span class="kbd">⏎</span> run</span>
-    <span class="ml-auto flex items-center gap-1">
-      <span>letters</span><span>jump to item</span>
+    <span class="ml-auto flex items-center gap-2">
+      <span class="flex items-center gap-1"><span class="kbd">/</span> search</span>
+      <span>letters jump to item</span>
     </span>
   </div>
 </ModalShell>
