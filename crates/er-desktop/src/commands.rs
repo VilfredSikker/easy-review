@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use tauri::State;
+#[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
 use crate::inbox::{
@@ -410,24 +411,29 @@ pub fn flush_pending_native_notifications(
     }
 }
 
-/// Release builds deliver notifications under the app bundle id (not Terminal).
-#[cfg(target_os = "macos")]
-pub fn prepare_macos_notifications(app: &tauri::AppHandle) {
-    if tauri::is_dev() {
-        return;
+fn show_native_notification(app: Option<&tauri::AppHandle>, title: &str, body: &str) -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app;
+        crate::native_notify::show(title, body)
     }
-    let ident = app.config().identifier.clone();
-    match notify_rust::set_application(&ident) {
-        Ok(()) => log::info!("macOS notifications: registered bundle id {ident}"),
-        Err(e) => log::warn!(
-            "macOS notifications: could not use bundle id {ident} ({e}). \
-             Launch the installed Easy Review.app and enable notifications in System Settings."
-        ),
+    #[cfg(not(target_os = "macos"))]
+    {
+        match app {
+            Some(app) => app
+                .notification()
+                .builder()
+                .title(title)
+                .body(body)
+                .show()
+                .is_ok(),
+            None => {
+                log::debug!("native notification skipped (no AppHandle yet)");
+                false
+            }
+        }
     }
 }
-
-#[cfg(not(target_os = "macos"))]
-pub fn prepare_macos_notifications(_app: &tauri::AppHandle) {}
 
 fn maybe_send_native_notification(
     inbox_handle: &InboxHandle,
@@ -445,17 +451,11 @@ fn maybe_send_native_notification(
         return;
     }
     let handle = app_handle_state.lock().ok().and_then(|g| g.clone());
-    if let Some(app) = handle {
-        let shown = app
-            .notification()
-            .builder()
-            .title(&item.title)
-            .body(&item.body)
-            .show()
-            .is_ok();
-        if shown {
-            inbox.notified_item_ids.insert(item.id.clone());
-        }
+    let shown = show_native_notification(handle.as_ref(), &item.title, &item.body);
+    if shown {
+        inbox.notified_item_ids.insert(item.id.clone());
+    } else {
+        log::debug!("native notification not delivered for {}", item.id);
     }
 }
 
@@ -7560,6 +7560,20 @@ pub fn refresh_notifications(state: State<AppState>) -> Result<AppSnapshot, Stri
 }
 
 #[tauri::command]
+pub fn test_native_notification(state: State<AppState>) -> Result<(), String> {
+    let handle = state.tauri_app_handle.lock().ok().and_then(|g| g.clone());
+    if show_native_notification(handle.as_ref(), "Easy Review", "Test notification") {
+        Ok(())
+    } else {
+        Err(
+            "Could not send a native notification. Launch the installed Easy Review.app \
+             and enable notifications in System Settings."
+                .into(),
+        )
+    }
+}
+
+#[tauri::command]
 pub async fn open_inbox_item(
     id: String,
     state: State<'_, AppState>,
@@ -11096,6 +11110,37 @@ mod tests {
         assert!(
             !inbox.lock().unwrap().notified_item_ids.contains(&item.id),
             "disabled notify kinds must not be marked notified"
+        );
+    }
+
+    #[test]
+    fn failed_native_send_is_not_marked_notified() {
+        let inbox: InboxHandle = Arc::new(Mutex::new(crate::inbox::InboxState::default()));
+        let app_handle: Arc<Mutex<Option<tauri::AppHandle>>> = Arc::new(Mutex::new(None));
+        let item = InboxItem {
+            id: "inbox-ai-fail-send".to_string(),
+            kind: "ai_review_done".to_string(),
+            severity: "success".to_string(),
+            title: "AI review completed".to_string(),
+            body: "done".to_string(),
+            source: "ai".to_string(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 0,
+            read_at_ms: None,
+            dedupe_key: "ai:fail-send:done".to_string(),
+        };
+
+        maybe_send_native_notification(&inbox, &app_handle, &InboxConfig::default(), &item);
+        assert!(
+            !inbox.lock().unwrap().notified_item_ids.contains(&item.id),
+            "a failed native send must not be marked notified"
         );
     }
 

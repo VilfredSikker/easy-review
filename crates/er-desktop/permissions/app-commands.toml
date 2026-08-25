@@ -111,6 +111,7 @@ commands.allow = [
   "mark_all_inbox_read",
   "clear_read_inbox_items",
   "refresh_notifications",
+  "test_native_notification",
   "dismiss_remote_pr",
   "undismiss_remote_pr",
   "sync_branch",

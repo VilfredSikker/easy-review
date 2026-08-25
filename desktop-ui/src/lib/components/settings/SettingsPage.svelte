@@ -55,6 +55,7 @@
   let uninstallTyped = $state("");
   let uninstallBusy = $state(false);
   let focusUninstall = $state(false);
+  let testNotifBusy = $state(false);
 
   const fields = $derived(activeTab === "general" ? generalFields : terminalFields);
 
@@ -123,6 +124,18 @@
       app.showToast("error", `get_config_hub: ${e}`);
     } finally {
       loading = false;
+    }
+  }
+
+  async function sendTestNotification() {
+    testNotifBusy = true;
+    try {
+      await invoke("test_native_notification");
+      app.showToast("info", "Test notification sent");
+    } catch (e) {
+      app.showToast("error", `test_native_notification: ${e}`);
+    } finally {
+      testNotifBusy = false;
     }
   }
 
@@ -427,6 +440,17 @@
                   </div>
                 {/if}
               {/each}
+              {#if section.title === "Inbox notifications"}
+                <div class="px-4 py-3">
+                  <Button
+                    onclick={() => void sendTestNotification()}
+                    disabled={testNotifBusy}
+                    title="Send a macOS banner while this window is focused"
+                  >
+                    Send test notification
+                  </Button>
+                </div>
+              {/if}
             </div>
           {/each}
         {/if}
