@@ -413,6 +413,15 @@ describe("findingReviewSide", () => {
     const f = mkFinding({ id: "f-file", file: FILE, line: null });
     expect(findingReviewSide(f, [])).toBe("new");
   });
+
+  it("prefers new when the same number exists as del and add", () => {
+    const f = mkFinding({ id: "f-both", file: FILE, line: 10 });
+    const lines: LineSnapshot[] = [
+      mkLine({ kind: "del", old_num: 10, text: "gone" }),
+      mkLine({ kind: "add", old_num: null, new_num: 10, text: "here" }),
+    ];
+    expect(findingReviewSide(f, lines)).toBe("new");
+  });
 });
 
 describe("fallbackThreadsForHunk", () => {

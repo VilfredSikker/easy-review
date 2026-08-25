@@ -1,19 +1,17 @@
 <script lang="ts">
+  import { SPLIT_ANNOTATION_TRAIL_PAD_PX } from "$lib/splitDiffLayout";
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
 
   interface Props {
     /** Absolute top position in px. When set, renders absolute (flat mode); otherwise sticky. */
     topPx?: number;
-    /** Left inset for Guide pillar rail — keep composer aligned with the diff column. */
-    offsetLeftPx?: number;
-    /** Horizontal position (px) of the composer's left edge, when constrained to a column. */
-    leftPx?: number;
-    /** Width (px) of the composer, when constrained to a column (split mode). */
-    widthPx?: number;
+    /** Split-view pane. Uses the same `.split-diff-grid` as posted annotation cards. */
+    splitPane?: "old" | "new" | null;
   }
-  const { topPx, offsetLeftPx = 0, leftPx, widthPx }: Props = $props();
+  const { topPx, splitPane = null }: Props = $props();
 
+  const split = $derived(splitPane !== null);
   const canSubmit = $derived(diffSel.text.trim().length > 0);
   let composerEl: HTMLTextAreaElement | null = $state(null);
   let didFocusForSelection = $state(false);
@@ -90,93 +88,110 @@
       submit();
     }
   }
+
+  const cardClass =
+    "mb-4 mt-2 rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]";
 </script>
 
 <div
-  onclick={(e) => e.stopPropagation()}
-  role="dialog"
-  aria-label="Add comment or question"
-  tabindex="-1"
-  onkeydown={() => {}}
-  style={topPx !== undefined
-    ? `position:absolute;top:${topPx}px;left:${widthPx !== undefined ? leftPx : offsetLeftPx}px;${widthPx !== undefined ? `width:${widthPx}px` : "right:0"};z-index:20`
-    : undefined}
-  class="{topPx === undefined ? 'sticky bottom-0 left-0 right-0 mb-4 mt-2' : 'mb-4 mt-2'} rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]
-         {diffSel.kind === 'question' || diffSel.kind === 'note'
-           ? 'border border-question/40 bg-card'
-           : 'border border-action/40 bg-card'}"
+  class={[
+    topPx !== undefined && "absolute left-0 right-0 z-20",
+    split && ["annotation-inline-row", "annotation-split-row", "split-diff-grid"],
+  ]}
+  data-split-pane={split ? splitPane : undefined}
+  style={topPx !== undefined ? `top:${topPx}px` : undefined}
 >
-  <!-- Header -->
-  <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
-    {#if diffSel.kind === "comment"}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-action"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
-    {/if}
-    <span class="text-fg-2 font-medium">{diffSel.rangeLabel()}</span>
+  <div
+    class={["min-w-0", split && "annotation-split-slot"]}
+    style={split ? `padding-right:${SPLIT_ANNOTATION_TRAIL_PAD_PX}px` : undefined}
+  >
+    <div
+      onclick={(e) => e.stopPropagation()}
+      role="dialog"
+      aria-label="Add comment or question"
+      tabindex="-1"
+      onkeydown={() => {}}
+      class={[
+        cardClass,
+        topPx === undefined && "sticky bottom-0 left-0 right-0",
+        diffSel.kind === "question" || diffSel.kind === "note"
+          ? "border border-question/40 bg-card"
+          : "border border-action/40 bg-card",
+      ]}
+    >
+    <!-- Header -->
+    <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
+      {#if diffSel.kind === "comment"}
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-action"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+      {/if}
+      <span class="text-fg-2 font-medium">{diffSel.rangeLabel()}</span>
 
-    <div class="ml-3 flex items-center gap-0.5 bg-bg border border-hairline rounded-md p-0.5">
-      <button
-        onclick={() => (diffSel.kind = "comment")}
-        class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-               {diffSel.kind === 'comment' ? 'bg-comment text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-      >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Comment
-      </button>
-      <button
-        onclick={() => (diffSel.kind = "question")}
-        class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-               {diffSel.kind === 'question' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-      >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-        Question
-      </button>
-      <button
-        onclick={() => (diffSel.kind = "note")}
-        class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-               {diffSel.kind === 'note' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-      >
-        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
-        Note
+      <div class="ml-3 flex items-center gap-0.5 bg-bg border border-hairline rounded-md p-0.5">
+        <button
+          onclick={() => (diffSel.kind = "comment")}
+          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
+                 {diffSel.kind === 'comment' ? 'bg-comment text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          Comment
+        </button>
+        <button
+          onclick={() => (diffSel.kind = "question")}
+          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
+                 {diffSel.kind === 'question' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+          Question
+        </button>
+        <button
+          onclick={() => (diffSel.kind = "note")}
+          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
+                 {diffSel.kind === 'note' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
+        >
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
+          Note
+        </button>
+      </div>
+
+      <span class="ml-auto text-[10px] mono text-muted">
+        {diffSel.kind === "comment" ? "will sync to GitHub" : "private · won't push"}
+      </span>
+      <button onclick={() => diffSel.clear()} aria-label="Cancel" class="ml-2 text-muted hover:text-fg-2">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
       </button>
     </div>
 
-    <span class="ml-auto text-[10px] mono text-muted">
-      {diffSel.kind === "comment" ? "will sync to GitHub" : "private · won't push"}
-    </span>
-    <button onclick={() => diffSel.clear()} aria-label="Cancel" class="ml-2 text-muted hover:text-fg-2">
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-    </button>
+    <textarea
+      bind:this={composerEl}
+      bind:value={diffSel.text}
+      onkeydown={handleKeydown}
+      rows="3"
+      placeholder={diffSel.kind === "question"
+        ? "Ask a question about these lines… (only you see this)"
+        : diffSel.kind === "note"
+          ? "Write a note / instruction for an agent… (only you see this)"
+          : "Add a review comment…"}
+      class="w-full bg-transparent text-sm px-3 py-2.5 outline-none resize-none font-sans placeholder:text-muted leading-relaxed"
+    ></textarea>
+
+    <div class="px-3 py-2 border-t border-hairline flex items-center gap-2 text-[11px]">
+      <span class="text-muted">Markdown supported</span>
+      <span class="ml-auto text-muted flex items-center gap-1">
+        <span class="kbd">ctrl+t</span> toggle
+        <span class="kbd">esc</span> cancel
+      </span>
+      <button
+        onclick={submit}
+        disabled={!canSubmit}
+        class="px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5
+               {diffSel.kind === 'question' || diffSel.kind === 'note'
+                 ? 'bg-question hover:bg-question/90 text-on-accent'
+                 : 'bg-comment hover:bg-comment/90 text-on-accent'}"
+      >
+        <span>{diffSel.kind === "question" ? "Save question" : diffSel.kind === "note" ? "Save note" : "Add comment"}</span>
+        <span class="opacity-60 mono">⌘⏎</span>
+      </button>
+    </div>
   </div>
-
-  <textarea
-    bind:this={composerEl}
-    bind:value={diffSel.text}
-    onkeydown={handleKeydown}
-    rows="3"
-    placeholder={diffSel.kind === "question"
-      ? "Ask a question about these lines… (only you see this)"
-      : diffSel.kind === "note"
-        ? "Write a note / instruction for an agent… (only you see this)"
-        : "Add a review comment…"}
-    class="w-full bg-transparent text-sm px-3 py-2.5 outline-none resize-none font-sans placeholder:text-muted leading-relaxed"
-  ></textarea>
-
-  <div class="px-3 py-2 border-t border-hairline flex items-center gap-2 text-[11px]">
-    <span class="text-muted">Markdown supported</span>
-    <span class="ml-auto text-muted flex items-center gap-1">
-      <span class="kbd">ctrl+t</span> toggle
-      <span class="kbd">esc</span> cancel
-    </span>
-    <button
-      onclick={submit}
-      disabled={!canSubmit}
-      class="px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5
-             {diffSel.kind === 'question' || diffSel.kind === 'note'
-               ? 'bg-question hover:bg-question/90 text-on-accent'
-               : 'bg-comment hover:bg-comment/90 text-on-accent'}"
-    >
-      <span>{diffSel.kind === "question" ? "Save question" : diffSel.kind === "note" ? "Save note" : "Add comment"}</span>
-      <span class="opacity-60 mono">⌘⏎</span>
-    </button>
   </div>
 </div>

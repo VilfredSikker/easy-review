@@ -182,8 +182,9 @@ export const LongLinesHorizontalScroll: Story = {
 };
 
 /**
- * Split mode with an inline comment thread on an added line. The card sits
- * in the right (new) pane, matching the composer width.
+ * Split mode with an inline comment thread on an added line. Comment,
+ * question, and finding cards sit in the right (new) pane, matching the
+ * composer width.
  */
 export const SplitWithThreads: Story = {
   args: (() => {

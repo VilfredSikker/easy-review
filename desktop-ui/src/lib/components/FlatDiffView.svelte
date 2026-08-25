@@ -74,7 +74,7 @@
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
-  import { SPLIT_ANNOTATION_TRAIL_PAD_PX, SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
+  import { SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
@@ -1252,21 +1252,10 @@
     return undefined;
   });
 
-  /** Left edge + width of the composer. In split mode it matches the selected
-   *  column (old → left panel, new → right panel); otherwise full-width. */
-  const composerGeometry = $derived.by(() => {
-    const railOffset = tourActive ? RAIL_W : 0;
-    if (viewMode === "split" && diffSel.side !== null && bandWidthPx > 0) {
-      const panelW = bandWidthPx / 2;
-      const left = diffSel.side === "old"
-        ? railOffset + GUTTER_PX
-        : railOffset + panelW + GUTTER_PX;
-      const width = panelW - GUTTER_PX - SPLIT_ANNOTATION_TRAIL_PAD_PX;
-      return { leftPx: left, widthPx: width };
-    }
-    // Unmeasured band or unified mode → full-width (DiffComposer uses left/right).
-    return { leftPx: railOffset, widthPx: bandWidthPx > 0 ? bandWidthPx : undefined };
-  });
+  /** Split pane for the composer. Same `.split-diff-grid` as posted cards. */
+  const composerSplitPane = $derived(
+    viewMode === "split" && diffSel.side !== null ? diffSel.side : null,
+  );
 
   // ── Composer scroll: one-shot into view on open; free scroll afterward ───
   let composerAutoScrolledKey = $state<string | null>(null);
@@ -2268,9 +2257,7 @@
       {#if diffSel.composerOpen}
         <DiffComposer
           topPx={composerTopPx}
-          leftPx={composerGeometry.leftPx}
-          widthPx={composerGeometry.widthPx}
-          offsetLeftPx={tourActive ? RAIL_W : 0}
+          splitPane={composerSplitPane}
         />
       {/if}
     {/if}

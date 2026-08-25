@@ -243,18 +243,27 @@ body {
   min-width: 0;
   box-sizing: border-box;
 }
-/* Split 50/50 tracks. Used by SplitContentRow and split annotation cards.
- * Gutter 40px matches SPLIT_GUTTER_PX. */
+/* Split 50/50 tracks. Used by SplitContentRow, posted annotation cards, and
+ * the comment composer. --er-split-gutter matches SPLIT_GUTTER_PX. */
+:root {
+  --er-split-gutter: 40px;
+}
 .split-diff-grid {
   display: grid;
-  grid-template-columns: 40px minmax(0, 1fr) 40px minmax(0, 1fr);
+  grid-template-columns: var(--er-split-gutter) minmax(0, 1fr) var(--er-split-gutter) minmax(0, 1fr);
 }
-/* Pin comment/question/note/finding cards to one code cell (col 2 old, col 4 new). */
+/* Pin comment/question/note/finding cards and the composer to one code cell
+ * (col 2 old, col 4 new). Empty columns must not steal clicks from the other pane. */
+.annotation-inline-row.annotation-split-row {
+  pointer-events: none;
+}
 .annotation-inline-row.annotation-split-row[data-split-pane="old"] > .annotation-split-slot {
   grid-column: 2 / 3;
+  pointer-events: auto;
 }
 .annotation-inline-row.annotation-split-row[data-split-pane="new"] > .annotation-split-slot {
   grid-column: 4 / 5;
+  pointer-events: auto;
 }
 /* In-flow file headers: viewport-wide + pinned left when scrolling long lines horizontally. */
 .file-header-viewport-row {

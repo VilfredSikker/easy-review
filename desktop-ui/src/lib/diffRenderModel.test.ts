@@ -7,6 +7,7 @@ import {
   NO_CHANGES_HEIGHT,
   estimateLazyStubHeight,
   estimateThreadHeight,
+  estimateFindingHeight,
   diffLineCount,
   filesRenderFingerprint,
   getFileBlock,
@@ -1107,6 +1108,27 @@ describe("estimateThreadHeight", () => {
     });
     const wide = estimateThreadHeight(t, 80);
     const narrow = estimateThreadHeight(t, 40);
+    expect(narrow).toBeGreaterThan(wide);
+  });
+});
+
+describe("estimateFindingHeight", () => {
+  it("grows when body columns shrink (split pane)", () => {
+    const f: FlatFinding = {
+      id: "f-wrap",
+      file: "a.ts",
+      line: 1,
+      hunk_index: 0,
+      severity: "med",
+      expert_label: null,
+      agent_label: "General",
+      title: "t",
+      message_markdown: "x".repeat(160),
+      promoted_to: null,
+      thread_id: null,
+    };
+    const wide = estimateFindingHeight(f, 80);
+    const narrow = estimateFindingHeight(f, 40);
     expect(narrow).toBeGreaterThan(wide);
   });
 });
