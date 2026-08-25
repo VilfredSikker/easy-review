@@ -27,7 +27,9 @@
 
 - **What changed.** The command palette no longer focuses search on open. Letter shortcuts jump to items until you press `/` (or choose Focus search) to type. In split view, comments, questions, notes, and findings sit in one pane next to the code, matching the composer. New code-quality tooling: an in-repo CRAP metric
   (cyclomatic complexity × test coverage) with a CI gate, fixture-based
-  negative tests, and mutation testing via cargo-mutants.
+  negative tests, and mutation testing via cargo-mutants. The inbox
+  popover lists every notification and can mark or clear a category at
+  once.
 
 ## Highlights
 
@@ -42,6 +44,19 @@
 - **Mutation testing.** `just mutants` runs cargo-mutants against
   er-engine on demand and records the date in `quality/mutants-last-run.txt`;
   `just mutants-stale` flags when the run log is old.
+- **Inbox.** The popover no longer caps at 20 items. The list scrolls
+  through every notification, and each category header has mark-read and
+  clear-read actions.
+
+## What's Changed
+
+### Features
+- Mark as read and clear read items from each inbox category header,
+  including when a single category chip is selected.
+
+### Fixes
+- Show the full inbox list and scroll through every category, including
+  Merged / closed. Group trash only removes already-read items.
 
 ## What's Changed
 

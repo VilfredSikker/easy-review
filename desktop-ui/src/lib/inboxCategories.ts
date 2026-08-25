@@ -136,7 +136,13 @@ export function sortInboxItems(items: InboxItemSnapshot[]): InboxItemSnapshot[] 
   });
 }
 
-export const INBOX_POPOVER_LIMIT = 20;
+export function inboxUnreadIds(items: InboxItemSnapshot[]): string[] {
+  return items.filter((i) => i.read_at_ms == null).map((i) => i.id);
+}
+
+export function inboxReadIds(items: InboxItemSnapshot[]): string[] {
+  return items.filter((i) => i.read_at_ms != null).map((i) => i.id);
+}
 
 export function applyInboxFilters(
   items: InboxItemSnapshot[],

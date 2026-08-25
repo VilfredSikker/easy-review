@@ -204,6 +204,53 @@ export const PopoverOpen: Story = {
 };
 
 /**
+ * Popover open with more items than the viewport so the list must scroll,
+ * including a long Merged / closed group.
+ */
+function manyInboxItems(): InboxItemSnapshot[] {
+  const comments: InboxItemSnapshot[] = Array.from({ length: 15 }, (_, i) => ({
+    id: `inbox-comment-${i + 1}`,
+    kind: "pr_comment",
+    category: "pr_comment",
+    severity: "info",
+    title: `Comment on your PR #${2041 - i}`,
+    body: `Comment body ${i + 1} on discovery-platform.`,
+    source: "github",
+    target: { pr_number: 2041 - i, project_id: "discovery-platform" },
+    created_at_ms: now - (11 + i) * 3_600_000,
+    read_at_ms: i < 12 ? null : now - 60_000,
+    dedupe_key: `pr_comment:${2041 - i}:msg-${i}`,
+  }));
+  const merged: InboxItemSnapshot[] = Array.from({ length: 13 }, (_, i) => ({
+    id: `inbox-merged-${i + 1}`,
+    kind: "pr_merged",
+    category: "lifecycle",
+    severity: "info",
+    title: `PR #${2030 - i} merged`,
+    body: `feat/branch-${i} was merged into main.`,
+    source: "github",
+    target: { pr_number: 2030 - i, project_id: "discovery-platform" },
+    created_at_ms: now - (20 + i) * 3_600_000,
+    read_at_ms: now - 90 * 60_000,
+    dedupe_key: `pr_merged:${2030 - i}`,
+  }));
+  return [
+    ...comments,
+    allKindsItems.find((i) => i.kind === "pr_comment_reply")!,
+    ...merged,
+    allKindsItems.find((i) => i.kind === "ai_review_done")!,
+  ];
+}
+
+export const PopoverManyItems: Story = {
+  args: {
+    inboxItems: manyInboxItems(),
+    projects: inboxProjects,
+    autoOpenPopover: true,
+  },
+};
+
+/**
  * Empty state: no inbox items — renders the "No notifications" quiet state.
  */
 export const Empty: Story = {

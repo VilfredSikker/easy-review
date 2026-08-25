@@ -8,7 +8,8 @@ import {
   inboxItemCategory,
   inboxItemProjectId,
   inboxKindMeta,
-  INBOX_POPOVER_LIMIT,
+  inboxReadIds,
+  inboxUnreadIds,
   sortInboxItems,
 } from "./inboxCategories";
 
@@ -159,7 +160,7 @@ describe("formatInboxAge", () => {
 });
 
 describe("applyInboxFilters", () => {
-  it("filters the full list then callers can cap", () => {
+  it("filters the full list without capping it", () => {
     const items = Array.from({ length: 25 }, (_, i) =>
       item({
         id: `n${i}`,
@@ -183,6 +184,70 @@ describe("applyInboxFilters", () => {
       category: "ci",
     });
     expect(filtered.map((i) => i.id)).toEqual(["ci-old"]);
-    expect(filtered.slice(0, INBOX_POPOVER_LIMIT)).toHaveLength(1);
+  });
+
+  it("keeps every matching item so the popover can scroll the full inbox", () => {
+    const items = Array.from({ length: 40 }, (_, i) =>
+      item({
+        id: `m${i}`,
+        kind: "pr_merged",
+        category: "lifecycle",
+        created_at_ms: i,
+        read_at_ms: i % 2 === 0 ? 10 : null,
+      }),
+    );
+    const filtered = applyInboxFilters(items, {
+      projects: [],
+      projectId: "all",
+      read: "all",
+      category: "lifecycle",
+    });
+    expect(filtered).toHaveLength(40);
+    const grouped = groupInboxItems(filtered);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].items).toHaveLength(40);
+  });
+});
+
+describe("inboxUnreadIds / inboxReadIds", () => {
+  it("splits ids for group mark-read and clear-read", () => {
+    const items = [
+      item({ id: "u1", kind: "pr_comment", category: "pr_comment" }),
+      item({
+        id: "r1",
+        kind: "pr_merged",
+        category: "lifecycle",
+        read_at_ms: 10,
+      }),
+      item({ id: "u2", kind: "pr_merged", category: "lifecycle" }),
+    ];
+    expect(inboxUnreadIds(items)).toEqual(["u1", "u2"]);
+    expect(inboxReadIds(items)).toEqual(["r1"]);
+    expect(inboxUnreadIds([])).toEqual([]);
+    expect(inboxReadIds([])).toEqual([]);
+  });
+
+  it("keeps a single-category filter as one group with those ids", () => {
+    const items = [
+      item({ id: "u", kind: "pr_merged", category: "lifecycle" }),
+      item({
+        id: "r",
+        kind: "pr_merged",
+        category: "lifecycle",
+        read_at_ms: 1,
+      }),
+      item({ id: "other", kind: "pr_comment", category: "pr_comment" }),
+    ];
+    const filtered = applyInboxFilters(items, {
+      projects: [],
+      projectId: "all",
+      read: "all",
+      category: "lifecycle",
+    });
+    const grouped = groupInboxItems(filtered);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].category).toBe("lifecycle");
+    expect(inboxUnreadIds(grouped[0].items)).toEqual(["u"]);
+    expect(inboxReadIds(grouped[0].items)).toEqual(["r"]);
   });
 });
