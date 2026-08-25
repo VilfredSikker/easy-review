@@ -60,14 +60,13 @@ export function threadReviewSide(t: ThreadSnapshot): "old" | "new" {
   return t.side === "LEFT" ? "old" : "new";
 }
 
-/**
- * Split-view inline threads share SplitContentRow's 4-column grid
- * (`40px minmax(0,1fr) 40px minmax(0,1fr)`). The card occupies the code cell
- * of the review side — same half-width as DiffComposer (after the gutter,
- * 8px trailing pad).
- */
-export function splitThreadGridColumn(t: ThreadSnapshot): "2 / 3" | "4 / 5" {
-  return threadReviewSide(t) === "old" ? "2 / 3" : "4 / 5";
+/** Split-view pane for a finding. New-side if the line has a new_num; old-side
+ *  only when it is a del-only line. No line → new (matches unset thread side). */
+export function findingReviewSide(f: FlatFinding, hunkLines: LineSnapshot[]): "old" | "new" {
+  if (f.line === null) return "new";
+  if (hunkLines.some((l) => l.new_num === f.line)) return "new";
+  if (hunkLines.some((l) => l.kind === "del" && l.old_num === f.line)) return "old";
+  return "new";
 }
 
 export function lineInThreadAnchorRange(

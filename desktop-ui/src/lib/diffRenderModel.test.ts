@@ -6,6 +6,7 @@ import {
   LINE_HEIGHT,
   NO_CHANGES_HEIGHT,
   estimateLazyStubHeight,
+  estimateThreadHeight,
   diffLineCount,
   filesRenderFingerprint,
   getFileBlock,
@@ -1090,5 +1091,22 @@ describe("getFileBlock / getCrossFileModel — max line columns", () => {
     const model = mkCross([f0, f1], emptyAi(), { snapshotKey: "maxcols-collapse" });
     const collapsed = applyCollapsedFiles(model, new Set(["a.ts"]));
     expect(collapsed.maxColsByFile).toBe(model.maxColsByFile);
+  });
+});
+
+describe("estimateThreadHeight", () => {
+  it("grows when body columns shrink (split pane)", () => {
+    const t = thread("t-wrap", "a.ts", 1, {
+      root: {
+        id: "t-wrap-root",
+        author: "me",
+        kind: "you",
+        timestamp: "",
+        body_markdown: "x".repeat(160),
+      },
+    });
+    const wide = estimateThreadHeight(t, 80);
+    const narrow = estimateThreadHeight(t, 40);
+    expect(narrow).toBeGreaterThan(wide);
   });
 });

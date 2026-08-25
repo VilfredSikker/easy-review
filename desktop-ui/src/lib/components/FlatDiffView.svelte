@@ -74,6 +74,7 @@
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
+  import { SPLIT_ANNOTATION_TRAIL_PAD_PX, SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
@@ -225,7 +226,7 @@
   // panels are a fixed 50/50. Long lines either word-wrap (app.wrapLines, the
   // default) or pan horizontally inside their own panel via --dx-l/--dx-r.
   /** Line-number gutter width per panel (grid col 40px). */
-  const GUTTER_PX = 40;
+  const GUTTER_PX = SPLIT_GUTTER_PX;
   /** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
   const CELL_HPAD_PX = 24;
 
@@ -1260,7 +1261,7 @@
       const left = diffSel.side === "old"
         ? railOffset + GUTTER_PX
         : railOffset + panelW + GUTTER_PX;
-      const width = panelW - GUTTER_PX - 8; // 8px right breathing room
+      const width = panelW - GUTTER_PX - SPLIT_ANNOTATION_TRAIL_PAD_PX;
       return { leftPx: left, widthPx: width };
     }
     // Unmeasured band or unified mode → full-width (DiffComposer uses left/right).
@@ -1943,6 +1944,10 @@
   function getFinding(findingId: string) {
     return annotationIndex.findingMap.get(findingId) ?? null;
   }
+
+  function getHunkLines(filePath: string, hunkIdx: number): LineSnapshot[] {
+    return files.find((f) => f.path === filePath)?.hunks[hunkIdx]?.lines ?? [];
+  }
 </script>
 
 <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative">
@@ -2242,7 +2247,13 @@
               {@const finding = getFinding(row.findingId)}
               {@const thread = finding?.thread_id ? getThread(finding.thread_id) : null}
               {#if finding}
-                <FindingRow {row} {finding} {thread} />
+                <FindingRow
+                  {row}
+                  {finding}
+                  {thread}
+                  split={viewMode === "split"}
+                  hunkLines={getHunkLines(row.filePath, row.hunkIdx)}
+                />
               {/if}
             {/if}
             {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
