@@ -136,8 +136,6 @@ export function sortInboxItems(items: InboxItemSnapshot[]): InboxItemSnapshot[] 
   });
 }
 
-export const INBOX_POPOVER_LIMIT = 20;
-
 export function applyInboxFilters(
   items: InboxItemSnapshot[],
   opts: {

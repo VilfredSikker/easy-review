@@ -8,7 +8,6 @@ import {
   inboxItemCategory,
   inboxItemProjectId,
   inboxKindMeta,
-  INBOX_POPOVER_LIMIT,
   sortInboxItems,
 } from "./inboxCategories";
 
@@ -159,7 +158,7 @@ describe("formatInboxAge", () => {
 });
 
 describe("applyInboxFilters", () => {
-  it("filters the full list then callers can cap", () => {
+  it("filters the full list without capping it", () => {
     const items = Array.from({ length: 25 }, (_, i) =>
       item({
         id: `n${i}`,
@@ -183,6 +182,27 @@ describe("applyInboxFilters", () => {
       category: "ci",
     });
     expect(filtered.map((i) => i.id)).toEqual(["ci-old"]);
-    expect(filtered.slice(0, INBOX_POPOVER_LIMIT)).toHaveLength(1);
+  });
+
+  it("keeps every matching item so the popover can scroll the full inbox", () => {
+    const items = Array.from({ length: 40 }, (_, i) =>
+      item({
+        id: `m${i}`,
+        kind: "pr_merged",
+        category: "lifecycle",
+        created_at_ms: i,
+        read_at_ms: i % 2 === 0 ? 10 : null,
+      }),
+    );
+    const filtered = applyInboxFilters(items, {
+      projects: [],
+      projectId: "all",
+      read: "all",
+      category: "lifecycle",
+    });
+    expect(filtered).toHaveLength(40);
+    const grouped = groupInboxItems(filtered);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].items).toHaveLength(40);
   });
 });

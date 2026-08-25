@@ -6,7 +6,6 @@
     formatInboxAge,
     formatInboxUpdated,
     groupInboxItems,
-    INBOX_POPOVER_LIMIT,
     inboxCategoryChips,
     inboxItemCategory,
     inboxItemProjectId,
@@ -47,6 +46,24 @@
     selectedInboxMessage = null;
   }
 
+  function unreadIds(items: InboxItemSnapshot[]): string[] {
+    return items.filter((i) => i.read_at_ms == null).map((i) => i.id);
+  }
+
+  function readIds(items: InboxItemSnapshot[]): string[] {
+    return items.filter((i) => i.read_at_ms != null).map((i) => i.id);
+  }
+
+  function markItemsRead(ids: string[]) {
+    if (ids.length === 0) return;
+    app.cmd("mark_inbox_items_read", { ids });
+  }
+
+  function clearItems(ids: string[]) {
+    if (ids.length === 0) return;
+    app.cmd("clear_inbox_items", { ids });
+  }
+
   const inboxProjectOptions = $derived(
     projects
       .filter((p) => inboxItems.some((item) => inboxItemProjectId(item, projects) === p.id))
@@ -84,10 +101,9 @@
   );
 
   const inboxFiltered = $derived(
-    (inboxCategoryFilter === "all"
+    inboxCategoryFilter === "all"
       ? inboxByRead
-      : inboxByRead.filter((i) => inboxItemCategory(i) === inboxCategoryFilter)
-    ).slice(0, INBOX_POPOVER_LIMIT),
+      : inboxByRead.filter((i) => inboxItemCategory(i) === inboxCategoryFilter),
   );
 
   const inboxGroups = $derived(groupInboxItems(inboxFiltered));
@@ -186,10 +202,9 @@
   <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div class="fixed inset-0 z-[200]" onclick={closeInboxPopover}></div>
   <div
-    class="absolute left-2 top-28 z-[201] w-96 rounded-lg border border-border bg-ink-800 shadow-xl flex flex-col overflow-hidden"
-    style="max-height: calc(100vh - 120px);"
+    class="fixed left-2 top-28 z-[201] w-96 max-h-[calc(100vh-8rem)] min-h-0 rounded-lg border border-border bg-ink-800 shadow-xl flex flex-col overflow-hidden"
   >
-    <div class="px-3 pt-2.5 pb-2 border-b border-hairline flex flex-col gap-2">
+    <div class="px-3 pt-2.5 pb-2 border-b border-hairline flex flex-col gap-2 shrink-0">
       <div class="flex items-center gap-1.5">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0">
           <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
@@ -286,14 +301,43 @@
         </div>
       {/if}
     </div>
-    <div class="flex-1 overflow-y-auto p-1">
+    <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1">
       {#if inboxFiltered.length === 0}
         <div class="px-3 py-6 text-center text-[12px] text-muted">No items</div>
       {:else if groupedView}
         {#each inboxGroups as group (group.category)}
-          <div class="px-2 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">
-            {group.label}
+          {@const groupUnread = unreadIds(group.items)}
+          {@const groupRead = readIds(group.items)}
+          <div class="sticky top-0 z-[1] bg-ink-800 px-2 pt-2 pb-1 flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">
+            <span class="truncate">{group.label}</span>
             <span class="ml-1 font-mono normal-case tracking-normal">{group.items.length}</span>
+            <div class="flex-1"></div>
+            <button
+              type="button"
+              disabled={groupUnread.length === 0}
+              onclick={(e) => {
+                e.stopPropagation();
+                markItemsRead(groupUnread);
+              }}
+              title="Mark group read"
+              aria-label="Mark {group.label} read"
+              class="w-5 h-5 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover disabled:opacity-30 disabled:hover:text-periwinkle disabled:hover:bg-transparent"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 7 17l-3-3"/><path d="m22 10-7.5 7.5L13 16"/></svg>
+            </button>
+            <button
+              type="button"
+              disabled={groupRead.length === 0}
+              onclick={(e) => {
+                e.stopPropagation();
+                clearItems(groupRead);
+              }}
+              title="Clear read in group"
+              aria-label="Clear read in {group.label}"
+              class="w-5 h-5 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover disabled:opacity-30 disabled:hover:text-periwinkle disabled:hover:bg-transparent"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M19 6l-1 14H6L5 6M10 11v6M14 11v6M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
           </div>
           {#each group.items as item (item.id)}
             {@render inboxRow(item, () => openInboxMessageModal(item))}

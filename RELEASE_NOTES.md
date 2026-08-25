@@ -4,7 +4,9 @@
 
 - **What changed.** New code-quality tooling: an in-repo CRAP metric
   (cyclomatic complexity × test coverage) with a CI gate, fixture-based
-  negative tests, and mutation testing via cargo-mutants.
+  negative tests, and mutation testing via cargo-mutants. The inbox
+  popover lists every notification and can mark or clear a category at
+  once.
 
 ## Highlights
 
@@ -17,6 +19,18 @@
 - **Mutation testing.** `just mutants` runs cargo-mutants against
   er-engine on demand and records the date in `quality/mutants-last-run.txt`;
   `just mutants-stale` flags when the run log is old.
+- **Inbox.** The popover no longer caps at 20 items. The list scrolls
+  through every notification, and each category header has mark-read and
+  clear-read actions.
+
+## What's Changed
+
+### Features
+- Mark as read and clear read items from each inbox category header.
+
+### Fixes
+- Show the full inbox list and scroll through every category, including
+  Merged / closed.
 
 # Easy Review v0.4.14
 

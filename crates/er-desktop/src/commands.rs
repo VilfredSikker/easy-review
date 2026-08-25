@@ -7564,9 +7564,33 @@ pub fn mark_all_inbox_read(state: State<AppState>) -> Result<AppSnapshot, String
 }
 
 #[tauri::command]
+pub fn mark_inbox_items_read(
+    ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    if let Ok(mut inbox) = state.inbox.lock() {
+        inbox.mark_items_read(&ids, now);
+    }
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
 pub fn clear_read_inbox_items(state: State<AppState>) -> Result<AppSnapshot, String> {
     if let Ok(mut inbox) = state.inbox.lock() {
         inbox.clear_read();
+    }
+    crate::inbox::save_inbox_state(&state.inbox);
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    snap!(state)
+}
+
+#[tauri::command]
+pub fn clear_inbox_items(ids: Vec<String>, state: State<AppState>) -> Result<AppSnapshot, String> {
+    if let Ok(mut inbox) = state.inbox.lock() {
+        inbox.remove_items(&ids);
     }
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
