@@ -980,14 +980,20 @@ mod tests {
         }
     }
 
+    fn inbox_with(items: Vec<InboxItem>) -> InboxState {
+        InboxState {
+            items,
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn mark_items_read_only_touches_named_unread() {
-        let mut inbox = InboxState::default();
-        inbox.items = vec![
+        let mut inbox = inbox_with(vec![
             sample_item("a", false),
             sample_item("b", false),
             sample_item("c", true),
-        ];
+        ]);
         inbox.mark_items_read(&["a".into(), "c".into(), "missing".into()], 50);
         assert_eq!(inbox.items[0].read_at_ms, Some(50));
         assert_eq!(inbox.items[1].read_at_ms, None);
@@ -997,12 +1003,11 @@ mod tests {
 
     #[test]
     fn remove_items_drops_named_ids() {
-        let mut inbox = InboxState::default();
-        inbox.items = vec![
+        let mut inbox = inbox_with(vec![
             sample_item("a", true),
             sample_item("b", false),
             sample_item("c", true),
-        ];
+        ]);
         inbox.remove_items(&["a".into(), "b".into()]);
         assert_eq!(
             inbox
@@ -1016,8 +1021,7 @@ mod tests {
 
     #[test]
     fn mark_and_remove_items_ignore_empty_ids() {
-        let mut inbox = InboxState::default();
-        inbox.items = vec![sample_item("a", false)];
+        let mut inbox = inbox_with(vec![sample_item("a", false)]);
         inbox.mark_items_read(&[], 50);
         inbox.remove_items(&[]);
         assert_eq!(inbox.items[0].read_at_ms, None);
