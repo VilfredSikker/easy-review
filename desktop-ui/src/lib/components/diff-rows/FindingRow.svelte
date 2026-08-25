@@ -7,7 +7,7 @@
   import InlineFinding from "$lib/components/InlineFinding.svelte";
   import { findingReviewSide } from "$lib/diffAnnotations";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
-  import type { FlatFinding, LineSnapshot, ThreadSnapshot } from "$lib/types";
+  import type { FlatFinding, ThreadSnapshot } from "$lib/types";
   import AnnotationSplitRow from "./AnnotationSplitRow.svelte";
 
   interface Props {
