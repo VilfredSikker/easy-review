@@ -6,6 +6,7 @@ import {
   fallbackThreadsForHunk,
   findingBelongsToHunk,
   findingRendersInline,
+  findingReviewSide,
   findingsForLine,
   findingsForSplitRow,
   hunkLevelFindings,
@@ -390,6 +391,36 @@ describe("threadsForLine", () => {
     const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
     expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "old").map((t) => t.id)).toEqual(["t-left"]);
     expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "new").map((t) => t.id)).toEqual(["t-right"]);
+  });
+});
+
+describe("findingReviewSide", () => {
+  it("uses new when the line has a new_num", () => {
+    const f = mkFinding({ id: "f-add", file: FILE, line: 13 });
+    expect(findingReviewSide(f, hunkLines)).toBe("new");
+  });
+
+  it("uses old for a del-only line", () => {
+    const f = mkFinding({ id: "f-del", file: FILE, line: 42 });
+    const lines: LineSnapshot[] = [
+      mkLine({ kind: "del", old_num: 42, text: "gone" }),
+      mkLine({ kind: "add", old_num: null, new_num: 43, text: "here" }),
+    ];
+    expect(findingReviewSide(f, lines)).toBe("old");
+  });
+
+  it("defaults to new when unanchored", () => {
+    const f = mkFinding({ id: "f-file", file: FILE, line: null });
+    expect(findingReviewSide(f, [])).toBe("new");
+  });
+
+  it("prefers new when the same number exists as del and add", () => {
+    const f = mkFinding({ id: "f-both", file: FILE, line: 10 });
+    const lines: LineSnapshot[] = [
+      mkLine({ kind: "del", old_num: 10, text: "gone" }),
+      mkLine({ kind: "add", old_num: null, new_num: 10, text: "here" }),
+    ];
+    expect(findingReviewSide(f, lines)).toBe("new");
   });
 });
 

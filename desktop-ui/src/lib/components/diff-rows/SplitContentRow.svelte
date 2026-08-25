@@ -98,7 +98,7 @@
 <!-- svelte-ignore a11y_click_events_have_key_events -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="grid grid-cols-[40px_minmax(0,1fr)_40px_minmax(0,1fr)] diff-row {rowSelClass} {rowAnchorClass}"
+  class="split-diff-grid diff-row {rowSelClass} {rowAnchorClass}"
   style={wrap ? "min-height:24px" : `height:${row.height}px`}
   data-row-identity={row.identity}
   data-row-idx={rowIdx}
