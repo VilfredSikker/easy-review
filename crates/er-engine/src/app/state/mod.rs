@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 #[allow(unused_imports)]
 use std::time::Instant;
 use tui_textarea::TextArea;
@@ -8967,7 +8967,7 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel_focus = false;
         tab.toggle_panel(); // None → FileDetail
-        // panel_focus stays as-is when panel is opened
+                            // panel_focus stays as-is when panel is opened
         assert!(!tab.panel_focus);
     }
 
@@ -9425,11 +9425,9 @@ mod tests {
             }) => {
                 assert_eq!(title.as_deref(), Some("GPT-5.6 Luna"));
                 assert_eq!(items.len(), 3);
-                assert!(
-                    items
-                        .iter()
-                        .all(|item| matches!(item.action, HubAction::SelectAiEffort { .. }))
-                );
+                assert!(items
+                    .iter()
+                    .all(|item| matches!(item.action, HubAction::SelectAiEffort { .. })));
             }
             other => panic!("expected effort picker, got {other:?}"),
         }
@@ -9817,7 +9815,7 @@ mod tests {
         tab.apply_filter_expr("*.rs");
         tab.apply_filter_expr("*.ts");
         tab.apply_filter_expr("*.rs"); // duplicate
-        // "*.rs" should appear only once (at front)
+                                       // "*.rs" should appear only once (at front)
         assert_eq!(tab.filter_history.len(), 2);
         assert_eq!(tab.filter_history[0], "*.rs");
         assert_eq!(tab.filter_history[1], "*.ts");
@@ -10481,11 +10479,9 @@ mod tests {
             1,
             "authoritative reload loads the PR-bucket sidecar"
         );
-        assert!(
-            tab.ai.questions.as_ref().unwrap().questions[0]
-                .text
-                .contains("pending")
-        );
+        assert!(tab.ai.questions.as_ref().unwrap().questions[0]
+            .text
+            .contains("pending"));
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
@@ -10681,11 +10677,10 @@ mod tests {
         let expected =
             crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
         assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
-        assert!(
-            !tab.er_root
-                .reviewed_path()
-                .contains(&crate::storage::slug_branch("main"))
-        );
+        assert!(!tab
+            .er_root
+            .reviewed_path()
+            .contains(&crate::storage::slug_branch("main")));
     }
 
     #[test]
@@ -11783,11 +11778,10 @@ mod tests {
             "PR guide regenerated from Tour mode must target the PR bucket"
         );
         tab.tour_is_pr = false;
-        assert!(
-            tab.tour_bucket_er_dir()
-                .unwrap()
-                .contains("view-buckets/branch")
-        );
+        assert!(tab
+            .tour_bucket_er_dir()
+            .unwrap()
+            .contains("view-buckets/branch"));
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }

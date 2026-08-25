@@ -1,8 +1,8 @@
 use ratatui::{
-    Frame,
     layout::Rect,
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
+    Frame,
 };
 
 use super::styles;

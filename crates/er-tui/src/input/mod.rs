@@ -2,8 +2,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
-    AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode, cleanup_note_replies,
-    cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews,
+    cleanup_note_replies, cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews,
+    AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode,
 };
 use er_engine::{git, github};
 
