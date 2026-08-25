@@ -2,12 +2,15 @@
 
 ## In plain terms
 
-- **What changed.** New code-quality tooling: an in-repo CRAP metric
-  (cyclomatic complexity × test coverage) with a CI gate, fixture-based
-  negative tests, and mutation testing via cargo-mutants.
+- **What changed.** The AI model picker asks for a thinking/effort level
+  before activating models that support it. New code-quality tooling: an
+  in-repo CRAP metric (cyclomatic complexity × test coverage) with a CI
+  gate, fixture-based negative tests, and mutation testing via cargo-mutants.
 
 ## Highlights
 
+- **Model picker.** Models with thinking/effort levels open those levels next.
+  The model activates only after you choose a level.
 - **CRAP metric.** `crates/er-crap` scores every Rust function from
   `cargo llvm-cov` coverage; `just crap` runs it, `just crap-test` runs
   the tool's own tests (including negative fixtures where crappy code must
@@ -17,6 +20,11 @@
 - **Mutation testing.** `just mutants` runs cargo-mutants against
   er-engine on demand and records the date in `quality/mutants-last-run.txt`;
   `just mutants-stale` flags when the run log is old.
+
+## What's Changed
+
+### Features
+- Ask for thinking/effort in the model picker before activating effort-capable models.
 
 # Easy Review v0.4.14
 

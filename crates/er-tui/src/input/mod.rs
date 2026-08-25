@@ -2,8 +2,8 @@ use anyhow::Result;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use er_engine::app;
 use er_engine::app::{
-    cleanup_note_replies, cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews,
-    AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode,
+    AiActionKind, App, ConfirmAction, DiffMode, HubAction, InputMode, cleanup_note_replies,
+    cleanup_question_answers, cleanup_questions_and_notes, cleanup_reviews,
 };
 use er_engine::{git, github};
 
@@ -232,22 +232,34 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             action,
             provider_id,
         } => {
-            if let Some(provider) = app.config.ai_hub.providers.get(&provider_id) {
-                if provider.models.len() > 1 {
-                    app.open_ai_model_picker(provider_id, action);
-                } else {
-                    let model_id = provider.models.first().map(|m| m.id.clone());
-                    if let Some(action) = action {
-                        let selection =
-                            app.resolve_ai_selection_override(&provider_id, model_id.as_deref())?;
-                        execute_ai_action_with_selection(app, action, selection)?;
-                    } else {
-                        app.set_ai_default_selection(&provider_id, model_id.as_deref())?;
-                        app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
+            let (model_count, model_id, model_has_effort) =
+                match app.config.ai_hub.providers.get(&provider_id) {
+                    Some(provider) => (
+                        provider.models.len(),
+                        provider.models.first().map(|m| m.id.clone()),
+                        provider
+                            .models
+                            .first()
+                            .is_some_and(|m| !m.effort_levels.is_empty()),
+                    ),
+                    None => {
+                        app.notify("Unknown AI provider");
+                        return Ok(());
                     }
+                };
+            if model_count > 1 {
+                app.open_ai_model_picker(provider_id, action);
+            } else if model_has_effort {
+                if let Some(model_id) = model_id {
+                    app.open_ai_effort_picker(provider_id, model_id, action);
                 }
+            } else if let Some(action) = action {
+                let selection =
+                    app.resolve_ai_selection_override(&provider_id, model_id.as_deref())?;
+                execute_ai_action_with_selection(app, action, selection)?;
             } else {
-                app.notify("Unknown AI provider");
+                app.set_ai_default_selection(&provider_id, model_id.as_deref())?;
+                app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
         HubAction::SelectAiModel {
@@ -255,11 +267,35 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             provider_id,
             model_id,
         } => {
-            if let Some(action) = action {
+            if app.model_has_effort_levels(&provider_id, &model_id) {
+                app.open_ai_effort_picker(provider_id, model_id, action);
+            } else if let Some(action) = action {
                 let selection = app.resolve_ai_selection_override(&provider_id, Some(&model_id))?;
                 execute_ai_action_with_selection(app, action, selection)?;
             } else {
                 app.set_ai_default_selection(&provider_id, Some(&model_id))?;
+                app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
+            }
+        }
+        HubAction::SelectAiEffort {
+            action,
+            provider_id,
+            model_id,
+            effort,
+        } => {
+            if let Some(action) = action {
+                let selection = app.resolve_ai_selection_override_with_effort(
+                    &provider_id,
+                    Some(&model_id),
+                    Some(&effort),
+                )?;
+                execute_ai_action_with_selection(app, action, selection)?;
+            } else {
+                app.set_ai_default_selection_with_effort(
+                    &provider_id,
+                    Some(&model_id),
+                    Some(&effort),
+                )?;
                 app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
@@ -2073,5 +2109,93 @@ mod tests {
             app.config.ai_hub.default_model.as_deref(),
             Some("gpt-5.6-luna")
         );
+    }
+
+    fn app_with_effort_models() -> App {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            er_engine::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![
+                    er_engine::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        label: Some("GPT-5.6 Luna".into()),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                    er_engine::config::AiModelConfig {
+                        id: "no-effort".into(),
+                        label: Some("No Effort".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app
+    }
+
+    #[test]
+    fn selecting_effort_capable_model_opens_effort_picker_without_activating() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert!(
+            matches!(
+                app.overlay,
+                Some(er_engine::app::OverlayData::ModalHub {
+                    kind: er_engine::app::HubKind::AiEffort,
+                    ..
+                })
+            ),
+            "expected effort picker overlay, got {:?}",
+            app.overlay
+        );
+    }
+
+    #[test]
+    fn selecting_effort_activates_the_model() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiEffort {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+                effort: "high".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn selecting_model_without_effort_activates_immediately() {
+        let mut app = app_with_effort_models();
+        app.current_ai_model = Some("gpt-5.6-luna".into());
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "no-effort".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert!(app.overlay.is_none());
     }
 }

@@ -16,7 +16,11 @@
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
-  import type { AiProviderInfo } from "$lib/types";
+  import type { AiModelInfo, AiProviderInfo } from "$lib/types";
+  import {
+    effortChoicesForModel,
+    selectedModelDescription,
+  } from "$lib/arena/effort";
 
   type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "PR" | "Files in this diff";
 
@@ -237,8 +241,9 @@
     ];
   }
 
-  // ── Provider / model nested picker (mirrors the old palette subviews) ────
+  // ── Provider / model / effort nested picker ──────────────────────────────
   function providerItems(): CommandItem[] {
+    const currentEffort = snapshot?.active_ai_effort ?? null;
     return aiProviders.map((p) => ({
       id: `provider-${p.id}`,
       label: p.label,
@@ -254,19 +259,48 @@
         }
       },
       submenuItems: p.models.length > 0
-        ? p.models.map((m) => ({
-            id: `model-${p.id}-${m.id}`,
-            label: m.label,
-            description: m.is_selected ? "currently selected" : "",
+        ? p.models.map((m) => modelItem(p.id, m, currentEffort))
+        : undefined,
+    }));
+  }
+
+  function modelItem(
+    providerId: string,
+    m: AiModelInfo,
+    currentEffort: string | null,
+  ): CommandItem {
+    const choices = effortChoicesForModel(m, currentEffort);
+    return {
+      id: `model-${providerId}-${m.id}`,
+      label: m.label,
+      description: selectedModelDescription(m, currentEffort),
+      group: "AI" as const,
+      run: () => {
+        if (choices.length === 0) {
+          void dismissAndRun(() =>
+            app.cmd("set_ai_selection", { providerId, modelId: m.id, persist: true }),
+          );
+        }
+      },
+      submenuItems: choices.length > 0
+        ? choices.map((choice) => ({
+            id: `effort-${providerId}-${m.id}-${choice.id}`,
+            label: choice.label,
+            description: choice.selected ? "currently selected" : "",
             group: "AI" as const,
             run: () => {
               void dismissAndRun(() =>
-                app.cmd("set_ai_selection", { providerId: p.id, modelId: m.id, persist: true }),
+                app.cmd("set_ai_selection", {
+                  providerId,
+                  modelId: m.id,
+                  effort: choice.id,
+                  persist: true,
+                }),
               );
             },
           }))
         : undefined,
-    }));
+    };
   }
 
   async function openProviderPicker() {

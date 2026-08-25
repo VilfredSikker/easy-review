@@ -16,8 +16,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 #[allow(unused_imports)]
 use std::time::Instant;
 use tui_textarea::TextArea;
@@ -422,6 +422,7 @@ pub enum HubKind {
     Ai,
     AiProvider,
     AiModel,
+    AiEffort,
     AiExpert,
     Verify,
     VerifyPackage,
@@ -437,6 +438,7 @@ impl HubKind {
             Self::Ai => "AI",
             Self::AiProvider => "AI PROVIDER",
             Self::AiModel => "AI MODEL",
+            Self::AiEffort => "EFFORT",
             Self::AiExpert => "SPECIALIZED REVIEW",
             Self::Verify => "VERIFY",
             Self::VerifyPackage => "VERIFY",
@@ -501,6 +503,13 @@ pub enum HubAction {
         action: Option<AiActionKind>,
         provider_id: String,
         model_id: String,
+    },
+    /// Pick a thinking/effort level, then activate the model (or continue an action)
+    SelectAiEffort {
+        action: Option<AiActionKind>,
+        provider_id: String,
+        model_id: String,
+        effort: String,
     },
     /// Refresh discovered models for a provider (CLI `models_command`)
     RefreshAiModels {
@@ -5057,15 +5066,36 @@ impl App {
         provider_id: &str,
         model_id: Option<&str>,
     ) -> Result<()> {
+        self.set_ai_default_selection_with_effort(provider_id, model_id, None)
+    }
+
+    /// Like [`Self::set_ai_default_selection`], but pins thinking/effort when given.
+    pub fn set_ai_default_selection_with_effort(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
         let agent = self.config.agent.clone();
-        let selection = self
-            .config
-            .ai_hub
-            .set_default_selection(provider_id, model_id, &agent)?;
+        let selection = self.config.ai_hub.set_default_selection_with_effort(
+            provider_id,
+            model_id,
+            effort,
+            &agent,
+        )?;
         self.current_ai_provider = selection.provider_id;
         self.current_ai_model = selection.model_id;
         self.current_ai_effort = selection.effort;
         Ok(())
+    }
+
+    pub fn model_has_effort_levels(&self, provider_id: &str, model_id: &str) -> bool {
+        !crate::config::effort_levels_for_hub_model(
+            &self.config.ai_hub,
+            Some(provider_id),
+            Some(model_id),
+        )
+        .is_empty()
     }
 
     /// Resolve an action-bound selection without mutating the shared default.
@@ -5074,12 +5104,22 @@ impl App {
         provider_id: &str,
         model_id: Option<&str>,
     ) -> Result<crate::config::AiSelection> {
-        self.config.ai_hub.resolve_selection(
+        self.resolve_ai_selection_override_with_effort(
             provider_id,
             model_id,
-            &self.config.agent,
             self.current_ai_effort.as_deref(),
         )
+    }
+
+    pub fn resolve_ai_selection_override_with_effort(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<crate::config::AiSelection> {
+        self.config
+            .ai_hub
+            .resolve_selection(provider_id, model_id, &self.config.agent, effort)
     }
 
     pub fn set_ai_selection_override(&mut self, selection: crate::config::AiSelection) {
@@ -5285,6 +5325,68 @@ impl App {
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiModel,
             title: None,
+            items,
+            selected,
+        });
+    }
+
+    /// Show thinking/effort levels for a model. Choosing a level is what
+    /// activates the model (`SelectAiEffort`); opening this picker does not.
+    pub fn open_ai_effort_picker(
+        &mut self,
+        provider_id: String,
+        model_id: String,
+        action: Option<AiActionKind>,
+    ) {
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            self.notify("Unknown AI provider");
+            return;
+        };
+        let Some(model) = provider.models.iter().find(|model| model.id == model_id) else {
+            self.notify("Unknown AI model");
+            return;
+        };
+        let levels = model.effort_levels.clone();
+        if levels.is_empty() {
+            self.notify("This model has no thinking levels");
+            return;
+        }
+        let title = model.display_name();
+        let model_is_current = self.current_ai_provider.as_deref() == Some(provider_id.as_str())
+            && self.current_ai_model.as_deref() == Some(model_id.as_str());
+        let current_effort = self.current_ai_effort.clone();
+        let mut selected = 0usize;
+        let items: Vec<HubItem> = levels
+            .iter()
+            .enumerate()
+            .map(|(idx, level)| {
+                let is_current =
+                    model_is_current && current_effort.as_deref() == Some(level.as_str());
+                if is_current {
+                    selected = idx;
+                }
+                HubItem {
+                    label: crate::config::effort_display_label(level),
+                    hint: "".into(),
+                    description: if is_current {
+                        "currently selected".into()
+                    } else {
+                        String::new()
+                    },
+                    action: HubAction::SelectAiEffort {
+                        action: action.clone(),
+                        provider_id: provider_id.clone(),
+                        model_id: model_id.clone(),
+                        effort: level.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                }
+            })
+            .collect();
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::AiEffort,
+            title: Some(title),
             items,
             selected,
         });
@@ -8865,7 +8967,7 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.panel_focus = false;
         tab.toggle_panel(); // None → FileDetail
-                            // panel_focus stays as-is when panel is opened
+        // panel_focus stays as-is when panel is opened
         assert!(!tab.panel_focus);
     }
 
@@ -9279,6 +9381,78 @@ mod tests {
         assert_eq!(app.active_ai_selection_label(), "Codex / GPT-5.6 Luna");
     }
 
+    fn hub_with_effort_and_plain_models() -> crate::config::AiHubConfig {
+        let mut hub = crate::config::AiHubConfig::default();
+        hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        label: Some("GPT-5.6 Luna".into()),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                    crate::config::AiModelConfig {
+                        id: "no-effort".into(),
+                        label: Some("No Effort".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        hub
+    }
+
+    #[test]
+    fn effort_picker_does_not_activate_the_model() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+
+        assert!(app.model_has_effort_levels("codex", "gpt-5.6-luna"));
+        app.open_ai_effort_picker("codex".into(), "gpt-5.6-luna".into(), None);
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        match &app.overlay {
+            Some(OverlayData::ModalHub {
+                kind: HubKind::AiEffort,
+                title,
+                items,
+                ..
+            }) => {
+                assert_eq!(title.as_deref(), Some("GPT-5.6 Luna"));
+                assert_eq!(items.len(), 3);
+                assert!(
+                    items
+                        .iter()
+                        .all(|item| matches!(item.action, HubAction::SelectAiEffort { .. }))
+                );
+            }
+            other => panic!("expected effort picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choosing_effort_activates_model_and_effort() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.set_ai_default_selection_with_effort("codex", Some("gpt-5.6-luna"), Some("high"))
+            .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+        assert_eq!(app.config.ai_hub.default_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn models_without_effort_levels_do_not_open_effort_picker() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        assert!(!app.model_has_effort_levels("codex", "no-effort"));
+    }
+
     #[test]
     fn get_line_anchor_finds_line_by_new_num() {
         let lines = vec![
@@ -9643,7 +9817,7 @@ mod tests {
         tab.apply_filter_expr("*.rs");
         tab.apply_filter_expr("*.ts");
         tab.apply_filter_expr("*.rs"); // duplicate
-                                       // "*.rs" should appear only once (at front)
+        // "*.rs" should appear only once (at front)
         assert_eq!(tab.filter_history.len(), 2);
         assert_eq!(tab.filter_history[0], "*.rs");
         assert_eq!(tab.filter_history[1], "*.ts");
@@ -10307,9 +10481,11 @@ mod tests {
             1,
             "authoritative reload loads the PR-bucket sidecar"
         );
-        assert!(tab.ai.questions.as_ref().unwrap().questions[0]
-            .text
-            .contains("pending"));
+        assert!(
+            tab.ai.questions.as_ref().unwrap().questions[0]
+                .text
+                .contains("pending")
+        );
         std::env::remove_var("ER_STORAGE_ROOT");
     }
 
@@ -10505,10 +10681,11 @@ mod tests {
         let expected =
             crate::storage::view_bucket_dir(&repo_slug, &branch_slug, "branch").join("reviewed");
         assert_eq!(tab.er_root.reviewed_path(), expected.to_string_lossy());
-        assert!(!tab
-            .er_root
-            .reviewed_path()
-            .contains(&crate::storage::slug_branch("main")));
+        assert!(
+            !tab.er_root
+                .reviewed_path()
+                .contains(&crate::storage::slug_branch("main"))
+        );
     }
 
     #[test]
@@ -11606,10 +11783,11 @@ mod tests {
             "PR guide regenerated from Tour mode must target the PR bucket"
         );
         tab.tour_is_pr = false;
-        assert!(tab
-            .tour_bucket_er_dir()
-            .unwrap()
-            .contains("view-buckets/branch"));
+        assert!(
+            tab.tour_bucket_er_dir()
+                .unwrap()
+                .contains("view-buckets/branch")
+        );
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }

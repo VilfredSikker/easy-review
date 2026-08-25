@@ -145,4 +145,11 @@ describe("panel chrome is local-first", () => {
     expect(palette).toContain('app.togglePanel("tree")');
     expect(palette).toContain('app.togglePanel("right")');
   });
+
+  it("opens effort levels before activating an effort-capable model", () => {
+    const palette = component("CommandPalette.svelte");
+    expect(palette).toContain("effortChoicesForModel");
+    expect(palette).toContain("function modelItem(");
+    expect(palette).toContain("effort: choice.id");
+  });
 });

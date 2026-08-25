@@ -7,22 +7,23 @@ use tauri::State;
 use tauri_plugin_notification::NotificationExt;
 
 use crate::inbox::{
-    inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
-    InboxItem, InboxNotification, InboxTarget, NotificationInboxCtx, PrInboxView, PrTransitionCtx,
+    InboxHandle, InboxItem, InboxNotification, InboxTarget, NotificationInboxCtx, PrInboxView,
+    PrTransitionCtx, inbox_item_from_notification, inbox_items_from_pr_transition,
+    is_review_edge_kind,
 };
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
 use crate::snapshot::{
-    build_chrome_snapshot, build_file_snapshot, AgentLogSnapshot, AppSnapshot, CheckSummary,
-    FileSnapshot, GhCommentSummary, GhReviewSummary, GhStatusCache, GhUser, GithubStatusSnapshot,
-    LoadingState, MetaCache, PendingAiReplies, PrInfo, WatchStatusState,
+    AgentLogSnapshot, AppSnapshot, CheckSummary, FileSnapshot, GhCommentSummary, GhReviewSummary,
+    GhStatusCache, GhUser, GithubStatusSnapshot, LoadingState, MetaCache, PendingAiReplies, PrInfo,
+    WatchStatusState, build_chrome_snapshot, build_file_snapshot,
 };
 use er_engine::ai::CommentType;
 #[cfg(test)]
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
-    build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
-    BrowserLayout, CardAiContextParams, DiffMode, InputMode,
+    App, BrowserLayout, CardAiContextParams, DiffMode, InputMode, build_card_ai_system_context,
+    plan_card_ai_invocation, run_card_ai_subprocess,
 };
 use er_engine::config::InboxConfig;
 
@@ -1381,11 +1382,7 @@ fn parse_semver_parts(raw: &str) -> Option<Vec<u64>> {
             .filter(|t| !t.is_empty())?;
         parts.push(num.parse().ok()?);
     }
-    if parts.is_empty() {
-        None
-    } else {
-        Some(parts)
-    }
+    if parts.is_empty() { None } else { Some(parts) }
 }
 
 /// True when `latest` is strictly newer than `current` (semver-ish numeric compare).
@@ -2924,7 +2921,7 @@ pub fn submit_github_review(
         _ => {
             return Err(format!(
                 "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ))
+            ));
         }
     };
 
@@ -3252,7 +3249,7 @@ pub fn submit_github_pr_decision(
         _ => {
             return Err(format!(
                 "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ))
+            ));
         }
     };
 
@@ -3991,7 +3988,7 @@ fn spawn_scoped_reviewers(
     scoped_files: bool,
     diff_hash: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
-    use er_engine::ai::{prompts, ReviewerKind};
+    use er_engine::ai::{ReviewerKind, prompts};
 
     let mut started = Vec::new();
     let mut skipped = Vec::new();
@@ -4270,6 +4267,7 @@ pub async fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
     persist: Option<bool>,
+    effort: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -4284,13 +4282,19 @@ pub async fn set_ai_selection(
             let selection = app
                 .config
                 .ai_hub
-                .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+                .set_default_selection_with_effort(
+                    &provider_id,
+                    model_id.as_deref(),
+                    effort.as_deref(),
+                    &agent,
+                )
                 .map_err(|e| e.to_string())?;
             er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
             selection
         } else {
-            // Session-only: keep current effort when the new model still supports it.
-            let runtime_effort = app.current_ai_effort.clone();
+            // Session-only: keep current effort when the new model still supports
+            // it, unless the picker supplied an explicit level.
+            let runtime_effort = effort.clone().or_else(|| app.current_ai_effort.clone());
             app.config
                 .ai_hub
                 .resolve_selection(
@@ -8544,7 +8548,7 @@ pub async fn update_thread_message(
 
 // ── Review export (markdown) ─────────────────────────────────────────────────
 
-use crate::export::{render_markdown, ExportOpts};
+use crate::export::{ExportOpts, render_markdown};
 
 /// Render the active tab's annotations as markdown and return the body to
 /// the UI for clipboard copy / preview.
@@ -10072,8 +10076,8 @@ pub fn get_background_task_log(
 mod tests {
     use super::*;
     use er_engine::ai::{
-        load_ui_annotations, save_ui_annotations, ErGitHubComments, ErQuestions,
-        GitHubReviewComment, ReviewQuestion, UiAnnotation,
+        ErGitHubComments, ErQuestions, GitHubReviewComment, ReviewQuestion, UiAnnotation,
+        load_ui_annotations, save_ui_annotations,
     };
 
     fn ann(id: &str) -> UiAnnotation {
