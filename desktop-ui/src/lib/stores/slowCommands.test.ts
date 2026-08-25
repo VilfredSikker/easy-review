@@ -151,5 +151,9 @@ describe("panel chrome is local-first", () => {
     expect(palette).toContain("effortChoicesForModel");
     expect(palette).toContain("function modelItem(");
     expect(palette).toContain("effort: choice.id");
+    expect(palette).toContain("if (choices.length === 0)");
+    expect(palette).toContain("function goBack()");
+    expect(palette).toContain("if (activeSubmenu) goBack()");
+    expect(palette).toContain("if (item.submenuItems || item.view) pushSubmenu(item);");
   });
 });

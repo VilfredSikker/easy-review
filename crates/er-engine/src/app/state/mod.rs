@@ -7401,6 +7401,38 @@ impl App {
         Ok(())
     }
 
+    fn ai_effort_picker_parent(&self) -> Option<(String, Option<AiActionKind>)> {
+        let OverlayData::ModalHub {
+            kind: HubKind::AiEffort,
+            items,
+            ..
+        } = self.overlay.as_ref()?
+        else {
+            return None;
+        };
+        items.iter().find_map(|item| match &item.action {
+            HubAction::SelectAiEffort {
+                action,
+                provider_id,
+                ..
+            } => Some((provider_id.clone(), action.clone())),
+            _ => None,
+        })
+    }
+
+    /// Pop the effort picker back to the model list. Leaves the current
+    /// model/effort unchanged.
+    fn pop_ai_effort_picker(&mut self) -> bool {
+        let Some((provider_id, action)) = self.ai_effort_picker_parent() else {
+            return false;
+        };
+        if !self.config.ai_hub.providers.contains_key(&provider_id) {
+            return false;
+        }
+        self.open_ai_model_picker(provider_id, action);
+        true
+    }
+
     /// Go up one directory in the directory browser
     pub fn overlay_go_up(&mut self) {
         if let Some(OverlayData::DirectoryBrowser {
@@ -7417,7 +7449,9 @@ impl App {
                     *selected = 0;
                 }
             }
+            return;
         }
+        let _ = self.pop_ai_effort_picker();
     }
 
     /// Close the overlay (reverts settings changes if in ConfigHub overlay)
@@ -7433,7 +7467,7 @@ impl App {
         ) {
             // Navigate back to the package picker instead of closing entirely.
             self.open_verify_hub();
-        } else {
+        } else if !self.pop_ai_effort_picker() {
             self.overlay = None;
         }
     }
@@ -9449,6 +9483,66 @@ mod tests {
         let mut app = make_test_app(make_test_tab(vec![]));
         app.config.ai_hub = hub_with_effort_and_plain_models();
         assert!(!app.model_has_effort_levels("codex", "no-effort"));
+    }
+
+    fn assert_effort_picker_returns_to_model_list(app: &App) {
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        match &app.overlay {
+            Some(OverlayData::ModalHub {
+                kind: HubKind::AiModel,
+                items,
+                ..
+            }) => {
+                assert!(items.iter().any(|item| matches!(
+                    item.action,
+                    HubAction::SelectAiModel {
+                        model_id: ref id,
+                        ..
+                    } if id == "gpt-5.6-luna"
+                )));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_effort_picker_returns_to_model_list_without_activating() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app.open_ai_effort_picker("codex".into(), "gpt-5.6-luna".into(), None);
+
+        app.overlay_close();
+        assert_effort_picker_returns_to_model_list(&app);
+    }
+
+    #[test]
+    fn effort_picker_go_up_returns_to_model_list_without_activating() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app.open_ai_effort_picker(
+            "codex".into(),
+            "gpt-5.6-luna".into(),
+            Some(AiActionKind::Validate),
+        );
+
+        app.overlay_go_up();
+        assert_effort_picker_returns_to_model_list(&app);
+        match &app.overlay {
+            Some(OverlayData::ModalHub { items, .. }) => {
+                assert!(items.iter().all(|item| match &item.action {
+                    HubAction::SelectAiModel { action, .. } => {
+                        *action == Some(AiActionKind::Validate)
+                    }
+                    HubAction::RefreshAiModels { .. } => true,
+                    other => panic!("unexpected model-picker action {other:?}"),
+                }));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
     }
 
     #[test]

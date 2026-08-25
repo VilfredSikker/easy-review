@@ -232,24 +232,22 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             action,
             provider_id,
         } => {
-            let (model_count, model_id, model_has_effort) =
-                match app.config.ai_hub.providers.get(&provider_id) {
-                    Some(provider) => (
-                        provider.models.len(),
-                        provider.models.first().map(|m| m.id.clone()),
-                        provider
-                            .models
-                            .first()
-                            .is_some_and(|m| !m.effort_levels.is_empty()),
-                    ),
-                    None => {
-                        app.notify("Unknown AI provider");
-                        return Ok(());
-                    }
-                };
+            let (model_count, model_id) = match app.config.ai_hub.providers.get(&provider_id) {
+                Some(provider) => (
+                    provider.models.len(),
+                    provider.models.first().map(|m| m.id.clone()),
+                ),
+                None => {
+                    app.notify("Unknown AI provider");
+                    return Ok(());
+                }
+            };
             if model_count > 1 {
                 app.open_ai_model_picker(provider_id, action);
-            } else if model_has_effort {
+            } else if model_id
+                .as_ref()
+                .is_some_and(|id| app.model_has_effort_levels(&provider_id, id))
+            {
                 if let Some(model_id) = model_id {
                     app.open_ai_effort_picker(provider_id, model_id, action);
                 }
@@ -2197,5 +2195,96 @@ mod tests {
         .unwrap();
         assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
         assert!(app.overlay.is_none());
+    }
+
+    fn overlay_kind(app: &App) -> Option<er_engine::app::HubKind> {
+        match &app.overlay {
+            Some(er_engine::app::OverlayData::ModalHub { kind, .. }) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn selecting_single_effort_model_provider_opens_effort_picker() {
+        let mut app = app_with_effort_models();
+        app.config
+            .ai_hub
+            .providers
+            .get_mut("codex")
+            .unwrap()
+            .models
+            .truncate(1);
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiProvider {
+                action: None,
+                provider_id: "codex".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiEffort));
+    }
+
+    #[test]
+    fn selecting_effort_for_an_action_does_not_change_the_default() {
+        let mut app = app_with_effort_models();
+        app.config.ai_hub.default_provider = Some("codex".into());
+        app.config.ai_hub.default_model = Some("no-effort".into());
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiEffort {
+                action: Some(AiActionKind::Validate),
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+                effort: "high".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(app.current_ai_effort, None);
+        assert_eq!(
+            app.config.ai_hub.default_model.as_deref(),
+            Some("no-effort")
+        );
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn escape_from_effort_picker_returns_to_model_list() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        handle_overlay_input(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
+    }
+
+    #[test]
+    fn backspace_from_effort_picker_returns_to_model_list() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        handle_overlay_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
     }
 }
