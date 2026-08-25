@@ -9,7 +9,8 @@
   notes, and findings sit in one pane next to the code, matching the composer.
   New code-quality tooling: an in-repo CRAP metric (cyclomatic complexity ×
   test coverage) with a CI gate, fixture-based negative tests, and mutation
-  testing via cargo-mutants.
+  testing via cargo-mutants. The inbox popover lists every notification and
+  can mark or clear a category at once.
 
 ## Highlights
 
@@ -26,15 +27,22 @@
 - **Mutation testing.** `just mutants` runs cargo-mutants against
   er-engine on demand and records the date in `quality/mutants-last-run.txt`;
   `just mutants-stale` flags when the run log is old.
+- **Inbox.** The popover no longer caps at 20 items. The list scrolls
+  through every notification, and each category header has mark-read and
+  clear-read actions.
 
 ## What's Changed
 
 ### Features
 - Ask for thinking/effort in the model picker before activating effort-capable models.
 - Command palette letter shortcuts only run when search is not focused. `/` focuses the search field.
+- Mark as read and clear read items from each inbox category header,
+  including when a single category chip is selected.
 
 ### Fixes
 - Pin split-view comments, questions, notes, and findings to one pane, matching the composer. (#197)
+- Show the full inbox list and scroll through every category, including
+  Merged / closed. Group trash only removes already-read items.
 
 # Easy Review v0.4.14
 

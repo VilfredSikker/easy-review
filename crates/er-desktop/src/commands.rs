@@ -8,7 +8,8 @@ use tauri_plugin_notification::NotificationExt;
 
 use crate::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
-    InboxItem, InboxNotification, InboxTarget, NotificationInboxCtx, PrInboxView, PrTransitionCtx,
+    InboxItem, InboxNotification, InboxState, InboxTarget, NotificationInboxCtx, PrInboxView,
+    PrTransitionCtx,
 };
 use crate::pr_cache::PrCacheFetchedAtMap;
 use crate::projects::{self, normalize_remote_slug};
@@ -7548,36 +7549,63 @@ pub fn refresh_project_pr_list(
     snap!(state)
 }
 
-#[tauri::command]
-pub fn mark_inbox_item_read(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let now = now_ms();
-    if let Ok(mut inbox) = state.inbox.lock() {
-        inbox.mark_item_read(&id, now);
+fn mutate_inbox(
+    state: &AppState,
+    command: &'static str,
+    f: impl FnOnce(&mut InboxState),
+) -> Result<AppSnapshot, String> {
+    {
+        let mut inbox = state.inbox.lock().map_err(|e| {
+            log::error!("[inbox] command={command} failed to lock inbox: {e}");
+            e.to_string()
+        })?;
+        f(&mut inbox);
     }
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
     snap!(state)
+}
+
+#[tauri::command]
+pub fn mark_inbox_item_read(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    mutate_inbox(&state, "mark_inbox_item_read", |inbox| {
+        inbox.mark_item_read(&id, now);
+    })
 }
 
 #[tauri::command]
 pub fn mark_all_inbox_read(state: State<AppState>) -> Result<AppSnapshot, String> {
     let now = now_ms();
-    if let Ok(mut inbox) = state.inbox.lock() {
+    mutate_inbox(&state, "mark_all_inbox_read", |inbox| {
         inbox.mark_all_read(now);
-    }
-    crate::inbox::save_inbox_state(&state.inbox);
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    snap!(state)
+    })
+}
+
+#[tauri::command]
+pub fn mark_inbox_items_read(
+    ids: Vec<String>,
+    state: State<AppState>,
+) -> Result<AppSnapshot, String> {
+    let now = now_ms();
+    mutate_inbox(&state, "mark_inbox_items_read", |inbox| {
+        inbox.mark_items_read(&ids, now);
+    })
 }
 
 #[tauri::command]
 pub fn clear_read_inbox_items(state: State<AppState>) -> Result<AppSnapshot, String> {
-    if let Ok(mut inbox) = state.inbox.lock() {
+    mutate_inbox(&state, "clear_read_inbox_items", |inbox| {
         inbox.clear_read();
-    }
-    crate::inbox::save_inbox_state(&state.inbox);
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    snap!(state)
+    })
+}
+
+#[tauri::command]
+pub fn clear_inbox_items(ids: Vec<String>, state: State<AppState>) -> Result<AppSnapshot, String> {
+    // Same contract as global trash: only already-read items are removed.
+    mutate_inbox(&state, "clear_inbox_items", |inbox| {
+        inbox.clear_read_items(&ids);
+    })
 }
 
 #[tauri::command]
@@ -7597,7 +7625,10 @@ pub async fn open_inbox_item(
 fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, String> {
     let now = now_ms();
     let mut target = {
-        let mut inbox = state.inbox.lock().map_err(|e| e.to_string())?;
+        let mut inbox = state.inbox.lock().map_err(|e| {
+            log::error!("[inbox] command=open_inbox_item failed to lock inbox: {e}");
+            e.to_string()
+        })?;
         let target = inbox
             .items
             .iter()
