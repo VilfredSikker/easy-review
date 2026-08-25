@@ -5,14 +5,17 @@
 - **What changed.** The AI model picker asks for a thinking/effort level
   before activating models that support it. The command palette no longer
   focuses search on open. Letter shortcuts jump to items until you press
-  `/` (or choose Focus search) to type. New code-quality tooling: an
-  in-repo CRAP metric (cyclomatic complexity × test coverage) with a CI
-  gate, fixture-based negative tests, and mutation testing via cargo-mutants.
+  `/` (or choose Focus search) to type. In split view, comments, questions,
+  notes, and findings sit in one pane next to the code, matching the composer.
+  New code-quality tooling: an in-repo CRAP metric (cyclomatic complexity ×
+  test coverage) with a CI gate, fixture-based negative tests, and mutation
+  testing via cargo-mutants.
 
 ## Highlights
 
 - **Model picker.** Models with thinking/effort levels open those levels next.
   The model activates only after you choose a level.
+- **Split comments.** Posted threads, findings, and the composer use the same half-width grid. Unified view is unchanged.
 - **Command palette.** Search starts unfocused. Letters jump to items. `/` or **Focus search** focuses the field so you can type. Escape clears the filter, then blurs, then closes.
 - **CRAP metric.** `crates/er-crap` scores every Rust function from
   `cargo llvm-cov` coverage; `just crap` runs it, `just crap-test` runs
@@ -29,6 +32,9 @@
 ### Features
 - Ask for thinking/effort in the model picker before activating effort-capable models.
 - Command palette letter shortcuts only run when search is not focused. `/` focuses the search field.
+
+### Fixes
+- Pin split-view comments, questions, notes, and findings to one pane, matching the composer. (#197)
 
 # Easy Review v0.4.14
 
