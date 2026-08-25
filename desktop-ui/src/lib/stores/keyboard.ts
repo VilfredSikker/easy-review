@@ -8,6 +8,7 @@ import { terminal } from "./terminal.svelte";
 import { browser } from "./browser.svelte";
 import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
 import { overlay } from "./overlay.svelte";
+import { commandPalette } from "./commandPalette.svelte";
 import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
@@ -139,6 +140,7 @@ export function initKeyboard(): () => void {
       ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) ||
       target.isContentEditable;
     const inTerminal = !!target.closest(".xterm");
+    const modalOpen = !!document.querySelector("[data-modal]");
 
     if (inTerminal) {
       const isToggleTerminal =
@@ -147,6 +149,10 @@ export function initKeyboard(): () => void {
     }
 
     if (e.key === "Escape") {
+      if (commandPalette.open) {
+        // Palette owns Escape (blur search, submenu back, or close).
+        return;
+      }
       if (overlay.dismissTopModal()) {
         e.preventDefault();
         return;
@@ -266,12 +272,12 @@ export function initKeyboard(): () => void {
       return;
     }
     if (
-      ((!inField && !e.ctrlKey && !e.metaKey) || (e.metaKey || e.ctrlKey)) &&
+      ((!inField && !e.ctrlKey && !e.metaKey && !modalOpen) || (e.metaKey || e.ctrlKey)) &&
       togglePanelForKey(e)
     ) {
       return;
     }
-    if (e.key === "`" && !inField && !target.closest(".xterm")) {
+    if (e.key === "`" && !inField && !modalOpen && !target.closest(".xterm")) {
       e.preventDefault();
       terminal.toggle();
       return;
