@@ -26,11 +26,12 @@
 ## What's Changed
 
 ### Features
-- Mark as read and clear read items from each inbox category header.
+- Mark as read and clear read items from each inbox category header,
+  including when a single category chip is selected.
 
 ### Fixes
 - Show the full inbox list and scroll through every category, including
-  Merged / closed.
+  Merged / closed. Group trash only removes already-read items.
 
 # Easy Review v0.4.14
 

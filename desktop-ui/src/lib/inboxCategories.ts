@@ -136,6 +136,14 @@ export function sortInboxItems(items: InboxItemSnapshot[]): InboxItemSnapshot[] 
   });
 }
 
+export function inboxUnreadIds(items: InboxItemSnapshot[]): string[] {
+  return items.filter((i) => i.read_at_ms == null).map((i) => i.id);
+}
+
+export function inboxReadIds(items: InboxItemSnapshot[]): string[] {
+  return items.filter((i) => i.read_at_ms != null).map((i) => i.id);
+}
+
 export function applyInboxFilters(
   items: InboxItemSnapshot[],
   opts: {

@@ -10,6 +10,8 @@
     inboxItemCategory,
     inboxItemProjectId,
     inboxKindMeta,
+    inboxReadIds,
+    inboxUnreadIds,
     sortInboxItems,
     type InboxCategoryId,
   } from "$lib/inboxCategories";
@@ -44,24 +46,6 @@
 
   function closeInboxMessageModal() {
     selectedInboxMessage = null;
-  }
-
-  function unreadIds(items: InboxItemSnapshot[]): string[] {
-    return items.filter((i) => i.read_at_ms == null).map((i) => i.id);
-  }
-
-  function readIds(items: InboxItemSnapshot[]): string[] {
-    return items.filter((i) => i.read_at_ms != null).map((i) => i.id);
-  }
-
-  function markItemsRead(ids: string[]) {
-    if (ids.length === 0) return;
-    app.cmd("mark_inbox_items_read", { ids });
-  }
-
-  function clearItems(ids: string[]) {
-    if (ids.length === 0) return;
-    app.cmd("clear_inbox_items", { ids });
   }
 
   const inboxProjectOptions = $derived(
@@ -108,7 +92,6 @@
 
   const inboxGroups = $derived(groupInboxItems(inboxFiltered));
   const inboxUnreadCountAll = $derived(inboxByProject.filter((i) => i.read_at_ms == null).length);
-  const groupedView = $derived(inboxCategoryFilter === "all");
 </script>
 
 {#snippet inboxRow(item: InboxItemSnapshot, onClick: () => void)}
@@ -304,10 +287,10 @@
     <div class="flex-1 min-h-0 overflow-y-auto overscroll-contain p-1">
       {#if inboxFiltered.length === 0}
         <div class="px-3 py-6 text-center text-[12px] text-muted">No items</div>
-      {:else if groupedView}
+      {:else}
         {#each inboxGroups as group (group.category)}
-          {@const groupUnread = unreadIds(group.items)}
-          {@const groupRead = readIds(group.items)}
+          {@const groupUnread = inboxUnreadIds(group.items)}
+          {@const groupRead = inboxReadIds(group.items)}
           <div class="sticky top-0 z-[1] bg-ink-800 px-2 pt-2 pb-1 flex items-center gap-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] text-muted">
             <span class="truncate">{group.label}</span>
             <span class="ml-1 font-mono normal-case tracking-normal">{group.items.length}</span>
@@ -317,7 +300,8 @@
               disabled={groupUnread.length === 0}
               onclick={(e) => {
                 e.stopPropagation();
-                markItemsRead(groupUnread);
+                if (groupUnread.length === 0) return;
+                app.cmd("mark_inbox_items_read", { ids: groupUnread });
               }}
               title="Mark group read"
               aria-label="Mark {group.label} read"
@@ -330,7 +314,8 @@
               disabled={groupRead.length === 0}
               onclick={(e) => {
                 e.stopPropagation();
-                clearItems(groupRead);
+                if (groupRead.length === 0) return;
+                app.cmd("clear_inbox_items", { ids: groupRead });
               }}
               title="Clear read in group"
               aria-label="Clear read in {group.label}"
@@ -342,10 +327,6 @@
           {#each group.items as item (item.id)}
             {@render inboxRow(item, () => openInboxMessageModal(item))}
           {/each}
-        {/each}
-      {:else}
-        {#each inboxFiltered as item (item.id)}
-          {@render inboxRow(item, () => openInboxMessageModal(item))}
         {/each}
       {/if}
     </div>

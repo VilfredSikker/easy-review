@@ -8,6 +8,8 @@ import {
   inboxItemCategory,
   inboxItemProjectId,
   inboxKindMeta,
+  inboxReadIds,
+  inboxUnreadIds,
   sortInboxItems,
 } from "./inboxCategories";
 
@@ -204,5 +206,48 @@ describe("applyInboxFilters", () => {
     const grouped = groupInboxItems(filtered);
     expect(grouped).toHaveLength(1);
     expect(grouped[0].items).toHaveLength(40);
+  });
+});
+
+describe("inboxUnreadIds / inboxReadIds", () => {
+  it("splits ids for group mark-read and clear-read", () => {
+    const items = [
+      item({ id: "u1", kind: "pr_comment", category: "pr_comment" }),
+      item({
+        id: "r1",
+        kind: "pr_merged",
+        category: "lifecycle",
+        read_at_ms: 10,
+      }),
+      item({ id: "u2", kind: "pr_merged", category: "lifecycle" }),
+    ];
+    expect(inboxUnreadIds(items)).toEqual(["u1", "u2"]);
+    expect(inboxReadIds(items)).toEqual(["r1"]);
+    expect(inboxUnreadIds([])).toEqual([]);
+    expect(inboxReadIds([])).toEqual([]);
+  });
+
+  it("keeps a single-category filter as one group with those ids", () => {
+    const items = [
+      item({ id: "u", kind: "pr_merged", category: "lifecycle" }),
+      item({
+        id: "r",
+        kind: "pr_merged",
+        category: "lifecycle",
+        read_at_ms: 1,
+      }),
+      item({ id: "other", kind: "pr_comment", category: "pr_comment" }),
+    ];
+    const filtered = applyInboxFilters(items, {
+      projects: [],
+      projectId: "all",
+      read: "all",
+      category: "lifecycle",
+    });
+    const grouped = groupInboxItems(filtered);
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].category).toBe("lifecycle");
+    expect(inboxUnreadIds(grouped[0].items)).toEqual(["u"]);
+    expect(inboxReadIds(grouped[0].items)).toEqual(["r"]);
   });
 });
