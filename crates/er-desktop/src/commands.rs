@@ -2925,7 +2925,7 @@ pub fn submit_github_review(
         _ => {
             return Err(format!(
                 "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ))
+            ));
         }
     };
 
@@ -3253,7 +3253,7 @@ pub fn submit_github_pr_decision(
         _ => {
             return Err(format!(
                 "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
-            ))
+            ));
         }
     };
 
@@ -4271,6 +4271,7 @@ pub async fn set_ai_selection(
     provider_id: String,
     model_id: Option<String>,
     persist: Option<bool>,
+    effort: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
@@ -4285,13 +4286,19 @@ pub async fn set_ai_selection(
             let selection = app
                 .config
                 .ai_hub
-                .set_default_selection(&provider_id, model_id.as_deref(), &agent)
+                .set_default_selection_with_effort(
+                    &provider_id,
+                    model_id.as_deref(),
+                    effort.as_deref(),
+                    &agent,
+                )
                 .map_err(|e| e.to_string())?;
             er_engine::config::save_config(&app.config).map_err(|e| e.to_string())?;
             selection
         } else {
-            // Session-only: keep current effort when the new model still supports it.
-            let runtime_effort = app.current_ai_effort.clone();
+            // Session-only: keep current effort when the new model still supports
+            // it, unless the picker supplied an explicit level.
+            let runtime_effort = effort.clone().or_else(|| app.current_ai_effort.clone());
             app.config
                 .ai_hub
                 .resolve_selection(

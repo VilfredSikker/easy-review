@@ -4,7 +4,7 @@ This directory contains Desktop feature components. Most components are thin vie
 
 ## Feature Ownership
 
-- `TabStrip.svelte`: open tab list, select/close/reorder tabs, panel toggles (left/tree/right), active AI provider/model chip. Backend commands: `new_tab`, `select_tab`, `close_tab`, `reorder_tabs`. Palette picks persist via `set_ai_selection`.
+- `TabStrip.svelte`: open tab list, select/close/reorder tabs, panel toggles (left/tree/right), active AI provider/model chip. Backend commands: `new_tab`, `select_tab`, `close_tab`, `reorder_tabs`. Palette picks persist via `set_ai_selection`. Models with `effort_levels` open those levels next; the model activates only after a level is chosen.
 - `BranchContextBar.svelte`: active branch chip, base label, copy branch/path actions (row below tab strip).
 - `LeftSidebar.svelte`: projects, tracked branches, PR buckets, refresh/dismiss/track actions, drag-reorder projects (`reorder_projects`).
 - `BranchCard.svelte`: active branch/PR summary, GitHub status, checks/reviews, watcher state, GitHub refresh.
