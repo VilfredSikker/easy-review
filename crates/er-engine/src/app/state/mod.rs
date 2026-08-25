@@ -422,6 +422,7 @@ pub enum HubKind {
     Ai,
     AiProvider,
     AiModel,
+    AiEffort,
     AiExpert,
     Verify,
     VerifyPackage,
@@ -437,6 +438,7 @@ impl HubKind {
             Self::Ai => "AI",
             Self::AiProvider => "AI PROVIDER",
             Self::AiModel => "AI MODEL",
+            Self::AiEffort => "EFFORT",
             Self::AiExpert => "SPECIALIZED REVIEW",
             Self::Verify => "VERIFY",
             Self::VerifyPackage => "VERIFY",
@@ -501,6 +503,13 @@ pub enum HubAction {
         action: Option<AiActionKind>,
         provider_id: String,
         model_id: String,
+    },
+    /// Pick a thinking/effort level, then activate the model (or continue an action)
+    SelectAiEffort {
+        action: Option<AiActionKind>,
+        provider_id: String,
+        model_id: String,
+        effort: String,
     },
     /// Refresh discovered models for a provider (CLI `models_command`)
     RefreshAiModels {
@@ -5057,15 +5066,36 @@ impl App {
         provider_id: &str,
         model_id: Option<&str>,
     ) -> Result<()> {
+        self.set_ai_default_selection_with_effort(provider_id, model_id, None)
+    }
+
+    /// Like [`Self::set_ai_default_selection`], but pins thinking/effort when given.
+    pub fn set_ai_default_selection_with_effort(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<()> {
         let agent = self.config.agent.clone();
-        let selection = self
-            .config
-            .ai_hub
-            .set_default_selection(provider_id, model_id, &agent)?;
+        let selection = self.config.ai_hub.set_default_selection_with_effort(
+            provider_id,
+            model_id,
+            effort,
+            &agent,
+        )?;
         self.current_ai_provider = selection.provider_id;
         self.current_ai_model = selection.model_id;
         self.current_ai_effort = selection.effort;
         Ok(())
+    }
+
+    pub fn model_has_effort_levels(&self, provider_id: &str, model_id: &str) -> bool {
+        !crate::config::effort_levels_for_hub_model(
+            &self.config.ai_hub,
+            Some(provider_id),
+            Some(model_id),
+        )
+        .is_empty()
     }
 
     /// Resolve an action-bound selection without mutating the shared default.
@@ -5074,12 +5104,22 @@ impl App {
         provider_id: &str,
         model_id: Option<&str>,
     ) -> Result<crate::config::AiSelection> {
-        self.config.ai_hub.resolve_selection(
+        self.resolve_ai_selection_override_with_effort(
             provider_id,
             model_id,
-            &self.config.agent,
             self.current_ai_effort.as_deref(),
         )
+    }
+
+    pub fn resolve_ai_selection_override_with_effort(
+        &self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+    ) -> Result<crate::config::AiSelection> {
+        self.config
+            .ai_hub
+            .resolve_selection(provider_id, model_id, &self.config.agent, effort)
     }
 
     pub fn set_ai_selection_override(&mut self, selection: crate::config::AiSelection) {
@@ -5285,6 +5325,68 @@ impl App {
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::AiModel,
             title: None,
+            items,
+            selected,
+        });
+    }
+
+    /// Show thinking/effort levels for a model. Choosing a level is what
+    /// activates the model (`SelectAiEffort`); opening this picker does not.
+    pub fn open_ai_effort_picker(
+        &mut self,
+        provider_id: String,
+        model_id: String,
+        action: Option<AiActionKind>,
+    ) {
+        let Some(provider) = self.config.ai_hub.providers.get(&provider_id) else {
+            self.notify("Unknown AI provider");
+            return;
+        };
+        let Some(model) = provider.models.iter().find(|model| model.id == model_id) else {
+            self.notify("Unknown AI model");
+            return;
+        };
+        let levels = model.effort_levels.clone();
+        if levels.is_empty() {
+            self.notify("This model has no thinking levels");
+            return;
+        }
+        let title = model.display_name();
+        let model_is_current = self.current_ai_provider.as_deref() == Some(provider_id.as_str())
+            && self.current_ai_model.as_deref() == Some(model_id.as_str());
+        let current_effort = self.current_ai_effort.clone();
+        let mut selected = 0usize;
+        let items: Vec<HubItem> = levels
+            .iter()
+            .enumerate()
+            .map(|(idx, level)| {
+                let is_current =
+                    model_is_current && current_effort.as_deref() == Some(level.as_str());
+                if is_current {
+                    selected = idx;
+                }
+                HubItem {
+                    label: crate::config::effort_display_label(level),
+                    hint: "".into(),
+                    description: if is_current {
+                        "currently selected".into()
+                    } else {
+                        String::new()
+                    },
+                    action: HubAction::SelectAiEffort {
+                        action: action.clone(),
+                        provider_id: provider_id.clone(),
+                        model_id: model_id.clone(),
+                        effort: level.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                }
+            })
+            .collect();
+        self.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::AiEffort,
+            title: Some(title),
             items,
             selected,
         });
@@ -7299,6 +7401,38 @@ impl App {
         Ok(())
     }
 
+    fn ai_effort_picker_parent(&self) -> Option<(String, Option<AiActionKind>)> {
+        let OverlayData::ModalHub {
+            kind: HubKind::AiEffort,
+            items,
+            ..
+        } = self.overlay.as_ref()?
+        else {
+            return None;
+        };
+        items.iter().find_map(|item| match &item.action {
+            HubAction::SelectAiEffort {
+                action,
+                provider_id,
+                ..
+            } => Some((provider_id.clone(), action.clone())),
+            _ => None,
+        })
+    }
+
+    /// Pop the effort picker back to the model list. Leaves the current
+    /// model/effort unchanged.
+    fn pop_ai_effort_picker(&mut self) -> bool {
+        let Some((provider_id, action)) = self.ai_effort_picker_parent() else {
+            return false;
+        };
+        if !self.config.ai_hub.providers.contains_key(&provider_id) {
+            return false;
+        }
+        self.open_ai_model_picker(provider_id, action);
+        true
+    }
+
     /// Go up one directory in the directory browser
     pub fn overlay_go_up(&mut self) {
         if let Some(OverlayData::DirectoryBrowser {
@@ -7315,7 +7449,9 @@ impl App {
                     *selected = 0;
                 }
             }
+            return;
         }
+        let _ = self.pop_ai_effort_picker();
     }
 
     /// Close the overlay (reverts settings changes if in ConfigHub overlay)
@@ -7331,7 +7467,7 @@ impl App {
         ) {
             // Navigate back to the package picker instead of closing entirely.
             self.open_verify_hub();
-        } else {
+        } else if !self.pop_ai_effort_picker() {
             self.overlay = None;
         }
     }
@@ -9277,6 +9413,136 @@ mod tests {
         assert_eq!(app.active_ai_provider_label().as_deref(), Some("Codex"));
         assert_eq!(app.active_ai_model_label().as_deref(), Some("GPT-5.6 Luna"));
         assert_eq!(app.active_ai_selection_label(), "Codex / GPT-5.6 Luna");
+    }
+
+    fn hub_with_effort_and_plain_models() -> crate::config::AiHubConfig {
+        let mut hub = crate::config::AiHubConfig::default();
+        hub.providers.insert(
+            "codex".into(),
+            crate::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![
+                    crate::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        label: Some("GPT-5.6 Luna".into()),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                    crate::config::AiModelConfig {
+                        id: "no-effort".into(),
+                        label: Some("No Effort".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        hub
+    }
+
+    #[test]
+    fn effort_picker_does_not_activate_the_model() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+
+        assert!(app.model_has_effort_levels("codex", "gpt-5.6-luna"));
+        app.open_ai_effort_picker("codex".into(), "gpt-5.6-luna".into(), None);
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        match &app.overlay {
+            Some(OverlayData::ModalHub {
+                kind: HubKind::AiEffort,
+                title,
+                items,
+                ..
+            }) => {
+                assert_eq!(title.as_deref(), Some("GPT-5.6 Luna"));
+                assert_eq!(items.len(), 3);
+                assert!(items
+                    .iter()
+                    .all(|item| matches!(item.action, HubAction::SelectAiEffort { .. })));
+            }
+            other => panic!("expected effort picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choosing_effort_activates_model_and_effort() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.set_ai_default_selection_with_effort("codex", Some("gpt-5.6-luna"), Some("high"))
+            .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+        assert_eq!(app.config.ai_hub.default_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn models_without_effort_levels_do_not_open_effort_picker() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        assert!(!app.model_has_effort_levels("codex", "no-effort"));
+    }
+
+    fn assert_effort_picker_returns_to_model_list(app: &App) {
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        match &app.overlay {
+            Some(OverlayData::ModalHub {
+                kind: HubKind::AiModel,
+                items,
+                ..
+            }) => {
+                assert!(items.iter().any(|item| matches!(
+                    item.action,
+                    HubAction::SelectAiModel {
+                        model_id: ref id,
+                        ..
+                    } if id == "gpt-5.6-luna"
+                )));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn closing_effort_picker_returns_to_model_list_without_activating() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app.open_ai_effort_picker("codex".into(), "gpt-5.6-luna".into(), None);
+
+        app.overlay_close();
+        assert_effort_picker_returns_to_model_list(&app);
+    }
+
+    #[test]
+    fn effort_picker_go_up_returns_to_model_list_without_activating() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config.ai_hub = hub_with_effort_and_plain_models();
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app.open_ai_effort_picker(
+            "codex".into(),
+            "gpt-5.6-luna".into(),
+            Some(AiActionKind::Validate),
+        );
+
+        app.overlay_go_up();
+        assert_effort_picker_returns_to_model_list(&app);
+        match &app.overlay {
+            Some(OverlayData::ModalHub { items, .. }) => {
+                assert!(items.iter().all(|item| match &item.action {
+                    HubAction::SelectAiModel { action, .. } => {
+                        *action == Some(AiActionKind::Validate)
+                    }
+                    HubAction::RefreshAiModels { .. } => true,
+                    other => panic!("unexpected model-picker action {other:?}"),
+                }));
+            }
+            other => panic!("expected model picker, got {other:?}"),
+        }
     }
 
     #[test]

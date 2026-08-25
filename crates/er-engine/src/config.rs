@@ -501,6 +501,18 @@ impl AiHubConfig {
         model_id: Option<&str>,
         agent: &AgentConfig,
     ) -> Result<AiSelection> {
+        self.set_default_selection_with_effort(provider_id, model_id, None, agent)
+    }
+
+    /// Like [`Self::set_default_selection`], but pins `effort` when given.
+    /// Unsupported non-Auto effort is rejected before any defaults change.
+    pub fn set_default_selection_with_effort(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+        agent: &AgentConfig,
+    ) -> Result<AiSelection> {
         let provider = self
             .providers
             .get(provider_id)
@@ -514,13 +526,31 @@ impl AiHubConfig {
         }
 
         let resolved_model = self.resolve_model_id(provider_id, model_id);
+        if let Some(requested) = effort {
+            let normalized = normalize_effort(
+                self,
+                Some(provider_id),
+                resolved_model.as_deref(),
+                Some(requested),
+            );
+            let raw = requested.trim();
+            if normalized.is_none() && !raw.is_empty() && !raw.eq_ignore_ascii_case("auto") {
+                anyhow::bail!("Effort is unsupported for the selected model");
+            }
+        }
+
         self.default_provider = Some(provider_id.to_string());
         self.default_model = resolved_model;
+        let effort_to_keep = if effort.is_some() {
+            effort.map(str::to_string)
+        } else {
+            self.default_effort.clone()
+        };
         self.default_effort = normalize_effort(
             self,
             Some(provider_id),
             self.default_model.as_deref(),
-            self.default_effort.as_deref(),
+            effort_to_keep.as_deref(),
         );
 
         Ok(self.resolve_default_selection(agent))
@@ -1109,6 +1139,17 @@ pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
 
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const AUTO_EFFORT: &str = "Auto";
+
+/// Title-case a catalog effort id for picker labels (`xhigh` → `XHigh`).
+pub fn effort_display_label(level: &str) -> String {
+    if level.eq_ignore_ascii_case("xhigh") {
+        "XHigh".to_string()
+    } else if let Some(first) = level.chars().next() {
+        first.to_uppercase().collect::<String>() + &level[first.len_utf8()..]
+    } else {
+        String::new()
+    }
+}
 
 /// Return the effort metadata advertised by the selected hub model.
 pub fn effort_levels_for_hub_model<'a>(
@@ -2468,6 +2509,8 @@ mod tests {
         assert!(effort_levels_for_hub_model(&hub, Some("claude"), Some("haiku-4.5")).is_empty());
         assert!(normalize_effort(&hub, Some("claude"), Some("sonnet-5"), Some("Auto")).is_none());
         assert!(normalize_effort(&hub, Some("claude"), Some("haiku-4.5"), Some("high")).is_none());
+        assert_eq!(effort_display_label("high"), "High");
+        assert_eq!(effort_display_label("xhigh"), "XHigh");
     }
 
     #[test]
@@ -3076,6 +3119,48 @@ mod tests {
         assert_eq!(selected.effort.as_deref(), Some("high"));
         assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(config.ai_hub.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn set_default_selection_with_effort_pins_the_chosen_level() {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                models: vec![AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    effort_levels: vec!["low".into(), "high".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        config.ai_hub.default_effort = Some("low".into());
+        let selected = config
+            .ai_hub
+            .set_default_selection_with_effort(
+                "codex",
+                Some("gpt-5.6-luna"),
+                Some("high"),
+                &config.agent,
+            )
+            .unwrap();
+        assert_eq!(selected.effort.as_deref(), Some("high"));
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("high"));
+        assert_eq!(
+            config
+                .ai_hub
+                .set_default_selection_with_effort(
+                    "codex",
+                    Some("gpt-5.6-luna"),
+                    Some("nope"),
+                    &config.agent,
+                )
+                .unwrap_err()
+                .to_string(),
+            "Effort is unsupported for the selected model"
+        );
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("high"));
     }
 
     #[test]
