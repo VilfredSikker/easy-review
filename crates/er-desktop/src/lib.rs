@@ -15,6 +15,7 @@ pub mod export;
 pub mod frame_script;
 pub mod gh_status_cache;
 pub mod inbox;
+pub mod native_notify;
 mod persist;
 pub mod pr_cache;
 pub mod pr_open_cache;
