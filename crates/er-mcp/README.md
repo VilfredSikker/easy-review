@@ -35,6 +35,10 @@ Every PR-scoped tool accepts **`ref`** (preferred) or `pr_url` / `repo` + `numbe
 
 Call `pr_resolve` first when ambiguous.
 
+Feedback tools accept `bucket: "local"` to use the current checked-out
+branch's local branch bucket. Omit the PR target fields in that mode. The
+default `bucket: "pr"` reads the shared PR bucket.
+
 ## Skills (workflows)
 
 Install with **`bunx @easy-review/skills`** (or `npx @easy-review/skills`):

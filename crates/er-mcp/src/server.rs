@@ -11,7 +11,8 @@ use er_engine::github::{
     gh_pr_thread_addressing_remote,
 };
 use er_engine::pr_review_feedback::{
-    get_pr_review_feedback, reply_to_pr_finding, reply_to_pr_note, reply_to_pr_question,
+    get_review_feedback_in_dir, reply_to_finding_in_dir, reply_to_note_in_dir,
+    reply_to_question_in_dir,
 };
 use er_engine::projects_pins::{self, PinnedPr};
 use er_engine::review_queue::{
@@ -166,6 +167,9 @@ pub struct PrDiagramArgs {
 pub struct PrFeedbackGetArgs {
     #[serde(flatten)]
     pub target: PrRefFields,
+    /// `pr` (default) or `local` for the current checked-out branch's branch bucket.
+    #[serde(default)]
+    pub bucket: Option<String>,
     #[serde(default)]
     pub include_resolved: Option<bool>,
 }
@@ -174,6 +178,9 @@ pub struct PrFeedbackGetArgs {
 pub struct PrFeedbackReplyArgs {
     #[serde(flatten)]
     pub target: PrRefFields,
+    /// `pr` (default) or `local` for the current checked-out branch's branch bucket.
+    #[serde(default)]
+    pub bucket: Option<String>,
     /// `question` | `note` | `finding`.
     pub r#type: String,
     pub id: String,
@@ -232,6 +239,66 @@ fn target_input(target: &PrRefFields) -> PrTargetInput<'_> {
 
 fn resolve_target(target: &PrRefFields) -> Result<ResolvedPr, McpError> {
     projects::resolve_pr_target(&target_input(target)).map_err(|e| tool_err(e.to_string()))
+}
+
+fn feedback_bucket(value: Option<&str>) -> Result<&str, McpError> {
+    let bucket = value
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("pr");
+    match bucket {
+        "pr" | "local" => Ok(bucket),
+        other => Err(tool_err(format!(
+            "bucket must be pr or local (got '{other}')"
+        ))),
+    }
+}
+
+fn resolve_local_feedback_target() -> Result<ResolvedPr, McpError> {
+    let repo_root = er_engine::git::get_repo_root().map_err(|e| tool_err(e.to_string()))?;
+    let branch =
+        er_engine::git::get_current_branch_in(&repo_root).map_err(|e| tool_err(e.to_string()))?;
+    if branch.is_empty() || branch == "HEAD" {
+        return Err(tool_err(
+            "bucket=local requires a checked-out branch, not a detached HEAD",
+        ));
+    }
+    let (owner, repo, number) = er_engine::github::get_pr_info(&repo_root).map_err(|e| {
+        tool_err(format!(
+            "bucket=local could not resolve the current branch PR: {e}"
+        ))
+    })?;
+    let bucket_path = er_engine::storage::local_branch_bucket_dir(&repo_root, &branch)
+        .to_string_lossy()
+        .into_owned();
+    Ok(ResolvedPr {
+        owner: owner.clone(),
+        repo: repo.clone(),
+        number,
+        pr_url: format!("https://github.com/{owner}/{repo}/pull/{number}"),
+        bucket_path,
+        branch: Some(branch),
+        project_name: None,
+        resolved_via: "local_branch".to_string(),
+    })
+}
+
+fn resolve_feedback_target(target: &PrRefFields, bucket: &str) -> Result<ResolvedPr, McpError> {
+    if bucket == "local" {
+        let has_explicit_target = target.r#ref.is_some()
+            || target.pr_url.is_some()
+            || target.repo.is_some()
+            || target.project_id.is_some()
+            || target.number.is_some();
+        if has_explicit_target {
+            return Err(tool_err(
+                "bucket=local uses the current checked-out branch; omit ref, repo, project_id, and number",
+            ));
+        }
+        resolve_local_feedback_target()
+    } else {
+        resolve_target(target)
+    }
 }
 
 /// Repo slug for queue/list tools: explicit `repo`, or `ref` when it names a repo (`owner/repo`).
@@ -977,40 +1044,59 @@ impl ErMcp {
         }
     }
 
-    #[tool(description = "Read review questions, notes, and AI findings for a PR.")]
+    #[tool(
+        description = "Read review questions, notes, and AI findings for a PR. bucket=local reads the current checked-out branch's local branch bucket."
+    )]
     async fn pr_feedback_get(
         &self,
         Parameters(args): Parameters<PrFeedbackGetArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
+        let bucket = feedback_bucket(args.bucket.as_deref())?;
+        let pr = resolve_feedback_target(&args.target, bucket)?;
         let owner = pr.owner.clone();
         let name = pr.repo.clone();
         let number = pr.number;
+        let er_dir = pr.bucket_path.clone();
+        let branch_scope = if bucket == "local" {
+            pr.branch.clone()
+        } else {
+            None
+        };
         let include_resolved = args.include_resolved.unwrap_or(false);
         let feedback = tokio::task::spawn_blocking(move || {
-            get_pr_review_feedback(&owner, &name, number, include_resolved)
+            get_review_feedback_in_dir(
+                &owner,
+                &name,
+                number,
+                &er_dir,
+                branch_scope.as_deref(),
+                include_resolved,
+            )
         })
         .await
         .map_err(|e| McpError::internal_error(e.to_string(), None))?
         .map_err(|e| tool_err(e.to_string()))?;
+        let bucket_path = feedback.bucket_path.clone();
         text_json(&json!({
             "project": pr.project_name,
             "repo": format!("{}/{}", pr.owner, pr.repo),
             "number": pr.number,
-            "bucket_path": pr.bucket_path,
+            "bucket": bucket,
+            "bucket_path": bucket_path,
             "feedback": feedback,
         }))
     }
 
-    #[tool(description = "Reply to a question, note, or AI finding on a PR.")]
+    #[tool(
+        description = "Reply to a question, note, or AI finding on a PR. bucket=local replies in the current checked-out branch's local branch bucket."
+    )]
     async fn pr_feedback_reply(
         &self,
         Parameters(args): Parameters<PrFeedbackReplyArgs>,
     ) -> Result<CallToolResult, McpError> {
-        let pr = resolve_target(&args.target)?;
-        let owner = pr.owner.clone();
-        let name = pr.repo.clone();
-        let number = pr.number;
+        let bucket = feedback_bucket(args.bucket.as_deref())?;
+        let pr = resolve_feedback_target(&args.target, bucket)?;
+        let er_dir = pr.bucket_path.clone();
         let text = args.text;
         let author = args.author;
 
@@ -1018,14 +1104,7 @@ impl ErMcp {
             "question" => {
                 let question_id = args.id.clone();
                 tokio::task::spawn_blocking(move || {
-                    reply_to_pr_question(
-                        &owner,
-                        &name,
-                        number,
-                        &question_id,
-                        &text,
-                        author.as_deref(),
-                    )
+                    reply_to_question_in_dir(&er_dir, &question_id, &text, author.as_deref())
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1034,7 +1113,7 @@ impl ErMcp {
             "note" => {
                 let note_id = args.id.clone();
                 tokio::task::spawn_blocking(move || {
-                    reply_to_pr_note(&owner, &name, number, &note_id, &text, author.as_deref())
+                    reply_to_note_in_dir(&er_dir, &note_id, &text, author.as_deref())
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1043,7 +1122,7 @@ impl ErMcp {
             "finding" => {
                 let finding_id = args.id.clone();
                 tokio::task::spawn_blocking(move || {
-                    reply_to_pr_finding(&owner, &name, number, &finding_id, &text)
+                    reply_to_finding_in_dir(&er_dir, &finding_id, &text)
                 })
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
@@ -1060,6 +1139,7 @@ impl ErMcp {
             "project": pr.project_name,
             "repo": format!("{}/{}", pr.owner, pr.repo),
             "number": pr.number,
+            "bucket": bucket,
             "bucket_path": pr.bucket_path,
             "reply": reply,
         }))
@@ -1292,5 +1372,35 @@ mod tests {
         for field in ["action", "kind", "prompt", "files", "refresh_diff"] {
             assert!(props.contains_key(field), "missing field: {field}");
         }
+    }
+
+    #[test]
+    fn feedback_tools_advertise_bucket_selector() {
+        let server = ErMcp::new();
+        let tools = server.tool_router.list_all();
+        for name in ["pr_feedback_get", "pr_feedback_reply"] {
+            let tool = tools
+                .iter()
+                .find(|tool| tool.name == name)
+                .unwrap_or_else(|| panic!("{name} tool registered"));
+            let props = tool
+                .input_schema
+                .get("properties")
+                .and_then(|p| p.as_object())
+                .expect("input schema has properties");
+            assert!(props.contains_key("bucket"), "missing bucket on {name}");
+        }
+        assert_eq!(feedback_bucket(None).unwrap(), "pr");
+        assert_eq!(feedback_bucket(Some("local")).unwrap(), "local");
+        assert!(feedback_bucket(Some("unstaged")).is_err());
+    }
+
+    #[test]
+    fn local_feedback_rejects_an_explicit_pr_target() {
+        let target = PrRefFields {
+            r#ref: Some("https://github.com/acme/widgets/pull/1".into()),
+            ..Default::default()
+        };
+        assert!(resolve_feedback_target(&target, "local").is_err());
     }
 }

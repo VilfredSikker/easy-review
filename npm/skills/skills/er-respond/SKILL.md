@@ -47,6 +47,22 @@ er-get-feedback feature/my-branch
 
 Mutating.
 
+## Local branch feedback
+
+`local` is a special target for the current checked-out branch. It reads and
+writes the local branch bucket, not the PR bucket.
+
+When the user runs `er-respond local`:
+
+1. Call `pr_feedback_get` with `{ "bucket": "local", "include_resolved": false }`.
+2. The MCP tool resolves the current repository and checked-out branch. Do not
+   pass `ref`, `repo`, `project_id`, or `number` with `bucket: "local"`.
+3. When replying, pass the same `bucket: "local"` to `pr_feedback_reply`.
+
+The local bucket contains the questions and notes created while reviewing the
+local branch diff. A normal target such as a PR URL continues to use the PR
+bucket and should not be mixed with the local workflow.
+
 ## Trigger phrases
 
 - "Answer this question" / "reply to the note" / "validate this finding"
