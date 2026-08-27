@@ -38,6 +38,7 @@
 - Command palette letter shortcuts only run when search is not focused. `/` focuses the search field.
 - Mark as read and clear read items from each inbox category header,
   including when a single category chip is selected.
+- Make `er-respond` implement actionable review notes before replying to them.
 
 ### Fixes
 - Pin split-view comments, questions, notes, and findings to one pane, matching the composer. (#197)

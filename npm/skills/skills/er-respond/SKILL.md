@@ -1,9 +1,10 @@
 ---
 name: er-respond
 description: >
-  Reply to review questions, local notes, or AI findings on a PR via Easy Review MCP.
-  Use when the user wants to answer a question, validate a finding, or respond on a PR
-  thread. Accepts PR URL, worktree path, owner/repo, or branch.
+  Answer review questions and implement actionable local notes on a PR, then reply via
+  Easy Review MCP. Use when the user wants to answer a question, act on a note, validate
+  a finding, or respond on a PR thread. Accepts PR URL, worktree path, owner/repo, or
+  branch.
 metadata:
   author: easy-review
   version: "0.1.0"
@@ -45,7 +46,7 @@ er-get-feedback feature/my-branch
 - **No ER project for owner/repo** — pass a worktree path or configure the project in Desktop.
 - **No PR on current branch** — checkout the PR branch or pass an explicit URL.
 
-Mutating.
+Mutating. Questions get an answer. Notes are actionable implementation requests.
 
 ## Local branch feedback
 
@@ -66,12 +67,23 @@ bucket and should not be mixed with the local workflow.
 ## Trigger phrases
 
 - "Answer this question" / "reply to the note" / "validate this finding"
+- "Implement these review notes" / "address the notes"
 - "Respond on PR #42" with question/note/finding id
 
 ## Workflow
 
 1. **`pr_feedback_get`** first (unless user gave `type` + `id` explicitly).
-2. **`pr_feedback_reply`**:
+2. Classify the selected item and act on it:
+   - **Question** — answer it from the current code and review context. Do not
+     edit the worktree unless the user separately asks for a change.
+   - **Note** — treat it as an implementation request. Inspect the target
+     worktree, make the requested change, and run the narrowest relevant checks.
+     Preserve unrelated work. If the note is ambiguous or requires a broader
+     change than the user authorized, stop and ask for direction.
+   - **Finding** — respond with whether the finding is valid. Do not fix it
+     unless the user explicitly requests a fix or a review-fix workflow includes
+     it.
+3. **`pr_feedback_reply`** after acting:
 
 ```json
 {
@@ -84,10 +96,13 @@ bucket and should not be mixed with the local workflow.
 
 `type`: `question` | `note` | `finding`
 
-3. **`pr_feedback_get`** again to confirm.
+4. **`pr_feedback_get`** again to confirm.
 
 ## Rules
 
 - Route question → `question`, note → `note`, finding → `finding`.
+- A note is not complete when it has only been acknowledged. Implement the
+  requested change before replying, then summarize the change and validation in
+  the reply. Do not claim completion if implementation or validation is blocked.
 - Do not resolve or delete items (not supported via MCP yet).
 - Do not invent ids — use ids from `pr_feedback_get`.
