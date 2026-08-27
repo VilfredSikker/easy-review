@@ -123,6 +123,18 @@ pub fn view_bucket_dir(repo_slug: &str, branch_slug: &str, bucket: &str) -> Path
         .join(bucket)
 }
 
+/// Directory for the checked-out branch's local review bucket.
+///
+/// This follows the same storage rules as a local `er` tab: repo-local mode
+/// uses `<repo_root>/.er`, while managed storage uses the `branch` view bucket.
+pub fn local_branch_bucket_dir(repo_root: &str, branch: &str) -> PathBuf {
+    if use_repo_local_storage() {
+        return Path::new(repo_root).join(".er");
+    }
+
+    view_bucket_dir(&slug_repo(repo_root), &slug_branch(branch), "branch")
+}
+
 /// Directory for a PR bucket under the managed storage root.
 ///
 /// Layout: `<storage_root>/repos/<owner_repo_slug>/prs/pr-<N>`
@@ -377,6 +389,13 @@ mod tests {
             s.contains("view-buckets/unstaged"),
             "missing bucket path: {s}"
         );
+    }
+
+    #[test]
+    fn local_branch_bucket_dir_uses_branch_view_bucket() {
+        let dir = local_branch_bucket_dir("/tmp/example-repo", "feature/foo");
+        let s = dir.to_string_lossy();
+        assert!(s.contains("repos/example-repo/branches/feature-foo/view-buckets/branch"));
     }
 
     #[test]
