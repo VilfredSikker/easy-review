@@ -12,6 +12,7 @@ pub fn initialize(app: &AppHandle) {
 
 /// Queue a banner. Returns `false` when this process cannot deliver (no app
 /// bundle, or the platform backend refused the request).
+#[cfg(target_os = "macos")]
 pub fn show(title: &str, body: &str) -> bool {
     imp::show(title, body)
 }
@@ -169,8 +170,4 @@ mod imp {
     use super::AppHandle;
 
     pub fn initialize(_app: &AppHandle) {}
-
-    pub fn show(_title: &str, _body: &str) -> bool {
-        false
-    }
 }
