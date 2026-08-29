@@ -2,43 +2,33 @@
 
 ## In plain terms
 
-- **What changed.** The GitHub repo has product topics, a description, and a docs homepage so Easy Review shows up in GitHub search.
-- **TL;DR.** GitHub topics for discovery.
-
-## Highlights
-
-- **GitHub topics.** `VilfredSikker/easy-review` is tagged for git, code-review, tui, tauri, MCP, and related search terms. `herdr-plugin` stays so the Herdr marketplace can index it.
-- **What changed.** The Herdr plugin is documented on the Herdr marketplace. Search `easy-review` at herdr.dev/plugins after the index refresh.
-- **TL;DR.** Marketplace listing docs.
-
-## Highlights
-
-- **Herdr marketplace.** Easy Review is listed at [herdr.dev/plugins](https://herdr.dev/plugins/). The GitHub repo keeps the `herdr-plugin` topic so Herdr's index can pick it up.
-
-## What's Changed
-
-### Docs
-- Record GitHub repo topics, description, and homepage for discovery.
-- Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
-
-# Easy Review (unreleased)
-
-## In plain terms
-
 - **What changed.** The AI model picker asks for a thinking/effort level
   before activating models that support it. The command palette no longer
   focuses search on open. Letter shortcuts jump to items until you press
   `/` (or choose Focus search) to type. In split view, comments, questions,
   notes, and findings sit in one pane next to the code, matching the composer.
-  New code-quality tooling: an in-repo CRAP metric (cyclomatic complexity ×
-  test coverage) with a CI gate, fixture-based negative tests, and mutation
-  testing via cargo-mutants. The inbox popover lists every notification and
-  can mark or clear a category at once.
+  `er-respond` can now reply to feedback on the local checked-out branch, not
+  just PRs. Desktop review-complete notifications show up even while the app
+  is focused. New code-quality tooling: an in-repo CRAP metric (cyclomatic
+  complexity × test coverage) with a CI gate, fixture-based negative tests,
+  and mutation testing via cargo-mutants. The inbox popover lists every
+  notification and can mark or clear a category at once. The GitHub repo
+  also has product topics and a docs homepage for discovery, and the Herdr
+  marketplace listing is documented.
+- **TL;DR.** Model effort picker, local-branch MCP feedback, desktop
+  notification fix, CRAP/mutation tooling, inbox improvements, GitHub/Herdr
+  discovery.
 
 ## Highlights
 
 - **Model picker.** Models with thinking/effort levels open those levels next.
   The model activates only after you choose a level.
+- **Local branch feedback via MCP.** `pr_feedback_get`/`pr_feedback_reply`
+  accept `bucket: "local"` to read and write the current checked-out
+  branch's local bucket instead of the PR bucket; `er-respond local` uses it.
+- **Desktop notifications.** Review-complete banners now use
+  `UNUserNotificationCenter`, so they show up even while Easy Review is
+  focused (`NSUserNotificationCenter` only fired in the background).
 - **Split comments.** Posted threads, findings, and the composer use the same half-width grid. Unified view is unchanged.
 - **Command palette.** Search starts unfocused. Letters jump to items. `/` or **Focus search** focuses the field so you can type. Escape clears the filter, then blurs, then closes.
 - **CRAP metric.** `crates/er-crap` scores every Rust function from
@@ -53,6 +43,8 @@
 - **Inbox.** The popover no longer caps at 20 items. The list scrolls
   through every notification, and each category header has mark-read and
   clear-read actions.
+- **GitHub topics.** `VilfredSikker/easy-review` is tagged for git, code-review, tui, tauri, MCP, and related search terms. `herdr-plugin` stays so the Herdr marketplace can index it.
+- **Herdr marketplace.** Easy Review is listed at [herdr.dev/plugins](https://herdr.dev/plugins/). The GitHub repo keeps the `herdr-plugin` topic so Herdr's index can pick it up.
 
 ## What's Changed
 
@@ -62,11 +54,17 @@
 - Mark as read and clear read items from each inbox category header,
   including when a single category chip is selected.
 - Make `er-respond` implement actionable review notes before replying to them.
+- Support `bucket: "local"` on MCP feedback tools for the current checked-out branch.
 
 ### Fixes
 - Pin split-view comments, questions, notes, and findings to one pane, matching the composer. (#197)
 - Show the full inbox list and scroll through every category, including
   Merged / closed. Group trash only removes already-read items.
+- Show review-complete banners with `UNUserNotificationCenter` so they appear while Easy Review is focused.
+
+### Docs
+- Record GitHub repo topics, description, and homepage for discovery.
+- Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
 
 # Easy Review v0.4.14
 
