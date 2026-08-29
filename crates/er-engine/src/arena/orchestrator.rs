@@ -124,7 +124,7 @@ pub fn arbiter_display_label(hub: &crate::config::AiHubConfig, arbiter: &Reviewe
         .unwrap_or_else(|| arbiter.model_id.clone())
 }
 
-pub fn scope_git_mode(scope: ArenaScope) -> &'static str {
+pub const fn scope_git_mode(scope: ArenaScope) -> &'static str {
     match scope {
         ArenaScope::Branch => "branch",
         ArenaScope::Unstaged => "unstaged",
@@ -156,7 +156,7 @@ pub fn estimate_cost_usd(
         if let Some(arb) = arb {
             let arb_rate = model_cost_rate(hub, &arb);
             let arb_tokens = (diff_bytes as f64 * 0.45 * 1.2) as f32;
-            cost += (arb_tokens / 1000.0) * arb_rate;
+            cost = (arb_tokens / 1000.0).mul_add(arb_rate, cost);
         }
     }
     cost
@@ -314,7 +314,7 @@ pub fn start_arena_run(
         config: ArenaConfig {
             reviewers: params.reviewers.clone(),
             rounds,
-            arbiter: arbiter_ref.clone(),
+            arbiter: arbiter_ref,
             auto_accept_threshold: 0.75,
             scope: params.scope,
             files: params.files.clone(),
@@ -323,8 +323,8 @@ pub fn start_arena_run(
             } else {
                 ArenaRunKind::Models
             },
-            agent_kind: params.agent_kind.clone(),
-            effort: run_effort.clone(),
+            agent_kind: params.agent_kind,
+            effort: run_effort,
         },
         reviewers: reviewers.clone(),
         findings: vec![],
@@ -903,13 +903,7 @@ fn run_supervisor(
         run.completed_at = Some(crate::app::chrono_now());
         *status.lock().unwrap() = RunStatus::Complete;
         save_run(paths, &run)?;
-        emit(
-            registry,
-            paths,
-            &ProgressEvent::RunComplete {
-                run_id: run_id.clone(),
-            },
-        );
+        emit(registry, paths, &ProgressEvent::RunComplete { run_id });
         return Ok(());
     }
 
@@ -975,9 +969,7 @@ fn run_supervisor(
     emit(
         registry,
         paths,
-        &ProgressEvent::ArbiterStarted {
-            arbiter_label: arbiter_label.clone(),
-        },
+        &ProgressEvent::ArbiterStarted { arbiter_label },
     );
     *status.lock().unwrap() = RunStatus::Running {
         round: total_rounds,
@@ -1039,13 +1031,7 @@ fn run_supervisor(
     run.completed_at = Some(crate::app::chrono_now());
     *status.lock().unwrap() = RunStatus::Complete;
     save_run(paths, &run)?;
-    emit(
-        registry,
-        paths,
-        &ProgressEvent::RunComplete {
-            run_id: run_id.clone(),
-        },
-    );
+    emit(registry, paths, &ProgressEvent::RunComplete { run_id });
     Ok(())
 }
 

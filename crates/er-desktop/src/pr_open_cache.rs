@@ -64,6 +64,7 @@ fn parse_persisted(content: &str) -> Option<HashMap<PrOpenCacheKey, PrOpenCacheE
 }
 
 /// Retain only entries whose `(project_id, pr_number)` is in `keep`. Pure
+///
 /// (operates on the borrowed map) so the policy is unit-testable without a lock,
 /// mirroring `evict_lru` in commands.rs. Startup prune keeps the on-disk cache
 /// small: callers build `keep` from each project's saved ∪ top-10-recent PRs.

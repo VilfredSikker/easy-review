@@ -19,7 +19,7 @@ pub enum UninstallKind {
 }
 
 impl UninstallKind {
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::Config => "Config",
             Self::Data => "Review data",
@@ -63,7 +63,7 @@ impl Default for UninstallOptions {
 
 impl UninstallOptions {
     /// Remove config, review data, cache, binaries, and desktop app when found.
-    pub fn full() -> Self {
+    pub const fn full() -> Self {
         Self {
             remove_config: true,
             remove_data: true,
@@ -84,7 +84,7 @@ pub struct UninstallReport {
 }
 
 impl UninstallReport {
-    pub fn is_success(&self) -> bool {
+    pub const fn is_success(&self) -> bool {
         self.failed.is_empty()
     }
 
@@ -345,6 +345,7 @@ fn paths_same(a: &Path, b: &Path) -> bool {
 }
 
 /// Remove the given targets. Paths that are the currently running executable or its
+///
 /// enclosing `.app` are returned in [`UninstallReport::deferred`] — callers must
 /// [`schedule_deferred_removal`] then exit so the waiter can finish.
 pub fn execute(targets: &[UninstallTarget]) -> UninstallReport {

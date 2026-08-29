@@ -1,3 +1,7 @@
+// Deliberate style decision: keep `if let Some(x) = ... { } else { }` chains over
+// `Option::map_or[_else]` (same rationale as er-engine).
+#![allow(clippy::option_if_let_else)]
+
 mod input;
 mod ui;
 
@@ -289,9 +293,9 @@ fn main() -> Result<()> {
     }
 
     // Hint + PR data: check for PR in background (avoids blocking startup on network)
+    let repo_root = app.tab().repo_root.clone();
     let (hint_rx, pr_data_rx) =
         if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
-            let repo_root = app.tab().repo_root.clone();
             let current_base = app.tab().base_branch.clone();
             let (hint_tx, hint_rx) = mpsc::channel::<String>();
             let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
@@ -312,7 +316,6 @@ fn main() -> Result<()> {
             (Some(hint_rx), Some(pr_rx))
         } else {
             // For --pr flag or PR URL, fetch PR data synchronously (already in the right state)
-            let repo_root = app.tab().repo_root.clone();
             let pr_number_for_data = app.tab().pr_number;
             let pr_data = github::gh_pr_overview(&repo_root, pr_number_for_data);
             if let Some(data) = pr_data {

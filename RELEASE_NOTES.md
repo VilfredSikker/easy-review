@@ -21,6 +21,53 @@
 - Record GitHub repo topics, description, and homepage for discovery.
 - Document Herdr marketplace listing and the `herdr-plugin` GitHub topic.
 
+# Easy Review (unreleased)
+
+## In plain terms
+
+- **What changed.** The AI model picker asks for a thinking/effort level
+  before activating models that support it. The command palette no longer
+  focuses search on open. Letter shortcuts jump to items until you press
+  `/` (or choose Focus search) to type. In split view, comments, questions,
+  notes, and findings sit in one pane next to the code, matching the composer.
+  New code-quality tooling: an in-repo CRAP metric (cyclomatic complexity ×
+  test coverage) with a CI gate, fixture-based negative tests, and mutation
+  testing via cargo-mutants. The inbox popover lists every notification and
+  can mark or clear a category at once.
+
+## Highlights
+
+- **Model picker.** Models with thinking/effort levels open those levels next.
+  The model activates only after you choose a level.
+- **Split comments.** Posted threads, findings, and the composer use the same half-width grid. Unified view is unchanged.
+- **Command palette.** Search starts unfocused. Letters jump to items. `/` or **Focus search** focuses the field so you can type. Escape clears the filter, then blurs, then closes.
+- **CRAP metric.** `crates/er-crap` scores every Rust function from
+  `cargo llvm-cov` coverage; `just crap` runs it, `just crap-test` runs
+  the tool's own tests (including negative fixtures where crappy code must
+  fail the gate).
+- **Negative tests.** Documented convention (docs/quality-checks.md) plus
+  error-path and gate-failure fixtures for the CRAP tooling.
+- **Mutation testing.** `just mutants` runs cargo-mutants against
+  er-engine on demand and records the date in `quality/mutants-last-run.txt`;
+  `just mutants-stale` flags when the run log is old.
+- **Inbox.** The popover no longer caps at 20 items. The list scrolls
+  through every notification, and each category header has mark-read and
+  clear-read actions.
+
+## What's Changed
+
+### Features
+- Ask for thinking/effort in the model picker before activating effort-capable models.
+- Command palette letter shortcuts only run when search is not focused. `/` focuses the search field.
+- Mark as read and clear read items from each inbox category header,
+  including when a single category chip is selected.
+- Make `er-respond` implement actionable review notes before replying to them.
+
+### Fixes
+- Pin split-view comments, questions, notes, and findings to one pane, matching the composer. (#197)
+- Show the full inbox list and scroll through every category, including
+  Merged / closed. Group trash only removes already-read items.
+
 # Easy Review v0.4.14
 
 ## In plain terms

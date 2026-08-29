@@ -60,6 +60,15 @@ export function threadReviewSide(t: ThreadSnapshot): "old" | "new" {
   return t.side === "LEFT" ? "old" : "new";
 }
 
+/** Split-view pane for a finding. New-side if the line has a new_num; old-side
+ *  only when it is a del-only line. No line → new (matches unset thread side). */
+export function findingReviewSide(f: FlatFinding, hunkLines: LineSnapshot[]): "old" | "new" {
+  if (f.line === null) return "new";
+  if (hunkLines.some((l) => l.new_num === f.line)) return "new";
+  if (hunkLines.some((l) => l.kind === "del" && l.old_num === f.line)) return "old";
+  return "new";
+}
+
 export function lineInThreadAnchorRange(
   t: ThreadSnapshot,
   line: number,

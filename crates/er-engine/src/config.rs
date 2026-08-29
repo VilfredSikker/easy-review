@@ -46,6 +46,7 @@ pub struct ErConfig {
 }
 
 /// [commands] section — configurable shell commands for hub actions.
+///
 /// Each command is a shell string run via `sh -c`. Placeholders:
 /// `{base}` (base branch), `{branch}` (current branch), `{repo}` (repo root),
 /// `{output}` (default output path, e.g. managed `{er_dir}/summary.md`).
@@ -198,7 +199,7 @@ pub struct AiSelection {
 
 impl AiHubConfig {
     /// Effective concurrency cap — configured value, or the default when unset.
-    pub fn effective_max_concurrent_reviews(&self) -> usize {
+    pub const fn effective_max_concurrent_reviews(&self) -> usize {
         if self.max_concurrent_reviews == 0 {
             DEFAULT_MAX_CONCURRENT_REVIEWS
         } else {
@@ -312,15 +313,15 @@ impl Default for HintConfig {
     }
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
-fn default_tab_width() -> u8 {
+const fn default_tab_width() -> u8 {
     4
 }
 
-fn default_auto_context_threshold() -> usize {
+const fn default_auto_context_threshold() -> usize {
     100
 }
 
@@ -500,6 +501,18 @@ impl AiHubConfig {
         model_id: Option<&str>,
         agent: &AgentConfig,
     ) -> Result<AiSelection> {
+        self.set_default_selection_with_effort(provider_id, model_id, None, agent)
+    }
+
+    /// Like [`Self::set_default_selection`], but pins `effort` when given.
+    /// Unsupported non-Auto effort is rejected before any defaults change.
+    pub fn set_default_selection_with_effort(
+        &mut self,
+        provider_id: &str,
+        model_id: Option<&str>,
+        effort: Option<&str>,
+        agent: &AgentConfig,
+    ) -> Result<AiSelection> {
         let provider = self
             .providers
             .get(provider_id)
@@ -513,13 +526,31 @@ impl AiHubConfig {
         }
 
         let resolved_model = self.resolve_model_id(provider_id, model_id);
+        if let Some(requested) = effort {
+            let normalized = normalize_effort(
+                self,
+                Some(provider_id),
+                resolved_model.as_deref(),
+                Some(requested),
+            );
+            let raw = requested.trim();
+            if normalized.is_none() && !raw.is_empty() && !raw.eq_ignore_ascii_case("auto") {
+                anyhow::bail!("Effort is unsupported for the selected model");
+            }
+        }
+
         self.default_provider = Some(provider_id.to_string());
         self.default_model = resolved_model;
+        let effort_to_keep = if effort.is_some() {
+            effort.map(str::to_string)
+        } else {
+            self.default_effort.clone()
+        };
         self.default_effort = normalize_effort(
             self,
             Some(provider_id),
             self.default_model.as_deref(),
-            self.default_effort.as_deref(),
+            effort_to_keep.as_deref(),
         );
 
         Ok(self.resolve_default_selection(agent))
@@ -747,11 +778,11 @@ impl CliFamily {
         }
     }
 
-    pub fn supports_claude_stream_json(self) -> bool {
+    pub const fn supports_claude_stream_json(self) -> bool {
         matches!(self, Self::Claude | Self::Cursor)
     }
 
-    pub fn id(self) -> Option<&'static str> {
+    pub const fn id(self) -> Option<&'static str> {
         match self {
             Self::Claude => Some("claude"),
             Self::Codex => Some("codex"),
@@ -1109,6 +1140,17 @@ pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const AUTO_EFFORT: &str = "Auto";
 
+/// Title-case a catalog effort id for picker labels (`xhigh` → `XHigh`).
+pub fn effort_display_label(level: &str) -> String {
+    if level.eq_ignore_ascii_case("xhigh") {
+        "XHigh".to_string()
+    } else if let Some(first) = level.chars().next() {
+        first.to_uppercase().collect::<String>() + &level[first.len_utf8()..]
+    } else {
+        String::new()
+    }
+}
+
 /// Return the effort metadata advertised by the selected hub model.
 pub fn effort_levels_for_hub_model<'a>(
     hub: &'a AiHubConfig,
@@ -1303,7 +1345,7 @@ impl ErConfig {
 pub fn split_shell_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
-    let mut chars = s.chars().peekable();
+    let mut chars = s.chars(); // peek() is never used — a plain iterator suffices
     let mut in_single = false;
     let mut in_double = false;
 
@@ -1532,21 +1574,21 @@ pub enum ConfigItem {
 impl std::fmt::Debug for ConfigItem {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConfigItem::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
-            ConfigItem::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
-            ConfigItem::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
-            ConfigItem::DynamicStringCycle { label, .. } => {
+            Self::SectionHeader(s) => write!(f, "SectionHeader({:?})", s),
+            Self::BoolToggle { label, .. } => write!(f, "BoolToggle({:?})", label),
+            Self::StringCycle { label, .. } => write!(f, "StringCycle({:?})", label),
+            Self::DynamicStringCycle { label, .. } => {
                 write!(f, "DynamicStringCycle({:?})", label)
             }
-            ConfigItem::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
-            ConfigItem::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
-            ConfigItem::ListEntry { label, index } => {
+            Self::StringEdit { label, .. } => write!(f, "StringEdit({:?})", label),
+            Self::NumberEdit { label, .. } => write!(f, "NumberEdit({:?})", label),
+            Self::ListEntry { label, index } => {
                 write!(f, "ListEntry({:?}, {})", label, index)
             }
-            ConfigItem::ListAdd { label, section } => {
+            Self::ListAdd { label, section } => {
                 write!(f, "ListAdd({:?}, {:?})", label, section)
             }
-            ConfigItem::Action { label, .. } => write!(f, "Action({:?})", label),
+            Self::Action { label, .. } => write!(f, "Action({:?})", label),
         }
     }
 }
@@ -1919,7 +1961,9 @@ mod tests {
         let mut hub = AiHubConfig::default();
         assert!(hub.providers.is_empty());
         supplement_ai_hub(&mut hub);
-        assert!(!hub.providers.is_empty());
+        // Catalog is fixed: claude, codex, cursor, opencode.
+        assert_eq!(hub.providers.len(), 4);
+        assert!(hub.providers.contains_key("codex"));
     }
 
     #[test]
@@ -2165,6 +2209,15 @@ mod tests {
             "Expected at least 22 total items (with headers), got {}",
             items.len()
         );
+        // Concrete spot checks: specific known items must be present (not just a count).
+        assert!(items.iter().any(|i| matches!(
+            i,
+            ConfigItem::StringEdit { label, .. } if label == "Summary"
+        )));
+        assert!(items.iter().any(|i| matches!(
+            i,
+            ConfigItem::SectionHeader(title) if title == "Views"
+        )));
     }
 
     #[test]
@@ -2456,6 +2509,8 @@ mod tests {
         assert!(effort_levels_for_hub_model(&hub, Some("claude"), Some("haiku-4.5")).is_empty());
         assert!(normalize_effort(&hub, Some("claude"), Some("sonnet-5"), Some("Auto")).is_none());
         assert!(normalize_effort(&hub, Some("claude"), Some("haiku-4.5"), Some("high")).is_none());
+        assert_eq!(effort_display_label("high"), "High");
+        assert_eq!(effort_display_label("xhigh"), "XHigh");
     }
 
     #[test]
@@ -3032,7 +3087,7 @@ mod tests {
                 default_provider: Some("codex".into()),
                 default_model: Some("gpt-5.6-luna".into()),
                 default_effort: Some("medium".into()),
-                providers: [(
+                providers: std::iter::once((
                     "codex".into(),
                     AiProviderConfig {
                         models: vec![
@@ -3049,8 +3104,7 @@ mod tests {
                         ],
                         ..Default::default()
                     },
-                )]
-                .into_iter()
+                ))
                 .collect(),
                 ..Default::default()
             },
@@ -3065,6 +3119,48 @@ mod tests {
         assert_eq!(selected.effort.as_deref(), Some("high"));
         assert_eq!(config.ai_hub.default_model.as_deref(), Some("gpt-5.6-luna"));
         assert_eq!(config.ai_hub.default_effort.as_deref(), Some("medium"));
+    }
+
+    #[test]
+    fn set_default_selection_with_effort_pins_the_chosen_level() {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.insert(
+            "codex".into(),
+            AiProviderConfig {
+                models: vec![AiModelConfig {
+                    id: "gpt-5.6-luna".into(),
+                    effort_levels: vec!["low".into(), "high".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        config.ai_hub.default_effort = Some("low".into());
+        let selected = config
+            .ai_hub
+            .set_default_selection_with_effort(
+                "codex",
+                Some("gpt-5.6-luna"),
+                Some("high"),
+                &config.agent,
+            )
+            .unwrap();
+        assert_eq!(selected.effort.as_deref(), Some("high"));
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("high"));
+        assert_eq!(
+            config
+                .ai_hub
+                .set_default_selection_with_effort(
+                    "codex",
+                    Some("gpt-5.6-luna"),
+                    Some("nope"),
+                    &config.agent,
+                )
+                .unwrap_err()
+                .to_string(),
+            "Effort is unsupported for the selected model"
+        );
+        assert_eq!(config.ai_hub.default_effort.as_deref(), Some("high"));
     }
 
     #[test]
@@ -3105,7 +3201,7 @@ mod tests {
     #[test]
     fn supplement_backfills_models_command_and_family() {
         let mut hub = AiHubConfig {
-            providers: [(
+            providers: std::iter::once((
                 "cursor".into(),
                 AiProviderConfig {
                     command: "agent".into(),
@@ -3116,8 +3212,7 @@ mod tests {
                     }],
                     ..Default::default()
                 },
-            )]
-            .into_iter()
+            ))
             .collect(),
             ..Default::default()
         };
@@ -3350,7 +3445,7 @@ mod tests {
         );
 
         let mut hub = AiHubConfig {
-            providers: [("cursor".into(), provider)].into_iter().collect(),
+            providers: std::iter::once(("cursor".into(), provider)).collect(),
             ..Default::default()
         };
         let agent = AgentConfig::default();

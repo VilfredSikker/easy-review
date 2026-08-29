@@ -405,7 +405,7 @@ pub fn browser_set_bounds(
     height: f64,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
@@ -425,7 +425,7 @@ pub fn browser_navigate(
     url: String,
     tabIdx: Option<usize>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let (wv, newly_created) = ensure_tab_webview(&app, &browser_state, idx, &url)?;
     finish_browser_navigate(&app, &browser_state, idx, &wv, &url, newly_created)
 }
@@ -439,7 +439,7 @@ pub fn browser_set_annotate_mode(
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     browser_state.set_tab_annotate_mode(idx, active);
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
@@ -462,7 +462,7 @@ pub fn browser_reload(
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };
@@ -478,7 +478,7 @@ pub fn browser_send_to_page(
     tabIdx: Option<usize>,
     browser_state: State<'_, BrowserWebviewState>,
 ) -> Result<(), String> {
-    let idx = tabIdx.unwrap_or(browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
+    let idx = tabIdx.unwrap_or_else(|| browser_state.active_tab.lock().map(|g| *g).unwrap_or(0));
     let Some(wv) = tab_webview(&app, idx) else {
         return Ok(());
     };

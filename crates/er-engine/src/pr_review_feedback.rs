@@ -65,7 +65,7 @@ fn resolve_pr_er_dir(owner: &str, repo: &str, pr: u64) -> Result<String> {
     Ok(er_dir)
 }
 
-fn pr_bucket_path(er_dir: &str) -> String {
+fn review_bucket_path(er_dir: &str) -> String {
     er_dir.to_string()
 }
 
@@ -101,7 +101,7 @@ fn pr_diff_hash(er_dir: &str) -> String {
     String::new()
 }
 
-fn severity_label(level: RiskLevel) -> &'static str {
+const fn severity_label(level: RiskLevel) -> &'static str {
     match level {
         RiskLevel::High => "high",
         RiskLevel::Medium => "medium",
@@ -225,9 +225,9 @@ fn append_question_reply(
 ) -> Result<String> {
     let mut questions = load_questions(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    if questions.diff_hash.is_empty() {
-        questions.diff_hash = diff_hash.clone();
-    } else if !diff_hash.is_empty() && questions.diff_hash != diff_hash {
+    // Record the new diff hash whenever we have one or none is stored yet
+    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+    if questions.diff_hash.is_empty() || !diff_hash.is_empty() {
         questions.diff_hash = diff_hash;
     }
 
@@ -269,9 +269,9 @@ fn append_note_reply(
 ) -> Result<String> {
     let mut notes = load_notes(er_dir)?;
     let diff_hash = pr_diff_hash(er_dir);
-    if notes.diff_hash.is_empty() {
-        notes.diff_hash = diff_hash.clone();
-    } else if !diff_hash.is_empty() && notes.diff_hash != diff_hash {
+    // Record the new diff hash whenever we have one or none is stored yet
+    // (assigning an equal value is a no-op, so the inequality guard adds nothing).
+    if notes.diff_hash.is_empty() || !diff_hash.is_empty() {
         notes.diff_hash = diff_hash;
     }
 
@@ -305,16 +305,17 @@ fn append_note_reply(
     Ok(id)
 }
 
-/// Read questions, notes, and merged AI findings from the managed PR bucket.
-pub fn get_pr_review_feedback(
+/// Read questions, notes, and merged AI findings from a review bucket.
+pub fn get_review_feedback_in_dir(
     owner: &str,
     repo: &str,
     number: u64,
+    er_dir: &str,
+    branch_scope: Option<&str>,
     include_resolved: bool,
 ) -> Result<PrReviewFeedback> {
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    let diff_hash = pr_diff_hash(&er_dir);
-    let ai = load_ai_state(&er_dir, &diff_hash, None);
+    let diff_hash = pr_diff_hash(er_dir);
+    let ai = load_ai_state(er_dir, &diff_hash, branch_scope);
 
     let questions = ai
         .questions
@@ -345,7 +346,7 @@ pub fn get_pr_review_feedback(
         owner: owner.to_string(),
         repo: repo.to_string(),
         number,
-        bucket_path: pr_bucket_path(&er_dir),
+        bucket_path: review_bucket_path(er_dir),
         diff_hash,
         questions,
         notes,
@@ -353,7 +354,39 @@ pub fn get_pr_review_feedback(
     })
 }
 
-/// Reply to a top-level question thread in `questions.json`.
+/// Read questions, notes, and merged AI findings from the managed PR bucket.
+pub fn get_pr_review_feedback(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    include_resolved: bool,
+) -> Result<PrReviewFeedback> {
+    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
+    get_review_feedback_in_dir(owner, repo, number, &er_dir, None, include_resolved)
+}
+
+/// Reply to a top-level question thread in a review bucket.
+pub fn reply_to_question_in_dir(
+    er_dir: &str,
+    question_id: &str,
+    text: &str,
+    author: Option<&str>,
+) -> Result<PrFeedbackReply> {
+    if text.trim().is_empty() {
+        bail!("reply text must be non-empty");
+    }
+    let questions = load_questions(er_dir)?;
+    let parent = validate_parent_thread(&questions.questions, question_id, "question")?;
+    let author = author.unwrap_or("agent");
+    let id = append_question_reply(er_dir, parent, text, author)?;
+    Ok(PrFeedbackReply {
+        id,
+        kind: "question".to_string(),
+        parent_id: Some(question_id.to_string()),
+    })
+}
+
+/// Reply to a top-level question thread in the managed PR bucket.
 pub fn reply_to_pr_question(
     owner: &str,
     repo: &str,
@@ -362,22 +395,32 @@ pub fn reply_to_pr_question(
     text: &str,
     author: Option<&str>,
 ) -> Result<PrFeedbackReply> {
+    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
+    reply_to_question_in_dir(&er_dir, question_id, text, author)
+}
+
+/// Reply to a top-level note thread in a review bucket.
+pub fn reply_to_note_in_dir(
+    er_dir: &str,
+    note_id: &str,
+    text: &str,
+    author: Option<&str>,
+) -> Result<PrFeedbackReply> {
     if text.trim().is_empty() {
         bail!("reply text must be non-empty");
     }
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    let questions = load_questions(&er_dir)?;
-    let parent = validate_parent_thread(&questions.questions, question_id, "question")?;
+    let notes = load_notes(er_dir)?;
+    let parent = validate_parent_thread(&notes.notes, note_id, "note")?;
     let author = author.unwrap_or("agent");
-    let id = append_question_reply(&er_dir, parent, text, author)?;
+    let id = append_note_reply(er_dir, parent, text, author)?;
     Ok(PrFeedbackReply {
         id,
-        kind: "question".to_string(),
-        parent_id: Some(question_id.to_string()),
+        kind: "note".to_string(),
+        parent_id: Some(note_id.to_string()),
     })
 }
 
-/// Reply to a top-level note thread in `notes.json`.
+/// Reply to a top-level note thread in the managed PR bucket.
 pub fn reply_to_pr_note(
     owner: &str,
     repo: &str,
@@ -386,22 +429,28 @@ pub fn reply_to_pr_note(
     text: &str,
     author: Option<&str>,
 ) -> Result<PrFeedbackReply> {
+    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
+    reply_to_note_in_dir(&er_dir, note_id, text, author)
+}
+
+/// Append a validation / follow-up reply on an AI finding in a review bucket.
+pub fn reply_to_finding_in_dir(
+    er_dir: &str,
+    finding_id: &str,
+    text: &str,
+) -> Result<PrFeedbackReply> {
     if text.trim().is_empty() {
         bail!("reply text must be non-empty");
     }
-    let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    let notes = load_notes(&er_dir)?;
-    let parent = validate_parent_thread(&notes.notes, note_id, "note")?;
-    let author = author.unwrap_or("agent");
-    let id = append_note_reply(&er_dir, parent, text, author)?;
+    let id = append_finding_response(er_dir, finding_id, text)?;
     Ok(PrFeedbackReply {
         id,
-        kind: "note".to_string(),
-        parent_id: Some(note_id.to_string()),
+        kind: "finding".to_string(),
+        parent_id: Some(finding_id.to_string()),
     })
 }
 
-/// Append a validation / follow-up reply on an AI finding (`review.json` or expert/professor sidecars).
+/// Append a validation / follow-up reply on an AI finding in the managed PR bucket.
 pub fn reply_to_pr_finding(
     owner: &str,
     repo: &str,
@@ -409,16 +458,8 @@ pub fn reply_to_pr_finding(
     finding_id: &str,
     text: &str,
 ) -> Result<PrFeedbackReply> {
-    if text.trim().is_empty() {
-        bail!("reply text must be non-empty");
-    }
     let er_dir = resolve_pr_er_dir(owner, repo, number)?;
-    let id = append_finding_response(&er_dir, finding_id, text)?;
-    Ok(PrFeedbackReply {
-        id,
-        kind: "finding".to_string(),
-        parent_id: Some(finding_id.to_string()),
-    })
+    reply_to_finding_in_dir(&er_dir, finding_id, text)
 }
 
 #[cfg(test)]
@@ -522,7 +563,7 @@ mod tests {
                 created_at: String::new(),
                 base_branch: String::new(),
                 head_branch: String::new(),
-                files: [(
+                files: std::iter::once((
                     "a.rs".into(),
                     ErFileReview {
                         risk: RiskLevel::Low,
@@ -530,8 +571,7 @@ mod tests {
                         summary: String::new(),
                         findings: vec![finding],
                     },
-                )]
-                .into_iter()
+                ))
                 .collect::<HashMap<_, _>>(),
                 file_hashes: HashMap::new(),
             };
@@ -541,6 +581,44 @@ mod tests {
             let feedback = get_pr_review_feedback("acme", "widgets", 6, true).unwrap();
             assert_eq!(feedback.findings.len(), 1);
             assert_eq!(feedback.findings[0].responses[0].text, "Confirmed.");
+        });
+    }
+
+    #[test]
+    fn local_bucket_feedback_roundtrip() {
+        with_storage_root(|| {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path().to_string_lossy().to_string();
+            let qs = ErQuestions {
+                version: 1,
+                diff_hash: "hash".into(),
+                questions: vec![sample_question("q-local")],
+            };
+            write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+
+            let feedback = get_review_feedback_in_dir(
+                "acme",
+                "widgets",
+                9,
+                &er_dir,
+                Some("feature/local"),
+                true,
+            )
+            .unwrap();
+            assert_eq!(feedback.questions[0].id, "q-local");
+
+            let reply = reply_to_question_in_dir(&er_dir, "q-local", "Answered.", None).unwrap();
+            assert_eq!(reply.kind, "question");
+            let feedback = get_review_feedback_in_dir(
+                "acme",
+                "widgets",
+                9,
+                &er_dir,
+                Some("feature/local"),
+                true,
+            )
+            .unwrap();
+            assert_eq!(feedback.questions.len(), 2);
         });
     }
 }

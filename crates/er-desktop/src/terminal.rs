@@ -59,7 +59,7 @@ impl PtySession {
         Ok(())
     }
 
-    pub fn resize(&mut self, rows: u16, cols: u16) -> anyhow::Result<()> {
+    pub fn resize(&self, rows: u16, cols: u16) -> anyhow::Result<()> {
         self.master.resize(PtySize {
             rows,
             cols,

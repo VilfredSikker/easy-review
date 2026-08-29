@@ -373,7 +373,9 @@ fn render_modal_hub(
     let title_color = match kind {
         HubKind::Git => styles::GREEN(),
         HubKind::Ai => styles::PURPLE(),
-        HubKind::AiProvider | HubKind::AiModel | HubKind::AiExpert => styles::PURPLE(),
+        HubKind::AiProvider | HubKind::AiModel | HubKind::AiEffort | HubKind::AiExpert => {
+            styles::PURPLE()
+        }
         HubKind::Verify | HubKind::VerifyPackage => styles::YELLOW(),
         HubKind::Help => styles::CYAN(),
         HubKind::Open => styles::BLUE(),
@@ -452,7 +454,7 @@ fn render_modal_hub(
         "Enter=select, Esc=close"
     };
 
-    let display_title = title_override.unwrap_or(kind.title());
+    let display_title = title_override.unwrap_or_else(|| kind.title());
     let block = Block::default()
         .title(Span::styled(
             format!(" {} ({}) ", display_title, close_hint),

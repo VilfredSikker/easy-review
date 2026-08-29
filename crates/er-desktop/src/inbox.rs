@@ -28,7 +28,7 @@ pub enum InboxCategory {
 }
 
 impl InboxCategory {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::PrComment => "pr_comment",
             Self::ReviewReceived => "review_received",
@@ -45,7 +45,7 @@ impl InboxCategory {
     }
 
     #[cfg(test)]
-    pub fn label(self) -> &'static str {
+    pub const fn label(self) -> &'static str {
         match self {
             Self::PrComment => "Comment on your PR",
             Self::ReviewReceived => "Review received",
@@ -201,8 +201,34 @@ impl InboxState {
         }
     }
 
+    fn id_set(ids: &[String]) -> HashSet<&str> {
+        ids.iter().map(String::as_str).collect()
+    }
+
+    pub fn mark_items_read(&mut self, ids: &[String], now_ms: u64) {
+        if ids.is_empty() {
+            return;
+        }
+        let wanted = Self::id_set(ids);
+        for item in &mut self.items {
+            if item.read_at_ms.is_none() && wanted.contains(item.id.as_str()) {
+                item.read_at_ms = Some(now_ms);
+            }
+        }
+    }
+
     pub fn clear_read(&mut self) {
         self.items.retain(|i| i.read_at_ms.is_none());
+    }
+
+    /// Drop named items that are already read. Unread items stay even if listed.
+    pub fn clear_read_items(&mut self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let wanted = Self::id_set(ids);
+        self.items
+            .retain(|item| item.read_at_ms.is_none() || !wanted.contains(item.id.as_str()));
     }
 
     pub fn unread_count(&self) -> usize {
@@ -619,7 +645,13 @@ pub fn save_inbox_state(handle: &InboxHandle) {
     let Some(path) = inbox_path() else {
         return;
     };
-    let snapshot = handle.lock().ok().map(|g| g.clone()).unwrap_or_default();
+    let snapshot = match handle.lock() {
+        Ok(guard) => guard.clone(),
+        Err(e) => {
+            log::error!("[inbox] skipped persist; inbox lock poisoned: {e}");
+            return;
+        }
+    };
     let payload = InboxFile {
         version: INBOX_SCHEMA_VERSION,
         items: snapshot.items,
@@ -936,5 +968,76 @@ mod tests {
         assert!(
             inbox_item_from_notification(&note("author"), &note_ctx(&remotes, &skip)).is_none()
         );
+    }
+
+    fn sample_item(id: &str, read: bool) -> InboxItem {
+        InboxItem {
+            id: id.into(),
+            kind: "pr_merged".into(),
+            severity: "info".into(),
+            title: id.into(),
+            body: String::new(),
+            source: "github".into(),
+            target: InboxTarget {
+                project_id: None,
+                repo_root: None,
+                remote: None,
+                pr_number: None,
+                branch: None,
+                url: None,
+            },
+            created_at_ms: 1,
+            read_at_ms: if read { Some(2) } else { None },
+            dedupe_key: id.into(),
+        }
+    }
+
+    fn inbox_with(items: Vec<InboxItem>) -> InboxState {
+        InboxState {
+            items,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn mark_items_read_only_touches_named_unread() {
+        let mut inbox = inbox_with(vec![
+            sample_item("a", false),
+            sample_item("b", false),
+            sample_item("c", true),
+        ]);
+        inbox.mark_items_read(&["a".into(), "c".into(), "missing".into()], 50);
+        assert_eq!(inbox.items[0].read_at_ms, Some(50));
+        assert_eq!(inbox.items[1].read_at_ms, None);
+        assert_eq!(inbox.items[2].read_at_ms, Some(2));
+        assert_eq!(inbox.unread_count(), 1);
+    }
+
+    #[test]
+    fn clear_read_items_drops_named_read_only() {
+        let mut inbox = inbox_with(vec![
+            sample_item("a", true),
+            sample_item("b", false),
+            sample_item("c", true),
+        ]);
+        inbox.clear_read_items(&["a".into(), "b".into()]);
+        assert_eq!(
+            inbox
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["b", "c"]
+        );
+        assert_eq!(inbox.items[0].read_at_ms, None);
+    }
+
+    #[test]
+    fn mark_and_clear_read_items_ignore_empty_ids() {
+        let mut inbox = inbox_with(vec![sample_item("a", false)]);
+        inbox.mark_items_read(&[], 50);
+        inbox.clear_read_items(&[]);
+        assert_eq!(inbox.items[0].read_at_ms, None);
+        assert_eq!(inbox.items.len(), 1);
     }
 }

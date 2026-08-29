@@ -102,6 +102,7 @@ pub fn fake_arena_json_from_dir(dir: &str) -> Result<Value> {
     serde_json::from_str(&text).context("parse fake arena json")
 }
 
+#[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
 fn run_once(
     cmd: &ProviderCommand,
     prompt: &str,
@@ -141,17 +142,19 @@ fn run_once(
         let mut kids = children
             .lock()
             .map_err(|_| anyhow::anyhow!("children lock poisoned"))?;
-        let slot = kids
-            .iter_mut()
-            .find(|c| c.id() == child_id)
+        // Take ownership of the child so the guard drops before the blocking
+        // wait() — holding the mutex across a long-running agent would block
+        // unrelated spawns that push to the same map.
+        let idx = kids
+            .iter()
+            .position(|c| c.id() == child_id)
             .with_context(|| "child handle missing")?;
-        slot.wait()
+        let mut child = kids.remove(idx);
+        drop(kids);
+        child
+            .wait()
             .with_context(|| format!("wait {}", cmd.command))?
     };
-
-    if let Ok(mut kids) = children.lock() {
-        kids.retain(|c| c.id() != child_id);
-    }
 
     if cancel.load(Ordering::SeqCst) {
         anyhow::bail!("cancelled");

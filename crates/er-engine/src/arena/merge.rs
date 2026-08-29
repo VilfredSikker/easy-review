@@ -32,7 +32,7 @@ fn should_propose_merge(a: &ArenaFinding, b: &ArenaFinding) -> bool {
     title_jaccard(&a.title, &b.title) >= TITLE_JACCARD_THRESHOLD
 }
 
-fn lines_close(a: Option<usize>, b: Option<usize>) -> bool {
+const fn lines_close(a: Option<usize>, b: Option<usize>) -> bool {
     match (a, b) {
         (Some(la), Some(lb)) => {
             let d = la.abs_diff(lb);
@@ -126,7 +126,7 @@ pub fn findings_from_round1(
     out
 }
 
-fn severity_rank(s: RiskLevel) -> u8 {
+const fn severity_rank(s: RiskLevel) -> u8 {
     match s {
         RiskLevel::High => 3,
         RiskLevel::Medium => 2,

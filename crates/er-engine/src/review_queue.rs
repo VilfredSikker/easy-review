@@ -98,7 +98,7 @@ pub enum ReviewStatus {
 }
 
 impl ReviewStatus {
-    pub fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::ReadyToReview => "ready_to_review",
             Self::Draft => "draft",
@@ -163,7 +163,7 @@ fn size_lines(pr: &QueuePr) -> u64 {
         .unwrap_or_else(|| pr.additions.saturating_add(pr.deletions))
 }
 
-pub fn size_bucket(lines: u64) -> SizeBucket {
+pub const fn size_bucket(lines: u64) -> SizeBucket {
     match lines {
         0..=20 => SizeBucket::Xsmall,
         21..=80 => SizeBucket::Small,
@@ -584,7 +584,7 @@ mod tests {
         let small = pr(1, 5, 2);
         let mut huge = pr(2, 900, 400);
         huge.review_requested_of_me = true;
-        let ranked = rank_priority(&[huge.clone(), small.clone()], 2);
+        let ranked = rank_priority(&[huge, small], 2);
         assert_eq!(ranked[0].pr.number, 1);
     }
 

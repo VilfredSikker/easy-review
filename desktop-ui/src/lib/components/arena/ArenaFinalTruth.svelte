@@ -116,10 +116,18 @@
         </p>
         {#each list as f (f.id)}
           {@const expanded = isExpanded(f)}
-          <button
-            type="button"
+          <div
+            role="button"
+            tabindex="0"
             class="arena-link-row mb-1 w-full rounded-md px-2 py-2 text-left {selectedId === f.id ? 'arena-selected' : ''}"
             onclick={() => onSelect(f.id)}
+            onkeydown={(e) => {
+              if (e.target !== e.currentTarget) return;
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                onSelect(f.id);
+              }
+            }}
           >
             <div class="flex items-start gap-2">
               <span class="mono mt-0.5 text-[10px] {severityTone(latestSeverity(f) as 'high')}">●</span>
@@ -187,7 +195,7 @@
                 </div>
               </div>
             </div>
-          </button>
+          </div>
         {/each}
       {/if}
     {/each}

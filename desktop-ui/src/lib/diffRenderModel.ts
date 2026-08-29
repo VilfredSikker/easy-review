@@ -306,12 +306,13 @@ export function estimateLazyStubHeight(file: FileSnapshot): number {
 /** Max scroll height for annotation body text (matches `.annotation-body-scroll`). */
 const ANNOTATION_BODY_MAX_PX = 192;
 
-export function estimateThreadHeight(thread: ThreadSnapshot): number {
+export function estimateThreadHeight(thread: ThreadSnapshot, bodyCols = 80): number {
+  const cols = bodyCols > 0 ? bodyCols : 80;
   let h = 48; // header
   const messages: Array<{ body_markdown: string }> = [thread.root, ...thread.replies];
   for (const m of messages) {
     const body = m.body_markdown ?? "";
-    const bodyH = Math.min(ANNOTATION_BODY_MAX_PX, Math.ceil(body.length / 80) * 20);
+    const bodyH = Math.min(ANNOTATION_BODY_MAX_PX, Math.ceil(body.length / cols) * 20);
     h += 24 + bodyH + 12;
   }
   // composer_open not present on ThreadSnapshot — composer state lives outside the model.
@@ -324,14 +325,20 @@ export function estimateThreadHeight(thread: ThreadSnapshot): number {
   return h;
 }
 
-export function estimateFindingHeight(finding: FlatFinding): number {
+export function estimateFindingHeight(finding: FlatFinding, bodyCols = 80): number {
+  const cols = bodyCols > 0 ? bodyCols : 80;
   const title = finding.title ?? "";
   const body = finding.message_markdown ?? "";
   const textH = Math.min(
     ANNOTATION_BODY_MAX_PX,
-    Math.ceil((title.length + body.length) / 80) * 20,
+    Math.ceil((title.length + body.length) / cols) * 20,
   );
   return 48 + textH + 24;
+}
+
+function annotationBodyCols(wrapCols: number | null, viewMode: "unified" | "split"): number {
+  if (wrapCols != null && wrapCols > 0) return wrapCols;
+  return viewMode === "split" ? 40 : 80;
 }
 
 function lineNumOf(line: LineSnapshot): number | null {
@@ -472,6 +479,7 @@ function hashStr(s: string): number {
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
   const wrapCols = input.wrapCols ?? null;
+  const bodyCols = annotationBodyCols(wrapCols, viewMode);
   const annFp = fileAnnotationFingerprint(file, annotationIndex);
   const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
 
@@ -588,7 +596,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
                 hunkIdx,
                 findingId: f.id,
                 side,
-                height: estimateFindingHeight(f),
+                height: estimateFindingHeight(f, bodyCols),
                 identity: `if:${f.id}`,
               });
             }
@@ -615,7 +623,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
                 hunkIdx,
                 threadId: t.id,
                 side,
-                height: estimateThreadHeight(t),
+                height: estimateThreadHeight(t, bodyCols),
                 identity: `it:${t.id}`,
               });
             }
@@ -662,7 +670,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
               hunkIdx,
               findingId: f.id,
               side,
-              height: estimateFindingHeight(f),
+              height: estimateFindingHeight(f, bodyCols),
               identity: `if:${f.id}`,
             });
           }
@@ -698,7 +706,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
               hunkIdx,
               threadId: t.id,
               side,
-              height: estimateThreadHeight(t),
+              height: estimateThreadHeight(t, bodyCols),
               identity: `it:${t.id}`,
             });
           }
@@ -717,7 +725,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           hunkIdx,
           findingId: f.id,
           side,
-          height: estimateFindingHeight(f),
+          height: estimateFindingHeight(f, bodyCols),
           identity: `ff:${f.id}`,
         });
       }
@@ -732,7 +740,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           hunkIdx,
           findingId: f.id,
           side,
-          height: estimateFindingHeight(f),
+          height: estimateFindingHeight(f, bodyCols),
           identity: `ff:${f.id}`,
         });
       }
@@ -754,7 +762,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
           hunkIdx,
           threadId: t.id,
           side,
-          height: estimateThreadHeight(t),
+          height: estimateThreadHeight(t, bodyCols),
           identity: `ft:${t.id}`,
         });
       }

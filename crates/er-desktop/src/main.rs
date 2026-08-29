@@ -1,4 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// See lib.rs for the rationale behind these two crate-wide allows.
+#![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
 
 mod arena_commands;
 mod auto_triage;
@@ -13,6 +15,7 @@ mod frame_script;
 mod gh_status_cache;
 mod inbox;
 mod main_webview_policy;
+mod native_notify;
 mod persist;
 mod pr_cache;
 mod pr_open_cache;
@@ -43,14 +46,12 @@ fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
     let tag = format!("<script type=\"text/javascript\">{}</script>", FRAME_SCRIPT);
     if let Some(pos) = find_ascii_case_insensitive(&html, b"</head>") {
         html.splice(pos..pos, tag.bytes());
-        html
     } else if let Some(pos) = find_ascii_case_insensitive(&html, b"</body>") {
         html.splice(pos..pos, tag.bytes());
-        html
     } else {
         html.extend_from_slice(tag.as_bytes());
-        html
     }
+    html
 }
 
 fn find_ascii_case_insensitive(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -509,7 +510,7 @@ fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     {
         let app_submenu = Submenu::with_items(
             app,
-            app_name.clone(),
+            app_name,
             true,
             &[
                 &PredefinedMenuItem::about(app, None, None)?,
@@ -652,6 +653,7 @@ fn probe_recently_done(
     last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
+#[allow(clippy::large_stack_frames)] // Tauri's generate_context!/run closure carries a large match on RunEvent; boxing it adds noise for no real gain
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -1389,7 +1391,8 @@ fn main() {
 
             let (tx, rx) = mpsc::channel::<WatchEvent>();
             // Held only for its Drop side effect: dropping stops the watcher.
-            #[allow(unused_assignments, unused_variables)]
+            // Held only for its Drop side effect: dropping stops the watcher.
+            #[allow(unused_assignments, unused_variables, clippy::collection_is_never_read)]
             let mut watcher: Option<FileWatcher> = None;
             let mut current_key: Option<(String, String)> = None;
             let poll_interval = std::time::Duration::from_millis(400);
@@ -1753,7 +1756,7 @@ fn main() {
                 if let Ok(mut h) = state.tauri_app_handle.lock() {
                     *h = Some(app.handle().clone());
                 }
-                commands::prepare_macos_notifications(app.handle());
+                native_notify::initialize(app.handle());
                 let prefs = commands::clone_inbox_prefs(&state.app);
                 commands::flush_pending_native_notifications(
                     &state.inbox,
@@ -1964,8 +1967,11 @@ fn main() {
             commands::open_inbox_item,
             commands::mark_inbox_item_read,
             commands::mark_all_inbox_read,
+            commands::mark_inbox_items_read,
             commands::clear_read_inbox_items,
+            commands::clear_inbox_items,
             commands::refresh_notifications,
+            commands::test_native_notification,
             commands::dismiss_remote_pr,
             commands::undismiss_remote_pr,
             commands::sync_pr,

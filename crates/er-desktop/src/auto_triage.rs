@@ -271,7 +271,7 @@ fn run_branch_triage_once(
         repo_root: repo_root.to_string(),
         er_dir: er_dir.clone(),
         branch_label: branch.to_string(),
-        base_branch: base_branch.clone(),
+        base_branch,
         scope: "branch".to_string(),
         pr_number: None,
         remote_repo: Some(remote.to_string()),

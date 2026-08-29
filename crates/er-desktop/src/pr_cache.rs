@@ -94,9 +94,10 @@ pub fn save_persisted_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAt
 }
 
 /// Merge fresh fetch results into the existing cache.
+///
 /// Successful remotes replace their old entries; failed remotes keep stale data.
 /// This is a pure function — no I/O, no locks — making it straightforward to test.
-pub(crate) fn merge_pr_results(
+pub fn merge_pr_results(
     existing: &mut HashMap<String, Vec<PrInfo>>,
     results: Vec<(String, Option<Vec<PrInfo>>)>,
 ) {
@@ -109,6 +110,7 @@ pub(crate) fn merge_pr_results(
 }
 
 /// Patch a single PR's `head_oid` in place. Used by the 30s per-PR head probe
+///
 /// (`main.rs`) so the stale pill can light without waiting for the 10-min
 /// `pr_cache` sweep. Returns `true` iff the oid actually changed (caller bumps
 /// the desktop revision only then, to avoid churning polls on every tick).
@@ -206,10 +208,7 @@ fn refreshable_remotes(file: &projects::ProjectsFile) -> Vec<String> {
 
 /// Refresh PRs for every project with a remote. Fetches all remotes in parallel.
 /// Preserves stale cache entries for remotes that fail.
-pub(crate) async fn refresh_pr_cache(
-    cache: &PrCacheMap,
-    fetched_at: &PrCacheFetchedAtMap,
-) -> Vec<String> {
+pub async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtMap) -> Vec<String> {
     let file = projects::load();
     let remotes = refreshable_remotes(&file);
 
@@ -274,7 +273,7 @@ pub(crate) async fn refresh_pr_cache(
     failed_remotes
 }
 
-pub(crate) async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
+pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
     // statusCheckRollup is intentionally excluded — it forces GitHub to aggregate
     // CI checks for every PR and is the dominant cause of latency (adds ~5s per fetch).
     // Icon colors use reviewDecision instead, which is cheap.
@@ -494,6 +493,8 @@ mod tests {
         merge_pr_results(&mut cache, results);
 
         assert_eq!(cache["org/new"].len(), 1);
+        assert_eq!(cache["org/new"][0].number, 5);
+        assert_eq!(cache["org/new"][0].head_ref, "branch-5");
     }
 
     #[test]

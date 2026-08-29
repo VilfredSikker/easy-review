@@ -1342,14 +1342,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
+name = "er-crap"
+version = "0.4.14"
+dependencies = [
+ "anyhow",
+ "clap",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "tempfile",
+]
+
+[[package]]
 name = "er-desktop"
 version = "0.4.14"
 dependencies = [
  "anyhow",
+ "block2",
  "dirs",
  "er-engine",
  "log",
- "notify-rust",
+ "objc2",
+ "objc2-foundation",
+ "objc2-user-notifications",
  "portable-pty",
  "rfd",
  "serde",
@@ -3259,7 +3275,10 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9df9128cbbfef73cda168416ccf7f837b62737d748333bfe9ab71c245d76613e"
 dependencies = [
+ "bitflags 2.11.0",
+ "block2",
  "objc2",
+ "objc2-core-location",
  "objc2-foundation",
 ]
 

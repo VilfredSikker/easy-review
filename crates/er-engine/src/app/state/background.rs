@@ -127,7 +127,7 @@ pub fn unix_now_ms() -> u128 {
 /// later from the dispatch loop. `task.started_at_ms` is the enqueue time
 /// until launch, when it's refreshed.
 #[derive(Debug, Clone)]
-pub(crate) struct PendingBackgroundTask {
+pub struct PendingBackgroundTask {
     pub task: BackgroundTask,
     pub command_name: String,
     pub prompt: String,
@@ -152,7 +152,7 @@ pub struct HostWriteDiagram {
 
 /// In-flight + recently finished background task channels. The `App` owns
 /// this; one entry per task id.
-pub(crate) struct BackgroundTaskHandle {
+pub struct BackgroundTaskHandle {
     pub task: BackgroundTask,
     /// One-shot result channel; produces `Ok(())` on success or an `Err`
     /// describing the failure when the subprocess finishes.
@@ -251,7 +251,7 @@ impl TabState {
     }
 }
 
-pub(crate) type BackgroundTaskMap = HashMap<String, BackgroundTaskHandle>;
+pub type BackgroundTaskMap = HashMap<String, BackgroundTaskHandle>;
 
 #[cfg(test)]
 mod tests {
@@ -304,7 +304,7 @@ mod tests {
         // UI doesn't show the branch name twice.
         let t = target("feat-a", "branch");
         let sec = BackgroundTask::new("expert:security".to_string(), t.clone());
-        let prof = BackgroundTask::new("professor".to_string(), t.clone());
+        let prof = BackgroundTask::new("professor".to_string(), t);
 
         let sec_snap = BackgroundTaskSnapshot::from_task(&sec);
         let prof_snap = BackgroundTaskSnapshot::from_task(&prof);

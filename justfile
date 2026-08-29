@@ -206,6 +206,45 @@ build-engine-headless:
 [group('ci')]
 verify: fmt clippy test
 
+# ──────────────────────────────── quality ──────────────────────────────────────
+# Code-quality tooling: CRAP metric (crates/er-crap) and mutation testing.
+# See docs/quality-checks.md for the metric definition and conventions.
+
+# CRAP tool tests (formula, complexity analyzer, LCOV parser, positive + negative gate fixtures).
+[group('quality')]
+crap-test:
+    cargo test -p er-crap
+
+# Compute the CRAP metric for er-engine + er-tui from real coverage and gate on the threshold.
+# Needs `cargo llvm-cov` (install: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview).
+[group('quality')]
+crap:
+    @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
+    cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
+    cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui --fail-above
+
+# CRAP report without failing the gate (informational).
+[group('quality')]
+crap-report:
+    @command -v cargo-llvm-cov >/dev/null || { echo "missing cargo-llvm-cov — install with: cargo binstall cargo-llvm-cov && rustup component add llvm-tools-preview"; exit 1; }
+    cargo llvm-cov -p er-engine -p er-tui --lcov --output-path lcov.info
+    cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui
+
+# Mutation-test the engine on demand; stamps quality/mutants-last-run.txt (not scheduled — see docs/quality-checks.md).
+[group('quality')]
+mutants:
+    @command -v cargo-mutants >/dev/null || { echo "missing cargo-mutants — install with: cargo binstall cargo-mutants"; exit 1; }
+    cargo mutants -p er-engine
+    mkdir -p quality
+    date +%F > quality/mutants-last-run.txt
+    @echo "HTML report: mutants.out/mutants.html"
+    @echo "Recorded last run in quality/mutants-last-run.txt"
+
+# Show the age of the last mutation run; exit 1 when stale (default 30 days).
+[group('quality')]
+mutants-stale *N:
+    @scripts/mutants-stale.sh {{N}}
+
 # ──────────────────────────────── maintenance ────────────────────────────────────
 
 # Reclaim disk from bloated cargo target dirs. `just gc --force` also prunes target/desktop.

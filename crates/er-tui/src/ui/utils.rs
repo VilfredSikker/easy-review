@@ -1,6 +1,6 @@
 /// Returns a horizontal rule string of `width` dashes, capped at 300 to prevent
 /// pathological allocations on very wide terminals.
-pub(crate) fn horizontal_rule(width: usize) -> String {
+pub fn horizontal_rule(width: usize) -> String {
     "\u{2500}".repeat(width.min(300))
 }
 
@@ -9,7 +9,7 @@ pub(crate) fn horizontal_rule(width: usize) -> String {
 /// are measured in characters, not bytes.
 /// Preserves leading whitespace on the first segment of each line.
 // A max_width of 0 disables wrapping: the input comes back as a single unsplit line.
-pub(crate) fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
+pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
     if max_width == 0 {
         return vec![text.to_string()];
     }
@@ -71,7 +71,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 /// Calculate a centered rectangle within an area.
 /// Shared utility used by overlay and settings popups.
-pub(crate) fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
+pub fn centered_rect(width: u16, height: u16, r: Rect) -> Rect {
     let vertical = Layout::default()
         .direction(Direction::Vertical)
         .constraints([

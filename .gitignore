@@ -15,3 +15,12 @@ desktop-ui/storybook-static/
 !.claude/settings.json
 
 .scratch/
+
+# Code-quality tooling artifacts (docs/quality-checks.md)
+lcov.info
+target/coverage/
+mutants.out/
+mutants.out.old/
+.cargo-mutants/
+# Workspace-local cargo tool installs (e.g. cargo-mutants for `just mutants`)
+.cargo-local/

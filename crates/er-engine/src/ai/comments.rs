@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 // ── Comment type discriminator ──
 
 /// Distinguishes between personal review questions, local notes, and GitHub PR comments
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CommentType {
     /// Personal internal question (stored in questions.json)
     Question,
@@ -15,7 +15,7 @@ pub enum CommentType {
 }
 
 /// Type of navigable hint for unified J/K navigation
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HintType {
     Question,
     Note,
@@ -46,7 +46,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn comment_type(&self) -> CommentType {
+    pub const fn comment_type(&self) -> CommentType {
         match self {
             CommentRef::Question(_) => CommentType::Question,
             CommentRef::Note(_) => CommentType::Note,
@@ -96,7 +96,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn is_synced(&self) -> bool {
+    pub const fn is_synced(&self) -> bool {
         match self {
             // Questions and notes are local-only and never synced to GitHub.
             CommentRef::Question(_) | CommentRef::Note(_) => false,
@@ -105,7 +105,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn is_resolved(&self) -> bool {
+    pub const fn is_resolved(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.resolved,
             CommentRef::GitHubComment(c) => c.resolved,
@@ -113,7 +113,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn is_stale(&self) -> bool {
+    pub const fn is_stale(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.stale,
             CommentRef::GitHubComment(c) => c.stale || c.outdated,
@@ -138,7 +138,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn hunk_index(&self) -> Option<usize> {
+    pub const fn hunk_index(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
             CommentRef::GitHubComment(c) => c.hunk_index,
@@ -146,7 +146,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn line_start(&self) -> Option<usize> {
+    pub const fn line_start(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
             CommentRef::GitHubComment(c) => c.line_start,
@@ -154,7 +154,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn line_end(&self) -> Option<usize> {
+    pub const fn line_end(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.line_end,
             CommentRef::GitHubComment(c) => c.line_end,
@@ -162,7 +162,7 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    pub fn old_line_start(&self) -> Option<usize> {
+    pub const fn old_line_start(&self) -> Option<usize> {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.old_line_start,
             CommentRef::GitHubComment(c) => c.old_line_start,
@@ -171,7 +171,7 @@ impl<'a> CommentRef<'a> {
     }
 
     /// GitHub review side. `LEFT` means `line_start` is an old-side number.
-    pub fn side(&self) -> Option<&str> {
+    pub const fn side(&self) -> Option<&str> {
         match self {
             CommentRef::GitHubComment(c) => Some(c.side.as_str()),
             CommentRef::Question(q) | CommentRef::Note(q) => Some(q.side.as_str()),
@@ -189,7 +189,7 @@ impl<'a> CommentRef<'a> {
     }
 
     /// Whether this comment can be replied to (top-level comments/questions, not replies themselves)
-    pub fn can_reply(&self) -> bool {
+    pub const fn can_reply(&self) -> bool {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => q.in_reply_to.is_none(),
             CommentRef::GitHubComment(c) => c.in_reply_to.is_none(),
@@ -443,7 +443,7 @@ pub struct ErUiAnnotations {
     pub annotations: Vec<UiAnnotation>,
 }
 
-fn default_ui_version() -> u32 {
+const fn default_ui_version() -> u32 {
     1
 }
 
@@ -519,7 +519,7 @@ pub struct FeedbackComment {
 }
 
 /// Top-level GitHub comment eligible for batch validate / re-anchor.
-pub fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
+pub const fn github_comment_eligible_for_batch_validate(c: &GitHubReviewComment) -> bool {
     !c.resolved && !c.outdated && c.in_reply_to.is_none() && c.line_start.is_some()
 }
 

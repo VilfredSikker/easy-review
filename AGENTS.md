@@ -37,6 +37,9 @@ scripts/aliases below, so either form works.
 | Reclaim `target/` disk | `./scripts/cargo-gc.sh` (also runs from dev scripts) |
 | Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
 | Format check | `cargo fmt --all -- --check` |
+| CRAP tool tests (positive + negative gate fixtures) | `just crap-test` |
+| CRAP metric (coverage + complexity, CI gate) | `just crap` (needs `cargo llvm-cov`; see `docs/quality-checks.md`) |
+| Mutation testing (on demand, not scheduled) | `just mutants` (stamps `quality/mutants-last-run.txt`); `just mutants-stale` shows the age — needs `cargo-mutants` |
 | Debug mode | `ER_DEBUG=1 er` (overwrites `/tmp/er_debug.log` each git diff) |
 
 ## Environment Gotchas

@@ -188,6 +188,7 @@ struct CreateCommentResponse {
 }
 
 /// Parse a GitHub PR URL into its components.
+///
 /// Supports: https://github.com/owner/repo/pull/42
 /// Also handles: trailing /files, /commits, /checks, etc.
 /// Also handles: github.com/owner/repo/pull/42 (no scheme)
@@ -406,6 +407,7 @@ pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
 }
 
 /// Whether an error came from a local branch that genuinely has no upstream.
+///
 /// Callers may fall back to a local-only diff for this case, but not for fetch
 /// failures where falling back would show stale remote-backed state.
 pub fn is_no_upstream_to_refresh(err: &anyhow::Error) -> bool {
@@ -551,7 +553,7 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
 
     // Local branch exists — use it directly
     if rev_parse_ok(&base_branch)? {
-        return Ok(base_branch.clone());
+        return Ok(base_branch);
     }
 
     // Remote-tracking ref exists — use it (no fetch needed)
@@ -595,7 +597,7 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
 
     // Fallback: the fetch may have created a local ref via FETCH_HEAD
     if rev_parse_ok(&base_branch)? {
-        return Ok(base_branch.clone());
+        return Ok(base_branch);
     }
 
     anyhow::bail!(
@@ -776,13 +778,23 @@ struct RepoInfoCache {
 
 impl RepoInfoCache {
     fn get(&self, repo_root: &str) -> Option<Arc<(String, String)>> {
-        let mut g = self.inner.lock().ok()?;
-        let (v, at) = g.get(repo_root)?;
+        // Drop the guard before the (lock-free) expiry check to avoid holding
+        // the cache mutex longer than needed on the hot lookup path.
+        let (v, at) = {
+            let g = self.inner.lock().ok()?;
+            let (v, at) = g.get(repo_root)?;
+            // Clone into owned values so the guard can be dropped before the
+            // lock-free expiry check below.
+            let v = Arc::clone(v);
+            let at = *at;
+            drop(g);
+            (v, at)
+        };
         if at.elapsed() > self.ttl {
-            g.remove(repo_root);
+            self.inner.lock().ok()?.remove(repo_root);
             return None;
         }
-        Some(Arc::clone(v))
+        Some(v)
     }
 
     fn insert(&self, repo_root: &str, v: (String, String)) {
@@ -1161,6 +1173,7 @@ pub fn gh_pr_overview(repo_root: &str, pr_number: Option<u64>) -> Option<PrOverv
 }
 
 /// Like `gh_pr_overview`, but skips the separate `gh pr checks` subprocess
+///
 /// (`checks` is always empty in the result). Use this when the caller already
 /// has a fresher CI-checks source for the same PR — e.g. the desktop's 30s
 /// gh-status loop (`fetch_github_status` / `gh_status_cache`) — and only needs
@@ -1330,6 +1343,7 @@ pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<(
 }
 
 /// Get raw unified diff for a PR via `gh pr diff N --repo owner/repo`.
+///
 /// Works without a local clone — uses GitHub API via gh CLI.
 /// Falls back to shallow clone + local git diff when the PR exceeds GitHub's
 /// API line limit (HTTP 406 / diff_too_large).
@@ -1753,6 +1767,7 @@ where
 }
 
 /// Cached PR comment sync bundle (hover-prefetch warming, first-paint plan
+///
 /// step 3). Keyed by (owner, repo, pr); 60s TTL; failures never cached. The
 /// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s
 /// sequentially — they run in parallel here, and the sidebar hover prefetch
@@ -1774,14 +1789,25 @@ struct PrCommentsCache {
 
 impl PrCommentsCache {
     fn get(&self, owner: &str, repo: &str, pr: u64) -> Option<Arc<PrCommentBundle>> {
-        let mut g = self.inner.lock().ok()?;
-        let key = (owner.to_string(), repo.to_string(), pr);
-        let (bundle, at) = g.get(&key)?;
+        // Drop the guard before the (lock-free) expiry check to avoid holding
+        // the cache mutex longer than needed on the hot lookup path.
+        let (bundle, at) = {
+            let g = self.inner.lock().ok()?;
+            let key = (owner.to_string(), repo.to_string(), pr);
+            let (bundle, at) = g.get(&key)?;
+            // Clone into owned values so the guard can be dropped before the
+            // lock-free expiry check below.
+            let bundle = Arc::clone(bundle);
+            let at = *at;
+            drop(g);
+            (bundle, at)
+        };
         if at.elapsed() > self.ttl {
-            g.remove(&key);
+            let key = (owner.to_string(), repo.to_string(), pr);
+            self.inner.lock().ok()?.remove(&key);
             return None;
         }
-        Some(Arc::clone(bundle))
+        Some(bundle)
     }
 
     fn insert(&self, owner: &str, repo: &str, pr: u64, bundle: Arc<PrCommentBundle>) {
@@ -1834,6 +1860,7 @@ pub fn fetch_pr_comment_bundle(
 }
 
 /// Fetch (and cache) the PR comment sync bundle: REST comments + GraphQL
+///
 /// review-thread state. `repo_root = None` uses the remote variants (no local
 /// clone needed). A warm cache makes `sync_github_comments` network-free.
 pub fn gh_pr_comment_bundle_cached(
@@ -1856,6 +1883,7 @@ pub fn gh_pr_comment_bundle_cached(
 }
 
 /// Drop all cached PR comment bundles. Called on push: a comment pushed while
+///
 /// the 60 s TTL is warm would otherwise be absent from the stale bundle and
 /// dropped from `github-comments.json` on the next pull (review-fix-loop A1).
 pub fn invalidate_pr_comments_cache() {
@@ -2027,6 +2055,7 @@ pub struct ReviewBatchEntry {
 }
 
 /// Submit a batch PR review with multiple comments in one API call.
+///
 /// `comments` is a slice of `ReviewBatchEntry`. Marks all included comments as synced
 /// (no individual comment IDs are returned by the review API).
 pub fn gh_pr_submit_review(
@@ -2396,7 +2425,7 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
             {
                 ("PENDING".to_string(), "".to_string())
             } else {
-                ("COMPLETED".to_string(), state.clone())
+                ("COMPLETED".to_string(), state)
             };
             CheckRun {
                 name: c["name"].as_str().unwrap_or("").to_string(),
@@ -2452,6 +2481,7 @@ pub fn gh_pr_commits_remote(
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
+///
 /// ONE `gh pr view --json` subprocess. Collapses what used to be three
 /// separate `gh pr view` calls (`gh_pr_overview_remote_full` +
 /// `gh_pr_comments_overview` + `gh_pr_reviews`) into one GraphQL-backed call —
@@ -3416,68 +3446,25 @@ mod tests {
             ]
         }"#;
 
-        let v: serde_json::Value = serde_json::from_str(json).unwrap();
-        let number = v["number"].as_u64().unwrap_or(0);
-        let title = v["title"].as_str().unwrap_or("").to_string();
-        let state = v["state"].as_str().unwrap_or("").to_string();
-        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
-        let base_branch = v["baseRefName"].as_str().unwrap_or("").to_string();
-        let head_branch = v["headRefName"].as_str().unwrap_or("").to_string();
-        let reviewers: Vec<ReviewerStatus> = v["reviews"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|r| {
-                        let login = r["author"]["login"].as_str()?;
-                        let state = r["state"].as_str().unwrap_or("PENDING");
-                        Some(ReviewerStatus {
-                            login: login.to_string(),
-                            state: state.to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        assert_eq!(number, 123);
-        assert_eq!(title, "Add feature X");
-        assert_eq!(state, "OPEN");
-        assert_eq!(author, "developer");
-        assert_eq!(base_branch, "main");
-        assert_eq!(head_branch, "feature/x");
-        assert_eq!(reviewers.len(), 2);
-        assert_eq!(reviewers[0].login, "reviewer1");
-        assert_eq!(reviewers[0].state, "APPROVED");
-        assert_eq!(reviewers[1].login, "reviewer2");
-        assert_eq!(reviewers[1].state, "CHANGES_REQUESTED");
+        // Exercise the REAL parser — a parser regression must fail this test.
+        let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.number, 123);
+        assert_eq!(pr.title, "Add feature X");
+        assert_eq!(pr.state, "OPEN");
+        assert_eq!(pr.author, "developer");
+        assert_eq!(pr.base_ref_name, "main");
+        assert_eq!(pr.head_ref_name, "feature/x");
     }
 
     #[test]
     fn pr_overview_handles_missing_optional_fields() {
-        // Minimal JSON with only required fields
+        // Minimal JSON with only required fields — defaults must kick in.
         let json = r#"{"number": 1, "title": "T", "state": "OPEN"}"#;
-        let v: serde_json::Value = serde_json::from_str(json).unwrap();
-        let number = v["number"].as_u64().unwrap_or(0);
-        let author = v["author"]["login"].as_str().unwrap_or("").to_string();
-        let reviews: Vec<ReviewerStatus> = v["reviews"]
-            .as_array()
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|r| {
-                        let login = r["author"]["login"].as_str()?;
-                        let state = r["state"].as_str().unwrap_or("PENDING");
-                        Some(ReviewerStatus {
-                            login: login.to_string(),
-                            state: state.to_string(),
-                        })
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
-
-        assert_eq!(number, 1);
-        assert_eq!(author, ""); // missing → empty string default
-        assert!(reviews.is_empty()); // missing → empty vec
+        let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.number, 1);
+        assert_eq!(pr.author, ""); // missing → empty string default
+        assert!(pr.labels.is_empty()); // missing → empty vec
+        assert!(!pr.is_draft); // missing → false default
     }
 
     // ── parse_pr_overview ──
@@ -3683,6 +3670,26 @@ mod tests {
     }
 
     #[test]
+    fn canonical_owner_repo_slug_reads_origin_remote() {
+        // Exercises the REAL canonical_owner_repo_slug (origin remote -> slug),
+        // not a re-implementation of its composition.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["remote", "add", "origin", "git@github.com:Acme/My-Repo.git"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let slug = canonical_owner_repo_slug(root.to_str().unwrap()).expect("slug from origin");
+        assert_eq!(slug, "acme-my-repo");
+    }
+
+    #[test]
     fn ci_checks_parsed_from_gh_json() {
         // Simulate `gh pr checks --json name,state,bucket` output
         let json = r#"[
@@ -3690,26 +3697,18 @@ mod tests {
             {"name": "lint", "state": "FAILURE", "bucket": "fail"},
             {"name": "build", "state": "PENDING"}
         ]"#;
-        let arr: Vec<serde_json::Value> = serde_json::from_str(json).unwrap_or_default();
-        let checks: Vec<CiCheck> = arr
-            .iter()
-            .filter_map(|c| {
-                let name = c["name"].as_str()?;
-                let state = c["state"].as_str().unwrap_or("unknown");
-                let bucket = c["bucket"].as_str().map(|s| s.to_string());
-                Some(CiCheck {
-                    name: name.to_string(),
-                    status: state.to_string(),
-                    conclusion: bucket,
-                })
-            })
-            .collect();
-
+        // Exercise the REAL parser — a regression in state/bucket mapping must fail this.
+        let checks = parse_pr_checks(json).unwrap();
         assert_eq!(checks.len(), 3);
         assert_eq!(checks[0].name, "test");
-        assert_eq!(checks[0].conclusion, Some("pass".to_string()));
-        assert_eq!(checks[1].conclusion, Some("fail".to_string()));
-        assert!(checks[2].conclusion.is_none()); // pending — no bucket yet
+        assert_eq!(checks[0].status, "COMPLETED");
+        assert_eq!(checks[0].conclusion, "SUCCESS");
+        assert_eq!(checks[1].name, "lint");
+        assert_eq!(checks[1].status, "COMPLETED");
+        assert_eq!(checks[1].conclusion, "FAILURE");
+        assert_eq!(checks[2].name, "build");
+        assert_eq!(checks[2].status, "PENDING");
+        assert_eq!(checks[2].conclusion, "");
     }
 
     #[test]

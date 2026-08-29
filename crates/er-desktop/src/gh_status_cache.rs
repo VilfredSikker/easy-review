@@ -94,6 +94,7 @@ pub fn save_persisted_gh_status_cache(cache: &Arc<Mutex<GithubStatusCache>>) {
 }
 
 /// Drop every entry whose key is not in `keep`. The (owner, repo) comparison is
+///
 /// case-insensitive: cache keys preserve the casing of the URL a PR was opened
 /// with (`tab.remote_repo` is built from the raw `PrRef`), whereas `keep` is
 /// derived from `project.remote`, which is always lowercased at registration
@@ -116,6 +117,7 @@ pub fn prune_gh_status_cache(map: &mut GithubStatusCache, keep: &HashSet<(String
 }
 
 /// True only when `last_updated` parses as a u64 epoch-seconds string AND is
+///
 /// less than `ttl_secs` old relative to `now_secs`. Fails open — `None`,
 /// non-numeric, or any other unparseable value returns `false` (= "stale, go
 /// fetch"), never panics, never silently treats unknown freshness as fresh.
@@ -135,6 +137,7 @@ pub fn status_is_fresh(last_updated: Option<&str>, now_secs: u64, ttl_secs: u64)
 }
 
 /// Current time as epoch seconds, in the same format `fetch_github_status`
+///
 /// writes to `GithubStatusSnapshot.last_updated` (`commands.rs:642-645`).
 /// `now_secs` is a parameter on `status_is_fresh` (not called internally) so
 /// callers can pass a fixed value in tests; this just centralizes the

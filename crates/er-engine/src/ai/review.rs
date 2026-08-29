@@ -17,7 +17,7 @@ pub struct InlineLayers {
 
 impl Default for InlineLayers {
     fn default() -> Self {
-        InlineLayers {
+        Self {
             show_questions: true,
             show_github_comments: true,
             show_ai_findings: true,
@@ -27,7 +27,7 @@ impl Default for InlineLayers {
 }
 
 /// What the right context panel shows (replaces ViewMode::SidePanel/AiReview)
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelContent {
     PrOverview,
     AiSummary,
@@ -67,12 +67,13 @@ pub struct ErFileReview {
 }
 
 /// Deserialize an optional line anchor from model-authored JSON without
+///
 /// failing the whole sidecar. The annotated diff tags deleted lines as
 /// `[h<N> L-<old>]`, and models sometimes copy the negative number into
 /// `line_start` verbatim — which `Option<usize>` would reject, silently
 /// discarding the entire review. Anything that isn't a non-negative integer
 /// degrades to `None` (hunk-level anchor).
-pub(crate) fn lenient_line_anchor<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+pub fn lenient_line_anchor<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -84,10 +85,11 @@ where
 }
 
 /// Deserialize a findings array, skipping individual entries that fail to
+///
 /// parse instead of rejecting the whole sidecar. AI-authored files
 /// occasionally contain one malformed finding; losing that finding is far
 /// better than showing "no findings" for the entire review.
-pub(crate) fn lenient_findings<'de, D>(deserializer: D) -> Result<Vec<Finding>, D::Error>
+pub fn lenient_findings<'de, D>(deserializer: D) -> Result<Vec<Finding>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
@@ -98,7 +100,7 @@ where
         .collect())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     High,
@@ -108,12 +110,12 @@ pub enum RiskLevel {
 }
 
 impl RiskLevel {
-    pub fn symbol(&self) -> &'static str {
+    pub const fn symbol(&self) -> &'static str {
         match self {
-            RiskLevel::High => "●",
-            RiskLevel::Medium => "●",
-            RiskLevel::Low => "●",
-            RiskLevel::Info => "○",
+            Self::High => "●",
+            Self::Medium => "●",
+            Self::Low => "●",
+            Self::Info => "○",
         }
     }
 }
@@ -210,7 +212,7 @@ impl Finding {
     /// when the user has fixed it (`resolved`) or the AI dismissed it as a
     /// false positive (`Confidence::Dropped`).
     #[allow(dead_code)]
-    pub fn is_active(&self) -> bool {
+    pub const fn is_active(&self) -> bool {
         !self.resolved && !matches!(self.confidence, Confidence::Dropped)
     }
 }
@@ -436,7 +438,7 @@ use super::comments::{CommentRef, ErFeedback, ErGitHubComments, ErNotes, ErQuest
 // ── AiReview navigation ──
 
 /// Which column has focus in AiReview mode
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReviewFocus {
     /// Left column: file risk overview
     Files,
@@ -509,7 +511,7 @@ pub struct AiState {
 
 impl Default for AiState {
     fn default() -> Self {
-        AiState {
+        Self {
             review: None,
             order: None,
             tour: None,
@@ -643,7 +645,7 @@ impl AiState {
     }
 
     /// Whether any AI-generated data is loaded (excludes user feedback).
-    pub fn has_data(&self) -> bool {
+    pub const fn has_data(&self) -> bool {
         self.review.is_some()
             || self.order.is_some()
             || self.summary.is_some()
@@ -1212,13 +1214,13 @@ impl AiState {
 
     /// Get GitHub comments data (for sync operations)
     #[allow(dead_code)]
-    pub fn github_comments_data(&self) -> Option<&ErGitHubComments> {
+    pub const fn github_comments_data(&self) -> Option<&ErGitHubComments> {
         self.github_comments.as_ref()
     }
 
     /// Get questions data
     #[allow(dead_code)]
-    pub fn questions_data(&self) -> Option<&ErQuestions> {
+    pub const fn questions_data(&self) -> Option<&ErQuestions> {
         self.questions.as_ref()
     }
 
@@ -1246,7 +1248,7 @@ impl AiState {
 
     /// Get notes data
     #[allow(dead_code)]
-    pub fn notes_data(&self) -> Option<&ErNotes> {
+    pub const fn notes_data(&self) -> Option<&ErNotes> {
         self.notes.as_ref()
     }
 

@@ -154,7 +154,7 @@ pub struct ArenaFinding {
     #[serde(default)]
     pub merge_candidates: Vec<String>,
     #[serde(default)]
-    pub merged_children: Vec<ArenaFinding>,
+    pub merged_children: Vec<Self>,
     #[serde(default)]
     pub evidence: Vec<EvidenceItem>,
     #[serde(default, rename = "override", skip_serializing_if = "Option::is_none")]

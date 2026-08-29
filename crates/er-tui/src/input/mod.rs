@@ -135,7 +135,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
+pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
     match action {
         HubAction::Noop => {}
         HubAction::PushToRemote => {
@@ -232,22 +232,32 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             action,
             provider_id,
         } => {
-            if let Some(provider) = app.config.ai_hub.providers.get(&provider_id) {
-                if provider.models.len() > 1 {
-                    app.open_ai_model_picker(provider_id, action);
-                } else {
-                    let model_id = provider.models.first().map(|m| m.id.clone());
-                    if let Some(action) = action {
-                        let selection =
-                            app.resolve_ai_selection_override(&provider_id, model_id.as_deref())?;
-                        execute_ai_action_with_selection(app, action, selection)?;
-                    } else {
-                        app.set_ai_default_selection(&provider_id, model_id.as_deref())?;
-                        app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
-                    }
+            let (model_count, model_id) = match app.config.ai_hub.providers.get(&provider_id) {
+                Some(provider) => (
+                    provider.models.len(),
+                    provider.models.first().map(|m| m.id.clone()),
+                ),
+                None => {
+                    app.notify("Unknown AI provider");
+                    return Ok(());
                 }
+            };
+            if model_count > 1 {
+                app.open_ai_model_picker(provider_id, action);
+            } else if model_id
+                .as_ref()
+                .is_some_and(|id| app.model_has_effort_levels(&provider_id, id))
+            {
+                if let Some(model_id) = model_id {
+                    app.open_ai_effort_picker(provider_id, model_id, action);
+                }
+            } else if let Some(action) = action {
+                let selection =
+                    app.resolve_ai_selection_override(&provider_id, model_id.as_deref())?;
+                execute_ai_action_with_selection(app, action, selection)?;
             } else {
-                app.notify("Unknown AI provider");
+                app.set_ai_default_selection(&provider_id, model_id.as_deref())?;
+                app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
         HubAction::SelectAiModel {
@@ -255,11 +265,35 @@ pub(super) fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()
             provider_id,
             model_id,
         } => {
-            if let Some(action) = action {
+            if app.model_has_effort_levels(&provider_id, &model_id) {
+                app.open_ai_effort_picker(provider_id, model_id, action);
+            } else if let Some(action) = action {
                 let selection = app.resolve_ai_selection_override(&provider_id, Some(&model_id))?;
                 execute_ai_action_with_selection(app, action, selection)?;
             } else {
                 app.set_ai_default_selection(&provider_id, Some(&model_id))?;
+                app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
+            }
+        }
+        HubAction::SelectAiEffort {
+            action,
+            provider_id,
+            model_id,
+            effort,
+        } => {
+            if let Some(action) = action {
+                let selection = app.resolve_ai_selection_override_with_effort(
+                    &provider_id,
+                    Some(&model_id),
+                    Some(&effort),
+                )?;
+                execute_ai_action_with_selection(app, action, selection)?;
+            } else {
+                app.set_ai_default_selection_with_effort(
+                    &provider_id,
+                    Some(&model_id),
+                    Some(&effort),
+                )?;
                 app.notify(&format!("AI target: {}", app.active_ai_selection_label()));
             }
         }
@@ -606,7 +640,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             let action = app.input_mode.clone();
             if let InputMode::Confirm(ConfirmAction::DeleteComment { comment_id }) = action {
                 app.confirm_delete_comment(&comment_id)?;
-            } else if let InputMode::Confirm(ConfirmAction::Push) = action {
+            } else if action == InputMode::Confirm(ConfirmAction::Push) {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 match git::git_push(&repo_root) {
@@ -680,7 +714,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     app.spawn_agent_prompt("notes", &prompt)?;
                 }
                 app.clear_ai_selection_override();
-            } else if let InputMode::Confirm(ConfirmAction::ApprovePR) = action {
+            } else if action == InputMode::Confirm(ConfirmAction::ApprovePR) {
                 app.input_mode = InputMode::Normal;
                 let repo_root = app.tab().repo_root.clone();
                 let remote = app.tab().remote_repo.clone();
@@ -692,13 +726,19 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Char('r') => {
-            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+            if matches!(
+                &app.input_mode,
+                InputMode::Confirm(ConfirmAction::PushComments)
+            ) {
                 app.input_mode = InputMode::Normal;
                 push_comments_as_review(app)?;
             }
         }
         KeyCode::Char('i') => {
-            if let InputMode::Confirm(ConfirmAction::PushComments) = &app.input_mode {
+            if matches!(
+                &app.input_mode,
+                InputMode::Confirm(ConfirmAction::PushComments)
+            ) {
                 app.input_mode = InputMode::Normal;
                 push_all_comments_to_github(app)?;
             }
@@ -757,11 +797,7 @@ pub fn handle_commit_input(app: &mut App, key: KeyEvent) -> Result<()> {
 }
 
 /// Build the triage scan prompt (local diff modes only).
-pub(super) fn build_agent_triage_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_triage_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("Triage is local-only in v1 — checkout the PR first");
@@ -777,7 +813,7 @@ pub(super) fn build_agent_triage_prompt(
 }
 
 /// Build the Professor learning prompt (local diff modes only).
-pub(super) fn build_agent_professor_prompt(
+pub fn build_agent_professor_prompt(
     app: &mut App,
     er_dir: &str,
     diff_hash: &str,
@@ -806,7 +842,7 @@ pub(super) fn build_agent_professor_prompt(
 }
 
 /// Build a specialized expert review prompt (local diff modes only).
-pub(super) fn build_agent_expert_prompt(
+pub fn build_agent_expert_prompt(
     app: &mut App,
     expert_id: &str,
     er_dir: &str,
@@ -846,7 +882,7 @@ pub(super) fn build_agent_expert_prompt(
 /// findings. Remote tabs (`er --remote`) already hold the PR diff in memory
 /// (or can re-fetch it from this unsandboxed process); they use the same
 /// prepared-artifact path so the sandboxed agent does not call `gh`.
-pub(super) fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
+pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
     let scope = app.tab().mode.fetch_scope();
     let er_dir = app.tab().er_dir();
     let raw = match app.tab().raw_diff_for_review(scope) {
@@ -880,11 +916,7 @@ fn start_agent_review(app: &mut App) -> anyhow::Result<()> {
 /// Build the review agent prompt from prepared-diff artifacts. Remote
 /// (`--remote`) and local tabs share this prompt — the caller pre-writes
 /// `diff-tmp`/`diff-annotated` so the agent never shells out to `gh`/`git`.
-pub(super) fn build_agent_review_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     let mode = tab.mode;
     let base = tab.base_branch.clone();
@@ -918,11 +950,7 @@ pub(super) fn build_agent_review_prompt(
 /// (O1 contract): the caller pre-writes `diff-tmp`/`diff-annotated` via
 /// `ensure_diff_artifacts`, so the agent anchors against the harness-computed hash instead
 /// of re-running `git diff` + `sha256sum` + awk (review-fix-loop P4-2).
-pub(super) fn build_agent_validate_prompt(
-    app: &mut App,
-    er_dir: &str,
-    diff_hash: &str,
-) -> Option<String> {
+pub fn build_agent_validate_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         app.notify("validate is local-only — checkout the PR first, then re-run review locally");
@@ -946,7 +974,7 @@ pub(super) fn build_agent_validate_prompt(
 }
 
 /// Build the questions agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -988,7 +1016,7 @@ pub(super) fn build_agent_questions_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build the notes-addressing agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -1030,7 +1058,7 @@ pub(super) fn build_agent_notes_prompt(app: &mut App) -> Option<String> {
 }
 
 /// Build the summary generation agent prompt, using remote mode if applicable.
-pub(super) fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
+pub fn build_agent_summary_prompt(app: &mut App) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
         let (slug, pr_number) = match (&tab.remote_repo, tab.pr_number) {
@@ -1189,7 +1217,7 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
 }
 
 /// Sync GitHub PR comments (pull)
-pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
+pub fn sync_github_comments(app: &mut App) -> Result<()> {
     let tab = app.tab();
     let repo_root = tab.repo_root.clone();
     let explicit_pr_number = tab.pr_number;
@@ -1267,7 +1295,7 @@ pub(super) fn sync_github_comments(app: &mut App) -> Result<()> {
         }
         Err(_) => er_engine::ai::ErGitHubComments {
             version: 1,
-            diff_hash: diff_hash.clone(),
+            diff_hash,
             github: None,
             comments: Vec::new(),
         },
@@ -2079,5 +2107,184 @@ mod tests {
             app.config.ai_hub.default_model.as_deref(),
             Some("gpt-5.6-luna")
         );
+    }
+
+    fn app_with_effort_models() -> App {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.providers.insert(
+            "codex".into(),
+            er_engine::config::AiProviderConfig {
+                label: Some("Codex".into()),
+                models: vec![
+                    er_engine::config::AiModelConfig {
+                        id: "gpt-5.6-luna".into(),
+                        label: Some("GPT-5.6 Luna".into()),
+                        effort_levels: vec!["low".into(), "medium".into(), "high".into()],
+                        ..Default::default()
+                    },
+                    er_engine::config::AiModelConfig {
+                        id: "no-effort".into(),
+                        label: Some("No Effort".into()),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+        );
+        app.current_ai_provider = Some("codex".into());
+        app.current_ai_model = Some("no-effort".into());
+        app
+    }
+
+    #[test]
+    fn selecting_effort_capable_model_opens_effort_picker_without_activating() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert!(
+            matches!(
+                app.overlay,
+                Some(er_engine::app::OverlayData::ModalHub {
+                    kind: er_engine::app::HubKind::AiEffort,
+                    ..
+                })
+            ),
+            "expected effort picker overlay, got {:?}",
+            app.overlay
+        );
+    }
+
+    #[test]
+    fn selecting_effort_activates_the_model() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiEffort {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+                effort: "high".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("gpt-5.6-luna"));
+        assert_eq!(app.current_ai_effort.as_deref(), Some("high"));
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn selecting_model_without_effort_activates_immediately() {
+        let mut app = app_with_effort_models();
+        app.current_ai_model = Some("gpt-5.6-luna".into());
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "no-effort".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert!(app.overlay.is_none());
+    }
+
+    fn overlay_kind(app: &App) -> Option<er_engine::app::HubKind> {
+        match &app.overlay {
+            Some(er_engine::app::OverlayData::ModalHub { kind, .. }) => Some(*kind),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn selecting_single_effort_model_provider_opens_effort_picker() {
+        let mut app = app_with_effort_models();
+        app.config
+            .ai_hub
+            .providers
+            .get_mut("codex")
+            .unwrap()
+            .models
+            .truncate(1);
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiProvider {
+                action: None,
+                provider_id: "codex".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiEffort));
+    }
+
+    #[test]
+    fn selecting_effort_for_an_action_does_not_change_the_default() {
+        let mut app = app_with_effort_models();
+        app.config.ai_hub.default_provider = Some("codex".into());
+        app.config.ai_hub.default_model = Some("no-effort".into());
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiEffort {
+                action: Some(AiActionKind::Validate),
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+                effort: "high".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(app.current_ai_effort, None);
+        assert_eq!(
+            app.config.ai_hub.default_model.as_deref(),
+            Some("no-effort")
+        );
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn escape_from_effort_picker_returns_to_model_list() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        handle_overlay_input(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
+    }
+
+    #[test]
+    fn backspace_from_effort_picker_returns_to_model_list() {
+        let mut app = app_with_effort_models();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::SelectAiModel {
+                action: None,
+                provider_id: "codex".into(),
+                model_id: "gpt-5.6-luna".into(),
+            },
+        )
+        .unwrap();
+        handle_overlay_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
+        assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
     }
 }
