@@ -7,7 +7,7 @@ environment gotchas, and a map of the desktop app, which spans three layers.
 ## Branching
 
 - **Bug fixes:** PRs to `main`.
-- **Everything else:** PRs to **`release/v0.4.15`**.
+- **Everything else:** PRs to **`release/v0.4.16`**.
 - Release branches include release notes.
 
 ## Build / Test / Lint / Run

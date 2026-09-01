@@ -1343,7 +1343,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "er-crap"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "clap",
@@ -1356,7 +1356,7 @@ dependencies = [
 
 [[package]]
 name = "er-desktop"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "block2",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "er-engine"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1403,7 +1403,7 @@ dependencies = [
 
 [[package]]
 name = "er-mcp"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1420,7 +1420,7 @@ dependencies = [
 
 [[package]]
 name = "er-tui"
-version = "0.4.15"
+version = "0.4.16"
 dependencies = [
  "anyhow",
  "clap",

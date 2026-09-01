@@ -1,3 +1,22 @@
+# Easy Review v0.4.16
+
+## In plain terms
+
+- **What changed.** _Open release branch — entries land here as work merges._
+- **TL;DR.** _Pending._
+
+## Highlights
+
+- _Pending._
+
+## What's Changed
+
+### Features
+- _None yet._
+
+### Fixes
+- _None yet._
+
 # Easy Review v0.4.15
 
 ## In plain terms
