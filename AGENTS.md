@@ -7,7 +7,15 @@ environment gotchas, and a map of the desktop app, which spans three layers.
 ## Branching
 
 - **Bug fixes:** PRs to `main`.
-- **Everything else:** PRs to **`release/v0.4.16`**.
+- **Everything else:** PRs to the **current release branch** — the highest
+  `release/v*` on origin. Never hardcode it; resolve it:
+
+  ```bash
+  git fetch origin --quiet   # remote refs go stale, and a failed fetch is silent
+  git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/v*' \
+    | sort -V | tail -1
+  ```
+
 - Release branches include release notes.
 
 ## Build / Test / Lint / Run

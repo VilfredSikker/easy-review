@@ -17,6 +17,9 @@
 ### Fixes
 - _None yet._
 
+### Docs
+- Resolve the current release branch from origin instead of hardcoding a version in `AGENTS.md` / `CLAUDE.md`.
+
 # Easy Review v0.4.15
 
 ## In plain terms

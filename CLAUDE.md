@@ -19,7 +19,14 @@ No runtime dependencies beyond git. Single binary. (`gh` CLI optional for GitHub
 ## Branching & Release Workflow
 
 - **PRs to `main` are for bug fixes only.** Only point a PR at `main` when it is a bug fix.
-- **Everything else goes on `release/v0.4.16`.** New features and other non-bugfix work are developed on (and PR'd into) that release branch, not `main`.
+- **Everything else goes on the current release branch.** New features and other non-bugfix work are developed on (and PR'd into) that release branch, not `main`. The current release branch is the highest `release/v*` on origin — resolve it rather than hardcoding a version, because a version named here is the one that just shipped by the time you read it:
+
+  ```bash
+  git fetch origin --quiet   # remote refs go stale, and a failed fetch is silent
+  git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/v*' \
+    | sort -V | tail -1
+  ```
+
 - **Release branches must include release notes.** Every release branch ships with release notes describing what changed.
 
 ## Architecture
