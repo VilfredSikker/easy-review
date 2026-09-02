@@ -88,7 +88,7 @@
       composer = null;
       return;
     }
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     onSave(
       [composer.x, composer.y, composer.w, composer.h],
       composer.selector,

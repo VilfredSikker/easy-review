@@ -320,3 +320,23 @@ describe("reapplyOptimisticThreads", () => {
     expect(other.ai.comments).toBe(0);
   });
 });
+
+describe("ai.threads kind order", () => {
+  it("inserts where the backend will emit it: questions, then notes, then comments", () => {
+    const view = snap();
+    // Existing state: one question and one comment, as the backend orders them.
+    applyOptimisticThread(view, pendingFor("add_question", view, commentArgs, "q-0"));
+    applyOptimisticThread(view, pendingFor("add_comment", view, commentArgs, "c-0"));
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["q-0", "c-0"]);
+
+    // A new note lands between the kinds, not at the end.
+    applyOptimisticThread(view, pendingFor("add_note", view, commentArgs, "n-1"));
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["q-0", "n-1", "c-0"]);
+    // A new question goes after the existing question (append within kind).
+    applyOptimisticThread(view, pendingFor("add_question", view, commentArgs, "q-1"));
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["q-0", "q-1", "n-1", "c-0"]);
+    // A new comment still appends at the end.
+    applyOptimisticThread(view, pendingFor("add_comment", view, commentArgs, "c-1"));
+    expect(view.ai.threads.map((t) => t.id)).toEqual(["q-0", "q-1", "n-1", "c-0", "c-1"]);
+  });
+});

@@ -41,7 +41,7 @@
 
   function openInboxMessageModal(item: InboxItemSnapshot) {
     selectedInboxMessage = item;
-    app.cmd("mark_inbox_item_read", { id: item.id });
+    void app.cmd("mark_inbox_item_read", { id: item.id });
   }
 
   function closeInboxMessageModal() {
@@ -227,7 +227,7 @@
         <div class="flex-1"></div>
         <button
           type="button"
-          onclick={() => { app.cmd("mark_all_inbox_read"); }}
+          onclick={() => { void app.cmd("mark_all_inbox_read"); }}
           title="Mark all read"
           aria-label="Mark all read"
           class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
@@ -236,7 +236,7 @@
         </button>
         <button
           type="button"
-          onclick={() => { app.cmd("clear_read_inbox_items"); }}
+          onclick={() => { void app.cmd("clear_read_inbox_items"); }}
           title="Clear read"
           aria-label="Clear read"
           class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
@@ -301,7 +301,7 @@
               onclick={(e) => {
                 e.stopPropagation();
                 if (groupUnread.length === 0) return;
-                app.cmd("mark_inbox_items_read", { ids: groupUnread });
+                void app.cmd("mark_inbox_items_read", { ids: groupUnread });
               }}
               title="Mark group read"
               aria-label="Mark {group.label} read"
@@ -315,7 +315,7 @@
               onclick={(e) => {
                 e.stopPropagation();
                 if (groupRead.length === 0) return;
-                app.cmd("clear_inbox_items", { ids: groupRead });
+                void app.cmd("clear_inbox_items", { ids: groupRead });
               }}
               title="Clear read in group"
               aria-label="Clear read in {group.label}"

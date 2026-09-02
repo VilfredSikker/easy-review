@@ -144,10 +144,40 @@ function bumpFileCounts(file: FileSnapshot, kind: ThreadSnapshot["kind"], delta:
   else if (kind === "question") file.question_count = clamp(file.question_count);
 }
 
+const KIND_ORDER: Record<ThreadSnapshot["kind"], number> = {
+  question: 0,
+  note: 1,
+  comment: 2,
+};
+
+/**
+ * The backend emits `ai.threads` as questions → notes → comments, append
+ * order within a kind. Insert where the confirming snapshot will put it, so the
+ * annotation fingerprint (which folds `ai.threads` in order) matches between
+ * the optimistic paint and the confirm and the cross-file render model cache
+ * hits instead of rebuilding every row.
+ */
+export function insertThreadInKindOrder(
+  threads: ThreadSnapshot[],
+  thread: ThreadSnapshot,
+): ThreadSnapshot[] {
+  const rank = KIND_ORDER[thread.kind] ?? KIND_ORDER.comment;
+  let at = threads.length;
+  for (let i = 0; i < threads.length; i++) {
+    if ((KIND_ORDER[threads[i].kind] ?? KIND_ORDER.comment) > rank) {
+      at = i;
+      break;
+    }
+  }
+  const next = [...threads];
+  next.splice(at, 0, thread);
+  return next;
+}
+
 export function applyOptimisticThread(snap: AppSnapshot, pending: OptimisticThread): void {
   const already = snap.ai.threads.some((t) => t.id === pending.id);
   if (!already) {
-    snap.ai.threads = [...snap.ai.threads, pending.thread];
+    snap.ai.threads = insertThreadInKindOrder(snap.ai.threads, pending.thread);
     bumpAiCounts(snap, pending.thread.kind, 1);
   }
 

@@ -568,12 +568,12 @@
     return (project.dismissed_prs ?? []).includes(prNumber);
   }
 
-  async function togglePinPr(project: ProjectSnapshot, pr: PrInfo) {
+  function togglePinPr(project: ProjectSnapshot, pr: PrInfo) {
     closeRowActionMenu();
     if (isPrPinned(project, pr.number)) {
-      await app.cmd("unsave_pr", { projectId: project.id, prNumber: pr.number });
+      void app.cmd("unsave_pr", { projectId: project.id, prNumber: pr.number });
     } else {
-      await app.cmd("save_pr", { projectId: project.id, prNumber: pr.number, title: pr.title });
+      void app.cmd("save_pr", { projectId: project.id, prNumber: pr.number, title: pr.title });
     }
   }
 
@@ -601,12 +601,12 @@
     }
   }
 
-  async function toggleIgnorePr(project: ProjectSnapshot, pr: PrInfo) {
+  function toggleIgnorePr(project: ProjectSnapshot, pr: PrInfo) {
     closeRowActionMenu();
     if (isPrIgnored(project, pr.number)) {
-      await app.cmd("undismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+      void app.cmd("undismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
     } else {
-      await app.cmd("dismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
+      void app.cmd("dismiss_remote_pr", { projectId: project.id, prNumber: pr.number });
     }
   }
 
