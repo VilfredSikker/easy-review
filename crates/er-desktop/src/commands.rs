@@ -2546,8 +2546,7 @@ pub async fn remove_finding_thread(
             for id in pending_ids {
                 p.remove(&id);
             }
-            if let Some(root) =
-                er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
+            if let Some(root) = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
             {
                 p.remove(&root);
             }
@@ -3414,7 +3413,7 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
 
     let (owner, repo, number) = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, &state)
+        active_github_key(&app, state)
             .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
     };
 
@@ -3433,7 +3432,7 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
     );
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    Ok(snap_from(&app, state))
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -4750,8 +4749,7 @@ pub async fn elaborate_with_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || ask_ai_impl(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), &state))
-        .await
+    run_blocking(move || ask_ai_impl(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), &state)).await
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -4773,11 +4771,7 @@ pub async fn ask_ai(
 /// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
 /// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
 /// files) under the app lock, so callers run it on the blocking pool.
-fn ask_ai_impl(
-    thread_id: String,
-    prompt: String,
-    state: &AppState,
-) -> Result<AppSnapshot, String> {
+fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
@@ -4988,7 +4982,7 @@ fn ask_ai_impl(
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
-    let snap = snap_from(&app, &state);
+    let snap = snap_from(&app, state);
 
     // Release lock before spawning so the subprocess runs without holding the App mutex.
     drop(app);
@@ -5211,7 +5205,7 @@ fn ask_ai_for_finding(
     let inv_for_thread = invocation;
     let model_for_thread = model_for_subprocess;
 
-    let snap = snap_from(&app, &state);
+    let snap = snap_from(&app, state);
     drop(app);
 
     std::thread::spawn(move || {
@@ -8568,7 +8562,7 @@ fn promote_finding_to_comment_impl(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from_confirmed(&app, &state))
+    Ok(snap_from_confirmed(&app, state))
 }
 
 const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
@@ -8583,8 +8577,7 @@ pub async fn reply_to_finding(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state))
-        .await
+    run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
 }
 
 fn reply_to_finding_impl(
@@ -8728,7 +8721,7 @@ fn reply_to_finding_impl(
         .map_err(|e| e.to_string())?;
     }
 
-    Ok(snap_from_confirmed(&app, &state))
+    Ok(snap_from_confirmed(&app, state))
 }
 
 #[tauri::command]
