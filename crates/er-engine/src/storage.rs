@@ -87,6 +87,21 @@ pub fn slug_branch(branch: &str) -> String {
     slugify(&branch.replace('/', "-"))
 }
 
+/// Label a PR tab carries while its head branch is still unknown (`pr/<N>`).
+///
+/// It stands in for the branch in the tab title and the branch-bucket slug,
+/// but it is not a branch: sidecar scope checks must treat it as "no branch"
+/// (see [`is_pr_placeholder_branch`]).
+pub fn pr_placeholder_branch(pr_number: u64) -> String {
+    format!("pr/{pr_number}")
+}
+
+/// True when `name` is a [`pr_placeholder_branch`] label rather than a real branch.
+pub fn is_pr_placeholder_branch(name: &str) -> bool {
+    name.strip_prefix("pr/")
+        .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Directory for a specific branch under the managed storage root.
 pub fn branch_dir(repo_slug: &str, branch_slug: &str) -> PathBuf {
     storage_root()
@@ -306,6 +321,17 @@ pub static STORAGE_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new((
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn pr_placeholder_branch_round_trips_and_rejects_real_branches() {
+        assert_eq!(pr_placeholder_branch(1560), "pr/1560");
+        assert!(is_pr_placeholder_branch("pr/1560"));
+        assert!(!is_pr_placeholder_branch("pr/"));
+        assert!(!is_pr_placeholder_branch("pr/1560-fix"));
+        assert!(!is_pr_placeholder_branch("fix/superviewer-manager"));
+        assert!(!is_pr_placeholder_branch("unknown"));
+        assert!(!is_pr_placeholder_branch(""));
+    }
 
     #[test]
     fn slug_branch_replaces_slashes() {

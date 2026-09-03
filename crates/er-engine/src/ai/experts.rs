@@ -291,6 +291,21 @@ fn prefix_finding_id(prefix: &str, id: &str) -> String {
     }
 }
 
+/// Whether an expert sidecar belongs on the review card: generated against the
+/// diff the tab shows now, or against the same diff as the general review it is
+/// merged into. A selected-files run hashes only the filtered diff, so its
+/// general + expert sidecars share a hash the full tab diff never matches — the
+/// card is already flagged stale for that, and skipping the experts on top
+/// silently hid their findings.
+pub fn expert_hash_accepted(
+    expert: &ExpertReview,
+    review_hash: &str,
+    current_diff_hash: &str,
+) -> bool {
+    expert.diff_hash == current_diff_hash
+        || (!review_hash.is_empty() && expert.diff_hash == review_hash)
+}
+
 /// Merge expert findings into `review` at load time (skip stale expert files).
 pub fn merge_experts_into_review(
     review: &mut ErReview,
@@ -298,7 +313,7 @@ pub fn merge_experts_into_review(
     current_diff_hash: &str,
 ) {
     for expert in experts {
-        if expert.diff_hash != current_diff_hash {
+        if !expert_hash_accepted(expert, &review.diff_hash, current_diff_hash) {
             continue;
         }
         let Some(def) = expert_by_id(&expert.expert_id) else {
@@ -514,5 +529,48 @@ mod tests {
             .findings
             .iter()
             .any(|f| f.id == "api-2"));
+    }
+
+    #[test]
+    fn merge_keeps_experts_sharing_the_review_hash_after_tab_diff_moved_on() {
+        // Selected-files run: general + expert sidecars hash the filtered diff
+        // ("scoped") while the tab hashes the full diff ("full"). The review
+        // loads as stale; its experts must ride along instead of vanishing.
+        // An expert from an older generation still stays out.
+        let mut review = ErReview {
+            version: 1,
+            diff_hash: "scoped".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        };
+        let expert = |id: &str, hash: &str| ExpertReview {
+            version: 1,
+            expert_id: id.to_string(),
+            diff_hash: hash.to_string(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: HashMap::from([(
+                "m.sql".to_string(),
+                ExpertFileReview {
+                    findings: vec![sample_finding("1")],
+                },
+            )]),
+        };
+        let experts = vec![expert("reliability", "scoped"), expert("security", "older")];
+        merge_experts_into_review(&mut review, &experts, "full");
+        let categories: Vec<&str> = review.files["m.sql"]
+            .findings
+            .iter()
+            .map(|f| f.category.as_str())
+            .collect();
+        assert_eq!(categories, vec!["reliability"]);
+        assert!(
+            !expert_hash_accepted(&experts[0], "", "full"),
+            "without a review hash only the tab's own hash is accepted"
+        );
     }
 }

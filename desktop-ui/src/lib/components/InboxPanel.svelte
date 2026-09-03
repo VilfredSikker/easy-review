@@ -48,6 +48,13 @@
     selectedInboxMessage = null;
   }
 
+  /** Open the selected notification's target in the active tab, or in a new one. */
+  function openSelectedInboxTarget(newTab: boolean) {
+    if (!selectedInboxMessage) return;
+    app.cmd("open_inbox_item", { id: selectedInboxMessage.id, newTab });
+    closeInboxMessageModal();
+  }
+
   const inboxProjectOptions = $derived(
     projects
       .filter((p) => inboxItems.some((item) => inboxItemProjectId(item, projects) === p.id))
@@ -352,12 +359,16 @@
     <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
       <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
       <button
+        class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover"
+        title="Open the target without replacing the current tab"
+        onclick={() => openSelectedInboxTarget(true)}
+      >
+        Open in new tab
+      </button>
+      <button
         class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
-        onclick={() => {
-          if (!selectedInboxMessage) return;
-          app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
-          closeInboxMessageModal();
-        }}
+        title="Open the target in the current tab"
+        onclick={() => openSelectedInboxTarget(false)}
       >
         Open target
       </button>
