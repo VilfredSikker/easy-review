@@ -65,7 +65,7 @@
     if (diffSel.side !== null) {
       cmdArgs.side = diffSel.side === "old" ? "LEFT" : "RIGHT";
     }
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd(command, cmdArgs);
     diffSel.clear();
   }

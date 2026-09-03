@@ -46,7 +46,12 @@ export function openTabCacheKeys(snap: AppSnapshot | null): Set<string> {
   return keys;
 }
 
-/** Keep the live tab strip (and project lists) while painting a cached diff. */
+/**
+ * Keep the live app-wide chrome (tab strip, project lists, inbox) while
+ * painting a cached diff. The inbox is global state: a cached entry may be
+ * minutes old, and repainting its items would flash read/cleared
+ * notifications back onto the screen on every tab switch.
+ */
 export function applyCachedTabSnapshot(
   cached: AppSnapshot,
   live: AppSnapshot,
@@ -60,6 +65,9 @@ export function applyCachedTabSnapshot(
     projects: live.projects,
     panels: live.panels,
     theme: live.theme,
+    inbox_items: live.inbox_items,
+    inbox_unread_count: live.inbox_unread_count,
+    inbox_last_refresh_ms: live.inbox_last_refresh_ms,
   };
 }
 

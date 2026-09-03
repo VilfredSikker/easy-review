@@ -11,6 +11,7 @@ import { profileLog } from "../profileLog";
 import {
   applyOptimisticOp,
   buildOptimisticOp,
+  isGlobalOp,
   isOptimisticCommand,
   optimisticInvokeArgs,
   reapplyOptimisticOps,
@@ -673,23 +674,49 @@ class AppStore {
   }
 
   /**
+   * A local write could not paint because a view switch is in flight. Say so:
+   * a click that does nothing reads as a frozen app, and the composer keeps
+   * its draft for the retry.
+   */
+  explainPaintBlocked(command?: string): void {
+    profileLog("optimistic_paint_blocked", { command: command ?? "" });
+    this.showToast("error", "Still switching views, try again in a moment");
+  }
+
+  /**
    * Paint a local sidecar write immediately, then run IPC in the
    * background. Rollback only if the write fails. Apply happens before
    * the first await so composers can close without waiting.
+   *
+   * View-scoped ops (threads, findings) are tied to the review view they were
+   * painted on: they roll back if the view changes and are confirmed by a
+   * full snapshot. Global ops (inbox, project pins) paint through tab
+   * switches and are confirmed by a chrome-only merge; a successful write is
+   * never rolled back.
    */
   private async cmdOptimistic(command: string, args: Record<string, unknown>): Promise<void> {
-    if (!this.canPaintOptimistic()) return;
     const snap = this.snapshot;
     if (!snap) return;
 
     const op = buildOptimisticOp(command, args, snap);
     if (!op) return;
+    const global = isGlobalOp(op);
+    if (global ? this.switching : !this.canPaintOptimistic()) {
+      this.explainPaintBlocked(command);
+      return;
+    }
 
     const viewAtStart = op.viewIdentity;
     const originSnap = snap;
     this.pendingOps = [...this.pendingOps, op];
     applyOptimisticOp(snap, op);
-    const invokeArgs = optimisticInvokeArgs(command, args, op, snapshotViewParts(snap));
+    const invokeArgs = optimisticInvokeArgs(
+      command,
+      args,
+      op,
+      global ? undefined : snapshotViewParts(snap),
+    );
+    const tStart = performance.now();
 
     await this.enqueueOptimistic(async () => {
       const rollbackPaintedView = () => {
@@ -697,22 +724,28 @@ class AppStore {
         if (
           this.snapshot &&
           this.snapshot !== originSnap &&
-          snapshotViewIdentity(this.snapshot) === viewAtStart
+          (global || snapshotViewIdentity(this.snapshot) === viewAtStart)
         ) {
           rollbackOptimisticOp(this.snapshot, op);
         }
       };
-      const stillHere =
-        this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
-      if (!stillHere) {
-        rollbackPaintedView();
-        this.dropPendingOp(op.id);
-        return;
+      if (!global) {
+        const stillHere =
+          this.snapshot != null && snapshotViewIdentity(this.snapshot) === viewAtStart;
+        if (!stillHere) {
+          rollbackPaintedView();
+          this.dropPendingOp(op.id);
+          return;
+        }
       }
+      const tInvokeStart = performance.now();
       try {
         const returned = await invoke<AppSnapshot>(command, invokeArgs);
+        const tInvokeDone = performance.now();
         this.dropPendingOp(op.id);
-        if (
+        if (global) {
+          this.mergeGlobalConfirm(returned);
+        } else if (
           this.snapshot &&
           snapshotViewIdentity(this.snapshot) === viewAtStart &&
           snapshotViewIdentity(returned) === viewAtStart
@@ -721,14 +754,46 @@ class AppStore {
         } else {
           rollbackPaintedView();
         }
+        const tDone = performance.now();
+        const totalMs = timingSegmentMs(tStart, tDone);
+        if (totalMs > 500) {
+          logWarn(
+            `cmd_timing command=${command} optimistic=1 queue_ms=${timingSegmentMs(tStart, tInvokeStart)} invoke_ms=${timingSegmentMs(tInvokeStart, tInvokeDone)} ingest_ms=${timingSegmentMs(tInvokeDone, tDone)} total_ms=${totalMs}`,
+          ).catch(() => {});
+        }
       } catch (e) {
         this.dropPendingOp(op.id);
         rollbackPaintedView();
-        if (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart) {
+        if (global || (this.snapshot && snapshotViewIdentity(this.snapshot) === viewAtStart)) {
           this.reportCmdError(command, e);
         }
       }
     });
+  }
+
+  /**
+   * Confirm a global op. The backend answers with a chrome-only snapshot
+   * (no files/AI), so merge it onto the current view instead of replacing
+   * the diff. When the painted tab or mode moved on, skip the merge: the
+   * write succeeded and the revision-bump poll carries the truth.
+   */
+  private mergeGlobalConfirm(returned: AppSnapshot): void {
+    const current = this.snapshot;
+    if (
+      !current ||
+      this.pendingTabSwitch ||
+      !snapshotsShareTabCacheKey(current, returned) ||
+      snapshotViewIdentity(current) !== snapshotViewIdentity(returned)
+    ) {
+      return;
+    }
+    this.snapshot = mergeChromeSnapshot(current, returned, "prev");
+    // A poll that started before the click must not land on this merge with
+    // pre-write chrome; a new generation discards it.
+    this.snapshotGeneration += 1;
+    this.rememberSnapshot(this.snapshot);
+    this.lastConfirmedSnapshot = this.snapshot;
+    this.keepOptimisticOps();
   }
 
   /**
@@ -768,6 +833,9 @@ class AppStore {
         this.snapshot = mergeChromeSnapshot(this.snapshot, returned);
         this.rememberSnapshot(this.snapshot);
         this.lastConfirmedSnapshot = this.snapshot;
+        // The merge takes inbox/projects from the backend response; reapply
+        // any in-flight global op (inbox read, pin) painted on the old object.
+        this.keepOptimisticOps();
       }
     } catch (e) {
       // Roll back optimistic mutation only on the tab we mutated.

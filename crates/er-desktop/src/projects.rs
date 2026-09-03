@@ -252,40 +252,42 @@ fn reorder_projects_in_file(file: &mut ProjectsFile, ordered_ids: &[String]) -> 
     changed
 }
 
+// Pin/ignore mutations run on the blocking pool (their Tauri commands are
+// async) while other projects.json writers stay on the main thread, so they
+// take the `update_file` lock instead of an unguarded load-mutate-save.
 pub fn save_pr(project_id: &str, pr_number: u64, title: &str) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let now = now_epoch_ms();
-    proj.saved_prs.retain(|e| e.number != pr_number);
-    proj.saved_prs.insert(
-        0,
-        SavedPrEntry {
-            number: pr_number,
-            saved_at_ms: now,
-            title: title.to_string(),
-        },
-    );
-    proj.saved_prs.truncate(MAX_PR_HISTORY);
-    save(&file)
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let now = now_epoch_ms();
+        proj.saved_prs.retain(|e| e.number != pr_number);
+        proj.saved_prs.insert(
+            0,
+            SavedPrEntry {
+                number: pr_number,
+                saved_at_ms: now,
+                title: title.to_string(),
+            },
+        );
+        proj.saved_prs.truncate(MAX_PR_HISTORY);
+        Ok(true)
+    })
 }
 
 pub fn unsave_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let before = proj.saved_prs.len();
-    proj.saved_prs.retain(|e| e.number != pr_number);
-    if proj.saved_prs.len() != before {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let before = proj.saved_prs.len();
+        proj.saved_prs.retain(|e| e.number != pr_number);
+        Ok(proj.saved_prs.len() != before)
+    })
 }
 
 pub fn config_path() -> PathBuf {
@@ -626,28 +628,29 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
 }
 
 pub fn dismiss_pr(project_id: &str, pr_number: u64) {
-    let mut file = load();
-    if let Some(p) = file.projects.iter_mut().find(|p| p.id == project_id) {
-        if !p.dismissed_prs.contains(&pr_number) {
-            p.dismissed_prs.push(pr_number);
-            let _ = save(&file);
+    let _ = update_file(|file| {
+        let Some(p) = file.projects.iter_mut().find(|p| p.id == project_id) else {
+            return Ok(false);
+        };
+        if p.dismissed_prs.contains(&pr_number) {
+            return Ok(false);
         }
-    }
+        p.dismissed_prs.push(pr_number);
+        Ok(true)
+    });
 }
 
 pub fn undismiss_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {
-    let mut file = load();
-    let proj = file
-        .projects
-        .iter_mut()
-        .find(|p| p.id == project_id)
-        .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
-    let before = proj.dismissed_prs.len();
-    proj.dismissed_prs.retain(|n| n != &pr_number);
-    if proj.dismissed_prs.len() != before {
-        save(&file)?;
-    }
-    Ok(())
+    update_file(|file| {
+        let proj = file
+            .projects
+            .iter_mut()
+            .find(|p| p.id == project_id)
+            .ok_or_else(|| anyhow::anyhow!("Project not found: {project_id}"))?;
+        let before = proj.dismissed_prs.len();
+        proj.dismissed_prs.retain(|n| n != &pr_number);
+        Ok(proj.dismissed_prs.len() != before)
+    })
 }
 
 pub fn track_pr(project_id: &str, pr_number: u64) -> anyhow::Result<()> {

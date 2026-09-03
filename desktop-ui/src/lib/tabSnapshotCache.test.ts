@@ -289,6 +289,39 @@ describe("applyCachedTabSnapshot", () => {
       expect(painted.files[0]).not.toBe(cached.files[0]);
     }
   });
+
+  it("takes the live inbox instead of the cached one", () => {
+    const item = (id: string, read_at_ms: number | null) => ({
+      id,
+      kind: "k",
+      severity: "info",
+      title: id,
+      body: "",
+      source: "s",
+      target: {},
+      created_at_ms: 1,
+      read_at_ms,
+      dedupe_key: id,
+    });
+    const cached = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "a", is_active: true })],
+      inbox_items: [item("old", null)],
+      inbox_unread_count: 1,
+      inbox_last_refresh_ms: 1,
+    });
+    const live = snap({
+      active_tab: 1,
+      tabs: [tab({ idx: 0, label: "a" }), tab({ idx: 1, label: "b", is_active: true })],
+      inbox_items: [item("old", 5)],
+      inbox_unread_count: 0,
+      inbox_last_refresh_ms: 9,
+    });
+    const painted = applyCachedTabSnapshot(cached, live, 0);
+    expect(painted.inbox_items).toBe(live.inbox_items);
+    expect(painted.inbox_unread_count).toBe(0);
+    expect(painted.inbox_last_refresh_ms).toBe(9);
+  });
 });
 
 describe("shouldDropCommandSnapshot", () => {
