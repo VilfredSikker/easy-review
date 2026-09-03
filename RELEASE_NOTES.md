@@ -12,13 +12,14 @@
 ## What's Changed
 
 ### Features
-- _None yet._
+- Open every markdown review export with a **Handling rules** preamble so a pasted export states how to act on each item type.
 
 ### Fixes
 - _None yet._
 
 ### Docs
 - Resolve the current release branch from origin instead of hardcoding a version in `AGENTS.md` / `CLAUDE.md`.
+- State the per-type action semantics in `er-respond`: a question stays discussion-only even when it recommends a code change.
 
 # Easy Review v0.4.15
 

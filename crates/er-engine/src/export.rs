@@ -43,6 +43,22 @@ impl Default for ExportOpts {
     }
 }
 
+/// Item-type action semantics, emitted verbatim at the top of every non-empty
+/// export so a pasted export carries its own handling contract even when the
+/// agent has no `er-respond` skill installed. Keep in sync with
+/// `npm/skills/source/er-respond/SKILL.md`.
+pub const HANDLING_RULES: &str = "\
+## Handling rules
+
+- Question: Answer and discuss only. Do not edit code until the user approves a change.
+- Note: Apply the requested change unless the note is stale.
+- Finding: Validate against the current code. Fix only when explicitly requested.
+- Resolved: Take no action.
+- Stale: Reason about whether it still applies and where, then ask before acting on it.
+
+> A question remains discussion-only even when it proposes or recommends a code change.
+";
+
 /// Render the active tab's annotations as a single markdown document, grouped
 /// by file path. Returns a placeholder body when there is nothing to export.
 pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
@@ -167,6 +183,8 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
 
     let mut out = String::new();
     out.push_str(&format!("# Review export — {branch}\n\n"));
+    out.push_str(HANDLING_RULES);
+    out.push('\n');
 
     for (file, items) in &groups {
         out.push_str(&format!("## {file}\n\n"));
@@ -575,6 +593,63 @@ mod tests {
         let tab = tab_with_ai(AiState::default());
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(out.contains("No annotations."), "got:\n{out}");
+    }
+
+    #[test]
+    fn embeds_handling_rules_preamble() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![make_question(
+                "q-1",
+                "packages/foo.ts",
+                10,
+                "Should this be a Map?",
+                false,
+            )],
+        });
+        let tab = tab_with_ai(ai);
+        let out = render_markdown(&tab, &ExportOpts::default());
+
+        assert!(
+            out.contains("## Handling rules"),
+            "missing handling rules preamble:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "A question remains discussion-only even when it proposes or recommends a code change."
+            ),
+            "missing the discussion-only rule:\n{out}"
+        );
+        // `ExportOpts::default()` keeps `only_unresolved: false`, so a default
+        // export still renders `[resolved]` items — the rules have to say to
+        // leave them alone, and that a stale item needs confirmation first.
+        assert!(
+            out.contains("- Resolved: Take no action."),
+            "missing the resolved rule:\n{out}"
+        );
+        assert!(
+            out.contains(
+                "- Stale: Reason about whether it still applies and where, then ask before acting on it."
+            ),
+            "missing the stale rule:\n{out}"
+        );
+        // The preamble must precede the first file group so an agent reads the
+        // rules before the items they govern.
+        let rules_at = out.find("## Handling rules").unwrap();
+        let first_group_at = out.find("## packages/foo.ts").unwrap();
+        assert!(
+            rules_at < first_group_at,
+            "preamble must sit above the file groups:\n{out}"
+        );
+
+        // Nothing to hand off → no rules, just the placeholder.
+        let empty = render_markdown(&tab_with_ai(AiState::default()), &ExportOpts::default());
+        assert!(
+            !empty.contains("## Handling rules"),
+            "empty export must stay a bare placeholder:\n{empty}"
+        );
     }
 
     #[test]
