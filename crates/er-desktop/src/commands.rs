@@ -7627,16 +7627,24 @@ pub fn test_native_notification(state: State<AppState>) -> Result<(), String> {
     }
 }
 
+/// Open a notification's target. `new_tab` opens it in a fresh tab; the
+/// default replaces the active tab (the inbox dialog offers both).
 #[tauri::command]
 pub async fn open_inbox_item(
     id: String,
+    new_tab: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_inbox_item_impl(id, &state)).await
+    run_blocking(move || open_inbox_item_impl(id, new_tab.unwrap_or(false), &state)).await
 }
 
-fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, String> {
+fn open_inbox_item_impl(
+    id: String,
+    new_tab: bool,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let replace = Some(!new_tab);
     let now = now_ms();
     let mut target = {
         let mut inbox = state.inbox.lock().map_err(|e| {
@@ -7662,10 +7670,10 @@ fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, Str
             );
         }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review_impl(project_id, pr_number, Some(true), None, state);
+            return open_pr_review_impl(project_id, pr_number, replace, None, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
-            return open_local_branch_impl(project_id, branch, Some(true), state);
+            return open_local_branch_impl(project_id, branch, replace, state);
         }
     }
 
