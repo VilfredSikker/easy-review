@@ -14,12 +14,14 @@
 ### Features
 - Desktop: inbox mark-read / clear, PR pin / unpin, PR ignore / unignore, and the finding-thread actions (remove thread, promote to comment, reply, delete AI response) now paint immediately and confirm in the background, rolling back only on error. Their handlers run off the main thread and answer with a chrome-only snapshot instead of rebuilding the whole diff.
 - Desktop: deleting, editing, resolving and promoting comments, notes and questions no longer re-read every review sidecar; each write produces one snapshot instead of two, and GitHub deletions of pushed comments run off the app lock. A write attempted while a view switch is in flight now shows a toast instead of silently doing nothing.
+- Open every markdown review export with a **Handling rules** preamble so a pasted export states how to act on each item type.
 
 ### Fixes
 - _None yet._
 
 ### Docs
 - Resolve the current release branch from origin instead of hardcoding a version in `AGENTS.md` / `CLAUDE.md`.
+- State the per-type action semantics in `er-respond`: a question stays discussion-only even when it recommends a code change.
 
 # Easy Review v0.4.15
 

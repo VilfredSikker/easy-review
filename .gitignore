@@ -24,3 +24,6 @@ mutants.out.old/
 .cargo-mutants/
 # Workspace-local cargo tool installs (e.g. cargo-mutants for `just mutants`)
 .cargo-local/
+desktop-ui/dist
+desktop-ui/node_modules
+reasonix.toml

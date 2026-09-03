@@ -1120,7 +1120,7 @@ impl TabState {
         let mut tab = Self::new_with_base_unloaded(repo_root, base_branch)?;
         tab.local_branch_view = Some(match head_branch_name {
             Some(name) if !name.is_empty() => name,
-            _ => format!("pr/{pr_number}"),
+            _ => crate::storage::pr_placeholder_branch(pr_number),
         });
         tab.pr_head_ref = Some(format!("refs/er/pr/{pr_number}/head"));
         tab.pr_number = Some(pr_number);
@@ -1172,6 +1172,17 @@ impl TabState {
             .filter(|s| !s.is_empty())
         {
             self.current_branch = head.to_string();
+            // A stub placed without a head-branch hint (inbox "Open target",
+            // first open of a PR) carries the `pr/<N>` placeholder. GitHub has
+            // now named the head: adopt it so the tab label, branch bucket, and
+            // sidecar scope match a tab opened with the hint.
+            if self
+                .local_branch_view
+                .as_deref()
+                .is_some_and(crate::storage::is_pr_placeholder_branch)
+            {
+                self.local_branch_view = Some(head.to_string());
+            }
         }
         let hash = crate::ai::compute_diff_hash(raw);
         self.diff_hash = hash.clone();
@@ -1213,7 +1224,7 @@ impl TabState {
 
         let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
-            format!("pr/{}", pr_number)
+            crate::storage::pr_placeholder_branch(pr_number)
         } else {
             head_branch_name
         });
@@ -1244,7 +1255,7 @@ impl TabState {
     ) -> Result<Self> {
         let mut tab = Self::new_with_base_unloaded(repo_root, resolved_base)?;
         tab.local_branch_view = Some(if head_branch_name.is_empty() {
-            format!("pr/{}", pr_number)
+            crate::storage::pr_placeholder_branch(pr_number)
         } else {
             head_branch_name
         });
@@ -2211,10 +2222,20 @@ impl TabState {
     }
 
     /// Branch name used to resolve managed storage for this tab (for sidecar validation).
+    ///
+    /// A PR tab opened before GitHub answered with its head branch carries the
+    /// `pr/<N>` placeholder as its view label. That label is not a branch, so
+    /// it yields no scope — returning it made `artifacts_branch_mismatch`
+    /// discard every sidecar whose `head_branch` named the real PR head, and
+    /// the review card showed "No findings" / "fresh" over a complete review.
     pub fn storage_branch_scope(&self) -> Option<&str> {
-        if self.local_branch_view.is_some() {
-            self.local_branch_view.as_deref()
-        } else if self.remote_repo.is_some() {
+        if let Some(view) = self.local_branch_view.as_deref() {
+            if self.pr_number.is_some() && crate::storage::is_pr_placeholder_branch(view) {
+                return None;
+            }
+            return Some(view);
+        }
+        if self.remote_repo.is_some() {
             // PR storage is keyed by pr-{n}; path isolation is enough.
             None
         } else if self.current_branch.is_empty() {
@@ -10505,6 +10526,78 @@ mod tests {
             DiffMode::PrDiff,
             "populated payload is gh pr diff; landing in Branch made Local Branch look stuck"
         );
+    }
+
+    fn pr_data_with_head(number: u64, head_branch: &str) -> PrOverviewData {
+        PrOverviewData {
+            number,
+            title: String::new(),
+            body: String::new(),
+            state: String::new(),
+            author: String::new(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: head_branch.to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        }
+    }
+
+    #[test]
+    fn populate_pr_tab_promotes_pr_placeholder_to_head_branch() {
+        // Inbox "Open target" places the stub without a head-branch hint, so
+        // the view label is the `pr/<N>` placeholder until `gh pr view`
+        // answers. Adopt the real head then — keeping the placeholder left the
+        // sidecar scope disagreeing with review.json's head_branch.
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(1560);
+        tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1560));
+        tab.remote_repo = Some("owner/repo".into());
+        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        tab.populate_pr_tab(
+            raw,
+            Some(pr_data_with_head(1560, "fix/superviewer-manager")),
+            Vec::new(),
+            "main".to_string(),
+            None,
+        );
+        assert_eq!(
+            tab.local_branch_view.as_deref(),
+            Some("fix/superviewer-manager")
+        );
+        assert_eq!(tab.storage_branch_scope(), Some("fix/superviewer-manager"));
+    }
+
+    #[test]
+    fn populate_pr_tab_keeps_a_real_head_branch_label() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(7);
+        tab.local_branch_view = Some("feat/x".into());
+        tab.remote_repo = Some("owner/repo".into());
+        let raw = "diff --git a/x.rs b/x.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        tab.populate_pr_tab(
+            raw,
+            Some(pr_data_with_head(7, "feat/x-renamed")),
+            Vec::new(),
+            "main".to_string(),
+            None,
+        );
+        assert_eq!(tab.local_branch_view.as_deref(), Some("feat/x"));
+    }
+
+    #[test]
+    fn storage_branch_scope_ignores_pr_placeholder_label() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.current_branch = "main".to_string();
+        tab.pr_number = Some(1560);
+        tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1560));
+        assert_eq!(
+            tab.storage_branch_scope(),
+            None,
+            "the pr/<N> label is not a branch and must not scope sidecars"
+        );
+        tab.local_branch_view = Some("fix/superviewer-manager".to_string());
+        assert_eq!(tab.storage_branch_scope(), Some("fix/superviewer-manager"));
     }
 
     #[test]

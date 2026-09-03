@@ -117,17 +117,25 @@ pub fn summary_declares_branch(summary: &str) -> Option<String> {
     None
 }
 
-/// True when a stored branch declaration carries real information. Review
-/// agents that can't determine the branch (prepared-diff reviews of remote
-/// PRs) write "unknown" or leave the prompt template's `<head branch if
-/// known>` placeholder — neither identifies another branch, so neither may
-/// disqualify the sidecar.
+/// True when a branch declaration carries real information. Review agents
+/// that can't determine the branch (prepared-diff reviews of remote PRs)
+/// write "unknown" or leave the prompt template's `<head branch if known>`
+/// placeholder, and a PR tab whose head is still unknown labels itself
+/// `pr/<N>` — none of these identifies another branch, so none may
+/// disqualify a sidecar, whether it appears as the stored `head_branch` or
+/// as the tab's scope.
 fn branch_declaration_is_real(branch: &str) -> bool {
-    !branch.is_empty() && !branch.eq_ignore_ascii_case("unknown") && !branch.starts_with('<')
+    !branch.is_empty()
+        && !branch.eq_ignore_ascii_case("unknown")
+        && !branch.starts_with('<')
+        && !crate::storage::is_pr_placeholder_branch(branch)
 }
 
 /// True when sidecars in `er_dir` clearly belong to another branch than `scope`.
 pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
+    if !branch_declaration_is_real(scope) {
+        return false;
+    }
     let review_path = er_dir.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
@@ -234,10 +242,17 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
-    // Merge specialized expert sidecars into review (load-time only).
+    // Merge specialized expert sidecars into review (load-time only). Experts
+    // from the same generation as a (possibly stale) general review ride along
+    // with it — see `expert_hash_accepted`.
     let experts = load_expert_reviews(er_dir);
+    let review_hash = state
+        .review
+        .as_ref()
+        .map(|r| r.diff_hash.as_str())
+        .unwrap_or("");
     for expert in &experts {
-        if expert.diff_hash != current_diff_hash {
+        if !super::experts::expert_hash_accepted(expert, review_hash, current_diff_hash) {
             continue;
         }
         let summary = expert.summary.trim();
@@ -619,6 +634,143 @@ mod tests {
         assert_eq!(r.diff_hash, "abc");
         assert!(r.files.is_empty());
         assert!(!state.is_stale);
+    }
+
+    fn write_review_for_head(dir: &std::path::Path, head_branch: &str) {
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "head_branch": head_branch,
+            "files": {
+                "tests/test_bots.py": {
+                    "risk": "low",
+                    "findings": [{
+                        "id": "f-1",
+                        "title": "Add coverage for superuser branch",
+                        "description": "d",
+                        "severity": "low",
+                        "category": "testing",
+                        "hunk_index": 0
+                    }]
+                }
+            }
+        });
+        std::fs::write(
+            dir.join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.join("summary.md"), "Adds the managing group.\n").unwrap();
+    }
+
+    #[test]
+    fn load_ai_state_keeps_review_when_scope_is_pr_placeholder() {
+        // pr-1560: the tab was re-opened from the inbox without a head-branch
+        // hint, so its scope was the `pr/1560` label while review.json named
+        // the real head. The label is not a branch — it must not disqualify
+        // the review (nor the summary, which the early return also dropped).
+        let dir = tempfile::tempdir().unwrap();
+        write_review_for_head(dir.path(), "fix/superviewer-manager");
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "abc", Some("pr/1560"));
+        let review = state
+            .review
+            .expect("placeholder scope must not discard the review");
+        assert_eq!(review.files["tests/test_bots.py"].findings.len(), 1);
+        assert_eq!(state.summary.as_deref(), Some("Adds the managing group.\n"));
+        assert!(!state.is_stale);
+    }
+
+    #[test]
+    fn load_ai_state_keeps_review_whose_stored_head_is_pr_placeholder() {
+        // Mirror case: a review spawned from a placeholder-labelled tab baked
+        // `pr/1560` into head_branch; a tab that later knows the real head
+        // must still load it.
+        let dir = tempfile::tempdir().unwrap();
+        write_review_for_head(dir.path(), "pr/1560");
+
+        let state = load_ai_state(
+            dir.path().to_str().unwrap(),
+            "abc",
+            Some("fix/superviewer-manager"),
+        );
+        assert!(
+            state.review.is_some(),
+            "stored pr/<N> label is not a branch"
+        );
+        assert!(state.summary.is_some());
+    }
+
+    #[test]
+    fn load_ai_state_merges_experts_sharing_the_stale_review_hash() {
+        // Selected-files run (pr-582): review.json + experts/*.json hash the
+        // filtered diff, the tab hashes the full diff. The review loads as
+        // stale — its experts' findings and summaries must load with it,
+        // while an expert from an older generation stays out.
+        let dir = tempfile::tempdir().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "scoped",
+            "head_branch": "",
+            "files": {}
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+        let experts = dir.path().join("experts");
+        std::fs::create_dir_all(&experts).unwrap();
+        let expert = |id: &str, hash: &str, summary: &str| {
+            serde_json::json!({
+                "version": 1,
+                "expert_id": id,
+                "diff_hash": hash,
+                "summary": summary,
+                "files": {
+                    "m.sql": {
+                        "findings": [{
+                            "id": "1",
+                            "title": "t",
+                            "description": "d",
+                            "severity": "medium",
+                            "category": id,
+                            "hunk_index": 0
+                        }]
+                    }
+                }
+            })
+        };
+        std::fs::write(
+            experts.join("reliability.json"),
+            serde_json::to_string(&expert("reliability", "scoped", "Rel summary")).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            experts.join("security.json"),
+            serde_json::to_string(&expert("security", "older", "Old summary")).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(dir.path().to_str().unwrap(), "full", None);
+        assert!(
+            state.is_stale,
+            "filtered-diff hash never matches the full tab diff"
+        );
+        let review = state.review.expect("review loads even when stale");
+        let ids: Vec<&str> = review.files["m.sql"]
+            .findings
+            .iter()
+            .map(|f| f.id.as_str())
+            .collect();
+        assert_eq!(
+            ids,
+            vec!["rel-1"],
+            "same-generation expert merged, older one skipped"
+        );
+        let summaries: Vec<&str> = state.agent_summaries.values().map(String::as_str).collect();
+        assert!(summaries.contains(&"Rel summary"));
+        assert!(!summaries.contains(&"Old summary"));
     }
 
     #[test]
