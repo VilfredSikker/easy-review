@@ -10,26 +10,33 @@ use serde::Deserialize;
 use crate::ai::{Confidence, Finding, GitHubReviewComment, ReviewQuestion, UiAnnotation};
 use crate::app::TabState;
 
-const fn default_true() -> bool {
-    true
-}
-
 /// Toggles for which annotation kinds to include in the export.
+///
+/// Each category has an optional per-item allow-list: when `Some`, only the
+/// listed item ids from that category are exported (the category toggle must
+/// also be on). `None`/absent means "export the whole category". Replies are
+/// nested under their kept parent and are never filtered individually.
 ///
 /// JSON shape from the UI uses camelCase (Tauri 2 default).
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct ExportOpts {
     pub include_comments: bool,
     pub include_questions: bool,
-    #[serde(default = "default_true")]
     pub include_notes: bool,
     pub include_findings: bool,
     pub only_unresolved: bool,
-    #[serde(default = "default_true")]
     pub include_annotations: bool,
+    pub include_comment_ids: Option<Vec<String>>,
+    pub include_question_ids: Option<Vec<String>>,
+    pub include_note_ids: Option<Vec<String>>,
+    pub include_finding_ids: Option<Vec<String>>,
 }
 
+/// The `serde(default)` above must keep missing fields as `true` for the
+/// historical category toggles, so we override the Default impl (the old
+/// `deserialize_with` used field-level defaults). All per-item lists default
+/// to `None` (whole category).
 impl Default for ExportOpts {
     fn default() -> Self {
         Self {
@@ -39,8 +46,20 @@ impl Default for ExportOpts {
             include_findings: true,
             only_unresolved: false,
             include_annotations: true,
+            include_comment_ids: None,
+            include_question_ids: None,
+            include_note_ids: None,
+            include_finding_ids: None,
         }
     }
+}
+
+/// True when an item should be skipped because the per-category allow-list is
+/// `Some` and does not contain `item_id`.
+fn allow_list_excludes(allow: Option<&[String]>, item_id: &str) -> bool {
+    allow
+        .map(|ids| !ids.iter().any(|id| id == item_id))
+        .unwrap_or(false)
 }
 
 /// Render the active tab's annotations as a single markdown document, grouped
@@ -77,6 +96,9 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 if opts.only_unresolved && q.resolved {
                     continue;
                 }
+                if allow_list_excludes(opts.include_question_ids.as_deref(), &q.id) {
+                    continue;
+                }
                 let replies: Vec<&ReviewQuestion> = qs
                     .questions
                     .iter()
@@ -99,6 +121,9 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 if opts.only_unresolved && n.resolved {
                     continue;
                 }
+                if allow_list_excludes(opts.include_note_ids.as_deref(), &n.id) {
+                    continue;
+                }
                 let replies: Vec<&ReviewQuestion> = ns
                     .notes
                     .iter()
@@ -118,6 +143,9 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                 .collect();
             for c in top_level {
                 if opts.only_unresolved && c.resolved {
+                    continue;
+                }
+                if allow_list_excludes(opts.include_comment_ids.as_deref(), &c.id) {
                     continue;
                 }
                 let replies: Vec<&GitHubReviewComment> = gc
@@ -142,6 +170,9 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
                     if opts.only_unresolved
                         && (f.resolved || matches!(f.confidence, Confidence::Dropped))
                     {
+                        continue;
+                    }
+                    if allow_list_excludes(opts.include_finding_ids.as_deref(), &f.id) {
                         continue;
                     }
                     push(&mut groups, path, ItemBlock::Finding(f));
@@ -557,6 +588,7 @@ mod tests {
             include_findings: false,
             only_unresolved: true,
             include_annotations: false,
+            ..ExportOpts::default()
         };
         let out = render_markdown(&tab, &opts);
 
@@ -776,5 +808,214 @@ mod tests {
         assert!(out.contains("## src/x.rs"), "missing group heading:\n{out}");
         assert!(out.contains("AI finding"), "missing finding label:\n{out}");
         assert!(out.contains("Use Map"));
+    }
+
+    // ── Per-item allow-lists ──
+
+    #[test]
+    fn question_allow_list_filters_to_named_questions() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![
+                make_question("q-1", "src/a.ts", 1, "Keep me", false),
+                make_question("q-2", "src/b.ts", 2, "Drop me", false),
+            ],
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            include_questions: true,
+            include_question_ids: Some(vec!["q-1".to_string()]),
+            ..ExportOpts::default()
+        };
+        let out = render_markdown(&tab, &opts);
+        assert!(out.contains("Keep me"), "kept question missing:\n{out}");
+        assert!(
+            !out.contains("Drop me"),
+            "unlisted question must be filtered:\n{out}"
+        );
+    }
+
+    #[test]
+    fn note_allow_list_is_independent_of_question_allow_list() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![make_question("q-1", "a.ts", 1, "Question text", false)],
+        });
+        ai.notes = Some(crate::ai::ErNotes {
+            version: 1,
+            diff_hash: String::new(),
+            notes: vec![
+                make_question("n-1", "a.ts", 2, "Note one", false),
+                make_question("n-2", "b.ts", 3, "Note two", false),
+            ],
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            include_questions: true,
+            include_notes: true,
+            // Only note n-2 selected — question q-1 and note n-1 drop.
+            include_note_ids: Some(vec!["n-2".to_string()]),
+            ..ExportOpts::default()
+        };
+        let out = render_markdown(&tab, &opts);
+        assert!(out.contains("Note two"));
+        assert!(!out.contains("Note one"), "unlisted note must be filtered");
+        assert!(
+            out.contains("Question text"),
+            "questions have no allow-list set, so they export regardless of the note list"
+        );
+    }
+
+    #[test]
+    fn comment_allow_list_keeps_replies_of_kept_parent() {
+        let mut ai = AiState::default();
+        let mut parent = make_comment("c-1", "a.ts", 1, "Parent comment");
+        parent.in_reply_to = None;
+        let mut reply = make_comment("c-2", "a.ts", 1, "Nested reply");
+        reply.in_reply_to = Some("c-1".to_string());
+        ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: String::new(),
+            github: None,
+            comments: vec![parent.clone(), reply.clone()],
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            include_comments: true,
+            include_comment_ids: Some(vec!["c-1".to_string()]),
+            ..ExportOpts::default()
+        };
+        let out = render_markdown(&tab, &opts);
+        assert!(
+            out.contains("Parent comment"),
+            "kept comment missing:\n{out}"
+        );
+        assert!(
+            out.contains("Nested reply"),
+            "reply under kept parent must render:\n{out}"
+        );
+    }
+
+    #[test]
+    fn comment_allow_list_drops_reply_whose_parent_is_not_listed() {
+        let mut ai = AiState::default();
+        let mut parent = make_comment("c-1", "a.ts", 1, "Parent comment");
+        parent.in_reply_to = None;
+        let mut reply = make_comment("c-2", "a.ts", 1, "Orphan reply");
+        reply.in_reply_to = Some("c-1".to_string());
+        ai.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: String::new(),
+            github: None,
+            comments: vec![parent.clone(), reply.clone()],
+        });
+        let tab = tab_with_ai(ai);
+        // Only the reply is in the allow-list, not its parent — replies are
+        // nested under their parent, so the orphan reply must not render.
+        let opts = ExportOpts {
+            include_comments: true,
+            include_comment_ids: Some(vec!["c-2".to_string()]),
+            ..ExportOpts::default()
+        };
+        let out = render_markdown(&tab, &opts);
+        assert!(!out.contains("Orphan reply"));
+        assert!(!out.contains("Parent comment"));
+    }
+
+    #[test]
+    fn finding_allow_list_filters_by_finding_id() {
+        let mut ai = AiState::default();
+        let mut files = HashMap::new();
+        files.insert(
+            "src/x.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings: vec![
+                    Finding {
+                        id: "f-keep".into(),
+                        severity: RiskLevel::Medium,
+                        category: "perf".into(),
+                        title: "Keep finding".into(),
+                        description: "Detail".into(),
+                        hunk_index: Some(0),
+                        line_start: Some(5),
+                        line_end: None,
+                        suggestion: String::new(),
+                        related_files: Vec::new(),
+                        outside_diff: false,
+                        confidence: Confidence::Confirmed,
+                        verification_plan: String::new(),
+                        evidence: Vec::new(),
+                        responses: Vec::new(),
+                        resolved: false,
+                        resolved_note: String::new(),
+                        resolved_at: String::new(),
+                        promoted_to: None,
+                    },
+                    Finding {
+                        id: "f-drop".into(),
+                        severity: RiskLevel::Low,
+                        category: "style".into(),
+                        title: "Drop finding".into(),
+                        description: "Detail".into(),
+                        hunk_index: Some(0),
+                        line_start: Some(6),
+                        line_end: None,
+                        suggestion: String::new(),
+                        related_files: Vec::new(),
+                        outside_diff: false,
+                        confidence: Confidence::Confirmed,
+                        verification_plan: String::new(),
+                        evidence: Vec::new(),
+                        responses: Vec::new(),
+                        resolved: false,
+                        resolved_note: String::new(),
+                        resolved_at: String::new(),
+                        promoted_to: None,
+                    },
+                ],
+            },
+        );
+        ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files,
+            file_hashes: HashMap::new(),
+        });
+        let tab = tab_with_ai(ai);
+        let opts = ExportOpts {
+            include_findings: true,
+            include_finding_ids: Some(vec!["f-keep".to_string()]),
+            ..ExportOpts::default()
+        };
+        let out = render_markdown(&tab, &opts);
+        assert!(out.contains("Keep finding"));
+        assert!(!out.contains("Drop finding"), "unlisted finding dropped");
+    }
+
+    #[test]
+    fn absent_allow_list_exports_whole_category() {
+        let mut ai = AiState::default();
+        ai.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: String::new(),
+            questions: vec![
+                make_question("q-1", "a.ts", 1, "First", false),
+                make_question("q-2", "a.ts", 2, "Second", false),
+            ],
+        });
+        let tab = tab_with_ai(ai);
+        // Default opts: all category toggles on, all lists None.
+        let out = render_markdown(&tab, &ExportOpts::default());
+        assert!(out.contains("First") && out.contains("Second"));
     }
 }

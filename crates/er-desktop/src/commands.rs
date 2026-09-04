@@ -1028,6 +1028,27 @@ pub async fn set_mode(
     .await
 }
 
+/// Change the compare/base branch the active tab diffs against. Only valid on
+/// local working-tree / local-branch / local-PR tabs; remote PR diffs come from
+/// GitHub and cannot be re-based client-side. Persists the new base so a
+/// restart restores the same comparison.
+#[tauri::command]
+pub async fn change_base(
+    branch: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut()
+            .set_base_branch(&branch)
+            .map_err(|e| e.to_string())?;
+        crate::tabs::persist_app_tabs(&app);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
+}
+
 // ── Reviewed state ────────────────────────────────────────────────────────────
 
 #[tauri::command]
@@ -7630,13 +7651,18 @@ pub fn test_native_notification(state: State<AppState>) -> Result<(), String> {
 #[tauri::command]
 pub async fn open_inbox_item(
     id: String,
+    replace: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_inbox_item_impl(id, &state)).await
+    run_blocking(move || open_inbox_item_impl(id, replace, &state)).await
 }
 
-fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, String> {
+fn open_inbox_item_impl(
+    id: String,
+    replace: Option<bool>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
     let now = now_ms();
     let mut target = {
         let mut inbox = state.inbox.lock().map_err(|e| {
@@ -7662,10 +7688,10 @@ fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, Str
             );
         }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review_impl(project_id, pr_number, Some(true), None, state);
+            return open_pr_review_impl(project_id, pr_number, replace, None, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
-            return open_local_branch_impl(project_id, branch, Some(true), state);
+            return open_local_branch_impl(project_id, branch, replace, state);
         }
     }
 

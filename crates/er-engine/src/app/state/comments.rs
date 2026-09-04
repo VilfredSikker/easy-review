@@ -2612,6 +2612,66 @@ impl App {
         )
     }
 
+    /// Generate a guided tour for the **active tab** and spawn it as an
+    /// app-level background task (`kind` = `tour`).
+    ///
+    /// Mirrors the desktop `generate_tour` command so the TUI and desktop
+    /// produce identical artifacts: captures the active view's diff (the PR
+    /// head-vs-base diff in PrDiff mode), writes the prepared-diff artifacts
+    /// into the active view's tour bucket (`tour_bucket_er_dir`), builds the
+    /// tour prompt, and enqueues the task. Completion is surfaced by the
+    /// app-level task poll (`poll_background_tasks`), which both reloads the
+    /// sidecars and lets the mtime poll surface the Guide tab.
+    pub fn spawn_tour_for_active_tab(&mut self) -> Result<()> {
+        let scope = "branch".to_string();
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = self.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                er_dir,
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)?;
+
+        let raw = self.tab().raw_diff_for_review(&scope)?;
+        if raw.trim().is_empty() {
+            anyhow::bail!("Nothing to tour");
+        }
+        let diff_hash = crate::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)
+            .map_err(|e| anyhow::anyhow!("failed to prepare tour diff: {e}"))?;
+
+        let is_pr = self.tab().tour_context_is_pr();
+        let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+        let prompt = crate::ai::prompts::build_tour_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            "tour.json",
+            &diff_hash,
+        );
+        let target = super::background::BackgroundTaskTarget {
+            repo_root,
+            er_dir,
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        self.spawn_background_tour(target, prompt, true)
+    }
+
     /// Spawn diagram generation (`kind` = `diagram:<diagram-kind>`). The agent
     /// runs read-only and emits JSON; the harness atomically writes
     /// `diagrams/<file>.json` only (prompt-injection write confinement).

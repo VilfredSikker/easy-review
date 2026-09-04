@@ -4,6 +4,9 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { app } from "$lib/stores/app.svelte";
 
+  // Mirrors `ExportOpts` in `crates/er-engine/src/export.rs` (camelCase over IPC).
+  // The `include*Ids` arrays are per-category allow-lists: undefined = whole
+  // category; otherwise only the listed item ids are exported.
   type ExportOpts = {
     includeComments: boolean;
     includeQuestions: boolean;
@@ -11,6 +14,10 @@
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
+    includeCommentIds?: string[];
+    includeQuestionIds?: string[];
+    includeNoteIds?: string[];
+    includeFindingIds?: string[];
   };
   type ExportOptionKey = keyof ExportOpts;
 
@@ -21,6 +28,13 @@
   let includeAnnotations = $state(true);
   let onlyUnresolved = $state(false);
 
+  // Per-item exclusions. Empty set = export the whole category (no allow-list
+  // sent); any exclusions produce an allow-list of the remaining known ids.
+  let excludedCommentIds = $state<Set<string>>(new Set());
+  let excludedQuestionIds = $state<Set<string>>(new Set());
+  let excludedNoteIds = $state<Set<string>>(new Set());
+  let excludedFindingIds = $state<Set<string>>(new Set());
+
   let preview = $state("");
   let loadingPreview = $state(false);
   let error = $state<string | null>(null);
@@ -28,6 +42,21 @@
   let savedAt = $state(0);
   let previewRequestId = 0;
   let lastPreviewTab = $state(-1);
+
+  const ai = $derived(app.snapshot?.ai);
+  const commentItems = $derived(
+    (ai?.threads ?? []).filter((t) => t.kind === "comment"),
+  );
+  const questionItems = $derived(
+    (ai?.threads ?? []).filter((t) => t.kind === "question"),
+  );
+  const noteItems = $derived((ai?.threads ?? []).filter((t) => t.kind === "note"));
+  const findingItems = $derived(ai?.findings ?? []);
+
+  function allowList(excluded: Set<string>, known: string[]): string[] | undefined {
+    if (excluded.size === 0) return undefined;
+    return known.filter((id) => !excluded.has(id));
+  }
 
   function currentExportOpts(): ExportOpts {
     return {
@@ -37,6 +66,10 @@
       includeFindings,
       includeAnnotations,
       onlyUnresolved,
+      includeCommentIds: allowList(excludedCommentIds, commentItems.map((t) => t.id)),
+      includeQuestionIds: allowList(excludedQuestionIds, questionItems.map((t) => t.id)),
+      includeNoteIds: allowList(excludedNoteIds, noteItems.map((t) => t.id)),
+      includeFindingIds: allowList(excludedFindingIds, findingItems.map((f) => f.id)),
     };
   }
 
@@ -70,30 +103,87 @@
     applyExportOpts({ ...currentExportOpts(), [key]: checked });
   }
 
+  // Toggle a single item in a category. The category master must be on; the
+  // exclusion set drives the per-category allow-list. `excluded` is a Svelte
+  // $state-proxied Set, so in-place mutation is reactive.
+  function toggleItem(excluded: Set<string>, id: string) {
+    if (excluded.has(id)) {
+      excluded.delete(id);
+    } else {
+      excluded.add(id);
+    }
+    void refreshPreview();
+  }
+
+  function masterToggle(
+    masterOn: boolean,
+    setMaster: (v: boolean) => void,
+    excluded: Set<string>,
+  ) {
+    setMaster(masterOn);
+    if (masterOn) {
+      // Re-enabling the category exports everything again.
+      excluded.clear();
+    }
+    void refreshPreview();
+  }
+
   function includeAllOptions() {
-    applyExportOpts({
-      includeComments: true,
-      includeQuestions: true,
-      includeNotes: true,
-      includeFindings: true,
-      includeAnnotations: true,
-      onlyUnresolved: false,
-    });
+    includeComments = true;
+    includeQuestions = true;
+    includeNotes = true;
+    includeFindings = true;
+    includeAnnotations = true;
+    onlyUnresolved = false;
+    excludedCommentIds = new Set();
+    excludedQuestionIds = new Set();
+    excludedNoteIds = new Set();
+    excludedFindingIds = new Set();
+    void refreshPreview();
   }
 
   function excludeAllOptions() {
-    applyExportOpts({
-      includeComments: false,
-      includeQuestions: false,
-      includeNotes: false,
-      includeFindings: false,
-      includeAnnotations: false,
-      onlyUnresolved: false,
-    });
+    includeComments = false;
+    includeQuestions = false;
+    includeNotes = false;
+    includeFindings = false;
+    includeAnnotations = false;
+    onlyUnresolved = false;
+    excludedCommentIds = new Set();
+    excludedQuestionIds = new Set();
+    excludedNoteIds = new Set();
+    excludedFindingIds = new Set();
+    void refreshPreview();
   }
 
   function onExportOptionChange(key: ExportOptionKey, e: Event) {
-    setExportOption(key, (e.currentTarget as HTMLInputElement).checked);
+    const checked = (e.currentTarget as HTMLInputElement).checked;
+    switch (key) {
+      case "includeComments":
+        masterToggle(checked, (v) => (includeComments = v), excludedCommentIds);
+        break;
+      case "includeQuestions":
+        masterToggle(checked, (v) => (includeQuestions = v), excludedQuestionIds);
+        break;
+      case "includeNotes":
+        masterToggle(checked, (v) => (includeNotes = v), excludedNoteIds);
+        break;
+      case "includeFindings":
+        masterToggle(checked, (v) => (includeFindings = v), excludedFindingIds);
+        break;
+      default:
+        setExportOption(key, checked);
+    }
+  }
+
+  function itemChecked(excluded: Set<string>, id: string): boolean {
+    return !excluded.has(id);
+  }
+
+  function threadLabel(t: { file: string; line: number; root: { body_markdown?: string } }): string {
+    const loc = t.line > 0 ? `${t.file}:${t.line}` : t.file;
+    const body = (t.root.body_markdown ?? "").replace(/\s+/g, " ").trim();
+    return body ? `${loc} — ${body.slice(0, 60)}${body.length > 60 ? "…" : ""}` : loc;
   }
 
   async function handleCopyToClipboard() {
@@ -243,6 +333,97 @@
     {/if}
     {#if error}
       <span class="text-[11px] text-del-fg mono">{error}</span>
+    {/if}
+  </div>
+
+  <!-- Per-item toggles: every individual comment / question / note / finding
+       appears as a sub-option so the user can exclude a single item without
+       dropping the whole category. -->
+  <div class="px-4 py-2 border-b border-hairline bg-bg flex flex-wrap items-start gap-x-6 gap-y-2 max-h-40 overflow-y-auto">
+    {#if includeComments && commentItems.length > 0}
+      <div class="min-w-[240px] max-w-[320px]">
+        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Comments ({commentItems.length})</div>
+        <ul class="space-y-0.5">
+          {#each commentItems as t (t.id)}
+            <li>
+              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="mt-0.5"
+                  checked={itemChecked(excludedCommentIds, t.id)}
+                  onchange={() => toggleItem(excludedCommentIds, t.id)}
+                />
+                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if includeQuestions && questionItems.length > 0}
+      <div class="min-w-[240px] max-w-[320px]">
+        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Questions ({questionItems.length})</div>
+        <ul class="space-y-0.5">
+          {#each questionItems as t (t.id)}
+            <li>
+              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="mt-0.5"
+                  checked={itemChecked(excludedQuestionIds, t.id)}
+                  onchange={() => toggleItem(excludedQuestionIds, t.id)}
+                />
+                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if includeNotes && noteItems.length > 0}
+      <div class="min-w-[240px] max-w-[320px]">
+        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Notes ({noteItems.length})</div>
+        <ul class="space-y-0.5">
+          {#each noteItems as t (t.id)}
+            <li>
+              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="mt-0.5"
+                  checked={itemChecked(excludedNoteIds, t.id)}
+                  onchange={() => toggleItem(excludedNoteIds, t.id)}
+                />
+                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if includeFindings && findingItems.length > 0}
+      <div class="min-w-[240px] max-w-[320px]">
+        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">AI findings ({findingItems.length})</div>
+        <ul class="space-y-0.5">
+          {#each findingItems as f (f.id)}
+            <li>
+              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  class="mt-0.5"
+                  checked={itemChecked(excludedFindingIds, f.id)}
+                  onchange={() => toggleItem(excludedFindingIds, f.id)}
+                />
+                <span class="truncate" title={`${f.file}:${f.line ?? "—"} — ${f.title}`}>
+                  {f.file}:{f.line ?? "—"} — {f.title}
+                </span>
+              </label>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if !includeComments && !includeQuestions && !includeNotes && !includeFindings}
+      <span class="text-[11px] text-muted">Enable a category above to see its individual items.</span>
     {/if}
   </div>
 

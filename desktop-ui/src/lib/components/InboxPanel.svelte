@@ -22,6 +22,12 @@
   const inboxUnreadCount = $derived<number>(snapshot?.inbox_unread_count ?? 0);
   const inboxLastRefreshMs = $derived<number>(snapshot?.inbox_last_refresh_ms ?? 0);
 
+  /** Plain click replaces the active tab. Cmd/Ctrl-click or middle-click opens
+   * a new tab. Mirrors the modifier semantics in LeftSidebar. */
+  function shouldReplaceTab(e: MouseEvent): boolean {
+    return !(e.metaKey || e.ctrlKey || e.button === 1);
+  }
+
   let inboxPopoverOpen = $state(false);
   let inboxFilter = $state<"all" | "unread" | "read">("all");
   let inboxProjectFilterChoice = $state<"all" | string>("all");
@@ -353,9 +359,21 @@
       <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
       <button
         class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
-        onclick={() => {
+        title="Open in current tab · ⌘/Ctrl-click or middle-click opens a new tab"
+        onclick={(e) => {
           if (!selectedInboxMessage) return;
-          app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
+          app.cmd("open_inbox_item", {
+            id: selectedInboxMessage.id,
+            replace: shouldReplaceTab(e),
+          });
+          closeInboxMessageModal();
+        }}
+        onauxclick={(e) => {
+          if (e.button !== 1 || !selectedInboxMessage) return;
+          app.cmd("open_inbox_item", {
+            id: selectedInboxMessage.id,
+            replace: false,
+          });
           closeInboxMessageModal();
         }}
       >

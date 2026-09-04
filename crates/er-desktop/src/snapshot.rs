@@ -2035,6 +2035,7 @@ fn build_snapshot_inner(
         InputMode::Commit => "commit",
         InputMode::Confirm(_) => "confirm",
         InputMode::RemoteUrl => "remoteurl",
+        InputMode::BaseBranch => "basebranch",
     };
 
     let (reviewed_count, total_count) = tab.active_reviewed_count();
