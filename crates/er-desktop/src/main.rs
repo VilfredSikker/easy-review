@@ -1462,10 +1462,25 @@ fn main() {
                                 {
                                     return None;
                                 }
-                                Some(g.tab_mut().refresh_diff_quick())
+                                Some(g.tab_mut().refresh_diff_quick_with_unmark())
                             });
                             match result {
                                 Some(Ok(())) => {
+                                    let unmark_count = app
+                                        .lock()
+                                        .ok()
+                                        .map(|mut g| {
+                                            std::mem::replace(
+                                                &mut g.tab_mut().pending_unmark_count,
+                                                0,
+                                            )
+                                        })
+                                        .unwrap_or(0);
+                                    if unmark_count > 0 {
+                                        log::info!(
+                                            "active-branch watcher: auto-unmarked {unmark_count} reviewed file(s) whose diff changed (branch={watched_branch})"
+                                        );
+                                    }
                                     profile_log::bump_desktop_revision(&rev, "watcher_refresh");
                                 }
                                 Some(Err(e)) => {
@@ -1965,6 +1980,7 @@ fn main() {
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,
             commands::open_inbox_item,
+            commands::change_base,
             commands::mark_inbox_item_read,
             commands::mark_all_inbox_read,
             commands::mark_inbox_items_read,
