@@ -1,6 +1,6 @@
 //! Settings field catalog split by scope (General / App / Terminal).
 
-use super::config_desktop_settings::ConfigHubFieldDto;
+use super::desktop_settings::ConfigHubFieldDto;
 use super::{ErConfig, AGENT_EFFORT_OPTIONS};
 
 pub const THEME_OPTIONS: &[&str] = &[
@@ -218,7 +218,7 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
         label: "Add pattern…".into(),
     });
 
-    fields.extend(super::config_inbox::inbox_settings_fields(config));
+    fields.extend(super::inbox::inbox_settings_fields(config));
 
     fields
 }

@@ -25,8 +25,6 @@
 //! Redirect `Location` values are rewritten to `erp://` or `erps://` so the WebView issues
 //! the next hop on the custom scheme with its cookie jar (auth hosts, CDNs, etc.).
 
-use std::collections::HashSet;
-
 use tauri::http;
 
 #[derive(Clone, Debug)]
@@ -162,41 +160,6 @@ pub fn webview_navigation_handoff(http_location: &str) -> http::Response<Vec<u8>
             "</head><body></body></html>"
         ),
         json = json
-    );
-    http::Response::builder()
-        .status(200)
-        .header("Content-Type", "text/html; charset=utf-8")
-        .header("Cache-Control", "no-cache")
-        .header("Access-Control-Allow-Origin", "*")
-        .body(body.into_bytes())
-        .unwrap()
-}
-
-#[allow(dead_code)] // reserved for client-side redirect-loop detection
-pub fn redirect_loop_error_response(visited: &HashSet<String>) -> http::Response<Vec<u8>> {
-    let hops = visited
-        .iter()
-        .take(8)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("\n  ");
-    log::warn!("[erp] redirect loop:\n  {hops}");
-    let body = format!(
-        concat!(
-            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head>",
-            "<body style=\"font-family:system-ui,sans-serif;padding:2rem;max-width:40rem;line-height:1.5\">",
-            "<h1>Redirect loop</h1>",
-            "<p>The server bounced between URLs repeatedly. Common causes:</p>",
-            "<ul><li>Stale session cookies in this embedded browser</li>",
-            "<li>SSO/OAuth handshakes that must run in a normal browser tab first</li>",
-            "<li><code>localhost</code> vs <code>127.0.0.1</code> — pick one host and stick to it</li></ul>",
-            "<p>Use the <strong>Sign in</strong> button in the toolbar to complete auth in your ",
-            "system browser, then return here and reload. You can also clear site data for this ",
-            "host or restart Easy Review.</p>",
-            "<pre style=\"background:#f4f4f4;padding:1rem;overflow:auto;font-size:12px\">{hops}</pre>",
-            "</body></html>"
-        ),
-        hops = hops
     );
     http::Response::builder()
         .status(200)

@@ -996,30 +996,14 @@ impl App {
         Ok(())
     }
 
-    // ── Comment Navigation ──
-
     /// Jump to the next comment across all files.
-    #[allow(dead_code)]
     pub fn next_comment(&mut self) {
         self.jump_comment(true, false);
     }
 
     /// Jump to the previous comment across all files.
-    #[allow(dead_code)]
     pub fn prev_comment(&mut self) {
         self.jump_comment(false, false);
-    }
-
-    /// Jump to the next question across all files.
-    #[allow(dead_code)]
-    pub fn next_question(&mut self) {
-        self.jump_comment(true, true);
-    }
-
-    /// Jump to the previous question across all files.
-    #[allow(dead_code)]
-    pub fn prev_question(&mut self) {
-        self.jump_comment(false, true);
     }
 
     /// Core jump logic: navigate forward/backward through comments or questions across all files.

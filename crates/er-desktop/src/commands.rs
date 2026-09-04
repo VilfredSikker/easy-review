@@ -6727,17 +6727,8 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    let t_cmd = std::time::Instant::now();
-    run_blocking(move || {
-        // TEMP diagnostic: spawn_blocking dispatch latency (candidate 2 — queue wait).
-        log::info!(
-            "open_pr_review pr={} phase=queue_wait ms={}",
-            pr_number,
-            t_cmd.elapsed().as_millis()
-        );
-        open_pr_review_impl(project_id, pr_number, replace, hint, &state)
-    })
-    .await
+    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state))
+        .await
 }
 
 fn open_pr_review_impl(
@@ -6923,26 +6914,6 @@ fn open_pr_review_impl(
     // Background-fetch the PR's local git refs (skipped by the fast
     // `enter_pr_diff_preloaded` path) so later local-ref consumers find them.
     kick_pr_ref_fetch(&app, state);
-    // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
-    // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
-    // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
-    let t_ser = std::time::Instant::now();
-    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
-    log::info!(
-        "open_pr_review pr={} phase=summary cache_hit={} files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms={} record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
-        pr_number,
-        cache_hit,
-        snapshot.files.len(),
-        app_lock_ms,
-        tab_build_ms,
-        tab_place_ms,
-        pr_diff_enter_ms,
-        record_recent_ms,
-        snap_build_ms,
-        ser_bytes,
-        t_ser.elapsed().as_millis(),
-        t_total.elapsed().as_millis(),
-    );
     Ok(snapshot)
 }
 

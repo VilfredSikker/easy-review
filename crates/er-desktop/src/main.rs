@@ -2,31 +2,6 @@
 // See lib.rs for the rationale behind these two crate-wide allows.
 #![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
 
-mod arena_commands;
-mod auto_triage;
-mod browser_proxy;
-mod browser_webview;
-mod commands;
-mod config_commands;
-mod dev_log;
-mod er_storage;
-mod export;
-mod frame_script;
-mod gh_status_cache;
-mod inbox;
-mod main_webview_policy;
-mod native_notify;
-mod persist;
-mod pr_cache;
-mod pr_open_cache;
-mod profile_log;
-mod projects;
-mod remote_pr_open_cache;
-mod snapshot;
-mod tabs;
-mod terminal;
-mod window_placement;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};

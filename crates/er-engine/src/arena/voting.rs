@@ -52,15 +52,6 @@ pub fn severity_from_cross_check(
     }
 }
 
-/// Back-compat alias for round-2 cross-check.
-#[allow(dead_code)]
-pub fn severity_from_round2(
-    findings: &mut [ArenaFinding],
-    ballots: &[(String, super::schema::Round2Output)],
-) {
-    severity_from_cross_check(findings, ballots, 2);
-}
-
 fn parse_vote_enum(s: &str) -> Vote {
     match s.to_ascii_lowercase().as_str() {
         "propose" => Vote::Propose,

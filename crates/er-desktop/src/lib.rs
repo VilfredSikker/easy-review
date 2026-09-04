@@ -6,22 +6,24 @@
 
 pub mod arena_commands;
 pub mod auto_triage;
+mod browser_proxy;
 pub mod browser_webview;
 pub mod commands;
 pub mod config_commands;
 pub mod dev_log;
-pub mod er_storage;
 pub mod export;
 pub mod frame_script;
 pub mod gh_status_cache;
 pub mod inbox;
+mod main_webview_policy;
 pub mod native_notify;
 mod persist;
 pub mod pr_cache;
 pub mod pr_open_cache;
-pub mod profile_log;
+mod profile_log;
 pub mod projects;
 pub mod remote_pr_open_cache;
 pub mod snapshot;
 pub mod tabs;
 pub mod terminal;
+mod window_placement;

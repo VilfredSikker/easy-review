@@ -3383,7 +3383,6 @@ impl TabState {
                     RelocateLookup::UnparsedStub => continue,
                     RelocateLookup::Ready(idx) => {
                         let anchor = ai::CommentAnchor {
-                            file: q.file.clone(),
                             hunk_index: q.hunk_index,
                             line_start: q.line_start,
                             line_content: q.line_content.clone(),
@@ -3442,7 +3441,6 @@ impl TabState {
                     RelocateLookup::UnparsedStub => continue,
                     RelocateLookup::Ready(idx) => {
                         let anchor = ai::CommentAnchor {
-                            file: n.file.clone(),
                             hunk_index: n.hunk_index,
                             line_start: n.line_start,
                             line_content: n.line_content.clone(),
@@ -3505,7 +3503,6 @@ impl TabState {
                     RelocateLookup::UnparsedStub => continue,
                     RelocateLookup::Ready(idx) => {
                         let anchor = ai::CommentAnchor {
-                            file: c.file.clone(),
                             hunk_index: c.hunk_index,
                             line_start: c.line_start,
                             line_content: c.line_content.clone(),
@@ -4272,18 +4269,6 @@ impl TabState {
         }
     }
 
-    /// Reload config from .er-config.toml
-    #[allow(dead_code)]
-    pub fn reload_config(&mut self) {
-        let er_config = config::load_global_config();
-        self.watched_config = er_config.watched;
-        let has_paths = !self.watched_config.paths.is_empty();
-        if !has_paths {
-            self.show_watched = false;
-            self.watched_files.clear();
-            self.selected_watched = None;
-        }
-    }
 
     /// Update snapshot for the currently selected watched file
     pub fn update_watched_snapshot(&mut self) -> Result<()> {
@@ -7545,7 +7530,6 @@ impl App {
     }
 
     /// Stage all files
-    #[allow(dead_code)]
     pub fn stage_all(&mut self) -> Result<()> {
         let repo_root = self.tab().repo_root.clone();
         git::git_stage_all(&repo_root)?;

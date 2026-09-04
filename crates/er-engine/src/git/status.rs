@@ -98,21 +98,6 @@ pub fn get_repo_root_at(path: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// Get the current branch name
-#[allow(dead_code)]
-pub fn get_current_branch() -> Result<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--abbrev-ref", "HEAD"])
-        .output()
-        .context("Failed to get current branch")?;
-
-    if !output.status.success() {
-        anyhow::bail!("Failed to determine current branch");
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
 /// Get current branch for a specific repo root
 pub fn get_current_branch_in(repo_root: &str) -> Result<String> {
     let output = Command::new("git")
@@ -126,13 +111,6 @@ pub fn get_current_branch_in(repo_root: &str) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-/// Auto-detect the base branch by checking upstream tracking, then falling
-/// back to common names (main, master, develop).
-#[allow(dead_code)]
-pub fn detect_base_branch() -> Result<String> {
-    detect_base_branch_impl(None)
 }
 
 /// Auto-detect base branch for a specific repo root
@@ -601,22 +579,6 @@ pub fn git_push(repo_root: &str) -> Result<String> {
     }
 
     Ok(String::from_utf8_lossy(&output.stderr).trim().to_string())
-}
-
-/// Returns true if the current branch has commits not yet pushed to upstream
-#[allow(dead_code)]
-pub fn has_unpushed_commits(repo_root: &str) -> bool {
-    let output = Command::new("git")
-        .args(["rev-list", "--count", "@{upstream}..HEAD"])
-        .current_dir(repo_root)
-        .output();
-    match output {
-        Ok(out) if out.status.success() => {
-            let count_str = String::from_utf8_lossy(&out.stdout);
-            count_str.trim().parse::<u64>().unwrap_or(0) > 0
-        }
-        _ => false,
-    }
 }
 
 /// Get raw diff output between two refs (e.g. "HEAD~1" and "HEAD")
