@@ -1056,6 +1056,27 @@ pub async fn set_mode(
     .await
 }
 
+/// Change the compare/base branch the active tab diffs against. Only valid on
+/// local working-tree / local-branch / local-PR tabs; remote PR diffs come from
+/// GitHub and cannot be re-based client-side. Persists the new base so a
+/// restart restores the same comparison.
+#[tauri::command]
+pub async fn change_base(
+    branch: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut()
+            .set_base_branch(&branch)
+            .map_err(|e| e.to_string())?;
+        crate::tabs::persist_app_tabs(&app);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
+}
+
 // ── Reviewed state ────────────────────────────────────────────────────────────
 
 #[tauri::command]

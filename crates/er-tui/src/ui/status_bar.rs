@@ -757,7 +757,8 @@ pub fn bottom_bar_height(app: &App, width: u16) -> u16 {
         | InputMode::Confirm(_)
         | InputMode::Filter
         | InputMode::Commit
-        | InputMode::RemoteUrl => 1,
+        | InputMode::RemoteUrl
+        | InputMode::BaseBranch => 1,
         InputMode::Normal => {
             let hints = build_hints(app);
             let lines = pack_hint_lines(&hints, width as usize);
@@ -945,6 +946,38 @@ pub fn render_bottom_bar(f: &mut Frame, area: Rect, app: &App) {
                     " open  ",
                     ratatui::style::Style::default().fg(styles::DIM()),
                 ),
+                Span::styled("Esc", styles::key_hint_style()),
+                Span::styled(
+                    " cancel",
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+            ];
+            let bar = Paragraph::new(Line::from(spans)).style(panel_bg);
+            f.render_widget(bar, area);
+        }
+        InputMode::BaseBranch => {
+            let current = app.tab().base_branch.clone();
+            let spans = vec![
+                Span::styled(
+                    " compare-base ",
+                    ratatui::style::Style::default()
+                        .fg(styles::BG())
+                        .bg(styles::PURPLE())
+                        .add_modifier(ratatui::style::Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!(" {} ", app.remote_url_input),
+                    ratatui::style::Style::default().fg(styles::TEXT()),
+                ),
+                Span::styled("█", ratatui::style::Style::default().fg(styles::PURPLE())),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled(
+                    format!("(current: {})", current),
+                    ratatui::style::Style::default().fg(styles::DIM()),
+                ),
+                Span::styled("  ", ratatui::style::Style::default()),
+                Span::styled("Enter", styles::key_hint_style()),
+                Span::styled(" set  ", ratatui::style::Style::default().fg(styles::DIM())),
                 Span::styled("Esc", styles::key_hint_style()),
                 Span::styled(
                     " cancel",

@@ -107,6 +107,7 @@ commands.allow = [
   "refresh_pr_list",
   "refresh_project_pr_list",
   "open_inbox_item",
+  "change_base",
   "mark_inbox_item_read",
   "mark_all_inbox_read",
   "mark_inbox_items_read",

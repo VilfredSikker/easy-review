@@ -298,6 +298,7 @@ pub enum InputMode {
     Filter,
     Commit,
     RemoteUrl,
+    BaseBranch,
 }
 
 /// Actions that require user confirmation (y/n)
@@ -411,6 +412,7 @@ pub enum AiActionKind {
     Questions,
     Notes,
     Summary,
+    Tour,
 }
 
 impl AiActionKind {}
@@ -533,6 +535,8 @@ pub enum HubAction {
     PromptQuestions,
     /// Run AI note addressing via configured agent command
     PromptNotes,
+    /// Generate a guided tour (writes tour.json via the background agent)
+    PromptTour,
     /// Approve PR on GitHub
     ApprovePR,
     /// Post a general comment on the PR (not attached to a file/line)
@@ -542,6 +546,8 @@ pub enum HubAction {
     OpenWorktree,
     OpenRemoteUrl,
     OpenPrInBrowser,
+    /// Change the compare/base branch this tab diffs against
+    SetBaseBranch,
     // Copy hub actions
     CopyFullFile,
     CopyFilePath,
@@ -2388,7 +2394,7 @@ impl TabState {
         // open-time diff and never hit the network (the local path is
         // additionally guarded by mode).
         self.preloaded_branch_raw = None;
-        self.refresh_diff_impl(true, true)
+        self.refresh_diff_impl(true, true, true)
     }
 
     /// For local PR tabs: re-fetch the PR head ref and base branch from origin before
@@ -2507,13 +2513,89 @@ impl TabState {
     /// Lightweight refresh: skips branch hash recomputation in non-Branch modes.
     /// Use for watch events where the extra git diff call adds unwanted latency.
     pub fn refresh_diff_quick(&mut self) -> Result<()> {
-        self.refresh_diff_impl(false, false)
+        self.refresh_diff_impl(false, false, false)
     }
 
     /// Refresh for mode switch: recompute hashes but don't auto-unmark.
     /// Diff content differs per mode, so hash changes don't mean actual file changes.
     pub fn refresh_diff_mode_switch(&mut self) -> Result<()> {
-        self.refresh_diff_impl(true, false)
+        self.refresh_diff_impl(true, false, false)
+    }
+
+    /// Lightweight refresh that also refreshes per-file hashes and auto-unmarks
+    /// reviewed files whose diff changed. Used by the file-watcher paths so a
+    /// live edit/stage/commit to an already-reviewed file clears the review
+    /// marker without waiting for a full refresh. Keeps the fast whole-diff
+    /// hash for quick refreshes; per-file SHA-256 is recomputed so a later
+    /// mark/toggle reads a current hash for any file.
+    pub fn refresh_diff_quick_with_unmark(&mut self) -> Result<()> {
+        self.refresh_diff_impl(false, true, true)
+    }
+
+    /// Change the base branch this tab diffs against (the "compare against"
+    /// target). Works for local working-tree / local-branch / local-PR tabs:
+    /// resolves the new base ref (local name or `origin/<name>`), clears the
+    /// per-file review hashes so previously-reviewed files re-anchor to the new
+    /// diff, and refreshes.
+    ///
+    /// Remote-only PR tabs get their diff straight from GitHub's PR API and
+    /// cannot be re-based client-side — returns an error explaining that.
+    ///
+    /// Also updates `pr_refs_fetched` on local PR tabs so the next PR-diff
+    /// entry re-fetches the refs against the new base.
+    pub fn set_base_branch(&mut self, new_base: &str) -> Result<()> {
+        let new_base = new_base.trim().to_string();
+        if new_base.is_empty() {
+            anyhow::bail!("Base branch cannot be empty");
+        }
+        if self.is_remote() {
+            anyhow::bail!(
+                "Cannot change the compare base of a remote-only PR — the diff comes from GitHub's PR API"
+            );
+        }
+        if self.base_branch == new_base {
+            return Ok(());
+        }
+
+        // Resolve to a usable local ref. Read-only local-branch views never
+        // fetch (they resolve purely from refs already present); everything
+        // else mirrors ensure_base_ref_available (local branch, origin/<name>,
+        // or a fetch from origin when neither exists yet).
+        let resolved = if self.is_local_branch_view() && self.local_branch_checkout_root.is_none() {
+            let base_short = new_base.strip_prefix("origin/").unwrap_or(&new_base);
+            let candidates = [format!("origin/{base_short}"), base_short.to_string()];
+            candidates
+                .into_iter()
+                .find(|candidate| crate::github::ref_exists_locally(&self.repo_root, candidate))
+                .ok_or_else(|| {
+                    anyhow::anyhow!("No local ref for '{}' — fetch the branch first", new_base)
+                })?
+        } else {
+            crate::github::ensure_base_ref_available(&self.repo_root, &new_base)?
+        };
+
+        self.base_branch = resolved;
+        // The diff scope changes — per-file review hashes are stale.
+        self.current_per_file_hashes.clear();
+        self.pending_unmark_count = 0;
+        // Local PR tabs cache fetched refs; force a re-fetch against the new base.
+        self.pr_refs_fetched = false;
+        self.preloaded_branch_raw = None;
+        self.preloaded_branch_ai = None;
+
+        // Refresh against the new base. Local PR tabs go through the PR-entry
+        // flow (refetch + managed-root reload); others just re-run the diff.
+        if self.pr_number.is_some() && !self.is_remote() {
+            if self.mode == DiffMode::PrDiff {
+                self.enter_pr_diff()
+            } else {
+                self.refresh_diff()
+            }
+        } else if self.is_local_branch_view() && self.local_branch_checkout_root.is_none() {
+            self.refresh_diff_without_remote_fetch()
+        } else {
+            self.refresh_diff()
+        }
     }
 
     /// Refresh conflict files for Conflicts mode.
@@ -2722,7 +2804,12 @@ impl TabState {
         self.fetch_tab_raw_diff(scope)
     }
 
-    fn refresh_diff_impl(&mut self, recompute_branch_hash: bool, auto_unmark: bool) -> Result<()> {
+    fn refresh_diff_impl(
+        &mut self,
+        recompute_branch_hash: bool,
+        auto_unmark: bool,
+        compute_per_file_hashes: bool,
+    ) -> Result<()> {
         let t_total = Instant::now();
 
         self.sync_storage_if_checkout_branch_changed()?;
@@ -2825,6 +2912,11 @@ impl TabState {
             let t_ai_reload = Instant::now();
             self.reload_ai_state();
             log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+            // Full refreshes and quick-with-unmark refreshes recompute per-file
+            // hashes; plain quick refreshes skip the SHA-256 pass.
+            if recompute_branch_hash || compute_per_file_hashes {
+                self.refresh_per_file_hashes_and_unmark(&raw, auto_unmark);
+            }
             // Tour reorders this branch diff into pillars — rebuild after re-parse.
             if self.mode == DiffMode::Tour {
                 self.rebuild_tour_state();
@@ -2894,6 +2986,11 @@ impl TabState {
                 self.relocate_all_comments();
                 if self.ai.is_stale {
                     self.compute_stale_files(&raw);
+                }
+                // Full refreshes and quick-with-unmark refreshes recompute
+                // per-file hashes; plain quick refreshes skip.
+                if recompute_branch_hash || compute_per_file_hashes {
+                    self.refresh_per_file_hashes_and_unmark(&raw, auto_unmark);
                 }
                 // Tour reorders this branch diff into pillars — rebuild after re-parse.
                 if self.mode == DiffMode::Tour {
@@ -3043,17 +3140,13 @@ impl TabState {
             None
         };
 
-        // Compute per-file hashes from the raw diff output.
-        // Used to detect when a reviewed file's diff changes since it was marked.
-        // Skip on quick refreshes (watch events) — SHA-256 per-file is expensive and
-        // staleness detection doesn't need sub-second precision.
-        if recompute_branch_hash {
+        // Refresh per-file hashes and auto-unmark reviewed files whose diff
+        // changed since they were marked. The full per-file map is always
+        // stored (mark/toggle reads it). Plain quick refreshes skip this pass
+        // unless the caller opts in (the file-watcher paths).
+        if recompute_branch_hash || compute_per_file_hashes {
             let t = Instant::now();
-            self.current_per_file_hashes = ai::compute_per_file_hashes(&raw);
-            if auto_unmark {
-                // Auto-unmark reviewed files whose diff has changed since they were marked.
-                self.pending_unmark_count = self.auto_unmark_changed_reviewed();
-            }
+            self.refresh_per_file_hashes_and_unmark(&raw, auto_unmark);
             log_branch_profile_phase(self, "compute_per_file_hashes", t);
         }
 
@@ -4391,6 +4484,13 @@ impl TabState {
 
     // ── Reviewed-File Tracking ──
 
+    /// Whether the active tab has a diff that can be toured — i.e. the branch /
+    /// PR raw diff can be resolved (loaded into `files`, or fetchable). History /
+    /// Conflicts / Hidden modes cannot produce a tour.
+    pub fn has_reviewable_diff(&self) -> bool {
+        !self.active_diff_files().is_empty()
+    }
+
     /// Count of reviewed files vs total in the active diff (branch / history commit).
     pub fn active_reviewed_count(&self) -> (usize, usize) {
         let files = self.active_diff_files();
@@ -4500,6 +4600,24 @@ impl TabState {
             let _ = self.save_reviewed_files();
         }
         count
+    }
+
+    /// Recompute per-file diff hashes from `raw` and auto-unmark reviewed files
+    /// whose stored hash no longer matches.
+    ///
+    /// Always stores the FULL per-file hash map (not just reviewed paths):
+    /// `toggle_reviewed` reads this map when the user marks a file, so every
+    /// file in the diff must have a current hash or a newly-marked file would
+    /// store the empty sentinel and permanently dodge auto-unmark.
+    ///
+    /// `auto_unmark` gates the removal itself — mode-switch refreshes pass false
+    /// because diff content legitimately differs per mode. The result is stored
+    /// in `pending_unmark_count` for the caller to surface.
+    fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
+        self.current_per_file_hashes = ai::compute_per_file_hashes(raw);
+        if auto_unmark {
+            self.pending_unmark_count = self.auto_unmark_changed_reviewed();
+        }
     }
 
     /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
@@ -5949,6 +6067,18 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Generate guided tour".into(),
+                hint: "".into(),
+                description: if self.tab().ai.has_tour() {
+                    "Regenerate the guided tour for this branch / PR diff".into()
+                } else {
+                    "AI-guided walkthrough: pillars + per-file reasons (adds the Guide tab)".into()
+                },
+                action: HubAction::RunAiAction(AiActionKind::Tour),
+                is_header: false,
+                enabled: self.tab().has_reviewable_diff(),
+            },
+            HubItem {
                 label: "Cleanup questions & notes".into(),
                 hint: "z".into(),
                 description: if has_questions_or_notes {
@@ -6271,6 +6401,7 @@ impl App {
             include_findings,
             only_unresolved: false,
             include_annotations: false,
+            ..crate::export::ExportOpts::default()
         };
         let body = crate::export::render_markdown(self.tab(), &opts);
         Self::copy_to_clipboard(&body)?;
@@ -6841,6 +6972,21 @@ impl App {
                 action: HubAction::OpenRemoteUrl,
                 is_header: false,
                 enabled: true,
+            },
+            HubItem {
+                label: "Change compare base".into(),
+                hint: "".into(),
+                description: if self.tab().is_remote() {
+                    "Not available for remote PRs".into()
+                } else {
+                    format!(
+                        "Diff against a different branch (current: {})",
+                        self.tab().base_branch
+                    )
+                },
+                action: HubAction::SetBaseBranch,
+                is_header: false,
+                enabled: !self.tab().is_remote(),
             },
         ];
 
@@ -8352,6 +8498,164 @@ mod tests {
         assert_eq!(tab.prune_reviewed_not_in_diff(), 1);
         assert_eq!(tab.reviewed.len(), 1);
         assert!(tab.reviewed.contains_key("a.json"));
+    }
+
+    // ── auto-unmark reviewed files whose diff changed ──
+
+    fn reviewed_diff_raw() -> String {
+        "diff --git a/a.json b/a.json\n\
+         new file mode 100644\n\
+         index 0000000..1111111\n\
+         --- /dev/null\n\
+         +++ b/a.json\n\
+         @@ -0,0 +1 @@\n\
+         +{}\n"
+            .to_string()
+    }
+
+    fn changed_reviewed_diff_raw() -> String {
+        "diff --git a/a.json b/a.json\n\
+         new file mode 100644\n\
+         index 0000000..2222222\n\
+         --- /dev/null\n\
+         +++ b/a.json\n\
+         @@ -0,0 +1 @@\n\
+         +{ \"changed\": true }\n"
+            .to_string()
+    }
+
+    #[test]
+    fn auto_unmark_keeps_reviewed_file_with_unchanged_diff() {
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        tab.current_per_file_hashes = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+        let stored = tab.current_per_file_hashes["a.json"].clone();
+        tab.reviewed.insert("a.json".to_string(), stored.clone());
+        assert_eq!(tab.auto_unmark_changed_reviewed(), 0);
+        assert_eq!(tab.reviewed.len(), 1);
+        assert_eq!(tab.pending_unmark_count, 0);
+    }
+
+    #[test]
+    fn auto_unmark_drops_reviewed_file_whose_diff_changed() {
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+        let stored = original["a.json"].clone();
+        tab.reviewed.insert("a.json".to_string(), stored.clone());
+        let revision_before = tab.reviewed_revision;
+        tab.current_per_file_hashes =
+            crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
+        assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
+        assert!(tab.reviewed.is_empty());
+        assert_eq!(tab.reviewed_revision, revision_before + 1);
+    }
+
+    #[test]
+    fn auto_unmark_drops_reviewed_file_absent_from_current_diff() {
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        tab.reviewed
+            .insert("gone.rs".to_string(), "stored-hash".to_string());
+        tab.reviewed.insert("a.json".to_string(), String::new());
+        let revision_before = tab.reviewed_revision;
+        assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
+        // gone.rs is pruned; a.json is a legacy empty-hash entry that is kept.
+        assert_eq!(tab.reviewed.len(), 1);
+        assert!(tab.reviewed.contains_key("a.json"));
+        assert_eq!(tab.reviewed_revision, revision_before + 1);
+    }
+
+    #[test]
+    fn auto_unmark_keeps_legacy_empty_hash_entries() {
+        // Old single-column format loaded with an empty-hash sentinel — those
+        // entries are never auto-unmarked (backwards compat), but absent paths
+        // are still pruned.
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        tab.reviewed.insert("a.json".to_string(), String::new());
+        let revision_before = tab.reviewed_revision;
+        assert_eq!(tab.auto_unmark_changed_reviewed(), 0);
+        assert!(tab.reviewed.contains_key("a.json"));
+        assert_eq!(tab.reviewed_revision, revision_before);
+    }
+
+    #[test]
+    fn quick_unmark_refresh_keeps_full_map_and_unmarks_changed_reviewed_file() {
+        let mut tab = make_test_tab(vec![
+            make_file("a.json", vec![], 1, 0),
+            make_file("b.json", vec![], 1, 0),
+        ]);
+        let original = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+        let stored = original["a.json"].clone();
+        tab.reviewed.insert("a.json".to_string(), stored.clone());
+        tab.pending_unmark_count = 0;
+        // The raw changed, so the marked file's section hash differs and it
+        // auto-unmarks; the full map still contains every file's current hash.
+        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        assert!(tab.reviewed.is_empty());
+        assert_eq!(tab.pending_unmark_count, 1);
+        assert!(
+            tab.current_per_file_hashes.contains_key("a.json"),
+            "full per-file map must be kept so newly-marked files store a real hash"
+        );
+    }
+
+    #[test]
+    fn quick_unmark_refresh_keeps_full_hash_map_when_nothing_reviewed() {
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        tab.pending_unmark_count = 7;
+        // Nothing marked reviewed: hashes still refresh (a later mark of this
+        // file reads a real hash); the unmark pass finds nothing stale, so the
+        // counter is reset to 0 (its contract: 0 = nothing to surface).
+        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        assert!(
+            tab.current_per_file_hashes.contains_key("a.json"),
+            "the map must be populated even with zero reviewed files"
+        );
+        assert_eq!(tab.pending_unmark_count, 0);
+    }
+
+    #[test]
+    fn refresh_hashes_without_unmark_when_auto_unmark_off() {
+        let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
+        tab.reviewed
+            .insert("a.json".to_string(), "stored".to_string());
+        tab.pending_unmark_count = 7;
+        // auto_unmark=false (mode switch): hashes refresh, nothing unmarks.
+        tab.refresh_per_file_hashes_and_unmark(&reviewed_diff_raw(), false);
+        assert_eq!(tab.pending_unmark_count, 7);
+        assert!(tab.reviewed.contains_key("a.json"));
+        assert!(
+            tab.current_per_file_hashes.contains_key("a.json"),
+            "mode-switch refresh must still populate hashes for newly-marked files"
+        );
+    }
+
+    // ── set_base_branch (compare target) ──
+
+    #[test]
+    fn set_base_branch_rejects_remote_only_tabs() {
+        let mut tab = make_test_tab(vec![]);
+        tab.remote_repo = Some("owner/repo".into());
+        tab.local_branch_view = None;
+        let err = tab.set_base_branch("release/1.x").unwrap_err();
+        assert!(
+            err.to_string().contains("remote"),
+            "remote tabs cannot re-base: {err}"
+        );
+    }
+
+    #[test]
+    fn set_base_branch_rejects_empty_input() {
+        let mut tab = make_test_tab(vec![]);
+        let err = tab.set_base_branch("   ").unwrap_err();
+        assert!(err.to_string().contains("empty"));
+    }
+
+    #[test]
+    fn set_base_branch_same_base_is_noop() {
+        let mut tab = make_test_tab(vec![]);
+        tab.base_branch = "origin/main".into();
+        // Same value returns Ok without touching anything (no git resolution).
+        assert!(tab.set_base_branch("origin/main").is_ok());
+        assert_eq!(tab.base_branch, "origin/main");
     }
 
     // ── next_file / prev_file ──

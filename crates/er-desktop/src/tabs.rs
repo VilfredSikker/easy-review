@@ -173,6 +173,11 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
     }
     // Plain local branch view
     if let Some(branch) = tab.local_branch_view.clone() {
+        let base_ref = if tab.base_branch.is_empty() {
+            None
+        } else {
+            Some(tab.base_branch.clone())
+        };
         return TabDescriptor {
             kind: TabKind::LocalBranch,
             repo_root: tab.repo_root.clone(),
@@ -181,11 +186,16 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
             pr_repo: None,
             pr_number: None,
             pr_head_ref: None,
-            base_ref: None,
+            base_ref,
             browser_url,
             browser_layout,
         };
     }
+    let base_ref = if tab.base_branch.is_empty() {
+        None
+    } else {
+        Some(tab.base_branch.clone())
+    };
     TabDescriptor {
         kind: TabKind::Working,
         repo_root: tab.repo_root.clone(),
@@ -194,7 +204,7 @@ pub fn descriptor_from_tab(tab: &er_engine::app::TabState) -> TabDescriptor {
         pr_repo: None,
         pr_number: None,
         pr_head_ref: None,
-        base_ref: None,
+        base_ref,
         browser_url,
         browser_layout,
     }
@@ -205,7 +215,11 @@ fn rebuild_local_branch(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
         .branch
         .clone()
         .context("local_branch descriptor missing branch")?;
-    let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
+    // Prefer the persisted (user-chosen) base; fall back to auto-detection.
+    let base = match d.base_ref.as_deref() {
+        Some(base) if !base.is_empty() => base.to_string(),
+        _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+    };
     let mut tab = er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
     tab.local_branch_view = Some(branch);
     tab.mode = er_engine::app::DiffMode::Branch;
@@ -278,7 +292,10 @@ pub fn rebuild_tab_with(d: &TabDescriptor, lazy: bool) -> Result<er_engine::app:
     let mut tab = match d.kind {
         TabKind::Working => {
             if lazy {
-                let base = er_engine::git::detect_base_branch_in(&d.repo_root)?;
+                let base = match d.base_ref.as_deref() {
+                    Some(base) if !base.is_empty() => base.to_string(),
+                    _ => er_engine::git::detect_base_branch_in(&d.repo_root)?,
+                };
                 let mut tab =
                     er_engine::app::TabState::new_with_base_unloaded(d.repo_root.clone(), base)?;
                 tab.needs_initial_refresh = true;
