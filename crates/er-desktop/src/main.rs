@@ -7,14 +7,18 @@ use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
-use browser_webview::BrowserWebviewState;
-use commands::AppState;
-use er_engine::app::App;
-use frame_script::FRAME_SCRIPT;
-use snapshot::{
+use er_desktop::frame_script::FRAME_SCRIPT;
+use er_desktop::snapshot::{
     GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
     WatchStatusState,
 };
+use er_desktop::{
+    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
+    gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache, pr_open_cache,
+    profile_log, projects, snapshot, tabs, terminal, window_placement,
+};
+use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
+use er_engine::app::App;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {

@@ -6727,8 +6727,7 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state))
-        .await
+    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
 }
 
 fn open_pr_review_impl(
@@ -6811,7 +6810,6 @@ fn open_pr_review_impl(
         head_branch_for_checkout
     };
     let checkout_root = resolve_head_checkout(&repo_root_for_checkout, &checkout_branch);
-    let tab_build_ms = t_tab_build.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_tab_build", t_tab_build);
     log::info!(
         "branch_open project={} branch={} phase=pr_open_cache hit={}",
@@ -6821,14 +6819,12 @@ fn open_pr_review_impl(
     );
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let app_lock_ms = t_app_lock.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
     // apply_managed_root + AI reload for the PR bucket (first-paint plan
     // step 1: three full reloads per open → one).
     place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
-    let tab_place_ms = t_place_tab.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
     // PR Diff, so the first snapshot already reflects the working-tree views.
@@ -6889,11 +6885,8 @@ fn open_pr_review_impl(
             });
         }
     }
-    let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
-    let t_recent = std::time::Instant::now();
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
-    let record_recent_ms = t_recent.elapsed().as_millis();
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
     let snapshot = if two_phase {
@@ -6904,7 +6897,6 @@ fn open_pr_review_impl(
     } else {
         snap_from_command(&app, state)
     };
-    let snap_build_ms = t_snapshot.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, state);
