@@ -3725,3 +3725,2898 @@ mod background_queue_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod comment_state_tests {
+    use super::super::background::{
+        unix_now_ms, BackgroundTask, BackgroundTaskHandle, BackgroundTaskTarget,
+        PendingBackgroundTask,
+    };
+    use crate::ai;
+    use crate::app::{AgentLogEntry, AgentLogSource, App, CommandStatus, InputMode, TabState};
+    use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use crate::paths::ErRoot;
+    use anyhow::Result;
+    use std::collections::HashMap;
+    use tui_textarea::TextArea;
+
+    // ── Fixtures ───────────────────────────────────────────────────────────
+    // Mirrors of the private helpers in `state/mod.rs` and `ai/review.rs`
+    // (both live in `#[cfg(test)] mod tests` and are not reachable from here).
+
+    fn make_line(line_type: LineType, content: &str, new_num: Option<usize>) -> DiffLine {
+        DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: None,
+            new_num,
+        }
+    }
+
+    /// Hunk of plain added lines numbered `new_nums` on the new side.
+    fn make_hunk(new_nums: &[usize]) -> DiffHunk {
+        DiffHunk {
+            header: "@@ -1,3 +1,4 @@".to_string(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines: new_nums
+                .iter()
+                .map(|n| make_line(LineType::Add, &format!("line {n}"), Some(*n)))
+                .collect(),
+        }
+    }
+
+    fn make_file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks,
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    /// One-hunk file whose lines are numbered `new_nums`.
+    fn simple_file(path: &str, new_nums: &[usize]) -> DiffFile {
+        make_file(path, vec![make_hunk(new_nums)])
+    }
+
+    fn question(
+        id: &str,
+        file: &str,
+        hunk_index: Option<usize>,
+        line_start: Option<usize>,
+    ) -> ai::ReviewQuestion {
+        ai::ReviewQuestion {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start,
+            line_end: None,
+            line_content: String::new(),
+            text: format!("text for {id}"),
+            resolved: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            side: "RIGHT".to_string(),
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            in_reply_to: None,
+            author: "You".to_string(),
+            promoted_to: None,
+            finding_ref: None,
+        }
+    }
+
+    fn reply_question(id: &str, file: &str, parent: &str) -> ai::ReviewQuestion {
+        let mut q = question(id, file, Some(0), Some(1));
+        q.in_reply_to = Some(parent.to_string());
+        q
+    }
+
+    fn gh_comment(
+        id: &str,
+        file: &str,
+        hunk_index: Option<usize>,
+        line_start: Option<usize>,
+    ) -> ai::GitHubReviewComment {
+        ai::GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index,
+            line_start,
+            line_end: None,
+            line_content: String::new(),
+            comment: format!("comment for {id}"),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    fn finding_full(
+        id: &str,
+        hunk_index: Option<usize>,
+        line_start: Option<usize>,
+        severity: ai::RiskLevel,
+        confidence: ai::Confidence,
+    ) -> ai::Finding {
+        ai::Finding {
+            id: id.to_string(),
+            severity,
+            category: String::new(),
+            title: format!("Finding {id}"),
+            description: String::new(),
+            hunk_index,
+            line_start,
+            line_end: None,
+            suggestion: String::new(),
+            related_files: Vec::new(),
+            outside_diff: false,
+            confidence,
+            verification_plan: String::new(),
+            evidence: Vec::new(),
+            responses: Vec::new(),
+            resolved: false,
+            resolved_note: String::new(),
+            resolved_at: String::new(),
+            promoted_to: None,
+        }
+    }
+
+    fn finding(id: &str, hunk_index: Option<usize>, line_start: Option<usize>) -> ai::Finding {
+        finding_full(
+            id,
+            hunk_index,
+            line_start,
+            ai::RiskLevel::Medium,
+            ai::Confidence::Tentative,
+        )
+    }
+
+    fn review_with(files: Vec<(&str, ai::RiskLevel, Vec<ai::Finding>)>) -> ai::ErReview {
+        let mut map = HashMap::new();
+        for (path, risk, findings) in files {
+            map.insert(
+                path.to_string(),
+                ai::ErFileReview {
+                    risk,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings,
+                },
+            );
+        }
+        ai::ErReview {
+            version: 1,
+            diff_hash: "fixture-hash".to_string(),
+            created_at: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            files: map,
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    fn questions_doc(questions: Vec<ai::ReviewQuestion>) -> ai::ErQuestions {
+        ai::ErQuestions {
+            version: 1,
+            diff_hash: "fixture-hash".to_string(),
+            questions,
+        }
+    }
+
+    fn notes_doc(notes: Vec<ai::ReviewQuestion>) -> ai::ErNotes {
+        ai::ErNotes {
+            version: 1,
+            diff_hash: "fixture-hash".to_string(),
+            notes,
+        }
+    }
+
+    fn gh_doc(comments: Vec<ai::GitHubReviewComment>) -> ai::ErGitHubComments {
+        ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "fixture-hash".to_string(),
+            github: None,
+            comments,
+        }
+    }
+
+    /// A `TabState` whose sidecar directory is a throwaway TempDir. Never the
+    /// shared `/tmp/test/.er` that `TabState::new_for_test` defaults to —
+    /// that path is global and would cross-contaminate the whole binary.
+    fn tab_in_tempdir(files: Vec<DiffFile>) -> (TabState, tempfile::TempDir) {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path().to_string_lossy().to_string();
+        let mut tab = TabState::new_for_test(files);
+        tab.repo_root = root.clone();
+        tab.er_root = ErRoot::RepoLocal(root);
+        tab.diff_hash = "fixture-hash".to_string();
+        tab.branch_diff_hash = "fixture-hash".to_string();
+        std::fs::create_dir_all(tab.er_dir()).unwrap();
+        (tab, tmp)
+    }
+
+    fn app_in_tempdir(files: Vec<DiffFile>) -> (App, tempfile::TempDir) {
+        let (tab, tmp) = tab_in_tempdir(files);
+        let mut app = App::new_for_test(vec![]);
+        app.tabs = vec![tab];
+        (app, tmp)
+    }
+
+    fn write_sidecar(er_dir: &str, name: &str, contents: &str) {
+        std::fs::write(std::path::Path::new(er_dir).join(name), contents).unwrap();
+    }
+
+    fn read_sidecar(er_dir: &str, name: &str) -> String {
+        std::fs::read_to_string(std::path::Path::new(er_dir).join(name)).unwrap()
+    }
+
+    fn log_entry(name: &str, text: &str) -> AgentLogEntry {
+        AgentLogEntry {
+            timestamp: std::time::Instant::now(),
+            command_name: name.to_string(),
+            source: AgentLogSource::Stdout,
+            text: text.to_string(),
+        }
+    }
+
+    // ── App::agent_completion_summary_for ───────────────────────────────────
+
+    #[test]
+    fn agent_summary_for_review_counts_files_and_findings() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        let review = review_with(vec![
+            (
+                "a.rs",
+                ai::RiskLevel::High,
+                vec![
+                    finding("f-1", Some(0), Some(1)),
+                    finding("f-2", Some(0), None),
+                ],
+            ),
+            (
+                "b.rs",
+                ai::RiskLevel::Low,
+                vec![finding("f-3", Some(0), None)],
+            ),
+        ]);
+        write_sidecar(
+            &tab.er_dir(),
+            "review.json",
+            &serde_json::to_string(&review).unwrap(),
+        );
+
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "review"),
+            "Review done — 2 files, 3 findings"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_review_uses_singular_wording_for_one_file_and_finding() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        let review = review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-1", Some(0), Some(1))],
+        )]);
+        write_sidecar(
+            &tab.er_dir(),
+            "review.json",
+            &serde_json::to_string(&review).unwrap(),
+        );
+
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "review"),
+            "Review done — 1 file, 1 finding"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_review_without_a_sidecar_blames_missing_permissions() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "review"),
+            "Review done — but no review.json found (agent may lack permissions)"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_review_reports_an_unparseable_sidecar() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        write_sidecar(&tab.er_dir(), "review.json", "{not json");
+
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "review"),
+            "Review done — review.json written but could not be parsed"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_questions_counts_replies_against_top_level_questions() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        let doc = questions_doc(vec![
+            question("q-1", "a.rs", Some(0), Some(1)),
+            question("q-2", "a.rs", Some(0), Some(2)),
+            reply_question("q-3", "a.rs", "q-1"),
+        ]);
+        write_sidecar(
+            &tab.er_dir(),
+            "questions.json",
+            &serde_json::to_string(&doc).unwrap(),
+        );
+
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "questions"),
+            "Questions done — 1 of 2 answered"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_questions_without_a_sidecar_reports_the_missing_file() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "questions"),
+            "Questions done — but no questions.json found"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_questions_reports_an_unparseable_sidecar() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        write_sidecar(&tab.er_dir(), "questions.json", "[[[");
+
+        assert_eq!(
+            App::agent_completion_summary_for(&tab, "questions"),
+            "Questions done — questions.json written but could not be parsed"
+        );
+    }
+
+    #[test]
+    fn agent_summary_for_an_unrecognised_command_falls_back_to_name_done() {
+        let (tab, _tmp) = tab_in_tempdir(vec![]);
+        assert_eq!(App::agent_completion_summary_for(&tab, "lint"), "lint done");
+    }
+
+    // ── App::check_commands ────────────────────────────────────────────────
+
+    /// Queue a finished command result on a tab without running a subprocess.
+    fn stage_command_result(tab: &mut TabState, name: &str, result: Result<()>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(result).unwrap();
+        tab.command_rx.insert(name.to_string(), rx);
+        tab.command_status
+            .insert(name.to_string(), CommandStatus::Running);
+    }
+
+    #[test]
+    fn check_commands_marks_a_finished_command_done_and_logs_completion() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        stage_command_result(app.tab_mut(), "lint", Ok(()));
+
+        app.check_commands();
+
+        assert_eq!(
+            app.tab().command_status.get("lint"),
+            Some(&CommandStatus::Done)
+        );
+        assert!(
+            !app.tab().command_rx.contains_key("lint"),
+            "the finished receiver is dropped so it is not polled again"
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("lint done"));
+
+        app.drain_agent_log();
+        assert!(
+            app.tab()
+                .agent_log
+                .iter()
+                .any(|e| e.text == "lint completed"),
+            "completion is announced on the agent log"
+        );
+    }
+
+    #[test]
+    fn check_commands_reloads_ai_sidecars_for_artifact_writing_commands() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        let review = review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-1", Some(0), Some(1))],
+        )]);
+        write_sidecar(
+            &app.tab().er_dir(),
+            "review.json",
+            &serde_json::to_string(&review).unwrap(),
+        );
+        assert!(app.tab().ai.review.is_none(), "not loaded before the poll");
+
+        stage_command_result(app.tab_mut(), "review", Ok(()));
+        app.check_commands();
+
+        assert!(
+            app.tab().ai.review.is_some(),
+            "an artifact-writing command forces a sidecar reload"
+        );
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Review done — 1 file, 1 finding")
+        );
+    }
+
+    #[test]
+    fn check_commands_does_not_reload_sidecars_for_non_artifact_commands() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        let review = review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-1", Some(0), Some(1))],
+        )]);
+        write_sidecar(
+            &app.tab().er_dir(),
+            "review.json",
+            &serde_json::to_string(&review).unwrap(),
+        );
+
+        stage_command_result(app.tab_mut(), "test", Ok(()));
+        app.check_commands();
+
+        assert!(
+            app.tab().ai.review.is_none(),
+            "`test` writes no sidecars, so the reload must not fire"
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("test done"));
+    }
+
+    #[test]
+    fn check_commands_records_a_failure_message_as_the_command_status() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        stage_command_result(app.tab_mut(), "lint", Err(anyhow::anyhow!("boom")));
+
+        app.check_commands();
+
+        assert_eq!(
+            app.tab().command_status.get("lint"),
+            Some(&CommandStatus::Failed("boom".to_string()))
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("lint failed: boom"));
+
+        app.drain_agent_log();
+        assert!(
+            app.tab()
+                .agent_log
+                .iter()
+                .any(|e| e.text == "lint failed: boom"),
+            "failure is announced on the agent log"
+        );
+    }
+
+    #[test]
+    fn check_commands_truncates_a_long_failure_on_a_char_boundary() {
+        // 100 two-byte chars: `msg.len()` is 200 bytes, so byte slicing at 80
+        // would split a char and panic. The status bar text must cut at the
+        // 80th *character*.
+        let long = "é".repeat(100);
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        stage_command_result(app.tab_mut(), "lint", Err(anyhow::anyhow!("{long}")));
+
+        app.check_commands();
+
+        let expected = format!("lint failed: {}…", "é".repeat(80));
+        assert_eq!(app.watch_message.as_deref(), Some(expected.as_str()));
+        assert_eq!(
+            app.tab().command_status.get("lint"),
+            Some(&CommandStatus::Failed(long)),
+            "the stored status keeps the untruncated message"
+        );
+    }
+
+    #[test]
+    fn check_commands_treats_a_dropped_sender_as_a_crashed_thread() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
+        drop(tx);
+        app.tab_mut().command_rx.insert("review".to_string(), rx);
+        app.tab_mut()
+            .command_status
+            .insert("review".to_string(), CommandStatus::Running);
+
+        app.check_commands();
+
+        assert_eq!(
+            app.tab().command_status.get("review"),
+            Some(&CommandStatus::Failed("review thread crashed".to_string()))
+        );
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("review failed: review thread crashed")
+        );
+    }
+
+    #[test]
+    fn check_commands_leaves_a_still_running_command_alone() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        let (tx, rx) = std::sync::mpsc::channel::<Result<()>>();
+        app.tab_mut().command_rx.insert("lint".to_string(), rx);
+        app.tab_mut()
+            .command_status
+            .insert("lint".to_string(), CommandStatus::Running);
+
+        app.check_commands();
+
+        assert_eq!(
+            app.tab().command_status.get("lint"),
+            Some(&CommandStatus::Running)
+        );
+        assert!(
+            app.tab().command_rx.contains_key("lint"),
+            "an unfinished command keeps its receiver for the next tick"
+        );
+        assert!(app.watch_message.is_none());
+        drop(tx);
+    }
+
+    // ── App::drain_agent_log ───────────────────────────────────────────────
+
+    #[test]
+    fn drain_agent_log_moves_pending_entries_into_the_tab_buffer_in_order() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        for text in ["first", "second", "third"] {
+            app.tab().log_tx.send(log_entry("review", text)).unwrap();
+        }
+
+        app.drain_agent_log();
+
+        let texts: Vec<&str> = app
+            .tab()
+            .agent_log
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert_eq!(texts, vec!["first", "second", "third"]);
+    }
+
+    #[test]
+    fn drain_agent_log_autoscrolls_the_open_agent_log_panel() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        app.tab_mut().panel = Some(ai::PanelContent::AgentLog);
+        app.tab_mut().agent_log_auto_scroll = true;
+        for text in ["a", "b", "c"] {
+            app.tab().log_tx.send(log_entry("review", text)).unwrap();
+        }
+
+        app.drain_agent_log();
+
+        assert_eq!(
+            app.tab().panel_scroll,
+            2,
+            "scroll parks on the last of the three entries"
+        );
+    }
+
+    #[test]
+    fn drain_agent_log_leaves_scroll_alone_when_autoscroll_is_off() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        app.tab_mut().panel = Some(ai::PanelContent::AgentLog);
+        app.tab_mut().agent_log_auto_scroll = false;
+        app.tab_mut().panel_scroll = 7;
+        app.tab().log_tx.send(log_entry("review", "a")).unwrap();
+
+        app.drain_agent_log();
+
+        assert_eq!(app.tab().agent_log.len(), 1);
+        assert_eq!(app.tab().panel_scroll, 7);
+    }
+
+    #[test]
+    fn drain_agent_log_leaves_scroll_alone_for_a_non_log_panel() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        app.tab_mut().panel = Some(ai::PanelContent::FileDetail);
+        app.tab_mut().agent_log_auto_scroll = true;
+        app.tab_mut().panel_scroll = 3;
+        app.tab().log_tx.send(log_entry("review", "a")).unwrap();
+
+        app.drain_agent_log();
+
+        assert_eq!(app.tab().agent_log.len(), 1);
+        assert_eq!(
+            app.tab().panel_scroll,
+            3,
+            "only the AgentLog panel follows the tail"
+        );
+    }
+
+    #[test]
+    fn drain_agent_log_caps_the_buffer_at_5000_entries() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        for i in 0..5002 {
+            app.tab()
+                .log_tx
+                .send(log_entry("review", &format!("e{i}")))
+                .unwrap();
+        }
+
+        app.drain_agent_log();
+
+        assert_eq!(app.tab().agent_log.len(), 5000);
+        assert_eq!(
+            app.tab().agent_log.front().map(|e| e.text.as_str()),
+            Some("e2"),
+            "the two oldest entries are evicted from the front"
+        );
+        assert_eq!(
+            app.tab().agent_log.back().map(|e| e.text.as_str()),
+            Some("e5001")
+        );
+    }
+
+    #[test]
+    fn drain_agent_log_drains_background_tabs_without_touching_their_scroll() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        let mut second = TabState::new_for_test(vec![]);
+        second.panel = Some(ai::PanelContent::AgentLog);
+        second.agent_log_auto_scroll = true;
+        second.panel_scroll = 42;
+        second.log_tx.send(log_entry("review", "bg")).unwrap();
+        app.tabs.push(second);
+
+        app.drain_agent_log();
+
+        assert_eq!(app.tabs[1].agent_log.len(), 1, "inactive tabs still drain");
+        assert_eq!(
+            app.tabs[1].panel_scroll, 42,
+            "only the active tab autoscrolls"
+        );
+    }
+
+    // ── App::start_reply_comment ───────────────────────────────────────────
+
+    #[test]
+    fn start_reply_comment_anchors_the_draft_to_the_parent_question() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![question(
+            "q-1",
+            "a.rs",
+            Some(2),
+            Some(42),
+        )]));
+
+        app.start_reply_comment("q-1");
+
+        assert_eq!(app.tab().comment_file, "a.rs");
+        assert_eq!(app.tab().comment_hunk, 2);
+        assert_eq!(app.tab().comment_line_num, Some(42));
+        assert_eq!(app.tab().comment_reply_to.as_deref(), Some("q-1"));
+        assert_eq!(app.tab().comment_type, ai::CommentType::Question);
+        assert!(app.tab().comment_finding_ref.is_none());
+        assert_eq!(app.input_mode, InputMode::Comment);
+    }
+
+    #[test]
+    fn start_reply_comment_on_a_note_keeps_the_note_draft_type() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.notes = Some(notes_doc(vec![question("n-1", "a.rs", Some(1), Some(7))]));
+
+        app.start_reply_comment("n-1");
+
+        assert_eq!(app.tab().comment_type, ai::CommentType::Note);
+        assert_eq!(app.tab().comment_hunk, 1);
+        assert_eq!(app.tab().comment_line_num, Some(7));
+        assert_eq!(app.tab().comment_reply_to.as_deref(), Some("n-1"));
+    }
+
+    #[test]
+    fn start_reply_comment_on_a_github_comment_keeps_the_comment_draft_type() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.github_comments =
+            Some(gh_doc(vec![gh_comment("c-1", "a.rs", None, Some(9))]));
+
+        app.start_reply_comment("c-1");
+
+        assert_eq!(app.tab().comment_type, ai::CommentType::GitHubComment);
+        assert_eq!(
+            app.tab().comment_hunk,
+            0,
+            "a hunk-less parent falls back to hunk 0"
+        );
+        assert_eq!(app.tab().comment_line_num, Some(9));
+        assert_eq!(app.input_mode, InputMode::Comment);
+    }
+
+    #[test]
+    fn start_reply_comment_with_an_unknown_id_does_not_open_the_editor() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![question(
+            "q-1",
+            "a.rs",
+            Some(0),
+            Some(1),
+        )]));
+
+        app.start_reply_comment("q-missing");
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_reply_to.is_none());
+    }
+
+    #[test]
+    fn start_reply_comment_without_any_loaded_sidecar_does_nothing() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+
+        app.start_reply_comment("q-1");
+        app.start_reply_comment("n-1");
+        app.start_reply_comment("c-1");
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_reply_to.is_none());
+    }
+
+    // ── App::start_reply_finding ───────────────────────────────────────────
+
+    #[test]
+    fn start_reply_finding_opens_a_github_comment_bound_to_the_finding() {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "b.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-1", Some(3), Some(11))],
+        )]));
+
+        app.start_reply_finding("f-1");
+
+        assert_eq!(app.tab().comment_file, "b.rs");
+        assert_eq!(app.tab().comment_hunk, 3);
+        assert_eq!(app.tab().comment_line_num, Some(11));
+        assert_eq!(app.tab().comment_finding_ref.as_deref(), Some("f-1"));
+        assert_eq!(app.tab().comment_type, ai::CommentType::GitHubComment);
+        assert!(
+            app.tab().comment_reply_to.is_none(),
+            "a finding reply is a new top-level comment, not a thread reply"
+        );
+        assert_eq!(app.input_mode, InputMode::Comment);
+    }
+
+    #[test]
+    fn start_reply_finding_without_a_review_explains_why_it_cannot_reply() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+
+        app.start_reply_finding("f-1");
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("No AI review loaded — cannot reply to finding")
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+    }
+
+    #[test]
+    fn start_reply_finding_with_an_unknown_id_warns_about_a_stale_review() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::Low,
+            vec![finding("f-1", Some(0), Some(1))],
+        )]));
+
+        app.start_reply_finding("f-gone");
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Finding not found — review may be stale")
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_finding_ref.is_none());
+    }
+
+    // ── App::submit_question (via submit_comment) ──────────────────────────
+
+    /// Stage a question draft anchored at `a.rs` line 2.
+    fn stage_question_draft(app: &mut App, text: &str) {
+        app.tab_mut().comment_textarea = TextArea::new(vec![text.to_string()]);
+        app.tab_mut().comment_file = "a.rs".to_string();
+        app.tab_mut().comment_hunk = 0;
+        app.tab_mut().comment_line_num = Some(2);
+        app.tab_mut().comment_type = ai::CommentType::Question;
+        app.input_mode = InputMode::Comment;
+    }
+
+    fn load_questions(er_dir: &str) -> ai::ErQuestions {
+        serde_json::from_str(&read_sidecar(er_dir, "questions.json")).unwrap()
+    }
+
+    #[test]
+    fn submit_comment_writes_a_new_question_anchored_to_the_current_line() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        stage_question_draft(&mut app, "why this branch?");
+
+        app.submit_comment().unwrap();
+
+        let er_dir = app.tab().er_dir();
+        let doc = load_questions(&er_dir);
+        assert_eq!(doc.questions.len(), 1);
+        let q = &doc.questions[0];
+        assert_eq!(q.text, "why this branch?");
+        assert!(
+            q.id.starts_with("q-"),
+            "minted id is question-scoped: {}",
+            q.id
+        );
+        assert_eq!(q.line_start, Some(2));
+        assert_eq!(q.line_content, "line 2");
+        assert_eq!(q.hunk_index, Some(0));
+        assert_eq!(q.author, "You");
+        assert_eq!(q.side, "RIGHT");
+        assert!(q.in_reply_to.is_none());
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Question added: why this branch?")
+        );
+    }
+
+    #[test]
+    fn submit_comment_labels_a_threaded_question_as_a_reply() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        stage_question_draft(&mut app, "answering");
+        app.tab_mut().comment_reply_to = Some("q-parent".to_string());
+
+        app.submit_comment().unwrap();
+
+        let doc = load_questions(&app.tab().er_dir());
+        assert_eq!(doc.questions[0].in_reply_to.as_deref(), Some("q-parent"));
+        assert_eq!(app.watch_message.as_deref(), Some("Reply added: answering"));
+    }
+
+    #[test]
+    fn submit_comment_honours_a_question_scoped_id_override() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        stage_question_draft(&mut app, "pinned id");
+        app.tab_mut().comment_id_override = Some("q-fixed-id".to_string());
+
+        app.submit_comment().unwrap();
+
+        let doc = load_questions(&app.tab().er_dir());
+        assert_eq!(doc.questions[0].id, "q-fixed-id");
+        assert!(
+            app.tab().comment_id_override.is_none(),
+            "the override is consumed, not reused by the next draft"
+        );
+    }
+
+    #[test]
+    fn submit_comment_ignores_an_id_override_with_the_wrong_prefix() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        stage_question_draft(&mut app, "wrong prefix");
+        app.tab_mut().comment_id_override = Some("c-not-a-question".to_string());
+
+        app.submit_comment().unwrap();
+
+        let doc = load_questions(&app.tab().er_dir());
+        assert_ne!(doc.questions[0].id, "c-not-a-question");
+        assert!(doc.questions[0].id.starts_with("q-"));
+    }
+
+    #[test]
+    fn submit_comment_starts_a_fresh_questions_file_when_the_sidecar_is_corrupt() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        write_sidecar(&app.tab().er_dir(), "questions.json", "}}not json{{");
+        stage_question_draft(&mut app, "after corruption");
+
+        app.submit_comment().unwrap();
+
+        let doc = load_questions(&app.tab().er_dir());
+        assert_eq!(
+            doc.questions.len(),
+            1,
+            "the unreadable file is replaced, not appended to"
+        );
+        assert_eq!(doc.questions[0].text, "after corruption");
+    }
+
+    #[test]
+    fn submit_comment_appends_to_an_existing_questions_file() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![question(
+                "q-old",
+                "a.rs",
+                Some(0),
+                Some(1),
+            )]))
+            .unwrap(),
+        );
+        stage_question_draft(&mut app, "second one");
+
+        app.submit_comment().unwrap();
+
+        let doc = load_questions(&er_dir);
+        assert_eq!(doc.questions.len(), 2);
+        assert_eq!(doc.questions[0].id, "q-old");
+        assert_eq!(doc.questions[1].text, "second one");
+    }
+
+    #[test]
+    fn submit_comment_with_an_empty_draft_closes_the_editor_without_writing() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        stage_question_draft(&mut app, "   ");
+        app.tab_mut().comment_id_override = Some("q-fixed-id".to_string());
+
+        app.submit_comment().unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(
+            !std::path::Path::new(&app.tab().er_dir())
+                .join("questions.json")
+                .exists(),
+            "a whitespace-only draft must not create a sidecar"
+        );
+        assert!(app.tab().comment_id_override.is_none());
+    }
+
+    // ── App::update_comment_text ───────────────────────────────────────────
+
+    #[test]
+    fn update_comment_text_rewrites_a_question_body_on_disk() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![
+                question("q-1", "a.rs", Some(0), Some(1)),
+                question("q-2", "a.rs", Some(0), Some(2)),
+            ]))
+            .unwrap(),
+        );
+
+        app.update_comment_text("q-1", "rewritten").unwrap();
+
+        let doc = load_questions(&er_dir);
+        assert_eq!(doc.questions[0].text, "rewritten");
+        assert_eq!(
+            doc.questions[1].text, "text for q-2",
+            "sibling questions are untouched"
+        );
+    }
+
+    #[test]
+    fn update_comment_text_refuses_to_edit_ai_authored_question_text() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        let mut q = question("q-1", "a.rs", Some(0), Some(1));
+        q.author = "ai".to_string();
+        write_sidecar(
+            &er_dir,
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![q])).unwrap(),
+        );
+
+        let err = app.update_comment_text("q-1", "hijacked").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Cannot edit AI-generated text"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            load_questions(&er_dir).questions[0].text,
+            "text for q-1",
+            "the refused edit leaves the sidecar untouched"
+        );
+    }
+
+    #[test]
+    fn update_comment_text_errors_when_the_question_id_is_unknown() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        write_sidecar(
+            &app.tab().er_dir(),
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![question(
+                "q-1",
+                "a.rs",
+                Some(0),
+                Some(1),
+            )]))
+            .unwrap(),
+        );
+
+        let err = app.update_comment_text("q-gone", "nope").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Question not found"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn update_comment_text_errors_when_the_sidecar_is_absent() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+
+        let err = app.update_comment_text("q-1", "nope").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Failed to read"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn update_comment_text_rewrites_a_note_body_on_disk() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "notes.json",
+            &serde_json::to_string(&notes_doc(vec![question("n-1", "a.rs", Some(0), Some(1))]))
+                .unwrap(),
+        );
+
+        app.update_comment_text("n-1", "handed to the agent")
+            .unwrap();
+
+        let doc: ai::ErNotes = serde_json::from_str(&read_sidecar(&er_dir, "notes.json")).unwrap();
+        assert_eq!(doc.notes[0].text, "handed to the agent");
+    }
+
+    #[test]
+    fn update_comment_text_errors_when_the_note_id_is_unknown() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        write_sidecar(
+            &app.tab().er_dir(),
+            "notes.json",
+            &serde_json::to_string(&notes_doc(vec![question("n-1", "a.rs", Some(0), Some(1))]))
+                .unwrap(),
+        );
+
+        let err = app.update_comment_text("n-gone", "nope").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Note not found"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn update_comment_text_rewrites_a_local_github_comment_without_calling_github() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        // `github_id: None` (from the fixture) is the local-only case: no `gh`
+        // round-trip, just a sidecar rewrite.
+        write_sidecar(
+            &er_dir,
+            "github-comments.json",
+            &serde_json::to_string(&gh_doc(vec![gh_comment("c-1", "a.rs", Some(0), Some(1))]))
+                .unwrap(),
+        );
+
+        app.update_comment_text("c-1", "please rename this")
+            .unwrap();
+
+        let doc: ai::ErGitHubComments =
+            serde_json::from_str(&read_sidecar(&er_dir, "github-comments.json")).unwrap();
+        assert_eq!(doc.comments[0].comment, "please rename this");
+        assert!(doc.comments[0].github_id.is_none());
+    }
+
+    #[test]
+    fn update_comment_text_errors_when_the_github_comment_id_is_unknown() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        write_sidecar(
+            &app.tab().er_dir(),
+            "github-comments.json",
+            &serde_json::to_string(&gh_doc(vec![gh_comment("c-1", "a.rs", Some(0), Some(1))]))
+                .unwrap(),
+        );
+
+        let err = app.update_comment_text("c-gone", "nope").unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Comment not found"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    // ── App::update_comment (via submit_comment in edit mode) ──────────────
+
+    /// Stage an in-place edit of `comment_id`, re-anchored at `a.rs` line 3.
+    fn stage_edit_draft(app: &mut App, comment_id: &str, text: &str) {
+        app.tab_mut().comment_textarea = TextArea::new(vec![text.to_string()]);
+        app.tab_mut().comment_file = "a.rs".to_string();
+        app.tab_mut().comment_hunk = 0;
+        app.tab_mut().comment_line_num = Some(3);
+        app.tab_mut().comment_edit_id = Some(comment_id.to_string());
+        app.input_mode = InputMode::Comment;
+    }
+
+    #[test]
+    fn submit_comment_in_edit_mode_reanchors_a_question_to_the_current_line() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        let mut q = question("q-1", "a.rs", Some(9), Some(1));
+        // `stale` is `#[serde(skip)]`, so the persisted evidence of a drifted
+        // anchor is the status + hash pair, not the runtime flag.
+        q.anchor_status = "lost".to_string();
+        q.relocated_at_hash = "stale-hash".to_string();
+        write_sidecar(
+            &er_dir,
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![q])).unwrap(),
+        );
+        stage_edit_draft(&mut app, "q-1", "now with context");
+
+        app.submit_comment().unwrap();
+
+        let stored = &load_questions(&er_dir).questions[0];
+        assert_eq!(stored.text, "now with context");
+        assert_eq!(stored.line_start, Some(3));
+        assert_eq!(stored.line_content, "line 3");
+        assert_eq!(stored.hunk_index, Some(0));
+        assert_eq!(stored.anchor_status, "original");
+        assert_eq!(
+            stored.relocated_at_hash, "fixture-hash",
+            "the anchor is re-stamped with the current diff hash"
+        );
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_edit_id.is_none());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Comment updated: now with context")
+        );
+    }
+
+    #[test]
+    fn submit_comment_in_edit_mode_reanchors_a_note() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "notes.json",
+            &serde_json::to_string(&notes_doc(vec![question("n-1", "a.rs", Some(9), Some(1))]))
+                .unwrap(),
+        );
+        stage_edit_draft(&mut app, "n-1", "hand this to the agent");
+
+        app.submit_comment().unwrap();
+
+        let doc: ai::ErNotes = serde_json::from_str(&read_sidecar(&er_dir, "notes.json")).unwrap();
+        assert_eq!(doc.notes[0].text, "hand this to the agent");
+        assert_eq!(doc.notes[0].line_start, Some(3));
+        assert_eq!(doc.notes[0].hunk_index, Some(0));
+    }
+
+    #[test]
+    fn submit_comment_in_edit_mode_reanchors_a_github_comment() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "github-comments.json",
+            &serde_json::to_string(&gh_doc(vec![gh_comment("c-1", "a.rs", Some(9), Some(1))]))
+                .unwrap(),
+        );
+        stage_edit_draft(&mut app, "c-1", "still worth a look");
+
+        app.submit_comment().unwrap();
+
+        let doc: ai::ErGitHubComments =
+            serde_json::from_str(&read_sidecar(&er_dir, "github-comments.json")).unwrap();
+        assert_eq!(doc.comments[0].comment, "still worth a look");
+        assert_eq!(doc.comments[0].line_start, Some(3));
+        assert_eq!(doc.comments[0].line_content, "line 3");
+        assert_eq!(doc.comments[0].anchor_status, "original");
+    }
+
+    // ── App::confirm_delete_comment ────────────────────────────────────────
+
+    #[test]
+    fn confirm_delete_comment_removes_a_question_and_cascades_its_replies() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        write_sidecar(
+            &er_dir,
+            "questions.json",
+            &serde_json::to_string(&questions_doc(vec![
+                question("q-1", "a.rs", Some(0), Some(1)),
+                reply_question("q-1r", "a.rs", "q-1"),
+                question("q-2", "a.rs", Some(0), Some(2)),
+            ]))
+            .unwrap(),
+        );
+        app.input_mode = InputMode::Confirm(crate::app::ConfirmAction::DeleteComment {
+            comment_id: "q-1".to_string(),
+        });
+
+        app.confirm_delete_comment("q-1").unwrap();
+
+        let ids: Vec<String> = load_questions(&er_dir)
+            .questions
+            .iter()
+            .map(|q| q.id.clone())
+            .collect();
+        assert_eq!(ids, vec!["q-2".to_string()], "parent and reply both go");
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.watch_message.as_deref(), Some("Comment deleted"));
+    }
+
+    #[test]
+    fn confirm_delete_comment_removes_a_note_and_cascades_its_replies() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        let mut reply = question("n-1r", "a.rs", Some(0), Some(1));
+        reply.in_reply_to = Some("n-1".to_string());
+        write_sidecar(
+            &er_dir,
+            "notes.json",
+            &serde_json::to_string(&notes_doc(vec![
+                question("n-1", "a.rs", Some(0), Some(1)),
+                reply,
+                question("n-2", "a.rs", Some(0), Some(2)),
+            ]))
+            .unwrap(),
+        );
+
+        app.confirm_delete_comment("n-1").unwrap();
+
+        let doc: ai::ErNotes = serde_json::from_str(&read_sidecar(&er_dir, "notes.json")).unwrap();
+        let ids: Vec<String> = doc.notes.iter().map(|n| n.id.clone()).collect();
+        assert_eq!(ids, vec!["n-2".to_string()]);
+    }
+
+    #[test]
+    fn confirm_delete_comment_removes_a_local_github_comment_and_cascades_its_replies() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        let er_dir = app.tab().er_dir();
+        let mut reply = gh_comment("c-1r", "a.rs", Some(0), Some(1));
+        reply.in_reply_to = Some("c-1".to_string());
+        write_sidecar(
+            &er_dir,
+            "github-comments.json",
+            &serde_json::to_string(&gh_doc(vec![
+                gh_comment("c-1", "a.rs", Some(0), Some(1)),
+                reply,
+                gh_comment("c-2", "a.rs", Some(0), Some(2)),
+            ]))
+            .unwrap(),
+        );
+
+        app.confirm_delete_comment("c-1").unwrap();
+
+        let doc: ai::ErGitHubComments =
+            serde_json::from_str(&read_sidecar(&er_dir, "github-comments.json")).unwrap();
+        let ids: Vec<String> = doc.comments.iter().map(|c| c.id.clone()).collect();
+        assert_eq!(ids, vec!["c-2".to_string()]);
+        assert_eq!(
+            app.tab()
+                .ai
+                .github_comments
+                .as_ref()
+                .unwrap()
+                .comments
+                .len(),
+            1,
+            "the in-memory state is reloaded after the delete"
+        );
+    }
+
+    #[test]
+    fn confirm_delete_comment_returns_to_normal_mode_when_the_sidecar_is_missing() {
+        let (mut app, _tmp) = app_in_tempdir(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.input_mode = InputMode::Confirm(crate::app::ConfirmAction::DeleteComment {
+            comment_id: "q-1".to_string(),
+        });
+
+        app.confirm_delete_comment("q-1").unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.watch_message.as_deref(), Some("Comment deleted"));
+    }
+
+    // ── App::jump_comment (via next_comment / prev_comment / next_question) ─
+
+    /// `a.rs` carries a question, `b.rs` a GitHub comment.
+    fn app_with_two_file_comments() -> App {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![question(
+            "q-a",
+            "a.rs",
+            Some(0),
+            Some(1),
+        )]));
+        app.tab_mut().ai.github_comments =
+            Some(gh_doc(vec![gh_comment("c-b", "b.rs", Some(0), Some(10))]));
+        app
+    }
+
+    #[test]
+    fn next_comment_moves_to_the_comment_in_the_following_file() {
+        let mut app = app_with_two_file_comments();
+        app.tab_mut().focused_finding_id = Some("f-stale".to_string());
+        app.tab_mut().selection_anchor = Some(2);
+
+        app.next_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("c-b"));
+        assert_eq!(app.tab().selected_file, 1);
+        assert!(
+            app.tab().focused_finding_id.is_none(),
+            "comment focus takes over from finding focus"
+        );
+        assert!(app.tab().selection_anchor.is_none());
+    }
+
+    #[test]
+    fn next_comment_wraps_to_the_first_comment_after_the_last() {
+        let mut app = app_with_two_file_comments();
+        app.tab_mut().selected_file = 1;
+        app.tab_mut().focused_comment_id = Some("c-b".to_string());
+
+        app.next_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("q-a"));
+        assert_eq!(app.tab().selected_file, 0);
+    }
+
+    #[test]
+    fn prev_comment_wraps_to_the_last_comment_from_the_first() {
+        let mut app = app_with_two_file_comments();
+        app.tab_mut().focused_comment_id = Some("q-a".to_string());
+
+        app.prev_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("c-b"));
+        assert_eq!(app.tab().selected_file, 1);
+    }
+
+    #[test]
+    fn next_comment_from_a_file_with_no_comments_starts_at_the_first() {
+        let mut app = App::new_for_test(vec![
+            simple_file("z_unrelated.rs", &[1]),
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![question(
+            "q-a",
+            "a.rs",
+            Some(0),
+            Some(1),
+        )]));
+        app.tab_mut().ai.github_comments =
+            Some(gh_doc(vec![gh_comment("c-b", "b.rs", Some(0), Some(10))]));
+
+        app.next_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("q-a"));
+        assert_eq!(app.tab().selected_file, 1);
+    }
+
+    #[test]
+    fn prev_comment_from_a_file_with_no_comments_starts_at_the_last() {
+        let mut app = App::new_for_test(vec![
+            simple_file("z_unrelated.rs", &[1]),
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![question(
+            "q-a",
+            "a.rs",
+            Some(0),
+            Some(1),
+        )]));
+        app.tab_mut().ai.github_comments =
+            Some(gh_doc(vec![gh_comment("c-b", "b.rs", Some(0), Some(10))]));
+
+        app.prev_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("c-b"));
+        assert_eq!(app.tab().selected_file, 2);
+    }
+
+    #[test]
+    fn next_comment_within_one_file_moves_the_hunk_cursor() {
+        let mut app = App::new_for_test(vec![make_file(
+            "a.rs",
+            vec![
+                make_hunk(&[1, 2]),
+                make_hunk(&[5, 6]),
+                make_hunk(&[8, 9]),
+                make_hunk(&[20, 21]),
+            ],
+        )]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![
+            question("q-a1", "a.rs", Some(0), Some(1)),
+            question("q-a2", "a.rs", Some(3), Some(20)),
+        ]));
+        app.tab_mut().current_line = Some(1);
+
+        app.next_comment();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("q-a2"));
+        assert_eq!(app.tab().selected_file, 0, "same file, no reselection");
+        assert_eq!(app.tab().current_hunk, 3);
+        assert!(app.tab().current_line.is_none());
+    }
+
+    #[test]
+    fn next_question_skips_github_comments() {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+            simple_file("c.rs", &[20, 21]),
+        ]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![
+            question("q-a", "a.rs", Some(0), Some(1)),
+            question("q-c", "c.rs", Some(0), Some(20)),
+        ]));
+        app.tab_mut().ai.github_comments =
+            Some(gh_doc(vec![gh_comment("c-b", "b.rs", Some(0), Some(10))]));
+
+        app.next_question();
+
+        assert_eq!(
+            app.tab().focused_comment_id.as_deref(),
+            Some("q-c"),
+            "the GitHub comment on b.rs is not part of question navigation"
+        );
+        assert_eq!(app.tab().selected_file, 2);
+    }
+
+    #[test]
+    fn next_comment_without_any_comments_is_a_noop() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().selected_file = 0;
+
+        app.next_comment();
+
+        assert!(app.tab().focused_comment_id.is_none());
+        assert_eq!(app.tab().selected_file, 0);
+    }
+
+    // ── App::jump_finding (via next_finding / prev_finding) ────────────────
+
+    /// `a.rs` has two line-anchored findings, `b.rs` one.
+    fn app_with_findings_across_two_files() -> App {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11, 12]),
+        ]);
+        app.tab_mut().ai.review = Some(review_with(vec![
+            (
+                "a.rs",
+                ai::RiskLevel::Medium,
+                vec![
+                    finding("f-a1", Some(0), Some(1)),
+                    finding("f-a2", Some(0), Some(3)),
+                ],
+            ),
+            (
+                "b.rs",
+                ai::RiskLevel::High,
+                vec![finding("f-b", Some(0), Some(11))],
+            ),
+        ]));
+        app
+    }
+
+    #[test]
+    fn next_finding_advances_within_the_file_and_lands_on_the_finding_line() {
+        let mut app = app_with_findings_across_two_files();
+        app.tab_mut().focused_comment_id = Some("q-stale".to_string());
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-a2"));
+        assert_eq!(app.tab().selected_file, 0);
+        assert_eq!(
+            app.tab().current_line,
+            Some(2),
+            "line 3 is the third line of the hunk"
+        );
+        assert!(
+            app.tab().focused_comment_id.is_none(),
+            "finding focus takes over from comment focus"
+        );
+    }
+
+    #[test]
+    fn next_finding_crosses_into_the_next_file_and_clears_the_selection() {
+        let mut app = app_with_findings_across_two_files();
+        app.tab_mut().focused_finding_id = Some("f-a2".to_string());
+        app.tab_mut().selection_anchor = Some(1);
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-b"));
+        assert_eq!(app.tab().selected_file, 1);
+        assert_eq!(app.tab().current_line, Some(1), "line 11 is index 1");
+        assert!(app.tab().selection_anchor.is_none());
+    }
+
+    #[test]
+    fn next_finding_wraps_to_the_first_finding_after_the_last() {
+        let mut app = app_with_findings_across_two_files();
+        app.tab_mut().selected_file = 1;
+        app.tab_mut().focused_finding_id = Some("f-b".to_string());
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-a1"));
+        assert_eq!(app.tab().selected_file, 0);
+        assert_eq!(app.tab().current_line, Some(0));
+    }
+
+    #[test]
+    fn next_finding_leaves_the_hunk_cursor_alone_for_a_hunkless_finding() {
+        let mut app = App::new_for_test(vec![make_file(
+            "a.rs",
+            vec![make_hunk(&[1, 2, 3]), make_hunk(&[10, 11, 12])],
+        )]);
+        // A finding with no hunk anchor but a line anchor still navigates
+        // (`all_findings_ordered` only drops findings with neither).
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::Medium,
+            vec![
+                finding("f-hunkless", None, Some(2)),
+                finding("f-anchored", Some(1), Some(11)),
+            ],
+        )]));
+        app.tab_mut().focused_finding_id = Some("f-anchored".to_string());
+        app.tab_mut().current_hunk = 1;
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-hunkless"));
+        assert_eq!(
+            app.tab().current_hunk,
+            1,
+            "without a hunk anchor the hunk cursor is left where it was"
+        );
+        assert_eq!(
+            app.tab().current_line,
+            Some(1),
+            "the line cursor is still resolved from line_start against hunk 0"
+        );
+    }
+
+    #[test]
+    fn prev_finding_wraps_to_the_last_finding_from_the_first() {
+        let mut app = app_with_findings_across_two_files();
+        app.tab_mut().focused_finding_id = Some("f-a1".to_string());
+
+        app.prev_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-b"));
+        assert_eq!(app.tab().selected_file, 1);
+    }
+
+    #[test]
+    fn prev_finding_from_no_focus_steps_back_from_the_cursor_position() {
+        let mut app = app_with_findings_across_two_files();
+        app.tab_mut().selected_file = 1;
+        app.tab_mut().current_hunk = 0;
+
+        app.prev_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-a2"));
+        assert_eq!(app.tab().selected_file, 0);
+    }
+
+    #[test]
+    fn next_finding_ignores_a_focused_id_belonging_to_another_file() {
+        let mut app = app_with_findings_across_two_files();
+        // The user navigated back to a.rs but the panel still remembers b.rs's
+        // finding. Honouring it would wrap to f-a1; the stale id must be dropped
+        // and the cursor position used instead.
+        app.tab_mut().selected_file = 0;
+        app.tab_mut().current_hunk = 0;
+        app.tab_mut().focused_finding_id = Some("f-b".to_string());
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-a2"));
+        assert_eq!(app.tab().selected_file, 0);
+    }
+
+    #[test]
+    fn next_finding_parks_the_cursor_at_the_end_of_a_hunk_level_finding() {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11, 12]),
+        ]);
+        app.tab_mut().ai.review = Some(review_with(vec![
+            (
+                "a.rs",
+                ai::RiskLevel::Medium,
+                vec![finding("f-a1", Some(0), Some(1))],
+            ),
+            (
+                "b.rs",
+                ai::RiskLevel::High,
+                vec![finding("f-bh", Some(0), None)],
+            ),
+        ]));
+
+        app.next_finding();
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-bh"));
+        assert_eq!(
+            app.tab().current_line,
+            Some(2),
+            "a hunk-level finding renders after the hunk's last line"
+        );
+    }
+
+    #[test]
+    fn next_finding_skips_findings_for_files_absent_from_the_diff() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "deleted-since.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-gone", Some(0), Some(1))],
+        )]));
+
+        app.next_finding();
+
+        assert!(
+            app.tab().focused_finding_id.is_none(),
+            "a finding whose file is not in the diff is unreachable"
+        );
+    }
+
+    // ── App::jump_hint (via next_hint / prev_hint) ─────────────────────────
+
+    /// `a.rs` holds a question, its reply, and an AI finding; `b.rs` a second
+    /// question. Hint navigation must visit the reply and skip the finding.
+    fn app_with_hints_and_a_finding() -> App {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.questions = Some(questions_doc(vec![
+            question("q-1", "a.rs", Some(0), Some(1)),
+            reply_question("q-1r", "a.rs", "q-1"),
+            question("q-2", "b.rs", Some(0), Some(10)),
+        ]));
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-a", Some(0), Some(2))],
+        )]));
+        app
+    }
+
+    #[test]
+    fn next_hint_visits_replies_that_comment_navigation_skips() {
+        let mut app = app_with_hints_and_a_finding();
+
+        app.next_hint();
+
+        assert_eq!(
+            app.tab().focused_comment_id.as_deref(),
+            Some("q-1r"),
+            "hint navigation steps through thread replies"
+        );
+    }
+
+    #[test]
+    fn next_comment_skips_the_replies_that_hint_navigation_visits() {
+        let mut app = app_with_hints_and_a_finding();
+
+        app.next_comment();
+
+        assert_eq!(
+            app.tab().focused_comment_id.as_deref(),
+            Some("q-2"),
+            "comment navigation only stops on thread parents"
+        );
+        assert_eq!(app.tab().selected_file, 1);
+    }
+
+    #[test]
+    fn hint_navigation_never_focuses_an_ai_finding() {
+        let mut app = app_with_hints_and_a_finding();
+        let mut visited = Vec::new();
+
+        for _ in 0..3 {
+            app.next_hint();
+            assert!(
+                app.tab().focused_finding_id.is_none(),
+                "findings are excluded from Shift+J/K navigation"
+            );
+            visited.push(app.tab().focused_comment_id.clone().unwrap());
+        }
+
+        assert_eq!(visited, vec!["q-1r", "q-2", "q-1"]);
+    }
+
+    #[test]
+    fn next_hint_switching_files_clears_the_line_cursor() {
+        let mut app = app_with_hints_and_a_finding();
+        app.tab_mut().current_line = Some(2);
+
+        app.next_hint(); // q-1r, still a.rs
+        app.next_hint(); // q-2, now b.rs
+
+        assert_eq!(app.tab().selected_file, 1);
+        assert_eq!(app.tab().current_hunk, 0);
+        assert!(app.tab().current_line.is_none());
+    }
+
+    #[test]
+    fn prev_hint_wraps_to_the_last_hint_from_the_first() {
+        let mut app = app_with_hints_and_a_finding();
+        app.tab_mut().focused_comment_id = Some("q-1".to_string());
+
+        app.prev_hint();
+
+        assert_eq!(app.tab().focused_comment_id.as_deref(), Some("q-2"));
+        assert_eq!(app.tab().selected_file, 1);
+    }
+
+    #[test]
+    fn next_hint_with_only_findings_loaded_is_a_noop() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-a", Some(0), Some(2))],
+        )]));
+
+        app.next_hint();
+
+        assert!(app.tab().focused_comment_id.is_none());
+        assert!(app.tab().focused_finding_id.is_none());
+    }
+
+    // ── App::navigate_panel_finding ────────────────────────────────────────
+
+    /// Panel order is confidence first, then hunk: `f2` (Confirmed, hunk 2)
+    /// outranks `f3` (Tentative, hunk 0) and `f1` (Tentative, hunk 1).
+    fn app_with_panel_findings() -> App {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::Medium,
+            vec![
+                finding_full(
+                    "f1",
+                    Some(1),
+                    None,
+                    ai::RiskLevel::Medium,
+                    ai::Confidence::Tentative,
+                ),
+                finding_full(
+                    "f2",
+                    Some(2),
+                    None,
+                    ai::RiskLevel::Low,
+                    ai::Confidence::Confirmed,
+                ),
+                finding_full(
+                    "f3",
+                    Some(0),
+                    None,
+                    ai::RiskLevel::High,
+                    ai::Confidence::Tentative,
+                ),
+            ],
+        )]));
+        app
+    }
+
+    #[test]
+    fn navigate_panel_finding_forward_starts_at_the_confirmed_finding() {
+        let mut app = app_with_panel_findings();
+
+        app.navigate_panel_finding(true);
+
+        assert_eq!(
+            app.tab().focused_finding_id.as_deref(),
+            Some("f2"),
+            "confidence outranks hunk order in the panel list"
+        );
+    }
+
+    #[test]
+    fn navigate_panel_finding_backward_starts_at_the_end_of_the_panel_list() {
+        let mut app = app_with_panel_findings();
+
+        app.navigate_panel_finding(false);
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f1"));
+    }
+
+    #[test]
+    fn navigate_panel_finding_forward_follows_panel_order_not_hunk_order() {
+        let mut app = app_with_panel_findings();
+        app.tab_mut().focused_finding_id = Some("f2".to_string());
+
+        app.navigate_panel_finding(true);
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f3"));
+    }
+
+    #[test]
+    fn navigate_panel_finding_forward_wraps_after_the_last_entry() {
+        let mut app = app_with_panel_findings();
+        app.tab_mut().focused_finding_id = Some("f1".to_string());
+
+        app.navigate_panel_finding(true);
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f2"));
+    }
+
+    #[test]
+    fn navigate_panel_finding_backward_wraps_before_the_first_entry() {
+        let mut app = app_with_panel_findings();
+        app.tab_mut().focused_finding_id = Some("f2".to_string());
+
+        app.navigate_panel_finding(false);
+
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f1"));
+    }
+
+    #[test]
+    fn navigate_panel_finding_is_a_noop_when_the_file_has_no_findings() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "other.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-x", Some(0), Some(1))],
+        )]));
+
+        app.navigate_panel_finding(true);
+
+        assert!(app.tab().focused_finding_id.is_none());
+    }
+
+    #[test]
+    fn navigate_panel_finding_is_a_noop_without_a_selected_file() {
+        let mut app = App::new_for_test(vec![]);
+
+        app.navigate_panel_finding(true);
+
+        assert!(app.tab().focused_finding_id.is_none());
+    }
+
+    // ── App::jump_to_focused_finding ───────────────────────────────────────
+
+    /// `a.rs` has two hunks (lines 1-3 and 10-11) and findings anchored in,
+    /// past, and outside them.
+    fn app_with_two_hunk_findings() -> App {
+        let mut app = App::new_for_test(vec![make_file(
+            "a.rs",
+            vec![make_hunk(&[1, 2, 3]), make_hunk(&[10, 11])],
+        )]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "a.rs",
+            ai::RiskLevel::High,
+            vec![
+                finding("f-line", Some(1), Some(11)),
+                finding("f-hunk", Some(0), None),
+                finding("f-outside", Some(0), Some(999)),
+                finding("f-nohunk", Some(5), None),
+            ],
+        )]));
+        app.tab_mut().panel_focus = true;
+        app
+    }
+
+    #[test]
+    fn jump_to_focused_finding_moves_the_cursor_onto_the_finding_line() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().focused_finding_id = Some("f-line".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert_eq!(app.tab().current_hunk, 1);
+        assert_eq!(app.tab().current_line, Some(1), "line 11 is index 1");
+        assert!(
+            !app.tab().panel_focus,
+            "jumping hands focus back to the diff"
+        );
+    }
+
+    #[test]
+    fn jump_to_focused_finding_parks_at_the_end_of_a_hunk_level_finding() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().focused_finding_id = Some("f-hunk".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert_eq!(app.tab().current_hunk, 0);
+        assert_eq!(app.tab().current_line, Some(2));
+        assert!(!app.tab().panel_focus);
+    }
+
+    #[test]
+    fn jump_to_focused_finding_reports_a_line_that_is_not_in_the_diff() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().current_hunk = 1;
+        app.tab_mut().focused_finding_id = Some("f-outside".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Line 999 is outside the diff — open in editor to view")
+        );
+        assert_eq!(app.tab().current_hunk, 1, "the cursor does not move");
+        assert!(!app.tab().panel_focus);
+    }
+
+    #[test]
+    fn jump_to_focused_finding_reports_a_hunk_beyond_the_parsed_diff() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().focused_finding_id = Some("f-nohunk".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Line ? is outside the diff — open in editor to view")
+        );
+        assert_eq!(app.tab().current_hunk, 0);
+    }
+
+    #[test]
+    fn jump_to_focused_finding_without_a_focused_finding_is_a_noop() {
+        let mut app = app_with_two_hunk_findings();
+
+        app.jump_to_focused_finding();
+
+        assert!(app.tab().panel_focus, "panel focus is left untouched");
+        assert!(app.watch_message.is_none());
+    }
+
+    #[test]
+    fn jump_to_focused_finding_without_a_review_is_a_noop() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().ai.review = None;
+        app.tab_mut().focused_finding_id = Some("f-line".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert!(app.tab().panel_focus);
+        assert!(app.watch_message.is_none());
+    }
+
+    #[test]
+    fn jump_to_focused_finding_with_an_unknown_id_is_a_noop() {
+        let mut app = app_with_two_hunk_findings();
+        app.tab_mut().focused_finding_id = Some("f-gone".to_string());
+
+        app.jump_to_focused_finding();
+
+        assert!(app.tab().panel_focus);
+        assert!(app.watch_message.is_none());
+    }
+
+    // ── App::review_jump_to_file ───────────────────────────────────────────
+
+    #[test]
+    fn review_jump_to_file_opens_the_riskiest_file_at_its_first_anchored_finding() {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.review = Some(review_with(vec![
+            ("a.rs", ai::RiskLevel::Medium, vec![]),
+            (
+                "b.rs",
+                ai::RiskLevel::High,
+                vec![
+                    finding("f-b1", Some(1), Some(11)),
+                    finding("f-b0", Some(0), Some(10)),
+                ],
+            ),
+        ]));
+        app.tab_mut().review_focus = ai::ReviewFocus::Files;
+        app.tab_mut().review_cursor = 0;
+
+        app.review_jump_to_file();
+
+        assert_eq!(app.tab().selected_file, 1, "High risk sorts first");
+        assert_eq!(app.tab().focused_finding_id.as_deref(), Some("f-b0"));
+        assert_eq!(app.tab().current_hunk, 0);
+        assert_eq!(app.tab().panel, Some(ai::PanelContent::FileDetail));
+        assert_eq!(app.watch_message.as_deref(), Some("Jumped to: b.rs"));
+    }
+
+    #[test]
+    fn review_jump_to_file_reports_a_file_missing_from_the_diff() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().ai.review = Some(review_with(vec![(
+            "removed.rs",
+            ai::RiskLevel::High,
+            vec![finding("f-x", Some(0), Some(1))],
+        )]));
+        app.tab_mut().review_focus = ai::ReviewFocus::Files;
+        app.tab_mut().review_cursor = 0;
+
+        app.review_jump_to_file();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("File not in diff: removed.rs")
+        );
+        assert_eq!(app.tab().selected_file, 0);
+        assert!(app.tab().panel.is_none());
+    }
+
+    #[test]
+    fn review_jump_to_file_follows_the_checklist_when_that_column_has_focus() {
+        let mut app = App::new_for_test(vec![
+            simple_file("a.rs", &[1, 2, 3]),
+            simple_file("b.rs", &[10, 11]),
+        ]);
+        app.tab_mut().ai.checklist = Some(ai::ErChecklist {
+            version: 1,
+            diff_hash: "fixture-hash".to_string(),
+            items: vec![ai::ChecklistItem {
+                id: "chk-1".to_string(),
+                text: "verify the parser".to_string(),
+                category: String::new(),
+                checked: false,
+                related_findings: vec![],
+                related_files: vec!["b.rs".to_string()],
+            }],
+        });
+        app.tab_mut().review_focus = ai::ReviewFocus::Checklist;
+        app.tab_mut().review_cursor = 0;
+
+        app.review_jump_to_file();
+
+        assert_eq!(app.tab().selected_file, 1);
+        assert_eq!(app.watch_message.as_deref(), Some("Jumped to: b.rs"));
+    }
+
+    #[test]
+    fn review_jump_to_file_reports_an_item_with_no_associated_file() {
+        let mut app = App::new_for_test(vec![simple_file("a.rs", &[1, 2, 3])]);
+        app.tab_mut().review_focus = ai::ReviewFocus::Checklist;
+        app.tab_mut().review_cursor = 0;
+
+        app.review_jump_to_file();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("No file associated with this item")
+        );
+    }
+
+    // ── Background task fixtures ───────────────────────────────────────────
+
+    fn bg_target(repo_root: &str, branch: &str) -> BackgroundTaskTarget {
+        BackgroundTaskTarget {
+            repo_root: repo_root.to_string(),
+            er_dir: format!("{repo_root}/.er"),
+            branch_label: branch.to_string(),
+            base_branch: "main".to_string(),
+            scope: "branch".to_string(),
+            pr_number: None,
+            remote_repo: None,
+            managed_local: false,
+        }
+    }
+
+    /// Register a synthetic in-flight handle. The result/log senders are
+    /// dropped immediately — nothing in these tests polls them, and
+    /// `poll_background_tasks` (which would reap them) is never called.
+    fn insert_bg_handle(app: &mut App, task: BackgroundTask, recent_log: Vec<AgentLogEntry>) {
+        let (_result_tx, result_rx) = std::sync::mpsc::channel();
+        let (_log_tx, log_rx) = std::sync::mpsc::channel();
+        app.background_tasks.insert(
+            task.id.clone(),
+            BackgroundTaskHandle {
+                task,
+                result_rx,
+                log_rx,
+                recent_log: recent_log.into_iter().collect(),
+            },
+        );
+    }
+
+    fn pending_task(task: BackgroundTask) -> PendingBackgroundTask {
+        PendingBackgroundTask {
+            task,
+            command_name: "review".to_string(),
+            prompt: "prompt".to_string(),
+            prepared_diff: false,
+            host_write_diagram: None,
+            ai_selection: None,
+        }
+    }
+
+    // ── App::background_task_snapshots ─────────────────────────────────────
+
+    #[test]
+    fn background_task_snapshots_include_running_and_recently_finished_tasks_only() {
+        let mut app = App::new_for_test(vec![]);
+        let now = unix_now_ms();
+
+        let mut running = BackgroundTask::new("review".to_string(), bg_target("/repo", "running"));
+        running.started_at_ms = 10;
+        insert_bg_handle(&mut app, running.clone(), vec![]);
+
+        let mut just_done = BackgroundTask::new("triage".to_string(), bg_target("/repo", "fresh"));
+        just_done.status = CommandStatus::Done;
+        just_done.started_at_ms = 20;
+        just_done.finished_at_ms = Some(now);
+        insert_bg_handle(&mut app, just_done.clone(), vec![]);
+
+        let mut long_done = BackgroundTask::new("tour".to_string(), bg_target("/repo", "ancient"));
+        long_done.status = CommandStatus::Done;
+        long_done.started_at_ms = 30;
+        long_done.finished_at_ms = Some(1);
+        insert_bg_handle(&mut app, long_done.clone(), vec![]);
+
+        let mut no_finish =
+            BackgroundTask::new("professor".to_string(), bg_target("/repo", "orphan"));
+        no_finish.status = CommandStatus::Failed("crashed".to_string());
+        no_finish.started_at_ms = 40;
+        no_finish.finished_at_ms = None;
+        insert_bg_handle(&mut app, no_finish.clone(), vec![]);
+
+        let mut retired_fresh =
+            BackgroundTask::new("review".to_string(), bg_target("/repo", "retired-fresh"));
+        retired_fresh.status = CommandStatus::Done;
+        retired_fresh.started_at_ms = 50;
+        retired_fresh.finished_at_ms = Some(now);
+        app.recent_background_tasks.push(retired_fresh.clone());
+
+        let mut retired_old =
+            BackgroundTask::new("review".to_string(), bg_target("/repo", "retired-old"));
+        retired_old.status = CommandStatus::Done;
+        retired_old.started_at_ms = 60;
+        retired_old.finished_at_ms = Some(1);
+        app.recent_background_tasks.push(retired_old.clone());
+
+        let mut queued = BackgroundTask::new("review".to_string(), bg_target("/repo", "waiting"));
+        queued.started_at_ms = 70;
+        app.pending_background_tasks
+            .push_back(pending_task(queued.clone()));
+
+        let snaps = app.background_task_snapshots();
+        let status_of = |id: &str| {
+            snaps
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.status.as_str().to_string())
+        };
+
+        assert_eq!(status_of(&running.id), Some("running".to_string()));
+        assert_eq!(status_of(&just_done.id), Some("done".to_string()));
+        assert_eq!(
+            status_of(&long_done.id),
+            None,
+            "a task that finished more than 8s ago is dropped"
+        );
+        assert_eq!(
+            status_of(&no_finish.id),
+            None,
+            "a non-running task without a finish time is dropped"
+        );
+        assert_eq!(status_of(&retired_fresh.id), Some("done".to_string()));
+        assert_eq!(status_of(&retired_old.id), None);
+        assert_eq!(
+            status_of(&queued.id),
+            Some("queued".to_string()),
+            "pending tasks are relabelled as queued"
+        );
+        assert_eq!(snaps.len(), 4);
+    }
+
+    #[test]
+    fn background_task_snapshots_are_ordered_by_start_time() {
+        let mut app = App::new_for_test(vec![]);
+        let mut last = BackgroundTask::new("review".to_string(), bg_target("/repo", "c"));
+        last.started_at_ms = 300;
+        let mut first = BackgroundTask::new("review".to_string(), bg_target("/repo", "a"));
+        first.started_at_ms = 100;
+        let mut middle = BackgroundTask::new("review".to_string(), bg_target("/repo", "b"));
+        middle.started_at_ms = 200;
+        insert_bg_handle(&mut app, last.clone(), vec![]);
+        insert_bg_handle(&mut app, first.clone(), vec![]);
+        insert_bg_handle(&mut app, middle.clone(), vec![]);
+
+        let ids: Vec<String> = app
+            .background_task_snapshots()
+            .into_iter()
+            .map(|s| s.id)
+            .collect();
+
+        assert_eq!(ids, vec![first.id, middle.id, last.id]);
+    }
+
+    #[test]
+    fn background_task_snapshots_keep_the_last_40_log_lines_in_order() {
+        let mut app = App::new_for_test(vec![]);
+        let mut task = BackgroundTask::new("review".to_string(), bg_target("/repo", "chatty"));
+        task.started_at_ms = 1;
+        let log: Vec<AgentLogEntry> = (0..50)
+            .map(|i| log_entry("review", &format!("log-{i}")))
+            .collect();
+        insert_bg_handle(&mut app, task.clone(), log);
+
+        let snaps = app.background_task_snapshots();
+        let snap = snaps.iter().find(|s| s.id == task.id).unwrap();
+
+        assert_eq!(snap.recent_log.len(), 40);
+        assert_eq!(
+            snap.recent_log.first().unwrap().text,
+            "log-10",
+            "the tail is kept, not the head"
+        );
+        assert_eq!(snap.recent_log.last().unwrap().text, "log-49");
+    }
+
+    #[test]
+    fn background_task_snapshots_carry_no_log_for_queued_tasks() {
+        let mut app = App::new_for_test(vec![]);
+        let mut queued = BackgroundTask::new("review".to_string(), bg_target("/repo", "waiting"));
+        queued.started_at_ms = 1;
+        app.pending_background_tasks
+            .push_back(pending_task(queued.clone()));
+
+        let snaps = app.background_task_snapshots();
+
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].status, "queued");
+        assert!(snaps[0].recent_log.is_empty());
+    }
+
+    // ── App::background_tasks_for_tab ──────────────────────────────────────
+
+    #[test]
+    fn background_tasks_for_tab_keeps_only_matching_and_recent_targets() {
+        let mut app = App::new_for_test(vec![]);
+        // `TabState::new_for_test` uses repo_root "/tmp/test", branch "feature".
+        let tab = TabState::new_for_test(vec![]);
+        let now = unix_now_ms();
+
+        let mut mine = BackgroundTask::new("review".to_string(), bg_target("/tmp/test", "feature"));
+        mine.started_at_ms = 1;
+        insert_bg_handle(&mut app, mine.clone(), vec![]);
+
+        let theirs = BackgroundTask::new("review".to_string(), bg_target("/tmp/test", "other"));
+        insert_bg_handle(&mut app, theirs.clone(), vec![]);
+
+        let mut stale =
+            BackgroundTask::new("triage".to_string(), bg_target("/tmp/test", "feature"));
+        stale.status = CommandStatus::Done;
+        stale.finished_at_ms = Some(1);
+        insert_bg_handle(&mut app, stale.clone(), vec![]);
+
+        let mut done = BackgroundTask::new("tour".to_string(), bg_target("/tmp/test", "feature"));
+        done.status = CommandStatus::Done;
+        done.finished_at_ms = Some(now);
+        insert_bg_handle(&mut app, done.clone(), vec![]);
+
+        let queued_mine =
+            BackgroundTask::new("professor".to_string(), bg_target("/tmp/test", "feature"));
+        app.pending_background_tasks
+            .push_back(pending_task(queued_mine.clone()));
+        let queued_theirs =
+            BackgroundTask::new("professor".to_string(), bg_target("/tmp/test", "elsewhere"));
+        app.pending_background_tasks
+            .push_back(pending_task(queued_theirs.clone()));
+
+        let out = app.background_tasks_for_tab(&tab);
+        let ids: Vec<&str> = out.iter().map(|s| s.id.as_str()).collect();
+
+        assert!(ids.contains(&mine.id.as_str()));
+        assert!(ids.contains(&done.id.as_str()));
+        assert!(ids.contains(&queued_mine.id.as_str()));
+        assert!(
+            !ids.contains(&theirs.id.as_str()),
+            "another branch's task belongs to another tab"
+        );
+        assert!(
+            !ids.contains(&stale.id.as_str()),
+            "finished more than 8s ago"
+        );
+        assert!(!ids.contains(&queued_theirs.id.as_str()));
+        assert_eq!(
+            out.iter()
+                .find(|s| s.id == queued_mine.id)
+                .map(|s| s.status.as_str()),
+            Some("queued")
+        );
+        assert_eq!(out.len(), 3);
+    }
+
+    #[test]
+    fn background_tasks_for_tab_is_empty_for_a_tab_on_a_different_repo() {
+        let mut app = App::new_for_test(vec![]);
+        let tab = TabState::new_for_test(vec![]);
+        insert_bg_handle(
+            &mut app,
+            BackgroundTask::new(
+                "review".to_string(),
+                bg_target("/somewhere/else", "feature"),
+            ),
+            vec![],
+        );
+
+        assert!(app.background_tasks_for_tab(&tab).is_empty());
+    }
+
+    // ── App::spawn_background_agent_task (via spawn_background_review) ─────
+
+    #[test]
+    fn spawn_background_review_rejects_a_target_with_no_repo_and_no_remote() {
+        let mut app = App::new_for_test(vec![]);
+
+        let err = app
+            .spawn_background_review(bg_target("", "feature"), "prompt".to_string(), false)
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("Open a repository or PR first"),
+            "unexpected error: {err:#}"
+        );
+        assert!(app.background_tasks.is_empty());
+        assert!(app.pending_background_tasks.is_empty());
+    }
+
+    #[test]
+    fn spawn_background_review_rejects_a_duplicate_of_a_running_task() {
+        let mut app = App::new_for_test(vec![]);
+        let target = bg_target("/repo", "feat-a");
+        insert_bg_handle(
+            &mut app,
+            BackgroundTask::new("review".to_string(), target.clone()),
+            vec![],
+        );
+
+        let err = app
+            .spawn_background_review(target, "prompt".to_string(), false)
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("review already running for feat-a"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(app.background_tasks.len(), 1);
+        assert!(app.pending_background_tasks.is_empty());
+    }
+
+    #[test]
+    fn spawn_background_review_queues_when_the_concurrency_cap_is_reached() {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        insert_bg_handle(
+            &mut app,
+            BackgroundTask::new("review".to_string(), bg_target("/repo", "busy")),
+            vec![],
+        );
+
+        app.spawn_background_review(bg_target("/repo", "feat-a"), "prompt".to_string(), false)
+            .unwrap();
+
+        assert_eq!(
+            app.background_tasks.len(),
+            1,
+            "the cap prevents a second subprocess"
+        );
+        assert_eq!(app.pending_background_tasks.len(), 1);
+        assert_eq!(app.pending_background_tasks[0].task.kind, "review");
+        assert!(
+            app.pending_background_tasks[0].ai_selection.is_some(),
+            "the provider/model choice is snapshotted at enqueue time"
+        );
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("review queued (#1, feat-a)")
+        );
+    }
+
+    #[test]
+    fn spawn_background_review_rejects_a_duplicate_of_an_already_queued_task() {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        insert_bg_handle(
+            &mut app,
+            BackgroundTask::new("review".to_string(), bg_target("/repo", "busy")),
+            vec![],
+        );
+        app.spawn_background_review(bg_target("/repo", "feat-a"), "prompt".to_string(), false)
+            .unwrap();
+
+        let err = app
+            .spawn_background_review(bg_target("/repo", "feat-a"), "prompt".to_string(), false)
+            .unwrap_err();
+
+        assert!(
+            format!("{err:#}").contains("review already running for feat-a"),
+            "unexpected error: {err:#}"
+        );
+        assert_eq!(
+            app.pending_background_tasks.len(),
+            1,
+            "the queue does not grow a second copy"
+        );
+    }
+
+    #[test]
+    fn a_tour_and_a_review_queue_independently_for_the_same_target() {
+        let mut app = App::new_for_test(vec![]);
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        insert_bg_handle(
+            &mut app,
+            BackgroundTask::new("review".to_string(), bg_target("/repo", "busy")),
+            vec![],
+        );
+
+        app.spawn_background_review(bg_target("/repo", "feat-a"), "prompt".to_string(), false)
+            .unwrap();
+        app.spawn_background_tour(bg_target("/repo", "feat-a"), "prompt".to_string(), false)
+            .unwrap();
+
+        assert_eq!(app.pending_background_tasks.len(), 2);
+        assert_eq!(app.pending_background_tasks[1].task.kind, "tour");
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("tour queued (#2, feat-a)"),
+            "dedup is per kind, not per target"
+        );
+    }
+
+    // ── App::spawn_command ─────────────────────────────────────────────────
+
+    /// Poll `check_commands` until `name` leaves the Running state.
+    fn wait_for_command(app: &mut App, name: &str) -> CommandStatus {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        loop {
+            app.check_commands();
+            match app.tab().command_status.get(name) {
+                Some(CommandStatus::Running) | None => {}
+                Some(status) => return status.clone(),
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} never finished"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn spawn_command_substitutes_placeholders_before_running_the_shell() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+
+        app.spawn_command("summary", "printf '%s' {branch} > {output}")
+            .unwrap();
+
+        assert_eq!(
+            app.tab().command_status.get("summary"),
+            Some(&CommandStatus::Running)
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("summary started..."));
+
+        assert_eq!(wait_for_command(&mut app, "summary"), CommandStatus::Done);
+        assert_eq!(
+            read_sidecar(&app.tab().er_dir(), "summary.md"),
+            "feature",
+            "{{branch}} resolves to the tab's branch and {{output}} to the sidecar path"
+        );
+        assert_eq!(
+            app.tab().ai.summary.as_deref(),
+            Some("feature"),
+            "`summary` is an artifact-writing command, so the sidecar is reloaded"
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("summary done"));
+    }
+
+    #[test]
+    fn spawn_command_refuses_a_second_run_of_the_same_name() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        app.tab_mut()
+            .command_status
+            .insert("test".to_string(), CommandStatus::Running);
+
+        app.spawn_command("test", "printf hi").unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("test already running"));
+        assert!(
+            !app.tab().command_rx.contains_key("test"),
+            "no second process is started"
+        );
+    }
+
+    #[test]
+    fn spawn_command_reports_a_failing_shell_command_with_its_stderr() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+
+        app.spawn_command("test", "echo 'boom happened' >&2; exit 1")
+            .unwrap();
+
+        match wait_for_command(&mut app, "test") {
+            CommandStatus::Failed(msg) => {
+                assert_eq!(msg, "test failed: boom happened");
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_command_streams_stdout_into_the_agent_log() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+
+        app.spawn_command("test", "echo hello-from-shell").unwrap();
+        wait_for_command(&mut app, "test");
+        app.drain_agent_log();
+
+        let texts: Vec<&str> = app
+            .tab()
+            .agent_log
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(texts.contains(&"test started"), "log: {texts:?}");
+        assert!(texts.contains(&"hello-from-shell"), "log: {texts:?}");
+        assert!(texts.contains(&"test completed"), "log: {texts:?}");
+    }
+
+    // ── App::spawn_agent_prompt ────────────────────────────────────────────
+
+    /// Write an executable stub named `claude` (the stem decides which CLI
+    /// conventions `spawn_agent_prompt` applies) into `dir`.
+    #[cfg(unix)]
+    fn write_fake_claude(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join("claude");
+        std::fs::write(&path, format!("#!/bin/sh\n{body}")).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_agent_prompt_injects_claude_tool_rules_and_records_the_invocation() {
+        let (mut app, tmp) = app_in_tempdir(vec![]);
+        let fake = write_fake_claude(
+            tmp.path(),
+            "echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"looking at the diff\"}]}}'\n\
+             echo 'plain non-json line'\n\
+             echo 'agent warning' >&2\n\
+             exit 0\n",
+        );
+        // No AI Hub providers configured, so the legacy `agent.command` arm runs
+        // with the default args (--print --output-format stream-json -p {prompt}).
+        assert!(app.config.ai_hub.providers.is_empty());
+        app.config.agent.command = fake.to_string_lossy().to_string();
+
+        app.spawn_agent_prompt("review", "review this diff")
+            .unwrap();
+        assert_eq!(app.watch_message.as_deref(), Some("review started..."));
+
+        assert_eq!(wait_for_command(&mut app, "review"), CommandStatus::Done);
+
+        let debug = read_sidecar(&app.tab().er_dir(), "debug-agent.log");
+        assert!(
+            debug.contains("--disallowedTools Bash(git clone*)"),
+            "cloning stays denied:\n{debug}"
+        );
+        assert!(
+            debug.contains("--allowedTools Read"),
+            "read access is granted explicitly, not via skip-permissions:\n{debug}"
+        );
+        assert!(
+            debug.contains("--allowedTools Bash(git fetch origin pull/*)"),
+            "the narrow fetch rule survives:\n{debug}"
+        );
+        assert!(
+            debug.contains("--add-dir="),
+            "the sidecar directory is handed to the agent:\n{debug}"
+        );
+        assert!(
+            debug.contains("--verbose"),
+            "--print + stream-json requires --verbose on Claude:\n{debug}"
+        );
+        assert!(debug.contains("exit code: 0"), "{debug}");
+        assert!(
+            debug.contains("agent warning"),
+            "stderr is captured:\n{debug}"
+        );
+
+        app.drain_agent_log();
+        let texts: Vec<&str> = app
+            .tab()
+            .agent_log
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("looking at the diff")),
+            "stream-json assistant text reaches the agent log: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"agent warning"),
+            "stderr reaches the agent log: {texts:?}"
+        );
+        assert!(
+            !texts.contains(&"plain non-json line"),
+            "unparseable stream-json lines are dropped, not shown raw: {texts:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_agent_prompt_points_a_failed_run_at_the_debug_log() {
+        let (mut app, tmp) = app_in_tempdir(vec![]);
+        let fake = write_fake_claude(tmp.path(), "echo 'fatal' >&2\nexit 3\n");
+        app.config.agent.command = fake.to_string_lossy().to_string();
+
+        app.spawn_agent_prompt("review", "review this diff")
+            .unwrap();
+
+        match wait_for_command(&mut app, "review") {
+            CommandStatus::Failed(msg) => {
+                assert!(
+                    msg.starts_with("review failed (see ") && msg.ends_with("debug-agent.log)"),
+                    "unexpected failure message: {msg}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        let debug = read_sidecar(&app.tab().er_dir(), "debug-agent.log");
+        assert!(debug.contains("exit code: 3"), "{debug}");
+    }
+
+    #[test]
+    fn spawn_agent_prompt_refuses_a_second_run_of_the_same_name() {
+        let (mut app, _tmp) = app_in_tempdir(vec![]);
+        app.tab_mut()
+            .command_status
+            .insert("review".to_string(), CommandStatus::Running);
+
+        app.spawn_agent_prompt("review", "prompt").unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("review already running"));
+        assert!(!app.tab().command_rx.contains_key("review"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_agent_prompt_prefers_the_ai_hub_provider_over_the_legacy_agent_command() {
+        let (mut app, tmp) = app_in_tempdir(vec![]);
+        let fake = write_fake_claude(tmp.path(), "exit 0\n");
+        app.config.ai_hub.providers.insert(
+            "hub-claude".to_string(),
+            crate::config::AiProviderConfig {
+                command: fake.to_string_lossy().to_string(),
+                args: vec![
+                    "--print".to_string(),
+                    "-p".to_string(),
+                    "{prompt}".to_string(),
+                ],
+                models: vec![crate::config::AiModelConfig {
+                    id: "sonnet-test".to_string(),
+                    args: vec!["--model".to_string(), "sonnet-test".to_string()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.config.ai_hub.default_provider = Some("hub-claude".to_string());
+        app.config.ai_hub.default_model = Some("sonnet-test".to_string());
+        // If the hub arm were skipped this command would be spawned and fail.
+        app.config.agent.command = "er-test-no-such-binary".to_string();
+
+        app.spawn_agent_prompt("review", "review this diff")
+            .unwrap();
+
+        assert_eq!(wait_for_command(&mut app, "review"), CommandStatus::Done);
+        let debug = read_sidecar(&app.tab().er_dir(), "debug-agent.log");
+        assert!(
+            debug.contains(fake.to_string_lossy().as_ref()),
+            "the hub provider's command wins over agent.command:\n{debug}"
+        );
+        assert!(
+            debug.contains("--model sonnet-test"),
+            "the selected model's args are merged in:\n{debug}"
+        );
+        assert!(
+            debug.contains("--output-format stream-json"),
+            "a Claude-family provider still gets streaming output:\n{debug}"
+        );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn spawn_agent_prompt_isolates_codex_and_leaves_claude_flags_off() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (mut app, tmp) = app_in_tempdir(vec![]);
+        let fake = tmp.path().join("codex");
+        std::fs::write(&fake, "#!/bin/sh\necho 'codex plain output'\nexit 0\n").unwrap();
+        let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&fake, perms).unwrap();
+
+        app.config.ai_hub.providers.insert(
+            "codex".to_string(),
+            crate::config::AiProviderConfig {
+                command: fake.to_string_lossy().to_string(),
+                args: vec!["exec".to_string(), "{prompt}".to_string()],
+                models: vec![crate::config::AiModelConfig {
+                    id: "gpt-test".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.config.ai_hub.default_provider = Some("codex".to_string());
+
+        app.spawn_agent_prompt("review", "review this diff")
+            .unwrap();
+
+        assert_eq!(wait_for_command(&mut app, "review"), CommandStatus::Done);
+        let debug = read_sidecar(&app.tab().er_dir(), "debug-agent.log");
+        assert!(
+            debug.contains("--ignore-user-config"),
+            "Codex runs isolated from the user's own config:\n{debug}"
+        );
+        assert!(
+            !debug.contains("--allowedTools"),
+            "Claude-only permission flags must not leak onto Codex:\n{debug}"
+        );
+        assert!(
+            !debug.contains("--output-format"),
+            "Codex does not emit Claude stream-json:\n{debug}"
+        );
+
+        app.drain_agent_log();
+        let texts: Vec<&str> = app
+            .tab()
+            .agent_log
+            .iter()
+            .map(|e| e.text.as_str())
+            .collect();
+        assert!(
+            texts.contains(&"codex plain output"),
+            "non-streaming stdout is logged verbatim: {texts:?}"
+        );
+    }
+
+    // ── App::copy_context ──────────────────────────────────────────────────
+    //
+    // The happy paths end in a real `pbcopy`, so they are macOS-only: that is
+    // the one platform where the clipboard binary is guaranteed present.
+
+    #[test]
+    fn copy_context_reports_when_no_file_is_selected() {
+        let mut app = App::new_for_test(vec![]);
+
+        app.copy_context().unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("No file selected"));
+    }
+
+    #[test]
+    fn copy_context_reports_when_the_file_has_no_hunks() {
+        let mut app = App::new_for_test(vec![make_file("a.rs", vec![])]);
+
+        app.copy_context().unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("No hunk selected"));
+    }
+
+    /// A hunk with one of each line kind, including a fold marker (which is
+    /// counted but never rendered), plus an AI finding on the same hunk.
+    #[cfg(target_os = "macos")]
+    fn app_for_copy_context() -> App {
+        let hunk = DiffHunk {
+            header: "@@ -1,3 +1,4 @@".to_string(),
+            old_start: 1,
+            old_count: 3,
+            new_start: 1,
+            new_count: 4,
+            lines: vec![
+                make_line(LineType::Context, "ctx", Some(1)),
+                make_line(LineType::Add, "added", Some(2)),
+                make_line(LineType::Delete, "removed", None),
+                make_line(LineType::Fold(12), "", None),
+            ],
+        };
+        let mut app = App::new_for_test(vec![make_file("a.rs", vec![hunk])]);
+        let mut f = finding("f-1", Some(0), Some(2));
+        f.suggestion = "guard the unwrap".to_string();
+        app.tab_mut().ai.review = Some(review_with(vec![("a.rs", ai::RiskLevel::High, vec![f])]));
+        app
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn copy_context_copies_the_whole_hunk_when_navigating_by_hunk() {
+        let mut app = app_for_copy_context();
+        app.tab_mut().current_line = None;
+
+        app.copy_context().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Copied hunk (4 lines)"),
+            "hunk-level navigation copies every line, fold marker included"
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn copy_context_copies_only_the_cursor_line_when_navigating_by_line() {
+        let mut app = app_for_copy_context();
+        app.tab_mut().current_line = Some(1);
+
+        app.copy_context().unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("Copied line (1 lines)"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn copy_context_copies_the_shift_selected_range() {
+        let mut app = app_for_copy_context();
+        app.tab_mut().selection_anchor = Some(0);
+        app.tab_mut().current_line = Some(2);
+
+        app.copy_context().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Copied selection (3 lines)")
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn copy_context_falls_back_to_the_full_hunk_when_the_line_cursor_is_out_of_range() {
+        let mut app = app_for_copy_context();
+        app.tab_mut().current_line = Some(99);
+
+        app.copy_context().unwrap();
+
+        // The scope word still reads "line" (it is derived from `current_line`
+        // alone), but the count shows the whole 4-line hunk was copied.
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Copied line (4 lines)"),
+            "an out-of-range line index degrades to the whole hunk"
+        );
+    }
+}

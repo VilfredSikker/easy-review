@@ -12871,4 +12871,2303 @@ mod tests {
         assert!(!er.join("professor.json").exists());
         assert!(!experts.join("security.json").exists());
     }
+
+    // ── HubKind::title ──
+
+    /// The hub header text is the only label the modal renders, so every
+    /// variant must map to a stable string (and the two Verify variants
+    /// deliberately share one header).
+    #[test]
+    fn hub_kind_title_maps_every_variant_to_its_header_text() {
+        assert_eq!(HubKind::Git.title(), "GIT");
+        assert_eq!(HubKind::Ai.title(), "AI");
+        assert_eq!(HubKind::AiProvider.title(), "AI PROVIDER");
+        assert_eq!(HubKind::AiModel.title(), "AI MODEL");
+        assert_eq!(HubKind::AiEffort.title(), "EFFORT");
+        assert_eq!(HubKind::AiExpert.title(), "SPECIALIZED REVIEW");
+        assert_eq!(HubKind::Verify.title(), "VERIFY");
+        assert_eq!(HubKind::VerifyPackage.title(), "VERIFY");
+        assert_eq!(HubKind::Help.title(), "HELP");
+        assert_eq!(HubKind::Open.title(), "OPEN");
+        assert_eq!(HubKind::Copy.title(), "COPY");
+    }
+
+    // ── close_tab_at ──
+
+    #[test]
+    fn close_tab_at_refuses_to_close_the_only_tab() {
+        let mut app = make_app_with_n_tabs(1);
+        app.close_tab_at(0);
+        assert_eq!(tab_roots(&app), vec!["tab0"]);
+        assert_eq!(app.watch_message.as_deref(), Some("Cannot close last tab"));
+    }
+
+    #[test]
+    fn close_tab_at_ignores_an_out_of_range_index() {
+        let mut app = make_app_with_n_tabs(2);
+        app.active_tab = 1;
+        app.close_tab_at(5);
+        assert_eq!(tab_roots(&app), vec!["tab0", "tab1"]);
+        assert_eq!(app.active_tab, 1);
+        assert!(
+            app.watch_message.is_none(),
+            "an out-of-range close is silent, not a 'Closed:' notification"
+        );
+    }
+
+    #[test]
+    fn close_tab_at_active_tab_focuses_the_previous_one() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 2;
+        app.close_tab_at(2);
+        assert_eq!(tab_roots(&app), vec!["tab0", "tab1"]);
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.tab().repo_root, "tab1");
+        assert_eq!(app.watch_message.as_deref(), Some("Closed: feature"));
+    }
+
+    #[test]
+    fn close_tab_at_first_tab_keeps_focus_on_index_zero() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 0;
+        app.close_tab_at(0);
+        assert_eq!(tab_roots(&app), vec!["tab1", "tab2"]);
+        assert_eq!(app.active_tab, 0);
+        assert_eq!(app.tab().repo_root, "tab1");
+    }
+
+    #[test]
+    fn close_tab_at_earlier_index_keeps_the_same_tab_focused() {
+        let mut app = make_app_with_n_tabs(3);
+        app.active_tab = 2;
+        app.close_tab_at(0);
+        assert_eq!(tab_roots(&app), vec!["tab1", "tab2"]);
+        // Still looking at "tab2" — its index just shifted down by one.
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.tab().repo_root, "tab2");
+    }
+
+    /// Defensive clamp: an already out-of-range `active_tab` must not survive a
+    /// close and leave `tab()` indexing past the end.
+    #[test]
+    fn close_tab_at_clamps_an_active_index_past_the_end() {
+        let mut app = make_app_with_n_tabs(2);
+        app.active_tab = 2; // stale/invalid
+        app.close_tab_at(0);
+        assert_eq!(tab_roots(&app), vec!["tab1"]);
+        assert_eq!(app.active_tab, 0);
+    }
+
+    // ── export picker ──
+
+    fn export_flags(app: &App) -> (bool, bool, bool, bool) {
+        match &app.overlay {
+            Some(OverlayData::ExportPicker {
+                include_comments,
+                include_findings,
+                include_questions,
+                include_notes,
+                ..
+            }) => (
+                *include_comments,
+                *include_findings,
+                *include_questions,
+                *include_notes,
+            ),
+            other => panic!("expected an export picker overlay, got {other:?}"),
+        }
+    }
+
+    fn set_export_selected(app: &mut App, idx: usize) {
+        match &mut app.overlay {
+            Some(OverlayData::ExportPicker { selected, .. }) => *selected = idx,
+            other => panic!("expected an export picker overlay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_picker_toggle_flips_only_the_highlighted_row() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        assert_eq!(export_flags(&app), (true, true, true, true));
+
+        app.export_picker_toggle_selected(); // row 0 — comments
+        assert_eq!(export_flags(&app), (false, true, true, true));
+
+        set_export_selected(&mut app, 1);
+        app.export_picker_toggle_selected(); // findings
+        assert_eq!(export_flags(&app), (false, false, true, true));
+
+        set_export_selected(&mut app, 2);
+        app.export_picker_toggle_selected(); // questions
+        assert_eq!(export_flags(&app), (false, false, false, true));
+
+        set_export_selected(&mut app, 3);
+        app.export_picker_toggle_selected(); // notes
+        assert_eq!(export_flags(&app), (false, false, false, false));
+
+        // The toggle is symmetric — re-pressing restores the row.
+        app.export_picker_toggle_selected();
+        assert_eq!(export_flags(&app), (false, false, false, true));
+    }
+
+    #[test]
+    fn export_picker_toggle_ignores_rows_past_the_last_section() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        set_export_selected(&mut app, 4);
+        app.export_picker_toggle_selected();
+        assert_eq!(export_flags(&app), (true, true, true, true));
+    }
+
+    #[test]
+    fn export_picker_toggle_is_a_noop_without_the_picker_overlay() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        app.export_picker_toggle_selected();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn export_picker_confirm_puts_back_a_non_picker_overlay_untouched() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::FilterHistory {
+            history: vec!["*.rs".into()],
+            selected: 0,
+            preset_count: 2,
+        });
+        app.export_picker_confirm().unwrap();
+        match &app.overlay {
+            Some(OverlayData::FilterHistory {
+                history, selected, ..
+            }) => {
+                assert_eq!(history, &vec!["*.rs".to_string()]);
+                assert_eq!(*selected, 0);
+            }
+            other => panic!("a non-picker overlay must survive confirm, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn export_picker_confirm_with_nothing_checked_reopens_the_picker() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        for idx in 0..4 {
+            set_export_selected(&mut app, idx);
+            app.export_picker_toggle_selected();
+        }
+        assert_eq!(export_flags(&app), (false, false, false, false));
+
+        app.export_picker_confirm().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Select at least one section to export")
+        );
+        // Reopened with the defaults rather than left closed, so the user can
+        // pick something instead of losing the overlay.
+        assert_eq!(export_flags(&app), (true, true, true, true));
+    }
+
+    // ── overlay_next / overlay_prev / overlay_select ──
+
+    fn overlay_worktree(path: &str) -> Worktree {
+        Worktree {
+            path: path.to_string(),
+            branch: "main".to_string(),
+        }
+    }
+
+    fn overlay_dir_entry(name: &str, is_dir: bool, is_git_repo: bool) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            is_dir,
+            is_git_repo,
+        }
+    }
+
+    fn overlay_hub_item(
+        label: &str,
+        is_header: bool,
+        enabled: bool,
+        description: &str,
+        action: HubAction,
+    ) -> HubItem {
+        HubItem {
+            label: label.to_string(),
+            hint: String::new(),
+            description: description.to_string(),
+            action,
+            is_header,
+            enabled,
+        }
+    }
+
+    fn overlay_selected_index(app: &App) -> usize {
+        match &app.overlay {
+            Some(OverlayData::WorktreePicker { selected, .. })
+            | Some(OverlayData::DirectoryBrowser { selected, .. })
+            | Some(OverlayData::FilterHistory { selected, .. })
+            | Some(OverlayData::ModalHub { selected, .. })
+            | Some(OverlayData::ConfigHub { selected, .. })
+            | Some(OverlayData::ExportPicker { selected, .. }) => *selected,
+            None => panic!("no overlay open"),
+        }
+    }
+
+    /// `overlay_next`/`overlay_prev` read the overlay's own `items` (unlike
+    /// `config_hub_activate`, which rebuilds from the real scope), so a
+    /// synthetic item list is the precise way to pin the header-skip loop.
+    fn synthetic_config_bool(label: &str) -> config::ConfigItem {
+        config::ConfigItem::BoolToggle {
+            label: label.to_string(),
+            description: String::new(),
+            get: |c| c.display.line_numbers,
+            set: |c, v| c.display.line_numbers = v,
+        }
+    }
+
+    fn synthetic_config_hub(items: Vec<config::ConfigItem>, selected: usize) -> OverlayData {
+        OverlayData::ConfigHub {
+            tab: config::SettingsScope::General,
+            items,
+            selected,
+            saved_config: Box::new(ErConfig::default()),
+            editing: None,
+        }
+    }
+
+    #[test]
+    fn overlay_next_advances_the_worktree_picker_and_clamps_at_the_end() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::WorktreePicker {
+            worktrees: vec![overlay_worktree("/a"), overlay_worktree("/b")],
+            selected: 0,
+        });
+        app.overlay_next();
+        assert_eq!(overlay_selected_index(&app), 1);
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            1,
+            "clamps at the last worktree"
+        );
+    }
+
+    #[test]
+    fn overlay_next_advances_the_directory_browser_and_clamps_at_the_end() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: "/repos".into(),
+            entries: vec![
+                overlay_dir_entry("a", true, false),
+                overlay_dir_entry("b", true, true),
+            ],
+            selected: 0,
+        });
+        app.overlay_next();
+        assert_eq!(overlay_selected_index(&app), 1);
+        app.overlay_next();
+        assert_eq!(overlay_selected_index(&app), 1, "clamps at the last entry");
+    }
+
+    #[test]
+    fn overlay_next_crosses_from_presets_into_filter_history() {
+        // `selected` indexes presets 0..preset_count, then history after it —
+        // the separator drawn between the two groups is not selectable.
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::FilterHistory {
+            history: vec!["*.rs".into()],
+            selected: 1,
+            preset_count: 2,
+        });
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            2,
+            "moves off the last preset onto the first history entry"
+        );
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            2,
+            "clamps at preset_count + history.len() - 1"
+        );
+    }
+
+    #[test]
+    fn overlay_next_skips_consecutive_modal_hub_headers() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![
+                overlay_hub_item("── Git ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("Push", false, true, "", HubAction::PushToRemote),
+                overlay_hub_item("── AI ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("── More ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("Refresh", false, true, "", HubAction::RefreshDiff),
+            ],
+            selected: 1,
+        });
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            4,
+            "two adjacent headers are skipped in one keypress"
+        );
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            4,
+            "no selectable item below — selection stays put"
+        );
+    }
+
+    #[test]
+    fn overlay_next_stays_put_when_only_headers_remain_below() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![
+                overlay_hub_item("Push", false, true, "", HubAction::PushToRemote),
+                overlay_hub_item("── Tail ──", true, false, "", HubAction::Noop),
+            ],
+            selected: 0,
+        });
+        app.overlay_next();
+        assert_eq!(overlay_selected_index(&app), 0);
+    }
+
+    #[test]
+    fn overlay_next_skips_config_hub_section_headers() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(synthetic_config_hub(
+            vec![
+                synthetic_config_bool("first"),
+                config::ConfigItem::SectionHeader("Display".into()),
+                synthetic_config_bool("second"),
+            ],
+            0,
+        ));
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            2,
+            "the header is not selectable"
+        );
+    }
+
+    #[test]
+    fn overlay_next_does_not_move_while_a_config_value_is_being_edited() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        let mut overlay = synthetic_config_hub(
+            vec![synthetic_config_bool("a"), synthetic_config_bool("b")],
+            0,
+        );
+        if let OverlayData::ConfigHub { editing, .. } = &mut overlay {
+            *editing = Some(ConfigEditState {
+                item_index: 0,
+                buffer: "typing".into(),
+                cursor_pos: 6,
+            });
+        }
+        app.overlay = Some(overlay);
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            0,
+            "arrow keys belong to the text buffer while editing"
+        );
+    }
+
+    #[test]
+    fn overlay_next_clamps_the_export_picker_to_its_four_rows() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        for expected in 1..4 {
+            app.overlay_next();
+            assert_eq!(overlay_selected_index(&app), expected);
+        }
+        app.overlay_next();
+        assert_eq!(
+            overlay_selected_index(&app),
+            3,
+            "the picker has exactly four rows"
+        );
+    }
+
+    #[test]
+    fn overlay_next_without_an_overlay_is_a_noop() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        app.overlay_next();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn overlay_prev_decrements_the_simple_list_overlays_and_clamps_at_zero() {
+        // WorktreePicker / DirectoryBrowser / FilterHistory share one arm.
+        let mut app = make_test_app(make_test_tab(vec![]));
+
+        app.overlay = Some(OverlayData::WorktreePicker {
+            worktrees: vec![overlay_worktree("/a"), overlay_worktree("/b")],
+            selected: 1,
+        });
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: "/repos".into(),
+            entries: vec![overlay_dir_entry("a", true, false)],
+            selected: 1,
+        });
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+
+        app.overlay = Some(OverlayData::FilterHistory {
+            history: vec!["*.rs".into()],
+            selected: 2,
+            preset_count: 2,
+        });
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 1);
+    }
+
+    #[test]
+    fn overlay_prev_skips_consecutive_modal_hub_headers() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![
+                overlay_hub_item("Push", false, true, "", HubAction::PushToRemote),
+                overlay_hub_item("── AI ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("── More ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("Refresh", false, true, "", HubAction::RefreshDiff),
+            ],
+            selected: 3,
+        });
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0, "clamps at the first item");
+    }
+
+    #[test]
+    fn overlay_prev_stays_put_when_only_a_header_sits_above() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![
+                overlay_hub_item("── Git ──", true, false, "", HubAction::Noop),
+                overlay_hub_item("Push", false, true, "", HubAction::PushToRemote),
+            ],
+            selected: 1,
+        });
+        app.overlay_prev();
+        assert_eq!(
+            overlay_selected_index(&app),
+            1,
+            "index 0 is a header, so there is nowhere to go"
+        );
+    }
+
+    #[test]
+    fn overlay_prev_skips_config_hub_section_headers() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(synthetic_config_hub(
+            vec![
+                synthetic_config_bool("first"),
+                config::ConfigItem::SectionHeader("Display".into()),
+                synthetic_config_bool("second"),
+            ],
+            2,
+        ));
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+    }
+
+    #[test]
+    fn overlay_prev_does_not_move_while_a_config_value_is_being_edited() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        let mut overlay = synthetic_config_hub(
+            vec![synthetic_config_bool("a"), synthetic_config_bool("b")],
+            1,
+        );
+        if let OverlayData::ConfigHub { editing, .. } = &mut overlay {
+            *editing = Some(ConfigEditState {
+                item_index: 1,
+                buffer: "typing".into(),
+                cursor_pos: 6,
+            });
+        }
+        app.overlay = Some(overlay);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 1);
+    }
+
+    #[test]
+    fn overlay_prev_decrements_the_export_picker_and_clamps_at_zero() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        set_export_selected(&mut app, 2);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 1);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+        app.overlay_prev();
+        assert_eq!(overlay_selected_index(&app), 0);
+    }
+
+    #[test]
+    fn overlay_prev_without_an_overlay_is_a_noop() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        app.overlay_prev();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn overlay_select_without_an_overlay_is_a_noop() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        app.overlay_select().unwrap();
+        assert!(app.overlay.is_none());
+        assert!(app.watch_message.is_none());
+    }
+
+    #[test]
+    fn overlay_select_worktree_already_open_switches_to_that_tab() {
+        // The picker lists every worktree, including ones already open — picking
+        // one of those must focus the existing tab, not open a duplicate.
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].repo_root = "/repos/other".to_string();
+        app.active_tab = 0;
+        app.overlay = Some(OverlayData::WorktreePicker {
+            worktrees: vec![
+                overlay_worktree("/repos/nope"),
+                overlay_worktree("/repos/other"),
+            ],
+            selected: 1,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.tabs.len(), 2, "no duplicate tab was opened");
+        assert_eq!(app.active_tab, 1);
+        assert!(app.overlay.is_none());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Switched to tab: feature")
+        );
+    }
+
+    #[test]
+    fn overlay_select_worktree_out_of_range_just_closes_the_overlay() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::WorktreePicker {
+            worktrees: vec![overlay_worktree("/repos/a")],
+            selected: 7,
+        });
+        app.overlay_select().unwrap();
+        assert!(app.overlay.is_none());
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn overlay_select_filter_preset_applies_the_preset_expression() {
+        use crate::app::filter::FILTER_PRESETS;
+        let mut app = make_test_app(make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]));
+        app.overlay = Some(OverlayData::FilterHistory {
+            history: vec!["never-used".into()],
+            selected: 0,
+            preset_count: FILTER_PRESETS.len(),
+        });
+
+        app.overlay_select().unwrap();
+
+        let expected = FILTER_PRESETS[0].expr;
+        assert_eq!(app.tab().filter_expr, expected);
+        let notice = format!("Filter: {expected}");
+        assert_eq!(app.watch_message.as_deref(), Some(notice.as_str()));
+    }
+
+    #[test]
+    fn overlay_select_past_the_presets_applies_a_history_entry() {
+        use crate::app::filter::FILTER_PRESETS;
+        let mut app = make_test_app(make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]));
+        let preset_count = FILTER_PRESETS.len();
+        app.overlay = Some(OverlayData::FilterHistory {
+            history: vec!["src/*".into(), "docs/*".into()],
+            selected: preset_count + 1,
+            preset_count,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.tab().filter_expr, "docs/*");
+    }
+
+    #[test]
+    fn overlay_select_descends_into_a_plain_directory() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join("plain/inner")).unwrap();
+        std::fs::write(tmp.path().join("plain/leaf.txt"), "x").unwrap();
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: tmp.path().to_string_lossy().to_string(),
+            entries: vec![overlay_dir_entry("plain", true, false)],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        match &app.overlay {
+            Some(OverlayData::DirectoryBrowser {
+                current_path,
+                entries,
+                selected,
+            }) => {
+                assert!(current_path.ends_with("/plain"));
+                assert_eq!(*selected, 0, "descending resets the cursor");
+                let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+                assert_eq!(names, vec!["inner", "leaf.txt"]);
+            }
+            other => panic!("expected to descend into the directory, got {other:?}"),
+        }
+        assert_eq!(app.tabs.len(), 1, "a plain directory does not open a tab");
+    }
+
+    #[test]
+    fn overlay_select_on_a_git_repo_entry_opens_it_as_a_tab() {
+        // Pointed at a path that is already open so the switch path runs without
+        // shelling out to git.
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].repo_root = "/repos/widget".to_string();
+        app.active_tab = 0;
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: "/repos".into(),
+            entries: vec![overlay_dir_entry("widget", true, true)],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.active_tab, 1);
+        assert_eq!(app.tabs.len(), 2);
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn overlay_select_directory_browser_restores_itself_when_nothing_is_selected() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: "/repos".into(),
+            entries: vec![overlay_dir_entry("a", true, false)],
+            selected: 9,
+        });
+
+        app.overlay_select().unwrap();
+
+        match &app.overlay {
+            Some(OverlayData::DirectoryBrowser {
+                current_path,
+                entries,
+                selected,
+            }) => {
+                assert_eq!(current_path, "/repos");
+                assert_eq!(entries.len(), 1);
+                assert_eq!(*selected, 9);
+            }
+            other => panic!("browser must stay open on a bad index, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn overlay_select_on_a_file_entry_closes_without_opening_anything() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::DirectoryBrowser {
+            current_path: "/repos".into(),
+            entries: vec![overlay_dir_entry("README.md", false, false)],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert!(app.overlay.is_none());
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn overlay_select_stores_an_enabled_hub_action_for_the_caller_to_dispatch() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![overlay_hub_item(
+                "Push",
+                false,
+                true,
+                "",
+                HubAction::PushToRemote,
+            )],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.pending_hub_action, Some(HubAction::PushToRemote));
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn overlay_select_on_a_disabled_hub_item_explains_why_instead_of_dispatching() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![overlay_hub_item(
+                "Push",
+                false,
+                false,
+                "No remote configured",
+                HubAction::PushToRemote,
+            )],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.pending_hub_action, None);
+        assert_eq!(app.watch_message.as_deref(), Some("No remote configured"));
+    }
+
+    #[test]
+    fn overlay_select_on_a_hub_header_dispatches_nothing() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![overlay_hub_item(
+                "── Git ──",
+                true,
+                false,
+                "not a real action",
+                HubAction::Noop,
+            )],
+            selected: 0,
+        });
+
+        app.overlay_select().unwrap();
+
+        assert_eq!(app.pending_hub_action, None);
+        assert!(
+            app.watch_message.is_none(),
+            "a header must not fall through to the disabled-item notification"
+        );
+    }
+
+    #[test]
+    fn overlay_select_keeps_the_export_picker_open_for_its_own_key_handler() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.open_export_picker();
+        app.overlay_select().unwrap();
+        assert_eq!(export_flags(&app), (true, true, true, true));
+    }
+
+    #[test]
+    fn overlay_select_closes_the_config_hub_without_dispatching() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = Some(synthetic_config_hub(vec![synthetic_config_bool("a")], 0));
+        app.overlay_select().unwrap();
+        assert!(app.overlay.is_none());
+        assert_eq!(app.pending_hub_action, None);
+    }
+
+    // ── read_directory ──
+
+    #[test]
+    fn read_directory_lists_dirs_before_files_and_flags_git_repos() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join("zeta")).unwrap();
+        std::fs::create_dir_all(root.join("alpha/.git")).unwrap();
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        std::fs::write(root.join("a.txt"), "a").unwrap();
+
+        let entries = App::read_directory(&root.to_string_lossy());
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "zeta", "a.txt", "b.txt"]);
+        assert!(entries[0].is_dir && entries[0].is_git_repo);
+        assert!(entries[1].is_dir && !entries[1].is_git_repo);
+        assert!(!entries[2].is_dir && !entries[2].is_git_repo);
+    }
+
+    #[test]
+    fn read_directory_hides_dotfiles_and_dot_directories() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let root = tmp.path();
+        std::fs::create_dir_all(root.join(".hidden-dir")).unwrap();
+        std::fs::write(root.join(".hidden-file"), "x").unwrap();
+        std::fs::write(root.join("visible.txt"), "x").unwrap();
+
+        let entries = App::read_directory(&root.to_string_lossy());
+
+        let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, vec!["visible.txt"]);
+    }
+
+    #[test]
+    fn read_directory_returns_empty_for_an_unreadable_path() {
+        let entries = App::read_directory("/definitely/not/a/real/path/er-test");
+        assert!(entries.is_empty());
+    }
+
+    // ── config hub activate / activate_prev / confirm_edit ──
+
+    fn config_item_label(item: &config::ConfigItem) -> Option<&str> {
+        match item {
+            config::ConfigItem::SectionHeader(_) => None,
+            config::ConfigItem::BoolToggle { label, .. }
+            | config::ConfigItem::StringCycle { label, .. }
+            | config::ConfigItem::DynamicStringCycle { label, .. }
+            | config::ConfigItem::StringEdit { label, .. }
+            | config::ConfigItem::NumberEdit { label, .. }
+            | config::ConfigItem::ListEntry { label, .. }
+            | config::ConfigItem::ListAdd { label, .. }
+            | config::ConfigItem::Action { label, .. } => Some(label),
+        }
+    }
+
+    /// Move the hub cursor onto the item with `label`. Items must come from the
+    /// real scope list — `config_hub_activate` rebuilds from it after every edit.
+    fn focus_config_item(app: &mut App, label: &str) {
+        let idx = match &app.overlay {
+            Some(OverlayData::ConfigHub { items, .. }) => items
+                .iter()
+                .position(|item| config_item_label(item) == Some(label))
+                .unwrap_or_else(|| panic!("no config hub item labelled {label:?}")),
+            other => panic!("expected a config hub overlay, got {other:?}"),
+        };
+        match &mut app.overlay {
+            Some(OverlayData::ConfigHub { selected, .. }) => *selected = idx,
+            _ => unreachable!(),
+        }
+    }
+
+    fn config_hub_editing(app: &App) -> Option<&ConfigEditState> {
+        match &app.overlay {
+            Some(OverlayData::ConfigHub { editing, .. }) => editing.as_ref(),
+            other => panic!("expected a config hub overlay, got {other:?}"),
+        }
+    }
+
+    /// Redirect both the managed storage root and the config file into `tmp`
+    /// so live-persisting hub edits never touch the developer's real config.
+    fn redirect_config_to(tmp: &tempfile::TempDir) {
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        std::env::set_var("ER_CONFIG_PATH", tmp.path().join("config.toml"));
+    }
+
+    fn clear_config_redirect() {
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("ER_CONFIG_PATH");
+    }
+
+    fn two_provider_hub() -> crate::config::AiHubConfig {
+        let mut hub = crate::config::AiHubConfig::default();
+        for id in ["alpha", "beta"] {
+            hub.providers.insert(
+                id.into(),
+                crate::config::AiProviderConfig {
+                    models: vec![crate::config::AiModelConfig {
+                        id: format!("{id}-model"),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+        }
+        hub.default_provider = Some("alpha".into());
+        hub
+    }
+
+    #[test]
+    fn config_hub_activate_is_a_noop_without_the_hub_open() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        let before = app.config.display.line_numbers;
+        app.config_hub_activate();
+        assert_eq!(app.config.display.line_numbers, before);
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn config_hub_activate_is_ignored_while_an_inline_edit_is_open() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        let mut overlay = synthetic_config_hub(vec![synthetic_config_bool("Line numbers")], 0);
+        if let OverlayData::ConfigHub { editing, .. } = &mut overlay {
+            *editing = Some(ConfigEditState {
+                item_index: 0,
+                buffer: "typed".into(),
+                cursor_pos: 5,
+            });
+        }
+        app.overlay = Some(overlay);
+        let before = app.config.display.line_numbers;
+
+        app.config_hub_activate();
+
+        assert_eq!(
+            app.config.display.line_numbers, before,
+            "Enter belongs to the inline editor, not the toggle underneath"
+        );
+    }
+
+    #[test]
+    fn config_hub_activate_flips_a_bool_toggle_and_persists_it() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        let before = app.config.features.model_discovery;
+        app.open_config_hub();
+        focus_config_item(&mut app, "Model discovery");
+
+        app.config_hub_activate();
+
+        assert_eq!(app.config.features.model_discovery, !before);
+        assert_eq!(
+            crate::config::load_global_config().features.model_discovery,
+            !before,
+            "a hub toggle auto-persists — it must survive a reload"
+        );
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_cycles_a_string_option_forward_and_wraps() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        assert!(app.config.agent.effort.is_none(), "unset reads as 'medium'");
+        app.open_config_hub();
+        focus_config_item(&mut app, "Effort");
+
+        app.config_hub_activate();
+        assert_eq!(app.config.agent.effort.as_deref(), Some("high"));
+
+        // low / medium / high — past the end wraps back to the first option.
+        app.config_hub_activate();
+        assert_eq!(app.config.agent.effort.as_deref(), Some("low"));
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_on_a_dynamic_cycle_with_no_options_changes_nothing() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.ai_hub.providers.clear();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Provider");
+
+        app.config_hub_activate();
+
+        assert_eq!(app.config.ai_hub.default_provider, None);
+        assert!(
+            !tmp.path().join("config.toml").exists(),
+            "no options — nothing saved"
+        );
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_cycles_the_dynamic_provider_list_and_syncs_the_selection() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.ai_hub = two_provider_hub();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Provider");
+
+        app.config_hub_activate();
+
+        assert_eq!(app.config.ai_hub.default_provider.as_deref(), Some("beta"));
+        assert_eq!(
+            app.current_ai_provider.as_deref(),
+            Some("beta"),
+            "the live AI selection follows the new default"
+        );
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_increments_a_number_and_wraps_at_the_max() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+        focus_config_item(&mut app, "Tab width");
+        assert_eq!(app.config.display.tab_width, 4);
+
+        app.config_hub_activate();
+        assert_eq!(app.config.display.tab_width, 5);
+
+        app.config.display.tab_width = 16; // the item's max
+        app.config_hub_activate();
+        assert_eq!(app.config.display.tab_width, 1, "wraps back to the min");
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_on_a_string_edit_opens_an_editor_seeded_with_the_value() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.commands.summary = Some("echo hi".into());
+        app.open_config_hub();
+        focus_config_item(&mut app, "Summary");
+        let selected = overlay_selected_index(&app);
+
+        app.config_hub_activate();
+
+        let editing = config_hub_editing(&app).expect("inline editor opened");
+        assert_eq!(editing.item_index, selected);
+        assert_eq!(editing.buffer, "echo hi");
+        assert_eq!(
+            editing.cursor_pos,
+            "echo hi".len(),
+            "cursor starts at the end"
+        );
+    }
+
+    #[test]
+    fn config_hub_activate_on_add_pattern_opens_an_empty_editor() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Add pattern...");
+        let selected = overlay_selected_index(&app);
+
+        app.config_hub_activate();
+
+        let editing = config_hub_editing(&app).expect("inline editor opened");
+        assert_eq!(editing.item_index, selected);
+        assert_eq!(editing.buffer, "");
+        assert_eq!(editing.cursor_pos, 0);
+    }
+
+    #[test]
+    fn config_hub_activate_on_an_action_closes_the_hub_and_runs_it() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        // Empty .er/ dir — copy_review_json reports the missing file instead of
+        // reaching for the system clipboard.
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        let mut app = make_test_app(tab);
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+        focus_config_item(&mut app, "Copy review.json");
+
+        app.config_hub_activate();
+
+        assert!(app.overlay.is_none(), "an action item dismisses the hub");
+        assert_eq!(app.watch_message.as_deref(), Some("No review.json found"));
+    }
+
+    #[test]
+    fn config_hub_activate_prev_is_a_noop_without_the_hub_open() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.overlay = None;
+        app.config_hub_activate_prev();
+        assert!(app.overlay.is_none());
+    }
+
+    #[test]
+    fn config_hub_activate_prev_is_ignored_while_an_inline_edit_is_open() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.display.tab_width = 4;
+        app.open_config_hub();
+        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+        focus_config_item(&mut app, "Tab width");
+        if let Some(OverlayData::ConfigHub {
+            editing, selected, ..
+        }) = &mut app.overlay
+        {
+            *editing = Some(ConfigEditState {
+                item_index: *selected,
+                buffer: String::new(),
+                cursor_pos: 0,
+            });
+        }
+
+        app.config_hub_activate_prev();
+
+        assert_eq!(app.config.display.tab_width, 4);
+    }
+
+    #[test]
+    fn config_hub_activate_prev_cycles_a_string_option_backwards_and_wraps() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Effort");
+
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.agent.effort.as_deref(), Some("low"));
+
+        // Before the first option wraps round to the last.
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.agent.effort.as_deref(), Some("high"));
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_prev_on_a_dynamic_cycle_with_no_options_changes_nothing() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.ai_hub.providers.clear();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Provider");
+
+        app.config_hub_activate_prev();
+
+        assert_eq!(app.config.ai_hub.default_provider, None);
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_prev_cycles_the_dynamic_provider_list_backwards() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.ai_hub = two_provider_hub();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Provider");
+
+        // alpha is first, so stepping back wraps to the last provider.
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.ai_hub.default_provider.as_deref(), Some("beta"));
+
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.ai_hub.default_provider.as_deref(), Some("alpha"));
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_prev_decrements_a_number_and_wraps_at_the_min() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        app.config_hub_switch_tab(crate::config::SettingsScope::Terminal);
+        focus_config_item(&mut app, "Tab width");
+
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.display.tab_width, 3);
+
+        app.config.display.tab_width = 1; // the item's min
+        app.config_hub_activate_prev();
+        assert_eq!(app.config.display.tab_width, 16, "wraps round to the max");
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_activate_prev_leaves_a_bool_toggle_alone() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        let before = app.config.features.model_discovery;
+        app.open_config_hub();
+        focus_config_item(&mut app, "Model discovery");
+
+        app.config_hub_activate_prev();
+
+        assert_eq!(
+            app.config.features.model_discovery, before,
+            "Left is a cycle-backwards key; booleans only respond to Enter"
+        );
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_confirm_edit_without_an_open_editor_is_a_noop() {
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        let before = app.config.commands.summary.clone();
+
+        app.config_hub_confirm_edit();
+
+        assert_eq!(app.config.commands.summary, before);
+        assert!(config_hub_editing(&app).is_none());
+    }
+
+    #[test]
+    fn config_hub_confirm_edit_writes_the_buffer_into_the_string_setting() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Summary");
+        let idx = overlay_selected_index(&app);
+        if let Some(OverlayData::ConfigHub { editing, .. }) = &mut app.overlay {
+            *editing = Some(ConfigEditState {
+                item_index: idx,
+                buffer: "cargo run".into(),
+                cursor_pos: 9,
+            });
+        }
+
+        app.config_hub_confirm_edit();
+
+        assert_eq!(app.config.commands.summary.as_deref(), Some("cargo run"));
+        assert!(
+            config_hub_editing(&app).is_none(),
+            "confirming closes the inline editor"
+        );
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_confirm_edit_appends_a_trimmed_watched_pattern() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.watched.paths.clear();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Add pattern...");
+        let idx = overlay_selected_index(&app);
+        if let Some(OverlayData::ConfigHub { editing, .. }) = &mut app.overlay {
+            *editing = Some(ConfigEditState {
+                item_index: idx,
+                buffer: "  .work/**  ".into(),
+                cursor_pos: 0,
+            });
+        }
+
+        app.config_hub_confirm_edit();
+
+        assert_eq!(app.config.watched.paths, vec![".work/**".to_string()]);
+        assert!(config_hub_editing(&app).is_none());
+
+        clear_config_redirect();
+    }
+
+    #[test]
+    fn config_hub_confirm_edit_drops_a_blank_watched_pattern() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        redirect_config_to(&tmp);
+
+        let mut app = make_test_app(make_test_tab(vec![]));
+        app.config = ErConfig::default();
+        app.config.watched.paths.clear();
+        app.open_config_hub();
+        focus_config_item(&mut app, "Add pattern...");
+        let idx = overlay_selected_index(&app);
+        if let Some(OverlayData::ConfigHub { editing, .. }) = &mut app.overlay {
+            *editing = Some(ConfigEditState {
+                item_index: idx,
+                buffer: "   ".into(),
+                cursor_pos: 0,
+            });
+        }
+
+        app.config_hub_confirm_edit();
+
+        assert!(
+            app.config.watched.paths.is_empty(),
+            "whitespace must not become a watched glob"
+        );
+        assert!(config_hub_editing(&app).is_none());
+
+        clear_config_redirect();
+    }
+
+    // ── ai_summary_section_offsets ──
+
+    /// Mirrors the header/blank arithmetic in `render_ai_summary`: 2 chrome
+    /// lines + 2 header lines, then the summary block, then a blank.
+    #[test]
+    fn ai_summary_section_offsets_account_for_the_empty_state_placeholders() {
+        let tab = make_test_tab(vec![]);
+        // chrome(2) + header(2) + "no summary"(1) + blank(1) = 6
+        // then "File Risk Overview"(2) + "no review"(1) + blank(1) = 10
+        assert_eq!(tab.ai_summary_section_offsets(), (6, 10));
+    }
+
+    #[test]
+    fn ai_summary_section_offsets_count_one_row_per_summary_line_and_file() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.summary = Some("# Title\n\nshort line\n".to_string());
+        tab.ai.review = Some(
+            serde_json::from_str(
+                r#"{
+                    "version": 1,
+                    "diff_hash": "",
+                    "files": {
+                        "a.rs": { "risk": "high" },
+                        "b.rs": { "risk": "low" }
+                    },
+                    "file_hashes": {}
+                }"#,
+            )
+            .unwrap(),
+        );
+
+        // chrome(2) + header(2) + 3 summary lines + blank = 8
+        // + "File Risk Overview"(2) + 2 files + blank = 13 (no findings row)
+        assert_eq!(tab.ai_summary_section_offsets(), (8, 13));
+    }
+
+    #[test]
+    fn ai_summary_section_offsets_wrap_long_summary_lines_and_add_a_findings_row() {
+        let mut tab = make_test_tab(vec![]);
+        // 140 chars → 140/70 + 1 = 3 rendered rows.
+        tab.ai.summary = Some("x".repeat(140));
+        tab.ai.review = Some(
+            serde_json::from_str(
+                r#"{
+                    "version": 1,
+                    "diff_hash": "",
+                    "files": {
+                        "a.rs": {
+                            "risk": "high",
+                            "findings": [
+                                { "id": "f1", "severity": "high", "title": "boom" }
+                            ]
+                        }
+                    },
+                    "file_hashes": {}
+                }"#,
+            )
+            .unwrap(),
+        );
+
+        // chrome(2) + header(2) + 3 wrapped rows + blank = 8
+        // + "File Risk Overview"(2) + 1 file + findings total & blank(2) + blank = 14
+        assert_eq!(tab.ai_summary_section_offsets(), (8, 14));
+    }
+
+    // ── compute_stale_files ──
+
+    fn stale_test_review(file_hashes: HashMap<String, String>) -> ai::ErReview {
+        ai::ErReview {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes,
+        }
+    }
+
+    const STALE_RAW_DIFF: &str = "diff --git a/a.rs b/a.rs\n\
+--- a/a.rs\n\
++++ b/a.rs\n\
+@@ -1 +1 @@\n\
+-old\n\
++new\n\
+diff --git a/b.rs b/b.rs\n\
+--- a/b.rs\n\
++++ b/b.rs\n\
+@@ -1 +1 @@\n\
+-one\n\
++two\n";
+
+    #[test]
+    fn compute_stale_files_flags_changed_and_missing_files_but_not_unchanged_ones() {
+        let current = ai::compute_per_file_hashes(STALE_RAW_DIFF);
+        let mut hashes = HashMap::new();
+        // a.rs still hashes the same; b.rs was reviewed against older bytes;
+        // gone.rs is no longer in the diff at all.
+        hashes.insert("a.rs".to_string(), current["a.rs"].clone());
+        hashes.insert("b.rs".to_string(), "stale-hash".to_string());
+        hashes.insert("gone.rs".to_string(), "whatever".to_string());
+
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.review = Some(stale_test_review(hashes));
+        tab.compute_stale_files(STALE_RAW_DIFF);
+
+        let mut stale: Vec<&str> = tab.ai.stale_files.iter().map(String::as_str).collect();
+        stale.sort_unstable();
+        assert_eq!(stale, vec!["b.rs", "gone.rs"]);
+    }
+
+    #[test]
+    fn compute_stale_files_leaves_state_alone_when_the_review_has_no_hashes() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.stale_files.insert("sentinel.rs".to_string());
+        tab.ai.review = Some(stale_test_review(HashMap::new()));
+
+        tab.compute_stale_files(STALE_RAW_DIFF);
+
+        assert!(
+            tab.ai.stale_files.contains("sentinel.rs"),
+            "an old review with no per-file hashes must not wipe existing staleness"
+        );
+    }
+
+    #[test]
+    fn compute_stale_files_is_a_noop_without_a_review() {
+        let mut tab = make_test_tab(vec![]);
+        tab.ai.review = None;
+        tab.compute_stale_files(STALE_RAW_DIFF);
+        assert!(tab.ai.stale_files.is_empty());
+    }
+
+    // ── real-git fixtures for the refresh/mode/staging targets ──
+
+    fn init_state_test_repo(root: &std::path::Path) {
+        run_git_for_history_test(root, &["init", "-b", "main"]);
+        run_git_for_history_test(root, &["config", "user.email", "test@example.com"]);
+        run_git_for_history_test(root, &["config", "user.name", "Test User"]);
+        run_git_for_history_test(root, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// Like `run_git_for_history_test` but tolerates a non-zero exit — a
+    /// conflicting `git merge` legitimately fails.
+    fn run_git_allowing_failure(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"))
+    }
+
+    /// main has `file.txt`; `feature` adds a committed line to it plus a
+    /// branch-only `only.txt`, and leaves one more uncommitted edit to
+    /// `file.txt` in the working tree.
+    fn branch_and_worktree_repo(root: &std::path::Path) {
+        init_state_test_repo(root);
+        std::fs::write(root.join("file.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "file.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        run_git_for_history_test(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("file.txt"), "base\ncommitted\n").unwrap();
+        std::fs::write(root.join("only.txt"), "branch only\n").unwrap();
+        run_git_for_history_test(root, &["add", "file.txt", "only.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "feature work"]);
+        std::fs::write(root.join("file.txt"), "base\ncommitted\nunstaged\n").unwrap();
+    }
+
+    // ── refresh_conflicts ──
+
+    #[test]
+    fn refresh_conflicts_puts_unmerged_files_first_and_counts_them() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        init_state_test_repo(root);
+        std::fs::write(root.join("shared.txt"), "base\n").unwrap();
+        std::fs::write(root.join("other.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "shared.txt", "other.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        run_git_for_history_test(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("shared.txt"), "feature\n").unwrap();
+        std::fs::write(root.join("other.txt"), "feature-only\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "feature"]);
+        run_git_for_history_test(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("shared.txt"), "mainline\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "mainline"]);
+        let merge = run_git_allowing_failure(root, &["merge", "feature"]);
+        assert!(!merge.status.success(), "the merge must actually conflict");
+
+        let mut tab =
+            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
+                .unwrap();
+        tab.mode = DiffMode::Conflicts;
+        tab.selected_file = 5;
+        tab.diff_scroll = 9;
+
+        tab.refresh_conflicts();
+
+        assert!(tab.merge_active, "a conflicted merge is in progress");
+        assert_eq!(tab.unresolved_count, 1);
+        assert_eq!(
+            tab.files[0].path, "shared.txt",
+            "unresolved files sort ahead of auto-merged ones"
+        );
+        assert_eq!(tab.files[0].status, crate::git::FileStatus::Unmerged);
+        let other = tab
+            .files
+            .iter()
+            .find(|f| f.path == "other.txt")
+            .expect("auto-merged file is still listed");
+        assert_ne!(other.status, crate::git::FileStatus::Unmerged);
+        assert_eq!(tab.selected_file, 0, "navigation resets on refresh");
+        assert_eq!(tab.diff_scroll, 0);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── refresh_diff_without_remote_fetch ──
+
+    #[test]
+    fn refresh_without_remote_fetch_errors_when_the_tab_has_no_local_branch_view() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        tab.local_branch_view = None;
+
+        let err = tab.refresh_diff_without_remote_fetch().unwrap_err();
+        assert!(
+            err.to_string().contains("No local branch view"),
+            "unexpected error: {err}"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn refresh_without_remote_fetch_delegates_for_a_checked_out_branch_tab() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+        let root = repo.path().to_string_lossy().to_string();
+
+        let mut tab = TabState::new_with_base_unloaded(root.clone(), "main".into()).unwrap();
+        // A checkout-backed tab short-circuits to the plain refresh before the
+        // local-branch-view requirement is ever checked.
+        tab.local_branch_checkout_root = Some(root);
+        tab.local_branch_view = None;
+
+        tab.refresh_diff_without_remote_fetch().unwrap();
+
+        assert!(tab.files.iter().any(|f| f.path == "file.txt"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn refresh_without_remote_fetch_resolves_the_base_from_local_refs_only() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "origin/main".into(),
+        )
+        .unwrap();
+        tab.local_branch_view = Some("feature".into());
+
+        tab.refresh_diff_without_remote_fetch().unwrap();
+
+        assert_eq!(
+            tab.base_branch, "main",
+            "origin/main does not exist locally, so the bare branch is used"
+        );
+        assert!(tab.pr_head_ref.is_none());
+        assert!(tab.files.iter().any(|f| f.path == "only.txt"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn refresh_without_remote_fetch_errors_when_no_local_base_ref_exists() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "no-such-base".into(),
+        )
+        .unwrap();
+        tab.local_branch_view = Some("feature".into());
+
+        let err = tab.refresh_diff_without_remote_fetch().unwrap_err();
+        assert!(
+            err.to_string().contains("No local base ref resolved"),
+            "unexpected error: {err}"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── refetch_and_refresh_diff ──
+
+    fn stub_preload(base_branch: &str) -> super::preload::PreloadedBranchRaw {
+        super::preload::PreloadedBranchRaw {
+            raw: "diff --git a/stale.rs b/stale.rs\n".to_string(),
+            base_branch: base_branch.to_string(),
+            pr_number: None,
+            local_branch_view: None,
+            checkout_root: None,
+            remote_repo: None,
+            pr_head_ref: None,
+            parity: true,
+        }
+    }
+
+    #[test]
+    fn refetch_drops_the_open_time_preload_before_refreshing() {
+        // A refetch demands fresh data — keeping the preload would let the
+        // refresh serve the diff captured when the tab was opened.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        tab.mode = DiffMode::Unstaged; // neither a local PR nor the branch-base view
+        tab.preloaded_branch_raw = Some(stub_preload("main"));
+
+        tab.refetch_and_refresh_diff().unwrap();
+
+        assert!(tab.preloaded_branch_raw.is_none());
+        assert!(
+            tab.files.iter().any(|f| f.path == "file.txt"),
+            "the working-tree edit was re-read from git, not from the preload"
+        );
+        assert!(!tab.files.iter().any(|f| f.path == "stale.rs"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn refetch_keeps_the_existing_base_when_the_origin_fetch_fails() {
+        // Best-effort: offline / no remote must still recompute the diff.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        assert!(tab.shows_branch_base_diff());
+
+        tab.refetch_and_refresh_diff().unwrap();
+
+        assert_eq!(tab.base_branch, "main", "a failed fetch keeps the old base");
+        assert!(tab.files.iter().any(|f| f.path == "only.txt"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn refetch_repoints_the_branch_base_at_the_fetched_remote_ref() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let origin = tempfile::TempDir::new().unwrap();
+        run_git_for_history_test(origin.path(), &["init", "--bare", "-q", "-b", "main"]);
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        branch_and_worktree_repo(root);
+        let origin_path = origin.path().to_string_lossy().to_string();
+        run_git_for_history_test(root, &["remote", "add", "origin", &origin_path]);
+        run_git_for_history_test(root, &["push", "-q", "origin", "main"]);
+
+        let mut tab =
+            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
+                .unwrap();
+
+        tab.refetch_and_refresh_diff().unwrap();
+
+        assert_eq!(
+            tab.base_branch, "origin/main",
+            "the branch view compares against the freshly fetched remote ref"
+        );
+        assert!(tab.files.iter().any(|f| f.path == "only.txt"));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── set_mode ──
+
+    #[test]
+    fn set_mode_hidden_clears_the_diff_and_reloads_watched_globs_from_config() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(&config_path, "[watched]\npaths = [\"logs/**\"]\n").unwrap();
+        std::env::set_var("ER_CONFIG_PATH", &config_path);
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]);
+        tab.repo_root = repo.path().to_string_lossy().to_string();
+        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.current_hunk = 3;
+        tab.diff_scroll = 7;
+
+        tab.set_mode(DiffMode::Hidden);
+
+        assert!(tab.files.is_empty(), "Hidden mode shows only watched files");
+        assert!(tab.show_watched);
+        assert_eq!(tab.watched_config.paths, vec!["logs/**".to_string()]);
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.diff_scroll, 0);
+        assert_eq!(tab.selected_watched, None, "nothing matches the glob yet");
+
+        std::env::remove_var("ER_CONFIG_PATH");
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn set_mode_conflicts_loads_the_conflict_file_list() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        init_state_test_repo(root);
+        std::fs::write(root.join("shared.txt"), "base\n").unwrap();
+        run_git_for_history_test(root, &["add", "shared.txt"]);
+        run_git_for_history_test(root, &["commit", "-m", "base"]);
+        run_git_for_history_test(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("shared.txt"), "feature\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "feature"]);
+        run_git_for_history_test(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("shared.txt"), "mainline\n").unwrap();
+        run_git_for_history_test(root, &["commit", "-am", "mainline"]);
+        run_git_allowing_failure(root, &["merge", "feature"]);
+
+        let mut tab =
+            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
+                .unwrap();
+        tab.set_mode(DiffMode::Conflicts);
+
+        assert_eq!(tab.mode, DiffMode::Conflicts);
+        assert_eq!(tab.unresolved_count, 1);
+        assert_eq!(tab.files[0].path, "shared.txt");
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn set_mode_keeps_the_cursor_on_a_file_present_in_both_modes() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        tab.refresh_diff().unwrap();
+        let branch_idx = tab
+            .files
+            .iter()
+            .position(|f| f.path == "file.txt")
+            .expect("file.txt is in the branch diff");
+        tab.selected_file = branch_idx;
+
+        tab.set_mode(DiffMode::Unstaged);
+
+        assert_eq!(tab.mode, DiffMode::Unstaged);
+        assert_eq!(
+            tab.files[tab.selected_file].path, "file.txt",
+            "selection follows the path, not the index"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn set_mode_falls_back_to_the_first_file_when_the_previous_one_is_gone() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        let mut tab = TabState::new_with_base_unloaded(
+            repo.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        tab.refresh_diff().unwrap();
+        let only_idx = tab
+            .files
+            .iter()
+            .position(|f| f.path == "only.txt")
+            .expect("only.txt is branch-only");
+        tab.selected_file = only_idx;
+
+        // only.txt is committed, so it has no unstaged changes.
+        tab.set_mode(DiffMode::Unstaged);
+
+        assert_eq!(tab.selected_file, 0);
+        assert_eq!(tab.files[0].path, "file.txt");
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── restore_session ──
+
+    fn write_session_file(path: &str, value: serde_json::Value) {
+        let p = std::path::Path::new(path);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, serde_json::to_string(&value).unwrap()).unwrap();
+    }
+
+    fn session_tab_with_two_files(dir: &std::path::Path) -> TabState {
+        let hunk = make_hunk(vec![make_line(LineType::Add, "x", Some(1))]);
+        let files = vec![
+            make_file("a.rs", vec![hunk.clone(), hunk.clone()], 1, 0),
+            make_file("b.rs", vec![hunk.clone(), hunk], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.er_root = ErRoot::RepoLocal(dir.to_string_lossy().to_string());
+        tab.branch_diff_hash = "hash-1".to_string();
+        tab
+    }
+
+    #[test]
+    fn restore_session_refuses_for_a_remote_only_tab() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.local_branch_view = None;
+        assert!(tab.is_remote());
+        assert!(
+            !tab.restore_session(),
+            "remote PR tabs have no local session to restore"
+        );
+    }
+
+    #[test]
+    fn restore_session_returns_false_when_no_session_file_exists() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = session_tab_with_two_files(tmp.path());
+        assert!(!tab.restore_session());
+    }
+
+    #[test]
+    fn restore_session_returns_false_when_the_diff_moved_on() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = session_tab_with_two_files(tmp.path());
+        write_session_file(
+            &tab.er_root.session_path(),
+            serde_json::json!({ "diff_hash": "some-older-hash", "selected_file": 1 }),
+        );
+
+        assert!(!tab.restore_session());
+        assert_eq!(tab.selected_file, 0, "nothing was applied");
+    }
+
+    #[test]
+    fn restore_session_returns_false_when_the_diff_has_no_files() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.branch_diff_hash = "hash-1".to_string();
+        write_session_file(
+            &tab.er_root.session_path(),
+            serde_json::json!({ "diff_hash": "hash-1", "diff_scroll": 30 }),
+        );
+
+        assert!(!tab.restore_session());
+        assert_eq!(
+            tab.diff_scroll, 0,
+            "navigation is not restored onto nothing"
+        );
+    }
+
+    #[test]
+    fn restore_session_reapplies_navigation_filter_and_comment_draft() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = session_tab_with_two_files(tmp.path());
+        write_session_file(
+            &tab.er_root.session_path(),
+            serde_json::json!({
+                "diff_hash": "hash-1",
+                "diff_mode": "branch",
+                "selected_file": 9,
+                "current_hunk": 9,
+                "current_line": 3,
+                "diff_scroll": 12,
+                "h_scroll": 4,
+                "filter_expr": "*.rs",
+                "filter_history": ["*.rs", "docs/*"],
+                "show_unreviewed_only": true,
+                "sort_by_mtime": true,
+                "comment_draft": "half-written",
+                "comment_draft_file": "b.rs",
+                "comment_draft_hunk": 1,
+                "comment_draft_line": 7,
+                "comment_draft_type": "note"
+            }),
+        );
+
+        assert!(tab.restore_session());
+
+        assert_eq!(tab.selected_file, 1, "clamped to the last file");
+        assert_eq!(tab.current_hunk, 1, "clamped to the last hunk");
+        assert_eq!(tab.current_line, Some(3));
+        assert_eq!(tab.diff_scroll, 12);
+        assert_eq!(tab.h_scroll, 4);
+        assert_eq!(tab.filter_expr, "*.rs");
+        assert_eq!(
+            tab.filter_history,
+            vec!["*.rs".to_string(), "docs/*".to_string()],
+            "the saved history replaces the entry apply_filter_expr just pushed"
+        );
+        assert!(tab.show_unreviewed_only);
+        assert!(tab.sort_by_mtime);
+        assert_eq!(tab.comment_text(), "half-written");
+        assert_eq!(tab.comment_file, "b.rs");
+        assert_eq!(tab.comment_hunk, 1);
+        assert_eq!(tab.comment_line_num, Some(7));
+        assert_eq!(tab.comment_type, CommentType::Note);
+    }
+
+    #[test]
+    fn restore_session_leaves_the_comment_draft_alone_when_it_was_empty() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = session_tab_with_two_files(tmp.path());
+        tab.comment_textarea = TextArea::new(vec!["still typing".to_string()]);
+        write_session_file(
+            &tab.er_root.session_path(),
+            serde_json::json!({ "diff_hash": "hash-1", "comment_draft": "" }),
+        );
+
+        assert!(tab.restore_session());
+        assert_eq!(tab.comment_text(), "still typing");
+    }
+
+    #[test]
+    fn restore_session_maps_the_saved_mode_string_onto_a_diff_mode() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        branch_and_worktree_repo(repo.path());
+
+        // The session file is read before set_mode runs, so the bucket switch
+        // that follows cannot move it out from under the restore.
+        for (saved, expected) in [
+            ("unstaged", DiffMode::Unstaged),
+            ("staged", DiffMode::Staged),
+            ("conflicts", DiffMode::Conflicts),
+            ("history", DiffMode::History),
+            ("not-a-mode", DiffMode::Branch),
+        ] {
+            let mut tab = TabState::new_with_base_unloaded(
+                repo.path().to_string_lossy().to_string(),
+                "main".into(),
+            )
+            .unwrap();
+            tab.branch_diff_hash = "hash-1".to_string();
+            write_session_file(
+                &tab.er_root.session_path(),
+                serde_json::json!({ "diff_hash": "hash-1", "diff_mode": saved }),
+            );
+
+            tab.restore_session();
+
+            assert_eq!(tab.mode, expected, "diff_mode {saved:?} mapped wrong");
+        }
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── toggle_stage_file ──
+
+    #[test]
+    fn toggle_stage_file_ignores_a_selection_past_the_file_list() {
+        let mut tab = make_test_tab(vec![]);
+        tab.selected_file = 4;
+        let mut app = make_test_app(tab);
+        app.toggle_stage_file().unwrap();
+        assert!(app.watch_message.is_none());
+    }
+
+    #[test]
+    fn toggle_stage_file_reports_that_history_mode_cannot_stage() {
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]);
+        tab.mode = DiffMode::History;
+        let mut app = make_test_app(tab);
+
+        app.toggle_stage_file().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Staging not available in this mode")
+        );
+    }
+
+    #[test]
+    fn toggle_stage_file_stages_from_unstaged_and_unstages_from_staged() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let repo = tempfile::TempDir::new().unwrap();
+        let root = repo.path();
+        branch_and_worktree_repo(root);
+
+        let mut tab =
+            TabState::new_with_base_unloaded(root.to_string_lossy().to_string(), "main".into())
+                .unwrap();
+        tab.mode = DiffMode::Unstaged;
+        tab.refresh_diff().unwrap();
+        assert_eq!(tab.files[0].path, "file.txt");
+        let mut app = make_test_app(tab);
+
+        app.toggle_stage_file().unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("Staged: file.txt"));
+        assert_eq!(
+            run_git_for_history_test(root, &["diff", "--cached", "--name-only"]),
+            "file.txt"
+        );
+
+        app.tab_mut().mode = DiffMode::Staged;
+        app.tab_mut().refresh_diff().unwrap();
+        app.tab_mut().selected_file = 0;
+
+        app.toggle_stage_file().unwrap();
+
+        assert_eq!(app.watch_message.as_deref(), Some("Unstaged: file.txt"));
+        assert_eq!(
+            run_git_for_history_test(root, &["diff", "--cached", "--name-only"]),
+            "",
+            "the working-tree edit is back out of the index"
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    // ── toggle_reviewed ──
+
+    #[test]
+    fn toggle_reviewed_ignores_a_selection_past_the_file_list() {
+        let mut tab = make_test_tab(vec![]);
+        tab.selected_file = 2;
+        let mut app = make_test_app(tab);
+        app.toggle_reviewed().unwrap();
+        assert!(app.tab().reviewed.is_empty());
+        assert!(app.watch_message.is_none());
+    }
+
+    #[test]
+    fn toggle_reviewed_marks_then_unmarks_and_rewrites_the_marker_file() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.current_per_file_hashes
+            .insert("a.rs".to_string(), "hash-a".to_string());
+        let mut app = make_test_app(tab);
+        let marker = tmp.path().join(".er").join("reviewed");
+
+        app.toggle_reviewed().unwrap();
+
+        assert_eq!(
+            app.tab().reviewed.get("a.rs").map(String::as_str),
+            Some("hash-a"),
+            "the file's current diff hash is stored so later edits unmark it"
+        );
+        assert_eq!(app.tab().reviewed_revision, 1);
+        assert_eq!(std::fs::read_to_string(&marker).unwrap(), "a.rs\thash-a\n");
+        assert_eq!(app.watch_message.as_deref(), Some("Reviewed: a.rs"));
+
+        app.toggle_reviewed().unwrap();
+
+        assert!(app.tab().reviewed.is_empty());
+        assert_eq!(app.tab().reviewed_revision, 2);
+        assert!(!marker.exists(), "an empty reviewed set deletes the marker");
+        assert_eq!(app.watch_message.as_deref(), Some("Unreviewed: a.rs"));
+    }
+
+    #[test]
+    fn toggle_reviewed_stores_an_empty_hash_for_a_file_absent_from_the_diff() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![make_file("a.rs", vec![], 1, 0)]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.current_per_file_hashes.clear();
+        let mut app = make_test_app(tab);
+
+        app.toggle_reviewed().unwrap();
+
+        assert_eq!(app.tab().reviewed.get("a.rs").map(String::as_str), Some(""));
+    }
+
+    #[test]
+    fn toggle_reviewed_advances_to_the_next_unreviewed_file_when_filtering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+            make_file("c.rs", vec![], 1, 0),
+        ]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.show_unreviewed_only = true;
+        tab.selected_file = 0;
+        tab.current_hunk = 2;
+        tab.diff_scroll = 40;
+        let mut app = make_test_app(tab);
+
+        app.toggle_reviewed().unwrap();
+
+        assert_eq!(
+            app.tab().selected_file,
+            1,
+            "the just-reviewed file is hidden, so the cursor moves off it"
+        );
+        assert_eq!(app.tab().current_hunk, 0);
+        assert_eq!(app.tab().diff_scroll, 0);
+    }
+
+    #[test]
+    fn toggle_reviewed_keeps_the_cursor_when_not_filtering() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut tab = make_test_tab(vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.show_unreviewed_only = false;
+        let mut app = make_test_app(tab);
+
+        app.toggle_reviewed().unwrap();
+
+        assert_eq!(app.tab().selected_file, 0, "the file is still on screen");
+    }
 }

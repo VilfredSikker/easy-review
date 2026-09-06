@@ -460,4 +460,177 @@ mod tests {
             .windows(2)
             .any(|pair| pair[0] == "--model" && pair[1] == "gpt-5.3-codex-spark"));
     }
+
+    // ── run_card_ai_subprocess ────────────────────────────────────────────
+    //
+    // The subprocess is a plain `sh` script, so these exercise the real spawn
+    // path (argv assembly, exit-status classification, output shaping) without
+    // an agent CLI or a network call.
+
+    // Serialize env-var-touching tests to avoid races on parallel runners.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn with_fake_claude<R>(value: Option<&str>, f: impl FnOnce() -> R) -> R {
+        let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var("ER_FAKE_CLAUDE").ok();
+        match value {
+            Some(v) => std::env::set_var("ER_FAKE_CLAUDE", v),
+            None => std::env::remove_var("ER_FAKE_CLAUDE"),
+        }
+        let out = f();
+        match prev {
+            Some(v) => std::env::set_var("ER_FAKE_CLAUDE", v),
+            None => std::env::remove_var("ER_FAKE_CLAUDE"),
+        }
+        out
+    }
+
+    fn sh_invocation(script: &str) -> CardAiInvocation {
+        CardAiInvocation {
+            command: "sh".into(),
+            args: vec!["-c".into(), script.into()],
+            work_dir: std::env::temp_dir().to_string_lossy().into_owned(),
+            is_claude_compatible: false,
+            uses_stream_json: false,
+            env: vec![],
+        }
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_maps_each_fake_claude_value_to_a_canned_reply() {
+        let inv = sh_invocation("echo real-subprocess-ran");
+        assert_eq!(
+            with_fake_claude(Some("fail"), || run_card_ai_subprocess(
+                &inv, "s", "u", None
+            )),
+            "Pending — invoke via CLI (error: ER_FAKE_CLAUDE=fail)"
+        );
+        assert_eq!(
+            with_fake_claude(Some("ok"), || run_card_ai_subprocess(&inv, "s", "u", None)),
+            "mocked ok"
+        );
+        assert_eq!(
+            with_fake_claude(Some("canned body"), || run_card_ai_subprocess(
+                &inv, "s", "u", None
+            )),
+            "canned body",
+            "any other value is returned verbatim as the reply"
+        );
+        assert_eq!(
+            with_fake_claude(Some(""), || run_card_ai_subprocess(&inv, "s", "u", None)),
+            "mocked ok",
+            "an empty value still short-circuits the subprocess"
+        );
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_returns_trimmed_stdout_on_success() {
+        let inv = sh_invocation("echo '  mocked-reply  '");
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert_eq!(reply, "mocked-reply");
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_reports_an_empty_response_as_pending() {
+        let inv = sh_invocation("true");
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert_eq!(reply, "Pending — invoke via CLI (empty response)");
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_reports_the_exit_code_and_stderr_on_failure() {
+        let inv = sh_invocation("echo boom >&2; exit 3");
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert_eq!(reply, "Pending — invoke via CLI (sh exited 3: boom)");
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_reports_a_spawn_failure_with_the_command_name() {
+        let mut inv = sh_invocation("true");
+        inv.command = "er-no-such-agent-binary".into();
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert!(
+            reply.starts_with("Pending — invoke via CLI (failed to spawn er-no-such-agent-binary:"),
+            "unspawnable agent is reported, not panicked on: {reply}"
+        );
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_truncates_replies_over_8_kib() {
+        // 200 × 100 characters of output, no whitespace, so the trim after the
+        // truncation cannot hide an off-by-one in the cap.
+        let inv = sh_invocation(
+            "i=0; while [ $i -lt 200 ]; do printf '%s' \
+             0123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789; \
+             i=$((i+1)); done",
+        );
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert_eq!(reply.len(), 8 * 1024, "reply capped at 8 KiB");
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_extracts_the_stream_json_result_when_the_agent_streams() {
+        let mut inv = sh_invocation(
+            "echo '{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"working\"}]}}'; \
+             echo '{\"type\":\"result\",\"result\":\"Verdict: Confirmed\"}'",
+        );
+        inv.uses_stream_json = true;
+        let reply = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert_eq!(
+            reply, "Verdict: Confirmed",
+            "the final result event wins over streamed assistant text"
+        );
+
+        // The same stdout is passed through untouched when the invocation is
+        // not a stream-json one.
+        inv.uses_stream_json = false;
+        let raw = with_fake_claude(None, || run_card_ai_subprocess(&inv, "sys", "usr", None));
+        assert!(raw.contains("\"type\":\"assistant\""), "raw stdout: {raw}");
+    }
+
+    #[test]
+    fn run_card_ai_subprocess_appends_the_model_override_only_for_claude_agents() {
+        // `sh -c '<script>' sh …` puts the assembled argv in "$@".
+        let echo_argv = |claude: bool| {
+            let mut inv = sh_invocation("echo \"$@\"");
+            inv.args.push("sh".into());
+            inv.is_claude_compatible = claude;
+            inv
+        };
+
+        let reply = with_fake_claude(None, || {
+            run_card_ai_subprocess(&echo_argv(true), "sys", "usr", Some("opus-x"))
+        });
+        assert!(
+            reply.contains("--model opus-x"),
+            "claude-compatible agents get the override appended: {reply}"
+        );
+
+        let reply = with_fake_claude(None, || {
+            run_card_ai_subprocess(&echo_argv(false), "sys", "usr", Some("opus-x"))
+        });
+        assert!(
+            !reply.contains("--model"),
+            "non-claude agents carry their model in their own args: {reply}"
+        );
+
+        let reply = with_fake_claude(None, || {
+            run_card_ai_subprocess(&echo_argv(true), "sys", "usr", Some("   "))
+        });
+        assert!(
+            !reply.contains("--model"),
+            "a blank override is ignored: {reply}"
+        );
+
+        let mut preset = echo_argv(true);
+        preset.args.push("--model".into());
+        preset.args.push("sonnet-y".into());
+        let reply = with_fake_claude(None, || {
+            run_card_ai_subprocess(&preset, "sys", "usr", Some("opus-x"))
+        });
+        assert!(
+            reply.contains("--model sonnet-y") && !reply.contains("opus-x"),
+            "an explicit --model in the invocation is not overridden: {reply}"
+        );
+    }
 }
