@@ -9,11 +9,11 @@ pub use desktop_settings::{
     ConfigHubFieldDto, DesktopSettingsSnapshot,
 };
 pub use inbox::{InboxConfig, InboxKindToggles};
+use serde::{Deserialize, Serialize};
 pub use settings::{
     agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
     settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

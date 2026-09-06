@@ -4269,7 +4269,6 @@ impl TabState {
         }
     }
 
-
     /// Update snapshot for the currently selected watched file
     pub fn update_watched_snapshot(&mut self) -> Result<()> {
         if let Some(watched) = self.selected_watched_file() {
