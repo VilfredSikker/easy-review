@@ -1,6 +1,6 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
-use super::config_settings::{agent_effort_label, settings_fields_grouped};
+use super::settings::{agent_effort_label, settings_fields_grouped};
 use super::{split_shell_args, ErConfig, AGENT_EFFORT_OPTIONS};
 use serde::{Deserialize, Serialize};
 
@@ -288,7 +288,7 @@ mod tests {
 
     #[test]
     fn settings_scopes_partition_fields() {
-        use super::super::config_settings::{settings_fields_grouped, SettingsScope};
+        use crate::config::settings::{settings_fields_grouped, SettingsScope};
 
         let config = ErConfig::default();
         let grouped = settings_fields_grouped(&config);

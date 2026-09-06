@@ -2,44 +2,23 @@
 // See lib.rs for the rationale behind these two crate-wide allows.
 #![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
 
-mod arena_commands;
-mod auto_triage;
-mod browser_proxy;
-mod browser_webview;
-mod commands;
-mod config_commands;
-mod dev_log;
-mod er_storage;
-mod export;
-mod frame_script;
-mod gh_status_cache;
-mod inbox;
-mod main_webview_policy;
-mod native_notify;
-mod persist;
-mod pr_cache;
-mod pr_open_cache;
-mod profile_log;
-mod projects;
-mod remote_pr_open_cache;
-mod snapshot;
-mod tabs;
-mod terminal;
-mod window_placement;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
-use browser_webview::BrowserWebviewState;
-use commands::AppState;
-use er_engine::app::App;
-use frame_script::FRAME_SCRIPT;
-use snapshot::{
+use er_desktop::frame_script::FRAME_SCRIPT;
+use er_desktop::snapshot::{
     GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
     WatchStatusState,
 };
+use er_desktop::{
+    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
+    gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache, pr_open_cache,
+    profile_log, projects, snapshot, tabs, terminal, window_placement,
+};
+use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
+use er_engine::app::App;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
