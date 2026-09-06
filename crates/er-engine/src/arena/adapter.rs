@@ -495,4 +495,92 @@ mod tests {
         assert!(v1.get("findings").is_some());
         std::env::remove_var("ER_FAKE_ARENA_DIR");
     }
+
+    #[test]
+    fn classify_error_detects_rate_limits_before_any_other_pattern() {
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("provider rate limit reached")),
+            ErrorClass::RateLimit
+        );
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("HTTP 429 Too Many Requests")),
+            ErrorClass::RateLimit
+        );
+        // Rate limit is checked first, so a message mentioning both must not be
+        // downgraded to a plain retryable timeout (they back off differently).
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("timed out waiting on rate limit reset")),
+            ErrorClass::RateLimit
+        );
+    }
+
+    #[test]
+    fn classify_error_treats_cancellation_as_fatal_not_retryable() {
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("cancelled")),
+            ErrorClass::Fatal
+        );
+        // Matching is case-insensitive and substring-based.
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("Run was CANCELLED by the user")),
+            ErrorClass::Fatal
+        );
+        // A cancellation that also mentions a timeout stays Fatal — retrying a
+        // cancelled run is exactly what the ordering here exists to prevent.
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("cancelled: child timed out")),
+            ErrorClass::Fatal
+        );
+    }
+
+    #[test]
+    fn classify_error_marks_timeouts_and_temporary_failures_transient() {
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("provider timed out")),
+            ErrorClass::Transient
+        );
+        // The needle is the stem "temporar", so both spellings classify.
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("Temporary failure in name resolution")),
+            ErrorClass::Transient
+        );
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("service temporarily unavailable")),
+            ErrorClass::Transient
+        );
+    }
+
+    #[test]
+    fn classify_error_defaults_unrecognized_messages_to_fatal() {
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("no JSON object in provider output")),
+            ErrorClass::Fatal
+        );
+        assert_eq!(classify_error(&anyhow::anyhow!("")), ErrorClass::Fatal);
+        // "timeout" (no space) is not the "timed out" needle — unknown, so Fatal.
+        assert_eq!(
+            classify_error(&anyhow::anyhow!("connection timeout")),
+            ErrorClass::Fatal
+        );
+    }
+
+    #[test]
+    fn classify_error_reads_only_the_outermost_context_not_the_source_chain() {
+        // `classify_error` matches `err.to_string()`, and anyhow's `Display`
+        // renders only the outermost message — the source chain needs `{:#}`.
+        // So the needle is found anywhere *within the top message*...
+        let needle_in_context = anyhow::anyhow!("boom").context("round-1 reviewer hit rate limit");
+        assert_eq!(classify_error(&needle_in_context), ErrorClass::RateLimit);
+
+        // ...but a needle that survives only in the wrapped cause is invisible,
+        // and the message classifies on its outermost text alone. Switching to
+        // `format!("{err:#}")` would flip this — which is the point of pinning
+        // it here rather than discovering it from a retry that never happened.
+        let needle_in_source =
+            anyhow::anyhow!("provider rate limit reached").context("round-1 reviewer failed");
+        assert_eq!(classify_error(&needle_in_source), ErrorClass::Fatal);
+
+        let timeout_in_source = anyhow::anyhow!("timed out").context("round-2 reviewer failed");
+        assert_eq!(classify_error(&timeout_in_source), ErrorClass::Fatal);
+    }
 }

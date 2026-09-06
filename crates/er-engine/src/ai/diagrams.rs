@@ -511,4 +511,92 @@ mod tests {
         let d = parse_diagram_from_agent_stdout(stdout, true).unwrap();
         assert!(d.mermaid.contains("flowchart LR"));
     }
+
+    // The agent is told to emit bare JSON between the markers, but models
+    // habitually add a ```json fence anyway — it must be stripped, not fed to
+    // the parser.
+    #[test]
+    fn extract_payload_strips_a_json_fence_inside_the_markers() {
+        let body = "```json\n{\"kind\":\"flows\"}\n```";
+        let text = format!("thinking…\n{DIAGRAM_JSON_BEGIN}\n{body}\n{DIAGRAM_JSON_END}\ndone");
+        assert_eq!(
+            extract_diagram_json_payload(&text).as_deref(),
+            Some(r#"{"kind":"flows"}"#)
+        );
+    }
+
+    #[test]
+    fn extract_payload_strips_an_unlabelled_fence_inside_the_markers() {
+        let body = "```\n{\"kind\":\"subsystems\"}\n```";
+        let text = format!("{DIAGRAM_JSON_BEGIN}\n{body}\n{DIAGRAM_JSON_END}");
+        assert_eq!(
+            extract_diagram_json_payload(&text).as_deref(),
+            Some(r#"{"kind":"subsystems"}"#)
+        );
+    }
+
+    // A truncated stream can leave the opening marker without its closer; the
+    // fenced-block fallback still recovers the payload.
+    #[test]
+    fn extract_payload_falls_back_to_a_fenced_block_when_the_end_marker_is_missing() {
+        let text = format!(
+            "{DIAGRAM_JSON_BEGIN}\n```json\n{}\n```\n",
+            r#"{"kind":"flows"}"#
+        );
+        assert_eq!(
+            extract_diagram_json_payload(&text).as_deref(),
+            Some(r#"{"kind":"flows"}"#)
+        );
+    }
+
+    // Markers present but nothing between them: fall through rather than
+    // returning an empty payload the parser would choke on.
+    #[test]
+    fn extract_payload_ignores_an_empty_marker_body() {
+        let text = format!(
+            "{DIAGRAM_JSON_BEGIN}\n   \n{DIAGRAM_JSON_END}\n```json\n{}\n```",
+            r#"{"kind":"mental-model"}"#
+        );
+        assert_eq!(
+            extract_diagram_json_payload(&text).as_deref(),
+            Some(r#"{"kind":"mental-model"}"#)
+        );
+    }
+
+    #[test]
+    fn extract_payload_accepts_an_unadorned_json_document() {
+        let text = "  \n{\"kind\":\"flows\",\"mermaid\":\"graph TD\"}\n  ";
+        assert_eq!(
+            extract_diagram_json_payload(text).as_deref(),
+            Some(r#"{"kind":"flows","mermaid":"graph TD"}"#)
+        );
+    }
+
+    // Text that merely starts with `{` is not automatically the payload — the
+    // whole-text parse fails and the reverse line scan finds the real object on
+    // the last line.
+    #[test]
+    fn extract_payload_scans_backwards_when_the_whole_text_is_not_json() {
+        let text = "{ note: this is prose, not JSON\nmore chatter\n{\"kind\":\"flows\"}\n";
+        assert_eq!(
+            extract_diagram_json_payload(text).as_deref(),
+            Some(r#"{"kind":"flows"}"#)
+        );
+    }
+
+    // The reverse scan takes the *last* complete JSON line, so a later revision
+    // wins over an earlier draft.
+    #[test]
+    fn extract_payload_reverse_scan_prefers_the_last_json_line() {
+        let text = "here you go\n{\"kind\":\"flows\",\"n\":1}\nactually, revised:\n{\"kind\":\"flows\",\"n\":2}\n";
+        assert_eq!(
+            extract_diagram_json_payload(text).as_deref(),
+            Some(r#"{"kind":"flows","n":2}"#)
+        );
+    }
+
+    #[test]
+    fn extract_payload_returns_none_when_there_is_no_json_anywhere() {
+        assert!(extract_diagram_json_payload("I could not build a diagram.").is_none());
+    }
 }

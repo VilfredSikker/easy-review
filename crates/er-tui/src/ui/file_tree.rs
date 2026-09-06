@@ -780,3 +780,503 @@ mod tests {
         assert_eq!(shorten_path("some/dir/main.rs", 11), "main.rs");
     }
 }
+
+#[cfg(test)]
+mod finding_severity_style_tests {
+    use super::finding_severity_style;
+    use er_engine::ai::RiskLevel;
+    use ratatui::style::Modifier;
+
+    // Colours are theme-dependent (and the theme is global mutable state shared by
+    // every test in this binary), so these pin the theme-independent facts: which
+    // severities are emphasised, and that severities stay distinguishable.
+
+    #[test]
+    fn high_and_medium_findings_are_bold_low_and_info_are_not() {
+        assert!(finding_severity_style(RiskLevel::High, false)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(finding_severity_style(RiskLevel::Medium, false)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(!finding_severity_style(RiskLevel::Low, false)
+            .add_modifier
+            .contains(Modifier::BOLD));
+        assert!(!finding_severity_style(RiskLevel::Info, false)
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn each_severity_gets_its_own_colour() {
+        let high = finding_severity_style(RiskLevel::High, false).fg;
+        let medium = finding_severity_style(RiskLevel::Medium, false).fg;
+        let low = finding_severity_style(RiskLevel::Low, false).fg;
+        let info = finding_severity_style(RiskLevel::Info, false).fg;
+
+        assert!(high.is_some(), "severity dots always carry a colour");
+        assert_ne!(high, medium);
+        assert_ne!(high, low);
+        assert_ne!(high, info);
+        assert_ne!(medium, low);
+        assert_ne!(medium, info);
+        assert_ne!(low, info);
+    }
+
+    /// A stale finding was generated against a diff that has since changed — it
+    /// must stop shouting, whatever severity it claims.
+    #[test]
+    fn stale_findings_lose_their_severity_emphasis() {
+        for level in [
+            RiskLevel::High,
+            RiskLevel::Medium,
+            RiskLevel::Low,
+            RiskLevel::Info,
+        ] {
+            assert!(
+                !finding_severity_style(level, true)
+                    .add_modifier
+                    .contains(Modifier::BOLD),
+                "{level:?} must not stay bold when stale"
+            );
+        }
+        assert!(
+            finding_severity_style(RiskLevel::High, false)
+                .add_modifier
+                .contains(Modifier::BOLD),
+            "…but a fresh high-severity finding still is"
+        );
+    }
+
+    #[test]
+    fn stale_collapses_every_severity_onto_one_colour() {
+        let high = finding_severity_style(RiskLevel::High, true).fg;
+        for level in [RiskLevel::Medium, RiskLevel::Low, RiskLevel::Info] {
+            assert_eq!(
+                finding_severity_style(level, true).fg,
+                high,
+                "stale styling ignores severity ({level:?})"
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod commit_list_render_tests {
+    use super::*;
+    use er_engine::git::CommitInfo;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn draw_tree(app: &App, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|f| render(f, f.area(), app))
+            .expect("draw file tree");
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn text(rows: &[String]) -> String {
+        rows.join("\n")
+    }
+
+    fn row_containing<'a>(rows: &'a [String], needle: &str) -> &'a str {
+        match rows.iter().find(|r| r.contains(needle)) {
+            Some(row) => row.as_str(),
+            None => panic!("no rendered row contains {needle:?}:\n{}", text(rows)),
+        }
+    }
+
+    fn commit(subject: &str, author: &str, is_merge: bool) -> CommitInfo {
+        CommitInfo {
+            hash: format!("hash-{subject}"),
+            short_hash: format!("s{subject}"),
+            subject: subject.to_string(),
+            author: author.to_string(),
+            date: "2026-01-01".to_string(),
+            relative_date: "1 day ago".to_string(),
+            file_count: 1,
+            adds: 1,
+            dels: 0,
+            is_merge,
+        }
+    }
+
+    /// History mode on a local PR tab: `set_mode` takes the commit list straight
+    /// from `pr_commits` (no `git log`), and keeping `remote_repo` set pins the
+    /// review bucket across the switch so no managed-storage dirs are touched.
+    fn app_in_history(commits: Vec<CommitInfo>, selected: usize) -> App {
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.local_branch_view = Some("feature".to_string());
+            tab.local_branch_checkout_root = Some("/er-tui-test/no-such-repo".to_string());
+            tab.pr_number = Some(1);
+            tab.pr_commits = commits;
+            tab.set_mode(DiffMode::History);
+            if let Some(history) = tab.history.as_mut() {
+                history.selected_commit = selected;
+            }
+        }
+        app
+    }
+
+    #[test]
+    fn commit_list_marks_the_selected_commit_and_flags_merges() {
+        let app = app_in_history(
+            vec![
+                commit("add the parser", "ada", false),
+                commit("bring topic into trunk", "grace", true),
+            ],
+            1,
+        );
+        let buf = draw_tree(&app, 40, 20);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("COMMITS (2)"), "{out}");
+
+        let merge = row_containing(&rows, "bring topic into trunk");
+        assert!(merge.contains("●"), "the selected commit gets a filled dot");
+        assert!(
+            merge.contains("⊕"),
+            "merge commits get a merge glyph: {merge}"
+        );
+
+        let plain = row_containing(&rows, "add the parser");
+        assert!(plain.contains("○"), "unselected commits get a hollow dot");
+        assert!(!plain.contains("⊕"), "non-merges get no glyph: {plain}");
+
+        assert!(out.contains("ada"), "author line renders: {out}");
+        assert!(out.contains("grace"), "{out}");
+    }
+
+    /// The list scrolls by accumulated *row height*, not commit index, so the
+    /// selection stays on screen even though each commit is three rows tall.
+    #[test]
+    fn commit_list_scrolls_so_the_selected_commit_stays_visible() {
+        let subjects = [
+            "commit-zero",
+            "commit-one",
+            "commit-two",
+            "commit-three",
+            "commit-four",
+            "commit-five",
+        ];
+        let app = app_in_history(
+            subjects
+                .iter()
+                .map(|s| commit(s, "ada", false))
+                .collect::<Vec<_>>(),
+            5,
+        );
+        // height 8 → 6 usable rows → only the last two 3-row commits fit.
+        let buf = draw_tree(&app, 40, 8);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(
+            out.contains("commit-five"),
+            "selection must be visible:\n{out}"
+        );
+        assert!(row_containing(&rows, "commit-five").contains("●"));
+        assert!(out.contains("commit-four"), "{out}");
+        for hidden in ["commit-zero", "commit-one", "commit-two", "commit-three"] {
+            assert!(
+                !out.contains(hidden),
+                "{hidden} should have scrolled off:\n{out}"
+            );
+        }
+        assert!(
+            out.contains("COMMITS (6)"),
+            "the header still counts every commit:\n{out}"
+        );
+    }
+
+    #[test]
+    fn commit_list_shows_a_zero_count_before_history_loads() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().mode = DiffMode::History;
+
+        let buf = draw_tree(&app, 40, 12);
+        let out = text(&rows(&buf));
+
+        assert!(out.contains("COMMITS (0)"), "{out}");
+        assert!(
+            !out.contains("FILES"),
+            "History mode replaces the file tree"
+        );
+    }
+}
+
+#[cfg(test)]
+mod pillar_list_render_tests {
+    use super::*;
+    use er_engine::ai::{ErTour, TourFile, TourPillar, TourRelatedFile};
+    use er_engine::git::DiffFile;
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn draw_tree(app: &App, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|f| render(f, f.area(), app))
+            .expect("draw file tree");
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn text(rows: &[String]) -> String {
+        rows.join("\n")
+    }
+
+    fn row_containing<'a>(rows: &'a [String], needle: &str) -> &'a str {
+        match rows.iter().find(|r| r.contains(needle)) {
+            Some(row) => row.as_str(),
+            None => panic!("no rendered row contains {needle:?}:\n{}", text(rows)),
+        }
+    }
+
+    fn col_of(row: &str, needle: &str) -> usize {
+        let byte = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in {row:?}"));
+        row[..byte].chars().count()
+    }
+
+    fn diff_file(path: &str) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    fn tour_file(path: &str, related: Vec<TourRelatedFile>) -> TourFile {
+        TourFile {
+            path: path.to_string(),
+            reason: String::new(),
+            finding_ids: Vec::new(),
+            related,
+        }
+    }
+
+    fn pillar(
+        id: &str,
+        title: &str,
+        order: u32,
+        foundation: bool,
+        files: Vec<TourFile>,
+    ) -> TourPillar {
+        TourPillar {
+            id: id.to_string(),
+            title: title.to_string(),
+            description: String::new(),
+            order,
+            importance: 0,
+            foundation,
+            files,
+        }
+    }
+
+    fn app_in_tour(files: Vec<DiffFile>, pillars: Vec<TourPillar>) -> App {
+        let mut app = App::new_for_test(files);
+        {
+            let tab = app.tab_mut();
+            tab.ai.tour = Some(ErTour {
+                version: 1,
+                diff_hash: String::new(),
+                created_at: String::new(),
+                title: String::new(),
+                overview: String::new(),
+                pillars,
+            });
+            tab.rebuild_tour_state();
+            tab.mode = DiffMode::Tour;
+        }
+        app
+    }
+
+    #[test]
+    fn pillar_list_without_a_tour_renders_an_empty_tour_header() {
+        let mut app = App::new_for_test(vec![diff_file("src/a.rs")]);
+        app.tab_mut().mode = DiffMode::Tour;
+
+        let buf = draw_tree(&app, 40, 12);
+        let out = text(&rows(&buf));
+
+        assert!(out.contains("TOUR"), "{out}");
+        assert!(
+            !out.contains("PILLARS"),
+            "no pillar count without a tour: {out}"
+        );
+        assert!(
+            !out.contains("src/a.rs"),
+            "the diff files are not listed until a tour exists: {out}"
+        );
+    }
+
+    #[test]
+    fn pillar_list_flags_foundation_pillars_and_counts_unreviewed_files() {
+        let app = app_in_tour(
+            vec![diff_file("src/auth.rs"), diff_file("src/ui.rs")],
+            vec![
+                pillar(
+                    "p-auth",
+                    "Auth core",
+                    0,
+                    true,
+                    vec![tour_file("src/auth.rs", vec![])],
+                ),
+                pillar(
+                    "p-ui",
+                    "UI shell",
+                    1,
+                    false,
+                    vec![tour_file("src/ui.rs", vec![])],
+                ),
+            ],
+        );
+        let buf = draw_tree(&app, 40, 20);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("PILLARS (2)"), "{out}");
+
+        let auth = row_containing(&rows, "Auth core");
+        assert!(
+            auth.contains("◆ Auth core"),
+            "foundation pillars get the ◆ marker: {auth}"
+        );
+        assert!(auth.contains("00/01"), "0 of 1 reviewed: {auth}");
+        assert!(auth.contains("●"), "the first pillar is selected: {auth}");
+
+        let ui = row_containing(&rows, "UI shell");
+        assert!(
+            !ui.contains("◆"),
+            "non-foundation pillars get no marker: {ui}"
+        );
+        assert!(ui.contains("○"), "{ui}");
+
+        assert!(
+            out.contains("src/auth.rs"),
+            "pillar files are listed: {out}"
+        );
+        assert!(out.contains("src/ui.rs"), "{out}");
+    }
+
+    #[test]
+    fn pillar_list_swaps_the_counter_for_a_check_once_every_file_is_reviewed() {
+        let mut app = app_in_tour(
+            vec![diff_file("src/auth.rs"), diff_file("src/ui.rs")],
+            vec![
+                pillar(
+                    "p-auth",
+                    "Auth core",
+                    0,
+                    false,
+                    vec![tour_file("src/auth.rs", vec![])],
+                ),
+                pillar(
+                    "p-ui",
+                    "UI shell",
+                    1,
+                    false,
+                    vec![tour_file("src/ui.rs", vec![])],
+                ),
+            ],
+        );
+        app.tab_mut()
+            .reviewed
+            .insert("src/auth.rs".to_string(), String::new());
+
+        let buf = draw_tree(&app, 40, 20);
+        let rows = rows(&buf);
+
+        let auth = row_containing(&rows, "Auth core");
+        assert!(
+            auth.contains("✓"),
+            "fully reviewed pillar shows a check: {auth}"
+        );
+        assert!(!auth.contains("00/01"), "…instead of a counter: {auth}");
+
+        let ui = row_containing(&rows, "UI shell");
+        assert!(
+            ui.contains("00/01"),
+            "a pillar with unreviewed files keeps its counter: {ui}"
+        );
+
+        let file_row = row_containing(&rows, "src/auth.rs");
+        assert!(
+            file_row.contains("✓ src/auth.rs"),
+            "reviewed files are ticked: {file_row}"
+        );
+        let unreviewed = row_containing(&rows, "src/ui.rs");
+        assert!(!unreviewed.contains("✓"), "{unreviewed}");
+    }
+
+    /// Co-located tests/styles/stories hang off their primary file with a ↳ and an
+    /// extra four columns of indent.
+    #[test]
+    fn pillar_list_indents_related_files_under_their_primary() {
+        let app = app_in_tour(
+            vec![diff_file("src/auth.rs"), diff_file("src/auth.test.rs")],
+            vec![pillar(
+                "p-auth",
+                "Auth core",
+                0,
+                false,
+                vec![tour_file(
+                    "src/auth.rs",
+                    vec![TourRelatedFile {
+                        path: "src/auth.test.rs".to_string(),
+                        kind: "test".to_string(),
+                        reason: String::new(),
+                    }],
+                )],
+            )],
+        );
+        let buf = draw_tree(&app, 44, 20);
+        let rows = rows(&buf);
+
+        let primary = row_containing(&rows, "src/auth.rs");
+        let related = row_containing(&rows, "src/auth.test.rs");
+
+        assert!(
+            related.contains("↳"),
+            "related files get the ↳ marker: {related}"
+        );
+        assert!(!primary.contains("↳"), "primaries do not: {primary}");
+        assert_eq!(
+            col_of(related, "src/auth.test.rs"),
+            col_of(primary, "src/auth.rs") + 4,
+            "related rows are indented four columns further than their primary"
+        );
+    }
+}

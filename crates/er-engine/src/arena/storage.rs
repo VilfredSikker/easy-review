@@ -366,4 +366,352 @@ mod tests {
             vec!["run-fixture-001".to_string()]
         );
     }
+
+    fn ev(event: &ProgressEvent) -> String {
+        serde_json::to_string(event).unwrap()
+    }
+
+    fn write_progress(paths: &ArenaPaths, lines: &[String]) {
+        paths.ensure_dirs().unwrap();
+        fs::write(paths.progress_jsonl(), lines.join("\n")).unwrap();
+    }
+
+    fn sorted(mut v: Vec<String>) -> Vec<String> {
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn parse_progress_state_is_default_when_progress_file_missing() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-never-started");
+        let state = parse_progress_state(&paths);
+        assert_eq!(state.round, 0);
+        assert_eq!(state.total_rounds, 0);
+        assert!(state.phase.is_empty());
+        assert!(state.thinking.is_empty());
+        assert!(state.done.is_empty());
+    }
+
+    #[test]
+    fn parse_progress_state_skips_blank_and_unparseable_lines() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-noise");
+        write_progress(
+            &paths,
+            &[
+                String::new(),
+                "   ".to_string(),
+                "{ not json at all".to_string(),
+                r#"{"type":"from_a_newer_version"}"#.to_string(),
+                ev(&ProgressEvent::RoundStarted {
+                    round: 2,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 2,
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert_eq!(
+            state.round, 2,
+            "events following junk lines must still be applied"
+        );
+        assert_eq!(state.total_rounds, 3);
+        assert_eq!(state.thinking, vec!["r1".to_string()]);
+    }
+
+    #[test]
+    fn parse_progress_state_moves_reviewer_from_thinking_to_done() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-progress");
+        write_progress(
+            &paths,
+            &[
+                ev(&ProgressEvent::RoundStarted {
+                    round: 1,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 1,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r2".into(),
+                    round: 1,
+                }),
+                ev(&ProgressEvent::ReviewerDone {
+                    reviewer_id: "r1".into(),
+                    round: 1,
+                    findings_count: 4,
+                }),
+                ev(&ProgressEvent::FindingVerdict {
+                    finding_id: "f1".into(),
+                    verdict: "kept".into(),
+                    confidence: 0.9,
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert_eq!(state.round, 1);
+        assert_eq!(state.total_rounds, 3);
+        assert_eq!(
+            state.thinking,
+            vec!["r2".to_string()],
+            "a done reviewer must stop being reported as thinking"
+        );
+        assert_eq!(state.done, vec!["r1".to_string()]);
+        assert!(
+            state.phase.is_empty(),
+            "reviewer rounds leave phase empty (arbiter only)"
+        );
+    }
+
+    #[test]
+    fn parse_progress_state_round_start_clears_previous_round_activity() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-rounds");
+        write_progress(
+            &paths,
+            &[
+                ev(&ProgressEvent::RoundStarted {
+                    round: 1,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 1,
+                }),
+                ev(&ProgressEvent::ReviewerDone {
+                    reviewer_id: "r2".into(),
+                    round: 1,
+                    findings_count: 0,
+                }),
+                ev(&ProgressEvent::RoundStarted {
+                    round: 2,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r3".into(),
+                    round: 2,
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert_eq!(state.round, 2);
+        assert_eq!(
+            state.thinking,
+            vec!["r3".to_string()],
+            "round 1 thinking must not leak into round 2"
+        );
+        assert!(
+            state.done.is_empty(),
+            "round 1 done must not leak into round 2"
+        );
+    }
+
+    #[test]
+    fn parse_progress_state_new_round_leaves_the_arbiter_phase() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-rerun");
+        write_progress(
+            &paths,
+            &[
+                ev(&ProgressEvent::RoundStarted {
+                    round: 2,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ArbiterStarted {
+                    arbiter_label: "Opus".into(),
+                }),
+                ev(&ProgressEvent::RoundStarted {
+                    round: 3,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 3,
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert!(
+            state.phase.is_empty(),
+            "a round starting after the arbiter phase must drop back to reviewer phase"
+        );
+        assert_eq!(state.round, 3);
+        assert_eq!(state.thinking, vec!["r1".to_string()]);
+    }
+
+    #[test]
+    fn parse_progress_state_arbiter_phase_clears_reviewer_activity() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-arbiter");
+        write_progress(
+            &paths,
+            &[
+                ev(&ProgressEvent::RoundStarted {
+                    round: 3,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 3,
+                }),
+                ev(&ProgressEvent::ReviewerDone {
+                    reviewer_id: "r2".into(),
+                    round: 3,
+                    findings_count: 2,
+                }),
+                ev(&ProgressEvent::ArbiterStarted {
+                    arbiter_label: "Opus".into(),
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert_eq!(state.phase, "arbiter");
+        assert_eq!(state.round, 3, "arbiter phase keeps the last round number");
+        assert!(state.thinking.is_empty());
+        assert!(state.done.is_empty());
+    }
+
+    #[test]
+    fn parse_progress_state_run_complete_clears_thinking_but_keeps_done() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "run-complete");
+        write_progress(
+            &paths,
+            &[
+                ev(&ProgressEvent::RoundStarted {
+                    round: 3,
+                    total_rounds: 3,
+                }),
+                ev(&ProgressEvent::ReviewerThinking {
+                    reviewer_id: "r1".into(),
+                    round: 3,
+                }),
+                ev(&ProgressEvent::ReviewerDone {
+                    reviewer_id: "r2".into(),
+                    round: 3,
+                    findings_count: 1,
+                }),
+                ev(&ProgressEvent::ReviewerDone {
+                    reviewer_id: "r3".into(),
+                    round: 3,
+                    findings_count: 0,
+                }),
+                ev(&ProgressEvent::RunComplete {
+                    run_id: "run-complete".into(),
+                }),
+            ],
+        );
+        let state = parse_progress_state(&paths);
+        assert!(
+            state.thinking.is_empty(),
+            "a finished run must not leave a reviewer spinning"
+        );
+        assert_eq!(
+            sorted(state.done),
+            vec!["r2".to_string(), "r3".to_string()],
+            "completed reviewers stay listed after the run finishes"
+        );
+    }
+
+    #[test]
+    fn latest_arena_mtime_is_none_without_arena_dir() {
+        let dir = tempdir().unwrap();
+        assert!(latest_arena_mtime(dir.path()).is_none());
+    }
+
+    #[test]
+    fn latest_arena_mtime_is_none_for_empty_arena_dir() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().join(".er");
+        fs::create_dir_all(er.join("arena")).unwrap();
+        assert!(
+            latest_arena_mtime(&er).is_none(),
+            "an arena dir holding no files has no mtime"
+        );
+    }
+
+    #[test]
+    fn latest_arena_mtime_finds_newest_file_in_a_nested_round_dir() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().join(".er");
+        let nested = er.join("arena").join("run-1").join("round-1");
+        fs::create_dir_all(&nested).unwrap();
+
+        let shallow = er.join("arena").join("shallow.txt");
+        fs::write(&shallow, b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let deep = nested.join("reviewer.json");
+        fs::write(&deep, b"new").unwrap();
+
+        let shallow_mtime = fs::metadata(&shallow).unwrap().modified().unwrap();
+        let deep_mtime = fs::metadata(&deep).unwrap().modified().unwrap();
+        assert!(
+            deep_mtime > shallow_mtime,
+            "fixture requires a strictly newer nested file"
+        );
+
+        assert_eq!(
+            latest_arena_mtime(&er),
+            Some(deep_mtime),
+            "the walk must descend into round dirs, not stop at the arena root"
+        );
+    }
+
+    #[test]
+    fn walk_mtime_skips_unreadable_dirs_instead_of_aborting() {
+        let dir = tempdir().unwrap();
+        let missing = dir.path().join("does-not-exist");
+        let readable = dir.path().join("readable");
+        fs::create_dir_all(&readable).unwrap();
+        let file = readable.join("a.txt");
+        fs::write(&file, b"x").unwrap();
+        let expected = fs::metadata(&file).unwrap().modified().unwrap();
+
+        // The stack is popped LIFO, so `missing` is visited FIRST — the readable dir is
+        // only reached if the failed `read_dir` is `continue`d rather than ending the walk.
+        let mut latest = None;
+        walk_mtime(vec![readable, missing], &mut latest);
+        assert_eq!(
+            latest,
+            Some(expected),
+            "an unreadable dir must be skipped, leaving the rest of the stack walked"
+        );
+    }
+
+    #[test]
+    fn walk_mtime_keeps_the_newest_mtime_when_an_older_file_is_visited_later() {
+        let dir = tempdir().unwrap();
+        let older_dir = dir.path().join("older");
+        let newer_dir = dir.path().join("newer");
+        fs::create_dir_all(&older_dir).unwrap();
+        fs::create_dir_all(&newer_dir).unwrap();
+
+        let older = older_dir.join("a.txt");
+        fs::write(&older, b"old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let newer = newer_dir.join("b.txt");
+        fs::write(&newer, b"new").unwrap();
+        let older_mtime = fs::metadata(&older).unwrap().modified().unwrap();
+        let newer_mtime = fs::metadata(&newer).unwrap().modified().unwrap();
+        assert!(
+            newer_mtime > older_mtime,
+            "fixture requires a strictly newer second file, or the keep-arm is untested"
+        );
+
+        // The stack is popped LIFO, so `newer` is recorded first and `older` must not
+        // overwrite it.
+        let mut latest = None;
+        walk_mtime(vec![older_dir, newer_dir], &mut latest);
+        assert_eq!(
+            latest,
+            Some(newer_mtime),
+            "a later-visited older file must not replace the newest mtime seen"
+        );
+    }
 }

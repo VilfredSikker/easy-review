@@ -3365,4 +3365,649 @@ mod tests {
         // p-1 owns nothing → a.test.ts is unowned ("Other changes").
         assert_eq!(ownership, vec![("p-1".to_string(), Vec::<String>::new())]);
     }
+
+    // ── AiState::comments_for_hunk (indexed path: questions + notes + github) ──
+
+    #[test]
+    fn comments_for_hunk_index_path_merges_questions_notes_and_github_comments() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q1", "a.rs", Some(0)),
+                make_question("q2", "a.rs", Some(1)),
+                make_question("q3", "b.rs", Some(0)),
+            ],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![
+                make_question("n-1", "a.rs", Some(0)),
+                make_question("n-2", "a.rs", Some(1)),
+            ],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c1", "a.rs", Some(0), None),
+                make_github_comment("c2", "a.rs", Some(2), None),
+            ],
+        });
+        let results = state.comments_for_hunk("a.rs", 0);
+        let ids: Vec<&str> = results.iter().map(|c| c.id()).collect();
+        // One hit per source, in index build order: questions → notes → github.
+        assert_eq!(ids, vec!["q1", "n-1", "c1"]);
+        assert!(matches!(&results[0], CommentRef::Question(_)));
+        assert!(matches!(&results[1], CommentRef::Note(_)));
+        assert!(matches!(&results[2], CommentRef::GitHubComment(_)));
+    }
+
+    #[test]
+    fn comments_for_hunk_index_path_includes_replies() {
+        let mut state = AiState::default();
+        let mut q_reply = make_question("q1-reply", "a.rs", Some(0));
+        q_reply.in_reply_to = Some("q1".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0)), q_reply],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c1", "a.rs", Some(0), None),
+                make_github_comment("c1-reply", "a.rs", Some(0), Some("c1")),
+            ],
+        });
+        let results = state.comments_for_hunk("a.rs", 0);
+        let ids: Vec<&str> = results.iter().map(|c| c.id()).collect();
+        // comments_for_hunk is the "everything anchored here" query — unlike
+        // comments_for_hunk_only, replies are part of the result.
+        assert_eq!(ids, vec!["q1", "q1-reply", "c1", "c1-reply"]);
+    }
+
+    #[test]
+    fn comments_for_hunk_index_path_unknown_hunk_or_file_returns_empty() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        assert!(state.comments_for_hunk("a.rs", 7).is_empty());
+        assert!(state.comments_for_hunk("zz.rs", 0).is_empty());
+    }
+
+    #[test]
+    fn comments_for_hunk_ignores_legacy_feedback_once_a_modern_source_exists() {
+        // The gate is presence, not non-emptiness:
+        // `questions.is_some() || notes.is_some() || github_comments.is_some()`.
+        // Any present-but-empty modern source shadows the legacy feedback list
+        // entirely for hunk queries.
+        let legacy_id = make_feedback_comment("a.rs", Some(0)).id;
+        fn legacy_file() -> ErFeedback {
+            ErFeedback {
+                version: 1,
+                diff_hash: "test".to_string(),
+                github: None,
+                comments: vec![make_feedback_comment("a.rs", Some(0))],
+            }
+        }
+
+        // Sanity: with no modern source at all, the legacy fallback does fire —
+        // so an empty result below is the gate, not an empty fixture.
+        let mut legacy_only = AiState::default();
+        legacy_only.feedback = Some(legacy_file());
+        let baseline = legacy_only.comments_for_hunk("a.rs", 0);
+        assert_eq!(baseline.len(), 1);
+        assert_eq!(baseline[0].id(), legacy_id.as_str());
+
+        // Arm 1: empty `questions` shadows it.
+        let mut via_questions = AiState::default();
+        via_questions.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![],
+        });
+        via_questions.feedback = Some(legacy_file());
+        assert!(via_questions.comments_for_hunk("a.rs", 0).is_empty());
+        // …though the shadowed comment is still resolvable by id.
+        assert!(matches!(
+            via_questions.find_comment(&legacy_id),
+            Some(CommentRef::Legacy(_))
+        ));
+
+        // Arm 2: empty `notes` shadows it just as well.
+        let mut via_notes = AiState::default();
+        via_notes.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![],
+        });
+        via_notes.feedback = Some(legacy_file());
+        assert!(via_notes.comments_for_hunk("a.rs", 0).is_empty());
+
+        // Arm 3: empty `github_comments` shadows it too.
+        let mut via_github = AiState::default();
+        via_github.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![],
+        });
+        via_github.feedback = Some(legacy_file());
+        assert!(via_github.comments_for_hunk("a.rs", 0).is_empty());
+    }
+
+    // ── AiState::comments_for_line (indexed path) ──
+
+    #[test]
+    fn comments_for_line_index_path_returns_question_note_and_github_on_same_line() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(0));
+        q.line_start = Some(10);
+        let mut q_other_line = make_question("q2", "a.rs", Some(0));
+        q_other_line.line_start = Some(11);
+        let mut n = make_question("n-1", "a.rs", Some(0));
+        n.line_start = Some(10);
+        let mut c = make_github_comment("c1", "a.rs", Some(0), None);
+        c.line_start = Some(10);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q, q_other_line],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![n],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+        let results = state.comments_for_line("a.rs", 0, 10);
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        assert_eq!(ids, vec!["q1", "n-1", "c1"]);
+    }
+
+    #[test]
+    fn comments_for_line_excludes_comments_anchored_to_a_different_hunk() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(1));
+        q.line_start = Some(10);
+        let mut n = make_question("n-1", "a.rs", Some(1));
+        n.line_start = Some(10);
+        let mut c = make_github_comment("c1", "a.rs", Some(1), None);
+        c.line_start = Some(10);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![n],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![c],
+        });
+        // The line index is keyed by file+line only, so the hunk filter is what
+        // keeps hunk 1's comments off the identically-numbered line in hunk 0.
+        assert!(state.comments_for_line("a.rs", 0, 10).is_empty());
+        let matched = state.comments_for_line("a.rs", 1, 10);
+        let ids: Vec<&str> = matched.iter().map(|r| r.id()).collect();
+        assert_eq!(ids, vec!["q1", "n-1", "c1"]);
+    }
+
+    #[test]
+    fn comments_for_line_index_path_unmatched_line_or_file_returns_empty() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(0));
+        q.line_start = Some(10);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+        assert!(state.comments_for_line("a.rs", 0, 99).is_empty());
+        assert!(state.comments_for_line("zz.rs", 0, 10).is_empty());
+    }
+
+    #[test]
+    fn comments_for_line_excludes_github_comments_that_answer_a_finding() {
+        let mut state = AiState::default();
+        let mut plain = make_github_comment("c1", "a.rs", Some(0), None);
+        plain.line_start = Some(10);
+        let mut on_finding = make_github_comment("c2", "a.rs", Some(0), None);
+        on_finding.line_start = Some(10);
+        on_finding.finding_ref = Some("f-1".to_string());
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![plain, on_finding],
+        });
+        let results = state.comments_for_line("a.rs", 0, 10);
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        // A finding-anchored comment renders under its finding, not inline on
+        // the line — the guard exists for github comments only.
+        assert_eq!(ids, vec!["c1"]);
+    }
+
+    #[test]
+    fn rebuild_comment_index_moves_line_lookup_to_the_new_anchor() {
+        let mut state = AiState::default();
+        let mut q = make_question("q1", "a.rs", Some(0));
+        q.line_start = Some(42);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q],
+        });
+        // Warm the index against the original anchor. The result is a temporary
+        // so its borrow of `state` ends here, leaving `questions.as_mut()` free.
+        {
+            let warm = state.comments_for_line("a.rs", 0, 42);
+            let ids: Vec<&str> = warm.iter().map(|r| r.id()).collect();
+            assert_eq!(ids, vec!["q1"]);
+        }
+
+        if let Some(qs) = state.questions.as_mut() {
+            qs.questions[0].line_start = Some(50);
+        }
+        state.rebuild_comment_index();
+
+        // Complements `rebuild_comment_index_refreshes_line_lookup_after_anchor_mutation`,
+        // which only asserts the *new* anchor starts matching. This asserts the
+        // *old* key stops matching — i.e. the index is rebuilt from scratch and
+        // not merged into the stale one. Do not delete as a duplicate.
+        assert!(state.comments_for_line("a.rs", 0, 42).is_empty());
+        let moved = state.comments_for_line("a.rs", 0, 50);
+        let moved_ids: Vec<&str> = moved.iter().map(|r| r.id()).collect();
+        assert_eq!(moved_ids, vec!["q1"]);
+    }
+
+    // ── AiState::comments_for_hunk_only (indexed path) ──
+
+    #[test]
+    fn comments_for_hunk_only_index_path_returns_hunk_level_from_all_sources() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![make_question("n-1", "a.rs", Some(0))],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(0), None)],
+        });
+        let results = state.comments_for_hunk_only("a.rs", 0);
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        assert_eq!(ids, vec!["q1", "n-1", "c1"]);
+        assert!(results.iter().all(|r| r.line_start().is_none()));
+    }
+
+    #[test]
+    fn comments_for_hunk_only_index_path_excludes_line_anchored_and_replies() {
+        let mut state = AiState::default();
+        let mut q_lined = make_question("q-lined", "a.rs", Some(0));
+        q_lined.line_start = Some(10);
+        let mut q_reply = make_question("q-reply", "a.rs", Some(0));
+        q_reply.in_reply_to = Some("q-hunk".to_string());
+        let mut n_lined = make_question("n-lined", "a.rs", Some(0));
+        n_lined.line_start = Some(10);
+        let mut n_reply = make_question("n-reply", "a.rs", Some(0));
+        n_reply.in_reply_to = Some("n-hunk".to_string());
+        let mut c_lined = make_github_comment("c-lined", "a.rs", Some(0), None);
+        c_lined.line_start = Some(10);
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q-hunk", "a.rs", Some(0)), q_lined, q_reply],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![make_question("n-hunk", "a.rs", Some(0)), n_lined, n_reply],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c-hunk", "a.rs", Some(0), None),
+                c_lined,
+                make_github_comment("c-reply", "a.rs", Some(0), Some("c-hunk")),
+            ],
+        });
+        let results = state.comments_for_hunk_only("a.rs", 0);
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        // Line-anchored comments render inline and replies render under their
+        // parent, so the hunk header only carries the bare hunk-level ones.
+        assert_eq!(ids, vec!["q-hunk", "n-hunk", "c-hunk"]);
+    }
+
+    #[test]
+    fn comments_for_hunk_only_index_path_unknown_hunk_or_file_returns_empty() {
+        let mut state = AiState::default();
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(0), None)],
+        });
+        assert!(state.comments_for_hunk_only("a.rs", 7).is_empty());
+        assert!(state.comments_for_hunk_only("zz.rs", 0).is_empty());
+    }
+
+    // ── AiState::comments_for_file_unanchored ──
+
+    #[test]
+    fn comments_for_file_unanchored_reads_legacy_when_no_modern_source_exists() {
+        let mut state = AiState::default();
+        let legacy = make_feedback_comment("a.rs", None);
+        let legacy_id = legacy.id.clone();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                legacy,
+                make_feedback_comment("b.rs", None), // other file
+                make_feedback_comment("a.rs", Some(0)), // anchored
+            ],
+        });
+        let results = state.comments_for_file_unanchored("a.rs");
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        // Pre-migration state: the legacy list is the only source, and it is
+        // still filtered by file and by "has no anchor".
+        assert_eq!(ids, vec![legacy_id.as_str()]);
+        assert!(matches!(&results[0], CommentRef::Legacy(_)));
+    }
+
+    #[test]
+    fn comments_for_file_unanchored_collects_top_level_from_all_modern_sources() {
+        let mut state = AiState::default();
+        let mut q_reply = make_question("q-reply", "a.rs", None);
+        q_reply.in_reply_to = Some("q-un".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q-un", "a.rs", None),
+                make_question("q-anchored", "a.rs", Some(0)),
+                make_question("q-other-file", "b.rs", None),
+                q_reply,
+            ],
+        });
+        let mut n_reply = make_question("n-reply", "a.rs", None);
+        n_reply.in_reply_to = Some("n-un".to_string());
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![
+                make_question("n-un", "a.rs", None),
+                make_question("n-anchored", "a.rs", Some(1)),
+                n_reply,
+            ],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c-un", "a.rs", None, None),
+                make_github_comment("c-anchored", "a.rs", Some(0), None),
+                make_github_comment("c-reply", "a.rs", None, Some("c-un")),
+                make_github_comment("c-other-file", "b.rs", None, None),
+            ],
+        });
+        let results = state.comments_for_file_unanchored("a.rs");
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        // Only anchor-less, top-level entries for this file, one per source.
+        assert_eq!(ids, vec!["q-un", "n-un", "c-un"]);
+    }
+
+    #[test]
+    fn comments_for_file_unanchored_falls_back_to_legacy_when_modern_sources_miss() {
+        let mut state = AiState::default();
+        // Modern source present, but every entry is anchored → no modern hit.
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        let legacy = make_feedback_comment("a.rs", None);
+        let legacy_id = legacy.id.clone();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![legacy, make_feedback_comment("a.rs", Some(0))],
+        });
+        let results = state.comments_for_file_unanchored("a.rs");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), legacy_id.as_str());
+        assert!(matches!(&results[0], CommentRef::Legacy(_)));
+    }
+
+    #[test]
+    fn comments_for_file_unanchored_skips_legacy_when_a_modern_match_exists() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q-un", "a.rs", None)],
+        });
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_feedback_comment("a.rs", None)],
+        });
+        let results = state.comments_for_file_unanchored("a.rs");
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        // Legacy is a fallback, not a merge source — one modern hit suppresses it.
+        assert_eq!(ids, vec!["q-un"]);
+    }
+
+    #[test]
+    fn file_level_question_is_unanchored_and_absent_from_hunk_only() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![
+                make_question("q-file", "a.rs", None),
+                make_question("q-hunk", "a.rs", Some(0)),
+            ],
+        });
+        let unanchored = state.comments_for_file_unanchored("a.rs");
+        let unanchored_ids: Vec<&str> = unanchored.iter().map(|r| r.id()).collect();
+        let hunk_only = state.comments_for_hunk_only("a.rs", 0);
+        let hunk_only_ids: Vec<&str> = hunk_only.iter().map(|r| r.id()).collect();
+        // The two queries partition the file's top-level comments: a `None`
+        // hunk_index is keyed under `(file, None)` and never reachable via hunk 0.
+        assert_eq!(unanchored_ids, vec!["q-file"]);
+        assert_eq!(hunk_only_ids, vec!["q-hunk"]);
+    }
+
+    // ── AiState::replies_to (modern sources) ──
+
+    #[test]
+    fn replies_to_collects_replies_from_questions_notes_and_github() {
+        let mut state = AiState::default();
+        let mut q_reply = make_question("q-reply", "a.rs", Some(0));
+        q_reply.in_reply_to = Some("parent".to_string());
+        let mut n_reply = make_question("n-reply", "a.rs", Some(0));
+        n_reply.in_reply_to = Some("parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("parent", "a.rs", Some(0)), q_reply],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![n_reply],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![
+                make_github_comment("c-reply", "a.rs", Some(0), Some("parent")),
+                make_github_comment("c-elsewhere", "a.rs", Some(0), Some("other")),
+            ],
+        });
+        let results = state.replies_to("parent");
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        assert_eq!(ids, vec!["q-reply", "n-reply", "c-reply"]);
+    }
+
+    #[test]
+    fn replies_to_skips_legacy_fallback_when_a_modern_reply_exists() {
+        let mut state = AiState::default();
+        let mut q_reply = make_question("q-reply", "a.rs", Some(0));
+        q_reply.in_reply_to = Some("parent".to_string());
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![q_reply],
+        });
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_feedback_reply("a.rs", Some(0), "parent")],
+        });
+        let results = state.replies_to("parent");
+        let ids: Vec<&str> = results.iter().map(|r| r.id()).collect();
+        assert_eq!(ids, vec!["q-reply"]);
+    }
+
+    #[test]
+    fn replies_to_falls_back_to_legacy_when_modern_sources_have_no_reply() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![],
+        });
+        let reply = make_feedback_reply("a.rs", Some(0), "parent");
+        let reply_id = reply.id.clone();
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![reply],
+        });
+        let results = state.replies_to("parent");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].id(), reply_id.as_str());
+        assert!(matches!(&results[0], CommentRef::Legacy(_)));
+    }
+
+    // ── AiState::find_comment ──
+
+    #[test]
+    fn find_comment_resolves_ids_across_all_four_sources() {
+        let mut state = AiState::default();
+        let legacy = make_feedback_comment("a.rs", Some(3));
+        let legacy_id = legacy.id.clone();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![make_question("n-1", "a.rs", Some(1))],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(2), None)],
+        });
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![legacy],
+        });
+
+        // Each id resolves to the variant of the file that owns it.
+        assert!(matches!(
+            state.find_comment("q1"),
+            Some(CommentRef::Question(_))
+        ));
+        assert!(matches!(
+            state.find_comment("n-1"),
+            Some(CommentRef::Note(_))
+        ));
+        assert!(matches!(
+            state.find_comment("c1"),
+            Some(CommentRef::GitHubComment(_))
+        ));
+        assert!(matches!(
+            state.find_comment(&legacy_id),
+            Some(CommentRef::Legacy(_))
+        ));
+        assert_eq!(state.find_comment("q1").unwrap().file(), "a.rs");
+    }
+
+    #[test]
+    fn find_comment_unknown_id_returns_none_after_searching_every_source() {
+        let mut state = AiState::default();
+        state.questions = Some(ErQuestions {
+            version: 1,
+            diff_hash: "test".to_string(),
+            questions: vec![make_question("q1", "a.rs", Some(0))],
+        });
+        state.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: "test".to_string(),
+            notes: vec![make_question("n-1", "a.rs", Some(0))],
+        });
+        state.github_comments = Some(ErGitHubComments {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_github_comment("c1", "a.rs", Some(0), None)],
+        });
+        state.feedback = Some(ErFeedback {
+            version: 1,
+            diff_hash: "test".to_string(),
+            github: None,
+            comments: vec![make_feedback_comment("a.rs", Some(0))],
+        });
+        assert!(state.find_comment("no-such-id").is_none());
+    }
 }

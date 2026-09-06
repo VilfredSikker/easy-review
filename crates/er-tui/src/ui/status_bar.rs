@@ -1116,4 +1116,502 @@ mod tests {
         let hint = Hint::new("j/k", " nav ");
         assert_eq!(hint.width(), 8); // "j/k" (3) + " nav " (5)
     }
+
+    // ── shared fixtures ──
+
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    fn hint_keys(hints: &[Hint]) -> Vec<&str> {
+        hints.iter().map(|h| h.key.as_str()).collect()
+    }
+
+    fn hint_labels(hints: &[Hint]) -> Vec<&str> {
+        hints.iter().map(|h| h.label.as_str()).collect()
+    }
+
+    fn history_app() -> App {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().mode = DiffMode::History;
+        app
+    }
+
+    fn gh_comment(
+        id: &str,
+        source: &str,
+        author: &str,
+        in_reply_to: Option<String>,
+    ) -> er_engine::ai::GitHubReviewComment {
+        er_engine::ai::GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: "src/lib.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: String::new(),
+            comment: "a remark".to_string(),
+            in_reply_to,
+            resolved: false,
+            source: source.to_string(),
+            github_id: None,
+            author: author.to_string(),
+            synced: false,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    fn app_focused_on_comment(comment: er_engine::ai::GitHubReviewComment) -> App {
+        let mut app = history_app();
+        let id = comment.id.clone();
+        app.tab_mut().ai.github_comments = Some(er_engine::ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "h".to_string(),
+            github: None,
+            comments: vec![comment],
+        });
+        app.tab_mut().focused_comment_id = Some(id);
+        app
+    }
+
+    // ── build_history_hints ──
+
+    #[test]
+    fn build_history_hints_leads_with_commit_navigation_when_navigation_is_enabled() {
+        let app = history_app();
+        let hints = build_history_hints(&app);
+
+        let keys = hint_keys(&hints);
+        assert_eq!(&keys[..4], &["j/k", "n/N", "↑↓", "/"][..]);
+        assert_eq!(
+            hint_labels(&hints)[0],
+            " commits ",
+            "History mode navigates commits, not files, with j/k"
+        );
+    }
+
+    #[test]
+    fn build_history_hints_drops_navigation_but_keeps_hub_triggers_when_disabled() {
+        let mut app = history_app();
+        app.config.hints.navigation = false;
+        let hints = build_history_hints(&app);
+
+        let keys = hint_keys(&hints);
+        assert!(!keys.contains(&"j/k"), "got: {keys:?}");
+        assert_eq!(
+            &keys[..],
+            &["g", "a", "?", "^q"][..],
+            "the hub triggers are unconditional"
+        );
+    }
+
+    #[test]
+    fn build_history_hints_offers_reply_and_delete_for_a_focused_local_comment() {
+        let app = app_focused_on_comment(gh_comment("gh-1", "local", "You", None));
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+
+        assert!(keys.contains(&"r"), "a top-level comment can be replied to");
+        assert!(keys.contains(&"x"), "a local comment can be deleted");
+    }
+
+    #[test]
+    fn build_history_hints_hides_delete_for_someone_elses_github_comment() {
+        let app = app_focused_on_comment(gh_comment("gh-2", "github", "martin-kr", None));
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+
+        assert!(keys.contains(&"r"), "you can still reply");
+        assert!(
+            !keys.contains(&"x"),
+            "another author's GitHub comment is not deletable, got: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn build_history_hints_hides_reply_for_a_focused_reply() {
+        let app =
+            app_focused_on_comment(gh_comment("gh-3", "local", "You", Some("gh-1".to_string())));
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+
+        assert!(
+            !keys.contains(&"r"),
+            "threads are single level, so a reply cannot be replied to, got: {keys:?}"
+        );
+        assert!(keys.contains(&"x"), "your own reply is still deletable");
+    }
+
+    #[test]
+    fn build_history_hints_offers_reply_for_a_focused_finding() {
+        let mut app = history_app();
+        app.tab_mut().focused_finding_id = Some("prof-1".to_string());
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+
+        assert!(
+            keys.contains(&"r"),
+            "a focused AI finding can be responded to, got: {keys:?}"
+        );
+    }
+
+    #[test]
+    fn build_history_hints_suppresses_comment_actions_when_comment_hints_are_off() {
+        let mut app = history_app();
+        app.config.hints.comments = false;
+        app.tab_mut().focused_finding_id = Some("prof-1".to_string());
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+
+        assert!(!keys.contains(&"r"), "got: {keys:?}");
+    }
+
+    #[test]
+    fn build_history_hints_adds_secondary_keys_only_in_verbose_mode() {
+        let mut app = history_app();
+        assert!(!hint_keys(&build_history_hints(&app)).contains(&"e"));
+
+        app.config.hints.verbose = true;
+        let binding = build_history_hints(&app);
+        let keys = hint_keys(&binding);
+        assert!(keys.contains(&"e"), "got: {keys:?}");
+        assert!(keys.contains(&"p"), "got: {keys:?}");
+        assert!(keys.contains(&"f"), "got: {keys:?}");
+    }
+
+    #[test]
+    fn build_history_hints_surfaces_the_active_filter_expression() {
+        let mut app = history_app();
+        app.tab_mut().filter_expr = "*.rs".to_string();
+        let hints = build_history_hints(&app);
+
+        let filter = hints
+            .iter()
+            .find(|h| h.key == "F:")
+            .expect("filter indicator missing");
+        assert_eq!(filter.label, " *.rs ");
+    }
+
+    #[test]
+    fn build_history_hints_surfaces_the_active_search_query() {
+        let mut app = history_app();
+        app.tab_mut().search_query = "todo".to_string();
+        let hints = build_history_hints(&app);
+
+        assert!(
+            hint_labels(&hints)
+                .iter()
+                .any(|l| l.contains("search: \"todo\"")),
+            "got: {:?}",
+            hint_labels(&hints)
+        );
+    }
+
+    #[test]
+    fn build_history_hints_omits_status_indicators_when_filter_and_search_are_clear() {
+        let app = history_app();
+        let hints = build_history_hints(&app);
+
+        assert!(hints.iter().all(|h| h.key != "F:"));
+        assert!(hint_labels(&hints).iter().all(|l| !l.contains("search:")));
+    }
+
+    // ── render_bottom_bar ──
+
+    fn buffer_text(backend: &TestBackend) -> String {
+        let buf = backend.buffer();
+        let area = *buf.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn draw_bottom_bar(app: &App, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        terminal.draw(|f| render_bottom_bar(f, area, app)).unwrap();
+        buffer_text(terminal.backend())
+    }
+
+    #[test]
+    fn render_bottom_bar_confirm_shows_an_action_specific_prompt() {
+        let cases: Vec<(ConfirmAction, &str)> = vec![
+            (
+                ConfirmAction::DeleteComment {
+                    comment_id: "gh-1".to_string(),
+                },
+                "Delete comment? (y/n)",
+            ),
+            (
+                ConfirmAction::DeleteWatchedFile {
+                    path: "notes.md".to_string(),
+                },
+                "Delete notes.md? (y/n)",
+            ),
+            (ConfirmAction::Push, "Push branch to remote? (y/n)"),
+            (
+                ConfirmAction::CleanupQuestions { count: 3 },
+                "Clear 3 item(s) (questions & notes)? (y/n)",
+            ),
+            (
+                ConfirmAction::CleanupReviews { count: 2 },
+                "Clear 2 review file(s)? (y/n)",
+            ),
+            (
+                ConfirmAction::RunAgentReview {
+                    clear_previous: true,
+                },
+                "Clear previous review before running?",
+            ),
+            (
+                ConfirmAction::RunAgentQuestions {
+                    clear_previous: false,
+                },
+                "Clear previous AI answers before running?",
+            ),
+            (
+                ConfirmAction::RunAgentNotes {
+                    clear_previous: false,
+                },
+                "Clear previous note replies before running?",
+            ),
+            (ConfirmAction::ApprovePR, "Approve this PR on GitHub? (y/n)"),
+            (
+                ConfirmAction::PushComments,
+                "Push as: (r) Review  (i) Individual  (Esc) Cancel",
+            ),
+        ];
+
+        for (action, expected) in cases {
+            let mut app = App::new_for_test(vec![]);
+            app.input_mode = InputMode::Confirm(action.clone());
+            let text = draw_bottom_bar(&app, 140, 1);
+            assert!(
+                text.contains(expected),
+                "{action:?} must prompt with {expected:?}, got: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_bottom_bar_confirm_prefixes_the_prompt_with_a_warning_badge() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Confirm(ConfirmAction::Push);
+        let text = draw_bottom_bar(&app, 140, 1);
+
+        assert!(text.starts_with(" ⚠ "), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_comment_mode_labels_the_draft_kind() {
+        let cases = [
+            (er_engine::ai::CommentType::GitHubComment, " comment "),
+            (er_engine::ai::CommentType::Question, " question "),
+            (er_engine::ai::CommentType::Note, " note "),
+        ];
+        for (kind, label) in cases {
+            let mut app = App::new_for_test(vec![]);
+            app.input_mode = InputMode::Comment;
+            app.tab_mut().comment_type = kind;
+            app.tab_mut().comment_file = "src/app/state/mod.rs".to_string();
+            let text = draw_bottom_bar(&app, 160, 4);
+            assert!(
+                text.contains(label),
+                "{kind:?} must render {label:?}, got: {text:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_bottom_bar_comment_mode_labels_replies_and_finding_responses() {
+        let mut reply = App::new_for_test(vec![]);
+        reply.input_mode = InputMode::Comment;
+        reply.tab_mut().comment_file = "mod.rs".to_string();
+        reply.tab_mut().comment_reply_to = Some("gh-1".to_string());
+        assert!(
+            draw_bottom_bar(&reply, 160, 4).contains(" reply "),
+            "a draft with a parent is a reply"
+        );
+
+        let mut response = App::new_for_test(vec![]);
+        response.input_mode = InputMode::Comment;
+        response.tab_mut().comment_file = "mod.rs".to_string();
+        response.tab_mut().comment_finding_ref = Some("prof-1".to_string());
+        assert!(
+            draw_bottom_bar(&response, 160, 4).contains(" response "),
+            "a draft against a finding is a response"
+        );
+    }
+
+    #[test]
+    fn render_bottom_bar_reply_pill_inherits_the_accent_of_the_kind_it_replies_to() {
+        fn pill_bg(comment_type: er_engine::ai::CommentType) -> ratatui::style::Color {
+            let mut app = App::new_for_test(vec![]);
+            app.input_mode = InputMode::Comment;
+            app.tab_mut().comment_file = "mod.rs".to_string();
+            app.tab_mut().comment_type = comment_type;
+            app.tab_mut().comment_reply_to = Some("gh-1".to_string());
+
+            let area = Rect::new(0, 0, 160, 4);
+            let mut terminal = Terminal::new(TestBackend::new(160, 4)).unwrap();
+            terminal.draw(|f| render_bottom_bar(f, area, &app)).unwrap();
+            // The " reply " pill starts at column 0, so column 1 is its first letter.
+            terminal.backend().buffer()[(1u16, 0u16)].bg
+        }
+
+        assert_eq!(
+            pill_bg(er_engine::ai::CommentType::Question),
+            styles::YELLOW(),
+            "a reply to a question keeps the yellow question accent"
+        );
+        assert_eq!(
+            pill_bg(er_engine::ai::CommentType::Note),
+            styles::YELLOW(),
+            "notes share the yellow accent with questions"
+        );
+        assert_eq!(
+            pill_bg(er_engine::ai::CommentType::GitHubComment),
+            styles::CYAN(),
+            "a reply to a GitHub comment stays cyan"
+        );
+    }
+
+    #[test]
+    fn render_bottom_bar_comment_mode_targets_a_line_or_falls_back_to_the_hunk() {
+        let mut on_line = App::new_for_test(vec![]);
+        on_line.input_mode = InputMode::Comment;
+        on_line.tab_mut().comment_file = "src/app/state/mod.rs".to_string();
+        on_line.tab_mut().comment_line_num = Some(42);
+        assert!(
+            draw_bottom_bar(&on_line, 160, 4).contains("mod.rs:L42"),
+            "a line-anchored draft names the line"
+        );
+
+        let mut on_hunk = App::new_for_test(vec![]);
+        on_hunk.input_mode = InputMode::Comment;
+        on_hunk.tab_mut().comment_file = "src/app/state/mod.rs".to_string();
+        on_hunk.tab_mut().comment_line_num = None;
+        on_hunk.tab_mut().comment_hunk = 2;
+        assert!(
+            draw_bottom_bar(&on_hunk, 160, 4).contains("mod.rs:h3"),
+            "a hunk-anchored draft names the 1-based hunk"
+        );
+    }
+
+    #[test]
+    fn render_bottom_bar_comment_mode_offers_the_type_toggle_only_for_a_fresh_draft() {
+        let mut fresh = App::new_for_test(vec![]);
+        fresh.input_mode = InputMode::Comment;
+        fresh.tab_mut().comment_file = "mod.rs".to_string();
+        assert!(
+            draw_bottom_bar(&fresh, 160, 4).contains("Ctrl+t"),
+            "a new file-anchored draft can cycle question → note → comment"
+        );
+
+        let mut reply = App::new_for_test(vec![]);
+        reply.input_mode = InputMode::Comment;
+        reply.tab_mut().comment_file = "mod.rs".to_string();
+        reply.tab_mut().comment_reply_to = Some("gh-1".to_string());
+        assert!(
+            !draw_bottom_bar(&reply, 160, 4).contains("Ctrl+t"),
+            "a reply inherits its parent's kind and cannot be retyped"
+        );
+    }
+
+    #[test]
+    fn render_bottom_bar_filter_mode_echoes_the_filter_input() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Filter;
+        app.tab_mut().filter_input = "*.rs".to_string();
+        let text = draw_bottom_bar(&app, 100, 1);
+
+        assert!(text.contains(" filter "), "got: {text:?}");
+        assert!(
+            text.contains("*.rs█"),
+            "the caret trails the input, got: {text:?}"
+        );
+        assert!(text.contains("Enter apply"), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_remote_url_mode_echoes_the_typed_url() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::RemoteUrl;
+        app.remote_url_input = "https://github.com/o/r/pull/9".to_string();
+        let text = draw_bottom_bar(&app, 100, 1);
+
+        assert!(text.contains(" remote "), "got: {text:?}");
+        assert!(
+            text.contains("https://github.com/o/r/pull/9"),
+            "got: {text:?}"
+        );
+        assert!(text.contains("Enter open"), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_search_mode_echoes_the_query() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Search;
+        app.tab_mut().search_query = "todo".to_string();
+        let text = draw_bottom_bar(&app, 100, 1);
+
+        assert!(text.starts_with(" / todo█"), "got: {text:?}");
+        assert!(text.contains("Enter confirm"), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_commit_mode_echoes_the_commit_message() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Commit;
+        app.tab_mut().commit_input = "fix: panel scroll".to_string();
+        let text = draw_bottom_bar(&app, 100, 1);
+
+        assert!(text.contains(" commit "), "got: {text:?}");
+        assert!(text.contains("fix: panel scroll█"), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_normal_mode_renders_the_packed_hints() {
+        let app = App::new_for_test(vec![]);
+        let text = draw_bottom_bar(&app, 120, 1);
+
+        assert!(text.contains("j/k"), "got: {text:?}");
+        assert!(text.contains("nav"), "got: {text:?}");
+        assert!(text.contains("^q"), "got: {text:?}");
+    }
+
+    #[test]
+    fn render_bottom_bar_normal_mode_spreads_wrapped_hints_over_several_rows_in_order() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().panel = Some(PanelContent::FileDetail);
+        // 20 columns cannot hold the panel hint list, so it packs onto several rows.
+        let text = draw_bottom_bar(&app, 20, 8);
+
+        let rows: Vec<&str> = text.lines().collect();
+        let first_row = rows.iter().position(|r| r.contains("j/k"));
+        let quit_row = rows.iter().position(|r| r.contains("^q"));
+        assert_eq!(
+            first_row,
+            Some(0),
+            "the first packed line lands on the first row, got: {text:?}"
+        );
+        assert!(
+            quit_row.is_some_and(|q| q > 0),
+            "hints that overflow the first row continue on later rows, got: {text:?}"
+        );
+    }
 }

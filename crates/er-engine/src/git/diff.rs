@@ -285,6 +285,56 @@ pub fn header_to_stub(header: &DiffFileHeader) -> DiffFile {
 }
 
 /// Parse unified diff output into structured data
+/// Extract the file path from a `diff --git a/PATH b/PATH` header line.
+/// Two identical halves = a non-rename; differing halves = a rename, where the
+/// new path (after ` b/`) is the one to keep.
+fn diff_file_path(line: &str) -> String {
+    if let Some(after_a) = line.strip_prefix("diff --git a/") {
+        let path_len = (after_a.len().saturating_sub(3)) / 2;
+        if path_len > 0
+            && after_a.len() >= path_len + 3
+            && after_a.get(..path_len) == after_a.get(path_len + 3..)
+        {
+            after_a[..path_len].to_string()
+        } else {
+            // Rename or edge case: paths differ, use the new path after " b/"
+            after_a.split(" b/").last().unwrap_or("").to_string()
+        }
+    } else {
+        line.split(" b/").last().unwrap_or("").to_string()
+    }
+}
+
+/// Refine `file.status` from a diff header line. Returns `true` when `line`
+/// is a status/skip header (so it must be consumed, not treated as content).
+fn apply_diff_status(line: &str, file: &mut DiffFile) -> bool {
+    if line.starts_with("new file") {
+        file.status = FileStatus::Added;
+        return true;
+    }
+    if line.starts_with("deleted file") {
+        file.status = FileStatus::Deleted;
+        return true;
+    }
+    if line.starts_with("rename from ") {
+        let old_path = line.strip_prefix("rename from ").unwrap_or("").to_string();
+        file.status = FileStatus::Renamed(old_path);
+        return true;
+    }
+    // Skip other header lines (index, ---, +++)
+    if line.starts_with("index ")
+        || line.starts_with("--- ")
+        || line.starts_with("+++ ")
+        || line.starts_with("similarity index")
+        || line.starts_with("rename to")
+        || line.starts_with("old mode")
+        || line.starts_with("new mode")
+    {
+        return true;
+    }
+    false
+}
+
 pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
     let mut files: Vec<DiffFile> = Vec::new();
     let mut current_file: Option<DiffFile> = None;
@@ -305,27 +355,8 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 files.push(file);
             }
 
-            // Extract path from "diff --git a/PATH b/PATH"
-            // For non-rename diffs both paths are identical, so the format is:
-            //   "diff --git a/PATH b/PATH"
-            // After stripping "diff --git a/" we have: "PATH b/PATH"
-            // Total = 2*PATH_len + 3, so PATH_len = (total - 3) / 2
-            // We validate both halves match to distinguish non-renames from renames.
-            // For renames (different paths), fall back to split(" b/").last().
-            let path = if let Some(after_a) = line.strip_prefix("diff --git a/") {
-                let path_len = (after_a.len().saturating_sub(3)) / 2;
-                if path_len > 0
-                    && after_a.len() >= path_len + 3
-                    && after_a.get(..path_len) == after_a.get(path_len + 3..)
-                {
-                    after_a[..path_len].to_string()
-                } else {
-                    // Rename or edge case: paths differ, use the new path after " b/"
-                    after_a.split(" b/").last().unwrap_or("").to_string()
-                }
-            } else {
-                line.split(" b/").last().unwrap_or("").to_string()
-            };
+            // Extract path from "diff --git a/PATH b/PATH" (see diff_file_path)
+            let path = diff_file_path(line);
 
             current_file = Some(DiffFile {
                 path,
@@ -341,28 +372,7 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
 
         // Detect file status from diff headers
         if let Some(ref mut file) = current_file {
-            if line.starts_with("new file") {
-                file.status = FileStatus::Added;
-                continue;
-            }
-            if line.starts_with("deleted file") {
-                file.status = FileStatus::Deleted;
-                continue;
-            }
-            if line.starts_with("rename from ") {
-                let old_path = line.strip_prefix("rename from ").unwrap_or("").to_string();
-                file.status = FileStatus::Renamed(old_path);
-                continue;
-            }
-            // Skip other header lines (index, ---, +++)
-            if line.starts_with("index ")
-                || line.starts_with("--- ")
-                || line.starts_with("+++ ")
-                || line.starts_with("similarity index")
-                || line.starts_with("rename to")
-                || line.starts_with("old mode")
-                || line.starts_with("new mode")
-            {
+            if apply_diff_status(line, file) {
                 continue;
             }
         }

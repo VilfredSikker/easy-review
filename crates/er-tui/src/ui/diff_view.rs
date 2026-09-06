@@ -3618,3 +3618,918 @@ mod tests {
         assert_eq!(format_size(2 * 1024 * 1024), "2.0 MB");
     }
 }
+
+// ── Shared helpers for the render tests below ──────────────────────────────
+//
+// `tempfile` is not a dev-dependency of `er-tui`, so the watched-file tests
+// roll a minimal throwaway-directory guard instead of adding one.
+
+#[cfg(test)]
+mod test_support {
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::text::Line;
+    use ratatui::{Frame, Terminal};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Render into an off-screen terminal and hand back the painted buffer.
+    pub fn draw(width: u16, height: u16, render: impl FnOnce(&mut Frame, Rect)) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        let area = Rect::new(0, 0, width, height);
+        terminal
+            .draw(|frame| render(frame, area))
+            .expect("draw frame");
+        terminal.backend().buffer().clone()
+    }
+
+    pub fn buffer_rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf.cell((x, y)).map_or(" ", |cell| cell.symbol()))
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    pub fn buffer_text(buf: &Buffer) -> String {
+        buffer_rows(buf).join("\n")
+    }
+
+    /// Column (counted in characters, not bytes) where `needle` first appears.
+    pub fn col_of(buf: &Buffer, needle: &str) -> Option<usize> {
+        buffer_rows(buf)
+            .iter()
+            .find_map(|row| row.find(needle).map(|idx| row[..idx].chars().count()))
+    }
+
+    /// Flatten a built line back into the text a terminal would show.
+    pub fn line_text(line: &Line<'_>) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    pub fn leading_spaces(text: &str) -> usize {
+        text.chars().take_while(|c| *c == ' ').count()
+    }
+
+    static TEMP_SEQ: AtomicUsize = AtomicUsize::new(0);
+
+    pub struct TempDir {
+        path: PathBuf,
+    }
+
+    impl TempDir {
+        pub fn new(tag: &str) -> Self {
+            let seq = TEMP_SEQ.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "er-diff-view-{}-{}-{}",
+                tag,
+                std::process::id(),
+                seq
+            ));
+            let _ = std::fs::remove_dir_all(&path);
+            std::fs::create_dir_all(&path).expect("create temp dir");
+            Self { path }
+        }
+
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
+
+        pub fn root(&self) -> String {
+            self.path.to_string_lossy().into_owned()
+        }
+
+        pub fn write(&self, rel: &str, contents: &str) {
+            self.write_bytes(rel, contents.as_bytes());
+        }
+
+        pub fn write_bytes(&self, rel: &str, contents: &[u8]) {
+            let full = self.path.join(rel);
+            if let Some(parent) = full.parent() {
+                std::fs::create_dir_all(parent).expect("create parent dir");
+            }
+            std::fs::write(full, contents).expect("write temp file");
+        }
+
+        pub fn size_of(&self, rel: &str) -> u64 {
+            std::fs::metadata(self.path.join(rel))
+                .expect("stat temp file")
+                .len()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.path);
+        }
+    }
+}
+
+/// `cell_wrap_height` decides how many terminal rows one split-view cell takes.
+/// Both panes advance by `max(left, right)`, so a wrong height here silently
+/// de-synchronises the two sides of the diff.
+#[cfg(test)]
+mod cell_wrap_height_tests {
+    use super::*;
+    use er_engine::git::DiffLine;
+
+    fn diff_line(line_type: LineType, content: &str) -> DiffLine {
+        DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: Some(1),
+            new_num: Some(1),
+        }
+    }
+
+    #[test]
+    fn missing_cell_occupies_exactly_one_row() {
+        // A one-sided row (add with no matching delete) still needs a phantom
+        // row on the other pane, or the panes drift apart.
+        assert_eq!(cell_wrap_height(None, true, 20, 4), 1);
+    }
+
+    #[test]
+    fn fold_row_stays_one_row_even_when_its_content_would_wrap() {
+        let line = diff_line(LineType::Fold(12), "aaaa bbbb cccc dddd eeee ffff");
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        assert_eq!(cell_wrap_height(Some(&cell), true, 8, 4), 1);
+    }
+
+    #[test]
+    fn wrapped_cell_height_matches_the_word_wrap_segment_count() {
+        let content = "alpha beta gamma delta";
+        let line = diff_line(LineType::Add, content);
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        // "alpha beta" (10 cols) then "gamma delta" (11) — two segments at width 12.
+        // Literal, not `word_wrap(content, 12).len()`: re-deriving the expected
+        // value with the function's own helper would pass for any wrap width.
+        assert_eq!(cell_wrap_height(Some(&cell), true, 12, 4), 2);
+    }
+
+    #[test]
+    fn wrap_disabled_keeps_a_long_line_on_one_row() {
+        let line = diff_line(LineType::Add, "alpha beta gamma delta");
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        assert_eq!(cell_wrap_height(Some(&cell), false, 12, 4), 1);
+    }
+
+    #[test]
+    fn empty_content_never_wraps() {
+        let line = diff_line(LineType::Context, "");
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        assert_eq!(cell_wrap_height(Some(&cell), true, 8, 4), 1);
+    }
+
+    #[test]
+    fn tabs_are_expanded_before_the_wrap_is_measured() {
+        let line = diff_line(LineType::Context, "\tword1 word2");
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        // tab_width 1 → " word1 word2" (12 cols) fits in 14.
+        assert_eq!(cell_wrap_height(Some(&cell), true, 14, 1), 1);
+        // tab_width 8 → 8 spaces of indent pushes "word2" onto a second row.
+        assert_eq!(cell_wrap_height(Some(&cell), true, 14, 8), 2);
+    }
+
+    #[test]
+    fn zero_wrap_width_falls_back_to_one_column_instead_of_no_wrapping() {
+        let line = diff_line(LineType::Add, "abcd");
+        let cell = SplitCell {
+            line_idx: 0,
+            line: &line,
+        };
+        // Without the `.max(1)` guard this would hit word_wrap's "0 disables
+        // wrapping" path and report a single row for a line that cannot fit.
+        assert_eq!(word_wrap("abcd", 0).len(), 1);
+        assert_eq!(cell_wrap_height(Some(&cell), true, 0, 4), 4);
+    }
+}
+
+/// Reply rendering: the `↳` header (icon, author, time, sync marker, focus
+/// diamond) plus the wrapped body, at two indent depths (inline vs panel).
+#[cfg(test)]
+mod render_reply_lines_tests {
+    use super::test_support::{leading_spaces, line_text};
+    use super::*;
+    use er_engine::ai::{GitHubReviewComment, ReviewQuestion};
+    use ratatui::style::Modifier;
+
+    fn question(id: &str, author: &str, timestamp: &str, text: &str) -> ReviewQuestion {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "file": "src/lib.rs",
+            "hunk_index": 0,
+            "line_start": 12,
+            "text": text,
+            "author": author,
+            "timestamp": timestamp,
+        }))
+        .expect("question fixture parses")
+    }
+
+    fn github_reply(id: &str, synced: bool) -> GitHubReviewComment {
+        GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: "src/lib.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(12),
+            line_end: None,
+            line_content: "let x = 1;".to_string(),
+            comment: "please rename".to_string(),
+            in_reply_to: Some("gh-parent".to_string()),
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "octocat".to_string(),
+            synced,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: "@@ -1,3 +1,3 @@".to_string(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    #[test]
+    fn question_reply_header_uses_the_question_icon_and_a_bold_author() {
+        let q = question("q-1", "reviewer", "", "Looks off to me");
+        let mut lines: Vec<Line> = Vec::new();
+        render_reply_lines(&mut lines, &CommentRef::Question(&q), 60, false, false);
+
+        let header = line_text(&lines[0]);
+        assert!(
+            header.starts_with("    \u{21b3} \u{2753} "),
+            "got {header:?}"
+        );
+        assert_eq!(lines[0].spans[1].content.as_ref(), "reviewer");
+        assert!(lines[0].spans[1]
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn note_reply_uses_the_comment_icon_not_the_question_icon() {
+        // Notes reuse `ReviewQuestion`, but only the `Question` variant gets the
+        // ❓ icon — a note reply renders like a comment.
+        let n = question("n-1", "You", "", "hand this to an agent");
+        let mut lines: Vec<Line> = Vec::new();
+        render_reply_lines(&mut lines, &CommentRef::Note(&n), 60, false, false);
+
+        let header = line_text(&lines[0]);
+        assert!(header.contains('\u{1f4ac}'), "got {header:?}");
+        assert!(!header.contains('\u{2753}'), "got {header:?}");
+    }
+
+    #[test]
+    fn unsynced_github_reply_is_marked_local_and_a_synced_one_is_marked_synced() {
+        let local = github_reply("gh-r1", false);
+        let mut local_lines: Vec<Line> = Vec::new();
+        render_reply_lines(
+            &mut local_lines,
+            &CommentRef::GitHubComment(&local),
+            60,
+            false,
+            false,
+        );
+        let local_header = line_text(&local_lines[0]);
+        assert!(
+            local_header.contains("\u{2191} local"),
+            "got {local_header:?}"
+        );
+        assert!(!local_header.contains("\u{2191} synced"));
+
+        let pushed = github_reply("gh-r2", true);
+        let mut pushed_lines: Vec<Line> = Vec::new();
+        render_reply_lines(
+            &mut pushed_lines,
+            &CommentRef::GitHubComment(&pushed),
+            60,
+            false,
+            false,
+        );
+        let pushed_header = line_text(&pushed_lines[0]);
+        assert!(
+            pushed_header.contains("\u{2191} synced"),
+            "got {pushed_header:?}"
+        );
+    }
+
+    #[test]
+    fn question_reply_header_carries_no_sync_marker_at_all() {
+        // Questions are private, so neither the "local" nor the "synced" badge
+        // applies — the header is just the prefix and the author.
+        let q = question("q-2", "You", "", "why?");
+        let mut lines: Vec<Line> = Vec::new();
+        render_reply_lines(&mut lines, &CommentRef::Question(&q), 60, false, false);
+
+        assert_eq!(lines[0].spans.len(), 2);
+        let header = line_text(&lines[0]);
+        assert!(!header.contains('\u{2191}'), "got {header:?}");
+    }
+
+    #[test]
+    fn reply_header_shows_only_the_time_part_of_the_timestamp() {
+        let q = question("q-3", "You", "2024-05-01T12:34:56Z", "when?");
+        let mut lines: Vec<Line> = Vec::new();
+        render_reply_lines(&mut lines, &CommentRef::Question(&q), 60, false, false);
+
+        let header = line_text(&lines[0]);
+        assert!(header.contains("12:34:56"), "got {header:?}");
+        assert!(!header.contains("2024-05-01"), "got {header:?}");
+        assert!(!header.contains('Z'), "trailing Z is trimmed: {header:?}");
+    }
+
+    #[test]
+    fn focused_reply_header_ends_with_the_focus_diamond() {
+        let q = question("q-4", "You", "", "focus me");
+        let mut lines: Vec<Line> = Vec::new();
+        render_reply_lines(&mut lines, &CommentRef::Question(&q), 60, false, true);
+
+        assert!(line_text(&lines[0]).ends_with("  \u{25c6}"));
+    }
+
+    #[test]
+    fn inline_replies_indent_two_columns_deeper_than_panel_replies() {
+        let reply = github_reply("gh-r3", false);
+
+        let mut inline_lines: Vec<Line> = Vec::new();
+        render_reply_lines(
+            &mut inline_lines,
+            &CommentRef::GitHubComment(&reply),
+            60,
+            true,
+            false,
+        );
+        let mut panel_lines: Vec<Line> = Vec::new();
+        render_reply_lines(
+            &mut panel_lines,
+            &CommentRef::GitHubComment(&reply),
+            60,
+            false,
+            false,
+        );
+
+        assert_eq!(leading_spaces(&line_text(&inline_lines[0])), 7);
+        assert_eq!(leading_spaces(&line_text(&panel_lines[0])), 4);
+        assert_eq!(leading_spaces(&line_text(&inline_lines[1])), 12);
+        assert_eq!(leading_spaces(&line_text(&panel_lines[1])), 10);
+    }
+
+    #[test]
+    fn reply_body_wraps_to_the_width_left_after_the_indent() {
+        let text = "alpha beta gamma delta epsilon zeta";
+        let q = question("q-5", "You", "", text);
+        let mut lines: Vec<Line> = Vec::new();
+        // width 30 − indent 10 = 20 columns of text.
+        render_reply_lines(&mut lines, &CommentRef::Question(&q), 30, false, false);
+
+        // Literals, not `word_wrap(text, 20)`: re-deriving with the same helper
+        // would pass whatever width the function actually wrapped at. At the
+        // full width 30 the body would be ["alpha beta gamma delta epsilon",
+        // "zeta"], so these strings pin the `width − indent` subtraction.
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[1]).trim(), "alpha beta gamma");
+        assert_eq!(line_text(&lines[2]).trim(), "delta epsilon zeta");
+    }
+}
+
+/// Finding banners: severity symbol, category, stale tag, focus marker, and the
+/// first-line-only description/suggestion rows with their two truncation budgets.
+#[cfg(test)]
+mod render_finding_banner_tests {
+    use super::test_support::line_text;
+    use super::*;
+    use ratatui::style::Modifier;
+
+    fn finding(value: serde_json::Value) -> Finding {
+        serde_json::from_value(value).expect("finding fixture parses")
+    }
+
+    fn plain_finding() -> Finding {
+        finding(serde_json::json!({
+            "id": "f-1",
+            "severity": "high",
+            "category": "correctness",
+            "title": "Null deref",
+        }))
+    }
+
+    #[test]
+    fn banner_without_body_is_a_single_symbol_category_title_row() {
+        let f = plain_finding();
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 80, false, false);
+
+        assert_eq!(lines.len(), 1, "no description or suggestion → title only");
+        assert_eq!(line_text(&lines[0]), "  \u{25cf} [correctness] Null deref");
+    }
+
+    #[test]
+    fn info_severity_renders_the_hollow_symbol() {
+        let f = finding(serde_json::json!({
+            "id": "f-2",
+            "severity": "info",
+            "category": "style",
+            "title": "Naming nit",
+        }));
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 80, false, false);
+
+        assert_eq!(line_text(&lines[0]), "  \u{25cb} [style] Naming nit");
+    }
+
+    #[test]
+    fn stale_file_appends_a_stale_tag_to_the_title() {
+        let f = plain_finding();
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 80, true, false);
+
+        assert!(line_text(&lines[0]).ends_with("Null deref [stale]"));
+    }
+
+    #[test]
+    fn focused_banner_appends_a_bold_focus_marker() {
+        let f = plain_finding();
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 80, false, true);
+
+        let marker = lines[0].spans.last().expect("focus span");
+        assert_eq!(marker.content.as_ref(), "  \u{25c6} focused");
+        assert!(marker.style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn description_and_suggestion_render_only_their_first_line() {
+        let f = finding(serde_json::json!({
+            "id": "f-3",
+            "severity": "medium",
+            "category": "logic",
+            "title": "Off by one",
+            "description": "loop overruns\nsecond paragraph",
+            "suggestion": "use ..= here\nsecond paragraph",
+        }));
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 80, false, false);
+
+        assert_eq!(lines.len(), 3);
+        assert_eq!(line_text(&lines[1]), "    loop overruns");
+        assert_eq!(line_text(&lines[2]), "    \u{2192} use ..= here");
+    }
+
+    #[test]
+    fn description_and_suggestion_truncate_to_their_own_width_budgets() {
+        let f = finding(serde_json::json!({
+            "id": "f-4",
+            "severity": "low",
+            "category": "perf",
+            "title": "Slow path",
+            "description": "d".repeat(100),
+            "suggestion": "s".repeat(100),
+        }));
+        let mut lines: Vec<Line> = Vec::new();
+        render_finding_banner(&mut lines, &f, 40, false, false);
+
+        // description budget = width − 6, suggestion budget = width − 8.
+        let desc = line_text(&lines[1]);
+        let desc_body = desc.strip_prefix("    ").expect("description indent");
+        assert_eq!(desc_body.chars().count(), 34);
+        assert!(desc_body.ends_with('\u{2026}'));
+
+        let sug = line_text(&lines[2]);
+        let sug_body = sug
+            .strip_prefix("    \u{2192} ")
+            .expect("suggestion indent");
+        assert_eq!(sug_body.chars().count(), 32);
+        assert!(sug_body.ends_with('\u{2026}'));
+    }
+}
+
+/// Watched-file content mode: numbered source rows plus the size/binary/error
+/// short circuits.
+#[cfg(test)]
+mod render_watched_content_lines_tests {
+    use super::test_support::{line_text, TempDir};
+    use super::*;
+
+    #[test]
+    fn content_lines_are_numbered_from_one_with_a_gutter() {
+        let dir = TempDir::new("content");
+        dir.write("notes.md", "alpha\nbeta\n");
+        let mut lines: Vec<Line> = Vec::new();
+        render_watched_content_lines(&mut lines, &dir.root(), "notes.md", dir.size_of("notes.md"));
+
+        assert_eq!(lines.len(), 2);
+        assert_eq!(line_text(&lines[0]), "    1 \u{2502}alpha");
+        assert_eq!(line_text(&lines[1]), "    2 \u{2502}beta");
+    }
+
+    #[test]
+    fn oversized_file_reports_its_size_without_reading_the_file() {
+        let dir = TempDir::new("huge");
+        // Nothing on disk: if the size guard did not short-circuit before the
+        // read, this would render a read error instead.
+        let mut lines: Vec<Line> = Vec::new();
+        render_watched_content_lines(&mut lines, &dir.root(), "absent.bin", 11 * 1024 * 1024);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "  Binary or large file (11.0 MB)");
+    }
+
+    #[test]
+    fn binary_file_reports_its_size_instead_of_content() {
+        let dir = TempDir::new("binary");
+        // A NUL byte in the first 8KB is what marks the file binary; the size
+        // in the label comes from the watcher's recorded size, not the file.
+        dir.write_bytes("blob.bin", &[b'a', 0, b'b']);
+        let mut lines: Vec<Line> = Vec::new();
+        render_watched_content_lines(&mut lines, &dir.root(), "blob.bin", 2048);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(line_text(&lines[0]), "  Binary file (2.0 KB)");
+    }
+
+    #[test]
+    fn missing_file_reports_the_read_error_with_the_path() {
+        let dir = TempDir::new("missing");
+        let mut lines: Vec<Line> = Vec::new();
+        render_watched_content_lines(&mut lines, &dir.root(), "gone.txt", 10);
+
+        assert_eq!(lines.len(), 1);
+        let text = line_text(&lines[0]);
+        assert!(text.starts_with("  Error reading file:"), "got {text:?}");
+        assert!(text.contains("gone.txt"), "got {text:?}");
+    }
+
+    #[test]
+    fn file_over_ten_thousand_lines_is_truncated_with_a_tail_note() {
+        let dir = TempDir::new("large");
+        let body: String = (1..=10_002).map(|i| format!("line{i}\n")).collect();
+        dir.write("big.txt", &body);
+        let mut lines: Vec<Line> = Vec::new();
+        render_watched_content_lines(&mut lines, &dir.root(), "big.txt", dir.size_of("big.txt"));
+
+        assert_eq!(
+            line_text(&lines[0]),
+            "  Large file (10002 lines) \u{2014} content truncated"
+        );
+        // warning + blank + 10_000 rendered rows + blank + tail note
+        assert_eq!(lines.len(), 2 + 10_000 + 2);
+        assert_eq!(line_text(&lines[2]), "    1 \u{2502}line1");
+        assert_eq!(line_text(&lines[lines.len() - 1]), "  ... 2 more lines");
+    }
+}
+
+/// The watched-file panel: header, size row, content mode, and all three
+/// snapshot-mode outcomes (first view, unchanged, changed) plus the error
+/// fallback.
+#[cfg(test)]
+mod render_watched_tests {
+    use super::test_support::{buffer_text, draw, TempDir};
+    use super::*;
+    use er_engine::ErRoot;
+
+    fn watched_app(dir: &TempDir, diff_mode: &str) -> App {
+        let mut app = App::new_for_test(vec![]);
+        let tab = app.tab_mut();
+        tab.repo_root = dir.root();
+        tab.er_root = ErRoot::RepoLocal(dir.root());
+        tab.watched_config.diff_mode = diff_mode.to_string();
+        app
+    }
+
+    #[test]
+    fn header_warns_when_the_watched_file_is_not_gitignored() {
+        let dir = TempDir::new("wnotignored");
+        dir.write("agent.log", "hello\n");
+        let mut app = watched_app(&dir, "content");
+        app.tab_mut()
+            .watched_not_ignored
+            .push("agent.log".to_string());
+
+        let buf = draw(80, 12, |f, area| {
+            render_watched(f, area, &app, "agent.log", 6);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(
+            text.contains("watched \u{b7} \u{26a0} not in .gitignore"),
+            "{text}"
+        );
+        assert!(!text.contains("not tracked by git"), "{text}");
+    }
+
+    #[test]
+    fn header_says_untracked_when_the_file_is_gitignored() {
+        let dir = TempDir::new("wignored");
+        dir.write("agent.log", "hello\n");
+        let app = watched_app(&dir, "content");
+
+        let buf = draw(80, 12, |f, area| {
+            render_watched(f, area, &app, "agent.log", 6);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("watched \u{b7} not tracked by git"), "{text}");
+        assert!(!text.contains("not in .gitignore"), "{text}");
+    }
+
+    #[test]
+    fn content_mode_shows_the_size_row_and_the_file_body() {
+        let dir = TempDir::new("wcontent");
+        dir.write("agent.log", "hello\n");
+        let app = watched_app(&dir, "content");
+
+        let buf = draw(80, 12, |f, area| {
+            render_watched(f, area, &app, "agent.log", 6);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("\u{25c9} agent.log"), "{text}");
+        assert!(text.contains("Size: 6 B"), "{text}");
+        assert!(text.contains("hello"), "{text}");
+    }
+
+    #[test]
+    fn scrolling_drops_the_header_rows_from_the_viewport() {
+        let dir = TempDir::new("wscroll");
+        dir.write("agent.log", "hello\n");
+        let mut app = watched_app(&dir, "content");
+        // Header, size row, and blank spacer occupy the first three lines.
+        app.tab_mut().diff_scroll = 3;
+
+        let buf = draw(80, 12, |f, area| {
+            render_watched(f, area, &app, "agent.log", 6);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(
+            !text.contains('\u{25c9}'),
+            "header must scroll away: {text}"
+        );
+        assert!(!text.contains("Size: 6 B"), "{text}");
+        assert!(text.contains("hello"), "content stays visible: {text}");
+    }
+
+    #[test]
+    fn snapshot_mode_first_view_saves_a_snapshot_and_still_shows_content() {
+        let dir = TempDir::new("wsnapfirst");
+        dir.write("agent.log", "one\ntwo\n");
+        let app = watched_app(&dir, "snapshot");
+
+        let buf = draw(80, 14, |f, area| {
+            render_watched(f, area, &app, "agent.log", 8);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("Snapshot saved (first view)"), "{text}");
+        assert!(
+            dir.path().join(".er/snapshots/agent.log").exists(),
+            "the first view must persist a snapshot"
+        );
+        assert!(text.contains("one"), "falls through to content: {text}");
+    }
+
+    #[test]
+    fn snapshot_mode_reports_no_changes_when_the_file_still_matches() {
+        let dir = TempDir::new("wsnapsame");
+        dir.write("agent.log", "one\ntwo\n");
+        let app = watched_app(&dir, "snapshot");
+
+        // First render seeds the snapshot; the second diffs against it.
+        draw(80, 14, |f, area| {
+            render_watched(f, area, &app, "agent.log", 8);
+        });
+        let buf = draw(80, 14, |f, area| {
+            render_watched(f, area, &app, "agent.log", 8);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("No changes since snapshot"), "{text}");
+        assert!(text.contains("Press s to update snapshot"), "{text}");
+    }
+
+    #[test]
+    fn snapshot_mode_renders_the_diff_after_the_file_changes() {
+        let dir = TempDir::new("wsnapdiff");
+        dir.write("agent.log", "one\ntwo\n");
+        let app = watched_app(&dir, "snapshot");
+
+        draw(80, 20, |f, area| {
+            render_watched(f, area, &app, "agent.log", 8);
+        });
+        dir.write("agent.log", "one\nTWO\n");
+        let buf = draw(80, 20, |f, area| {
+            render_watched(f, area, &app, "agent.log", 8);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("diff vs snapshot"), "{text}");
+        assert!(text.contains("@@"), "hunk header is rendered: {text}");
+        assert!(text.contains("-two"), "deleted line is rendered: {text}");
+        assert!(text.contains("+TWO"), "added line is rendered: {text}");
+        assert!(text.contains(" one"), "context line is rendered: {text}");
+    }
+
+    #[test]
+    fn snapshot_failure_falls_back_to_content_mode() {
+        let dir = TempDir::new("wsnaperr");
+        let app = watched_app(&dir, "snapshot");
+
+        // `..` escapes the repo root, so the snapshot path never resolves and
+        // the snapshot branch errors out into the content-mode fallback.
+        let buf = draw(80, 10, |f, area| {
+            render_watched(f, area, &app, "../escape.txt", 12);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(!text.contains("Snapshot saved"), "{text}");
+        assert!(text.contains("Error reading file"), "{text}");
+    }
+}
+
+/// Split view: the 50/50 pane routing and every condition that sends it back to
+/// the unified renderer.
+#[cfg(test)]
+mod render_split_tests {
+    use super::test_support::{buffer_text, col_of, draw, TempDir};
+    use super::*;
+    use er_engine::git::{DiffFile, DiffHunk, DiffLine, FileStatus, WatchedFile};
+    use er_engine::ErRoot;
+    use std::time::SystemTime;
+
+    fn split_file() -> DiffFile {
+        DiffFile {
+            path: "src/lib.txt".to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![DiffHunk {
+                header: "@@ -1,2 +1,2 @@".to_string(),
+                old_start: 1,
+                old_count: 2,
+                new_start: 1,
+                new_count: 2,
+                lines: vec![
+                    DiffLine {
+                        line_type: LineType::Context,
+                        content: "alpha".to_string(),
+                        old_num: Some(1),
+                        new_num: Some(1),
+                    },
+                    DiffLine {
+                        line_type: LineType::Delete,
+                        content: "OLDLINE".to_string(),
+                        old_num: Some(2),
+                        new_num: None,
+                    },
+                    DiffLine {
+                        line_type: LineType::Add,
+                        content: "NEWLINE".to_string(),
+                        old_num: None,
+                        new_num: Some(2),
+                    },
+                ],
+            }],
+            adds: 1,
+            dels: 1,
+            compacted: false,
+            raw_hunk_count: 1,
+        }
+    }
+
+    #[test]
+    fn split_view_puts_the_deleted_line_left_and_the_added_line_right() {
+        let app = App::new_for_test(vec![split_file()]);
+        let config = ErConfig::default();
+        let mut hl = Highlighter::new();
+
+        let buf = draw(100, 20, |f, area| {
+            render_split(f, area, &app, &mut hl, &config);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains(" Old "), "{text}");
+        assert!(text.contains(" New "), "{text}");
+        let old_col = col_of(&buf, "OLDLINE").expect("deleted line rendered");
+        let new_col = col_of(&buf, "NEWLINE").expect("added line rendered");
+        assert!(
+            old_col < 50,
+            "deleted line belongs left, got column {old_col}"
+        );
+        assert!(
+            new_col >= 50,
+            "added line belongs right, got column {new_col}"
+        );
+    }
+
+    #[test]
+    fn area_narrower_than_sixty_columns_falls_back_to_the_unified_view() {
+        let app = App::new_for_test(vec![split_file()]);
+        let config = ErConfig::default();
+        let mut hl = Highlighter::new();
+
+        let buf = draw(50, 20, |f, area| {
+            render_split(f, area, &app, &mut hl, &config);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(!text.contains(" Old "), "no split panes at 50 cols: {text}");
+        assert!(text.contains("OLDLINE"), "{text}");
+        assert!(text.contains("NEWLINE"), "{text}");
+    }
+
+    #[test]
+    fn compacted_file_falls_back_to_the_unified_summary() {
+        let mut file = split_file();
+        file.compacted = true;
+        file.hunks.clear();
+        let app = App::new_for_test(vec![file]);
+        let config = ErConfig::default();
+        let mut hl = Highlighter::new();
+
+        let buf = draw(100, 20, |f, area| {
+            render_split(f, area, &app, &mut hl, &config);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(
+            text.contains("(compacted \u{2014} press Enter to expand)"),
+            "{text}"
+        );
+        assert!(!text.contains(" Old "), "{text}");
+    }
+
+    #[test]
+    fn no_selected_file_falls_back_to_the_empty_state() {
+        let app = App::new_for_test(vec![]);
+        let config = ErConfig::default();
+        let mut hl = Highlighter::new();
+
+        let buf = draw(100, 20, |f, area| {
+            render_split(f, area, &app, &mut hl, &config);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("No files changed"), "{text}");
+        assert!(!text.contains(" Old "), "{text}");
+    }
+
+    #[test]
+    fn selected_watched_file_falls_back_to_the_watched_view() {
+        let dir = TempDir::new("splitwatched");
+        dir.write("agent.log", "watched body\n");
+        let mut app = App::new_for_test(vec![split_file()]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = dir.root();
+            tab.er_root = ErRoot::RepoLocal(dir.root());
+            tab.watched_config.diff_mode = "content".to_string();
+            tab.watched_files = vec![WatchedFile {
+                path: "agent.log".to_string(),
+                modified: SystemTime::now(),
+                size: 13,
+            }];
+            tab.selected_watched = Some(0);
+        }
+        let config = ErConfig::default();
+        let mut hl = Highlighter::new();
+
+        let buf = draw(100, 20, |f, area| {
+            render_split(f, area, &app, &mut hl, &config);
+        });
+        let text = buffer_text(&buf);
+
+        assert!(text.contains("\u{25c9} agent.log"), "{text}");
+        assert!(text.contains("watched body"), "{text}");
+        assert!(
+            !text.contains(" Old "),
+            "watched view is never split: {text}"
+        );
+    }
+}

@@ -1597,3 +1597,1342 @@ mod tests {
         assert_eq!(pick_context_for_size(2000, 20), 10);
     }
 }
+
+#[cfg(test)]
+mod nav_state_tests {
+    use super::*;
+    use crate::git::{DiffHunk, DiffLine, FileStatus, LineType};
+
+    /// `open_in_editor` reads the process-wide `EDITOR`, so the two tests that
+    /// set it are serialized against each other.
+    static EDITOR_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// A two-file raw diff with LF endings, so `parse_diff_headers` byte offsets
+    /// line up with `parse_file_at_offset`.
+    const TWO_FILE_DIFF: &str = r#"diff --git a/a.rs b/a.rs
+index 1111111..2222222 100644
+--- a/a.rs
++++ b/a.rs
+@@ -1,3 +1,3 @@
+ fn a() {
+-    old_a();
++    new_a();
+ }
+diff --git a/b.rs b/b.rs
+index 3333333..4444444 100644
+--- a/b.rs
++++ b/b.rs
+@@ -1,3 +1,3 @@
+ fn b() {
+-    old_b();
++    new_b();
+ }
+"#;
+
+    // ── fixtures ──
+
+    fn diff_line(line_type: LineType, content: &str, new_num: Option<usize>) -> DiffLine {
+        DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: None,
+            new_num,
+        }
+    }
+
+    fn hunk_with(new_start: usize, count: usize) -> DiffHunk {
+        DiffHunk {
+            header: String::new(),
+            old_start: new_start,
+            old_count: count,
+            new_start,
+            new_count: count,
+            lines: (0..count)
+                .map(|i| {
+                    diff_line(
+                        LineType::Context,
+                        &format!("line {}", new_start + i),
+                        Some(new_start + i),
+                    )
+                })
+                .collect(),
+        }
+    }
+
+    fn diff_file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks,
+            adds: 1,
+            dels: 1,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    fn commit_info(hash: &str, subject: &str, author: &str) -> CommitInfo {
+        CommitInfo {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            subject: subject.to_string(),
+            author: author.to_string(),
+            date: "2026-01-01T00:00:00Z".to_string(),
+            relative_date: "1 day ago".to_string(),
+            file_count: 1,
+            adds: 1,
+            dels: 0,
+            is_merge: false,
+        }
+    }
+
+    fn history_with(commits: Vec<CommitInfo>, commit_files: Vec<DiffFile>) -> HistoryState {
+        HistoryState {
+            commits,
+            selected_commit: 0,
+            commit_files,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+            all_loaded: false,
+            diff_cache: DiffCache::new(5),
+        }
+    }
+
+    fn pillar_view(id: &str) -> TourPillarView {
+        TourPillarView {
+            id: id.to_string(),
+            title: id.to_string(),
+            description: String::new(),
+            importance: 1,
+            foundation: false,
+        }
+    }
+
+    fn tour_with(files: Vec<DiffFile>, ranges: Vec<(usize, usize)>) -> TourState {
+        let file_is_related = vec![false; files.len()];
+        let pillars: Vec<TourPillarView> = (0..ranges.len())
+            .map(|i| pillar_view(&format!("p{i}")))
+            .collect();
+        TourState {
+            pillars,
+            selected_pillar: 0,
+            files,
+            file_is_related,
+            pillar_file_ranges: ranges,
+            selected_file: 0,
+            current_hunk: 0,
+            current_line: None,
+            diff_scroll: 0,
+            h_scroll: 0,
+        }
+    }
+
+    /// f0: hunks of 3 and 2 lines. f1: one hunk of 2 lines.
+    fn two_file_history() -> HistoryState {
+        history_with(
+            vec![commit_info("aaa1111", "c", "Ada")],
+            vec![
+                diff_file("f0.rs", vec![hunk_with(1, 3), hunk_with(20, 2)]),
+                diff_file("f1.rs", vec![hunk_with(1, 2)]),
+            ],
+        )
+    }
+
+    /// Same shape as `two_file_history`, but the two files sit in *different*
+    /// pillars so a cross-file move has to move `selected_pillar` too.
+    fn two_pillar_tour() -> TourState {
+        tour_with(
+            vec![
+                diff_file("p0a.rs", vec![hunk_with(1, 3), hunk_with(20, 2)]),
+                diff_file("p1a.rs", vec![hunk_with(1, 2)]),
+            ],
+            vec![(0, 1), (1, 2)],
+        )
+    }
+
+    // ── real-git fixtures ──
+
+    fn run_git(dir: &std::path::Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {args:?}: {e}"));
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn init_repo(root: &std::path::Path) {
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "test@example.com"]);
+        run_git(root, &["config", "user.name", "Test User"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
+    }
+
+    /// `main` plus a `feature` branch whose single commit edits line 30 of a
+    /// 60-line file. Wide enough that -U10 / -U20 / -U40 give distinguishable
+    /// hunk sizes (21 / 41 / 60 lines).
+    fn temp_branch_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        init_repo(root);
+        let base: String = (1..=60).map(|i| format!("line {i}\n")).collect();
+        std::fs::write(root.join("src.txt"), base).unwrap();
+        run_git(root, &["add", "src.txt"]);
+        run_git(root, &["commit", "-m", "base"]);
+        run_git(root, &["checkout", "-b", "feature"]);
+        let changed: String = (1..=60)
+            .map(|i| {
+                if i == 30 {
+                    "line 30 CHANGED\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        std::fs::write(root.join("src.txt"), changed).unwrap();
+        run_git(root, &["commit", "-am", "change line 30"]);
+        tmp
+    }
+
+    /// `main` plus a `feature` branch carrying three commits (first, second,
+    /// third) so `git log main..feature` can be paginated.
+    fn temp_history_repo() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        init_repo(root);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        run_git(root, &["add", "base.txt"]);
+        run_git(root, &["commit", "-m", "base"]);
+        run_git(root, &["checkout", "-b", "feature"]);
+        for subject in ["first", "second", "third"] {
+            std::fs::write(root.join(format!("{subject}.txt")), "x\n").unwrap();
+            run_git(root, &["add", "."]);
+            run_git(root, &["commit", "-m", subject]);
+        }
+        tmp
+    }
+
+    /// A Branch-mode tab whose diff is the real `main...feature` diff of
+    /// `src.txt`, parsed at `context` unified lines.
+    fn branch_tab(root: &std::path::Path, context: Option<usize>) -> TabState {
+        let root_str = root.to_string_lossy().to_string();
+        let raw = git::git_diff_raw_file("branch", "main", &root_str, "src.txt", context, None)
+            .expect("git diff for src.txt");
+        let mut tab = TabState::new_for_test(git::parse_diff(&raw));
+        tab.repo_root = root_str.clone();
+        tab.er_root = ErRoot::RepoLocal(root_str);
+        tab
+    }
+
+    /// `new_count` from the first hunk's `@@` header — unaffected by context
+    /// folding, so it is a stable measure of how wide the fetched hunk is.
+    fn first_hunk_new_count(tab: &TabState) -> usize {
+        tab.files[0].hunks.first().map_or(0, |h| h.new_count)
+    }
+
+    fn added_contents(file: &DiffFile) -> Vec<String> {
+        file.hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .filter(|l| matches!(l.line_type, LineType::Add))
+            .map(|l| l.content.trim().to_string())
+            .collect()
+    }
+
+    // ── ensure_file_parsed_at ──
+
+    #[test]
+    fn ensure_file_parsed_at_is_a_noop_when_lazy_mode_is_off() {
+        let mut tab = TabState::new_for_test(vec![diff_file("a.rs", vec![])]);
+        tab.raw_diff = Some(TWO_FILE_DIFF.to_string());
+        tab.file_headers = git::parse_diff_headers(TWO_FILE_DIFF);
+        tab.lazy_mode = false;
+
+        tab.ensure_file_parsed_at(0);
+
+        assert!(
+            tab.files[0].hunks.is_empty(),
+            "eager mode already holds every hunk it will ever have; on-demand parsing must not run"
+        );
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_leaves_a_compacted_file_collapsed() {
+        let mut file = diff_file("a.rs", vec![]);
+        file.compacted = true;
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.raw_diff = Some(TWO_FILE_DIFF.to_string());
+        tab.file_headers = git::parse_diff_headers(TWO_FILE_DIFF);
+        tab.lazy_mode = true;
+
+        tab.ensure_file_parsed_at(0);
+
+        assert!(tab.files[0].compacted);
+        assert!(
+            tab.files[0].hunks.is_empty(),
+            "a compacted stub stays collapsed until expanded, even with its section in raw_diff"
+        );
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_resolves_the_header_by_path_not_by_index() {
+        // Mtime sort reorders `files` without reordering `file_headers`, so an
+        // index-based header lookup parses the wrong file's section.
+        let mut tab =
+            TabState::new_for_test(vec![diff_file("b.rs", vec![]), diff_file("a.rs", vec![])]);
+        tab.raw_diff = Some(TWO_FILE_DIFF.to_string());
+        tab.file_headers = git::parse_diff_headers(TWO_FILE_DIFF);
+        tab.lazy_mode = true;
+
+        tab.ensure_file_parsed_at(0);
+
+        assert_eq!(
+            added_contents(&tab.files[0]),
+            vec!["new_b();".to_string()],
+            "files[0] is b.rs, so b.rs's section must be parsed even though header[0] is a.rs"
+        );
+        assert!(
+            tab.files[1].hunks.is_empty(),
+            "only the requested index is parsed"
+        );
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_skips_the_git_fallback_for_remote_tabs() {
+        // The repo really does contain src.txt in `main...feature`, so a git
+        // fallback would succeed here — the remote guard is what must stop it.
+        let tmp = temp_branch_repo();
+        let mut tab = TabState::new_for_test(vec![diff_file("src.txt", vec![])]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.lazy_mode = true;
+        tab.raw_diff = None;
+        tab.remote_repo = Some("owner/repo".to_string());
+
+        tab.ensure_file_parsed_at(0);
+
+        assert!(
+            tab.files[0].hunks.is_empty(),
+            "a remote tab has no local checkout to diff — raw_diff is its only source"
+        );
+    }
+
+    #[test]
+    fn ensure_file_parsed_at_falls_back_to_git_when_the_raw_diff_has_no_section() {
+        let tmp = temp_branch_repo();
+        let mut tab = TabState::new_for_test(vec![diff_file("src.txt", vec![])]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.lazy_mode = true;
+        tab.raw_diff = None;
+
+        tab.ensure_file_parsed_at(0);
+
+        assert!(
+            tab.files[0]
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("line 30 CHANGED")),
+            "with no raw_diff section the stub must be filled from a real `git diff` of that path"
+        );
+        assert_eq!(
+            tab.mem_budget.parsed_files, 1,
+            "the memory budget is refreshed after an on-demand parse"
+        );
+    }
+
+    // ── toggle_compacted ──
+
+    #[test]
+    fn toggle_compacted_recompacts_an_expanded_file_and_resets_navigation() {
+        let mut tab = TabState::new_for_test(vec![diff_file(
+            "a.rs",
+            vec![hunk_with(1, 3), hunk_with(20, 2)],
+        )]);
+        tab.user_expanded.insert("a.rs".to_string());
+        tab.current_hunk = 1;
+        tab.current_line = Some(1);
+        tab.diff_scroll = 40;
+        // Populate the offsets so clearing them is observable rather than a
+        // no-op against the `None` this tab starts with.
+        tab.rebuild_hunk_offsets();
+        assert!(tab.hunk_offsets.is_some());
+
+        tab.toggle_compacted().unwrap();
+
+        let file = &tab.files[0];
+        assert!(file.compacted);
+        assert!(file.hunks.is_empty(), "compacting frees the parsed hunks");
+        assert_eq!(
+            file.raw_hunk_count, 2,
+            "the hunk count survives so the collapsed row can still say how big the file is"
+        );
+        assert!(
+            !tab.user_expanded.contains("a.rs"),
+            "re-compacting forgets the manual expansion so refreshes keep it collapsed"
+        );
+        assert_eq!(tab.current_hunk, 0);
+        assert_eq!(tab.current_line, None);
+        assert_eq!(tab.diff_scroll, 0);
+        assert!(tab.hunk_offsets.is_none());
+    }
+
+    #[test]
+    fn toggle_compacted_expands_a_remote_file_from_the_cached_raw_diff() {
+        let mut file = diff_file("b.rs", vec![]);
+        file.compacted = true;
+        file.raw_hunk_count = 1;
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        // A path that is not a git repo: reaching git at all would be the bug.
+        tab.repo_root = "/nonexistent/er-test-remote-expand".to_string();
+        tab.raw_diff = Some(TWO_FILE_DIFF.to_string());
+        tab.file_headers = git::parse_diff_headers(TWO_FILE_DIFF);
+
+        tab.toggle_compacted().unwrap();
+
+        assert!(!tab.files[0].compacted);
+        assert_eq!(
+            added_contents(&tab.files[0]),
+            vec!["new_b();".to_string()],
+            "a remote expand re-parses the file's section out of raw_diff instead of shelling out"
+        );
+        assert!(
+            tab.user_expanded.contains("b.rs"),
+            "the expansion is remembered so a refresh does not re-collapse it"
+        );
+    }
+
+    #[test]
+    fn toggle_compacted_expands_a_local_file_by_refetching_from_git() {
+        let tmp = temp_branch_repo();
+        let mut tab = branch_tab(tmp.path(), None);
+        tab.files[0].hunks.clear();
+        tab.files[0].compacted = true;
+
+        tab.toggle_compacted().unwrap();
+
+        assert!(!tab.files[0].compacted);
+        assert!(
+            tab.files[0]
+                .hunks
+                .iter()
+                .flat_map(|h| h.lines.iter())
+                .any(|l| l.content.contains("line 30 CHANGED")),
+            "a local compacted file is re-fetched from git, not from raw_diff"
+        );
+        assert!(tab.user_expanded.contains("src.txt"));
+    }
+
+    // ── expand_context ──
+
+    #[test]
+    fn expand_context_is_a_noop_in_history_mode() {
+        let mut tab = TabState::new_for_test(vec![diff_file("a.rs", vec![hunk_with(1, 3)])]);
+        tab.mode = DiffMode::History;
+        tab.repo_root = "/nonexistent/er-test-history-context".to_string();
+
+        tab.expand_context().unwrap();
+
+        assert!(
+            tab.context_overrides.is_empty(),
+            "History mode renders a commit diff, which has no per-file context override"
+        );
+    }
+
+    #[test]
+    fn expand_context_leaves_a_single_hunk_added_file_alone() {
+        let mut file = diff_file("new.rs", vec![hunk_with(1, 3)]);
+        file.status = FileStatus::Added;
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.repo_root = "/nonexistent/er-test-added-context".to_string();
+
+        tab.expand_context().unwrap();
+
+        assert!(
+            tab.context_overrides.is_empty(),
+            "an added file's diff is already the whole file; there is no context to widen"
+        );
+    }
+
+    #[test]
+    fn expand_context_on_a_compacted_file_expands_it_instead_of_widening() {
+        let mut file = diff_file("b.rs", vec![]);
+        file.compacted = true;
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.remote_repo = Some("owner/repo".to_string());
+        tab.raw_diff = Some(TWO_FILE_DIFF.to_string());
+        tab.file_headers = git::parse_diff_headers(TWO_FILE_DIFF);
+
+        tab.expand_context().unwrap();
+
+        assert!(
+            !tab.files[0].compacted,
+            "`+` on a collapsed file behaves like Enter"
+        );
+        assert!(!tab.files[0].hunks.is_empty());
+        assert!(
+            tab.context_overrides.is_empty(),
+            "expanding a stub must not also record a context override"
+        );
+    }
+
+    #[test]
+    fn expand_context_steps_to_the_next_level_and_widens_the_hunk() {
+        let tmp = temp_branch_repo();
+        let mut tab = branch_tab(tmp.path(), None);
+        assert_eq!(
+            first_hunk_new_count(&tab),
+            21,
+            "-U10 around line 30 of a 60-line file"
+        );
+
+        tab.expand_context().unwrap();
+
+        assert_eq!(tab.context_overrides.get("src.txt").copied(), Some(20));
+        assert_eq!(
+            first_hunk_new_count(&tab),
+            41,
+            "the file is refetched at -U20, doubling the context on each side"
+        );
+    }
+
+    // ── collapse_context ──
+
+    #[test]
+    fn collapse_context_is_a_noop_in_history_mode() {
+        let mut tab = TabState::new_for_test(vec![diff_file("a.rs", vec![hunk_with(1, 3)])]);
+        tab.mode = DiffMode::History;
+        tab.context_overrides.insert("a.rs".to_string(), 40);
+        tab.repo_root = "/nonexistent/er-test-history-collapse".to_string();
+
+        tab.collapse_context().unwrap();
+
+        assert_eq!(tab.context_overrides.get("a.rs").copied(), Some(40));
+    }
+
+    #[test]
+    fn collapse_context_is_a_noop_for_a_compacted_file() {
+        let mut file = diff_file("a.rs", vec![]);
+        file.compacted = true;
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.context_overrides.insert("a.rs".to_string(), 40);
+        tab.repo_root = "/nonexistent/er-test-collapse-compacted".to_string();
+
+        tab.collapse_context().unwrap();
+
+        assert_eq!(
+            tab.context_overrides.get("a.rs").copied(),
+            Some(40),
+            "a collapsed file renders no context, so there is nothing to narrow"
+        );
+    }
+
+    #[test]
+    fn collapse_context_is_a_noop_at_the_default_context() {
+        let tmp = temp_branch_repo();
+        let mut tab = branch_tab(tmp.path(), None);
+        assert_eq!(first_hunk_new_count(&tab), 21, "-U10 is the default");
+        // Re-point at a non-repo so the early return is load-bearing: without it
+        // `prev` falls back to the default and the refetch would error through `?`.
+        tab.repo_root = "/nonexistent/er-test-collapse-default".to_string();
+
+        tab.collapse_context().unwrap();
+
+        assert!(tab.context_overrides.is_empty());
+        assert_eq!(
+            first_hunk_new_count(&tab),
+            21,
+            "already at the default -U10; `-` cannot go below it"
+        );
+    }
+
+    #[test]
+    fn collapse_context_steps_down_one_level_and_keeps_the_override() {
+        let tmp = temp_branch_repo();
+        let mut tab = branch_tab(tmp.path(), Some(40));
+        tab.context_overrides.insert("src.txt".to_string(), 40);
+        assert_eq!(first_hunk_new_count(&tab), 60, "-U40 covers the whole file");
+
+        tab.collapse_context().unwrap();
+
+        assert_eq!(tab.context_overrides.get("src.txt").copied(), Some(20));
+        assert_eq!(first_hunk_new_count(&tab), 41);
+    }
+
+    #[test]
+    fn collapse_context_drops_the_override_when_it_reaches_the_default() {
+        let tmp = temp_branch_repo();
+        let mut tab = branch_tab(tmp.path(), Some(20));
+        tab.context_overrides.insert("src.txt".to_string(), 20);
+
+        tab.collapse_context().unwrap();
+
+        assert!(
+            tab.context_overrides.is_empty(),
+            "back at the default the override is removed, not pinned to 10"
+        );
+        assert_eq!(first_hunk_new_count(&tab), 21);
+    }
+
+    // ── open_in_editor ──
+
+    #[test]
+    fn open_in_editor_is_a_noop_when_no_file_is_selected() {
+        // EDITOR points at a binary that cannot spawn, so `Ok` here means the
+        // no-file guard returned *before* building a command — not merely that
+        // the call happened to succeed.
+        let _guard = EDITOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("EDITOR", "/nonexistent/er-test-unspawnable-editor");
+        let tab = TabState::new_for_test(vec![]);
+
+        assert!(
+            tab.open_in_editor().is_ok(),
+            "with no selected file nothing may be spawned"
+        );
+    }
+
+    #[test]
+    fn open_in_editor_surfaces_a_missing_editor_binary_as_an_error() {
+        let _guard = EDITOR_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        std::env::set_var("EDITOR", "/nonexistent/er-test-missing-editor-bin");
+        let tab = TabState::new_for_test(vec![diff_file("src/lib.rs", vec![hunk_with(42, 3)])]);
+
+        let err = tab
+            .open_in_editor()
+            .expect_err("spawning a missing binary must fail");
+
+        assert!(
+            err.to_string().contains("Failed to open editor"),
+            "the spawn failure must be reported, not swallowed; got: {err}"
+        );
+    }
+
+    // NOTE: a second copy of the test above, with EDITOR containing "code" to
+    // "cover" the `-g <file>:<line>` arm, was removed as coverage theater: a
+    // spawn failure is argument-independent, so it passed identically whichever
+    // arm ran and would still pass with the vscode branch deleted. Pinning the
+    // three argument forms needs a recorder binary that logs its argv (the
+    // editor is spawned, never waited on), which is left for a follow-up.
+
+    // ── history_load_selected_diff ──
+
+    #[test]
+    fn history_load_selected_diff_leaves_the_branch_viewport_alone_without_history_state() {
+        let mut tab = TabState::new_for_test(vec![diff_file("branch.rs", vec![hunk_with(1, 2)])]);
+        tab.diff_scroll = 12;
+        tab.current_line = Some(1);
+
+        tab.history_load_selected_diff();
+
+        assert!(tab.history.is_none());
+        assert_eq!(
+            tab.diff_scroll, 12,
+            "the History pane's scroll reset must not touch the tab's own viewport"
+        );
+        assert_eq!(tab.current_line, Some(1));
+    }
+
+    #[test]
+    fn history_load_selected_diff_keeps_the_pane_when_no_commit_is_selected() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.history = Some(history_with(
+            vec![],
+            vec![diff_file("kept.rs", vec![hunk_with(1, 2)])],
+        ));
+
+        tab.history_load_selected_diff();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(
+            history.commit_files.len(),
+            1,
+            "an empty commit list returns before touching the diff pane"
+        );
+        assert_eq!(history.commit_files[0].path, "kept.rs");
+    }
+
+    #[test]
+    fn history_load_selected_diff_serves_the_cache_and_resets_navigation() {
+        let mut tab = TabState::new_for_test(vec![]);
+        // Not a git repo: a cache miss could not produce any files here.
+        tab.repo_root = "/nonexistent/er-test-history-cache".to_string();
+        let mut history = history_with(vec![commit_info("cafe1234", "cached", "Ada")], vec![]);
+        history.diff_cache.insert(
+            "cafe1234".to_string(),
+            vec![diff_file("cached.rs", vec![hunk_with(1, 2)])],
+        );
+        history.selected_file = 3;
+        history.current_hunk = 2;
+        history.current_line = Some(5);
+        history.diff_scroll = 90;
+        history.h_scroll = 7;
+        tab.history = Some(history);
+
+        tab.history_load_selected_diff();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.commit_files.len(), 1);
+        assert_eq!(history.commit_files[0].path, "cached.rs");
+        assert_eq!(history.selected_file, 0);
+        assert_eq!(history.current_hunk, 0);
+        assert_eq!(history.current_line, None);
+        assert_eq!(history.diff_scroll, 0);
+        assert_eq!(history.h_scroll, 0);
+    }
+
+    #[test]
+    fn history_load_selected_diff_clears_the_pane_when_git_fails() {
+        // A temp dir that is deliberately not a git repo.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        let mut history = history_with(
+            vec![commit_info(&"0".repeat(40), "missing", "Ada")],
+            vec![diff_file("stale.rs", vec![hunk_with(1, 2)])],
+        );
+        history.selected_file = 1;
+        tab.history = Some(history);
+
+        tab.history_load_selected_diff();
+
+        let history = tab.history.as_ref().unwrap();
+        assert!(
+            history.commit_files.is_empty(),
+            "a failed load must not leave the previous commit's files on screen"
+        );
+        assert_eq!(history.selected_file, 0);
+    }
+
+    #[test]
+    fn history_load_selected_diff_caches_the_commit_it_loaded() {
+        let tmp = temp_branch_repo();
+        let hash = run_git(tmp.path(), &["rev-parse", "HEAD"]);
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.history = Some(history_with(
+            vec![commit_info(&hash, "change line 30", "Test User")],
+            vec![],
+        ));
+
+        tab.history_load_selected_diff();
+        assert!(tab
+            .history
+            .as_ref()
+            .unwrap()
+            .commit_files
+            .iter()
+            .any(|f| f.path == "src.txt"));
+
+        // Re-point the tab at a non-repo and clear the pane: only the cache can
+        // satisfy the second load.
+        tab.repo_root = "/nonexistent/er-test-history-cache-proof".to_string();
+        tab.history.as_mut().unwrap().commit_files.clear();
+
+        tab.history_load_selected_diff();
+
+        assert!(
+            tab.history
+                .as_ref()
+                .unwrap()
+                .commit_files
+                .iter()
+                .any(|f| f.path == "src.txt"),
+            "the first load must populate diff_cache so re-selecting the commit costs no git call"
+        );
+    }
+
+    // ── history_load_more ──
+
+    #[test]
+    fn history_load_more_does_nothing_once_every_commit_is_loaded() {
+        // A real repo with two *unloaded* commits behind the one in the list, so
+        // a `git log` that actually ran would visibly append a page.
+        let tmp = temp_history_repo();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        let mut history = history_with(vec![commit_info("abc1234", "third", "Test User")], vec![]);
+        history.all_loaded = true;
+        tab.history = Some(history);
+
+        tab.history_load_more();
+
+        assert_eq!(
+            tab.history.as_ref().unwrap().commits.len(),
+            1,
+            "all_loaded short-circuits before `git log`, though `main..feature` has two more"
+        );
+    }
+
+    #[test]
+    fn history_load_more_ends_pagination_for_pr_history_without_running_git_log() {
+        // A real repo whose `main..feature` still holds two unloaded commits, so
+        // a stray `git log` would show up as an appended page.
+        let tmp = temp_history_repo();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature".to_string());
+        tab.history = Some(history_with(
+            vec![commit_info("abc1234", "third", "Test User")],
+            vec![],
+        ));
+
+        tab.history_load_more();
+
+        let history = tab.history.as_ref().unwrap();
+        assert!(
+            history.all_loaded,
+            "PR history is the whole pr_commits list; there is no second page to fetch"
+        );
+        assert_eq!(
+            history.commits.len(),
+            1,
+            "the PR guard returns before `git log`, which would otherwise append two more"
+        );
+    }
+
+    #[test]
+    fn history_load_more_appends_the_next_page_of_branch_commits() {
+        let tmp = temp_history_repo();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        // Page one already holds the newest commit, so the next page skips it.
+        tab.history = Some(history_with(
+            vec![commit_info("deadbee", "third", "Test User")],
+            vec![],
+        ));
+
+        tab.history_load_more();
+
+        let subjects: Vec<&str> = tab
+            .history
+            .as_ref()
+            .unwrap()
+            .commits
+            .iter()
+            .map(|c| c.subject.as_str())
+            .collect();
+        assert_eq!(
+            subjects,
+            vec!["third", "second", "first"],
+            "the page is `main..feature` minus the one already loaded; `base` belongs to main"
+        );
+        assert!(
+            !tab.history.as_ref().unwrap().all_loaded,
+            "a non-empty page leaves pagination open"
+        );
+    }
+
+    #[test]
+    fn history_load_more_marks_all_loaded_when_the_page_comes_back_empty() {
+        let tmp = temp_history_repo();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.history = Some(history_with(
+            vec![
+                commit_info("aaaaaa1", "third", "Test User"),
+                commit_info("aaaaaa2", "second", "Test User"),
+                commit_info("aaaaaa3", "first", "Test User"),
+            ],
+            vec![],
+        ));
+
+        tab.history_load_more();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.commits.len(), 3, "there was nothing left to fetch");
+        assert!(history.all_loaded, "an empty page ends the pagination");
+    }
+
+    // ── visible_commits ──
+
+    #[test]
+    fn visible_commits_is_empty_without_history_state() {
+        let tab = TabState::new_for_test(vec![]);
+        assert!(tab.visible_commits().is_empty());
+    }
+
+    #[test]
+    fn visible_commits_returns_every_commit_when_the_search_is_empty() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.history = Some(history_with(
+            vec![
+                commit_info("aaa1111", "first", "Ada"),
+                commit_info("bbb2222", "second", "Bob"),
+            ],
+            vec![],
+        ));
+
+        let indices: Vec<usize> = tab.visible_commits().iter().map(|(i, _)| *i).collect();
+
+        assert_eq!(indices, vec![0, 1]);
+    }
+
+    #[test]
+    fn visible_commits_filters_by_subject_hash_or_author_and_keeps_source_indices() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.history = Some(history_with(
+            vec![
+                commit_info("aaa1111", "add parser", "Ada Lovelace"),
+                commit_info("bbb2222", "fix crash", "Bob Martin"),
+                commit_info("ccc3333", "docs", "Ada Lovelace"),
+            ],
+            vec![],
+        ));
+
+        tab.search_query = "CRASH".to_string();
+        let indices: Vec<usize> = tab.visible_commits().iter().map(|(i, _)| *i).collect();
+        assert_eq!(indices, vec![1], "subject matching is case-insensitive");
+
+        tab.search_query = "ccc3".to_string();
+        let indices: Vec<usize> = tab.visible_commits().iter().map(|(i, _)| *i).collect();
+        assert_eq!(indices, vec![2], "a short-hash prefix matches");
+
+        tab.search_query = "ada".to_string();
+        let indices: Vec<usize> = tab.visible_commits().iter().map(|(i, _)| *i).collect();
+        assert_eq!(
+            indices,
+            vec![0, 2],
+            "author matches keep the original commit indices, not filtered positions"
+        );
+    }
+
+    // ── history_next_line ──
+
+    #[test]
+    fn history_next_line_selects_the_first_line_when_nothing_is_selected() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.history = Some(two_file_history());
+
+        tab.history_next_line();
+
+        assert_eq!(tab.history.as_ref().unwrap().current_line, Some(0));
+    }
+
+    #[test]
+    fn history_next_line_advances_within_the_current_hunk() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_line = Some(0);
+        tab.history = Some(history);
+
+        tab.history_next_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.current_line, Some(1));
+        assert_eq!(history.current_hunk, 0);
+    }
+
+    #[test]
+    fn history_next_line_rolls_over_into_the_next_hunk() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_line = Some(2); // last line of hunk 0
+        tab.history = Some(history);
+
+        tab.history_next_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.current_hunk, 1);
+        assert_eq!(history.current_line, Some(0));
+    }
+
+    #[test]
+    fn history_next_line_rolls_over_into_the_next_file() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_hunk = 1;
+        history.current_line = Some(1); // last line of the last hunk of f0
+        tab.history = Some(history);
+
+        tab.history_next_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.selected_file, 1);
+        assert_eq!(history.current_hunk, 0);
+        assert_eq!(history.current_line, Some(0));
+    }
+
+    #[test]
+    fn history_next_line_stops_at_the_end_of_the_last_file() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.selected_file = 1;
+        history.current_line = Some(1); // last line of the last file
+        tab.history = Some(history);
+
+        tab.history_next_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.selected_file, 1);
+        assert_eq!(
+            history.current_line,
+            Some(1),
+            "the end of the commit diff is a hard stop, not a wrap"
+        );
+    }
+
+    #[test]
+    fn history_next_line_is_a_noop_when_the_selected_file_is_out_of_range() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.selected_file = 9;
+        tab.history = Some(history);
+
+        tab.history_next_line();
+
+        assert_eq!(tab.history.as_ref().unwrap().current_line, None);
+    }
+
+    // ── history_prev_line ──
+
+    #[test]
+    fn history_prev_line_selects_the_last_line_when_nothing_is_selected() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.history = Some(two_file_history());
+
+        tab.history_prev_line();
+
+        assert_eq!(tab.history.as_ref().unwrap().current_line, Some(2));
+    }
+
+    #[test]
+    fn history_prev_line_moves_back_within_the_current_hunk() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_line = Some(2);
+        tab.history = Some(history);
+
+        tab.history_prev_line();
+
+        assert_eq!(tab.history.as_ref().unwrap().current_line, Some(1));
+    }
+
+    #[test]
+    fn history_prev_line_steps_back_into_the_previous_hunks_last_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_hunk = 1;
+        history.current_line = Some(0);
+        tab.history = Some(history);
+
+        tab.history_prev_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.current_hunk, 0);
+        assert_eq!(history.current_line, Some(2));
+    }
+
+    #[test]
+    fn history_prev_line_steps_back_into_the_previous_files_last_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.selected_file = 1;
+        history.current_line = Some(0);
+        tab.history = Some(history);
+
+        tab.history_prev_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.selected_file, 0);
+        assert_eq!(
+            history.current_hunk, 1,
+            "landing in the previous file lands on its last hunk"
+        );
+        assert_eq!(history.current_line, Some(1));
+    }
+
+    #[test]
+    fn history_prev_line_clears_the_selection_at_the_very_first_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = two_file_history();
+        history.current_line = Some(0);
+        tab.history = Some(history);
+
+        tab.history_prev_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(
+            history.current_line, None,
+            "moving up off the first line drops line focus rather than wrapping"
+        );
+        assert_eq!(history.selected_file, 0);
+    }
+
+    #[test]
+    fn history_prev_line_clears_the_line_when_the_previous_file_has_no_hunks() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut history = history_with(
+            vec![commit_info("aaa1111", "c", "Ada")],
+            vec![
+                diff_file("empty.rs", vec![]),
+                diff_file("f1.rs", vec![hunk_with(1, 2)]),
+            ],
+        );
+        history.selected_file = 1;
+        history.current_line = Some(0);
+        tab.history = Some(history);
+
+        tab.history_prev_line();
+
+        let history = tab.history.as_ref().unwrap();
+        assert_eq!(history.selected_file, 0);
+        assert_eq!(history.current_hunk, 0);
+        assert_eq!(
+            history.current_line, None,
+            "a hunk-less file (binary / mode change) has no line to land on"
+        );
+    }
+
+    // ── tour_next_line ──
+
+    #[test]
+    fn tour_next_line_is_a_noop_when_the_selected_file_is_out_of_range() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.selected_file = 9;
+        tab.tour = Some(tour);
+
+        tab.tour_next_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.current_line, None);
+        assert_eq!(
+            tour.selected_pillar, 0,
+            "an out-of-range file must not move the pillar selection"
+        );
+    }
+
+    #[test]
+    fn tour_next_line_selects_the_first_line_when_nothing_is_selected() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.tour = Some(two_pillar_tour());
+
+        tab.tour_next_line();
+
+        assert_eq!(tab.tour.as_ref().unwrap().current_line, Some(0));
+    }
+
+    #[test]
+    fn tour_next_line_rolls_over_into_the_next_hunk() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.current_line = Some(2); // last line of hunk 0
+        tab.tour = Some(tour);
+
+        tab.tour_next_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.current_hunk, 1);
+        assert_eq!(tour.current_line, Some(0));
+        assert_eq!(tour.selected_pillar, 0, "staying inside a file stays in its pillar");
+    }
+
+    #[test]
+    fn tour_next_line_crossing_into_the_next_file_follows_the_pillar() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.current_hunk = 1;
+        tour.current_line = Some(1); // last line of the last hunk of file 0
+        tab.tour = Some(tour);
+
+        tab.tour_next_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.selected_file, 1);
+        assert_eq!(tour.current_line, Some(0));
+        assert_eq!(
+            tour.selected_pillar, 1,
+            "the left pillar list must follow the cursor across a pillar boundary"
+        );
+    }
+
+    #[test]
+    fn tour_next_line_stops_at_the_end_of_the_tour() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.selected_file = 1;
+        tour.selected_pillar = 1;
+        tour.current_line = Some(1); // last line of the last file
+        tab.tour = Some(tour);
+
+        tab.tour_next_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.selected_file, 1);
+        assert_eq!(tour.current_line, Some(1));
+    }
+
+    // ── tour_prev_line ──
+
+    #[test]
+    fn tour_prev_line_selects_the_last_line_when_nothing_is_selected() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.tour = Some(two_pillar_tour());
+
+        tab.tour_prev_line();
+
+        assert_eq!(tab.tour.as_ref().unwrap().current_line, Some(2));
+    }
+
+    #[test]
+    fn tour_prev_line_moves_back_within_the_current_hunk() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.current_line = Some(2);
+        tab.tour = Some(tour);
+
+        tab.tour_prev_line();
+
+        assert_eq!(tab.tour.as_ref().unwrap().current_line, Some(1));
+    }
+
+    #[test]
+    fn tour_prev_line_steps_back_into_the_previous_hunks_last_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.current_hunk = 1;
+        tour.current_line = Some(0);
+        tab.tour = Some(tour);
+
+        tab.tour_prev_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.current_hunk, 0);
+        assert_eq!(tour.current_line, Some(2));
+    }
+
+    #[test]
+    fn tour_prev_line_crossing_back_into_the_previous_file_follows_the_pillar() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.selected_file = 1;
+        tour.selected_pillar = 1;
+        tour.current_line = Some(0);
+        tab.tour = Some(tour);
+
+        tab.tour_prev_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.selected_file, 0);
+        assert_eq!(tour.current_hunk, 1);
+        assert_eq!(tour.current_line, Some(1));
+        assert_eq!(
+            tour.selected_pillar, 0,
+            "stepping back across a pillar boundary must reselect the owning pillar"
+        );
+    }
+
+    #[test]
+    fn tour_prev_line_clears_the_selection_at_the_very_first_line() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.current_line = Some(0);
+        tab.tour = Some(tour);
+
+        tab.tour_prev_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.current_line, None);
+        assert_eq!(tour.selected_file, 0);
+    }
+
+    #[test]
+    fn tour_prev_line_clears_the_line_when_the_previous_file_has_no_hunks() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = tour_with(
+            vec![
+                diff_file("empty.rs", vec![]),
+                diff_file("f1.rs", vec![hunk_with(1, 2)]),
+            ],
+            vec![(0, 1), (1, 2)],
+        );
+        tour.selected_file = 1;
+        tour.selected_pillar = 1;
+        tour.current_line = Some(0);
+        tab.tour = Some(tour);
+
+        tab.tour_prev_line();
+
+        let tour = tab.tour.as_ref().unwrap();
+        assert_eq!(tour.selected_file, 0);
+        assert_eq!(tour.current_hunk, 0);
+        assert_eq!(tour.current_line, None);
+        assert_eq!(tour.selected_pillar, 0);
+    }
+
+    // ── tour_bulk_review_pillar ──
+
+    #[test]
+    fn tour_bulk_review_pillar_is_a_noop_without_tour_state() {
+        let mut tab = TabState::new_for_test(vec![]);
+
+        tab.tour_bulk_review_pillar();
+
+        assert!(tab.reviewed.is_empty());
+    }
+
+    #[test]
+    fn tour_bulk_review_pillar_is_a_noop_when_the_pillar_has_no_file_range() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut tour = two_pillar_tour();
+        tour.selected_pillar = 9;
+        tab.tour = Some(tour);
+
+        tab.tour_bulk_review_pillar();
+
+        assert!(tab.reviewed.is_empty());
+    }
+
+    #[test]
+    fn tour_bulk_review_pillar_marks_only_the_selected_pillars_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        let mut tour = tour_with(
+            vec![
+                diff_file("a.rs", vec![]),
+                diff_file("b.rs", vec![]),
+                diff_file("c.rs", vec![]),
+            ],
+            vec![(0, 1), (1, 3)],
+        );
+        tour.selected_pillar = 1;
+        tab.tour = Some(tour);
+        tab.current_per_file_hashes
+            .insert("b.rs".to_string(), "hash-b".to_string());
+
+        tab.tour_bulk_review_pillar();
+
+        let mut marked: Vec<&str> = tab.reviewed.keys().map(String::as_str).collect();
+        marked.sort_unstable();
+        assert_eq!(
+            marked,
+            vec!["b.rs", "c.rs"],
+            "files outside the selected pillar stay unreviewed"
+        );
+        assert_eq!(
+            tab.reviewed.get("b.rs").map(String::as_str),
+            Some("hash-b"),
+            "the file's current diff hash is stored, so a later edit un-reviews it"
+        );
+        assert_eq!(
+            tab.reviewed.get("c.rs").map(String::as_str),
+            Some(""),
+            "a file with no known hash is still marked, with an empty hash"
+        );
+        assert!(
+            tmp.path().join(".er").join("reviewed").exists(),
+            "the bulk mark is persisted to the shared reviewed sidecar"
+        );
+    }
+}

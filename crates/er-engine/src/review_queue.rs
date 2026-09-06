@@ -673,4 +673,228 @@ mod tests {
         p3.merge_state_status = Some("BLOCKED".into());
         assert!(is_blocked(&p3));
     }
+
+    #[test]
+    fn status_labels_match_the_serde_wire_format() {
+        let all = [
+            ReviewStatus::ReadyToReview,
+            ReviewStatus::Draft,
+            ReviewStatus::Outdated,
+            ReviewStatus::BlockedConflicts,
+            ReviewStatus::WaitingOnAuthor,
+            ReviewStatus::Approved,
+            ReviewStatus::MergeReady,
+            ReviewStatus::Inactive,
+            ReviewStatus::Unknown,
+        ];
+        for status in all {
+            // Exhaustive on purpose: a new variant must be given a label here,
+            // and `as_str` has to agree with it.
+            let expected = match status {
+                ReviewStatus::ReadyToReview => "ready_to_review",
+                ReviewStatus::Draft => "draft",
+                ReviewStatus::Outdated => "outdated",
+                ReviewStatus::BlockedConflicts => "blocked_conflicts",
+                ReviewStatus::WaitingOnAuthor => "waiting_on_author",
+                ReviewStatus::Approved => "approved",
+                ReviewStatus::MergeReady => "merge_ready",
+                ReviewStatus::Inactive => "inactive",
+                ReviewStatus::Unknown => "unknown",
+            };
+            assert_eq!(status.as_str(), expected, "{status:?}");
+            // `as_str` is what CLI/MCP callers filter on; it must not drift from
+            // the snake_case serde representation serialized into RankedPr.
+            assert_eq!(
+                serde_json::to_value(status).unwrap().as_str().unwrap(),
+                status.as_str(),
+                "{status:?}"
+            );
+        }
+        let labels: std::collections::BTreeSet<_> = all.iter().map(|s| s.as_str()).collect();
+        assert_eq!(labels.len(), all.len(), "labels must be distinct per variant");
+    }
+
+    #[test]
+    fn approved_pr_labels_split_on_merge_state() {
+        let mut clean = pr(1, 10, 0);
+        clean.review_decision = Some("APPROVED".into());
+        clean.merge_state_status = Some("CLEAN".into());
+        assert_eq!(classify_status(&clean).as_str(), "merge_ready");
+
+        let mut unclear = pr(2, 10, 0);
+        unclear.review_decision = Some("APPROVED".into());
+        unclear.merge_state_status = Some("BLOCKED".into());
+        unclear.mergeable = Some("UNKNOWN".into());
+        assert_eq!(classify_status(&unclear).as_str(), "approved");
+
+        let mut merged = pr(3, 10, 0);
+        merged.state = "MERGED".into();
+        assert_eq!(classify_status(&merged).as_str(), "inactive");
+    }
+
+    // ── score_pr ──────────────────────────────────────────────────────────────
+
+    fn reasons_of(p: &QueuePr) -> Vec<String> {
+        score_pr(p).reasons
+    }
+
+    fn score_of(p: &QueuePr) -> i32 {
+        score_pr(p).priority_score
+    }
+
+    #[test]
+    fn merged_pr_is_scored_far_below_a_ready_one() {
+        let mut merged = pr(1, 10, 0);
+        merged.state = "MERGED".into();
+        let ready = pr(2, 10, 0);
+
+        let ranked = score_pr(&merged);
+        assert_eq!(ranked.status, ReviewStatus::Inactive);
+        assert!(ranked.reasons.contains(&"inactive".to_string()));
+        // The -10_000 penalty must dominate every other signal so closed work
+        // can never float to the top of the queue.
+        assert!(ranked.priority_score < score_of(&ready) - 1_000);
+    }
+
+    #[test]
+    fn draft_pr_is_penalised_and_says_so() {
+        let mut draft = pr(1, 10, 0);
+        draft.is_draft = true;
+
+        let ranked = score_pr(&draft);
+        assert_eq!(ranked.status, ReviewStatus::Draft);
+        assert!(ranked.reasons.contains(&"draft".to_string()));
+        assert!(ranked.priority_score < score_of(&pr(2, 10, 0)));
+    }
+
+    #[test]
+    fn changes_requested_pr_is_marked_as_waiting_on_author() {
+        let mut cr = pr(1, 10, 0);
+        cr.review_decision = Some("CHANGES_REQUESTED".into());
+
+        let ranked = score_pr(&cr);
+        assert_eq!(ranked.status, ReviewStatus::WaitingOnAuthor);
+        assert!(ranked
+            .reasons
+            .contains(&"changes requested — waiting on author".to_string()));
+        assert!(ranked.priority_score < score_of(&pr(2, 10, 0)));
+    }
+
+    #[test]
+    fn approved_pr_scores_below_one_still_needing_review() {
+        let mut approved = pr(1, 10, 0);
+        approved.review_decision = Some("APPROVED".into());
+
+        let ranked = score_pr(&approved);
+        assert_eq!(ranked.status, ReviewStatus::MergeReady);
+        assert!(ranked.reasons.contains(&"already approved".to_string()));
+        assert!(ranked.priority_score < score_of(&pr(2, 10, 0)));
+    }
+
+    #[test]
+    fn conflicts_are_penalised_harder_than_being_behind_base() {
+        let mut conflicting = pr(1, 10, 0);
+        conflicting.mergeable = Some("CONFLICTING".into());
+        let mut behind = pr(2, 10, 0);
+        behind.merge_state_status = Some("BEHIND".into());
+
+        assert!(reasons_of(&conflicting).contains(&"merge conflicts".to_string()));
+        assert!(reasons_of(&behind).contains(&"outdated vs base (needs rebase)".to_string()));
+        // Conflicts (-80) block review outright; being behind (-40) does not.
+        assert!(score_of(&conflicting) < score_of(&behind));
+    }
+
+    #[test]
+    fn unknown_status_contributes_no_status_reason() {
+        let mut odd = pr(1, 10, 0);
+        odd.state = "UNKNOWN".into();
+
+        let ranked = score_pr(&odd);
+        assert_eq!(ranked.status, ReviewStatus::Unknown);
+        // Only the size reason — the status match arm adds nothing.
+        assert_eq!(ranked.reasons.len(), 1, "{:?}", ranked.reasons);
+        assert!(ranked.reasons[0].starts_with("size="));
+    }
+
+    #[test]
+    fn explicit_review_request_outranks_a_generic_pending_reviewer() {
+        let mut mine = pr(1, 10, 0);
+        mine.review_requested_of_me = true;
+        let mut someone_elses = pr(2, 10, 0);
+        someone_elses.reviewers = vec!["bob".into()];
+        let unassigned = pr(3, 10, 0);
+
+        assert!(reasons_of(&mine).contains(&"review requested of you".to_string()));
+        assert!(reasons_of(&someone_elses).contains(&"has pending reviewers".to_string()));
+        // The two reviewer bonuses are mutually exclusive: a PR requested of you
+        // must not also collect the generic "has pending reviewers" reason.
+        let mut both = pr(4, 10, 0);
+        both.review_requested_of_me = true;
+        both.reviewers = vec!["bob".into()];
+        assert!(!reasons_of(&both).contains(&"has pending reviewers".to_string()));
+
+        assert!(score_of(&mine) > score_of(&someone_elses));
+        assert!(score_of(&someone_elses) > score_of(&unassigned));
+    }
+
+    #[test]
+    fn size_bonus_decreases_monotonically_across_buckets() {
+        let cases = [
+            (10u64, SizeBucket::Xsmall),
+            (50, SizeBucket::Small),
+            (150, SizeBucket::Medium),
+            (500, SizeBucket::Large),
+            (2_000, SizeBucket::Xlarge),
+        ];
+        let mut previous: Option<i32> = None;
+        for (lines, bucket) in cases {
+            let mut p = pr(1, 0, 0);
+            p.production_lines = Some(lines);
+            let ranked = score_pr(&p);
+            assert_eq!(ranked.size_bucket, bucket, "{lines} lines");
+            assert_eq!(ranked.total_lines, lines);
+            if let Some(prev) = previous {
+                assert!(
+                    ranked.priority_score < prev,
+                    "bucket {bucket:?} ({lines} lines) must score below the smaller bucket"
+                );
+            }
+            previous = Some(ranked.priority_score);
+        }
+    }
+
+    #[test]
+    fn size_reason_distinguishes_production_lines_from_github_totals() {
+        let mut prod = pr(1, 400, 400);
+        prod.production_lines = Some(12);
+        assert!(
+            reasons_of(&prod)
+                .iter()
+                .any(|r| r.contains("12 lines production")),
+            "{:?}",
+            reasons_of(&prod)
+        );
+
+        let totals = pr(2, 8, 4);
+        assert!(
+            reasons_of(&totals)
+                .iter()
+                .any(|r| r.contains("12 lines total")),
+            "{:?}",
+            reasons_of(&totals)
+        );
+    }
+
+    #[test]
+    fn priority_labels_boost_the_score_and_other_labels_do_not() {
+        let mut labelled = pr(1, 10, 0);
+        labelled.labels = vec!["P1".into(), "docs".into()];
+        let plain = pr(2, 10, 0);
+
+        let reasons = reasons_of(&labelled);
+        // Matching is case-insensitive but the reason echoes the original label.
+        assert!(reasons.contains(&"label:P1".to_string()), "{reasons:?}");
+        assert!(!reasons.iter().any(|r| r == "label:docs"), "{reasons:?}");
+        assert!(score_of(&labelled) > score_of(&plain));
+    }
 }

@@ -686,4 +686,251 @@ mod tests {
         .unwrap();
         assert!(u.files["a.rs"].findings[0].responses.is_empty());
     }
+
+    fn reply_question(
+        id: &str,
+        in_reply_to: Option<&str>,
+        finding_ref: Option<&str>,
+        author: &str,
+        timestamp: &str,
+        text: &str,
+    ) -> crate::ai::comments::ReviewQuestion {
+        crate::ai::comments::ReviewQuestion {
+            id: id.to_string(),
+            timestamp: timestamp.to_string(),
+            file: "a.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(1),
+            line_end: None,
+            line_content: String::new(),
+            text: text.to_string(),
+            resolved: false,
+            stale: false,
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            side: "RIGHT".to_string(),
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            in_reply_to: in_reply_to.map(|s| s.to_string()),
+            author: author.to_string(),
+            promoted_to: None,
+            finding_ref: finding_ref.map(|s| s.to_string()),
+        }
+    }
+
+    fn reply_github(
+        id: &str,
+        in_reply_to: Option<&str>,
+        finding_ref: Option<&str>,
+        author: &str,
+        timestamp: &str,
+        text: &str,
+    ) -> crate::ai::comments::GitHubReviewComment {
+        crate::ai::comments::GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: timestamp.to_string(),
+            file: "a.rs".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(1),
+            line_end: None,
+            line_content: String::new(),
+            comment: text.to_string(),
+            in_reply_to: in_reply_to.map(|s| s.to_string()),
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: author.to_string(),
+            synced: false,
+            outdated: false,
+            stale: false,
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: finding_ref.map(|s| s.to_string()),
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    fn file_review(findings: Vec<Finding>) -> ErFileReview {
+        ErFileReview {
+            risk: RiskLevel::Low,
+            risk_reason: String::new(),
+            summary: String::new(),
+            findings,
+        }
+    }
+
+    fn ai_response(id: &str, timestamp: &str, text: &str) -> AiResponse {
+        AiResponse {
+            id: id.to_string(),
+            in_reply_to: String::new(),
+            timestamp: timestamp.to_string(),
+            text: text.to_string(),
+            new_findings: Vec::new(),
+        }
+    }
+
+    // The promote body has to gather every reply that hangs off the finding —
+    // AI validation responses plus replies on the linked question, note, and
+    // GitHub threads — interleaved chronologically, not grouped by source.
+    #[test]
+    fn collect_promote_replies_merges_every_source_in_timestamp_order() {
+        let mut ai = AiState::default();
+
+        let mut target = bare_finding("f-1");
+        target.responses = vec![ai_response("r-1", "2024-01-03T00:00:00Z", "AI validated")];
+        let mut other = bare_finding("f-other");
+        other.responses = vec![ai_response(
+            "r-2",
+            "2024-01-01T00:00:00Z",
+            "unrelated response",
+        )];
+
+        ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: vec![
+                ("a.rs".to_string(), file_review(vec![target])),
+                ("b.rs".to_string(), file_review(vec![other])),
+            ]
+            .into_iter()
+            .collect::<HashMap<_, _>>(),
+            file_hashes: HashMap::new(),
+        });
+
+        ai.questions = Some(crate::ai::comments::ErQuestions {
+            version: 1,
+            diff_hash: "h".to_string(),
+            questions: vec![
+                reply_question(
+                    "q-root",
+                    None,
+                    Some("f-1"),
+                    "You",
+                    "2023-12-01T00:00:00Z",
+                    "root question",
+                ),
+                // Author is blank on this one — it must fall back to "You".
+                reply_question(
+                    "q-r1",
+                    Some("q-root"),
+                    None,
+                    "",
+                    "2024-01-01T00:00:00Z",
+                    "question reply",
+                ),
+                reply_question(
+                    "q-x",
+                    Some("q-some-other-thread"),
+                    None,
+                    "mallory",
+                    "2024-01-05T00:00:00Z",
+                    "reply on an unrelated thread",
+                ),
+            ],
+        });
+
+        ai.notes = Some(crate::ai::comments::ErNotes {
+            version: 1,
+            diff_hash: "h".to_string(),
+            notes: vec![
+                reply_question(
+                    "n-root",
+                    None,
+                    Some("f-1"),
+                    "You",
+                    "2023-12-02T00:00:00Z",
+                    "root note",
+                ),
+                reply_question(
+                    "n-r1",
+                    Some("n-root"),
+                    None,
+                    "alice",
+                    "2024-01-02T00:00:00Z",
+                    "note reply",
+                ),
+            ],
+        });
+
+        ai.github_comments = Some(crate::ai::comments::ErGitHubComments {
+            version: 1,
+            diff_hash: "h".to_string(),
+            github: None,
+            comments: vec![
+                reply_github(
+                    "c-root",
+                    None,
+                    Some("f-1"),
+                    "You",
+                    "2023-12-03T00:00:00Z",
+                    "root comment",
+                ),
+                reply_github(
+                    "c-r1",
+                    Some("c-root"),
+                    None,
+                    "octocat",
+                    "2024-01-04T00:00:00Z",
+                    "gh reply",
+                ),
+                reply_github(
+                    "c-x",
+                    Some("c-some-other-thread"),
+                    None,
+                    "bot",
+                    "2024-01-06T00:00:00Z",
+                    "reply on an unrelated thread",
+                ),
+            ],
+        });
+
+        let replies = collect_finding_promote_replies(&ai, "f-1");
+
+        assert_eq!(
+            replies,
+            vec![
+                // blank author → "You"
+                ("You".to_string(), "question reply".to_string()),
+                ("alice".to_string(), "note reply".to_string()),
+                // finding responses are attributed to the AI, not the thread author
+                ("AI".to_string(), "AI validated".to_string()),
+                ("octocat".to_string(), "gh reply".to_string()),
+            ],
+            "roots, other findings' responses, and replies on unrelated threads must all be excluded"
+        );
+    }
+
+    #[test]
+    fn collect_promote_replies_is_empty_when_no_sidecars_are_loaded() {
+        let ai = AiState::default();
+        assert!(collect_finding_promote_replies(&ai, "f-1").is_empty());
+    }
+
+    // A finding thread with a root but no replies yet contributes nothing.
+    #[test]
+    fn collect_promote_replies_ignores_a_root_with_no_replies() {
+        let mut ai = AiState::default();
+        ai.questions = Some(crate::ai::comments::ErQuestions {
+            version: 1,
+            diff_hash: "h".to_string(),
+            questions: vec![reply_question(
+                "q-root",
+                None,
+                Some("f-1"),
+                "You",
+                "2024-01-01T00:00:00Z",
+                "root question",
+            )],
+        });
+        assert!(collect_finding_promote_replies(&ai, "f-1").is_empty());
+    }
 }

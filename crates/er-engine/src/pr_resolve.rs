@@ -417,4 +417,114 @@ mod tests {
     fn parse_slug_rejects_path_like() {
         assert!(parse_repo_slug_pair("/Users/me/proj").is_none());
     }
+
+    // ── resolve_ref_string ────────────────────────────────────────────────────
+    //
+    // Every case below leaves `projects` empty or non-matching-with-no-remote so
+    // that `resolve_repo_with_root` bails before `gh_open_pr_number_for_head`
+    // can be reached — these tests never touch the network. The one project that
+    // *does* match points at a bare temp directory with no git remote, where
+    // `gh pr view` fails locally.
+
+    fn ref_input<'a>(
+        ref_str: &'a str,
+        repo: Option<&'a str>,
+        projects: &'a [ProjectHint],
+    ) -> ResolvePrRefInput<'a> {
+        ResolvePrRefInput {
+            ref_str: Some(ref_str),
+            pr_url: None,
+            repo,
+            project_id: None,
+            number: None,
+            projects,
+            active_project_id: None,
+        }
+    }
+
+    #[test]
+    fn bare_number_ref_pairs_with_an_explicit_repo_slug() {
+        let projects = empty_projects();
+        let pr = resolve_pr_ref(&ref_input("7", Some("acme/widgets"), &projects)).unwrap();
+
+        assert_eq!(pr.owner, "acme");
+        assert_eq!(pr.repo, "widgets");
+        assert_eq!(pr.number, 7);
+        assert_eq!(pr.pr_url, "https://github.com/acme/widgets/pull/7");
+        assert_eq!(pr.resolved_via, "ref_number");
+        // No project was consulted, so no project name is attributed.
+        assert!(pr.project_name.is_none());
+    }
+
+    #[test]
+    fn bare_number_ref_without_repo_or_project_says_what_to_pass() {
+        let err = resolve_pr_ref(&ref_input("7", None, &empty_projects())).unwrap_err();
+        assert!(
+            err.to_string().contains("no Easy Review projects configured"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn worktree_path_ref_resolves_against_that_repo_root() {
+        let dir = tempfile::tempdir().unwrap();
+        // A real repo, deliberately with no remote: `git rev-parse` succeeds so
+        // the worktree branch is taken, and `gh pr view` then fails locally.
+        std::process::Command::new("git")
+            .args(["init", "-b", "feature"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+
+        let err = resolve_pr_ref(&ref_input(&path, None, &empty_projects())).unwrap_err();
+        assert!(
+            err.to_string().contains("no open PR for current branch"),
+            "an existing worktree must be resolved as a worktree: {err}"
+        );
+    }
+
+    #[test]
+    fn existing_directory_that_is_not_a_repo_is_not_treated_as_a_worktree() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().to_string_lossy().into_owned();
+
+        let err = resolve_pr_ref(&ref_input(&path, None, &empty_projects())).unwrap_err();
+        // Falls through the worktree branch to repo resolution instead of
+        // claiming there is no PR for a branch it never found.
+        assert!(
+            err.to_string().contains("no Easy Review projects configured"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn owner_repo_slug_without_a_matching_project_explains_the_gap() {
+        let err =
+            resolve_pr_ref(&ref_input("acme/widgets", None, &empty_projects())).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("looks like owner/repo but no Easy Review project matches"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn owner_repo_slug_matches_a_project_remote_case_insensitively() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        let projects = vec![ProjectHint {
+            id: "p1".into(),
+            name: "Widgets".into(),
+            root_path: root.clone(),
+            remote: Some("https://github.com/acme/widgets.git".into()),
+        }];
+
+        let err = resolve_pr_ref(&ref_input("Acme/Widgets", None, &projects)).unwrap_err();
+        let msg = err.to_string();
+        // Routed into the matching project's worktree (which has no PR), not
+        // rejected as an unknown slug.
+        assert!(msg.contains("no open PR for current branch"), "{msg}");
+        assert!(msg.contains(&root), "error must name the project root: {msg}");
+    }
 }

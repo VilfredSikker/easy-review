@@ -572,4 +572,156 @@ mod tests {
             "expected Lost for distant weak match but got Relocated"
         );
     }
+
+    fn fold_line(content: &str) -> DiffLine {
+        DiffLine {
+            line_type: LineType::Fold(4),
+            content: content.to_string(),
+            old_num: None,
+            new_num: None,
+        }
+    }
+
+    fn scored_anchor(
+        line_start: Option<usize>,
+        content: &str,
+        before: Vec<&str>,
+        after: Vec<&str>,
+        old_line_start: Option<usize>,
+        hunk_header: &str,
+    ) -> CommentAnchor {
+        CommentAnchor {
+            file: "test.rs".to_string(),
+            hunk_index: Some(0),
+            line_start,
+            line_content: content.to_string(),
+            context_before: before.iter().map(|s| s.to_string()).collect(),
+            context_after: after.iter().map(|s| s.to_string()).collect(),
+            old_line_start,
+            hunk_header: hunk_header.to_string(),
+        }
+    }
+
+    // pass1 bails on duplicate content, so pass2 has to break the tie. Only the
+    // second `dup` is surrounded by the anchor's recorded context.
+    #[test]
+    fn pass2_picks_the_duplicate_line_whose_surrounding_context_matches() {
+        let header = "@@ -1,6 +1,6 @@ fn ctx";
+        let file = make_file(vec![make_hunk(
+            header,
+            vec![
+                ctx_line("alpha", 1, 1),
+                ctx_line("dup", 2, 2),
+                ctx_line("beta", 3, 3),
+                ctx_line("gamma", 4, 4),
+                ctx_line("dup", 5, 5),
+                ctx_line("delta", 6, 6),
+            ],
+        )]);
+        let a = scored_anchor(Some(4), "dup", vec!["gamma"], vec!["delta"], None, header);
+        match relocate_comment(&a, &file) {
+            RelocationResult::Relocated {
+                new_hunk_index,
+                new_line_start,
+            } => {
+                assert_eq!(new_hunk_index, 0);
+                assert_eq!(new_line_start, 5, "context should select the second `dup`");
+            }
+            _ => panic!("expected Relocated to the context-matched duplicate"),
+        }
+    }
+
+    // With no context recorded at all, the old-side line number is the only
+    // signal strong enough (+2) to lift a candidate over the minimum score.
+    #[test]
+    fn pass2_uses_old_side_line_number_to_break_a_tie_without_context() {
+        let file = make_file(vec![make_hunk(
+            "",
+            vec![
+                ctx_line("head", 1, 1),
+                ctx_line("dup", 2, 2),
+                ctx_line("mid", 3, 3),
+                ctx_line("dup", 4, 4),
+                ctx_line("tail", 5, 5),
+            ],
+        )]);
+        let a = scored_anchor(Some(3), "dup", vec![], vec![], Some(4), "");
+        match relocate_comment(&a, &file) {
+            RelocationResult::Relocated { new_line_start, .. } => {
+                assert_eq!(
+                    new_line_start, 4,
+                    "the candidate whose old_num matches the anchor should win"
+                );
+            }
+            _ => panic!("expected Relocated to the old-line-number match"),
+        }
+    }
+
+    // Two identical candidates, both far from the original line, no context, no
+    // hunk header: nothing scores above the minimum, so the comment is Lost
+    // rather than attached to an arbitrary duplicate.
+    #[test]
+    fn pass2_gives_up_when_no_candidate_beats_the_minimum_score() {
+        let file = make_file(vec![make_hunk(
+            "",
+            vec![
+                ctx_line("dup", 1, 1),
+                ctx_line("x", 2, 2),
+                ctx_line("dup", 3, 3),
+            ],
+        )]);
+        let a = scored_anchor(Some(60), "dup", vec![], vec![], None, "");
+        assert!(matches!(
+            relocate_comment(&a, &file),
+            RelocationResult::Lost
+        ));
+    }
+
+    // Deleted lines and fold markers carry no new-side line number, so they can
+    // never be a relocation target even when their content matches.
+    #[test]
+    fn pass2_never_targets_deleted_or_folded_lines() {
+        let header = "@@ -1,5 +1,4 @@ fn ctx";
+        let file = make_file(vec![make_hunk(
+            header,
+            vec![
+                ctx_line("gamma", 1, 1),
+                del_line("dup", 2),
+                fold_line("dup"),
+                ctx_line("dup", 3, 2),
+                ctx_line("delta", 4, 3),
+                ctx_line("dup", 5, 4),
+            ],
+        )]);
+        let a = scored_anchor(Some(9), "dup", vec!["gamma"], vec!["delta"], None, header);
+        match relocate_comment(&a, &file) {
+            RelocationResult::Relocated { new_line_start, .. } => {
+                assert_eq!(
+                    new_line_start, 2,
+                    "should land on the surviving `dup` followed by `delta`"
+                );
+            }
+            _ => panic!("expected Relocated to a real new-side line"),
+        }
+    }
+
+    // Defensive guard: `relocate_comment` routes hunk-level anchors to
+    // `relocate_hunk_level` before pass2, so pass2 must decline them outright
+    // rather than scoring against an absent line number.
+    #[test]
+    fn pass2_declines_hunk_level_anchors_with_no_line_start() {
+        let file = make_file(vec![make_hunk(
+            "@@ -1,2 +1,2 @@",
+            vec![ctx_line("dup", 1, 1), ctx_line("dup", 2, 2)],
+        )]);
+        let a = scored_anchor(
+            None,
+            "dup",
+            vec!["dup"],
+            vec!["dup"],
+            Some(1),
+            "@@ -1,2 +1,2 @@",
+        );
+        assert!(pass2_scored(&a, &file).is_none());
+    }
 }

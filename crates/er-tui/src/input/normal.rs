@@ -894,3 +894,859 @@ pub(super) fn ai_review_scroll(app: &mut App, amount: u16, down: bool) {
         tab.panel_scroll = tab.panel_scroll.saturating_sub(amount);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use er_engine::ai::{
+        ChecklistItem, ErChecklist, ErFileReview, ErReview, ErTour, RiskLevel, TourFile, TourPillar,
+    };
+    use er_engine::git::{CommitInfo, DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
+    use er_engine::ErRoot;
+    use std::collections::HashMap;
+
+    // ── Fixtures ──
+
+    fn hunk_with(new_start: usize, count: usize) -> DiffHunk {
+        DiffHunk {
+            header: format!("@@ -{new_start},{count} +{new_start},{count} @@"),
+            old_start: new_start,
+            old_count: count,
+            new_start,
+            new_count: count,
+            lines: (0..count)
+                .map(|i| DiffLine {
+                    line_type: LineType::Context,
+                    content: format!("line {}", new_start + i),
+                    old_num: Some(new_start + i),
+                    new_num: Some(new_start + i),
+                })
+                .collect(),
+        }
+    }
+
+    fn diff_file(path: &str, hunks: Vec<DiffHunk>) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks,
+            adds: 1,
+            dels: 1,
+            compacted: false,
+            raw_hunk_count: 0,
+        }
+    }
+
+    fn commit_info(hash: &str, subject: &str) -> CommitInfo {
+        CommitInfo {
+            hash: hash.to_string(),
+            short_hash: hash.chars().take(7).collect(),
+            subject: subject.to_string(),
+            author: "Ada".to_string(),
+            date: "2026-01-01T00:00:00Z".to_string(),
+            relative_date: "1 day ago".to_string(),
+            file_count: 1,
+            adds: 1,
+            dels: 0,
+            is_merge: false,
+        }
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    /// A throwaway repo-local `er_root` whose `.er/` directory already exists, so
+    /// sidecar writes (`checklist.json`, `reviewed`) actually land instead of
+    /// failing on a missing parent. Returns `(root, ErRoot)`.
+    fn temp_er_root(name: &str) -> (std::path::PathBuf, ErRoot) {
+        let root = std::env::temp_dir().join(format!("er-tui-normal-{name}"));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".er")).unwrap();
+        let root_s = root.to_string_lossy().to_string();
+        (root, ErRoot::RepoLocal(root_s))
+    }
+
+    // ── handle_ai_review_input ──
+
+    fn review_with(files: Vec<(&str, RiskLevel)>) -> ErReview {
+        let mut file_map = HashMap::new();
+        for (path, risk) in files {
+            file_map.insert(
+                path.to_string(),
+                ErFileReview {
+                    risk,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: Vec::new(),
+                },
+            );
+        }
+        ErReview {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: file_map,
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    fn checklist_with(items: Vec<(&str, &str)>) -> ErChecklist {
+        ErChecklist {
+            version: 1,
+            diff_hash: String::new(),
+            items: items
+                .into_iter()
+                .map(|(id, text)| ChecklistItem {
+                    id: id.to_string(),
+                    text: text.to_string(),
+                    category: String::new(),
+                    checked: false,
+                    related_findings: Vec::new(),
+                    related_files: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Two reviewed files (one High, one Low) and a two-item checklist.
+    fn ai_review_app() -> App {
+        let mut app = App::new_for_test(vec![
+            diff_file("high.rs", vec![hunk_with(1, 2)]),
+            diff_file("low.rs", vec![hunk_with(1, 2)]),
+        ]);
+        app.tab_mut().ai.review = Some(review_with(vec![
+            ("high.rs", RiskLevel::High),
+            ("low.rs", RiskLevel::Low),
+        ]));
+        app.tab_mut().ai.checklist = Some(checklist_with(vec![
+            ("c-1", "Check the error path"),
+            ("c-2", "Check the tests"),
+        ]));
+        app
+    }
+
+    #[test]
+    fn ai_review_k_advances_the_cursor_and_stops_at_the_last_item() {
+        let mut app = ai_review_app();
+        assert_eq!(app.tab().review_focus, ReviewFocus::Files);
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(app.tab().review_cursor, 1);
+
+        handle_ai_review_input(&mut app, key(KeyCode::Down)).unwrap();
+        assert_eq!(
+            app.tab().review_cursor,
+            1,
+            "k/Down must not walk past the last of the two reviewed files"
+        );
+    }
+
+    #[test]
+    fn ai_review_j_walks_the_cursor_back_and_stops_at_zero() {
+        let mut app = ai_review_app();
+        app.tab_mut().review_cursor = 1;
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('j'))).unwrap();
+        assert_eq!(app.tab().review_cursor, 0);
+
+        handle_ai_review_input(&mut app, key(KeyCode::Up)).unwrap();
+        assert_eq!(
+            app.tab().review_cursor,
+            0,
+            "j/Up must not underflow past the first item"
+        );
+    }
+
+    #[test]
+    fn ai_review_tab_switches_column_and_scrolls_the_panel_to_that_section() {
+        let mut app = ai_review_app();
+        app.tab_mut().review_cursor = 1;
+        let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();
+        assert_ne!(
+            files_offset, checklist_offset,
+            "fixture guard: the two sections must sit at different panel offsets"
+        );
+
+        handle_ai_review_input(&mut app, key(KeyCode::Tab)).unwrap();
+
+        assert_eq!(app.tab().review_focus, ReviewFocus::Checklist);
+        assert_eq!(
+            app.tab().review_cursor,
+            0,
+            "switching columns restarts the cursor at the top of the new list"
+        );
+        assert_eq!(app.tab().panel_scroll, checklist_offset);
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('h'))).unwrap();
+
+        assert_eq!(app.tab().review_focus, ReviewFocus::Files);
+        assert_eq!(app.tab().panel_scroll, files_offset);
+    }
+
+    #[test]
+    fn ai_review_space_checks_the_focused_checklist_item_and_persists_it() {
+        let (root, er_root) = temp_er_root("checklist-toggle");
+        let mut app = ai_review_app();
+        app.tab_mut().er_root = er_root;
+        app.tab_mut().review_focus = ReviewFocus::Checklist;
+        app.tab_mut().review_cursor = 1;
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char(' '))).unwrap();
+
+        let items = &app.tab().ai.checklist.as_ref().unwrap().items;
+        assert!(!items[0].checked, "only the item under the cursor toggles");
+        assert!(items[1].checked);
+
+        let written = std::fs::read_to_string(root.join(".er").join("checklist.json"))
+            .expect("space must persist checklist.json");
+        assert!(
+            written.contains("\"checked\": true"),
+            "the checked flag reaches disk: {written}"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ai_review_space_is_ignored_while_the_files_column_has_focus() {
+        let (root, er_root) = temp_er_root("checklist-guard");
+        let mut app = ai_review_app();
+        app.tab_mut().er_root = er_root;
+        assert_eq!(app.tab().review_focus, ReviewFocus::Files);
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char(' '))).unwrap();
+
+        assert!(
+            app.tab()
+                .ai
+                .checklist
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .all(|i| !i.checked),
+            "space only toggles while the checklist column has focus"
+        );
+        assert!(
+            !root.join(".er").join("checklist.json").exists(),
+            "and writes nothing from the files column"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn ai_review_enter_jumps_to_the_highest_risk_file() {
+        let mut app = ai_review_app();
+        app.tab_mut().selected_file = 1;
+
+        handle_ai_review_input(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(
+            app.tab().selected_file,
+            0,
+            "cursor 0 of the risk-sorted list is high.rs, which is index 0 of the diff"
+        );
+        assert!(
+            matches!(app.tab().panel, Some(PanelContent::FileDetail)),
+            "jumping opens the file detail panel"
+        );
+        assert_eq!(app.watch_message.as_deref(), Some("Jumped to: high.rs"));
+    }
+
+    #[test]
+    fn ai_review_d_and_u_scroll_the_panel_by_ten() {
+        let mut app = ai_review_app();
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('d'))).unwrap();
+        assert_eq!(app.tab().panel_scroll, 10);
+
+        handle_ai_review_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(
+            app.tab().panel_scroll,
+            20,
+            "Ctrl+d scrolls the same amount as bare d"
+        );
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('u'))).unwrap();
+        assert_eq!(app.tab().panel_scroll, 10);
+    }
+
+    #[test]
+    fn ai_review_page_keys_scroll_twice_as_far_as_d_and_u() {
+        let mut app = ai_review_app();
+
+        handle_ai_review_input(&mut app, key(KeyCode::PageDown)).unwrap();
+        assert_eq!(app.tab().panel_scroll, 20);
+
+        handle_ai_review_input(&mut app, key(KeyCode::PageUp)).unwrap();
+        assert_eq!(app.tab().panel_scroll, 0);
+    }
+
+    #[test]
+    fn ai_review_scroll_down_is_capped_at_4096() {
+        let mut app = ai_review_app();
+        app.tab_mut().panel_scroll = 4090;
+
+        handle_ai_review_input(&mut app, key(KeyCode::PageDown)).unwrap();
+
+        assert_eq!(
+            app.tab().panel_scroll,
+            4096,
+            "ratatui does not clamp panel scroll, so the handler caps it"
+        );
+    }
+
+    #[test]
+    fn ai_review_scroll_up_saturates_at_the_top() {
+        let mut app = ai_review_app();
+
+        handle_ai_review_input(&mut app, key(KeyCode::Char('u'))).unwrap();
+
+        assert_eq!(
+            app.tab().panel_scroll,
+            0,
+            "scrolling up from the top must not underflow"
+        );
+    }
+
+    #[test]
+    fn ai_review_esc_releases_panel_focus() {
+        let mut app = ai_review_app();
+        app.tab_mut().panel_focus = true;
+
+        handle_ai_review_input(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert!(!app.tab().panel_focus);
+    }
+
+    #[test]
+    fn ai_review_shift_d_is_not_a_scroll_key() {
+        let mut app = ai_review_app();
+        app.tab_mut().panel_scroll = 12;
+
+        handle_ai_review_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.tab().panel_scroll,
+            12,
+            "the scroll arm accepts only NONE or CONTROL"
+        );
+    }
+
+    // ── handle_history_input ──
+
+    /// A tab in History mode holding two commits and a two-file commit diff.
+    ///
+    /// `HistoryState` is crate-private to er-engine, so it can't be built here —
+    /// `set_mode(History)` builds it for us. The repo root points at a directory
+    /// that does not exist, so the `git log` inside `set_mode` fails and yields an
+    /// empty state we then fill in through the (public) fields.
+    ///
+    /// `current_branch` is blanked on purpose: Branch → History changes the review
+    /// bucket, which calls `apply_managed_root()`; an empty branch makes that
+    /// return early instead of creating managed storage directories for real.
+    fn history_app() -> App {
+        let absent = std::env::temp_dir().join("er-tui-history-no-repo");
+        let absent_s = absent.to_string_lossy().to_string();
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = absent_s.clone();
+            tab.current_branch = String::new();
+            tab.er_root = ErRoot::RepoLocal(absent_s);
+        }
+        app.tab_mut().set_mode(DiffMode::History);
+        {
+            let history = app
+                .tab_mut()
+                .history
+                .as_mut()
+                .expect("entering History mode builds the history state");
+            history.commits = vec![
+                commit_info("aaa1111", "newest"),
+                commit_info("bbb2222", "older"),
+            ];
+            history.all_loaded = true;
+            history.commit_files = vec![
+                diff_file("f0.rs", vec![hunk_with(1, 3), hunk_with(20, 2)]),
+                diff_file("f1.rs", vec![hunk_with(1, 2)]),
+            ];
+        }
+        app
+    }
+
+    #[test]
+    fn history_k_selects_the_next_older_commit_and_loads_its_diff() {
+        let mut app = history_app();
+        // Seed the LRU so the reload resolves from memory instead of shelling
+        // out to git for a commit hash that does not exist.
+        app.tab_mut().history.as_mut().unwrap().diff_cache.insert(
+            "bbb2222".to_string(),
+            vec![diff_file("older.rs", vec![hunk_with(1, 1)])],
+        );
+
+        handle_history_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+
+        let history = app.tab().history.as_ref().unwrap();
+        assert_eq!(history.selected_commit, 1);
+        assert_eq!(
+            history
+                .commit_files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["older.rs"],
+            "moving commits reloads the right pane with that commit's diff"
+        );
+        assert_eq!(
+            history.selected_file, 0,
+            "the file cursor restarts inside the newly selected commit"
+        );
+    }
+
+    #[test]
+    fn history_k_at_the_last_commit_closes_pagination_when_the_next_page_is_empty() {
+        let mut app = history_app();
+        {
+            let history = app.tab_mut().history.as_mut().unwrap();
+            history.commits.truncate(1);
+            history.all_loaded = false;
+        }
+
+        handle_history_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+
+        let history = app.tab().history.as_ref().unwrap();
+        assert!(
+            history.all_loaded,
+            "an empty next page ends pagination instead of refetching on every k"
+        );
+        assert_eq!(
+            history.selected_commit, 0,
+            "there was no further commit to move onto"
+        );
+    }
+
+    #[test]
+    fn history_j_returns_to_the_newer_commit() {
+        let mut app = history_app();
+        {
+            let history = app.tab_mut().history.as_mut().unwrap();
+            history.selected_commit = 1;
+            history
+                .diff_cache
+                .insert("aaa1111".to_string(), vec![diff_file("newer.rs", vec![])]);
+        }
+
+        handle_history_input(&mut app, key(KeyCode::Char('j'))).unwrap();
+
+        let history = app.tab().history.as_ref().unwrap();
+        assert_eq!(history.selected_commit, 0);
+        assert_eq!(
+            history
+                .commit_files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["newer.rs"]
+        );
+    }
+
+    #[test]
+    fn history_n_and_shift_n_move_between_files_of_the_selected_commit() {
+        let mut app = history_app();
+        app.tab_mut().history.as_mut().unwrap().current_line = Some(2);
+
+        handle_history_input(&mut app, key(KeyCode::Char('n'))).unwrap();
+        {
+            let history = app.tab().history.as_ref().unwrap();
+            assert_eq!(history.selected_file, 1);
+            assert_eq!(
+                history.current_hunk, 0,
+                "a new file restarts at its first hunk"
+            );
+            assert_eq!(
+                history.current_line, None,
+                "and drops the previous file's line focus"
+            );
+        }
+
+        handle_history_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+        assert_eq!(app.tab().history.as_ref().unwrap().selected_file, 0);
+    }
+
+    #[test]
+    fn history_arrow_keys_walk_lines_inside_the_commit_diff() {
+        let mut app = history_app();
+
+        handle_history_input(&mut app, key(KeyCode::Down)).unwrap();
+        assert_eq!(
+            app.tab().history.as_ref().unwrap().current_line,
+            Some(0),
+            "Down with nothing selected lands on the first line"
+        );
+
+        handle_history_input(&mut app, key(KeyCode::Down)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().current_line, Some(1));
+
+        handle_history_input(&mut app, key(KeyCode::Up)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().current_line, Some(0));
+    }
+
+    #[test]
+    fn history_l_and_h_pan_the_commit_diff_horizontally_by_eight() {
+        let mut app = history_app();
+
+        handle_history_input(&mut app, key(KeyCode::Char('l'))).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().h_scroll, 8);
+
+        handle_history_input(&mut app, key(KeyCode::Right)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().h_scroll, 16);
+
+        handle_history_input(&mut app, key(KeyCode::Char('h'))).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().h_scroll, 8);
+
+        handle_history_input(&mut app, key(KeyCode::Left)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().h_scroll, 0);
+    }
+
+    #[test]
+    fn history_home_snaps_horizontal_scroll_back_to_the_left_edge() {
+        let mut app = history_app();
+        app.tab_mut().history.as_mut().unwrap().h_scroll = 40;
+
+        handle_history_input(&mut app, key(KeyCode::Home)).unwrap();
+
+        assert_eq!(app.tab().history.as_ref().unwrap().h_scroll, 0);
+    }
+
+    #[test]
+    fn history_d_and_u_scroll_by_ten_and_page_keys_by_twenty() {
+        let mut app = history_app();
+
+        handle_history_input(&mut app, key(KeyCode::Char('d'))).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().diff_scroll, 10);
+
+        handle_history_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().diff_scroll, 0);
+
+        handle_history_input(&mut app, key(KeyCode::PageDown)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().diff_scroll, 20);
+
+        handle_history_input(&mut app, key(KeyCode::PageUp)).unwrap();
+        assert_eq!(app.tab().history.as_ref().unwrap().diff_scroll, 0);
+    }
+
+    #[test]
+    fn history_scroll_up_saturates_at_the_top() {
+        let mut app = history_app();
+
+        handle_history_input(&mut app, key(KeyCode::Char('u'))).unwrap();
+
+        assert_eq!(
+            app.tab().history.as_ref().unwrap().diff_scroll,
+            0,
+            "scrolling up from the top must not underflow"
+        );
+    }
+
+    #[test]
+    fn history_shift_d_is_not_a_scroll_key() {
+        let mut app = history_app();
+
+        handle_history_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.tab().history.as_ref().unwrap().diff_scroll,
+            0,
+            "the scroll arm accepts only NONE or CONTROL"
+        );
+    }
+
+    // ── handle_tour_input ──
+
+    fn tour_pillar(id: &str, order: u32, path: &str) -> TourPillar {
+        TourPillar {
+            id: id.to_string(),
+            title: format!("Pillar {id}"),
+            description: String::new(),
+            order,
+            importance: 50,
+            foundation: false,
+            files: vec![TourFile {
+                path: path.to_string(),
+                reason: String::new(),
+                finding_ids: Vec::new(),
+                related: Vec::new(),
+            }],
+        }
+    }
+
+    /// Two single-file pillars over a two-file diff: `p0a.rs` (one 3-line hunk)
+    /// in pillar 0, `p1a.rs` (one 2-line hunk) in pillar 1.
+    fn tour_app() -> App {
+        let mut app = App::new_for_test(vec![
+            diff_file("p0a.rs", vec![hunk_with(1, 3)]),
+            diff_file("p1a.rs", vec![hunk_with(1, 2)]),
+        ]);
+        app.tab_mut().ai.tour = Some(ErTour {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            title: String::new(),
+            overview: String::new(),
+            pillars: vec![
+                tour_pillar("p0", 0, "p0a.rs"),
+                tour_pillar("p1", 1, "p1a.rs"),
+            ],
+        });
+        app.tab_mut().rebuild_tour_state();
+        app
+    }
+
+    /// `rebuild_tour_state` silently drops a pillar whose files are absent from
+    /// the diff and sweeps unreferenced files into a trailing "Other changes"
+    /// pillar, so a typo'd fixture path would quietly change the shape under test.
+    fn assert_two_pillar_shape(app: &App) {
+        let tour = app.tab().tour.as_ref().expect("tour state built");
+        assert_eq!(tour.pillars.len(), 2);
+        assert_eq!(tour.pillar_file_ranges, vec![(0, 1), (1, 2)]);
+    }
+
+    #[test]
+    fn tour_k_moves_to_the_next_pillar_and_lands_on_its_first_file() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+
+        handle_tour_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+
+        let tour = app.tab().tour.as_ref().unwrap();
+        assert_eq!(tour.selected_pillar, 1);
+        assert_eq!(
+            tour.selected_file, 1,
+            "the new pillar's first file becomes the selection"
+        );
+        assert_eq!(tour.current_line, None);
+    }
+
+    #[test]
+    fn tour_k_stops_at_the_last_pillar() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+        app.tab_mut().tour.as_mut().unwrap().selected_pillar = 1;
+
+        handle_tour_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+
+        assert_eq!(app.tab().tour.as_ref().unwrap().selected_pillar, 1);
+    }
+
+    #[test]
+    fn tour_j_moves_back_to_the_previous_pillar() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+        handle_tour_input(&mut app, key(KeyCode::Char('k'))).unwrap();
+
+        handle_tour_input(&mut app, key(KeyCode::Char('j'))).unwrap();
+
+        let tour = app.tab().tour.as_ref().unwrap();
+        assert_eq!(tour.selected_pillar, 0);
+        assert_eq!(tour.selected_file, 0);
+    }
+
+    #[test]
+    fn tour_n_crosses_into_the_next_file_and_follows_its_pillar() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+
+        handle_tour_input(&mut app, key(KeyCode::Char('n'))).unwrap();
+        {
+            let tour = app.tab().tour.as_ref().unwrap();
+            assert_eq!(tour.selected_file, 1);
+            assert_eq!(
+                tour.selected_pillar, 1,
+                "crossing a pillar boundary moves the left-list selection too"
+            );
+        }
+
+        handle_tour_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('N'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+        let tour = app.tab().tour.as_ref().unwrap();
+        assert_eq!(tour.selected_file, 0);
+        assert_eq!(tour.selected_pillar, 0);
+    }
+
+    #[test]
+    fn tour_arrow_keys_walk_lines_inside_the_tour_diff() {
+        let mut app = tour_app();
+
+        handle_tour_input(&mut app, key(KeyCode::Down)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().current_line, Some(0));
+
+        handle_tour_input(&mut app, key(KeyCode::Down)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().current_line, Some(1));
+
+        handle_tour_input(&mut app, key(KeyCode::Up)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().current_line, Some(0));
+    }
+
+    #[test]
+    fn tour_l_and_h_pan_the_tour_diff_horizontally_by_eight() {
+        let mut app = tour_app();
+
+        handle_tour_input(&mut app, key(KeyCode::Char('l'))).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().h_scroll, 8);
+
+        handle_tour_input(&mut app, key(KeyCode::Right)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().h_scroll, 16);
+
+        handle_tour_input(&mut app, key(KeyCode::Char('h'))).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().h_scroll, 8);
+
+        handle_tour_input(&mut app, key(KeyCode::Left)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().h_scroll, 0);
+    }
+
+    #[test]
+    fn tour_home_snaps_horizontal_scroll_back_to_the_left_edge() {
+        let mut app = tour_app();
+        app.tab_mut().tour.as_mut().unwrap().h_scroll = 40;
+
+        handle_tour_input(&mut app, key(KeyCode::Home)).unwrap();
+
+        assert_eq!(app.tab().tour.as_ref().unwrap().h_scroll, 0);
+    }
+
+    #[test]
+    fn tour_d_scrolls_ten_rows_and_reselects_the_pillar_under_the_cursor() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+
+        handle_tour_input(&mut app, key(KeyCode::Char('d'))).unwrap();
+
+        let tour = app.tab().tour.as_ref().unwrap();
+        assert_eq!(tour.diff_scroll, 10);
+        // Row layout per file: 2 header rows, then `1 + lines + 1` per hunk.
+        // p0a.rs (one 3-line hunk) is 2 + 5 = 7 rows, so row 10 sits in p1a.rs.
+        assert_eq!(
+            tour.selected_pillar, 1,
+            "free-scrolling past the first file re-selects the pillar now on screen"
+        );
+    }
+
+    #[test]
+    fn tour_u_scrolls_back_and_reselects_the_first_pillar() {
+        let mut app = tour_app();
+        assert_two_pillar_shape(&app);
+        handle_tour_input(&mut app, key(KeyCode::Char('d'))).unwrap();
+
+        handle_tour_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        let tour = app.tab().tour.as_ref().unwrap();
+        assert_eq!(tour.diff_scroll, 0);
+        assert_eq!(tour.selected_pillar, 0);
+    }
+
+    #[test]
+    fn tour_page_keys_scroll_twice_as_far_as_d_and_u() {
+        let mut app = tour_app();
+
+        handle_tour_input(&mut app, key(KeyCode::PageDown)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().diff_scroll, 20);
+
+        handle_tour_input(&mut app, key(KeyCode::PageUp)).unwrap();
+        assert_eq!(app.tab().tour.as_ref().unwrap().diff_scroll, 0);
+    }
+
+    #[test]
+    fn tour_space_toggles_reviewed_for_the_selected_file() {
+        let (root, er_root) = temp_er_root("tour-reviewed");
+        let mut app = tour_app();
+        app.tab_mut().er_root = er_root;
+
+        handle_tour_input(&mut app, key(KeyCode::Char(' '))).unwrap();
+        assert_eq!(
+            app.tab()
+                .reviewed
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            vec!["p0a.rs"]
+        );
+
+        handle_tour_input(&mut app, key(KeyCode::Char(' '))).unwrap();
+        assert!(
+            app.tab().reviewed.is_empty(),
+            "space is a toggle, not a one-way mark"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tour_b_bulk_reviews_only_the_selected_pillar() {
+        let (root, er_root) = temp_er_root("tour-bulk");
+        let mut app = tour_app();
+        app.tab_mut().er_root = er_root;
+        assert_two_pillar_shape(&app);
+
+        handle_tour_input(&mut app, key(KeyCode::Char('b'))).unwrap();
+
+        let marked: Vec<&str> = app.tab().reviewed.keys().map(String::as_str).collect();
+        assert_eq!(
+            marked,
+            vec!["p0a.rs"],
+            "the second pillar's file stays unreviewed"
+        );
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Reviewed all files in pillar")
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn tour_shift_d_is_not_a_scroll_key() {
+        let mut app = tour_app();
+
+        handle_tour_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::SHIFT),
+        )
+        .unwrap();
+
+        assert_eq!(
+            app.tab().tour.as_ref().unwrap().diff_scroll,
+            0,
+            "the scroll arm accepts only NONE or CONTROL"
+        );
+    }
+}

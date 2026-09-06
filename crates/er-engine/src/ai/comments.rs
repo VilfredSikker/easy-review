@@ -790,4 +790,55 @@ mod tests {
         let q: ReviewQuestion = serde_json::from_str(json).unwrap();
         assert!(q.promoted_to.is_none());
     }
+
+    fn sample_legacy_comment() -> FeedbackComment {
+        FeedbackComment {
+            id: "fb-1".into(),
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            file: "src/foo.rs".into(),
+            hunk_index: Some(0),
+            line_start: Some(10),
+            line_end: None,
+            line_content: "fn foo() {}".into(),
+            comment: "Legacy note".into(),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".into(),
+            github_id: None,
+            author: "You".into(),
+            synced: false,
+        }
+    }
+
+    #[test]
+    fn comment_ref_author_falls_back_to_you_when_stored_author_is_empty() {
+        let mut q = sample_question();
+        q.author = String::new();
+        assert_eq!(CommentRef::Question(&q).author(), "You");
+        assert_eq!(CommentRef::Note(&q).author(), "You");
+
+        let mut gh = sample_github_comment();
+        gh.author = String::new();
+        assert_eq!(CommentRef::GitHubComment(&gh).author(), "You");
+
+        let mut legacy = sample_legacy_comment();
+        legacy.author = String::new();
+        assert_eq!(CommentRef::Legacy(&legacy).author(), "You");
+    }
+
+    #[test]
+    fn comment_ref_author_returns_stored_name_for_every_variant() {
+        let mut q = sample_question();
+        q.author = "alice".into();
+        assert_eq!(CommentRef::Question(&q).author(), "alice");
+        assert_eq!(CommentRef::Note(&q).author(), "alice");
+
+        // A pulled GitHub comment keeps its remote login, not the "You" default.
+        let gh = sample_github_comment();
+        assert_eq!(CommentRef::GitHubComment(&gh).author(), "octo");
+
+        let mut legacy = sample_legacy_comment();
+        legacy.author = "bob".into();
+        assert_eq!(CommentRef::Legacy(&legacy).author(), "bob");
+    }
 }

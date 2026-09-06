@@ -537,3 +537,438 @@ fn render_export_picker(
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
     f.render_stateful_widget(list, popup, &mut state);
 }
+
+#[cfg(test)]
+mod overlay_render_tests {
+    use super::*;
+    use er_engine::app::{App, HubAction};
+    use ratatui::backend::TestBackend;
+    use ratatui::buffer::Buffer;
+    use ratatui::Terminal;
+
+    fn draw_overlay(overlay: &OverlayData, width: u16, height: u16) -> Buffer {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).expect("test terminal");
+        terminal
+            .draw(|f| render_overlay(f, f.area(), overlay))
+            .expect("draw overlay");
+        terminal.backend().buffer().clone()
+    }
+
+    fn rows(buf: &Buffer) -> Vec<String> {
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    fn text(rows: &[String]) -> String {
+        rows.join("\n")
+    }
+
+    fn row_containing<'a>(rows: &'a [String], needle: &str) -> &'a str {
+        match rows.iter().find(|r| r.contains(needle)) {
+            Some(row) => row.as_str(),
+            None => panic!("no rendered row contains {needle:?}:\n{}", text(rows)),
+        }
+    }
+
+    /// Column (not byte offset) at which `needle` starts in a rendered row.
+    fn col_of(row: &str, needle: &str) -> usize {
+        let byte = row
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in {row:?}"));
+        row[..byte].chars().count()
+    }
+
+    fn entry(name: &str, is_dir: bool, is_git_repo: bool) -> DirEntry {
+        DirEntry {
+            name: name.to_string(),
+            is_dir,
+            is_git_repo,
+        }
+    }
+
+    fn hub_item(label: &str, hint: &str, description: &str) -> HubItem {
+        HubItem {
+            label: label.to_string(),
+            hint: hint.to_string(),
+            description: description.to_string(),
+            action: HubAction::Noop,
+            is_header: false,
+            enabled: true,
+        }
+    }
+
+    // ── render_overlay dispatch ──
+
+    #[test]
+    fn overlay_routes_worktree_picker_to_the_worktree_list() {
+        let overlay = OverlayData::WorktreePicker {
+            worktrees: vec![
+                Worktree {
+                    path: "/repos/trunk".to_string(),
+                    branch: "main".to_string(),
+                },
+                Worktree {
+                    path: "/repos/topic".to_string(),
+                    branch: "feature-x".to_string(),
+                },
+            ],
+            selected: 1,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        assert!(text(&rows).contains("WORKTREES"), "{}", text(&rows));
+        assert!(
+            row_containing(&rows, "feature-x").contains("▶"),
+            "the selected worktree carries the marker"
+        );
+        assert!(
+            !row_containing(&rows, "/repos/trunk").contains("▶"),
+            "unselected worktrees do not"
+        );
+    }
+
+    /// The ConfigHub variant is deliberately a no-op here — `ui::draw` renders it
+    /// through `settings::render_config_hub` because it needs `&App`. If this arm
+    /// ever started drawing, the settings overlay would be painted twice.
+    #[test]
+    fn overlay_draws_nothing_for_the_config_hub_variant() {
+        let mut app = App::new_for_test(vec![]);
+        app.open_config_hub();
+        let overlay = app.overlay.as_ref().expect("config hub overlay opened");
+
+        let buf = draw_overlay(overlay, 60, 12);
+        let rows = rows(&buf);
+
+        assert!(
+            rows.iter().all(|r| r.trim().is_empty()),
+            "ConfigHub must be left to ui::draw, but render_overlay painted:\n{}",
+            text(&rows)
+        );
+    }
+
+    #[test]
+    fn overlay_routes_export_picker_and_marks_the_checked_options() {
+        let overlay = OverlayData::ExportPicker {
+            include_comments: true,
+            include_findings: false,
+            include_questions: true,
+            include_notes: false,
+            selected: 2,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        assert!(text(&rows).contains("EXPORT"), "{}", text(&rows));
+        assert!(row_containing(&rows, "GitHub comments").contains("[x]"));
+        assert!(row_containing(&rows, "AI findings").contains("[ ]"));
+        assert!(
+            row_containing(&rows, "Questions").contains("▶"),
+            "selected row 2 is Questions"
+        );
+    }
+
+    // ── render_directory_browser ──
+
+    #[test]
+    fn directory_browser_shows_a_placeholder_for_an_empty_directory() {
+        let overlay = OverlayData::DirectoryBrowser {
+            current_path: "/home/user/empty".to_string(),
+            entries: vec![],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("(empty directory)"), "{out}");
+        assert!(
+            out.contains("/home/user/empty"),
+            "the empty-state title is the bare path, without key hints: {out}"
+        );
+        assert!(
+            !out.contains("Enter=open"),
+            "the empty state has nothing to open: {out}"
+        );
+    }
+
+    #[test]
+    fn directory_browser_tags_git_repos_and_suffixes_plain_directories() {
+        let overlay = OverlayData::DirectoryBrowser {
+            current_path: "/home/user".to_string(),
+            entries: vec![
+                entry("easy-review", true, true),
+                entry("documents", true, false),
+                entry("notes.txt", false, false),
+            ],
+            selected: 1,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        let repo = row_containing(&rows, "easy-review");
+        assert!(repo.contains("[git]"), "git repos are tagged: {repo}");
+        assert!(!repo.contains("▶"), "row 0 is not selected: {repo}");
+
+        let dir = row_containing(&rows, "documents");
+        assert!(
+            dir.contains("documents/"),
+            "plain directories get a trailing slash: {dir}"
+        );
+        assert!(!dir.contains("[git]"), "{dir}");
+        assert!(dir.contains("▶"), "row 1 is the selected one: {dir}");
+
+        let file = row_containing(&rows, "notes.txt");
+        assert!(!file.contains("[git]"), "{file}");
+        assert!(
+            !file.contains("notes.txt/"),
+            "files get neither slash nor tag: {file}"
+        );
+    }
+
+    /// The title keeps the *tail* of a long path — the leading directories are
+    /// what you can afford to lose, the current folder is what you need to see.
+    #[test]
+    fn directory_browser_truncates_a_long_path_from_the_front() {
+        // width 40 → popup width 34 → max title width 14, so the 24-char path
+        // is cut down to its last 14 characters.
+        let overlay = OverlayData::DirectoryBrowser {
+            current_path: "/home/user/projects/deep".to_string(),
+            entries: vec![entry("src", true, false)],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 40, 24);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("…/projects/deep"), "{out}");
+        assert!(
+            !out.contains("/home/user"),
+            "the head of the path must be dropped: {out}"
+        );
+    }
+
+    // ── render_filter_history ──
+
+    #[test]
+    fn filter_history_lists_presets_and_omits_the_separator_when_history_is_empty() {
+        let overlay = OverlayData::FilterHistory {
+            history: vec![],
+            selected: 0,
+            preset_count: 2,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("FILTERS"), "{out}");
+        assert!(out.contains("frontend"), "{out}");
+        assert!(out.contains("backend"), "{out}");
+        assert!(
+            !out.contains("── history ──"),
+            "no separator without history entries: {out}"
+        );
+        assert!(row_containing(&rows, "frontend").contains("▶"));
+        assert!(!row_containing(&rows, "backend").contains("▶"));
+    }
+
+    /// The separator row occupies a visual row but no selection index: with two
+    /// presets, index 3 is the *second* history entry, not the first.
+    #[test]
+    fn filter_history_selection_index_skips_the_separator_row() {
+        let overlay = OverlayData::FilterHistory {
+            history: vec!["mine-only".to_string(), "risk-high".to_string()],
+            selected: 3,
+            preset_count: 2,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+        let out = text(&rows);
+
+        assert!(out.contains("── history ──"), "{out}");
+        assert!(
+            row_containing(&rows, "risk-high").contains("▶"),
+            "index 3 = preset_count(2) + history index 1"
+        );
+        assert!(!row_containing(&rows, "mine-only").contains("▶"), "{out}");
+        assert!(!row_containing(&rows, "frontend").contains("▶"), "{out}");
+        assert!(
+            !row_containing(&rows, "── history ──").contains("▶"),
+            "the separator is never selectable: {out}"
+        );
+    }
+
+    // ── render_modal_hub ──
+
+    #[test]
+    fn modal_hub_help_shows_descriptions_inline_and_suppresses_key_hints() {
+        let overlay = OverlayData::ModalHub {
+            kind: HubKind::Help,
+            title: None,
+            items: vec![hub_item("quit", "Ctrl+q", "leave er")],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        assert!(
+            text(&rows).contains("HELP (Esc=close)"),
+            "help has nothing to select: {}",
+            text(&rows)
+        );
+        let row = row_containing(&rows, "quit");
+        assert!(row.contains("leave er"), "{row}");
+        assert!(
+            !row.contains("[Ctrl+q]"),
+            "the help hub is already a keybinding list — it must not re-render hints: {row}"
+        );
+    }
+
+    #[test]
+    fn modal_hub_action_kind_shows_both_key_hint_and_description() {
+        let overlay = OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![hub_item("Push to remote", "Ctrl+P", "send commits up")],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        assert!(
+            text(&rows).contains("GIT (Enter=select, Esc=close)"),
+            "{}",
+            text(&rows)
+        );
+        let row = row_containing(&rows, "Push to remote");
+        assert!(row.contains("[Ctrl+P]"), "{row}");
+        assert!(row.contains("send commits up"), "{row}");
+    }
+
+    #[test]
+    fn modal_hub_headers_render_flush_and_without_a_selection_marker() {
+        let mut header = hub_item("Actions", "", "");
+        header.is_header = true;
+        let overlay = OverlayData::ModalHub {
+            kind: HubKind::Ai,
+            title: None,
+            items: vec![header, hub_item("Stage file", "", "")],
+            selected: 1,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        let header_row = row_containing(&rows, "Actions");
+        assert!(
+            !header_row.contains("▶"),
+            "section headers are not selectable: {header_row}"
+        );
+        let item_row = row_containing(&rows, "Stage file");
+        assert!(item_row.contains("▶"), "{item_row}");
+        assert_eq!(
+            col_of(item_row, "Stage file"),
+            col_of(header_row, "Actions") + 2,
+            "items are indented by the marker column; headers sit flush"
+        );
+    }
+
+    #[test]
+    fn modal_hub_title_override_replaces_the_kind_title() {
+        let overlay = OverlayData::ModalHub {
+            kind: HubKind::Verify,
+            title: Some("VERIFY / frontend".to_string()),
+            items: vec![hub_item("run tests", "", "")],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let out = text(&rows(&buf));
+
+        assert!(out.contains("VERIFY / frontend (Enter=select"), "{out}");
+    }
+
+    /// Expectations are written out as literals rather than read back from
+    /// `kind.title()` — checking the renderer against the very call it makes
+    /// would still pass if every title collapsed to the empty string.
+    #[test]
+    fn modal_hub_renders_the_title_of_every_kind() {
+        for (kind, expected) in [
+            (HubKind::Git, "GIT"),
+            (HubKind::Ai, "AI"),
+            (HubKind::AiProvider, "AI PROVIDER"),
+            (HubKind::AiModel, "AI MODEL"),
+            (HubKind::AiEffort, "EFFORT"),
+            (HubKind::AiExpert, "SPECIALIZED REVIEW"),
+            (HubKind::Verify, "VERIFY"),
+            (HubKind::VerifyPackage, "VERIFY"),
+            (HubKind::Help, "HELP"),
+            (HubKind::Open, "OPEN"),
+            (HubKind::Copy, "COPY"),
+        ] {
+            let overlay = OverlayData::ModalHub {
+                kind,
+                title: None,
+                items: vec![hub_item("an item", "", "")],
+                selected: 0,
+            };
+            let buf = draw_overlay(&overlay, 100, 24);
+            let out = text(&rows(&buf));
+            // The border title is ` {title} ({hint}) `, so the trailing " (" pins
+            // a whole title — " AI (" cannot be satisfied by " AI PROVIDER (".
+            assert!(
+                out.contains(&format!(" {expected} (")),
+                "{kind:?} must render the title {expected:?}:\n{out}"
+            );
+        }
+    }
+
+    /// A disabled item is dimmed to muted while an enabled one keeps the normal
+    /// text colour. (Selection is carried by the ▶ marker, not by colour — the
+    /// bright and normal text tokens resolve to the same value in every theme.)
+    #[test]
+    fn modal_hub_dims_disabled_items_and_marks_the_selected_one() {
+        let mut disabled = hub_item("third", "", "");
+        disabled.enabled = false;
+        let overlay = OverlayData::ModalHub {
+            kind: HubKind::Git,
+            title: None,
+            items: vec![
+                hub_item("first", "", ""),
+                hub_item("second", "", ""),
+                disabled,
+            ],
+            selected: 0,
+        };
+        let buf = draw_overlay(&overlay, 100, 24);
+        let rows = rows(&buf);
+
+        let fg_of = |needle: &str| {
+            let y = rows
+                .iter()
+                .position(|r| r.contains(needle))
+                .unwrap_or_else(|| panic!("{needle:?} not rendered:\n{}", text(&rows)));
+            let x = col_of(&rows[y], needle);
+            buf[(x as u16, y as u16)].fg
+        };
+
+        let enabled = fg_of("second");
+        let disabled_fg = fg_of("third");
+
+        assert_ne!(
+            enabled, disabled_fg,
+            "a disabled item is dimmed relative to an enabled one"
+        );
+        assert!(
+            row_containing(&rows, "first").contains("▶"),
+            "the selected item carries the marker"
+        );
+        assert!(
+            !row_containing(&rows, "third").contains("▶"),
+            "…and nothing else does"
+        );
+    }
+}

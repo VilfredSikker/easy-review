@@ -526,4 +526,182 @@ mod tests {
         assert!(!tab.needs_initial_refresh, "loaded tab is not a stub");
         std::env::remove_var("ER_STORAGE_ROOT");
     }
+
+    // ── fetch_branch_scope_raw ────────────────────────────────────────────
+    //
+    // Every arm below resolves through local git only; the `gh pr diff` arms
+    // (checkout-less local PR tabs and remote tabs) need the network and are
+    // not exercised here.
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .output()
+            .expect("git must be available");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// `main` (base.txt) → `feature` (adds feat.txt), left on `feature`.
+    fn repo_with_feature_branch() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        run_git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("base.txt"), "base\n").unwrap();
+        run_git(root, &["add", "base.txt"]);
+        run_git(root, &["commit", "-q", "-m", "base", "--no-gpg-sign"]);
+        run_git(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("feat.txt"), "feat\n").unwrap();
+        run_git(root, &["add", "feat.txt"]);
+        run_git(root, &["commit", "-q", "-m", "feat", "--no-gpg-sign"]);
+        dir
+    }
+
+    fn inputs_for(root: &std::path::Path) -> BranchScopeFetchInputs {
+        BranchScopeFetchInputs {
+            repo_root: root.to_string_lossy().into_owned(),
+            base_branch: "main".to_string(),
+            local_branch_view: Some("feature".to_string()),
+            pr_head_ref: None,
+            pr_number: None,
+            checkout_root: None,
+            remote_repo: None,
+        }
+    }
+
+    #[test]
+    fn fetch_branch_scope_diffs_the_branch_against_its_base() {
+        let repo = repo_with_feature_branch();
+        let raw = fetch_branch_scope_raw("branch", &inputs_for(repo.path())).unwrap();
+        assert!(
+            raw.contains("b/feat.txt"),
+            "branch commit is in the diff: {raw}"
+        );
+        assert!(
+            !raw.contains("base.txt"),
+            "a file unchanged since the base stays out: {raw}"
+        );
+    }
+
+    #[test]
+    fn fetch_branch_scope_prefers_the_pr_head_ref_over_the_branch_name() {
+        let repo = repo_with_feature_branch();
+        let root = repo.path();
+        run_git(root, &["checkout", "-q", "-b", "pr-head", "main"]);
+        std::fs::write(root.join("other.txt"), "other\n").unwrap();
+        run_git(root, &["add", "other.txt"]);
+        run_git(root, &["commit", "-q", "-m", "other", "--no-gpg-sign"]);
+        run_git(root, &["update-ref", "refs/er/pr/1/head", "pr-head"]);
+        run_git(root, &["checkout", "-q", "feature"]);
+
+        let mut inputs = inputs_for(root);
+        inputs.pr_head_ref = Some("refs/er/pr/1/head".to_string());
+        let raw = fetch_branch_scope_raw("branch", &inputs).unwrap();
+        assert!(raw.contains("b/other.txt"), "diffed the PR head ref: {raw}");
+        assert!(
+            !raw.contains("feat.txt"),
+            "the fetched ref wins over the tab's branch name: {raw}"
+        );
+    }
+
+    #[test]
+    fn fetch_branch_scope_checkout_root_wins_over_pr_head_ref_and_pr_number() {
+        // A checked-out head branch reviews the live working tree, so neither
+        // the fetched PR head ref nor a PR number may route this scope through
+        // `gh pr diff` (the untracked file proves the working tree was read).
+        let repo = repo_with_feature_branch();
+        let root = repo.path();
+        std::fs::write(root.join("wip.txt"), "wip\n").unwrap();
+
+        let mut inputs = inputs_for(root);
+        inputs.checkout_root = Some(root.to_string_lossy().into_owned());
+        inputs.pr_head_ref = Some("refs/heads/main".to_string());
+        inputs.pr_number = Some(9);
+        let raw = fetch_branch_scope_raw("branch", &inputs).unwrap();
+        assert!(
+            raw.contains("b/feat.txt"),
+            "branch commit diffed against the merge base: {raw}"
+        );
+        assert!(
+            raw.contains("wip.txt"),
+            "untracked working-tree file included: {raw}"
+        );
+    }
+
+    #[test]
+    fn fetch_branch_scope_unstaged_and_staged_read_the_checkout_index() {
+        let repo = repo_with_feature_branch();
+        let root = repo.path();
+        std::fs::write(root.join("base.txt"), "base\nedited\n").unwrap();
+
+        let mut inputs = inputs_for(root);
+        inputs.checkout_root = Some(root.to_string_lossy().into_owned());
+
+        let unstaged = fetch_branch_scope_raw("unstaged", &inputs).unwrap();
+        assert!(
+            unstaged.contains("b/base.txt"),
+            "working-tree edit: {unstaged}"
+        );
+        assert!(
+            !unstaged.contains("feat.txt"),
+            "a committed file is not unstaged work: {unstaged}"
+        );
+
+        let staged_before = fetch_branch_scope_raw("staged", &inputs).unwrap();
+        assert!(
+            staged_before.is_empty(),
+            "nothing staged yet: {staged_before}"
+        );
+        run_git(root, &["add", "base.txt"]);
+        let staged = fetch_branch_scope_raw("staged", &inputs).unwrap();
+        assert!(staged.contains("b/base.txt"), "staged edit: {staged}");
+    }
+
+    #[test]
+    fn fetch_branch_scope_errors_when_a_remote_tab_lacks_owner_repo_or_pr() {
+        let mut inputs = inputs_for(std::path::Path::new("/nonexistent-er-preload-test"));
+        inputs.local_branch_view = None;
+        inputs.remote_repo = Some("ownerrepo".to_string());
+        inputs.pr_number = Some(3);
+        let err = fetch_branch_scope_raw("branch", &inputs)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Remote tab missing owner/repo or pr_number"),
+            "slug without an owner is rejected: {err}"
+        );
+
+        // A well-formed slug with no PR number lands on the same guard.
+        inputs.remote_repo = Some("owner/repo".to_string());
+        inputs.pr_number = None;
+        let err = fetch_branch_scope_raw("branch", &inputs)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Remote tab missing owner/repo or pr_number"),
+            "missing PR number is rejected: {err}"
+        );
+    }
+
+    #[test]
+    fn fetch_branch_scope_errors_when_the_tab_has_no_diff_source() {
+        let mut inputs = inputs_for(std::path::Path::new("/nonexistent-er-preload-test"));
+        inputs.local_branch_view = None;
+        let err = fetch_branch_scope_raw("branch", &inputs)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("no branch view, checkout root, or remote"),
+            "{err}"
+        );
+    }
 }

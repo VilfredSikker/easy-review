@@ -749,3 +749,642 @@ impl App {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::TabState;
+    use crate::github::gh_support::with_fake_gh;
+    use tempfile::TempDir;
+
+    // Every test here stops before a `gh` subprocess can run: the guards and
+    // the failure classification are reachable offline, the post-push tail
+    // (file rewrite, reply fan-out, reload, notify) is not.
+
+    fn gh_comment(id: &str, file: &str, line_start: Option<usize>) -> ai::GitHubReviewComment {
+        ai::GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index: Some(0),
+            line_start,
+            line_end: None,
+            line_content: String::new(),
+            comment: format!("comment for {id}"),
+            in_reply_to: None,
+            resolved: false,
+            source: "local".to_string(),
+            github_id: None,
+            author: "You".to_string(),
+            synced: false,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    fn write_comments(er_root: &std::path::Path, comments: Vec<ai::GitHubReviewComment>) {
+        let dir = er_root.join(".er");
+        std::fs::create_dir_all(&dir).unwrap();
+        let gc = ai::ErGitHubComments {
+            version: 1,
+            diff_hash: String::new(),
+            github: None,
+            comments,
+        };
+        std::fs::write(
+            dir.join("github-comments.json"),
+            serde_json::to_string_pretty(&gc).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn read_comments(er_root: &std::path::Path) -> ai::ErGitHubComments {
+        let raw =
+            std::fs::read_to_string(er_root.join(".er").join("github-comments.json")).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    /// App whose single tab is a remote PR tab for `slug`, with its sidecars in
+    /// `er_root/.er`. No `pr_number` on the tab (the push commands take it as a
+    /// hint), so `github_comments_dir()` stays in that temp dir instead of
+    /// resolving a managed PR bucket.
+    fn remote_pr_app(er_root: &std::path::Path, slug: &str) -> App {
+        let mut app = App::new_for_test(vec![]);
+        let root = er_root.to_string_lossy().into_owned();
+        app.tabs[0].repo_root = root.clone();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(root);
+        app.tabs[0].remote_repo = Some(slug.to_string());
+        app
+    }
+
+    fn thread_push_err(comments: Vec<ai::GitHubReviewComment>, id: &str) -> String {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), comments);
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        app.push_github_comment_thread(id, Some(7))
+            .unwrap_err()
+            .to_string()
+    }
+
+    fn reply_push_err(comments: Vec<ai::GitHubReviewComment>, id: &str) -> String {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), comments);
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        app.push_github_comment_reply(id, Some(7))
+            .unwrap_err()
+            .to_string()
+    }
+
+    fn run_git(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git must be available");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    /// A repo root that resolves to `o/r` through `get_repo_info`'s process-wide
+    /// cache and is then deleted. `local_pr_target` still succeeds (cache hit),
+    /// while every `gh` call fails at *spawn* because its `current_dir` is gone —
+    /// no network, no GitHub mutation, and the real error path is exercised.
+    /// If that cache ever disappears these tests fail loudly with
+    /// "No PR found for current branch" rather than silently passing.
+    fn warmed_then_deleted_repo_root() -> String {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().to_string_lossy().into_owned();
+        run_git(dir.path(), &["init", "-q"]);
+        run_git(
+            dir.path(),
+            &["remote", "add", "origin", "https://github.com/o/r.git"],
+        );
+        let (owner, repo) = crate::github::get_repo_info(&root).expect("origin resolves");
+        assert_eq!((owner.as_str(), repo.as_str()), ("o", "r"));
+        drop(dir);
+        assert!(
+            !std::path::Path::new(&root).exists(),
+            "the repo root must really be gone, so no gh subprocess can start"
+        );
+        root
+    }
+
+    fn pr_overview(number: u64) -> github::PrOverviewData {
+        github::PrOverviewData {
+            number,
+            title: "t".to_string(),
+            body: String::new(),
+            state: "OPEN".to_string(),
+            author: "a".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            checks: Vec::new(),
+            reviewers: Vec::new(),
+        }
+    }
+
+    fn sync_result(
+        tab_key: (String, Option<u64>, bool),
+        is_remote: bool,
+        pr_data: Option<github::PrOverviewData>,
+    ) -> CommentSyncResult {
+        CommentSyncResult {
+            gc: ai::ErGitHubComments {
+                version: 1,
+                diff_hash: String::new(),
+                github: None,
+                comments: Vec::new(),
+            },
+            pr_data,
+            github_count: 3,
+            local_count: 1,
+            is_remote,
+            comments_path: String::new(),
+            tab_key,
+        }
+    }
+
+    // ── apply_comment_sync_result ─────────────────────────────────────────
+
+    #[test]
+    fn apply_comment_sync_result_reloads_the_matching_tab_and_notifies() {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(3))]);
+        let mut app = App::new_for_test(vec![]);
+        let root = tmp.path().to_string_lossy().into_owned();
+        app.tabs[0].repo_root = root.clone();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(root.clone());
+
+        app.apply_comment_sync_result(sync_result((root, None, false), false, None));
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("GitHub sync: 3 from GitHub, 1 local kept, PR status refreshed"),
+            "counts come from the result, not the reloaded file"
+        );
+        assert_eq!(
+            app.tabs[0]
+                .ai
+                .github_comments
+                .as_ref()
+                .map(|gc| gc.comments.len()),
+            Some(1),
+            "the tab re-read the comments the background sync wrote"
+        );
+    }
+
+    #[test]
+    fn apply_comment_sync_result_ignores_a_result_whose_tab_is_gone() {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(3))]);
+        let mut app = App::new_for_test(vec![]);
+        let root = tmp.path().to_string_lossy().into_owned();
+        app.tabs[0].repo_root = root.clone();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(root);
+
+        // Identity of a tab closed while the network fetch was in flight.
+        app.apply_comment_sync_result(sync_result(
+            ("/some/other/checkout".to_string(), Some(4), false),
+            false,
+            Some(pr_overview(4)),
+        ));
+
+        assert!(
+            app.watch_message.is_none(),
+            "no notification for a tab that is gone"
+        );
+        assert!(
+            app.tabs[0].ai.github_comments.is_none(),
+            "the surviving tab is not reloaded on its behalf"
+        );
+        assert!(
+            app.tabs[0].pr_data.is_none(),
+            "and does not adopt the other tab's PR data"
+        );
+    }
+
+    #[test]
+    fn apply_comment_sync_result_updates_a_background_tab_without_notifying() {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(3))]);
+        let mut app = App::new_for_test(vec![]);
+        app.tabs[0].repo_root = "/active/checkout".to_string();
+        let root = tmp.path().to_string_lossy().into_owned();
+        let mut background = TabState::new_for_test(vec![]);
+        background.repo_root = root.clone();
+        background.er_root = crate::ErRoot::RepoLocal(root.clone());
+        background.remote_repo = Some("o/r".to_string());
+        app.tabs.push(background);
+        assert_eq!(app.active_tab, 0, "the synced tab is not the active one");
+
+        app.apply_comment_sync_result(sync_result((root, None, true), true, Some(pr_overview(42))));
+
+        assert_eq!(
+            app.tabs[1]
+                .ai
+                .github_comments
+                .as_ref()
+                .map(|gc| gc.comments.len()),
+            Some(1),
+            "the result lands on the tab matching its key"
+        );
+        assert_eq!(
+            app.tabs[1].pr_data.as_ref().map(|d| d.number),
+            Some(42),
+            "refreshed PR overview is attached to that tab"
+        );
+        assert!(
+            app.tabs[0].ai.github_comments.is_none(),
+            "the active tab is left alone"
+        );
+        assert!(
+            app.watch_message.is_none(),
+            "a background tab's sync stays silent"
+        );
+    }
+
+    // ── sync_github_comments ──────────────────────────────────────────────
+
+    #[test]
+    fn sync_github_comments_reports_an_invalid_remote_slug() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "ownerrepo");
+        app.tabs[0].pr_number = Some(1);
+
+        app.sync_github_comments().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Invalid remote repo slug"),
+            "a slug without an owner is reported, not returned as an error"
+        );
+    }
+
+    #[test]
+    fn sync_github_comments_reports_a_remote_tab_with_no_pr_number() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "owner/repo");
+
+        app.sync_github_comments().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("No PR info for remote mode")
+        );
+    }
+
+    #[test]
+    fn sync_github_comments_reports_a_local_tab_with_no_resolvable_pr() {
+        // Not a git checkout, so `local_pr_target` cannot resolve owner/repo.
+        let tmp = TempDir::new().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        let root = tmp.path().to_string_lossy().into_owned();
+        app.tabs[0].repo_root = root.clone();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(root);
+        app.tabs[0].pr_number = Some(1);
+
+        app.sync_github_comments().unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("No PR found for current branch")
+        );
+    }
+
+    // ── push_github_comment_thread ────────────────────────────────────────
+
+    #[test]
+    fn push_thread_rejects_a_remote_tab_without_owner_repo_or_pr_number() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "ownerrepo");
+        let err = app
+            .push_github_comment_thread("c-1", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Invalid remote repo slug"), "{err}");
+
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_thread("c-1", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No PR info for remote mode"), "{err}");
+    }
+
+    #[test]
+    fn push_thread_errors_without_a_comments_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_thread("c-1", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No github-comments.json found"), "{err}");
+    }
+
+    #[test]
+    fn push_thread_errors_on_a_malformed_comments_file() {
+        let tmp = TempDir::new().unwrap();
+        std::fs::create_dir_all(tmp.path().join(".er")).unwrap();
+        std::fs::write(
+            tmp.path().join(".er").join("github-comments.json"),
+            "{ not json",
+        )
+        .unwrap();
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_thread("c-1", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Failed to parse github-comments.json"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_thread_errors_when_the_comment_is_missing() {
+        let err = thread_push_err(vec![gh_comment("c-1", "a.rs", Some(3))], "c-missing");
+        assert!(err.contains("Comment not found: c-missing"), "{err}");
+    }
+
+    #[test]
+    fn push_thread_refuses_a_comment_pulled_from_github() {
+        let mut c = gh_comment("c-1", "a.rs", Some(3));
+        c.source = "github".to_string();
+        let err = thread_push_err(vec![c], "c-1");
+        assert!(err.contains("Only local comments can be pushed"), "{err}");
+    }
+
+    #[test]
+    fn push_thread_refuses_an_already_pushed_comment() {
+        let mut c = gh_comment("c-1", "a.rs", Some(3));
+        c.synced = true;
+        let err = thread_push_err(vec![c], "c-1");
+        assert!(err.contains("Comment already pushed"), "{err}");
+    }
+
+    #[test]
+    fn push_thread_refuses_a_reply_as_the_thread_root() {
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.in_reply_to = Some("c-1".to_string());
+        let err = thread_push_err(vec![gh_comment("c-1", "a.rs", Some(3)), reply], "c-2");
+        assert!(
+            err.contains("Use Push only this on the thread root, not a reply"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_thread_requires_a_line_anchor_on_a_file_comment() {
+        // A file-scoped comment with no line anchor cannot become a review
+        // comment — this is caught before any GitHub call.
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", None)]);
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+
+        let err = app
+            .push_github_comment_thread("c-1", Some(7))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("Comment has no line anchor"),
+            "anchor is required before pushing: {err}"
+        );
+        assert!(
+            !read_comments(tmp.path()).comments[0].synced,
+            "the rejected comment stays unpushed on disk"
+        );
+    }
+
+    #[test]
+    fn push_thread_leaves_the_comment_unsynced_when_the_gh_push_fails() {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(12))]);
+        let mut app = App::new_for_test(vec![]);
+        app.tabs[0].repo_root = warmed_then_deleted_repo_root();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(tmp.path().to_string_lossy().into_owned());
+
+        let err = app
+            .push_github_comment_thread("c-1", Some(7))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("Failed to push comment"), "{err}");
+        let on_disk = read_comments(tmp.path());
+        assert!(
+            !on_disk.comments[0].synced,
+            "a failed push must not mark the comment synced"
+        );
+        assert!(
+            on_disk.comments[0].github_id.is_none(),
+            "and must not invent a GitHub id"
+        );
+    }
+
+    // ── push_github_comment_reply ─────────────────────────────────────────
+
+    #[test]
+    fn push_reply_refuses_finding_validation_replies() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_reply("fr-1", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("Finding validation replies cannot be pushed individually"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_reply_rejects_a_remote_tab_without_owner_repo_or_pr_number() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "ownerrepo");
+        let err = app
+            .push_github_comment_reply("c-2", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("Invalid remote repo slug"), "{err}");
+
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_reply("c-2", None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No PR info for remote mode"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_errors_without_a_comments_file() {
+        let tmp = TempDir::new().unwrap();
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let err = app
+            .push_github_comment_reply("c-2", Some(7))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("No github-comments.json found"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_errors_when_the_reply_is_missing() {
+        let err = reply_push_err(vec![gh_comment("c-1", "a.rs", Some(3))], "c-missing");
+        assert!(err.contains("Comment not found: c-missing"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_refuses_a_reply_pulled_from_github() {
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.source = "github".to_string();
+        reply.in_reply_to = Some("c-1".to_string());
+        let err = reply_push_err(vec![gh_comment("c-1", "a.rs", Some(3)), reply], "c-2");
+        assert!(err.contains("Only local comments can be pushed"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_refuses_an_already_pushed_reply() {
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.synced = true;
+        reply.in_reply_to = Some("c-1".to_string());
+        let err = reply_push_err(vec![gh_comment("c-1", "a.rs", Some(3)), reply], "c-2");
+        assert!(err.contains("Reply already pushed"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_refuses_a_thread_root() {
+        let err = reply_push_err(vec![gh_comment("c-1", "a.rs", Some(3))], "c-1");
+        assert!(
+            err.contains("Push only works on replies, not thread roots"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_reply_errors_when_the_parent_is_missing() {
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.in_reply_to = Some("c-gone".to_string());
+        let err = reply_push_err(vec![reply], "c-2");
+        assert!(err.contains("Parent comment not found"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_requires_the_thread_root_to_be_pushed_first() {
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.in_reply_to = Some("c-1".to_string());
+        let err = reply_push_err(vec![gh_comment("c-1", "a.rs", Some(3)), reply], "c-2");
+        assert!(
+            err.contains("Push the thread root to GitHub first"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn push_reply_errors_when_the_pushed_parent_has_no_github_id() {
+        let mut parent = gh_comment("c-1", "a.rs", Some(3));
+        parent.synced = true; // marked pushed but the id never came back
+        let mut reply = gh_comment("c-2", "a.rs", Some(3));
+        reply.in_reply_to = Some("c-1".to_string());
+        let err = reply_push_err(vec![parent, reply], "c-2");
+        assert!(err.contains("Parent comment has no GitHub id"), "{err}");
+    }
+
+    #[test]
+    fn push_reply_leaves_the_reply_unsynced_when_the_gh_push_fails() {
+        let tmp = TempDir::new().unwrap();
+        let mut parent = gh_comment("c-1", "a.rs", Some(12));
+        parent.synced = true;
+        parent.github_id = Some(555);
+        let mut reply = gh_comment("c-2", "a.rs", Some(12));
+        reply.in_reply_to = Some("c-1".to_string());
+        write_comments(tmp.path(), vec![parent, reply]);
+        let mut app = App::new_for_test(vec![]);
+        app.tabs[0].repo_root = warmed_then_deleted_repo_root();
+        app.tabs[0].er_root = crate::ErRoot::RepoLocal(tmp.path().to_string_lossy().into_owned());
+
+        let err = app
+            .push_github_comment_reply("c-2", Some(7))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("Failed to push reply"), "{err}");
+        let on_disk = read_comments(tmp.path());
+        assert!(
+            !on_disk.comments[1].synced,
+            "a failed reply push must not mark the reply synced"
+        );
+        assert!(
+            on_disk.comments[1].github_id.is_none(),
+            "and must not invent a GitHub id"
+        );
+        assert!(
+            on_disk.comments[0].synced,
+            "the parent's own sync state is untouched"
+        );
+    }
+
+
+    // ── gh push via a fake `gh` on PATH (github.rs' shared gh_support) ─────
+    #[test]
+    fn push_thread_pushes_a_local_file_comment_and_marks_it_synced() {
+        let tmp = TempDir::new().unwrap();
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(5))]);
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        // gh: `pr view` -> a HEAD oid; `api -X POST` -> the new comment's id.
+        let script = r#"#!/bin/sh
+case "$1" in
+  pr) printf '%s' 'abc123'; exit 0 ;;
+  api) printf '%s' '{"id":5}'; exit 0 ;;
+esac
+printf 'unexpected: %s' "$*" >&2
+exit 1
+"#;
+        with_fake_gh(script, || app.push_github_comment_thread("c-1", Some(7))).unwrap();
+        let on_disk = read_comments(tmp.path());
+        let c = on_disk.comments.iter().find(|c| c.id == "c-1").unwrap();
+        assert!(c.synced, "a successful push marks the comment synced");
+        assert_eq!(c.github_id, Some(5));
+    }
+
+
+
+    #[test]
+    fn push_thread_pushes_replies_then_marks_the_whole_thread_synced() {
+        let tmp = TempDir::new().unwrap();
+        let mut reply = gh_comment("c-2", "a.rs", Some(7));
+        reply.in_reply_to = Some("c-1".to_string());
+        write_comments(tmp.path(), vec![gh_comment("c-1", "a.rs", Some(5)), reply]);
+        let mut app = remote_pr_app(tmp.path(), "o/r");
+        let script = r#"#!/bin/sh
+case "$1" in
+  pr) printf '%s' 'abc123'; exit 0 ;;
+  api) printf '%s' '{"id":5}'; exit 0 ;;
+esac
+printf 'unexpected: %s' "$*" >&2
+exit 1
+"#;
+        with_fake_gh(script, || app.push_github_comment_thread("c-1", Some(7))).unwrap();
+        let on_disk = read_comments(tmp.path());
+        let parent = on_disk.comments.iter().find(|c| c.id == "c-1").unwrap();
+        let reply = on_disk.comments.iter().find(|c| c.id == "c-2").unwrap();
+        assert!(parent.synced);
+        assert_eq!(parent.github_id, Some(5));
+        assert!(reply.synced, "the reply is pushed and marked synced");
+        assert_eq!(reply.github_id, Some(5));
+    }
+
+}

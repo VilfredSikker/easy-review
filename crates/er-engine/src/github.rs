@@ -2989,6 +2989,40 @@ pub fn owner_repo_storage_slug(owner: &str, repo: &str) -> String {
 }
 
 #[cfg(test)]
+pub(crate) mod gh_support {
+    //! Hermetically exercise functions that shell out to `Command::new("gh")`
+    //! (no injection seam): a fake `gh` is prepended to `PATH` for a closure.
+    //! The temp dir contains nothing but `gh`, so `git`/other tools still
+    //! resolve from the rest of `PATH`; `PATH` is restored afterwards. A single
+    //! process-wide lock serialises the mutation so tests across modules can
+    //! never race each other over the environment.
+
+    use std::sync::Mutex;
+
+    static GH_PATH_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Run `f` with `script` installed as a fake `gh` on `PATH`, then restore.
+    pub(crate) fn with_fake_gh<T>(script: &str, f: impl FnOnce() -> T) -> T {
+        let _guard = GH_PATH_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let gh = dir.path().join("gh");
+        std::fs::write(&gh, script).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&gh, std::fs::Permissions::from_mode(0o755));
+        }
+        let old = std::env::var_os("PATH").unwrap_or_default();
+        let mut parts: Vec<std::path::PathBuf> = vec![dir.path().to_path_buf()];
+        parts.extend(std::env::split_paths(&old));
+        std::env::set_var("PATH", std::env::join_paths(parts).unwrap());
+        let result = f();
+        std::env::set_var("PATH", old);
+        result
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -3927,4 +3961,496 @@ mod tests {
             None
         );
     }
+
+    // ── reviewer deduplication (PR overview) ──
+
+    fn reviews_fixture(json: &str) -> Vec<serde_json::Value> {
+        serde_json::from_str(json).expect("reviews fixture")
+    }
+
+    /// `deduplicate_reviewers` builds its result from a `HashMap`, so the returned
+    /// order is not defined — always look a reviewer up by login.
+    fn state_of(reviewers: &[ReviewerStatus], login: &str) -> Option<String> {
+        reviewers
+            .iter()
+            .find(|r| r.login == login)
+            .map(|r| r.state.clone())
+    }
+
+    #[test]
+    fn deduplicate_reviewers_keeps_one_row_per_login() {
+        let arr = reviews_fixture(
+            r#"[
+                {"author": {"login": "ana"}, "state": "COMMENTED"},
+                {"author": {"login": "ana"}, "state": "APPROVED"},
+                {"author": {"login": "bo"}, "state": "CHANGES_REQUESTED"}
+            ]"#,
+        );
+        let out = deduplicate_reviewers(&arr);
+        assert_eq!(out.len(), 2, "three reviews, two reviewers");
+        assert_eq!(state_of(&out, "ana").as_deref(), Some("APPROVED"));
+        assert_eq!(state_of(&out, "bo").as_deref(), Some("CHANGES_REQUESTED"));
+    }
+
+    #[test]
+    fn deduplicate_reviewers_does_not_let_commented_downgrade_a_decisive_state() {
+        let arr = reviews_fixture(
+            r#"[
+                {"author": {"login": "ana"}, "state": "APPROVED"},
+                {"author": {"login": "ana"}, "state": "COMMENTED"},
+                {"author": {"login": "bo"}, "state": "CHANGES_REQUESTED"},
+                {"author": {"login": "bo"}, "state": "COMMENTED"}
+            ]"#,
+        );
+        let out = deduplicate_reviewers(&arr);
+        assert_eq!(
+            state_of(&out, "ana").as_deref(),
+            Some("APPROVED"),
+            "a later COMMENTED must not undo an approval"
+        );
+        assert_eq!(
+            state_of(&out, "bo").as_deref(),
+            Some("CHANGES_REQUESTED"),
+            "a later COMMENTED must not undo a change request"
+        );
+    }
+
+    #[test]
+    fn deduplicate_reviewers_lets_a_later_decisive_review_replace_commented() {
+        let arr = reviews_fixture(
+            r#"[
+                {"author": {"login": "ana"}, "state": "COMMENTED"},
+                {"author": {"login": "ana"}, "state": "CHANGES_REQUESTED"}
+            ]"#,
+        );
+        let out = deduplicate_reviewers(&arr);
+        assert_eq!(
+            state_of(&out, "ana").as_deref(),
+            Some("CHANGES_REQUESTED"),
+            "COMMENTED is not decisive, so it is overwritten"
+        );
+    }
+
+    #[test]
+    fn deduplicate_reviewers_defaults_a_missing_state_to_pending() {
+        let arr = reviews_fixture(r#"[{"author": {"login": "ana"}}]"#);
+        let out = deduplicate_reviewers(&arr);
+        assert_eq!(state_of(&out, "ana").as_deref(), Some("PENDING"));
+    }
+
+    #[test]
+    fn deduplicate_reviewers_skips_reviews_without_an_author_login() {
+        let arr = reviews_fixture(
+            r#"[
+                {"state": "APPROVED"},
+                {"author": {}, "state": "APPROVED"},
+                {"author": {"login": "ana"}, "state": "APPROVED"}
+            ]"#,
+        );
+        let out = deduplicate_reviewers(&arr);
+        assert_eq!(out.len(), 1, "authorless reviews are dropped");
+        assert_eq!(out[0].login, "ana");
+    }
+
+    #[test]
+    fn deduplicate_reviewers_returns_nothing_for_an_empty_reviews_array() {
+        assert!(deduplicate_reviewers(&[]).is_empty());
+    }
+
+    // ── base ref resolution ──
+
+    fn run_git_ok(root: &std::path::Path, args: &[&str]) {
+        let out = Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git command");
+        assert!(
+            out.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    fn rev_parse_verify(root: &std::path::Path, refname: &str) -> Option<String> {
+        let out = Command::new("git")
+            .args(["rev-parse", "--verify", refname])
+            .current_dir(root)
+            .output()
+            .expect("git rev-parse");
+        out.status
+            .success()
+            .then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
+    /// A self-contained repo with one empty commit on `branch` and no remotes, so
+    /// any `git fetch origin` fails locally instead of reaching the network.
+    /// Identity is passed as `-c` flags so the test never depends on global git config.
+    fn init_temp_repo(root: &std::path::Path, branch: &str) {
+        run_git_ok(root, &["init", "-q", "-b", branch, "."]);
+        let message = format!("init {branch}");
+        run_git_ok(
+            root,
+            &[
+                "-c",
+                "user.name=er-test",
+                "-c",
+                "user.email=er-test@example.invalid",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "-q",
+                "--no-verify",
+                "--allow-empty",
+                "-m",
+                &message,
+            ],
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_uses_an_existing_local_branch_as_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+        run_git_ok(root, &["branch", "release-1"]);
+
+        let resolved = ensure_base_ref_available(root.to_str().unwrap(), "release-1").unwrap();
+        assert_eq!(
+            resolved, "release-1",
+            "a local branch is returned unqualified"
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_trims_whitespace_around_the_base_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+
+        let resolved = ensure_base_ref_available(root.to_str().unwrap(), "  main\n").unwrap();
+        assert_eq!(resolved, "main", "surrounding whitespace is stripped");
+    }
+
+    #[test]
+    fn ensure_base_ref_available_prefers_the_remote_tracking_ref_over_fetching() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+        run_git_ok(
+            root,
+            &["update-ref", "refs/remotes/origin/release-2", "HEAD"],
+        );
+        assert!(
+            rev_parse_verify(root, "refs/heads/release-2").is_none(),
+            "precondition: no local branch of that name"
+        );
+
+        // No `origin` remote is configured, so reaching the fetch would fail —
+        // resolving proves the remote-tracking ref short-circuits it.
+        let resolved = ensure_base_ref_available(root.to_str().unwrap(), "release-2").unwrap();
+        assert_eq!(resolved, "origin/release-2");
+    }
+
+    #[test]
+    fn ensure_base_ref_available_detects_a_base_when_the_pr_reports_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+        run_git_ok(root, &["checkout", "-q", "-b", "feature"]);
+
+        let resolved = ensure_base_ref_available(root.to_str().unwrap(), "").unwrap();
+        assert_eq!(
+            resolved, "main",
+            "an empty base falls back to branch detection"
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_errors_when_the_base_is_missing_locally_and_on_origin() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+
+        // No `origin` remote at all — the fetch fails locally, never over the network.
+        let err = ensure_base_ref_available(root.to_str().unwrap(), "no-such-base").unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Base branch 'no-such-base' not found locally or on origin"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_treats_a_dash_prefixed_base_as_a_missing_ref() {
+        let origin = tempfile::tempdir().unwrap();
+        init_temp_repo(origin.path(), "shipped");
+
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_temp_repo(root, "main");
+        run_git_ok(
+            root,
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+
+        // A bare dash-prefixed base is qualified to `refs/heads/<name>` before it
+        // reaches `git fetch`, so git reads it as a refspec rather than an option.
+        // A real (local file) origin is what makes the two arms distinguishable:
+        // qualified, git answers `couldn't find remote ref refs/heads/--upload-pack=false`;
+        // unqualified, `--upload-pack=false` is parsed as an option and git fails with
+        // "Could not read from remote repository", which never names the ref. Asserting
+        // the qualified refspec reaches git is therefore what pins the guard.
+        let err =
+            ensure_base_ref_available(root.to_str().unwrap(), "--upload-pack=false").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("Base branch '--upload-pack=false' not found locally or on origin"),
+            "unexpected error: {msg}"
+        );
+        assert!(
+            msg.contains("refs/heads/--upload-pack=false"),
+            "the bare name must be qualified so git treats it as a refspec, not an option: {msg}"
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_fetches_a_missing_base_from_origin() {
+        let origin = tempfile::tempdir().unwrap();
+        init_temp_repo(origin.path(), "shipped");
+        let expected = rev_parse_verify(origin.path(), "shipped").expect("origin commit");
+
+        let work = tempfile::tempdir().unwrap();
+        init_temp_repo(work.path(), "main");
+        run_git_ok(
+            work.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+        assert!(
+            rev_parse_verify(work.path(), "origin/shipped").is_none(),
+            "precondition: the base is absent before the fetch"
+        );
+
+        let resolved = ensure_base_ref_available(work.path().to_str().unwrap(), "shipped").unwrap();
+        assert_eq!(
+            resolved, "origin/shipped",
+            "the fetch creates the remote-tracking ref, and that is what is returned"
+        );
+        assert_eq!(
+            rev_parse_verify(work.path(), &resolved).as_deref(),
+            Some(expected.as_str()),
+            "the returned ref resolves to the commit fetched from origin"
+        );
+    }
+
+    #[test]
+    fn ensure_base_ref_available_does_not_resolve_a_fully_qualified_base_after_fetching() {
+        let origin = tempfile::tempdir().unwrap();
+        init_temp_repo(origin.path(), "shipped");
+
+        let work = tempfile::tempdir().unwrap();
+        init_temp_repo(work.path(), "main");
+        run_git_ok(
+            work.path(),
+            &["remote", "add", "origin", origin.path().to_str().unwrap()],
+        );
+        let ls = Command::new("git")
+            .args(["ls-remote", "origin"])
+            .current_dir(work.path())
+            .output()
+            .expect("git ls-remote");
+        assert!(
+            ls.status.success(),
+            "precondition: the local file remote must be fetchable: {}",
+            String::from_utf8_lossy(&ls.stderr)
+        );
+
+        // A `refs/`-prefixed base is fetched verbatim, but the fetch creates neither
+        // `origin/refs/heads/shipped` nor a local `refs/heads/shipped`, so resolution
+        // still fails. Pinned as-is: this looks like a latent bug (a fix would likely
+        // check `origin/<basename>` after a qualified fetch), not a desired contract.
+        let err = ensure_base_ref_available(work.path().to_str().unwrap(), "refs/heads/shipped")
+            .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("Base branch 'refs/heads/shipped' fetched but still not resolvable"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // ── gh subprocess prologues ──
+    //
+    // A working directory that does not exist makes the spawn fail *before* `gh`
+    // is executed, so these are hermetic: no network, and no dependency on `gh`
+    // being installed.
+
+    #[test]
+    fn gh_pr_comments_names_the_operation_when_gh_cannot_be_launched() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-checkout");
+
+        let err = gh_pr_comments("acme", "discovery", 7, missing.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to fetch PR comments"),
+            "unexpected error: {err}"
+        );
+        assert!(
+            err.chain().count() >= 2,
+            "the underlying OS error is kept as the cause, not swallowed"
+        );
+    }
+
+    #[test]
+    fn gh_pr_push_comment_fails_on_the_head_sha_lookup_before_posting() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("no-such-checkout");
+
+        let err = gh_pr_push_comment(
+            "acme",
+            "discovery",
+            7,
+            "src/lib.rs",
+            10,
+            Some(12),
+            "looks wrong",
+            "RIGHT",
+            missing.to_str().unwrap(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("Failed to get PR head SHA"),
+            "the failure is attributed to the SHA lookup, not the POST: {err}"
+        );
+        assert!(
+            err.chain().count() >= 2,
+            "the underlying OS error is kept as the cause, not swallowed"
+        );
+    }
+
+    // ── review comment field arguments (shared by both push paths) ──
+
+    #[test]
+    fn review_comment_field_args_omits_start_line_for_a_single_line_comment() {
+        let args = review_comment_field_args("src/lib.rs", 12, 12, "RIGHT", "hi", "abc123");
+        assert!(args.contains(&"line=12".to_string()));
+        assert!(
+            !args.iter().any(|a| a.starts_with("start_line=")),
+            "a single-line comment must not send start_line: {args:?}"
+        );
+        assert!(args.contains(&"path=src/lib.rs".to_string()));
+        assert!(args.contains(&"commit_id=abc123".to_string()));
+        assert!(args.contains(&"side=RIGHT".to_string()));
+        assert!(args.contains(&"body=hi".to_string()));
+    }
+
+    #[test]
+    fn review_comment_field_args_adds_start_side_only_for_left_side_ranges() {
+        let right = review_comment_field_args("src/lib.rs", 5, 9, "RIGHT", "hi", "sha");
+        assert!(right.contains(&"start_line=5".to_string()));
+        assert!(right.contains(&"line=9".to_string()));
+        assert!(
+            !right.iter().any(|a| a.starts_with("start_side=")),
+            "RIGHT is the default side and needs no start_side: {right:?}"
+        );
+
+        let left = review_comment_field_args("src/lib.rs", 5, 9, "LEFT", "hi", "sha");
+        assert!(left.contains(&"start_side=LEFT".to_string()));
+
+        // `start_side` is nested inside the multi-line branch on purpose: GitHub
+        // rejects a payload carrying start_side without start_line, so a single-line
+        // LEFT comment must emit neither.
+        let single_left = review_comment_field_args("src/lib.rs", 12, 12, "LEFT", "hi", "sha");
+        assert!(
+            !single_left.iter().any(|a| a.starts_with("start_line=")),
+            "a single-line comment must not send start_line: {single_left:?}"
+        );
+        assert!(
+            !single_left.iter().any(|a| a.starts_with("start_side=")),
+            "start_side without start_line is an invalid review-comment payload: {single_left:?}"
+        );
+    }
+
+    #[test]
+    fn review_comment_field_args_clamps_an_inverted_range_to_a_single_line() {
+        let args = review_comment_field_args("src/lib.rs", 20, 3, "RIGHT", "hi", "sha");
+        assert!(
+            args.contains(&"line=20".to_string()),
+            "the end line clamps up to the start: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.starts_with("start_line=")),
+            "a clamped range is single-line: {args:?}"
+        );
+    }
+
+    // ── hermetic `gh` remote wrappers (prepend a fake `gh` to PATH) ──────────
+    // These shell out to Command::new("gh") with no injection seam, so the
+    // only hermetic way to exercise them is a fake `gh` on PATH. The temp dir
+    // contains nothing but `gh`, so git/other tools still resolve from the
+    // rest of PATH; PATH is restored afterwards. GH_PATH_LOCK serializes the
+    // mutation so these tests never race each other over the environment.
+
+    use super::gh_support::with_fake_gh;
+
+    const FAKE_COMMENTS_PAGE: &str = r#"[{"id":1,"body":"first comment","path":"a.rs","line":5,"original_line":5,"side":"RIGHT","user":{"login":"octocat"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","outdated":false}]"#;
+
+    fn comments_script(body: &str) -> String {
+        format!(
+            "#!/bin/sh\ncase \"$1\" in\n  api) printf '%s' '{}'; exit 0 ;;\nesac\nprintf 'unexpected: %s' \"$*\" >&2\nexit 1\n",
+            body
+        )
+    }
+
+    #[test]
+    fn gh_pr_comments_remote_parses_a_single_gh_api_page() {
+        let comments = with_fake_gh(&comments_script(FAKE_COMMENTS_PAGE), || gh_pr_comments_remote("o", "r", 42)).unwrap();
+        assert_eq!(comments.len(), 1);
+        assert_eq!(comments[0].id, 1);
+        assert_eq!(comments[0].body, "first comment");
+        assert_eq!(comments[0].path.as_deref(), Some("a.rs"));
+        assert_eq!(comments[0].user.login, "octocat");
+    }
+
+    #[test]
+    fn gh_pr_comments_remote_merges_paginated_gh_api_pages() {
+        // Two pages back-to-back (']' then '['): the pagination merge splits on bracket depth.
+        let two_pages = format!("{}{}", FAKE_COMMENTS_PAGE, FAKE_COMMENTS_PAGE);
+        let comments = with_fake_gh(&comments_script(&two_pages), || gh_pr_comments_remote("o", "r", 42)).unwrap();
+        assert_eq!(comments.len(), 2, "both pages merge into one comment list");
+    }
+
+    #[test]
+    fn gh_pr_push_comment_remote_posts_and_returns_the_created_id() {
+        let script = r#"#!/bin/sh
+case "$1" in
+  pr) printf '%s' 'abc123'; exit 0 ;;
+  api) printf '%s' '{"id":5}'; exit 0 ;;
+esac
+printf 'unexpected: %s' "$*" >&2
+exit 1
+"#;
+        let id = with_fake_gh(script, || {
+            gh_pr_push_comment_remote("o", "r", 42, "a.rs", 5, Some(9), "hi", "RIGHT")
+        })
+        .unwrap();
+        assert_eq!(id, 5);
+    }
+
+    #[test]
+    fn gh_pr_thread_addressing_remote_summarizes_a_resolved_thread() {
+        let script = r#"#!/bin/sh
+case "$1" in
+  api) printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"pageInfo":{"hasNextPage":false,"endCursor":"c1"},"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"databaseId":1}]}}]}}}}}' ; exit 0 ;;
+esac
+printf 'unexpected: %s' "$*" >&2
+exit 1
+"#;
+        let summary = with_fake_gh(script, || gh_pr_thread_addressing_remote("o", "r", 42)).unwrap();
+        assert_eq!(summary.thread_count, 1);
+        assert_eq!(summary.resolved, 1);
+        assert_eq!(summary.open, 0);
+        assert!(summary.all_addressed);
+    }
+
 }

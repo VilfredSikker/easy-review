@@ -292,6 +292,8 @@ fn unique_tmp_path(parent: &Path, final_path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::experts::ExpertFileReview;
+    use crate::ai::professor::ProfessorFileReview;
     use crate::ai::review::{Confidence, ErFileReview, Finding, RiskLevel};
     use std::collections::HashMap;
 
@@ -447,5 +449,359 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(er.join("review.json")).unwrap())
                 .unwrap();
         assert_eq!(after.files.len(), 1);
+    }
+
+    // ── snapshot_before_scoped_review ──
+
+    #[test]
+    fn snapshot_routes_each_reviewer_kind_to_its_own_prev_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+        std::fs::write(er.join("review.json"), r#"{"marker":"general"}"#).unwrap();
+        std::fs::write(er.join("professor.json"), r#"{"marker":"professor"}"#).unwrap();
+        std::fs::write(er.join("experts/security.json"), r#"{"marker":"security"}"#).unwrap();
+        std::fs::write(er.join("triage.json"), r#"{"marker":"triage"}"#).unwrap();
+        // Bait for the expert catch-all: if the dedicated `"triage"` arm were
+        // removed, `triage` would fall through and snapshot this file.
+        std::fs::write(
+            er.join("experts/triage.json"),
+            r#"{"marker":"triage-expert"}"#,
+        )
+        .unwrap();
+
+        snapshot_before_scoped_review(
+            er,
+            &[
+                "general".into(),
+                "professor".into(),
+                "security".into(),
+                "triage".into(),
+            ],
+        )
+        .unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(er.join("review.prev.json")).unwrap(),
+            r#"{"marker":"general"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(er.join("professor.prev.json")).unwrap(),
+            r#"{"marker":"professor"}"#
+        );
+        assert_eq!(
+            std::fs::read_to_string(er.join("experts/security.prev.json")).unwrap(),
+            r#"{"marker":"security"}"#
+        );
+        // Triage is a full-branch artifact — it is deliberately never
+        // snapshotted, to *either* destination: not the root (a misroute into
+        // the general/professor arms) and not `experts/` (a fall-through into
+        // the catch-all).
+        assert!(!er.join("triage.prev.json").exists());
+        assert!(!er.join("experts/triage.prev.json").exists());
+    }
+
+    #[test]
+    fn snapshot_treats_review_alias_the_same_as_general() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::write(er.join("review.json"), r#"{"marker":"general"}"#).unwrap();
+
+        snapshot_before_scoped_review(er, &["review".into()]).unwrap();
+
+        assert_eq!(
+            std::fs::read_to_string(er.join("review.prev.json")).unwrap(),
+            r#"{"marker":"general"}"#
+        );
+    }
+
+    /// A leftover `*.prev.json` from an earlier run must not be merged into a
+    /// sidecar that no longer exists — the snapshot pass clears it instead.
+    #[test]
+    fn snapshot_clears_stale_prev_when_sidecar_is_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+        std::fs::write(er.join("review.prev.json"), "stale").unwrap();
+        std::fs::write(er.join("professor.prev.json"), "stale").unwrap();
+        std::fs::write(er.join("experts/security.prev.json"), "stale").unwrap();
+
+        snapshot_before_scoped_review(
+            er,
+            &["general".into(), "professor".into(), "security".into()],
+        )
+        .unwrap();
+
+        assert!(!er.join("review.prev.json").exists());
+        assert!(!er.join("professor.prev.json").exists());
+        assert!(!er.join("experts/security.prev.json").exists());
+    }
+
+    #[test]
+    fn snapshot_creates_experts_dir_for_a_first_time_expert_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+
+        snapshot_before_scoped_review(er, &["performance".into()]).unwrap();
+
+        assert!(er.join("experts").is_dir());
+        assert!(!er.join("experts/performance.prev.json").exists());
+    }
+
+    // ── merge_scoped_expert / merge_scoped_professor ──
+
+    fn expert_file_review(findings: Vec<Finding>) -> ExpertFileReview {
+        ExpertFileReview { findings }
+    }
+
+    fn expert_review_with(
+        files: Vec<(&str, Vec<Finding>)>,
+        hash: &str,
+        scope: &str,
+        summary: &str,
+    ) -> ExpertReview {
+        let mut map = HashMap::new();
+        for (path, findings) in files {
+            map.insert(path.to_string(), expert_file_review(findings));
+        }
+        ExpertReview {
+            version: 1,
+            expert_id: "security".into(),
+            diff_hash: hash.to_string(),
+            diff_scope: scope.to_string(),
+            created_at: "old".into(),
+            summary: summary.to_string(),
+            files: map,
+        }
+    }
+
+    fn professor_review_with(
+        files: Vec<(&str, Vec<Finding>)>,
+        hash: &str,
+        scope: &str,
+        focus: &str,
+        summary: &str,
+    ) -> ProfessorReview {
+        let mut map = HashMap::new();
+        for (path, findings) in files {
+            map.insert(path.to_string(), ProfessorFileReview { findings });
+        }
+        ProfessorReview {
+            version: 1,
+            diff_hash: hash.to_string(),
+            diff_scope: scope.to_string(),
+            created_at: "old".into(),
+            focus_prompt: focus.to_string(),
+            summary: summary.to_string(),
+            files: map,
+        }
+    }
+
+    #[test]
+    fn scoped_expert_merge_keeps_non_scoped_files_and_the_full_diff_hash() {
+        let previous = expert_review_with(
+            vec![
+                ("a.ts", vec![finding("sec-1", "Old A")]),
+                ("b.ts", vec![finding("sec-2", "Old B")]),
+            ],
+            "full-hash",
+            "branch",
+            "old summary",
+        );
+        let mut scoped = expert_review_with(
+            vec![("b.ts", vec![finding("sec-9", "New B")])],
+            "scoped-hash",
+            "selected",
+            "new summary",
+        );
+        scoped.version = 2;
+        scoped.created_at = "new".into();
+        scoped.expert_id = "performance".into();
+
+        let merged = merge_scoped_expert(previous, scoped, &["b.ts".into()]);
+
+        assert_eq!(merged.diff_hash, "full-hash");
+        assert_eq!(merged.version, 2);
+        assert_eq!(merged.created_at, "new");
+        assert_eq!(merged.diff_scope, "selected");
+        assert_eq!(merged.summary, "new summary");
+        // The sidecar's identity comes from the file it lives in, not the scoped pass.
+        assert_eq!(merged.expert_id, "security");
+        assert_eq!(merged.files.len(), 2);
+        assert_eq!(merged.files["a.ts"].findings[0].id, "sec-1");
+        assert_eq!(merged.files["b.ts"].findings[0].id, "sec-9");
+    }
+
+    #[test]
+    fn scoped_expert_merge_keeps_prior_scope_and_summary_when_scoped_leaves_them_blank() {
+        let previous = expert_review_with(
+            vec![
+                ("a.ts", vec![finding("sec-1", "Old A")]),
+                ("b.ts", vec![finding("sec-2", "Old B")]),
+            ],
+            "full-hash",
+            "branch",
+            "old summary",
+        );
+        let scoped = expert_review_with(vec![], "scoped-hash", "", "");
+
+        let merged = merge_scoped_expert(previous, scoped, &["b.ts".into()]);
+
+        assert_eq!(merged.diff_scope, "branch");
+        assert_eq!(merged.summary, "old summary");
+        // Scoped pass reported nothing for b.ts → its prior findings are dropped.
+        assert!(merged.files.contains_key("a.ts"));
+        assert!(!merged.files.contains_key("b.ts"));
+    }
+
+    #[test]
+    fn scoped_professor_merge_keeps_non_scoped_files_and_the_full_diff_hash() {
+        let previous = professor_review_with(
+            vec![
+                ("a.ts", vec![finding("prof-1", "Old A")]),
+                ("b.ts", vec![finding("prof-2", "Old B")]),
+            ],
+            "full-hash",
+            "branch",
+            "old focus",
+            "old summary",
+        );
+        let mut scoped = professor_review_with(
+            vec![("b.ts", vec![finding("prof-9", "New B")])],
+            "scoped-hash",
+            "selected",
+            "new focus",
+            "new summary",
+        );
+        scoped.version = 2;
+        scoped.created_at = "new".into();
+
+        let merged = merge_scoped_professor(previous, scoped, &["b.ts".into()]);
+
+        assert_eq!(merged.diff_hash, "full-hash");
+        assert_eq!(merged.version, 2);
+        assert_eq!(merged.created_at, "new");
+        assert_eq!(merged.diff_scope, "selected");
+        assert_eq!(merged.focus_prompt, "new focus");
+        assert_eq!(merged.summary, "new summary");
+        assert_eq!(merged.files.len(), 2);
+        assert_eq!(merged.files["a.ts"].findings[0].id, "prof-1");
+        assert_eq!(merged.files["b.ts"].findings[0].id, "prof-9");
+    }
+
+    #[test]
+    fn scoped_professor_merge_keeps_prior_scope_focus_and_summary_when_scoped_leaves_them_blank() {
+        let previous = professor_review_with(
+            vec![
+                ("a.ts", vec![finding("prof-1", "Old A")]),
+                ("b.ts", vec![finding("prof-2", "Old B")]),
+            ],
+            "full-hash",
+            "branch",
+            "old focus",
+            "old summary",
+        );
+        let scoped = professor_review_with(vec![], "scoped-hash", "", "", "");
+
+        let merged = merge_scoped_professor(previous, scoped, &["b.ts".into()]);
+
+        assert_eq!(merged.diff_scope, "branch");
+        assert_eq!(merged.focus_prompt, "old focus");
+        assert_eq!(merged.summary, "old summary");
+        assert!(merged.files.contains_key("a.ts"));
+        assert!(!merged.files.contains_key("b.ts"));
+    }
+
+    /// `apply_scoped_sidecar_merge` must route `expert-<id>` to the matching
+    /// expert sidecar — a broken prefix strip would silently skip the merge.
+    #[test]
+    fn apply_merge_routes_expert_command_to_the_matching_expert_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        std::fs::create_dir_all(er.join("experts")).unwrap();
+        let previous = expert_review_with(
+            vec![
+                ("keep.ts", vec![finding("sec-1", "Keep me")]),
+                ("scoped.ts", vec![finding("sec-2", "Stale")]),
+            ],
+            "full-hash",
+            "branch",
+            "old summary",
+        );
+        let scoped = expert_review_with(
+            vec![("scoped.ts", vec![finding("sec-9", "Fresh")])],
+            "scoped-hash",
+            "selected",
+            "new summary",
+        );
+        std::fs::write(
+            er.join("experts/security.prev.json"),
+            serde_json::to_string(&previous).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            er.join("experts/security.json"),
+            serde_json::to_string(&scoped).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(er.join("review-files.txt"), "scoped.ts\n").unwrap();
+
+        apply_scoped_sidecar_merge(er, "expert-security").unwrap();
+
+        let merged: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(er.join("experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(merged.files.len(), 2);
+        assert_eq!(merged.files["keep.ts"].findings[0].title, "Keep me");
+        assert_eq!(merged.files["scoped.ts"].findings[0].title, "Fresh");
+        assert_eq!(merged.diff_hash, "full-hash");
+        assert!(!er.join("experts/security.prev.json").exists());
+    }
+
+    /// The professor branch of the same router.
+    #[test]
+    fn apply_merge_routes_professor_command_to_the_professor_sidecar() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path();
+        let previous = professor_review_with(
+            vec![
+                ("keep.ts", vec![finding("prof-1", "Keep me")]),
+                ("scoped.ts", vec![finding("prof-2", "Stale")]),
+            ],
+            "full-hash",
+            "branch",
+            "old focus",
+            "old summary",
+        );
+        let scoped = professor_review_with(
+            vec![("scoped.ts", vec![finding("prof-9", "Fresh")])],
+            "scoped-hash",
+            "selected",
+            "new focus",
+            "new summary",
+        );
+        std::fs::write(
+            er.join("professor.prev.json"),
+            serde_json::to_string(&previous).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            er.join("professor.json"),
+            serde_json::to_string(&scoped).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(er.join("review-files.txt"), "scoped.ts\n").unwrap();
+
+        apply_scoped_sidecar_merge(er, "professor").unwrap();
+
+        let merged: ProfessorReview =
+            serde_json::from_str(&std::fs::read_to_string(er.join("professor.json")).unwrap())
+                .unwrap();
+        assert_eq!(merged.files.len(), 2);
+        assert_eq!(merged.files["keep.ts"].findings[0].title, "Keep me");
+        assert_eq!(merged.files["scoped.ts"].findings[0].title, "Fresh");
+        assert_eq!(merged.diff_hash, "full-hash");
+        assert!(!er.join("professor.prev.json").exists());
     }
 }

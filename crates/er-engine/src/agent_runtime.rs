@@ -1336,4 +1336,142 @@ mod tests {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
+
+    #[test]
+    fn from_command_name_maps_the_ai_hub_command_vocabulary() {
+        for (name, expected) in [
+            ("review", AgentTaskKind::Review),
+            ("professor", AgentTaskKind::Professor),
+            ("triage", AgentTaskKind::Triage),
+            ("questions", AgentTaskKind::Questions),
+            ("summary", AgentTaskKind::Summary),
+            // `validate` and `validate-comments` are two different contracts.
+            ("validate", AgentTaskKind::ValidateReview),
+            ("validate-comments", AgentTaskKind::ValidateComments),
+        ] {
+            assert_eq!(AgentTaskKind::from_command_name(name), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn from_command_name_reads_the_expert_id_from_the_prefix() {
+        assert_eq!(
+            AgentTaskKind::from_command_name("expert-security"),
+            AgentTaskKind::Expert("security".into())
+        );
+        // Only the `expert-` prefix is stripped — dashes inside the id survive.
+        assert_eq!(
+            AgentTaskKind::from_command_name("expert-api-design"),
+            AgentTaskKind::Expert("api-design".into())
+        );
+        // The id is not validated here, so an empty one is accepted.
+        assert_eq!(
+            AgentTaskKind::from_command_name("expert-"),
+            AgentTaskKind::Expert(String::new())
+        );
+        // Without the dash there is no prefix to strip and no matching command.
+        assert_eq!(
+            AgentTaskKind::from_command_name("expert"),
+            AgentTaskKind::Other("expert".into())
+        );
+    }
+
+    #[test]
+    fn from_command_name_falls_back_to_other_for_unmapped_commands() {
+        for name in [
+            // Tour/CardReply/ArenaRound have no entry in the command table —
+            // they can only be constructed directly, never parsed from a name.
+            "tour",
+            "card-reply",
+            // Close-but-wrong spellings must not silently resolve to a contract.
+            "validate-review",
+            "Review",
+            "",
+        ] {
+            assert_eq!(
+                AgentTaskKind::from_command_name(name),
+                AgentTaskKind::Other(name.to_string()),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
+    fn artifact_contract_maps_each_task_to_its_sidecar() {
+        for (task, expected) in [
+            (AgentTaskKind::Review, ArtifactContract::Review),
+            (AgentTaskKind::Professor, ArtifactContract::Professor),
+            (AgentTaskKind::Triage, ArtifactContract::Triage),
+            (AgentTaskKind::Questions, ArtifactContract::Questions),
+            (AgentTaskKind::Summary, ArtifactContract::Summary),
+            (AgentTaskKind::ValidateReview, ArtifactContract::ValidateReview),
+            (
+                AgentTaskKind::ValidateComments,
+                ArtifactContract::ValidateComments,
+            ),
+        ] {
+            assert_eq!(task.artifact_contract(), expected, "{task:?}");
+        }
+    }
+
+    #[test]
+    fn artifact_contract_carries_the_expert_id_and_tour_filename() {
+        let expert = AgentTaskKind::Expert("security".into()).artifact_contract();
+        assert_eq!(
+            expert,
+            ArtifactContract::Expert {
+                id: "security".into()
+            }
+        );
+        assert_eq!(
+            expert.required_paths(),
+            vec!["experts/security.json".to_string()]
+        );
+
+        // Tour carries the per-view filename (branch vs PR bucket) through.
+        let tour = AgentTaskKind::Tour {
+            filename: "tour.pr.json".into(),
+        }
+        .artifact_contract();
+        assert_eq!(
+            tour,
+            ArtifactContract::Tour {
+                filename: "tour.pr.json".into()
+            }
+        );
+        assert_eq!(tour.required_paths(), vec!["tour.pr.json".to_string()]);
+    }
+
+    #[test]
+    fn conversational_tasks_declare_no_artifact_contract() {
+        for task in [
+            AgentTaskKind::CardReply,
+            AgentTaskKind::ArenaRound,
+            AgentTaskKind::Other("chat".into()),
+        ] {
+            assert_eq!(task.artifact_contract(), ArtifactContract::None, "{task:?}");
+        }
+
+        // The consequence of `None`: a card reply that writes no sidecar still
+        // validates, where a Review task against the same empty dir fails.
+        let dir = temp_dir("contract-none-noop");
+        ArtifactBaseline::capture(
+            AgentTaskKind::CardReply.artifact_contract(),
+            dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .validate(dir.to_str().unwrap())
+        .unwrap();
+
+        let error = ArtifactBaseline::capture(
+            AgentTaskKind::Review.artifact_contract(),
+            dir.to_str().unwrap(),
+        )
+        .unwrap()
+        .validate(dir.to_str().unwrap())
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("did not write"), "{error}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }

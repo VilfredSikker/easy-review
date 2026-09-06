@@ -137,6 +137,8 @@ const fn severity_rank(s: RiskLevel) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use super::super::model::{Verdict, Vote};
+    use super::super::schema::{Round1Finding, Round1Output};
     use super::*;
 
     #[test]
@@ -181,5 +183,225 @@ mod tests {
         ];
         propose_merge_candidates(&mut findings);
         assert!(findings[0].merge_candidates.contains(&"b".to_string()));
+    }
+
+    fn proposal(reviewer: &str, findings: Vec<Round1Finding>) -> (String, Round1Output) {
+        (reviewer.to_string(), Round1Output { findings })
+    }
+
+    fn r1(
+        file: &str,
+        line: Option<usize>,
+        title: &str,
+        severity: &str,
+        confidence: Option<f32>,
+    ) -> Round1Finding {
+        Round1Finding {
+            file: file.to_string(),
+            line,
+            title: title.to_string(),
+            body: format!("body of {title}"),
+            severity: severity.to_string(),
+            confidence,
+            tags: vec![],
+        }
+    }
+
+    #[test]
+    fn round1_finding_carries_a_propose_ballot_from_its_reviewer() {
+        let out = findings_from_round1(&[proposal(
+            "rev-a",
+            vec![r1("x.rs", Some(4), "Unbounded loop", "high", Some(0.9))],
+        )]);
+
+        assert_eq!(out.len(), 1);
+        let f = &out[0];
+        assert_eq!(f.file, "x.rs");
+        assert_eq!(f.line, Some(4));
+        assert_eq!(f.raised_by, vec!["rev-a".to_string()]);
+        assert_eq!(f.severity_by_round.get(&1), Some(&RiskLevel::High));
+        assert_eq!(f.confidence, 0.9);
+        assert_eq!(f.verdict, Verdict::Pending);
+        assert_eq!(f.rounds.len(), 1);
+        assert_eq!(f.rounds[0].n, 1);
+        assert_eq!(f.rounds[0].log.len(), 1);
+        assert_eq!(f.rounds[0].log[0].reviewer, "rev-a");
+        assert_eq!(f.rounds[0].log[0].vote, Vote::Propose);
+        assert_eq!(f.rounds[0].log[0].note, "body of Unbounded loop");
+    }
+
+    #[test]
+    fn identical_findings_from_two_reviewers_collapse_into_one_with_both_credited() {
+        let out = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(4), "Unbounded   loop", "low", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", Some(9), "unbounded loop", "high", Some(0.95))],
+            ),
+        ]);
+
+        // The id is sha1(file + canonicalized title), so case and repeated
+        // whitespace do not split one issue into two findings.
+        assert_eq!(out.len(), 1);
+        assert_eq!(
+            out[0].raised_by,
+            vec!["rev-a".to_string(), "rev-b".to_string()]
+        );
+        // The first proposal owns the mutable fields; the duplicate only adds
+        // attribution and (below) severity. rev-b differs on all three —
+        // line 9, lowercase title, confidence 0.95 — and none of them land.
+        assert_eq!(out[0].line, Some(4));
+        assert_eq!(out[0].title, "Unbounded   loop");
+        assert_eq!(out[0].confidence, 0.5);
+    }
+
+    #[test]
+    fn duplicate_findings_take_the_highest_proposed_severity() {
+        let escalating = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(4), "Race on cache", "low", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", Some(4), "Race on cache", "high", None)],
+            ),
+        ]);
+        assert_eq!(
+            escalating[0].severity_by_round.get(&1),
+            Some(&RiskLevel::High)
+        );
+
+        // ...and a later, milder opinion must not walk the severity back down.
+        let de_escalating = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(4), "Race on cache", "high", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", Some(4), "Race on cache", "low", None)],
+            ),
+        ]);
+        assert_eq!(
+            de_escalating[0].severity_by_round.get(&1),
+            Some(&RiskLevel::High)
+        );
+    }
+
+    #[test]
+    fn a_reviewer_repeating_itself_is_credited_only_once() {
+        let out = findings_from_round1(&[proposal(
+            "rev-a",
+            vec![
+                r1("x.rs", Some(4), "Unbounded   loop", "low", None),
+                r1("x.rs", Some(9), "unbounded loop", "high", None),
+            ],
+        )]);
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].raised_by, vec!["rev-a".to_string()]);
+        assert_eq!(out[0].severity_by_round.get(&1), Some(&RiskLevel::High));
+    }
+
+    #[test]
+    fn unparseable_severity_and_absent_confidence_get_defaults() {
+        let out = findings_from_round1(&[proposal(
+            "rev-a",
+            vec![r1("x.rs", None, "Nit: naming", "catastrophic", None)],
+        )]);
+
+        assert_eq!(out[0].severity_by_round.get(&1), Some(&RiskLevel::Medium));
+        assert_eq!(out[0].confidence, 0.5);
+    }
+
+    #[test]
+    fn near_duplicate_titles_stay_separate_but_are_cross_linked_as_merge_candidates() {
+        let out = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(10), "User input in map key", "high", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", Some(12), "User input in map keys", "high", None)],
+            ),
+        ]);
+
+        // Different titles → different ids, so no automatic collapse...
+        assert_eq!(out.len(), 2);
+        assert_ne!(out[0].id, out[1].id);
+        // ...but findings_from_round1 runs the merge proposer before returning,
+        // so the arbiter sees the pair as merge candidates in both directions.
+        assert!(out[0].merge_candidates.contains(&out[1].id));
+        assert!(out[1].merge_candidates.contains(&out[0].id));
+    }
+
+    #[test]
+    fn distant_findings_are_not_proposed_for_merge() {
+        // Same near-identical title as the cross-linking test above, so the
+        // Jaccard gate is satisfied in both halves and only the guard under
+        // test can be what rejects the pair.
+
+        // Different file → rejected by the `a.file != b.file` guard.
+        let other_file = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(10), "User input in map key", "high", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("y.rs", Some(10), "User input in map keys", "high", None)],
+            ),
+        ]);
+        assert_eq!(other_file.len(), 2);
+        assert!(other_file[0].merge_candidates.is_empty());
+        assert!(other_file[1].merge_candidates.is_empty());
+
+        // Same file, but further apart than LINE_PROXIMITY → rejected by the
+        // `lines_close` guard. Without this half, deleting the proximity check
+        // outright leaves every test in this file green.
+        let far_apart = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(10), "User input in map key", "high", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", Some(200), "User input in map keys", "high", None)],
+            ),
+        ]);
+        assert_eq!(far_apart.len(), 2);
+        assert!(far_apart[0].merge_candidates.is_empty());
+        assert!(far_apart[1].merge_candidates.is_empty());
+
+        // A finding with no line never merges with one that has a line — the
+        // `(Some, None)` arm of lines_close, distinct from the distance check.
+        let one_unlocated = findings_from_round1(&[
+            proposal(
+                "rev-a",
+                vec![r1("x.rs", Some(10), "User input in map key", "high", None)],
+            ),
+            proposal(
+                "rev-b",
+                vec![r1("x.rs", None, "User input in map keys", "high", None)],
+            ),
+        ]);
+        assert_eq!(one_unlocated.len(), 2);
+        assert!(one_unlocated[0].merge_candidates.is_empty());
+        assert!(one_unlocated[1].merge_candidates.is_empty());
+    }
+
+    #[test]
+    fn no_proposals_yields_no_findings() {
+        // Narrow claim: this is a degenerate-input guard, not a behavioral
+        // pin — empty-in/empty-out survives every mutation of the dedup body.
+        // What it does catch is an off-by-one in propose_merge_candidates'
+        // bounds: `for i in 0..n - 1` underflows and panics when n == 0.
+        assert!(findings_from_round1(&[]).is_empty());
+        assert!(findings_from_round1(&[proposal("rev-a", vec![])]).is_empty());
     }
 }

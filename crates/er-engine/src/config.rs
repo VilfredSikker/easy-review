@@ -3488,4 +3488,241 @@ mod tests {
         supplement_ai_hub(&mut hub);
         assert!(!hub.providers.contains_key("cursor"));
     }
+
+    // ── CliFamily::id ──
+
+    #[test]
+    fn cli_family_id_round_trips_through_from_id_for_known_families() {
+        // Receivers come from `detect` (a runtime call) rather than literal
+        // variants, so each arm is really executed rather than folded away.
+        let cases = vec![
+            ("claude", "claude"),
+            ("/usr/local/bin/codex", "codex"),
+            // Cursor's binary is named `agent`, but its config id is "cursor".
+            ("agent", "cursor"),
+            ("C:\\bin\\opencode.exe", "opencode"),
+        ];
+        for (command, expected_id) in cases {
+            let family = CliFamily::detect(command);
+            let id = family
+                .id()
+                .unwrap_or_else(|| panic!("{command} should map to a known family id"));
+            assert_eq!(id, expected_id, "wrong id for command {command}");
+            // The id is exactly what `family = "..."` accepts back.
+            assert_eq!(CliFamily::from_id(id), Some(family));
+            assert!(
+                KNOWN_FAMILY_IDS.contains(&id),
+                "id {id} must be advertised in KNOWN_FAMILY_IDS"
+            );
+        }
+    }
+
+    #[test]
+    fn cli_family_id_is_none_for_unrecognised_command() {
+        let family = CliFamily::detect("my-homegrown-cli");
+        assert_eq!(family, CliFamily::Other);
+        // Other is the "not a known family" sentinel: it has no config id, so
+        // it can never be written back into a provider's `family` field.
+        assert!(family.id().is_none());
+    }
+
+    // ── ErConfig::resolve_command ──
+
+    #[test]
+    fn resolve_command_maps_each_name_to_its_commands_slot() {
+        let mut config = ErConfig::default();
+        // Nothing configured → None, so callers disable the action.
+        assert_eq!(config.resolve_command("summary"), None);
+        assert_eq!(config.resolve_command("test"), None);
+        assert_eq!(config.resolve_command("lint"), None);
+        assert_eq!(config.resolve_command("typecheck"), None);
+        assert_eq!(config.resolve_command("security"), None);
+
+        config.commands.summary = Some("claude -p 'Summarize: {diff}'".into());
+        config.commands.test = Some("cargo test".into());
+        config.commands.lint = Some("cargo clippy".into());
+        config.commands.typecheck = Some("cargo check".into());
+        config.commands.security = Some("cargo audit".into());
+
+        // Each name reads its own slot — no cross-wiring.
+        assert_eq!(
+            config.resolve_command("summary").as_deref(),
+            Some("claude -p 'Summarize: {diff}'")
+        );
+        assert_eq!(config.resolve_command("test").as_deref(), Some("cargo test"));
+        assert_eq!(
+            config.resolve_command("lint").as_deref(),
+            Some("cargo clippy")
+        );
+        assert_eq!(
+            config.resolve_command("typecheck").as_deref(),
+            Some("cargo check")
+        );
+        assert_eq!(
+            config.resolve_command("security").as_deref(),
+            Some("cargo audit")
+        );
+    }
+
+    #[test]
+    fn resolve_command_name_match_is_exact() {
+        let mut config = ErConfig::default();
+        config.commands.test = Some("cargo test".into());
+        // Positive control: the exact name does resolve, so the near-misses
+        // below are a real contrast rather than "nothing ever resolves".
+        assert_eq!(config.resolve_command("test").as_deref(), Some("cargo test"));
+        // No aliases, no case folding, no trimming.
+        assert_eq!(config.resolve_command("build"), None);
+        assert_eq!(config.resolve_command("Test"), None);
+        assert_eq!(config.resolve_command(" test"), None);
+        assert_eq!(config.resolve_command(""), None);
+    }
+
+    // ── ErConfig::resolve_package_command ──
+
+    #[test]
+    fn resolve_package_command_reads_the_named_packages_own_slots() {
+        let mut config = ErConfig::default();
+        config.packages.items.insert(
+            "web".into(),
+            PackageConfig {
+                label: Some("Web".into()),
+                test: Some("bun test".into()),
+                lint: Some("bun lint".into()),
+                typecheck: Some("tsc --noEmit".into()),
+                security: Some("bun audit".into()),
+            },
+        );
+        config.packages.items.insert(
+            "api".into(),
+            PackageConfig {
+                test: Some("cargo test".into()),
+                ..Default::default()
+            },
+        );
+        assert!(config.has_packages());
+
+        assert_eq!(
+            config.resolve_package_command("web", "test").as_deref(),
+            Some("bun test")
+        );
+        assert_eq!(
+            config.resolve_package_command("web", "lint").as_deref(),
+            Some("bun lint")
+        );
+        assert_eq!(
+            config.resolve_package_command("web", "typecheck").as_deref(),
+            Some("tsc --noEmit")
+        );
+        assert_eq!(
+            config.resolve_package_command("web", "security").as_deref(),
+            Some("bun audit")
+        );
+        // Packages are independent — "api" does not inherit "web"'s commands.
+        assert_eq!(
+            config.resolve_package_command("api", "test").as_deref(),
+            Some("cargo test")
+        );
+        // "summary" is a global-only command; packages have no such slot.
+        assert_eq!(config.resolve_package_command("web", "summary"), None);
+    }
+
+    #[test]
+    fn resolve_package_command_is_none_for_unknown_package_or_unset_command() {
+        let mut config = ErConfig::default();
+        // Global [commands] are populated up front with sentinels distinct from
+        // any per-package value, so every None below proves "no fallback to the
+        // global slot" rather than merely "the slot was never set".
+        config.commands.test = Some("global test".into());
+        config.commands.lint = Some("global lint".into());
+
+        assert!(!config.has_packages());
+        // Unknown package short-circuits before the command match is reached —
+        // it does not fall through to commands.test.
+        assert_eq!(config.resolve_package_command("web", "test"), None);
+
+        config.packages.items.insert(
+            "api".into(),
+            PackageConfig {
+                test: Some("cargo test".into()),
+                ..Default::default()
+            },
+        );
+        // Still unknown, even though a sibling package now exists.
+        assert_eq!(config.resolve_package_command("web", "test"), None);
+        // The one configured slot still resolves to the package's own value,
+        // not the global sentinel.
+        assert_eq!(
+            config.resolve_package_command("api", "test").as_deref(),
+            Some("cargo test")
+        );
+        // Known package, but that command is not configured for it — the
+        // package override does not fall back to [commands].
+        assert_eq!(config.resolve_package_command("api", "lint"), None);
+        assert_eq!(config.resolve_package_command("api", "typecheck"), None);
+        assert_eq!(config.resolve_package_command("api", "nonsense"), None);
+    }
+
+    // ── ConfigItem Debug ──
+
+    #[test]
+    fn config_item_debug_renders_variant_name_and_label_only() {
+        fn first_with<'a>(rendered: &'a [String], prefix: &str) -> &'a str {
+            rendered
+                .iter()
+                .map(String::as_str)
+                .find(|s| s.starts_with(prefix))
+                .unwrap_or_else(|| panic!("no ConfigItem rendered as {prefix}..."))
+        }
+
+        let mut config = ErConfig::default();
+        // Watched paths are what produce the ListEntry variant.
+        config.watched.paths = vec![".work/**".to_string(), "logs/*.log".to_string()];
+        let rendered: Vec<String> = config_hub_items(&config)
+            .iter()
+            .map(|item| format!("{item:?}"))
+            .collect();
+
+        // Descriptions, placeholders, option lists, get/set fn pointers and
+        // action ids are all elided — only the variant name and label survive.
+        assert_eq!(
+            first_with(&rendered, "SectionHeader("),
+            r#"SectionHeader("Commands")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "StringEdit("),
+            r#"StringEdit("Summary")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "BoolToggle("),
+            r#"BoolToggle("Push summary to PR body")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "StringCycle("),
+            r#"StringCycle("Effort")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "DynamicStringCycle("),
+            r#"DynamicStringCycle("Provider")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "NumberEdit("),
+            r#"NumberEdit("Tab width")"#
+        );
+        assert_eq!(
+            first_with(&rendered, "Action("),
+            r#"Action("Copy review.json")"#
+        );
+
+        // ListEntry additionally prints its index (unquoted); ListAdd
+        // additionally prints its section.
+        assert_eq!(
+            first_with(&rendered, "ListEntry("),
+            r#"ListEntry(".work/**", 0)"#
+        );
+        assert_eq!(
+            first_with(&rendered, "ListAdd("),
+            r#"ListAdd("Add pattern...", "watched")"#
+        );
+    }
 }

@@ -890,4 +890,57 @@ mod tests {
         // Header is still the local hunk's header.
         assert_eq!(header, "@@ -1,25 +1,26 @@");
     }
+
+
+    #[test]
+    fn fetch_comment_sync_data_with_merges_a_remote_gh_bundle() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ctx = CommentSyncContext {
+            owner: "o".to_string(),
+            repo_name: "r".to_string(),
+            pr_number: 42,
+            is_remote: true,
+            repo_root: String::new(),
+            comments_path: tmp
+                .path()
+                .join("github-comments.json")
+                .to_string_lossy()
+                .into_owned(),
+            diff_hash: "diff-hash".to_string(),
+            anchor_hash: "anchor-hash".to_string(),
+            files: vec![],
+            pr_number_for_overview: Some(42),
+        };
+        // gh: `api` serves REST comments + GraphQL review threads; `pr view` serves overview.
+        let script = r#"#!/bin/sh
+case "$1" in
+  api)
+    if [ "$2" = "graphql" ]; then
+      printf '%s' '{"data":{"repository":{"pullRequest":{"reviewThreads":{"nodes":[{"isResolved":true,"isOutdated":false,"comments":{"nodes":[{"databaseId":1}]}}]}}}}}'
+      exit 0
+    fi
+    printf '%s' '[{"id":1,"body":"hi","path":"a.rs","line":5,"original_line":5,"side":"RIGHT","user":{"login":"octocat"},"created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z","diff_hunk":"@@ -1 +1 @@\n-a\n+b","outdated":false}]'
+    exit 0
+    ;;
+  pr)
+    printf '%s' '{"number":42,"title":"t","body":"","state":"OPEN","author":{"login":"a"},"url":"u","baseRefName":"main","headRefName":"feature","reviews":[]}'
+    exit 0
+    ;;
+esac
+printf 'unexpected: %s' "$*" >&2
+exit 1
+"#;
+        let result =
+            crate::github::gh_support::with_fake_gh(script, || fetch_comment_sync_data_with(&ctx, false))
+                .unwrap();
+        // One GitHub comment was fetched and merges into the result + written to disk.
+        assert_eq!(result.github_count, 1);
+        assert!(
+            result.gc.comments.iter().any(|c| c.source == "github" && c.id == "gh-1"),
+            "the fetched comment is merged in with its github id"
+        );
+        let on_disk = std::fs::read_to_string(&ctx.comments_path).unwrap();
+        assert!(on_disk.contains("gh-1"), "the merged comments are written to disk");
+    }
+
 }
