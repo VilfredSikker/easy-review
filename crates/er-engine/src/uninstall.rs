@@ -590,4 +590,358 @@ mod tests {
         assert!(opts.remove_binaries);
         assert!(opts.remove_desktop_app);
     }
+
+    fn all_off() -> UninstallOptions {
+        UninstallOptions {
+            remove_config: false,
+            remove_data: false,
+            remove_cache: false,
+            remove_binaries: false,
+            remove_desktop_app: false,
+        }
+    }
+
+    fn restore_env(key: &str, prev: Option<String>) {
+        match prev {
+            Some(v) => std::env::set_var(key, v),
+            None => std::env::remove_var(key),
+        }
+    }
+
+    /// Sets an env var for the lifetime of the guard and restores it on drop.
+    ///
+    /// Restoring on drop (not at the end of the test body) matters for `HOME`:
+    /// the storage lock is un-poisoned with `into_inner`, so a panicking test
+    /// would otherwise leak a temp `HOME` into every later test in the process
+    /// (`global_config_dir`, `storage_root`, `legacy_cache_dir` all read it).
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<String>,
+    }
+
+    impl EnvGuard {
+        fn set(key: &'static str, value: &Path) -> Self {
+            let prev = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, prev }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            restore_env(self.key, self.prev.take());
+        }
+    }
+
+    fn assert_no_duplicate_paths(paths: &[PathBuf], what: &str) {
+        for (i, a) in paths.iter().enumerate() {
+            for b in paths.iter().skip(i + 1) {
+                assert!(
+                    !paths_same(a, b),
+                    "duplicate {what} target: {}",
+                    a.display()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn kind_labels_are_distinct_and_human_readable() {
+        let all = [
+            UninstallKind::Config,
+            UninstallKind::Data,
+            UninstallKind::Cache,
+            UninstallKind::Binary,
+            UninstallKind::DesktopApp,
+        ];
+        assert_eq!(UninstallKind::Config.label(), "Config");
+        assert_eq!(UninstallKind::Data.label(), "Review data");
+        assert_eq!(UninstallKind::Cache.label(), "Legacy cache");
+        assert_eq!(UninstallKind::Binary.label(), "Terminal binary");
+        assert_eq!(UninstallKind::DesktopApp.label(), "Desktop app");
+
+        let mut labels: Vec<&str> = all.iter().map(|k| k.label()).collect();
+        labels.sort_unstable();
+        labels.dedup();
+        assert_eq!(
+            labels.len(),
+            all.len(),
+            "each kind needs its own label — the confirm list shows labels, not variants"
+        );
+    }
+
+    #[test]
+    fn target_description_prefixes_the_kind_label() {
+        let target = UninstallTarget {
+            kind: UninstallKind::DesktopApp,
+            path: PathBuf::from("/Applications/Easy Review.app"),
+            exists: true,
+        };
+        assert_eq!(
+            target.description(),
+            "Desktop app — /Applications/Easy Review.app"
+        );
+    }
+
+    #[test]
+    fn plan_with_every_option_off_is_empty() {
+        assert!(
+            plan(&all_off()).is_empty(),
+            "each category must be gated by its own flag"
+        );
+    }
+
+    #[test]
+    fn plan_lists_missing_data_root_and_flags_existence() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let opts = UninstallOptions {
+            remove_data: true,
+            ..all_off()
+        };
+
+        let missing = tmp.path().join("no-such-storage");
+        std::env::set_var("ER_STORAGE_ROOT", &missing);
+        let planned_missing = plan(&opts);
+
+        let present = tmp.path().join("real-storage");
+        fs::create_dir_all(&present).unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", &present);
+        let planned_present = plan(&opts);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        let m = planned_missing
+            .iter()
+            .find(|t| t.path == missing)
+            .expect("a missing storage root is still listed so dry-run shows the full picture");
+        assert!(!m.exists, "missing root must be flagged as absent");
+        assert_eq!(m.kind, UninstallKind::Data);
+
+        let p = planned_present
+            .iter()
+            .find(|t| t.path == present)
+            .expect("existing storage root is planned");
+        assert!(p.exists, "existing root must be flagged as present");
+        assert!(
+            planned_present
+                .iter()
+                .all(|t| t.kind == UninstallKind::Data),
+            "remove_data must not pull in other categories"
+        );
+        for dir in bundle_data_dirs() {
+            assert!(
+                planned_present.iter().any(|t| t.path == dir),
+                "bundle data dir {} must be planned",
+                dir.display()
+            );
+        }
+    }
+
+    #[test]
+    fn plan_collapses_storage_root_that_equals_a_bundle_data_dir() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        // `plan` only stats paths, never writes — safe to point at the real
+        // bundle dir purely to force the dedupe collision.
+        let dup = dirs::data_dir()
+            .expect("platform data dir")
+            .join("com.reshape.easy-review");
+        std::env::set_var("ER_STORAGE_ROOT", &dup);
+        let targets = plan(&UninstallOptions {
+            remove_data: true,
+            ..all_off()
+        });
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        let hits = targets.iter().filter(|t| t.path == dup).count();
+        assert_eq!(
+            hits, 1,
+            "storage root and bundle data dir are the same path — plan must list it once"
+        );
+    }
+
+    #[test]
+    fn plan_cache_target_follows_xdg_cache_home() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var("XDG_CACHE_HOME").ok();
+        std::env::set_var("XDG_CACHE_HOME", tmp.path());
+        let targets = plan(&UninstallOptions {
+            remove_cache: true,
+            ..all_off()
+        });
+        restore_env("XDG_CACHE_HOME", prev);
+
+        assert_eq!(targets.len(), 1, "cache category is a single root");
+        assert_eq!(targets[0].kind, UninstallKind::Cache);
+        assert_eq!(targets[0].path, tmp.path().join("er"));
+    }
+
+    #[test]
+    fn plan_config_covers_both_xdg_and_platform_config_dirs() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let prev = std::env::var("XDG_CONFIG_HOME").ok();
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path());
+        let targets = plan(&UninstallOptions {
+            remove_config: true,
+            ..all_off()
+        });
+        let platform = dirs::config_dir().map(|d| d.join("er"));
+        restore_env("XDG_CONFIG_HOME", prev);
+
+        assert!(
+            targets.iter().all(|t| t.kind == UninstallKind::Config),
+            "remove_config must not pull in other categories"
+        );
+        let xdg_dir = tmp.path().join("er");
+        assert!(
+            targets.iter().any(|t| t.path == xdg_dir),
+            "XDG_CONFIG_HOME/er must be planned, got {targets:?}"
+        );
+        if let Some(platform) = platform {
+            assert!(
+                targets.iter().any(|t| t.path == platform),
+                "platform config dir {} must also be planned",
+                platform.display()
+            );
+        }
+        let paths: Vec<PathBuf> = targets.into_iter().map(|t| t.path).collect();
+        assert_no_duplicate_paths(&paths, "config");
+    }
+
+    #[test]
+    fn full_plan_never_lists_the_same_path_twice() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let targets = plan(&UninstallOptions::full());
+        drop(_guard);
+
+        assert!(
+            !targets.is_empty(),
+            "a full plan always lists the managed storage root even when nothing is installed"
+        );
+        let paths: Vec<PathBuf> = targets.into_iter().map(|t| t.path).collect();
+        assert_no_duplicate_paths(&paths, "full-plan");
+    }
+
+    /// `discover_binaries` reads `HOME` via `dirs::home_dir`, so pointing `HOME`
+    /// at a temp dir makes the home-relative half of the candidate list
+    /// deterministic. The absolute candidates (`/usr/local/bin/er`,
+    /// `/opt/homebrew/bin/er`) survive the swap and may legitimately exist on the
+    /// machine running the suite — hence containment assertions, never `len()`.
+    #[test]
+    fn discover_binaries_offers_installed_er_and_skips_absent_candidates() {
+        let _lock = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let _home = EnvGuard::set("HOME", tmp.path());
+
+        let cargo_bin = tmp.path().join(".cargo/bin/er");
+        let local_bin = tmp.path().join(".local/bin/er");
+        let decoy = tmp.path().join(".cargo/bin/er-tui");
+        fs::create_dir_all(cargo_bin.parent().unwrap()).unwrap();
+        fs::create_dir_all(local_bin.parent().unwrap()).unwrap();
+        fs::write(&cargo_bin, "#!/bin/sh\n").unwrap();
+        fs::write(&decoy, "#!/bin/sh\n").unwrap();
+
+        let found = discover_binaries();
+        assert!(
+            found.iter().any(|p| p == &cargo_bin),
+            "an installed ~/.cargo/bin/er must be offered, got {found:?}"
+        );
+        assert!(
+            !found.iter().any(|p| p == &local_bin),
+            "~/.local/bin/er is not on disk — an absent candidate must be dropped, got {found:?}"
+        );
+        assert!(
+            !found.iter().any(|p| p == &decoy),
+            "only `er` is the product binary — ~/.cargo/bin/er-tui must not be offered, got {found:?}"
+        );
+
+        // Same directory, now with the binary actually installed.
+        fs::write(&local_bin, "#!/bin/sh\n").unwrap();
+        let found = discover_binaries();
+        assert!(
+            found.iter().any(|p| p == &local_bin),
+            "~/.local/bin/er must be offered once it exists, got {found:?}"
+        );
+        assert!(
+            found.iter().any(|p| p == &cargo_bin),
+            "~/.cargo/bin/er must still be offered, got {found:?}"
+        );
+
+        let exe = std::env::current_exe().expect("current_exe");
+        assert!(
+            !found.iter().any(|p| paths_same(p, &exe)),
+            "the running cargo build output must never be offered for deletion: {}",
+            exe.display()
+        );
+        assert_no_duplicate_paths(&found, "binary");
+    }
+
+    /// macOS-only because the user-level bundle candidate
+    /// (`~/Applications/Easy Review.app`) is the only `discover_desktop_apps`
+    /// branch with a `HOME`-relative seam. A `cfg`'d-out `#[test]` simply does
+    /// not exist on other platforms.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn discover_desktop_apps_offers_only_the_installed_easy_review_bundle() {
+        let _lock = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let _home = EnvGuard::set("HOME", tmp.path());
+
+        let app = tmp.path().join("Applications/Easy Review.app");
+        let unrelated = tmp.path().join("Applications/Something Else.app");
+        assert!(
+            !discover_desktop_apps().iter().any(|p| p == &app),
+            "a bundle that is not installed must not be offered"
+        );
+
+        fs::create_dir_all(app.join("Contents/MacOS")).unwrap();
+        fs::create_dir_all(&unrelated).unwrap();
+        let found = discover_desktop_apps();
+        assert!(
+            found.iter().any(|p| p == &app),
+            "~/Applications/Easy Review.app must be offered once installed, got {found:?}"
+        );
+        assert!(
+            !found.iter().any(|p| p == &unrelated),
+            "an unrelated .app in the same directory must not be offered, got {found:?}"
+        );
+        assert_no_duplicate_paths(&found, "desktop app");
+    }
+
+    #[test]
+    fn enclosing_app_bundle_walks_up_to_the_bundle_root() {
+        assert_eq!(
+            enclosing_app_bundle(Path::new(
+                "/Applications/Easy Review.app/Contents/MacOS/er-desktop"
+            )),
+            Some(PathBuf::from("/Applications/Easy Review.app"))
+        );
+        assert_eq!(enclosing_app_bundle(Path::new("/usr/local/bin/er")), None);
+        // The walk is capped at exactly 8 ancestors. These two pin the boundary
+        // from both sides: `0..7` breaks the first, `0..9` breaks the second.
+        assert_eq!(
+            enclosing_app_bundle(Path::new("/a.app/1/2/3/4/5/6/7/er")),
+            Some(PathBuf::from("/a.app"))
+        );
+        assert_eq!(
+            enclosing_app_bundle(Path::new("/a.app/1/2/3/4/5/6/7/8/9/er")),
+            None
+        );
+    }
 }

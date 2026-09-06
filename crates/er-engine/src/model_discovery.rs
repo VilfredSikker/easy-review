@@ -313,4 +313,88 @@ mod tests {
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }
+
+    // ── run_models_command ────────────────────────────────────────────────────
+    //
+    // These drive a real child process via `/bin/sh` — no storage root and no
+    // network, so they need neither STORAGE_TEST_ENV_LOCK nor ER_STORAGE_ROOT.
+
+    fn sh(script: &str) -> Vec<String> {
+        vec!["/bin/sh".into(), "-c".into(), script.into()]
+    }
+
+    #[test]
+    fn run_models_command_rejects_an_empty_or_blank_program() {
+        let err = run_models_command(&[]).unwrap_err();
+        assert!(err.to_string().contains("models_command is empty"), "{err}");
+
+        // A config with only whitespace must be rejected too, not spawned.
+        let blank = run_models_command(&["   ".to_string()]).unwrap_err();
+        assert!(
+            blank.to_string().contains("models_command is empty"),
+            "{blank}"
+        );
+    }
+
+    #[test]
+    fn run_models_command_names_the_program_it_could_not_spawn() {
+        let err =
+            run_models_command(&["er-no-such-provider-cli-xyz".to_string()]).unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("failed to spawn models_command"), "{msg}");
+        assert!(msg.contains("er-no-such-provider-cli-xyz"), "{msg}");
+    }
+
+    #[test]
+    fn run_models_command_returns_stdout_and_discards_stderr() {
+        let out = run_models_command(&sh("printf 'gpt-5.2 - GPT-5.2\\n'; printf 'warn\\n' >&2"))
+            .unwrap();
+
+        assert_eq!(out, "gpt-5.2 - GPT-5.2\n");
+        assert!(!out.contains("warn"), "stderr must not leak into stdout");
+        // The captured stdout is what the parser consumes downstream.
+        assert_eq!(
+            parse_models_output(&out),
+            vec![DiscoveredModel {
+                id: "gpt-5.2".into(),
+                label: "GPT-5.2".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn run_models_command_reports_a_failing_exit_with_truncated_stderr() {
+        // 50 × "ABCDEFGHIJ" = 500 stderr chars; only the first 200 may surface.
+        let err = run_models_command(&sh(
+            "i=0; while [ $i -lt 50 ]; do printf 'ABCDEFGHIJ' >&2; i=$((i+1)); done; exit 3",
+        ))
+        .unwrap_err();
+        let msg = err.to_string();
+
+        assert!(msg.contains("models_command exited with"), "{msg}");
+        assert!(
+            msg.contains("exit status: 3"),
+            "the child's exit status must be reported: {msg}"
+        );
+        // 200-char cap → 20 repetitions of the 10-char block, not 50.
+        assert_eq!(
+            msg.matches('A').count(),
+            20,
+            "stderr must be truncated to 200 chars: {msg}"
+        );
+    }
+
+    #[test]
+    fn run_models_command_polls_until_a_slow_child_finishes() {
+        let start = Instant::now();
+        let out = run_models_command(&sh("sleep 1; printf 'late-model\\n'")).unwrap();
+
+        // Returning the child's output proves the poll loop waited it out
+        // rather than reading an empty pipe from a still-running process.
+        assert_eq!(out, "late-model\n");
+        assert!(
+            start.elapsed() >= Duration::from_millis(900),
+            "must not return before the child exits"
+        );
+    }
 }

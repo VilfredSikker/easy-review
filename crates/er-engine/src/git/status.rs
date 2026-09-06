@@ -1584,4 +1584,341 @@ mod tests {
             "non-ASCII path must round-trip verbatim under -z; got {ignored:?}"
         );
     }
+
+    // ── git_diff_conflicts / list_worktrees fixtures ──
+
+    /// Run one git command in `root` with the same deterministic identity the
+    /// fixtures above use (avoids picking up the ambient user/gpg config).
+    fn git_in(root: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@t.com")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@t.com")
+            .current_dir(root)
+            .output()
+            .unwrap()
+    }
+
+    /// A repo whose only commit is on `main`, containing `f.txt` and `other.txt`.
+    fn init_repo(root: &Path) {
+        git_in(root, &["init", "-b", "main"]);
+        std::fs::write(root.join("f.txt"), "a\nb\nc\n").unwrap();
+        std::fs::write(root.join("other.txt"), "keep\n").unwrap();
+        git_in(root, &["add", "f.txt", "other.txt"]);
+        git_in(root, &["commit", "-m", "init", "--no-gpg-sign"]);
+    }
+
+    /// A directory git refuses to operate in: a `.git` *file* pointing nowhere.
+    /// Stops git's upward repo search, so the failure holds wherever `TMPDIR` is.
+    fn broken_repo(root: &Path) {
+        std::fs::write(root.join(".git"), "gitdir: /nonexistent/er-test\n").unwrap();
+    }
+
+    #[test]
+    fn git_diff_conflicts_combines_auto_merged_and_conflicted_files() {
+        // The documented invariant: the Conflicts view shows the *complete*
+        // changeset — staged auto-merged files (part 1) plus the working-tree
+        // diff of each still-conflicted file (part 2) — not just the latter.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+
+        git_in(root, &["checkout", "-b", "feature"]);
+        std::fs::write(root.join("f.txt"), "a\nFEATURE\nc\n").unwrap();
+        std::fs::write(root.join("other.txt"), "keep\nfeature-extra\n").unwrap();
+        git_in(root, &["add", "f.txt", "other.txt"]);
+        git_in(root, &["commit", "-m", "feat", "--no-gpg-sign"]);
+
+        git_in(root, &["checkout", "main"]);
+        std::fs::write(root.join("f.txt"), "a\nMAIN\nc\n").unwrap();
+        git_in(root, &["add", "f.txt"]);
+        git_in(root, &["commit", "-m", "main change", "--no-gpg-sign"]);
+
+        // Conflicts on f.txt, auto-merges other.txt into the index.
+        // `--no-ff` is a no-op for diverged branches but shields the fixture from
+        // an ambient `merge.ff = only`, which would abort instead of conflicting.
+        git_in(root, &["merge", "--no-ff", "feature"]);
+        assert_eq!(
+            unmerged_files(root.to_str().unwrap()).unwrap(),
+            vec!["f.txt".to_string()],
+            "fixture must leave exactly one conflicted file"
+        );
+
+        let combined = git_diff_conflicts(root.to_str().unwrap()).unwrap();
+
+        // Part 1 — the auto-merged file is staged, so it only reaches the view
+        // through `git diff --cached HEAD`.
+        assert!(
+            combined.contains("+feature-extra"),
+            "auto-merged other.txt missing from combined diff:\n{combined}"
+        );
+        // Part 2 — the conflicted file is unmerged, so it only reaches the view
+        // through the per-file `git diff HEAD -- <file>` loop.
+        assert!(
+            combined.contains("<<<<<<<") && combined.contains(">>>>>>>"),
+            "conflict markers for f.txt missing from combined diff:\n{combined}"
+        );
+    }
+
+    #[test]
+    fn git_diff_conflicts_returns_staged_diff_when_nothing_is_unmerged() {
+        // No merge in progress → the per-file loop runs zero times, but staged
+        // work must still come back rather than an empty string.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        std::fs::write(root.join("other.txt"), "keep\nstaged-line\n").unwrap();
+        git_in(root, &["add", "other.txt"]);
+
+        let root_str = root.to_str().unwrap();
+        assert!(
+            unmerged_files(root_str).unwrap().is_empty(),
+            "fixture must have no conflicts"
+        );
+
+        let combined = git_diff_conflicts(root_str).unwrap();
+        assert!(combined.contains("other.txt"), "got: {combined}");
+        assert!(combined.contains("+staged-line"), "got: {combined}");
+        assert!(
+            !combined.contains("<<<<<<<"),
+            "no conflict markers expected: {combined}"
+        );
+    }
+
+    #[test]
+    fn git_diff_conflicts_errors_when_staged_diff_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        broken_repo(root);
+
+        let err = git_diff_conflicts(root.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("git diff --cached HEAD failed"),
+            "expected the staged-diff bail, got: {err}"
+        );
+    }
+
+    #[test]
+    fn list_worktrees_reports_the_primary_worktree_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+
+        let worktrees = list_worktrees(root.to_str().unwrap()).unwrap();
+        assert_eq!(worktrees.len(), 1);
+        assert_eq!(worktrees[0].branch, "main");
+        // git reports the fully resolved path (`/private/var/...` on macOS).
+        let canonical = std::fs::canonicalize(root).unwrap();
+        assert_eq!(worktrees[0].path, canonical.to_string_lossy().to_string());
+    }
+
+    #[test]
+    fn list_worktrees_labels_detached_entries_and_keeps_branch_names() {
+        // Porcelain emits one blank-line-separated block per worktree; a linked
+        // worktree carries either `branch refs/heads/<name>` or `detached`.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        init_repo(root);
+        git_in(
+            root,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "side",
+                root.join("wt-side").to_str().unwrap(),
+            ],
+        );
+        git_in(
+            root,
+            &[
+                "worktree",
+                "add",
+                "--detach",
+                root.join("wt-detached").to_str().unwrap(),
+            ],
+        );
+
+        let worktrees = list_worktrees(root.to_str().unwrap()).unwrap();
+        assert_eq!(worktrees.len(), 3, "got: {worktrees:?}");
+
+        // Pins: the mid-loop save-previous push (deleting it yields 1 entry),
+        // the after-loop final push (deleting it yields 2), and the
+        // `branch refs/heads/` arm (deleting it collapses main/side to
+        // "(detached)"). Not pinned here: `current_branch.clear()` and the
+        // `detached` arm — real porcelain always carries branch-or-detached, so
+        // a stale branch is always overwritten before it is read, and the
+        // empty-branch fallback masks a missing `detached` arm. The bare-repo
+        // test below is what covers that fallback.
+        // Porcelain order is git's, not insertion order — compare as a set.
+        let mut branches: Vec<&str> = worktrees.iter().map(|w| w.branch.as_str()).collect();
+        branches.sort_unstable();
+        assert_eq!(branches, vec!["(detached)", "main", "side"]);
+
+        // Each block's path is paired with its own branch, not the previous one's.
+        let side = worktrees.iter().find(|w| w.branch == "side").unwrap();
+        assert!(side.path.ends_with("wt-side"), "got: {}", side.path);
+        let detached = worktrees.iter().find(|w| w.branch == "(detached)").unwrap();
+        assert!(
+            detached.path.ends_with("wt-detached"),
+            "got: {}",
+            detached.path
+        );
+    }
+
+    #[test]
+    fn list_worktrees_labels_a_bare_repo_as_detached() {
+        // A bare repo's porcelain block is `worktree <path>` + `bare` — no
+        // `branch` and no `detached` line — so the empty-branch fallback on the
+        // final entry is what supplies a label.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git_in(root, &["init", "--bare"]);
+
+        let worktrees = list_worktrees(root.to_str().unwrap()).unwrap();
+        assert_eq!(worktrees.len(), 1, "got: {worktrees:?}");
+        assert_eq!(worktrees[0].branch, "(detached)");
+    }
+
+    #[test]
+    fn list_worktrees_errors_when_git_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        broken_repo(root);
+
+        let err = list_worktrees(root.to_str().unwrap()).unwrap_err();
+        assert!(
+            err.to_string().contains("git worktree list failed"),
+            "expected the non-zero-status bail, got: {err}"
+        );
+    }
+
+    // ── discover_watched_files ──
+
+    /// Stamp a deterministic mtime so newest-first ordering is a real
+    /// assertion rather than a bet on filesystem timestamp granularity.
+    fn touch_at(path: &std::path::Path, secs_ago: u64) {
+        let f = std::fs::OpenOptions::new().write(true).open(path).unwrap();
+        f.set_modified(SystemTime::now() - std::time::Duration::from_secs(secs_ago))
+            .unwrap();
+    }
+
+    fn rel_paths(files: &[WatchedFile]) -> Vec<String> {
+        files.iter().map(|f| f.path.clone()).collect()
+    }
+
+    #[test]
+    fn watched_dir_star_star_pattern_matches_nested_files_and_skips_directories() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join(".work").join("sub")).unwrap();
+        std::fs::write(root.join(".work").join("top.md"), "top").unwrap();
+        std::fs::write(root.join(".work").join("sub").join("deep.md"), "deep!").unwrap();
+
+        let files =
+            discover_watched_files(root.to_str().unwrap(), &[".work/**".to_string()]).unwrap();
+
+        let mut paths = rel_paths(&files);
+        paths.sort();
+        // `.work/**` is normalized to `.work/**/*`, which reaches both depths;
+        // the `.work/sub` directory glob also yields must be filtered out.
+        assert_eq!(paths, vec![".work/sub/deep.md", ".work/top.md"]);
+        // Size comes from the real metadata, not a placeholder.
+        let deep = files
+            .iter()
+            .find(|f| f.path == ".work/sub/deep.md")
+            .unwrap();
+        assert_eq!(deep.size, 5);
+    }
+
+    #[test]
+    fn watched_dir_star_pattern_is_widened_to_recurse() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("notes").join("sub")).unwrap();
+        std::fs::write(root.join("notes").join("sub").join("deep.md"), "d").unwrap();
+
+        let files =
+            discover_watched_files(root.to_str().unwrap(), &["notes/*".to_string()]).unwrap();
+
+        // A user writing `notes/*` means "everything under notes", so the
+        // pattern is rewritten to `notes/**/*` and finds the nested file.
+        assert_eq!(rel_paths(&files), vec!["notes/sub/deep.md"]);
+    }
+
+    #[test]
+    fn watched_plain_pattern_is_used_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::create_dir_all(root.join("sub")).unwrap();
+        std::fs::write(root.join("a.log"), "a").unwrap();
+        std::fs::write(root.join("b.txt"), "b").unwrap();
+        std::fs::write(root.join("sub").join("c.log"), "c").unwrap();
+
+        let files =
+            discover_watched_files(root.to_str().unwrap(), &["*.log".to_string()]).unwrap();
+
+        // No normalization applies, so `*.log` stays single-level.
+        assert_eq!(rel_paths(&files), vec!["a.log"]);
+    }
+
+    #[test]
+    fn watched_pattern_with_a_glued_double_star_reports_the_original_pattern() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+
+        let err = discover_watched_files(root.to_str().unwrap(), &["dir**".to_string()])
+            .unwrap_err();
+
+        // `dir**` normalizes to `dir**/*`, which glob rejects (`**` must be a
+        // whole path component). The message must name what the user typed.
+        assert!(
+            err.to_string().contains("Invalid glob pattern: dir**"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn watched_files_that_escape_the_root_are_dropped() {
+        let outer = tempfile::tempdir().unwrap();
+        let root = outer.path().join("repo");
+        let outside = outer.path().join("outside");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("secret.txt"), "s").unwrap();
+        std::fs::write(root.join("inside.txt"), "i").unwrap();
+
+        let files = discover_watched_files(
+            root.to_str().unwrap(),
+            &["../outside/*".to_string(), "*.txt".to_string()],
+        )
+        .unwrap();
+
+        // The `..` pattern expands to a real file, but stripping the root leaves
+        // a ParentDir component, so it must not be reported.
+        assert_eq!(rel_paths(&files), vec!["inside.txt"]);
+    }
+
+    #[test]
+    fn watched_files_are_sorted_most_recently_modified_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for name in ["old.md", "newest.md", "middle.md"] {
+            std::fs::write(root.join(name), "x").unwrap();
+        }
+        touch_at(&root.join("old.md"), 3_600);
+        touch_at(&root.join("middle.md"), 60);
+        touch_at(&root.join("newest.md"), 0);
+
+        let files =
+            discover_watched_files(root.to_str().unwrap(), &["*.md".to_string()]).unwrap();
+
+        assert_eq!(
+            rel_paths(&files),
+            vec!["newest.md", "middle.md", "old.md"],
+            "watched files are ordered by recency so the newest agent output is on top"
+        );
+    }
 }

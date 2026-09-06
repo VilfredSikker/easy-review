@@ -45,6 +45,117 @@ impl Default for ExportOpts {
 
 /// Render the active tab's annotations as a single markdown document, grouped
 /// by file path. Returns a placeholder body when there is nothing to export.
+/// Append `block` under `file` in `groups`, starting a new group for a
+/// not-yet-seen file (preserves first-occurrence order across kinds).
+fn push_item<'a>(groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>, file: &str, block: ItemBlock<'a>) {
+    if let Some((_, items)) = groups.iter_mut().find(|(p, _)| p == file) {
+        items.push(block);
+    } else {
+        groups.push((file.to_string(), vec![block]));
+    }
+}
+
+/// Group top-level questions (replies nested under their parent).
+fn collect_questions<'a>(
+    groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>,
+    tab: &'a TabState,
+    opts: &ExportOpts,
+) {
+    if let Some(qs) = tab.ai.questions.as_ref() {
+        let top_level: Vec<&ReviewQuestion> = qs
+            .questions
+            .iter()
+            .filter(|q| q.in_reply_to.is_none())
+            .collect();
+        for q in top_level {
+            if opts.only_unresolved && q.resolved {
+                continue;
+            }
+            let replies: Vec<&ReviewQuestion> = qs
+                .questions
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(q.id.as_str()))
+                .collect();
+            push_item(groups, &q.file, ItemBlock::Question(q, replies));
+        }
+    }
+}
+
+/// Group top-level notes (replies nested under their parent).
+fn collect_notes<'a>(
+    groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>,
+    tab: &'a TabState,
+    opts: &ExportOpts,
+) {
+    if let Some(ns) = tab.ai.notes.as_ref() {
+        let top_level: Vec<&ReviewQuestion> = ns
+            .notes
+            .iter()
+            .filter(|n| n.in_reply_to.is_none())
+            .collect();
+        for n in top_level {
+            if opts.only_unresolved && n.resolved {
+                continue;
+            }
+            let replies: Vec<&ReviewQuestion> = ns
+                .notes
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(n.id.as_str()))
+                .collect();
+            push_item(groups, &n.file, ItemBlock::Note(n, replies));
+        }
+    }
+}
+
+/// Group top-level GitHub comments (replies nested under their parent).
+fn collect_comments<'a>(
+    groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>,
+    tab: &'a TabState,
+    opts: &ExportOpts,
+) {
+    if let Some(gc) = tab.ai.github_comments.as_ref() {
+        let top_level: Vec<&GitHubReviewComment> = gc
+            .comments
+            .iter()
+            .filter(|c| c.in_reply_to.is_none())
+            .collect();
+        for c in top_level {
+            if opts.only_unresolved && c.resolved {
+                continue;
+            }
+            let replies: Vec<&GitHubReviewComment> = gc
+                .comments
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(c.id.as_str()))
+                .collect();
+            push_item(groups, &c.file, ItemBlock::Comment(c, replies));
+        }
+    }
+}
+
+/// Group findings in stable (alphabetical path) order.
+fn collect_findings<'a>(
+    groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>,
+    tab: &'a TabState,
+    opts: &ExportOpts,
+) {
+    if let Some(review) = tab.ai.review.as_ref() {
+        let mut paths: Vec<&String> = review.files.keys().collect();
+        paths.sort();
+        for path in paths {
+            let file_review = &review.files[path];
+            for f in file_review.findings.iter() {
+                if opts.only_unresolved
+                    && (f.resolved || matches!(f.confidence, Confidence::Dropped))
+                {
+                    continue;
+                }
+                push_item(groups, path, ItemBlock::Finding(f));
+            }
+        }
+    }
+}
+
 pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     let branch = if tab.current_branch.is_empty() {
         "(unknown)"
@@ -57,97 +168,17 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     // sidebar ordering and what an agent will most naturally act on.
     let mut groups: Vec<(String, Vec<ItemBlock>)> = Vec::new();
 
-    fn push<'a>(groups: &mut Vec<(String, Vec<ItemBlock<'a>>)>, file: &str, block: ItemBlock<'a>) {
-        if let Some((_, items)) = groups.iter_mut().find(|(p, _)| p == file) {
-            items.push(block);
-        } else {
-            groups.push((file.to_string(), vec![block]));
-        }
-    }
-
     if opts.include_questions {
-        if let Some(qs) = tab.ai.questions.as_ref() {
-            // Top-level only — replies are rendered nested under their parent.
-            let top_level: Vec<&ReviewQuestion> = qs
-                .questions
-                .iter()
-                .filter(|q| q.in_reply_to.is_none())
-                .collect();
-            for q in top_level {
-                if opts.only_unresolved && q.resolved {
-                    continue;
-                }
-                let replies: Vec<&ReviewQuestion> = qs
-                    .questions
-                    .iter()
-                    .filter(|r| r.in_reply_to.as_deref() == Some(q.id.as_str()))
-                    .collect();
-                push(&mut groups, &q.file, ItemBlock::Question(q, replies));
-            }
-        }
+        collect_questions(&mut groups, tab, opts);
     }
-
     if opts.include_notes {
-        if let Some(ns) = tab.ai.notes.as_ref() {
-            // Top-level only — replies are rendered nested under their parent.
-            let top_level: Vec<&ReviewQuestion> = ns
-                .notes
-                .iter()
-                .filter(|n| n.in_reply_to.is_none())
-                .collect();
-            for n in top_level {
-                if opts.only_unresolved && n.resolved {
-                    continue;
-                }
-                let replies: Vec<&ReviewQuestion> = ns
-                    .notes
-                    .iter()
-                    .filter(|r| r.in_reply_to.as_deref() == Some(n.id.as_str()))
-                    .collect();
-                push(&mut groups, &n.file, ItemBlock::Note(n, replies));
-            }
-        }
+        collect_notes(&mut groups, tab, opts);
     }
-
     if opts.include_comments {
-        if let Some(gc) = tab.ai.github_comments.as_ref() {
-            let top_level: Vec<&GitHubReviewComment> = gc
-                .comments
-                .iter()
-                .filter(|c| c.in_reply_to.is_none())
-                .collect();
-            for c in top_level {
-                if opts.only_unresolved && c.resolved {
-                    continue;
-                }
-                let replies: Vec<&GitHubReviewComment> = gc
-                    .comments
-                    .iter()
-                    .filter(|r| r.in_reply_to.as_deref() == Some(c.id.as_str()))
-                    .collect();
-                push(&mut groups, &c.file, ItemBlock::Comment(c, replies));
-            }
-        }
+        collect_comments(&mut groups, tab, opts);
     }
-
     if opts.include_findings {
-        if let Some(review) = tab.ai.review.as_ref() {
-            // Stable order: sort file paths alphabetically. The HashMap iteration
-            // order is otherwise undefined, which makes diffs of exports churn.
-            let mut paths: Vec<&String> = review.files.keys().collect();
-            paths.sort();
-            for path in paths {
-                let file_review = &review.files[path];
-                for f in file_review.findings.iter() {
-                    if opts.only_unresolved
-                        && (f.resolved || matches!(f.confidence, Confidence::Dropped))
-                    {
-                        continue;
-                    }
-                    push(&mut groups, path, ItemBlock::Finding(f));
-                }
-            }
-        }
+        collect_findings(&mut groups, tab, opts);
     }
 
     // UI annotations are loaded from disk (read path matching the snapshot
@@ -251,140 +282,149 @@ enum ItemBlock<'a> {
     Finding(&'a Finding),
 }
 
-fn render_item(out: &mut String, item: &ItemBlock<'_>) {
-    match item {
-        ItemBlock::Question(q, replies) => {
-            let line = q
-                .line_start
-                .map(|l| l.to_string())
-                .unwrap_or_else(|| "—".into());
-            let stale = if q.stale { " [stale]" } else { "" };
-            let resolved = if q.resolved { " [resolved]" } else { "" };
-            let author = if q.author.is_empty() {
-                "You"
-            } else {
-                q.author.as_str()
-            };
-            let ago = ago_label(&q.timestamp);
-            out.push_str(&format!(
-                "### `{file}:{line}` — Question ({author}{ago}){stale}{resolved}\n",
-                file = q.file,
-            ));
-            push_blockquote(out, &q.text, 1);
-            for r in replies {
-                let r_author = if r.author.is_empty() {
-                    "You"
-                } else {
-                    r.author.as_str()
-                };
-                let r_ago = ago_label(&r.timestamp);
-                out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
-                push_blockquote(out, &r.text, 2);
-            }
-        }
-        ItemBlock::Note(n, replies) => {
-            let line = n
-                .line_start
-                .map(|l| l.to_string())
-                .unwrap_or_else(|| "—".into());
-            let stale = if n.stale { " [stale]" } else { "" };
-            let resolved = if n.resolved { " [resolved]" } else { "" };
-            let author = if n.author.is_empty() {
-                "You"
-            } else {
-                n.author.as_str()
-            };
-            let ago = ago_label(&n.timestamp);
-            out.push_str(&format!(
-                "### `{file}:{line}` — Note ({author}{ago}){stale}{resolved}\n",
-                file = n.file,
-            ));
-            push_blockquote(out, &n.text, 1);
-            for r in replies {
-                let r_author = if r.author.is_empty() {
-                    "You"
-                } else {
-                    r.author.as_str()
-                };
-                let r_ago = ago_label(&r.timestamp);
-                out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
-                push_blockquote(out, &r.text, 2);
-            }
-        }
-        ItemBlock::Comment(c, replies) => {
-            let line = c
-                .line_start
-                .map(|l| l.to_string())
-                .unwrap_or_else(|| "—".into());
-            let stale = if c.stale { " [stale]" } else { "" };
-            let resolved = if c.resolved { " [resolved]" } else { "" };
-            let author = if c.author.is_empty() {
-                "You"
-            } else {
-                c.author.as_str()
-            };
-            let ago = ago_label(&c.timestamp);
-            out.push_str(&format!(
-                "### `{file}:{line}` — Comment ({author}{ago}){stale}{resolved}\n",
-                file = c.file,
-            ));
-            push_blockquote(out, &c.comment, 1);
-            for r in replies {
-                let r_author = if r.author.is_empty() {
-                    "You"
-                } else {
-                    r.author.as_str()
-                };
-                let r_ago = ago_label(&r.timestamp);
-                out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
-                push_blockquote(out, &r.comment, 2);
-            }
-        }
-        ItemBlock::Finding(f) => {
-            let line_label = match (f.line_start, f.line_end) {
-                (Some(s), Some(e)) if e > s => format!("{s}-{e}"),
-                (Some(s), _) => s.to_string(),
-                _ => "—".into(),
-            };
-            let severity = format!("{:?}", f.severity).to_lowercase();
-            let category = if f.category.is_empty() {
-                ""
-            } else {
-                f.category.as_str()
-            };
-            let badges = if category.is_empty() {
-                severity
-            } else {
-                format!("{severity} · {category}")
-            };
-            let resolved = if f.resolved { " [resolved]" } else { "" };
-            let outside = if f.outside_diff {
-                " [outside diff]"
-            } else {
-                ""
-            };
-            // File-level finding (no line) goes into a clearly-named sub-bucket.
-            let header_path = if f.line_start.is_some() {
-                format!("`{file}:{line_label}`", file = first_file_of_finding(f))
-            } else {
-                "File-level finding".to_string()
-            };
-            out.push_str(&format!(
-                "### {header_path} — AI finding ({badges}){outside}{resolved}\n"
-            ));
-            if !f.title.is_empty() {
-                out.push_str(&format!("**{}**\n\n", f.title));
-            }
-            if !f.description.is_empty() {
-                push_blockquote(out, &f.description, 1);
-            }
-            if !f.suggestion.is_empty() {
-                out.push_str("\n_Suggestion:_\n");
-                push_blockquote(out, &f.suggestion, 1);
-            }
-        }
+fn render_question_item(out: &mut String, q: &ReviewQuestion, replies: &[&ReviewQuestion]) {
+    let line = q
+        .line_start
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "—".into());
+    let stale = if q.stale { " [stale]" } else { "" };
+    let resolved = if q.resolved { " [resolved]" } else { "" };
+    let author = if q.author.is_empty() {
+        "You"
+    } else {
+        q.author.as_str()
+    };
+    let ago = ago_label(&q.timestamp);
+    out.push_str(&format!(
+        "### `{file}:{line}` — Question ({author}{ago}){stale}{resolved}\n",
+        file = q.file,
+    ));
+    push_blockquote(out, &q.text, 1);
+    for r in replies {
+        let r_author = if r.author.is_empty() {
+            "You"
+        } else {
+            r.author.as_str()
+        };
+        let r_ago = ago_label(&r.timestamp);
+        out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
+        push_blockquote(out, &r.text, 2);
     }
 }
+
+fn render_note_item(out: &mut String, n: &ReviewQuestion, replies: &[&ReviewQuestion]) {
+    let line = n
+        .line_start
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "—".into());
+    let stale = if n.stale { " [stale]" } else { "" };
+    let resolved = if n.resolved { " [resolved]" } else { "" };
+    let author = if n.author.is_empty() {
+        "You"
+    } else {
+        n.author.as_str()
+    };
+    let ago = ago_label(&n.timestamp);
+    out.push_str(&format!(
+        "### `{file}:{line}` — Note ({author}{ago}){stale}{resolved}\n",
+        file = n.file,
+    ));
+    push_blockquote(out, &n.text, 1);
+    for r in replies {
+        let r_author = if r.author.is_empty() {
+            "You"
+        } else {
+            r.author.as_str()
+        };
+        let r_ago = ago_label(&r.timestamp);
+        out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
+        push_blockquote(out, &r.text, 2);
+    }
+}
+
+fn render_comment_item(out: &mut String, c: &GitHubReviewComment, replies: &[&GitHubReviewComment]) {
+    let line = c
+        .line_start
+        .map(|l| l.to_string())
+        .unwrap_or_else(|| "—".into());
+    let stale = if c.stale { " [stale]" } else { "" };
+    let resolved = if c.resolved { " [resolved]" } else { "" };
+    let author = if c.author.is_empty() {
+        "You"
+    } else {
+        c.author.as_str()
+    };
+    let ago = ago_label(&c.timestamp);
+    out.push_str(&format!(
+        "### `{file}:{line}` — Comment ({author}{ago}){stale}{resolved}\n",
+        file = c.file,
+    ));
+    push_blockquote(out, &c.comment, 1);
+    for r in replies {
+        let r_author = if r.author.is_empty() {
+            "You"
+        } else {
+            r.author.as_str()
+        };
+        let r_ago = ago_label(&r.timestamp);
+        out.push_str(&format!("> ↳ **{r_author}{r_ago}**\n"));
+        push_blockquote(out, &r.comment, 2);
+    }
+}
+
+fn render_finding_item(out: &mut String, f: &Finding) {
+    let line_label = match (f.line_start, f.line_end) {
+        (Some(s), Some(e)) if e > s => format!("{s}-{e}"),
+        (Some(s), _) => s.to_string(),
+        _ => "—".into(),
+    };
+    let severity = format!("{:?}", f.severity).to_lowercase();
+    let category = if f.category.is_empty() {
+        ""
+    } else {
+        f.category.as_str()
+    };
+    let badges = if category.is_empty() {
+        severity
+    } else {
+        format!("{severity} · {category}")
+    };
+    let resolved = if f.resolved { " [resolved]" } else { "" };
+    let outside = if f.outside_diff {
+        " [outside diff]"
+    } else {
+        ""
+    };
+    // File-level finding (no line) goes into a clearly-named sub-bucket.
+    let header_path = if f.line_start.is_some() {
+        format!("`{file}:{line_label}`", file = first_file_of_finding(f))
+    } else {
+        "File-level finding".to_string()
+    };
+    out.push_str(&format!(
+        "### {header_path} — AI finding ({badges}){outside}{resolved}\n"
+    ));
+    if !f.title.is_empty() {
+        out.push_str(&format!("**{}**\n\n", f.title));
+    }
+    if !f.description.is_empty() {
+        push_blockquote(out, &f.description, 1);
+    }
+    if !f.suggestion.is_empty() {
+        out.push_str("\n_Suggestion:_\n");
+        push_blockquote(out, &f.suggestion, 1);
+    }
+}
+
+fn render_item(out: &mut String, item: &ItemBlock<'_>) {
+    match item {
+        ItemBlock::Question(q, replies) => render_question_item(out, q, replies),
+        ItemBlock::Note(n, replies) => render_note_item(out, n, replies),
+        ItemBlock::Comment(c, replies) => render_comment_item(out, c, replies),
+        ItemBlock::Finding(f) => render_finding_item(out, f),
+    }
+}
+
 
 /// Findings live inside `ErFileReview` keyed by file path in `ErReview.files`,
 /// but the `Finding` struct itself doesn't carry the path. The caller has it;
@@ -427,8 +467,8 @@ const fn ago_label(ts: &str) -> String {
 mod tests {
     use super::*;
     use crate::ai::{
-        AiState, ErFileReview, ErGitHubComments, ErQuestions, ErReview, GitHubReviewComment,
-        ReviewQuestion, RiskLevel,
+        AiState, ErFileReview, ErGitHubComments, ErNotes, ErQuestions, ErReview,
+        GitHubReviewComment, ReviewQuestion, RiskLevel,
     };
     use crate::app::TabState;
     use std::collections::HashMap;
@@ -777,4 +817,27 @@ mod tests {
         assert!(out.contains("AI finding"), "missing finding label:\n{out}");
         assert!(out.contains("Use Map"));
     }
+
+
+    #[test]
+    fn renders_notes_grouped_by_file() {
+        let mut ai = AiState::default();
+        ai.notes = Some(ErNotes {
+            version: 1,
+            diff_hash: String::new(),
+            notes: vec![make_question("n-1", "packages/foo.ts", 10, "Note text", false)],
+        });
+        let tab = tab_with_ai(ai);
+        let out = render_markdown(&tab, &ExportOpts::default());
+
+        assert!(
+            out.contains("Note text"),
+            "notes must be exported, got:\n{out}"
+        );
+        assert!(
+            out.contains("— Note ("),
+            "note items use the Note label, got:\n{out}"
+        );
+    }
+
 }

@@ -208,6 +208,62 @@ mod tests {
     }
 
     #[test]
+    fn as_str_returns_the_serde_token_for_every_kind() {
+        // The tokens are the wire format (`#[serde(rename_all = "snake_case")]`),
+        // so a rename here silently breaks stored sidecars / MCP payloads.
+        let cases = [
+            (FileKind::Production, "production"),
+            (FileKind::Test, "test"),
+            (FileKind::Storybook, "storybook"),
+            (FileKind::Generated, "generated"),
+            (FileKind::Docs, "docs"),
+        ];
+        for (kind, expected) in cases {
+            assert_eq!(kind.as_str(), expected, "wrong token for {kind:?}");
+        }
+    }
+
+    #[test]
+    fn as_str_matches_the_serde_wire_token() {
+        // The test above asserts the literal tokens; this one proves they are
+        // the *same* strings serde writes under `rename_all = "snake_case"`.
+        // Nothing else pins that: renaming an `as_str` arm (or adding a
+        // `#[serde(rename)]`) would silently split the string used in MCP
+        // payloads from the one persisted in sidecars.
+        for kind in [
+            FileKind::Production,
+            FileKind::Test,
+            FileKind::Storybook,
+            FileKind::Generated,
+            FileKind::Docs,
+        ] {
+            let wire = serde_json::to_string(&kind).unwrap();
+            assert_eq!(
+                wire,
+                format!("\"{}\"", kind.as_str()),
+                "as_str disagrees with the serde token for {kind:?}"
+            );
+            assert_eq!(serde_json::from_str::<FileKind>(&wire).unwrap(), kind);
+        }
+    }
+
+    #[test]
+    fn as_str_agrees_with_classify_path_for_each_bucket() {
+        // Classify → stringify is the path MCP/review-queue tooling actually takes.
+        assert_eq!(
+            classify_path("crates/er-engine/src/lib.rs").as_str(),
+            "production"
+        );
+        assert_eq!(classify_path("src/foo.test.ts").as_str(), "test");
+        assert_eq!(
+            classify_path("src/Button.stories.tsx").as_str(),
+            "storybook"
+        );
+        assert_eq!(classify_path("Cargo.lock").as_str(), "generated");
+        assert_eq!(classify_path("README.md").as_str(), "docs");
+    }
+
+    #[test]
     fn generated_beats_test_when_both_match() {
         // Snapshot under a test dir is still generated noise for prod accounting.
         assert_eq!(
