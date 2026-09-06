@@ -2287,4 +2287,751 @@ mod tests {
         assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
         assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
     }
+
+    // ── Text-entry input handlers ──
+
+    /// Two-file branch diff so visibility/snap behaviour is observable.
+    fn app_with_two_files() -> App {
+        let raw = concat!(
+            "diff --git a/src/alpha.rs b/src/alpha.rs\n",
+            "--- a/src/alpha.rs\n",
+            "+++ b/src/alpha.rs\n",
+            "@@ -1,2 +1,3 @@\n",
+            " fn a() {}\n",
+            "+fn a2() {}\n",
+            " fn z() {}\n",
+            "diff --git a/src/beta.rs b/src/beta.rs\n",
+            "--- a/src/beta.rs\n",
+            "+++ b/src/beta.rs\n",
+            "@@ -1,2 +1,3 @@\n",
+            " fn b() {}\n",
+            "+fn b2() {}\n",
+            " fn y() {}\n",
+        );
+        App::new_for_test(git::parse_diff(raw))
+    }
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn search_typing_keeps_the_lowercased_mirror_in_sync() {
+        // visible_files() matches against search_query_lower, so the mirror
+        // must track every keystroke — not just the display string.
+        let mut app = App::new_for_test(vec![]);
+        for c in "AlP".chars() {
+            handle_search_input(&mut app, key(KeyCode::Char(c)));
+        }
+        assert_eq!(app.tab().search_query, "AlP");
+        assert_eq!(app.tab().search_query_lower, "alp");
+    }
+
+    #[test]
+    fn search_backspace_shrinks_both_query_and_mirror() {
+        let mut app = App::new_for_test(vec![]);
+        for c in "AB".chars() {
+            handle_search_input(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_search_input(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.tab().search_query, "A");
+        assert_eq!(app.tab().search_query_lower, "a");
+    }
+
+    #[test]
+    fn search_enter_snaps_selection_onto_a_still_visible_file() {
+        let mut app = app_with_two_files();
+        app.tab_mut().selected_file = 1; // src/beta.rs
+        app.input_mode = InputMode::Search;
+        for c in "alpha".chars() {
+            handle_search_input(&mut app, key(KeyCode::Char(c)));
+        }
+
+        handle_search_input(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().visible_files().len(), 1);
+        assert_eq!(
+            app.tab().selected_file,
+            0,
+            "selection must move off the filtered-out file"
+        );
+    }
+
+    #[test]
+    fn search_esc_abandons_the_query_so_all_files_return() {
+        let mut app = app_with_two_files();
+        app.input_mode = InputMode::Search;
+        for c in "alpha".chars() {
+            handle_search_input(&mut app, key(KeyCode::Char(c)));
+        }
+
+        handle_search_input(&mut app, key(KeyCode::Esc));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().search_query.is_empty());
+        assert!(app.tab().search_query_lower.is_empty());
+        assert_eq!(app.tab().visible_files().len(), 2);
+    }
+
+    #[test]
+    fn filter_typing_and_backspace_build_the_pending_expression() {
+        let mut app = App::new_for_test(vec![]);
+        for c in "alphx".chars() {
+            handle_filter_input(&mut app, key(KeyCode::Char(c)));
+        }
+        handle_filter_input(&mut app, key(KeyCode::Backspace));
+        assert_eq!(app.tab().filter_input, "alph");
+        assert!(
+            app.tab().filter_rules.is_empty(),
+            "typing must not apply the filter until Enter"
+        );
+    }
+
+    #[test]
+    fn filter_enter_applies_the_expression_and_reports_visible_over_total() {
+        let mut app = app_with_two_files();
+        app.input_mode = InputMode::Filter;
+        for c in "alpha".chars() {
+            handle_filter_input(&mut app, key(KeyCode::Char(c)));
+        }
+
+        handle_filter_input(&mut app, key(KeyCode::Enter));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().visible_files().len(), 1);
+        assert_eq!(app.watch_message.as_deref(), Some("Filter: alpha (1/2)"));
+    }
+
+    #[test]
+    fn filter_enter_on_a_blank_expression_clears_the_active_filter() {
+        let mut app = app_with_two_files();
+        app.tab_mut().apply_filter_expr("alpha");
+        assert_eq!(app.tab().visible_files().len(), 1);
+
+        app.tab_mut().filter_input = "   ".to_string();
+        app.input_mode = InputMode::Filter;
+        handle_filter_input(&mut app, key(KeyCode::Enter));
+
+        assert!(app.tab().filter_rules.is_empty());
+        assert_eq!(app.tab().visible_files().len(), 2);
+        assert_eq!(app.watch_message.as_deref(), Some("Filter cleared"));
+    }
+
+    #[test]
+    fn filter_esc_discards_the_draft_without_applying_it() {
+        let mut app = app_with_two_files();
+        app.input_mode = InputMode::Filter;
+        for c in "alpha".chars() {
+            handle_filter_input(&mut app, key(KeyCode::Char(c)));
+        }
+
+        handle_filter_input(&mut app, key(KeyCode::Esc));
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().filter_input.is_empty());
+        assert!(app.tab().filter_rules.is_empty());
+        assert_eq!(app.tab().visible_files().len(), 2);
+    }
+
+    #[test]
+    fn remote_url_typing_and_backspace_build_the_url_buffer() {
+        let mut app = App::new_for_test(vec![]);
+        for c in "abx".chars() {
+            handle_remote_url_input(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_remote_url_input(&mut app, key(KeyCode::Backspace)).unwrap();
+        assert_eq!(app.remote_url_input, "ab");
+    }
+
+    #[test]
+    fn remote_url_enter_on_a_blank_buffer_opens_no_tab() {
+        let mut app = App::new_for_test(vec![]);
+        app.remote_url_input = "   ".to_string();
+        app.input_mode = InputMode::RemoteUrl;
+
+        handle_remote_url_input(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tabs.len(), 1, "blank input must not open a remote tab");
+        assert!(
+            app.watch_message.is_none(),
+            "blank Enter is a silent dismiss — without the guard it would fall \
+             through to open_remote_url and notify a parse failure, got {:?}",
+            app.watch_message
+        );
+    }
+
+    #[test]
+    fn remote_url_enter_on_an_unparseable_url_reports_failure_and_resets_the_buffer() {
+        let mut app = App::new_for_test(vec![]);
+        app.remote_url_input = "not-a-github-pr-url".to_string();
+        app.input_mode = InputMode::RemoteUrl;
+
+        handle_remote_url_input(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tabs.len(), 1);
+        assert!(app.remote_url_input.is_empty());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Failed: Invalid GitHub PR URL")
+        );
+    }
+
+    #[test]
+    fn remote_url_esc_discards_the_typed_url() {
+        let mut app = App::new_for_test(vec![]);
+        app.remote_url_input = "https://github.com/o/r/pull/1".to_string();
+        app.input_mode = InputMode::RemoteUrl;
+
+        handle_remote_url_input(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.remote_url_input.is_empty());
+        assert_eq!(app.tabs.len(), 1);
+    }
+
+    #[test]
+    fn commit_typing_and_backspace_build_the_message() {
+        let mut app = App::new_for_test(vec![]);
+        for c in "fixx".chars() {
+            handle_commit_input(&mut app, key(KeyCode::Char(c))).unwrap();
+        }
+        handle_commit_input(&mut app, key(KeyCode::Backspace)).unwrap();
+        assert_eq!(app.tab().commit_input, "fix");
+    }
+
+    #[test]
+    fn commit_enter_on_a_whitespace_only_message_exits_without_committing() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().commit_input = "   ".to_string();
+        app.input_mode = InputMode::Commit;
+
+        handle_commit_input(&mut app, key(KeyCode::Enter)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(
+            !app.tab().committed_unpushed,
+            "a blank message must not run git commit"
+        );
+        assert!(
+            app.watch_message.is_none(),
+            "a real commit notifies \"Committed! Ctrl+P to push\" — a silent \
+             exit is the proof nothing was committed, got {:?}",
+            app.watch_message
+        );
+    }
+
+    #[test]
+    fn commit_esc_clears_the_pending_message() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().commit_input = "wip".to_string();
+        app.input_mode = InputMode::Commit;
+
+        handle_commit_input(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().commit_input.is_empty());
+    }
+
+    // ── Comment composer ──
+
+    fn comment_app() -> App {
+        let mut app = app_with_two_files();
+        app.tab_mut().comment_file = "src/alpha.rs".to_string();
+        app.input_mode = InputMode::Comment;
+        app
+    }
+
+    fn type_into_comment(app: &mut App, text: &str) {
+        for c in text.chars() {
+            handle_comment_input(app, key(KeyCode::Char(c))).unwrap();
+        }
+    }
+
+    #[test]
+    fn shift_enter_inserts_a_newline_instead_of_submitting_the_draft() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "hi");
+        handle_comment_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT),
+        )
+        .unwrap();
+        type_into_comment(&mut app, "yo");
+
+        assert_eq!(app.tab().comment_textarea.lines().len(), 2);
+        assert_eq!(app.tab().comment_text(), "hi\nyo");
+        assert_eq!(
+            app.input_mode,
+            InputMode::Comment,
+            "Shift+Enter must keep the composer open"
+        );
+    }
+
+    #[test]
+    fn plain_enter_on_an_empty_draft_dismisses_the_composer() {
+        let mut app = comment_app();
+        handle_comment_input(&mut app, key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_text().is_empty());
+        assert!(
+            app.tab().ai.github_comments.is_none(),
+            "an empty draft must persist nothing — submit_comment's empty guard \
+             is what stops a blank GitHubComment being written and cached"
+        );
+    }
+
+    #[test]
+    fn esc_discards_the_comment_draft_entirely() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "wip");
+
+        handle_comment_input(&mut app, key(KeyCode::Esc)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert!(app.tab().comment_text().is_empty());
+        assert!(!app.has_comment_draft());
+    }
+
+    #[test]
+    fn tab_pauses_the_composer_but_keeps_the_draft_resumable() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "wip");
+
+        handle_comment_input(&mut app, key(KeyCode::Tab)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().comment_text(), "wip");
+        assert!(app.has_comment_draft());
+    }
+
+    #[test]
+    fn back_tab_pauses_the_composer_the_same_way_as_tab() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "wip");
+
+        handle_comment_input(&mut app, key(KeyCode::BackTab)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Normal);
+        assert_eq!(app.tab().comment_text(), "wip");
+    }
+
+    #[test]
+    fn ctrl_t_cycles_the_draft_type_while_composing() {
+        let mut app = comment_app();
+        assert_eq!(
+            app.tab().comment_type,
+            er_engine::ai::CommentType::GitHubComment
+        );
+
+        handle_comment_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+
+        assert_eq!(app.tab().comment_type, er_engine::ai::CommentType::Question);
+        assert_eq!(
+            app.input_mode,
+            InputMode::Comment,
+            "cycling the type must not close the composer"
+        );
+    }
+
+    #[test]
+    fn plain_t_is_typed_into_the_draft_rather_than_cycling_the_type() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "t");
+        assert_eq!(app.tab().comment_text(), "t");
+        assert_eq!(
+            app.tab().comment_type,
+            er_engine::ai::CommentType::GitHubComment
+        );
+    }
+
+    #[test]
+    fn ctrl_d_and_ctrl_u_scroll_the_diff_behind_the_composer() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Comment;
+
+        handle_comment_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(app.tab().diff_scroll, 10);
+
+        handle_comment_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(app.tab().diff_scroll, 0);
+    }
+
+    #[test]
+    fn page_keys_scroll_the_diff_by_a_screenful_while_composing() {
+        let mut app = App::new_for_test(vec![]);
+        app.input_mode = InputMode::Comment;
+
+        handle_comment_input(&mut app, key(KeyCode::PageDown)).unwrap();
+        assert_eq!(app.tab().diff_scroll, 20);
+
+        handle_comment_input(&mut app, key(KeyCode::PageUp)).unwrap();
+        assert_eq!(app.tab().diff_scroll, 0);
+    }
+
+    #[test]
+    fn backspace_is_delegated_to_the_textarea() {
+        let mut app = comment_app();
+        type_into_comment(&mut app, "abc");
+        handle_comment_input(&mut app, key(KeyCode::Backspace)).unwrap();
+        assert_eq!(app.tab().comment_text(), "ab");
+    }
+
+    // ── build_agent_notes_prompt ──
+
+    #[test]
+    fn notes_prompt_for_a_remote_pr_reads_the_diff_via_gh() {
+        let output_dir = "/tmp/er-tui-notes-remote";
+        let mut app = app_with_managed_dir(output_dir);
+        app.tab_mut().remote_repo = Some("owner/repo".to_string());
+        app.tab_mut().pr_number = Some(42);
+
+        let prompt = build_agent_notes_prompt(&mut app).expect("remote notes prompt");
+
+        assert_managed_prompt(&prompt, output_dir, "notes.json");
+        assert!(
+            prompt.contains("gh pr diff 42"),
+            "remote notes must pull the PR diff for PR 42, not a local git diff:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn notes_prompt_is_refused_when_a_remote_tab_has_no_pr_number() {
+        let mut app = app_with_managed_dir("/tmp/er-tui-notes-no-pr");
+        app.tab_mut().remote_repo = Some("owner/repo".to_string());
+        app.tab_mut().pr_number = None;
+
+        assert!(build_agent_notes_prompt(&mut app).is_none());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Remote mode missing repo or PR number")
+        );
+    }
+
+    #[test]
+    fn notes_prompt_is_refused_when_the_remote_slug_is_not_owner_slash_repo() {
+        let mut app = app_with_managed_dir("/tmp/er-tui-notes-bad-slug");
+        app.tab_mut().remote_repo = Some("ownerrepo".to_string());
+        app.tab_mut().pr_number = Some(7);
+
+        assert!(build_agent_notes_prompt(&mut app).is_none());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Invalid remote repo slug: ownerrepo")
+        );
+    }
+
+    #[test]
+    fn notes_prompt_for_staged_mode_diffs_the_index_not_the_base_branch() {
+        let output_dir = "/tmp/er-tui-notes-staged";
+        let mut app = app_with_managed_dir(output_dir);
+        app.tab_mut().mode = DiffMode::Staged;
+
+        let prompt = build_agent_notes_prompt(&mut app).expect("staged notes prompt");
+
+        assert_managed_prompt(&prompt, output_dir, "notes.json");
+        assert!(
+            prompt.contains("git diff --staged"),
+            "staged scope must diff the index:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn notes_prompt_for_branch_mode_diffs_against_the_base_branch() {
+        let output_dir = "/tmp/er-tui-notes-branch";
+        let mut app = app_with_managed_dir(output_dir);
+        app.tab_mut().mode = DiffMode::Branch;
+        app.tab_mut().base_branch = "main".to_string();
+
+        let prompt = build_agent_notes_prompt(&mut app).expect("branch notes prompt");
+
+        assert!(
+            prompt.contains("git diff 'main' --unified=3"),
+            "branch scope must diff against the base branch:\n{prompt}"
+        );
+    }
+
+    #[test]
+    fn notes_prompt_is_unavailable_in_pr_diff_mode() {
+        // PR Diff reviews the PR head-vs-base; notes.json is a local-branch
+        // artifact, so the action is refused rather than silently mis-scoped.
+        let mut app = app_with_managed_dir("/tmp/er-tui-notes-prdiff");
+        app.tab_mut().mode = DiffMode::PrDiff;
+
+        assert!(build_agent_notes_prompt(&mut app).is_none());
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("AI notes not available in this mode")
+        );
+    }
+
+    // ── execute_ai_action ──
+
+    /// Every AI-action test keeps the agent inert: a mis-analysis anywhere in
+    /// the dispatch chain must not launch the user's real configured agent.
+    fn inert_agent_app() -> App {
+        let mut app = App::new_for_test(vec![]);
+        app.config.agent.command = "/bin/true".to_string();
+        app
+    }
+
+    #[test]
+    fn review_action_asks_to_clear_a_previous_review_before_running() {
+        let mut app = inert_agent_app();
+        app.tab_mut().ai.review = Some(er_engine::ai::ErReview {
+            version: 1,
+            diff_hash: String::new(),
+            created_at: String::new(),
+            base_branch: "main".into(),
+            head_branch: "feature".into(),
+            files: std::collections::HashMap::new(),
+            file_hashes: std::collections::HashMap::new(),
+        });
+
+        execute_ai_action(&mut app, AiActionKind::Review).unwrap();
+
+        assert_eq!(
+            app.input_mode,
+            InputMode::Confirm(ConfirmAction::RunAgentReview {
+                clear_previous: true
+            })
+        );
+        assert!(
+            app.tab().command_status.is_empty(),
+            "the agent must wait for the confirm answer"
+        );
+    }
+
+    #[test]
+    fn validate_action_reports_nothing_to_validate_without_a_review_or_comments() {
+        let mut app = inert_agent_app();
+
+        execute_ai_action(&mut app, AiActionKind::Validate).unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Nothing to validate — run review or add GitHub comments")
+        );
+        assert!(app.tab().command_status.is_empty());
+    }
+
+    #[test]
+    fn questions_action_is_refused_in_history_mode() {
+        let mut app = inert_agent_app();
+        app.tab_mut().mode = DiffMode::History;
+
+        execute_ai_action(&mut app, AiActionKind::Questions).unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("AI questions not available in this mode")
+        );
+        assert!(app.tab().command_status.is_empty());
+    }
+
+    #[test]
+    fn notes_action_is_refused_in_pr_diff_mode() {
+        let mut app = inert_agent_app();
+        app.tab_mut().mode = DiffMode::PrDiff;
+
+        execute_ai_action(&mut app, AiActionKind::Notes).unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("AI notes not available in this mode")
+        );
+        assert!(app.tab().command_status.is_empty());
+    }
+
+    #[test]
+    fn summary_action_is_refused_in_history_mode() {
+        let mut app = inert_agent_app();
+        app.tab_mut().mode = DiffMode::History;
+
+        execute_ai_action(&mut app, AiActionKind::Summary).unwrap();
+
+        assert_eq!(
+            app.watch_message.as_deref(),
+            Some("Summary generation not available in this mode")
+        );
+        assert!(app.tab().command_status.is_empty());
+    }
+
+    #[test]
+    fn scan_actions_report_a_missing_diff_instead_of_spawning_an_agent() {
+        // Triage / professor / expert all go through ensure_prepared_diff_for_action;
+        // a blank diff must stop them before any artifact write or spawn.
+        for action in [
+            AiActionKind::Triage,
+            AiActionKind::Professor,
+            AiActionKind::ExpertReview {
+                expert_id: "security".to_string(),
+            },
+        ] {
+            let mut app = inert_agent_app();
+            app.tab_mut().set_raw_diff_for_test("   ");
+
+            execute_ai_action(&mut app, action.clone()).unwrap();
+
+            assert_eq!(
+                app.watch_message.as_deref(),
+                Some("No diff to review against"),
+                "unexpected outcome for {action:?}"
+            );
+            assert!(app.tab().command_status.is_empty(), "{action:?} spawned");
+        }
+    }
+
+    // ── find_local_line_for_diff_hunk ──
+
+    fn diff_file(raw: &str) -> git::DiffFile {
+        git::parse_diff(raw)
+            .into_iter()
+            .next()
+            .expect("fixture diff must contain one file")
+    }
+
+    #[test]
+    fn diff_hunk_anchors_to_the_local_line_number_not_the_github_one() {
+        // GitHub numbers lines against the PR base; ours are 12 lines further
+        // down because main advanced. Content matching must win.
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -10,3 +20,4 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+            " delta\n",
+        ));
+        let gh_hunk = "@@ -10,3 +8,4 @@\n alpha\n beta\n+gamma";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), Some((0, 22)));
+    }
+
+    #[test]
+    fn diff_hunk_reports_the_index_of_the_hunk_that_matched() {
+        // The first hunk is shorter than the fingerprint window and must be
+        // skipped rather than producing a partial match.
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -1,2 +1,2 @@\n",
+            " one\n",
+            " two\n",
+            "@@ -50,2 +60,3 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+        ));
+        let gh_hunk = "@@ -50,2 +40,3 @@\n alpha\n beta\n+gamma";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), Some((1, 62)));
+    }
+
+    #[test]
+    fn diff_hunk_fingerprint_is_capped_at_the_last_four_new_side_lines() {
+        // A long GitHub hunk still anchors when only its tail survives locally.
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -30,3 +40,4 @@\n",
+            " three\n",
+            " four\n",
+            " five\n",
+            "+six\n",
+        ));
+        let gh_hunk = "@@ -1,5 +1,6 @@\n one\n two\n three\n four\n five\n+six";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), Some((0, 43)));
+    }
+
+    #[test]
+    fn deleted_lines_are_excluded_from_the_fingerprint() {
+        // The GitHub hunk carries a deletion our local diff no longer shows;
+        // matching only the new side keeps the anchor.
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -10,3 +20,3 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+        ));
+        let gh_hunk = "@@ -10,4 +8,3 @@\n alpha\n-dropped\n beta\n+gamma";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), Some((0, 22)));
+    }
+
+    #[test]
+    fn header_only_diff_hunk_has_no_anchor() {
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -10,3 +20,4 @@\n",
+            " alpha\n",
+            "+gamma\n",
+        ));
+        assert_eq!(find_local_line_for_diff_hunk("@@ -10,3 +8,4 @@", &file), None);
+    }
+
+    #[test]
+    fn all_deletion_diff_hunk_has_no_anchor() {
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -10,3 +20,4 @@\n",
+            " alpha\n",
+            "+gamma\n",
+        ));
+        let gh_hunk = "@@ -10,2 +9,0 @@\n-old one\n-old two";
+
+        assert_eq!(
+            find_local_line_for_diff_hunk(gh_hunk, &file),
+            None,
+            "a pure deletion has no new-side line to anchor to"
+        );
+    }
+
+    #[test]
+    fn ambiguous_diff_hunk_window_refuses_to_guess() {
+        // Repetitive code: the same three lines appear in two hunks. Anchoring
+        // to either one would be a coin flip, so the caller falls back to gh.line.
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -1,2 +1,3 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+            "@@ -50,2 +60,3 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+        ));
+        let gh_hunk = "@@ -1,2 +1,3 @@\n alpha\n beta\n+gamma";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), None);
+    }
+
+    #[test]
+    fn diff_hunk_whose_content_is_absent_locally_has_no_anchor() {
+        let file = diff_file(concat!(
+            "diff --git a/src/lib.rs b/src/lib.rs\n",
+            "@@ -10,3 +20,4 @@\n",
+            " alpha\n",
+            " beta\n",
+            "+gamma\n",
+        ));
+        let gh_hunk = "@@ -10,3 +8,4 @@\n unrelated one\n unrelated two\n+unrelated three";
+
+        assert_eq!(find_local_line_for_diff_hunk(gh_hunk, &file), None);
+    }
 }

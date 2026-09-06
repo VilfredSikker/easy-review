@@ -1441,4 +1441,852 @@ mod tests {
         assert_eq!(label, "○ pending");
         assert_eq!(color, styles::DIM());
     }
+
+    // ── fixtures + helpers for the panel body renderers ──
+
+    use er_engine::app::{AgentLogEntry, AgentLogSource, CommandStatus, TabState};
+    use er_engine::github::{CiCheck, PrOverviewData, ReviewerStatus};
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+    use std::time::{Duration, Instant};
+
+    /// Flatten one rendered `Line` back into its plain text.
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Flatten a whole panel body into newline-joined text.
+    fn joined(lines: &[Line<'_>]) -> String {
+        lines
+            .iter()
+            .map(|l| text_of(l))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Style of the first span whose content matches `content` exactly.
+    fn style_of_span(lines: &[Line<'_>], content: &str) -> Option<Style> {
+        lines
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .find(|s| s.content.as_ref() == content)
+            .map(|s| s.style)
+    }
+
+    /// Index of the first line whose flattened text contains `needle`.
+    fn line_index_containing(lines: &[Line<'_>], needle: &str) -> Option<usize> {
+        lines.iter().position(|l| text_of(l).contains(needle))
+    }
+
+    fn pr_data(state: &str) -> PrOverviewData {
+        PrOverviewData {
+            number: 42,
+            title: "Add panel rendering tests".to_string(),
+            body: String::new(),
+            state: state.to_string(),
+            author: "octocat".to_string(),
+            url: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature/panel".to_string(),
+            checks: vec![],
+            reviewers: vec![],
+        }
+    }
+
+    fn gh_comment(
+        id: &str,
+        file: &str,
+        in_reply_to: Option<String>,
+        author: &str,
+        source: &str,
+        synced: bool,
+    ) -> er_engine::ai::GitHubReviewComment {
+        er_engine::ai::GitHubReviewComment {
+            id: id.to_string(),
+            timestamp: String::new(),
+            file: file.to_string(),
+            hunk_index: None,
+            line_start: None,
+            line_end: None,
+            line_content: String::new(),
+            comment: format!("BODYOF{}", id),
+            in_reply_to,
+            resolved: false,
+            source: source.to_string(),
+            github_id: None,
+            author: author.to_string(),
+            synced,
+            outdated: false,
+            stale: false,
+            context_before: vec![],
+            context_after: vec![],
+            old_line_start: None,
+            hunk_header: String::new(),
+            anchor_status: "original".to_string(),
+            relocated_at_hash: String::new(),
+            finding_ref: None,
+            side: "RIGHT".to_string(),
+        }
+    }
+
+    /// A tab whose PR overview exercises every optional block at once:
+    /// url shortening + wrapping, body paragraphs, CI checks, reviewers, comments.
+    fn tab_with_full_pr() -> TabState {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut pr = pr_data("OPEN");
+        pr.url = "https://github.com/some-organization/some-repository-name/pull/42".to_string();
+        pr.body = "First paragraph line.\n\nSecond paragraph line.".to_string();
+        pr.checks = vec![
+            CiCheck {
+                name: "build".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("failure".to_string()),
+            },
+            CiCheck {
+                name: "lint".to_string(),
+                status: "IN_PROGRESS".to_string(),
+                conclusion: None,
+            },
+            CiCheck {
+                name: "an-extremely-long-check-name-that-overflows".to_string(),
+                status: "completed".to_string(),
+                conclusion: Some("success".to_string()),
+            },
+        ];
+        pr.reviewers = vec![
+            ReviewerStatus {
+                login: "zed".to_string(),
+                state: "COMMENTED".to_string(),
+            },
+            ReviewerStatus {
+                login: "zed".to_string(),
+                state: "APPROVED".to_string(),
+            },
+            ReviewerStatus {
+                login: "ada".to_string(),
+                state: "CHANGES_REQUESTED".to_string(),
+            },
+        ];
+        tab.pr_data = Some(pr);
+
+        let mut stale = gh_comment("gc-stale", "", None, "octocat", "github", true);
+        stale.stale = true;
+        stale.comment = "STALEREMARK".to_string();
+
+        tab.ai.github_comments = Some(er_engine::ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "h".to_string(),
+            github: None,
+            comments: vec![
+                gh_comment("gc-general", "", None, "reviewer-a", "local", false),
+                stale,
+                gh_comment("gc-file", "src/lib.rs", None, "octocat", "github", true),
+                gh_comment(
+                    "gc-reply",
+                    "",
+                    Some("gc-general".to_string()),
+                    "octocat",
+                    "github",
+                    true,
+                ),
+            ],
+        });
+        tab
+    }
+
+    // ── render_pr_overview ──
+
+    #[test]
+    fn render_pr_overview_without_pr_data_explains_how_to_get_one() {
+        let tab = TabState::new_for_test(vec![]);
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let text = joined(&lines);
+        assert!(text.contains("No PR data loaded"), "got: {text}");
+        assert!(
+            text.contains("Open a branch with an active PR"),
+            "the empty state must say how to load a PR, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_shows_number_lowercased_state_and_author() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let idx = line_index_containing(&lines, "#42").expect("header line missing");
+        assert_eq!(
+            text_of(&lines[idx]),
+            " #42 open  @octocat",
+            "the header is number, lowercased state, then author"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_colors_state_span_by_lifecycle() {
+        let expected = [
+            ("OPEN", "open", styles::GREEN()),
+            ("CLOSED", "closed", styles::RED_TEXT()),
+            ("MERGED", "merged", styles::PURPLE()),
+            ("DRAFT", "draft", styles::MUTED()),
+        ];
+        for (state, rendered, color) in expected {
+            let mut tab = TabState::new_for_test(vec![]);
+            tab.pr_data = Some(pr_data(state));
+            let mut lines: Vec<Line> = Vec::new();
+            render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+            let style = style_of_span(&lines, rendered)
+                .unwrap_or_else(|| panic!("no span rendered for state {state}"));
+            assert_eq!(style.fg, Some(color), "wrong color for state {state}");
+        }
+    }
+
+    #[test]
+    fn render_pr_overview_shortens_github_url_to_owner_repo_hash_number() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let text = joined(&lines);
+        assert!(
+            !text.contains("https://github.com/"),
+            "the host prefix is stripped, got: {text}"
+        );
+        assert!(
+            !text.contains("/pull/"),
+            "\"/pull/\" collapses to \"#\", got: {text}"
+        );
+
+        let first =
+            line_index_containing(&lines, "some-organization").expect("url line must be rendered");
+        let reassembled: String = lines[first..first + 2]
+            .iter()
+            .map(|l| l.spans[0].content.as_ref().trim_start().to_string())
+            .collect();
+        assert_eq!(reassembled, "some-organization/some-repository-name#42");
+    }
+
+    #[test]
+    fn render_pr_overview_puts_the_open_hint_only_on_the_first_url_line() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let first =
+            line_index_containing(&lines, "some-organization").expect("url line must be rendered");
+        assert!(
+            text_of(&lines[first]).contains("(o to open)"),
+            "the first url line carries the hint"
+        );
+        let continuation = text_of(&lines[first + 1]);
+        assert!(
+            continuation.contains("epository-name#42"),
+            "the long url wraps onto a second line, got: {continuation:?}"
+        );
+        assert!(
+            !continuation.contains("(o to open)"),
+            "the hint is not repeated on continuation lines, got: {continuation:?}"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_omits_the_url_line_when_the_pr_has_no_url() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_data = Some(pr_data("OPEN"));
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert!(
+            !joined(&lines).contains("(o to open)"),
+            "no open hint without a url"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_splits_the_branch_pair_around_the_arrow() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let idx = line_index_containing(&lines, "feature/panel").expect("branch line missing");
+        assert_eq!(text_of(&lines[idx]), " feature/panel → main");
+        let head = &lines[idx].spans[1];
+        assert_eq!(head.content.as_ref(), "feature/panel");
+        assert_eq!(
+            head.style.fg,
+            Some(styles::CYAN()),
+            "the head branch is the cyan half of the pair"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_falls_back_to_plain_style_when_wrapping_breaks_the_arrow() {
+        let mut tab = TabState::new_for_test(vec![]);
+        let mut pr = pr_data("OPEN");
+        pr.title = "T".to_string();
+        pr.head_branch = "verylongheadbranchname".to_string();
+        tab.pr_data = Some(pr);
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 24, 40), &tab);
+
+        let idx =
+            line_index_containing(&lines, "verylongheadbranchnam").expect("branch line missing");
+        assert_eq!(
+            lines[idx].spans.len(),
+            1,
+            "a wrapped segment with no arrow renders as one plain span, got: {:?}",
+            lines[idx].spans
+        );
+        assert_eq!(
+            lines[idx].spans[0].style.fg,
+            Some(styles::TEXT()),
+            "the fallback segment uses plain text styling"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_renders_description_paragraphs_with_their_blank_separator() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert!(joined(&lines).contains("─── Description ───"));
+        let first = line_index_containing(&lines, "First paragraph line.").expect("no first para");
+        let second =
+            line_index_containing(&lines, "Second paragraph line.").expect("no second para");
+        assert_eq!(
+            text_of(&lines[first + 1]),
+            "",
+            "the blank body line is preserved between paragraphs"
+        );
+        assert!(second > first, "body order is preserved");
+    }
+
+    #[test]
+    fn render_pr_overview_omits_the_description_section_when_the_body_is_empty() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_data = Some(pr_data("OPEN"));
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert!(
+            !joined(&lines).contains("Description"),
+            "no description header without a body"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_falls_back_to_check_status_when_the_conclusion_is_missing() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let idx = line_index_containing(&lines, "lint").expect("lint check missing");
+        let text = text_of(&lines[idx]);
+        assert!(
+            text.contains("in_progress"),
+            "a check with no conclusion shows its lowercased status, got: {text}"
+        );
+        assert!(
+            text.starts_with(" ○ "),
+            "an unconcluded check uses the pending icon, got: {text:?}"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_marks_a_failed_check_with_the_failure_icon() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let idx = line_index_containing(&lines, "build").expect("build check missing");
+        let text = text_of(&lines[idx]);
+        assert!(text.starts_with(" ✗ "), "got: {text:?}");
+        assert!(text.contains("failure"), "got: {text}");
+        assert_eq!(
+            style_of_span(&lines, " ✗ ").and_then(|s| s.fg),
+            Some(styles::RED_TEXT())
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_elides_check_names_wider_than_the_panel() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let idx = line_index_containing(&lines, "an-extremely-long").expect("long check missing");
+        let name = lines[idx].spans[1].content.as_ref().to_string();
+        assert!(name.ends_with('…'), "got: {name:?}");
+        assert!(
+            name.chars().count()
+                < "an-extremely-long-check-name-that-overflows"
+                    .chars()
+                    .count(),
+            "the elided name is shorter than the original, got: {name:?}"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_keeps_only_the_latest_state_per_reviewer() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let text = joined(&lines);
+        assert_eq!(
+            text.matches("@zed").count(),
+            1,
+            "a reviewer listed twice collapses to one row, got: {text}"
+        );
+        assert!(
+            text.contains("✓ approved"),
+            "the last state wins for a duplicated reviewer, got: {text}"
+        );
+        assert!(
+            !text.contains("◆ commented"),
+            "the superseded state is dropped, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_sorts_reviewers_by_login() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let ada = line_index_containing(&lines, "@ada").expect("ada missing");
+        let zed = line_index_containing(&lines, "@zed").expect("zed missing");
+        assert!(
+            ada < zed,
+            "reviewers are ordered by login, not by insertion"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_lists_only_general_top_level_comments() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        let text = joined(&lines);
+        assert!(
+            text.contains("BODYOFgc-general"),
+            "a general comment is shown, got: {text}"
+        );
+        assert!(
+            !text.contains("BODYOFgc-file"),
+            "a file-anchored comment belongs in the diff, not the PR overview"
+        );
+        assert!(
+            !text.contains("BODYOFgc-reply"),
+            "replies are not listed as top-level PR comments"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_accents_unsynced_local_comment_authors() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert_eq!(
+            style_of_span(&lines, " @reviewer-a:").and_then(|s| s.fg),
+            Some(styles::CYAN()),
+            "a local comment that has not been pushed is accented"
+        );
+        assert_eq!(
+            style_of_span(&lines, " @octocat:").and_then(|s| s.fg),
+            Some(styles::DIM()),
+            "an already-synced comment author is dimmed"
+        );
+    }
+
+    #[test]
+    fn render_pr_overview_dims_stale_comment_bodies() {
+        let tab = tab_with_full_pr();
+        let mut lines: Vec<Line> = Vec::new();
+        render_pr_overview(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert_eq!(
+            style_of_span(&lines, "   STALEREMARK").and_then(|s| s.fg),
+            Some(styles::STALE()),
+            "a comment whose anchor drifted renders in the stale color"
+        );
+        assert_eq!(
+            style_of_span(&lines, "   BODYOFgc-general").and_then(|s| s.fg),
+            Some(styles::TEXT()),
+            "a fresh comment keeps the normal text color"
+        );
+    }
+
+    // ── render_symbol_refs ──
+
+    #[test]
+    fn render_symbol_refs_without_state_reports_no_references() {
+        let tab = TabState::new_for_test(vec![]);
+        let mut lines: Vec<Line> = Vec::new();
+        render_symbol_refs(&mut lines, Rect::new(0, 0, 40, 40), &tab);
+
+        assert_eq!(lines.len(), 1);
+        assert_eq!(text_of(&lines[0]), " No symbol references");
+        assert_eq!(lines[0].spans[0].style.fg, Some(styles::MUTED()));
+    }
+
+    // ── render_agent_log ──
+
+    fn log_entry(ts: Instant, name: &str, source: AgentLogSource, text: &str) -> AgentLogEntry {
+        AgentLogEntry {
+            timestamp: ts,
+            command_name: name.to_string(),
+            source,
+            text: text.to_string(),
+        }
+    }
+
+    #[test]
+    fn render_agent_log_when_empty_explains_how_to_produce_output() {
+        let tab = TabState::new_for_test(vec![]);
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        let text = joined(&lines);
+        assert!(text.contains("Agent Log"), "got: {text}");
+        assert!(text.contains("No agent output yet"), "got: {text}");
+        assert!(
+            text.contains("AI hub"),
+            "the empty state points at the hub, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_agent_log_header_counts_only_running_commands() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.command_status
+            .insert("review".to_string(), CommandStatus::Running);
+        tab.command_status
+            .insert("questions".to_string(), CommandStatus::Running);
+        tab.command_status
+            .insert("triage".to_string(), CommandStatus::Done);
+        tab.command_status.insert(
+            "notes".to_string(),
+            CommandStatus::Failed("boom".to_string()),
+        );
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        let text = joined(&lines);
+        assert!(
+            text.contains("2 running"),
+            "done and failed commands are not counted, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_agent_log_header_omits_the_running_badge_when_nothing_runs() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.command_status
+            .insert("review".to_string(), CommandStatus::Done);
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        let text = joined(&lines);
+        assert!(!text.contains("running"), "got: {text}");
+    }
+
+    #[test]
+    fn render_agent_log_timestamps_are_relative_to_the_first_entry() {
+        let start = Instant::now();
+        let later = start + Duration::from_secs(90);
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.agent_log.push_back(log_entry(
+            start,
+            "review",
+            AgentLogSource::Stdout,
+            "started",
+        ));
+        tab.agent_log.push_back(log_entry(
+            later,
+            "review",
+            AgentLogSource::Stdout,
+            "finished",
+        ));
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        let text = joined(&lines);
+        assert!(
+            text.contains("+0s"),
+            "the first entry is the zero point, got: {text}"
+        );
+        assert!(
+            text.contains("+1m30s"),
+            "past 60s the elapsed time switches to minutes+seconds, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_agent_log_colors_the_command_name_by_command_kind() {
+        let now = Instant::now();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.agent_log
+            .push_back(log_entry(now, "review", AgentLogSource::Stdout, "a"));
+        tab.agent_log
+            .push_back(log_entry(now, "questions", AgentLogSource::Stdout, "b"));
+        tab.agent_log
+            .push_back(log_entry(now, "triage", AgentLogSource::Stdout, "c"));
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        assert_eq!(
+            style_of_span(&lines, "[review] ").and_then(|s| s.fg),
+            Some(styles::ORANGE())
+        );
+        assert_eq!(
+            style_of_span(&lines, "[questions] ").and_then(|s| s.fg),
+            Some(styles::YELLOW())
+        );
+        assert_eq!(
+            style_of_span(&lines, "[triage] ").and_then(|s| s.fg),
+            Some(styles::BLUE()),
+            "any other command falls back to blue"
+        );
+    }
+
+    #[test]
+    fn render_agent_log_distinguishes_stdout_stderr_and_status_output() {
+        let now = Instant::now();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.agent_log
+            .push_back(log_entry(now, "review", AgentLogSource::Stdout, "OUT"));
+        tab.agent_log
+            .push_back(log_entry(now, "review", AgentLogSource::Stderr, "ERR"));
+        tab.agent_log
+            .push_back(log_entry(now, "review", AgentLogSource::Status, "STAT"));
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        assert_eq!(
+            style_of_span(&lines, "OUT").and_then(|s| s.fg),
+            Some(styles::TEXT())
+        );
+        assert_eq!(
+            style_of_span(&lines, "ERR").and_then(|s| s.fg),
+            Some(styles::DIM())
+        );
+        assert_eq!(
+            style_of_span(&lines, "STAT").and_then(|s| s.fg),
+            Some(styles::CYAN())
+        );
+    }
+
+    #[test]
+    fn render_agent_log_wraps_long_entry_text_onto_indented_continuation_lines() {
+        let now = Instant::now();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.agent_log.push_back(log_entry(
+            now,
+            "review",
+            AgentLogSource::Stdout,
+            "alpha beta gamma delta epsilon zeta",
+        ));
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 40, 20), &tab);
+
+        let first = line_index_containing(&lines, "alpha").expect("first segment missing");
+        let last = line_index_containing(&lines, "zeta").expect("last segment missing");
+        assert!(
+            last > first,
+            "an entry wider than the panel spills onto later lines"
+        );
+        let continuation = &lines[last];
+        assert_eq!(
+            continuation.spans.len(),
+            2,
+            "a continuation line is indent + text, got: {:?}",
+            continuation.spans
+        );
+        assert!(
+            continuation.spans[0].content.as_ref().trim().is_empty()
+                && continuation.spans[0].content.len() > 10,
+            "continuation lines are indented to the text column, got: {:?}",
+            continuation.spans[0].content
+        );
+        assert!(
+            !text_of(continuation).contains("[review]"),
+            "the command prefix is not repeated"
+        );
+    }
+
+    #[test]
+    fn render_agent_log_keeps_short_entries_on_a_single_line() {
+        let now = Instant::now();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.agent_log
+            .push_back(log_entry(now, "review", AgentLogSource::Stdout, "short"));
+
+        let mut lines: Vec<Line> = Vec::new();
+        render_agent_log(&mut lines, Rect::new(0, 0, 60, 20), &tab);
+
+        // header + blank separator + one entry line
+        assert_eq!(lines.len(), 3, "got: {:?}", joined(&lines));
+        assert_eq!(
+            lines[2].spans.len(),
+            3,
+            "an unwrapped entry is time + name + text"
+        );
+    }
+
+    // ── render_panel (drawn through a real Frame) ──
+
+    fn buffer_text(backend: &TestBackend) -> String {
+        let buf = backend.buffer();
+        let area = *buf.area();
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn draw_panel(app: &App, content: PanelContent, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        let area = Rect::new(0, 0, width, height);
+        terminal
+            .draw(|f| render_panel(f, area, app, content))
+            .unwrap();
+        buffer_text(terminal.backend())
+    }
+
+    #[test]
+    fn render_panel_hides_the_ai_and_pr_tabs_when_there_is_no_such_data() {
+        let app = App::new_for_test(vec![]);
+        let text = draw_panel(&app, PanelContent::FileDetail, 60, 10);
+
+        assert!(text.contains("[File]"), "got: {text}");
+        assert!(text.contains("[Log]"), "got: {text}");
+        assert!(
+            !text.contains("[AI]"),
+            "the AI tab only appears with AI data, got: {text}"
+        );
+        assert!(
+            !text.contains("[PR]"),
+            "the PR tab only appears with PR data, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_panel_shows_the_ai_and_pr_tabs_once_their_data_is_loaded() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().ai.summary = Some("a summary".to_string());
+        app.tab_mut().pr_data = Some(pr_data("OPEN"));
+
+        let text = draw_panel(&app, PanelContent::PrOverview, 60, 10);
+
+        assert!(text.contains("[AI]"), "got: {text}");
+        assert!(text.contains("[PR]"), "got: {text}");
+        assert!(
+            text.contains("PR Overview"),
+            "the PrOverview body is dispatched, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_panel_dispatches_symbol_refs_content_to_its_empty_state() {
+        let app = App::new_for_test(vec![]);
+        let text = draw_panel(&app, PanelContent::SymbolRefs, 60, 10);
+
+        assert!(text.contains("No symbol references"), "got: {text}");
+        assert!(
+            !text.contains("[Refs]"),
+            "the Refs tab stays hidden while no refs are loaded, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_panel_border_signals_whether_the_panel_holds_focus() {
+        let area = Rect::new(0, 0, 60, 6);
+
+        let mut focused = App::new_for_test(vec![]);
+        focused.tab_mut().panel_focus = true;
+        let mut t1 = Terminal::new(TestBackend::new(60, 6)).unwrap();
+        t1.draw(|f| render_panel(f, area, &focused, PanelContent::FileDetail))
+            .unwrap();
+        let focused_fg = t1.backend().buffer()[(0u16, 1u16)].fg;
+
+        let unfocused = App::new_for_test(vec![]);
+        let mut t2 = Terminal::new(TestBackend::new(60, 6)).unwrap();
+        t2.draw(|f| render_panel(f, area, &unfocused, PanelContent::FileDetail))
+            .unwrap();
+        let unfocused_fg = t2.backend().buffer()[(0u16, 1u16)].fg;
+
+        assert_eq!(focused_fg, styles::PURPLE());
+        assert_eq!(unfocused_fg, styles::BORDER());
+    }
+
+    #[test]
+    fn render_panel_auto_scroll_keeps_the_newest_agent_log_entries_visible() {
+        let now = Instant::now();
+        let mut app = App::new_for_test(vec![]);
+        for i in 0..20 {
+            app.tab_mut().agent_log.push_back(log_entry(
+                now,
+                "ai",
+                AgentLogSource::Stdout,
+                &format!("entry-{i:02}"),
+            ));
+        }
+        app.tab_mut().agent_log_auto_scroll = true;
+
+        let text = draw_panel(&app, PanelContent::AgentLog, 60, 6);
+
+        assert!(
+            text.contains("entry-19"),
+            "auto-scroll pins the newest entry, got: {text}"
+        );
+        assert!(
+            !text.contains("Agent Log"),
+            "the header scrolls off once the log outgrows the panel, got: {text}"
+        );
+    }
+
+    #[test]
+    fn render_panel_without_auto_scroll_stays_at_the_stored_panel_scroll() {
+        let now = Instant::now();
+        let mut app = App::new_for_test(vec![]);
+        for i in 0..20 {
+            app.tab_mut().agent_log.push_back(log_entry(
+                now,
+                "ai",
+                AgentLogSource::Stdout,
+                &format!("entry-{i:02}"),
+            ));
+        }
+        app.tab_mut().agent_log_auto_scroll = false;
+        app.tab_mut().panel_scroll = 0;
+
+        let text = draw_panel(&app, PanelContent::AgentLog, 60, 6);
+
+        assert!(
+            text.contains("Agent Log"),
+            "with auto-scroll off the panel stays where the user left it, got: {text}"
+        );
+        assert!(
+            !text.contains("entry-19"),
+            "the tail sits below the viewport, got: {text}"
+        );
+    }
 }

@@ -880,6 +880,158 @@ mod tests {
 
     // ── KeyModifiers::NONE guard is exact ──
 
+    // ── run_uninstall ──
+    //
+    // SAFETY RAIL: `uninstall::plan` resolves *real* paths on this machine —
+    // `~/.config/er`, managed review storage, `~/.cargo/bin/er`,
+    // `/Applications/Easy Review.app`. Any test that can reach
+    // `uninstall::execute` must therefore enable **only** `remove_cache`, with
+    // `XDG_CACHE_HOME` redirected into a temp dir (see `cache_only_opts`).
+
+    /// `XDG_CACHE_HOME` is process-global, so the uninstall tests that redirect
+    /// it have to run one at a time. (er-engine has its own lock, but it is
+    /// `#[cfg(test)]`-private to that crate.)
+    static UNINSTALL_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Sets `XDG_CACHE_HOME` for the guard's lifetime and restores it on drop —
+    /// on drop rather than at the end of the body so a panicking test cannot
+    /// leak a temp cache home into the rest of the process.
+    struct CacheHomeGuard {
+        prev: Option<String>,
+    }
+
+    impl CacheHomeGuard {
+        fn set(dir: &std::path::Path) -> Self {
+            let prev = std::env::var("XDG_CACHE_HOME").ok();
+            std::env::set_var("XDG_CACHE_HOME", dir);
+            Self { prev }
+        }
+    }
+
+    impl Drop for CacheHomeGuard {
+        fn drop(&mut self) {
+            match self.prev.take() {
+                Some(v) => std::env::set_var("XDG_CACHE_HOME", v),
+                None => std::env::remove_var("XDG_CACHE_HOME"),
+            }
+        }
+    }
+
+    /// The only option set that is safe to run through `uninstall::execute`.
+    fn cache_only_opts() -> uninstall::UninstallOptions {
+        uninstall::UninstallOptions {
+            remove_config: false,
+            remove_data: false,
+            remove_cache: true,
+            remove_binaries: false,
+            remove_desktop_app: false,
+        }
+    }
+
+    fn keep_everything_opts() -> uninstall::UninstallOptions {
+        uninstall::UninstallOptions {
+            remove_config: false,
+            remove_data: false,
+            remove_cache: false,
+            remove_binaries: false,
+            remove_desktop_app: false,
+        }
+    }
+
+    /// A fresh temp directory to use as `XDG_CACHE_HOME`. The uninstall target
+    /// is the `er` subdirectory inside it, not the directory itself.
+    fn cache_home(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("er-tui-uninstall-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn run_uninstall_removes_nothing_when_every_category_is_kept() {
+        let _lock = UNINSTALL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = cache_home("nothing-selected");
+        let cache = home.join("er");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("marker"), "x").unwrap();
+        let _env = CacheHomeGuard::set(&home);
+        assert!(cache.join("marker").exists(), "precondition: cache present");
+
+        run_uninstall(true, false, keep_everything_opts()).expect("an empty plan is not an error");
+
+        assert!(
+            cache.join("marker").exists(),
+            "an empty plan must delete nothing, even with -y and no dry run"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn run_uninstall_dry_run_leaves_an_existing_target_in_place() {
+        let _lock = UNINSTALL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = cache_home("dry-run");
+        let cache = home.join("er");
+        std::fs::create_dir_all(&cache).unwrap();
+        std::fs::write(cache.join("marker"), "x").unwrap();
+        let _env = CacheHomeGuard::set(&home);
+        assert!(
+            cache.exists(),
+            "precondition: there is an existing target to list"
+        );
+
+        run_uninstall(true, true, cache_only_opts()).expect("a dry run is not an error");
+
+        assert!(
+            cache.join("marker").exists(),
+            "--dry-run must list the target without removing it"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn run_uninstall_deletes_the_legacy_cache_directory_when_confirmed() {
+        let _lock = UNINSTALL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = cache_home("execute");
+        let cache = home.join("er");
+        std::fs::create_dir_all(cache.join("nested")).unwrap();
+        std::fs::write(cache.join("nested").join("marker"), "x").unwrap();
+        let _env = CacheHomeGuard::set(&home);
+        assert!(
+            cache.exists(),
+            "precondition: there is an existing target to remove"
+        );
+
+        run_uninstall(true, false, cache_only_opts()).expect("uninstall reports success");
+
+        assert!(
+            !cache.exists(),
+            "-y removes the cache directory and everything under it"
+        );
+        assert!(
+            home.exists(),
+            "only `<XDG_CACHE_HOME>/er` is a target, not XDG_CACHE_HOME itself"
+        );
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn run_uninstall_is_idempotent_once_the_target_is_gone() {
+        let _lock = UNINSTALL_ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let home = cache_home("idempotent");
+        let cache = home.join("er");
+        std::fs::create_dir_all(&cache).unwrap();
+        let _env = CacheHomeGuard::set(&home);
+
+        run_uninstall(true, false, cache_only_opts()).expect("first run removes the cache");
+        assert!(!cache.exists());
+
+        run_uninstall(true, false, cache_only_opts())
+            .expect("a second run finds nothing installed and still succeeds");
+
+        assert!(!cache.exists());
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
     #[test]
     fn d_with_shift_does_not_trigger_delete_or_scroll() {
         // Shift+d has no handler in the current map, so nothing should change
