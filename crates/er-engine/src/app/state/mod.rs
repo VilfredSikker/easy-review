@@ -5918,6 +5918,26 @@ impl App {
                 enabled: true,
             },
             HubItem {
+                label: "Generate summary".into(),
+                hint: "".into(),
+                description: format!("Generate summary via {selection_label}"),
+                action: HubAction::RunAiAction(AiActionKind::Summary),
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Generate guided tour".into(),
+                hint: "".into(),
+                description: if self.tab().ai.has_tour() {
+                    "Regenerate the guided tour for this branch / PR diff".into()
+                } else {
+                    "AI-guided walkthrough: pillars + per-file reasons (adds the Guide tab)".into()
+                },
+                action: HubAction::RunAiAction(AiActionKind::Tour),
+                is_header: false,
+                enabled: self.tab().has_reviewable_diff(),
+            },
+            HubItem {
                 label: "Specialized review".into(),
                 hint: "".into(),
                 description: "Focused expert lens — security, patterns, testing, …".into(),
@@ -6041,26 +6061,6 @@ impl App {
                 action: HubAction::ToggleHideResolved,
                 is_header: false,
                 enabled: true,
-            },
-            HubItem {
-                label: "Generate summary".into(),
-                hint: "".into(),
-                description: format!("Generate summary via {selection_label}"),
-                action: HubAction::RunAiAction(AiActionKind::Summary),
-                is_header: false,
-                enabled: true,
-            },
-            HubItem {
-                label: "Generate guided tour".into(),
-                hint: "".into(),
-                description: if self.tab().ai.has_tour() {
-                    "Regenerate the guided tour for this branch / PR diff".into()
-                } else {
-                    "AI-guided walkthrough: pillars + per-file reasons (adds the Guide tab)".into()
-                },
-                action: HubAction::RunAiAction(AiActionKind::Tour),
-                is_header: false,
-                enabled: self.tab().has_reviewable_diff(),
             },
             HubItem {
                 label: "Cleanup questions & notes".into(),
