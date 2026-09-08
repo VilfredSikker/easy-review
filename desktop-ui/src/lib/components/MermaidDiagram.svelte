@@ -24,8 +24,8 @@
   let panStart = $state({ x: 0, y: 0 });
   let containerEl = $state<HTMLDivElement | null>(null);
 
-  const ZOOM_MIN = 0.3;
-  const ZOOM_MAX = 5;
+  const ZOOM_MIN = 0.5;
+  const ZOOM_MAX = 3;
   const ZOOM_STEP = 0.25;
 
   function clampZoom(z: number): number {
