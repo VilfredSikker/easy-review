@@ -61,7 +61,7 @@ jobs:
           if-no-files-found: error
 
   build-desktop:
-    name: Build desktop DMG (macOS arm64)
+    name: Build signed desktop DMG (macOS arm64)
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -75,8 +75,13 @@ jobs:
       - name: Install Tauri CLI
         run: cargo install tauri-cli --locked --version "^2.0"
 
-      - name: Build desktop .app + DMG (ad-hoc signed)
-        run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-build.sh
+      - name: Build signed + notarized DMG
+        run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-sign-release.sh
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
