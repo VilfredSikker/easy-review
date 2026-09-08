@@ -7776,6 +7776,30 @@ pub async fn open_inbox_item(
     run_blocking(move || open_inbox_item_impl(id, new_tab.unwrap_or(false), &state)).await
 }
 
+/// Build a `PrOpenHint` for an inbox PR open by looking up the PR metadata
+/// in the cached PR list for the project's remote. Returns `None` if the PR
+/// is not in the cache or any required field is missing — the caller then
+/// falls back to the no-hint (async-miss) path.
+fn build_inbox_pr_hint(pr_number: u64, remote: Option<&str>, state: &AppState) -> Option<PrOpenHint> {
+    let remote_slug = remote?;
+    let key = normalize_remote_slug(remote_slug);
+    let cache = state.pr_cache.lock().ok()?;
+    let prs = cache.get(&key)?;
+    let pr = prs.iter().find(|p| p.number == pr_number)?;
+    if pr.base_ref.trim().is_empty() || pr.head_ref.trim().is_empty() || pr.head_oid.trim().is_empty()
+    {
+        return None;
+    }
+    Some(PrOpenHint {
+        base_ref: pr.base_ref.clone(),
+        head_ref: pr.head_ref.clone(),
+        head_oid: pr.head_oid.clone(),
+        updated_at: pr.updated_at.clone(),
+        title: pr.title.clone(),
+        author: pr.author.clone(),
+    })
+}
+
 fn open_inbox_item_impl(
     id: String,
     new_tab: bool,
@@ -7807,7 +7831,12 @@ fn open_inbox_item_impl(
             );
         }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review_impl(project_id, pr_number, replace, None, state);
+            // Build a hint from the PR cache so the open can take the fast
+            // path (skip `gh pr view`, use cached diff) — same as the sidebar.
+            // Without a hint the code always takes the async-miss path, which
+            // historically has left the tab stuck on "Loading diff…" for inbox opens.
+            let hint = build_inbox_pr_hint(pr_number, target.remote.as_deref(), state);
+            return open_pr_review_impl(project_id, pr_number, replace, hint, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
             return open_local_branch_impl(project_id, branch, replace, state);
