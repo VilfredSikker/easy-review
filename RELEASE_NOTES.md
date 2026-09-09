@@ -1,13 +1,36 @@
-# Easy Review v0.4.16
+# Easy Review v0.4.18
 
 ## In plain terms
 
-- **What changed.** _Open release branch — entries land here as work merges._
-- **TL;DR.** _Pending._
+- **What changed.** Drag-and-drop works again — reorder projects and sidebar sections, and drag tabs in the tab strip. Picking a subdirectory as a project no longer creates a phantom project that swallows the real repository's notifications. A failed signed DMG build no longer blocks a release.
+- **TL;DR.** Dragging works, no phantom projects, releases publish without a DMG.
 
 ## Highlights
 
-- _Pending._
+- **Drag-and-drop restored.** Tauri's OS drag-drop handler claimed every drag before the page could see it, so nothing in the window was draggable — the sidebar reordering shipped in v0.4.17 included. Handing drags back to the webview fixes project and section reordering and tab dragging together.
+- **No phantom projects.** Folders register as the repository that contains them. A crate directory such as `crates/er-desktop` used to register under its own name, pick up the real repository's remote, and then collect that repository's PRs and notifications — whose **Open** failed with `Project not found`.
+- **Releases survive a DMG failure.** A missing or failed signed DMG build no longer takes the release down; the TUI and MCP binaries publish either way.
+
+## What's Changed
+
+### Fixes
+- Desktop: drag-and-drop works again anywhere in the window — reordering projects and sidebar sections, and dragging tabs in the tab strip. Tauri's OS drag-drop handler was claiming every drag, so the webview never saw one.
+- Desktop: picking a subdirectory in the project folder picker no longer registers a phantom project. A crate directory such as `crates/er-desktop` was registered under its own name, picked up the real repository's remote, and then collected that repository's PRs and notifications — whose "Open" failed with `Project not found`. Folders now register as the repository that contains them, and a notification whose project has since been deleted reopens against the matching repository instead of erroring. Those notifications were also missing from the inbox's per-project filters, since they claimed a project no longer in the list.
+- CI: a missing or failed signed DMG build no longer blocks the release, so the TUI and MCP binaries still publish.
+
+# Easy Review v0.4.16 – v0.4.17
+
+## In plain terms
+
+- **What changed.** Two releases share this section: v0.4.16 brought the optimistic desktop actions, the cheaper comment writes, and the review-export handling rules; v0.4.17 added sidebar section reordering, diagram zoom and pan, the inbox PR-open fix, and a signed + notarized DMG in CI.
+- **TL;DR.** Optimistic desktop actions and handling rules (v0.4.16); reorderable sidebar, zoomable diagrams, signed DMG (v0.4.17).
+
+## Highlights
+
+- **Reorderable sidebar.** Drag section headers (Saved, Tracked, My PRs, To Review, Recent, Recently Merged) to reorder. Order persists in localStorage across all projects and sessions. (Dragging itself only works from v0.4.18 — see above.)
+- **Diagram zoom & pan.** Ctrl/Cmd+scroll zooms centered on cursor, drag pans, double-click resets. Floating zoom controls show current percentage (0.5x–3x).
+- **Inbox PR open fix.** Opening a notification's PR builds a hint from the cached PR list, so it takes the same fast path as sidebar opens instead of stalling on the async-miss worker.
+- **Signed + notarized DMG.** Release CI produces a signed and notarized macOS DMG via `tauri-sign-release.sh` using Apple signing secrets.
 
 ## What's Changed
 
@@ -15,11 +38,12 @@
 - Desktop: inbox mark-read / clear, PR pin / unpin, PR ignore / unignore, and the finding-thread actions (remove thread, promote to comment, reply, delete AI response) now paint immediately and confirm in the background, rolling back only on error. Their handlers run off the main thread and answer with a chrome-only snapshot instead of rebuilding the whole diff.
 - Desktop: deleting, editing, resolving and promoting comments, notes and questions no longer re-read every review sidecar; each write produces one snapshot instead of two, and GitHub deletions of pushed comments run off the app lock. A write attempted while a view switch is in flight now shows a toast instead of silently doing nothing.
 - Open every markdown review export with a **Handling rules** preamble so a pasted export states how to act on each item type.
+- Sidebar: drag-to-reorder sections with persisted order.
+- Diagrams: add zoom and pan to expanded context diagrams.
+- CI: sign + notarize the macOS DMG using GitHub secrets.
 
 ### Fixes
-- Desktop: drag-and-drop works again anywhere in the window — reordering projects and sidebar sections, and dragging tabs in the tab strip. Tauri's OS drag-drop handler was claiming every drag, so the webview never saw one.
-- CI: a missing or failed signed DMG build no longer blocks the release, so the TUI and MCP binaries still publish.
-- Desktop: picking a subdirectory in the project folder picker no longer registers a phantom project. A crate directory such as `crates/er-desktop` was registered under its own name, picked up the real repository's remote, and then collected that repository's PRs and notifications — whose "Open" failed with `Project not found`. Folders now register as the repository that contains them, and a notification whose project has since been deleted reopens against the matching repository instead of erroring. Those notifications were also missing from the inbox's per-project filters, since they claimed a project no longer in the list.
+- Desktop: build a `PrOpenHint` from the PR cache when opening inbox items so the tab no longer stalls on "Loading diff…".
 
 ### Docs
 - Resolve the current release branch from origin instead of hardcoding a version in `AGENTS.md` / `CLAUDE.md`.
