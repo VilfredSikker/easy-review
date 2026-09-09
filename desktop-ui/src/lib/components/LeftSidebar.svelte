@@ -1016,7 +1016,7 @@
                 ondragstart={(e) => handleProjectDragStart(e, i)}
                 ondragend={handleProjectDragEnd}
                 title={canReorder ? "Drag to reorder" : undefined}
-                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0 {canReorder ? 'cursor-grab active:cursor-grabbing' : ''}"
+                class="flex-1 flex items-center gap-1.5 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-left {project.is_active ? 'text-fg-2' : 'text-fg-3'} min-w-0 {canReorder ? 'dnd-source cursor-grab active:cursor-grabbing' : ''}"
               >
                 <!-- Chevron caret: down when expanded, right when collapsed — 10px fg-muted -->
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
@@ -1149,19 +1149,16 @@
                 {#if showDropBefore}
                   <div class="h-0.5 bg-accent rounded-full mx-2" aria-hidden="true"></div>
                 {/if}
-                <!-- svelte-ignore a11y_no_static_element_interactions -->
-                <div
-                  class="relative {isDragging ? 'opacity-50' : ''}"
-                  draggable={sectionOrder.order.length > 1}
-                  ondragstart={(e) => handleSectionDragStart(e, sectionIdx)}
-                  ondragover={(e) => handleSectionDragOver(e, sectionIdx)}
-                  ondrop={(e) => handleSectionDrop(e, sectionIdx)}
-                  ondragend={handleSectionDragEnd}
-                >
+                <div class="relative {isDragging ? 'opacity-50' : ''}">
                   <button
                     type="button"
                     onclick={() => toggleSection(project.id, section)}
-                    class="w-full flex items-center gap-1.5 px-2 pt-3 pb-1.5 text-left rounded-md hover:bg-hover/60 transition-colors cursor-grab active:cursor-grabbing"
+                    draggable={sectionOrder.order.length > 1}
+                    ondragstart={(e) => handleSectionDragStart(e, sectionIdx)}
+                    ondragover={(e) => handleSectionDragOver(e, sectionIdx)}
+                    ondrop={(e) => handleSectionDrop(e, sectionIdx)}
+                    ondragend={handleSectionDragEnd}
+                    class="w-full flex items-center gap-1.5 px-2 pt-3 pb-1.5 text-left rounded-md hover:bg-hover/60 transition-colors cursor-grab active:cursor-grabbing {sectionOrder.order.length > 1 ? 'dnd-source' : ''}"
                     aria-expanded={sectionOpen}
                   >
                     <span class="flex h-3 w-3 shrink-0 items-center justify-center">
