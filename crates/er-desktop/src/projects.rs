@@ -452,6 +452,9 @@ impl TabProjectRef {
 }
 
 /// Register a local repo root in `file` when missing. Returns true if a row was added.
+/// In-memory mirror of the row-appending half of [`auto_register`], for tests.
+/// It takes `root_path` as given — normalizing to the repository root needs
+/// git, and what these tests cover is id uniqueness and dedupe by root.
 #[cfg(test)]
 fn register_local_root_in_file(file: &mut ProjectsFile, root_path: &str) -> bool {
     if root_path.is_empty() {
