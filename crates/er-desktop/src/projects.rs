@@ -452,6 +452,9 @@ impl TabProjectRef {
 }
 
 /// Register a local repo root in `file` when missing. Returns true if a row was added.
+/// In-memory mirror of the row-appending half of [`auto_register`], for tests.
+/// It takes `root_path` as given — normalizing to the repository root needs
+/// git, and what these tests cover is id uniqueness and dedupe by root.
 #[cfg(test)]
 fn register_local_root_in_file(file: &mut ProjectsFile, root_path: &str) -> bool {
     if root_path.is_empty() {
@@ -546,7 +549,7 @@ pub fn sync_projects_from_tabs(tabs: &[er_engine::app::TabState]) {
 /// Does registering `root_path` require a `gh repo view` lookup? Only when the
 /// project is unknown or its remote hasn't been resolved yet. A re-open of an
 /// already-registered project (the hot path, fired on every PR/branch open via
-/// `place_tab`) skips the subprocess entirely — `auto_register` only ever
+/// `place_tab`) skips that subprocess entirely — `auto_register` only ever
 /// *backfills* a `None` remote, never refreshes one that is already set.
 fn needs_remote_query(file: &ProjectsFile, root_path: &str) -> bool {
     match file.projects.iter().find(|p| p.root_path == root_path) {
@@ -555,14 +558,32 @@ fn needs_remote_query(file: &ProjectsFile, root_path: &str) -> bool {
     }
 }
 
-pub fn auto_register(root_path: &str) -> ProjectRecord {
+/// The repository root a project row must point at, or `None` when the path
+/// isn't inside a repository at all.
+///
+/// A project is a repository, so its row is keyed by the repository root — and
+/// callers hand over arbitrary paths. The folder picker registers whatever was
+/// picked, so choosing a subdirectory used to create a phantom project: `git
+/// remote` resolves from anywhere inside a repo, so a row named after a crate
+/// directory got the real repo's remote and started collecting its PRs and
+/// inbox items under an id no other code could resolve.
+fn project_root_for(path: &str) -> Option<String> {
+    let root = er_engine::git::get_repo_root_at(path).ok()?;
+    Some(root).filter(|r| !r.is_empty())
+}
+
+/// Register the repository containing `root_path`, or `None` when the path
+/// isn't in a repository. Returns the existing row when one already covers it.
+pub fn auto_register(root_path: &str) -> Option<ProjectRecord> {
+    let root_path = project_root_for(root_path)?;
+    let root_path = root_path.as_str();
     let mut file = load();
 
     // Fast path: already registered with a known remote. Skip both the
     // `gh repo view` subprocess and the disk write — pure waste on re-open.
     if !needs_remote_query(&file, root_path) {
         if let Some(existing) = file.projects.iter().find(|p| p.root_path == root_path) {
-            return existing.clone();
+            return Some(existing.clone());
         }
     }
 
@@ -587,7 +608,7 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
         if changed {
             let _ = save(&file);
         }
-        return record;
+        return Some(record);
     }
 
     // Ensure id uniqueness
@@ -624,7 +645,7 @@ pub fn auto_register(root_path: &str) -> ProjectRecord {
         file.active_id = Some(record.id.clone());
     }
     let _ = save(&file);
-    record
+    Some(record)
 }
 
 pub fn dismiss_pr(project_id: &str, pr_number: u64) {
@@ -854,11 +875,33 @@ pub fn patch_project_review_settings(
 }
 
 /// Resolve a configured project id from inbox target hints (explicit id preferred by caller).
+/// Which project an inbox item should open in.
+///
+/// `stored_id` is the id recorded on the item when it was created, and it is
+/// honoured only while that project still exists. Items outlive projects: one
+/// can be deleted, and older items point at phantom projects registered from a
+/// subdirectory before roots were normalized to the repository root. Falling
+/// back to the repo root and then the remote slug reunites those items with the
+/// real project instead of failing the open.
 pub fn resolve_project_id_for_inbox(
+    stored_id: Option<&str>,
     repo_root: Option<&str>,
     remote: Option<&str>,
 ) -> Option<String> {
-    let file = load();
+    resolve_inbox_project_in_file(&load(), stored_id, repo_root, remote)
+}
+
+fn resolve_inbox_project_in_file(
+    file: &ProjectsFile,
+    stored_id: Option<&str>,
+    repo_root: Option<&str>,
+    remote: Option<&str>,
+) -> Option<String> {
+    if let Some(id) = stored_id.filter(|id| !id.is_empty()) {
+        if file.projects.iter().any(|p| p.id == id) {
+            return Some(id.to_string());
+        }
+    }
     if let Some(root) = repo_root.filter(|r| !r.is_empty()) {
         if let Some(p) = file.projects.iter().find(|p| p.root_path == root) {
             return Some(p.id.clone());
@@ -1124,5 +1167,100 @@ mod tests {
             &["alpha".into(), "beta".into(), "gamma".into()]
         ));
         assert_eq!(ids(&file), vec!["alpha", "beta", "gamma"]);
+    }
+
+    #[test]
+    fn inbox_resolve_prefers_a_stored_id_that_still_exists() {
+        let file = ProjectsFile {
+            projects: vec![
+                local_project("easy-review", Some("owner/repo")),
+                local_project("other", Some("owner/repo")),
+            ],
+            active_id: None,
+        };
+        // A live stored id wins over both fallbacks, even when the remote
+        // matches another row first.
+        assert_eq!(
+            resolve_inbox_project_in_file(
+                &file,
+                Some("other"),
+                Some("/tmp/easy-review"),
+                Some("owner/repo")
+            ),
+            Some("other".to_string())
+        );
+    }
+
+    #[test]
+    fn inbox_resolve_falls_back_when_the_stored_project_is_gone() {
+        // The shipped failure: items created against a phantom project rooted at
+        // a crate subdirectory. The id resolves to nothing and the subdirectory
+        // matches no row, so the remote has to carry the open — case and all,
+        // since GitHub hands back either spelling.
+        let file = ProjectsFile {
+            projects: vec![local_project(
+                "easy-review",
+                Some("VilfredSikker/easy-review"),
+            )],
+            active_id: None,
+        };
+        assert_eq!(
+            resolve_inbox_project_in_file(
+                &file,
+                Some("er-desktop"),
+                Some("/Users/me/Projects/easy-review/crates/er-desktop"),
+                Some("vilfredsikker/easy-review"),
+            ),
+            Some("easy-review".to_string())
+        );
+    }
+
+    #[test]
+    fn inbox_resolve_gives_up_when_nothing_matches() {
+        let file = ProjectsFile {
+            projects: vec![local_project("easy-review", Some("owner/repo"))],
+            active_id: None,
+        };
+        assert_eq!(
+            resolve_inbox_project_in_file(
+                &file,
+                Some("er-desktop"),
+                Some("/nowhere"),
+                Some("someone/else")
+            ),
+            None
+        );
+        assert_eq!(resolve_inbox_project_in_file(&file, None, None, None), None);
+    }
+
+    #[test]
+    fn project_root_for_normalizes_a_subdirectory_to_the_repository_root() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(repo.join("crates/er-desktop")).expect("mkdir");
+        let status = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo)
+            .status()
+            .expect("git init");
+        assert!(status.success(), "git init failed");
+
+        // Compare against git's own answer for the top level: on macOS the
+        // temp path is a /var symlink and git reports the resolved /private/var.
+        let top = project_root_for(repo.to_str().unwrap()).expect("repo root resolves");
+        let from_subdir = project_root_for(repo.join("crates/er-desktop").to_str().unwrap());
+        assert_eq!(
+            from_subdir,
+            Some(top),
+            "a subdirectory must register as its repository, not as its own project"
+        );
+    }
+
+    #[test]
+    fn project_root_for_rejects_a_path_outside_any_repository() {
+        assert_eq!(
+            project_root_for("/nonexistent-path-for-er-project-test"),
+            None
+        );
     }
 }

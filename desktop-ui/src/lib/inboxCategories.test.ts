@@ -131,6 +131,39 @@ describe("inboxItemProjectId", () => {
       ),
     ).toBe("p1");
   });
+
+  it("ignores a stored id whose project is gone and matches the remote instead", () => {
+    // Items written against a phantom project rooted at a crate subdirectory:
+    // the id names nothing, the subdirectory matches no row, and the remote
+    // comes back from GitHub in a different case than the project stores.
+    expect(
+      inboxItemProjectId(
+        item({
+          id: "1",
+          kind: "x",
+          target: {
+            project_id: "er-desktop",
+            repo_root: "/repos/one/crates/er-desktop",
+            remote: "Org/One",
+          },
+        }),
+        projects,
+      ),
+    ).toBe("p1");
+  });
+
+  it("returns null when a stored id is gone and nothing else matches", () => {
+    expect(
+      inboxItemProjectId(
+        item({
+          id: "1",
+          kind: "x",
+          target: { project_id: "er-desktop", remote: "other/repo" },
+        }),
+        projects,
+      ),
+    ).toBeNull();
+  });
 });
 
 describe("inboxKindMeta", () => {

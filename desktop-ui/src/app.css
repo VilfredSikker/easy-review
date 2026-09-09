@@ -418,6 +418,11 @@ body {
 .titlebar-no-drag,
 .titlebar-no-drag * { -webkit-app-region: no-drag; }
 
+/* HTML5 drag sources that are form controls. WebKit won't start a drag on a
+ * <button> from the draggable attribute alone — the UA stylesheet makes it
+ * unselectable, and WebKit needs -webkit-user-drag to treat it as a source. */
+.dnd-source { -webkit-user-drag: element; }
+
 /* Jump-to pulse animation (mock lines 35–43, build-plan §lookup-utilities). */
 .flash { animation: flash-pulse 1200ms ease-out; }
 @keyframes flash-pulse {

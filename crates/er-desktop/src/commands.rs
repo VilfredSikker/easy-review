@@ -598,7 +598,7 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
         .unwrap_or_else(|| tab.current_branch.clone());
 
     let project_id =
-        projects::resolve_project_id_for_inbox(Some(repo_root.as_str()), remote.as_deref());
+        projects::resolve_project_id_for_inbox(None, Some(repo_root.as_str()), remote.as_deref());
 
     let mut emitted_any = false;
     let mut just_added: Vec<InboxItem> = Vec::new();
@@ -7830,12 +7830,14 @@ fn open_inbox_item_impl(
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
     if let Some(mut target) = target.take() {
-        if target.project_id.is_none() {
-            target.project_id = projects::resolve_project_id_for_inbox(
-                target.repo_root.as_deref(),
-                target.remote.as_deref(),
-            );
-        }
+        // Always re-resolve: a stored id can name a project that no longer
+        // exists, and passing one through unchecked turned the open into a hard
+        // "Project not found" error.
+        target.project_id = projects::resolve_project_id_for_inbox(
+            target.project_id.as_deref(),
+            target.repo_root.as_deref(),
+            target.remote.as_deref(),
+        );
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
             // Build a hint from the PR cache so the open can take the fast
             // path (skip `gh pr view`, use cached diff) — same as the sidebar.

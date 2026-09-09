@@ -63,6 +63,10 @@ jobs:
   build-desktop:
     name: Build signed desktop DMG (macOS arm64)
     runs-on: macos-latest
+    # Signed DMG requires Apple signing secrets. When these aren't configured
+    # (e.g. forked repos, missing APPLE_SIGNING_IDENTITY) skip gracefully so
+    # the TUI/MCP release still publishes — the release job tolerates a missing DMG.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -88,7 +92,7 @@ jobs:
         with:
           name: desktop-dmg
           path: target/desktop/release/bundle/dmg/*.dmg
-          if-no-files-found: error
+          if-no-files-found: ignore
 
   release:
     name: Create Release
@@ -104,10 +108,14 @@ jobs:
           merge-multiple: true
 
       - name: Download desktop DMG
+        # build-desktop is continue-on-error; the artifact may not exist if signing
+        # failed or was skipped. Allow missing artifacts so the release still publishes
+        # the TUI/MCP binaries.
         uses: actions/download-artifact@v4
         with:
           name: desktop-dmg
           path: desktop
+        continue-on-error: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

@@ -169,19 +169,27 @@ export function applyInboxFilters(
   });
 }
 
+/** Which project an inbox item belongs to, for the per-project filter chips.
+ *
+ *  A stored id counts only while that project exists. Items outlive projects:
+ *  one can be deleted, and older items name phantom projects that were
+ *  registered from a subdirectory before roots were normalized to the
+ *  repository root. Trusting a dead id hid those items behind every chip. */
 export function inboxItemProjectId(
   item: InboxItemSnapshot,
   projects: ProjectSnapshot[],
 ): string | null {
-  if (item.target.project_id) return item.target.project_id;
+  const stored = item.target.project_id;
+  if (stored && projects.some((p) => p.id === stored)) return stored;
   const root = item.target.repo_root;
   if (root) {
     const match = projects.find((p) => p.root_path && p.root_path === root);
     if (match) return match.id;
   }
-  const remote = item.target.remote;
+  // GitHub hands back either spelling of an owner, so compare case-insensitively.
+  const remote = item.target.remote?.toLowerCase();
   if (remote) {
-    const match = projects.find((p) => p.remote && p.remote === remote);
+    const match = projects.find((p) => p.remote?.toLowerCase() === remote);
     if (match) return match.id;
   }
   return null;

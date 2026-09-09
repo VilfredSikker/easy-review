@@ -1814,6 +1814,13 @@ fn main() {
                 .title_bar_style(tauri::TitleBarStyle::Overlay)
                 .hidden_title(true);
             let window = window_builder
+                // Tauri's OS drag-drop handler unconditionally reports every
+                // drag as handled, so wry never forwards to WKWebView's own
+                // NSDraggingDestination. That swallows in-page HTML5 drag and
+                // drop everywhere (tab strip, sidebar reordering): dragstart
+                // fires, the drag session is refused, dragend lands in the same
+                // tick. Nothing here consumes tauri://drag-drop file drops.
+                .disable_drag_drop_handler()
                 .visible(false)
                 .transparent(true)
                 .initialization_script_for_all_frames(FRAME_SCRIPT)

@@ -17,7 +17,9 @@
 - Open every markdown review export with a **Handling rules** preamble so a pasted export states how to act on each item type.
 
 ### Fixes
-- _None yet._
+- Desktop: drag-and-drop works again anywhere in the window — reordering projects and sidebar sections, and dragging tabs in the tab strip. Tauri's OS drag-drop handler was claiming every drag, so the webview never saw one.
+- CI: a missing or failed signed DMG build no longer blocks the release, so the TUI and MCP binaries still publish.
+- Desktop: picking a subdirectory in the project folder picker no longer registers a phantom project. A crate directory such as `crates/er-desktop` was registered under its own name, picked up the real repository's remote, and then collected that repository's PRs and notifications — whose "Open" failed with `Project not found`. Folders now register as the repository that contains them, and a notification whose project has since been deleted reopens against the matching repository instead of erroring. Those notifications were also missing from the inbox's per-project filters, since they claimed a project no longer in the list.
 
 ### Docs
 - Resolve the current release branch from origin instead of hardcoding a version in `AGENTS.md` / `CLAUDE.md`.
