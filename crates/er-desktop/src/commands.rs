@@ -7780,13 +7780,19 @@ pub async fn open_inbox_item(
 /// in the cached PR list for the project's remote. Returns `None` if the PR
 /// is not in the cache or any required field is missing — the caller then
 /// falls back to the no-hint (async-miss) path.
-fn build_inbox_pr_hint(pr_number: u64, remote: Option<&str>, state: &AppState) -> Option<PrOpenHint> {
+fn build_inbox_pr_hint(
+    pr_number: u64,
+    remote: Option<&str>,
+    state: &AppState,
+) -> Option<PrOpenHint> {
     let remote_slug = remote?;
     let key = normalize_remote_slug(remote_slug);
     let cache = state.pr_cache.lock().ok()?;
     let prs = cache.get(&key)?;
     let pr = prs.iter().find(|p| p.number == pr_number)?;
-    if pr.base_ref.trim().is_empty() || pr.head_ref.trim().is_empty() || pr.head_oid.trim().is_empty()
+    if pr.base_ref.trim().is_empty()
+        || pr.head_ref.trim().is_empty()
+        || pr.head_oid.trim().is_empty()
     {
         return None;
     }
