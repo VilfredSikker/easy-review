@@ -108,13 +108,14 @@ jobs:
           merge-multiple: true
 
       - name: Download desktop DMG
-        # build-desktop is continue-on-error; skip gracefully if no DMG was produced
-        # (e.g. Apple signing secrets not configured).
-        if: ${{ needs.build-desktop.result == 'success' }}
+        # build-desktop is continue-on-error; the artifact may not exist if signing
+        # failed or was skipped. Allow missing artifacts so the release still publishes
+        # the TUI/MCP binaries.
         uses: actions/download-artifact@v4
         with:
           name: desktop-dmg
           path: desktop
+        continue-on-error: true
 
       - name: Create Release
         uses: softprops/action-gh-release@v2
