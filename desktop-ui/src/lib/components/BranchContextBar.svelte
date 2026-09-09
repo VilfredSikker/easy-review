@@ -47,6 +47,39 @@
   /** Set when the open diff is behind origin (PR head or base advanced). */
   const diffStale = $derived(snapshot?.diff_stale ?? null);
 
+  /** True when the active tab can re-base locally (remote PR diffs come from
+   *  GitHub and cannot be changed). Working tabs / local branch views / local
+   *  PRs (a local clone) can all change base. */
+  const canChangeBase = $derived(activeTab?.kind !== "remote_pr");
+
+  let editingBase = $state(false);
+  let baseDraft = $state("");
+
+  function startEditBase() {
+    baseDraft = baseName ?? "";
+    editingBase = true;
+  }
+
+  async function commitBase() {
+    const draft = baseDraft.trim();
+    editingBase = false;
+    if (!draft || draft === baseName) return;
+    try {
+      await app.cmd("change_base", { branch: draft });
+      app.showToast("success", `Now diffing against ${draft}`);
+    } catch (e) {
+      app.showToast("error", `Change base failed: ${e}`);
+    }
+  }
+
+  async function handleBaseKey(e: KeyboardEvent) {
+    if (e.key === "Enter") {
+      await commitBase();
+    } else if (e.key === "Escape") {
+      editingBase = false;
+    }
+  }
+
   let syncing = $state(false);
   async function syncStale() {
     if (syncing) return;
@@ -112,7 +145,28 @@
     {#if baseName}
       <span class="text-muted text-[11px]">·</span>
       <span class="text-muted text-[11px]">base</span>
-      <span class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap shrink-0" data-testid="context-base">{baseName}</span>
+      {#if editingBase}
+        <input
+          class="px-1.5 py-0.5 rounded bg-ink-900 border border-border text-fg text-[10px] font-mono w-36 outline-none shrink-0"
+          bind:value={baseDraft}
+          onkeydown={handleBaseKey}
+          onblur={commitBase}
+          placeholder="branch or origin/branch"
+          data-testid="context-base-input"
+          autofocus
+        />
+      {:else if canChangeBase}
+        <button
+          class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap shrink-0 hover:text-fg hover:border-border transition-colors"
+          data-testid="context-base"
+          title="Change compare base — click to edit (e.g. a release branch)"
+          onclick={startEditBase}
+        >
+          {baseName}
+        </button>
+      {:else}
+        <span class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap shrink-0" data-testid="context-base">{baseName}</span>
+      {/if}
     {/if}
     {#if additions > 0 || deletions > 0}
       <span class="font-mono text-[10px] text-add-fg shrink-0">+{additions}</span>

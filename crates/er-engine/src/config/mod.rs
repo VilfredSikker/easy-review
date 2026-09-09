@@ -1,24 +1,19 @@
-#[path = "config_desktop_settings.rs"]
-mod config_desktop_settings;
-
-#[path = "config_settings.rs"]
-mod config_settings;
-
-#[path = "config_inbox.rs"]
-mod config_inbox;
+pub mod desktop_settings;
+pub mod inbox;
+pub mod settings;
 
 use anyhow::Result;
 
-pub use config_desktop_settings::{
+pub use desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot,
 };
-pub use config_inbox::{InboxConfig, InboxKindToggles};
-pub use config_settings::{
+pub use inbox::{InboxConfig, InboxKindToggles};
+use serde::{Deserialize, Serialize};
+pub use settings::{
     agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
     settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
 };
-use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -571,7 +566,7 @@ struct AiHubCatalogFile {
 
 /// Built-in `[ai_hub]` presets shipped with `er` (see `ai_hub_catalog.toml`).
 pub fn ai_hub_catalog() -> AiHubConfig {
-    toml::from_str::<AiHubCatalogFile>(include_str!("ai_hub_catalog.toml"))
+    toml::from_str::<AiHubCatalogFile>(include_str!("../ai_hub_catalog.toml"))
         .map(|f| f.ai_hub)
         .unwrap_or_default()
 }

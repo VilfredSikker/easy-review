@@ -2083,7 +2083,11 @@ fn render_tour_diff(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) 
     let tour = match tab.tour.as_ref() {
         Some(t) => t,
         None => {
-            render_history_empty(f, area, "No tour available — run /er-tour to generate one");
+            render_history_empty(
+                f,
+                area,
+                "No tour yet — press a (AI) then Generate guided tour",
+            );
             return;
         }
     };

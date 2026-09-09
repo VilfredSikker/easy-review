@@ -804,6 +804,7 @@ impl App {
             let tmp = format!("{path}.tmp");
             std::fs::write(&tmp, json)?;
             std::fs::rename(&tmp, &path)?;
+            self.adopt_questions(qs, &path);
         } else if comment_id.starts_with("n-") {
             let path = format!("{}/notes.json", er_dir);
             let content =
@@ -823,6 +824,7 @@ impl App {
             let tmp = format!("{path}.tmp");
             std::fs::write(&tmp, json)?;
             std::fs::rename(&tmp, &path)?;
+            self.adopt_notes(ns, &path);
         } else {
             let path = self.tab().github_comments_path();
             let content =
@@ -852,9 +854,9 @@ impl App {
             let tmp = format!("{path}.tmp");
             std::fs::write(&tmp, json)?;
             std::fs::rename(&tmp, &path)?;
+            self.adopt_github_comments(gc, &path);
         }
 
-        self.tab_mut().reload_ai_state();
         Ok(())
     }
 
@@ -996,30 +998,14 @@ impl App {
         Ok(())
     }
 
-    // ── Comment Navigation ──
-
     /// Jump to the next comment across all files.
-    #[allow(dead_code)]
     pub fn next_comment(&mut self) {
         self.jump_comment(true, false);
     }
 
     /// Jump to the previous comment across all files.
-    #[allow(dead_code)]
     pub fn prev_comment(&mut self) {
         self.jump_comment(false, false);
-    }
-
-    /// Jump to the next question across all files.
-    #[allow(dead_code)]
-    pub fn next_question(&mut self) {
-        self.jump_comment(true, true);
-    }
-
-    /// Jump to the previous question across all files.
-    #[allow(dead_code)]
-    pub fn prev_question(&mut self) {
-        self.jump_comment(false, true);
     }
 
     /// Core jump logic: navigate forward/backward through comments or questions across all files.
@@ -1471,6 +1457,33 @@ impl App {
         tab.scroll_to_current_hunk();
     }
 
+    /// Keep the in-memory questions in step with a sidecar we just rewrote.
+    ///
+    /// Thread mutations used to call `reload_ai_state()`, which re-reads every
+    /// sidecar (review.json, experts, tour, …) to learn about a change this
+    /// process just made. Adopting the written list instead is what already
+    /// keeps `submit_github_comment` fast; delete/edit/resolve follow suit.
+    fn adopt_questions(&mut self, qs: ai::ErQuestions, path: &str) {
+        let tab = self.tab_mut();
+        tab.ai.questions = Some(qs);
+        tab.ai.rebuild_comment_index();
+        tab.mark_sidecar_written(path);
+    }
+
+    fn adopt_notes(&mut self, ns: ai::ErNotes, path: &str) {
+        let tab = self.tab_mut();
+        tab.ai.notes = Some(ns);
+        tab.ai.rebuild_comment_index();
+        tab.mark_sidecar_written(path);
+    }
+
+    fn adopt_github_comments(&mut self, gc: ai::ErGitHubComments, path: &str) {
+        let tab = self.tab_mut();
+        tab.ai.github_comments = Some(gc);
+        tab.ai.rebuild_comment_index();
+        tab.mark_sidecar_written(path);
+    }
+
     /// Execute comment deletion after confirmation
     pub fn confirm_delete_comment(&mut self, comment_id: &str) -> Result<()> {
         let er_dir = self.tab().er_dir();
@@ -1489,6 +1502,7 @@ impl App {
                     let tmp_path = format!("{}.tmp", path);
                     std::fs::write(&tmp_path, &json)?;
                     std::fs::rename(&tmp_path, &path)?;
+                    self.adopt_questions(qs, &path);
                 }
             }
         } else if comment_id.starts_with("n-") {
@@ -1503,6 +1517,7 @@ impl App {
                     let tmp_path = format!("{}.tmp", path);
                     std::fs::write(&tmp_path, &json)?;
                     std::fs::rename(&tmp_path, &path)?;
+                    self.adopt_notes(ns, &path);
                 }
             }
         } else {
@@ -1526,20 +1541,6 @@ impl App {
                         .filter_map(|c| c.github_id)
                         .collect();
 
-                    // Delete from GitHub if applicable
-                    if let Some(gh_id) = github_id {
-                        if let Some(ref gh) = gc.github {
-                            let _ = crate::github::gh_pr_delete_comment(
-                                &gh.owner, &gh.repo, gh_id, &repo_root,
-                            );
-                            for reply_id in &reply_github_ids {
-                                let _ = crate::github::gh_pr_delete_comment(
-                                    &gh.owner, &gh.repo, *reply_id, &repo_root,
-                                );
-                            }
-                        }
-                    }
-
                     // Remove comment and cascade replies
                     gc.comments.retain(|c| {
                         c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
@@ -1549,12 +1550,30 @@ impl App {
                     let tmp_path = format!("{}.tmp", path);
                     std::fs::write(&tmp_path, &json)?;
                     std::fs::rename(&tmp_path, &path)?;
+
+                    // Delete from GitHub off this thread. The results were already
+                    // discarded (`let _ =`), and running `gh` inline held the
+                    // desktop's app lock for the whole network round trip, so every
+                    // poll and click queued behind a comment deletion.
+                    if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
+                        std::thread::spawn(move || {
+                            let _ = crate::github::gh_pr_delete_comment(
+                                &gh.owner, &gh.repo, gh_id, &repo_root,
+                            );
+                            for reply_id in reply_github_ids {
+                                let _ = crate::github::gh_pr_delete_comment(
+                                    &gh.owner, &gh.repo, reply_id, &repo_root,
+                                );
+                            }
+                        });
+                    }
+
+                    self.adopt_github_comments(gc, &path);
                 }
             }
         }
 
         self.input_mode = InputMode::Normal;
-        self.tab_mut().reload_ai_state();
         self.notify("Comment deleted");
         Ok(())
     }
@@ -2610,6 +2629,66 @@ impl App {
             prepared_diff,
             None,
         )
+    }
+
+    /// Generate a guided tour for the **active tab** and spawn it as an
+    /// app-level background task (`kind` = `tour`).
+    ///
+    /// Mirrors the desktop `generate_tour` command so the TUI and desktop
+    /// produce identical artifacts: captures the active view's diff (the PR
+    /// head-vs-base diff in PrDiff mode), writes the prepared-diff artifacts
+    /// into the active view's tour bucket (`tour_bucket_er_dir`), builds the
+    /// tour prompt, and enqueues the task. Completion is surfaced by the
+    /// app-level task poll (`poll_background_tasks`), which both reloads the
+    /// sidecars and lets the mtime poll surface the Guide tab.
+    pub fn spawn_tour_for_active_tab(&mut self) -> Result<()> {
+        let scope = "branch".to_string();
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = self.tab();
+            let branch_label = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            let er_dir = tab.tour_bucket_er_dir().unwrap_or_else(|| tab.er_dir());
+            (
+                tab.repo_root.clone(),
+                branch_label,
+                tab.base_branch.clone(),
+                er_dir,
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+
+        std::fs::create_dir_all(&er_dir)?;
+
+        let raw = self.tab().raw_diff_for_review(&scope)?;
+        if raw.trim().is_empty() {
+            anyhow::bail!("Nothing to tour");
+        }
+        let diff_hash = crate::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)
+            .map_err(|e| anyhow::anyhow!("failed to prepare tour diff: {e}"))?;
+
+        let is_pr = self.tab().tour_context_is_pr();
+        let scope_label = if is_pr { "PR diff" } else { "branch diff" };
+        let prompt = crate::ai::prompts::build_tour_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            "tour.json",
+            &diff_hash,
+        );
+        let target = super::background::BackgroundTaskTarget {
+            repo_root,
+            er_dir,
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+        self.spawn_background_tour(target, prompt, true)
     }
 
     /// Spawn diagram generation (`kind` = `diagram:<diagram-kind>`). The agent
@@ -3723,5 +3802,79 @@ mod background_queue_tests {
                 "{name} should not trigger AI sidecar reload"
             );
         }
+    }
+
+    /// Edit and delete keep the in-memory thread list in step with the sidecar
+    /// they just wrote, without `reload_ai_state()`. A reload would re-read
+    /// every sidecar (review.json, experts, tour, summary…) to learn about a
+    /// change this process made — that round trip was the cost of every
+    /// delete/edit click. `summary.md` is the canary: only a full reload
+    /// would pick it up.
+    #[test]
+    fn thread_edit_and_delete_update_memory_without_reloading_every_sidecar() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut app = App::new_for_test(vec![]);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = "/home/user/my-project".to_string();
+            tab.current_branch = "main".to_string();
+            tab.apply_managed_root();
+        }
+        let er_dir = app.tab().er_dir();
+        std::fs::create_dir_all(&er_dir).unwrap();
+        let q_path = format!("{er_dir}/questions.json");
+        std::fs::write(
+            &q_path,
+            r#"{"version":1,"diff_hash":"h","questions":[
+                {"id":"q-1","file":"x","hunk_index":0,"line_start":1,"line_content":"c","text":"pending","resolved":false},
+                {"id":"q-2","file":"x","hunk_index":0,"line_start":2,"line_content":"c","text":"other","resolved":false}
+            ]}"#,
+        )
+        .unwrap();
+        app.tab_mut().reload_ai_state();
+        assert_eq!(
+            app.tab().ai.questions.as_ref().map(|q| q.questions.len()),
+            Some(2)
+        );
+
+        // Written after the reload: visible only to a full `reload_ai_state()`.
+        std::fs::write(format!("{er_dir}/summary.md"), "# summary").unwrap();
+
+        app.update_comment_text("q-1", "edited").unwrap();
+        let edited = app
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .and_then(|qs| qs.questions.iter().find(|q| q.id == "q-1"))
+            .map(|q| q.text.clone());
+        assert_eq!(edited.as_deref(), Some("edited"), "edit visible in memory");
+        assert!(
+            app.tab().ai.summary.is_none(),
+            "edit must not re-read unrelated sidecars"
+        );
+
+        app.confirm_delete_comment("q-1").unwrap();
+        let ids: Vec<String> = app
+            .tab()
+            .ai
+            .questions
+            .as_ref()
+            .map(|qs| qs.questions.iter().map(|q| q.id.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(ids, vec!["q-2".to_string()], "delete visible in memory");
+        assert!(
+            app.tab().ai.summary.is_none(),
+            "delete must not re-read unrelated sidecars"
+        );
+        let on_disk = std::fs::read_to_string(&q_path).unwrap();
+        assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
+
+        std::env::remove_var("ER_STORAGE_ROOT");
     }
 }

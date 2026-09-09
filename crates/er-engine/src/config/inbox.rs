@@ -1,7 +1,7 @@
 //! Desktop inbox preferences: which event kinds appear in the sidebar, and
 //! which fire OS notifications.
 
-use super::config_desktop_settings::ConfigHubFieldDto;
+use super::desktop_settings::ConfigHubFieldDto;
 use super::ErConfig;
 use serde::{Deserialize, Serialize};
 

@@ -156,16 +156,16 @@
       (activeProject?.saved_prs ?? []).some((p) => p.number === effectivePrNumber),
   );
 
-  async function toggleSaved() {
+  function toggleSaved() {
     if (!activeProject || effectivePrNumber === null) return;
     const title = github?.title ?? pr?.title ?? "";
     if (isSaved) {
-      await app.cmd("unsave_pr", {
+      void app.cmd("unsave_pr", {
         projectId: activeProject.id,
         prNumber: effectivePrNumber,
       });
     } else {
-      await app.cmd("save_pr", {
+      void app.cmd("save_pr", {
         projectId: activeProject.id,
         prNumber: effectivePrNumber,
         title,

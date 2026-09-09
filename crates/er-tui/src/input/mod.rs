@@ -408,6 +408,10 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 app.spawn_agent_prompt("notes", &prompt)?;
             }
         }
+        HubAction::PromptTour => match app.spawn_tour_for_active_tab() {
+            Ok(()) => app.notify_long("Generating guided tour…"),
+            Err(e) => app.notify(&format!("Tour generation failed: {}", e)),
+        },
         HubAction::OpenDirectory => {
             app.open_directory_browser();
         }
@@ -417,6 +421,14 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         HubAction::OpenRemoteUrl => {
             app.remote_url_input.clear();
             app.input_mode = InputMode::RemoteUrl;
+        }
+        HubAction::SetBaseBranch => {
+            if app.tab().is_remote() {
+                app.notify("Cannot change base — remote PR diff comes from GitHub");
+            } else {
+                app.remote_url_input.clear();
+                app.input_mode = InputMode::BaseBranch;
+            }
         }
         HubAction::OpenPrInBrowser => {
             let repo_root = app.tab().repo_root.clone();
@@ -484,6 +496,7 @@ fn execute_ai_action(app: &mut App, action: AiActionKind) -> Result<()> {
         AiActionKind::Validate => dispatch_hub_action(app, HubAction::PromptValidate),
         AiActionKind::Questions => dispatch_hub_action(app, HubAction::PromptQuestions),
         AiActionKind::Notes => dispatch_hub_action(app, HubAction::PromptNotes),
+        AiActionKind::Tour => dispatch_hub_action(app, HubAction::PromptTour),
         AiActionKind::Summary => {
             if let Some(prompt) = build_agent_summary_prompt(app) {
                 app.spawn_agent_prompt("summary", &prompt)?;
@@ -581,6 +594,37 @@ pub fn handle_remote_url_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 app.notify(&format!("Failed: {}", e));
             }
             app.remote_url_input.clear();
+        }
+        KeyCode::Esc => {
+            app.remote_url_input.clear();
+            app.input_mode = InputMode::Normal;
+        }
+        KeyCode::Char(c) => {
+            app.remote_url_input.push(c);
+        }
+        KeyCode::Backspace => {
+            app.remote_url_input.pop();
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Text entry for changing the compare/base branch of the active tab.
+pub fn handle_base_branch_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    match key.code {
+        KeyCode::Enter => {
+            let input = app.remote_url_input.clone();
+            app.input_mode = InputMode::Normal;
+            app.remote_url_input.clear();
+            let branch = input.trim();
+            if branch.is_empty() {
+                return Ok(());
+            }
+            match app.tab_mut().set_base_branch(branch) {
+                Ok(()) => app.notify(&format!("Base set to {}", branch)),
+                Err(e) => app.notify(&format!("Could not change base: {}", e)),
+            }
         }
         KeyCode::Esc => {
             app.remote_url_input.clear();

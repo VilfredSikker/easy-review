@@ -287,8 +287,13 @@
         </svg>
       </button>
     </div>
-    <div class="flex-1 overflow-auto p-6">
-      <MermaidDiagram source={expandedDiagram.mermaid} />
+    <div class="flex-1 overflow-hidden p-6 relative">
+      <MermaidDiagram source={expandedDiagram.mermaid} interactive={true} />
+    </div>
+    <div class="px-4 py-2 border-t border-hairline shrink-0">
+      <p class="text-[10px] text-muted">
+        Ctrl/Cmd + scroll to zoom · drag to pan · double-click to reset
+      </p>
     </div>
   {/if}
 </ModalShell>

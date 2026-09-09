@@ -316,6 +316,34 @@ pub fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
     snap
 }
 
+/// Full snapshot for a mutation the frontend already painted optimistically
+/// (thread and finding writes). Records the revisions as sent, the same way
+/// `poll_impl` does after a send, so the follow-up poll is a `poll_skip`
+/// instead of rebuilding and re-sending the identical content a second time.
+pub fn snap_from_confirmed(app: &App, state: &AppState) -> AppSnapshot {
+    let t0 = std::time::Instant::now();
+    let snap = snap_from(app, state);
+    state
+        .last_sent_content_revision
+        .store(compute_content_revision(app), Ordering::Relaxed);
+    state
+        .last_sent_chrome_revision
+        .store(compute_chrome_revision(state), Ordering::Relaxed);
+    state
+        .last_sent_reviewed_revision
+        .store(app.tab().reviewed_revision, Ordering::Relaxed);
+    // Attributes a `build_snapshot` line to a thread/finding write so the
+    // cost of confirming one is visible next to the poll's own builds.
+    crate::profile_log::profile_log(
+        "thread_write_confirm",
+        &[
+            ("snap_ms", t0.elapsed().as_millis().to_string()),
+            ("files", snap.files.len().to_string()),
+        ],
+    );
+    snap
+}
+
 /// First-paint snapshot for hot open paths (two-phase open, first-paint plan
 ///
 /// step 2): full chrome (tabs/projects/mode/branch/base) + PR card, but no
@@ -1023,6 +1051,27 @@ pub async fn set_mode(
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
+}
+
+/// Change the compare/base branch the active tab diffs against. Only valid on
+/// local working-tree / local-branch / local-PR tabs; remote PR diffs come from
+/// GitHub and cannot be re-based client-side. Persists the new base so a
+/// restart restores the same comparison.
+#[tauri::command]
+pub async fn change_base(
+    branch: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut()
+            .set_base_branch(&branch)
+            .map_err(|e| e.to_string())?;
+        crate::tabs::persist_app_tabs(&app);
         Ok(snap_from_command(&app, &state))
     })
     .await
@@ -2280,7 +2329,7 @@ pub async fn add_comment(
             None,
         )
         .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2321,7 +2370,7 @@ pub async fn add_question(
             None,
         )
         .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2362,7 +2411,7 @@ pub async fn add_note(
             None,
         )
         .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2440,7 +2489,7 @@ pub async fn reply_to_thread(
             None,
         )
         .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2464,7 +2513,7 @@ pub async fn delete_thread(
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2497,31 +2546,38 @@ fn finding_linked_thread_ids(ai: &er_engine::ai::AiState, finding_id: &str) -> V
 }
 
 #[tauri::command]
-pub fn remove_finding_thread(
+pub async fn remove_finding_thread(
     finding_id: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let er_dir = app.tab().er_dir();
-
-    let pending_ids = finding_linked_thread_ids(&app.tab().ai, &finding_id);
-    er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id)
-        .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
-
-    if let Ok(mut p) = state.pending_ai_replies.lock() {
-        for id in pending_ids {
-            p.remove(&id);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
         }
-        if let Some(root) = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id) {
-            p.remove(&root);
-        }
-    }
+        let er_dir = app.tab().er_dir();
 
-    app.tab_mut().reload_ai_state();
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+        let pending_ids = finding_linked_thread_ids(&app.tab().ai, &finding_id);
+        er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id)
+            .map_err(|e| format!("Failed to remove finding thread: {e}"))?;
+
+        if let Ok(mut p) = state.pending_ai_replies.lock() {
+            for id in pending_ids {
+                p.remove(&id);
+            }
+            if let Some(root) = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id)
+            {
+                p.remove(&root);
+            }
+        }
+
+        app.tab_mut().reload_ai_state();
+        crate::profile_log::bump_desktop_revision(&state.desktop_revision, "remove_finding_thread");
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
 }
 
 fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), String> {
@@ -2531,12 +2587,15 @@ fn write_json_atomic<T: serde::Serialize>(path: &str, value: &T) -> Result<(), S
     std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
+/// Mark a thread root resolved in whichever sidecar holds it. Returns the path
+/// of the sidecar that holds the thread (written only if it was unresolved),
+/// or `None` when no sidecar knows the id.
 fn mark_thread_resolved_in_files(
     id: &str,
     q_path: &str,
     notes_path: &str,
     gc_path: &str,
-) -> Result<bool, String> {
+) -> Result<Option<String>, String> {
     use er_engine::ai::{ErGitHubComments, ErNotes, ErQuestions};
     if let Ok(text) = std::fs::read_to_string(q_path) {
         if let Ok(mut qs) = serde_json::from_str::<ErQuestions>(&text) {
@@ -2545,7 +2604,7 @@ fn mark_thread_resolved_in_files(
                     q.resolved = true;
                     write_json_atomic(q_path, &qs)?;
                 }
-                return Ok(true);
+                return Ok(Some(q_path.to_string()));
             }
         }
     }
@@ -2557,7 +2616,7 @@ fn mark_thread_resolved_in_files(
                     n.resolved = true;
                     write_json_atomic(notes_path, &ns)?;
                 }
-                return Ok(true);
+                return Ok(Some(notes_path.to_string()));
             }
         }
     }
@@ -2569,11 +2628,32 @@ fn mark_thread_resolved_in_files(
                     c.resolved = true;
                     write_json_atomic(gc_path, &gc)?;
                 }
-                return Ok(true);
+                return Ok(Some(gc_path.to_string()));
             }
         }
     }
-    Ok(false)
+    Ok(None)
+}
+
+/// Mirror `mark_thread_resolved_in_files` on the in-memory AI state so the
+/// handler does not need `reload_ai_state()` (which re-reads every sidecar).
+fn mark_thread_resolved_in_memory(ai: &mut er_engine::ai::AiState, id: &str) {
+    if let Some(qs) = ai.questions.as_mut() {
+        for q in qs.questions.iter_mut().filter(|q| q.id == id) {
+            q.resolved = true;
+        }
+    }
+    if let Some(ns) = ai.notes.as_mut() {
+        for n in ns.notes.iter_mut().filter(|n| n.id == id) {
+            n.resolved = true;
+        }
+    }
+    if let Some(gc) = ai.github_comments.as_mut() {
+        for c in gc.comments.iter_mut().filter(|c| c.id == id) {
+            c.resolved = true;
+        }
+    }
+    ai.rebuild_comment_index();
 }
 
 #[tauri::command]
@@ -2593,12 +2673,16 @@ pub async fn resolve_thread(
         let q_path = format!("{}/questions.json", tab.er_dir());
         let notes_path = format!("{}/notes.json", tab.er_dir());
         let gc_path = tab.github_comments_path();
-        let changed = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?;
-        if !changed {
+        let Some(touched) = mark_thread_resolved_in_files(&id, &q_path, &notes_path, &gc_path)?
+        else {
             return Err(format!("Thread not found or already resolved: {id}"));
+        };
+        {
+            let tab = app.tab_mut();
+            mark_thread_resolved_in_memory(&mut tab.ai, &id);
+            tab.mark_sidecar_written(&touched);
         }
-        app.tab_mut().reload_ai_state();
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -2845,41 +2929,55 @@ fn pull_github_comments_blocking(state: &AppState, force: bool) -> Result<AppSna
     }
 }
 
+// The three push commands shell out to `gh` for every unsynced comment; as sync
+// commands that network round trip ran on the main thread and froze the window.
 #[tauri::command]
-pub fn push_github_comments(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_all_comments_to_github()
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+pub async fn push_github_comments(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.push_all_comments_to_github()
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Push a single local comment thread (root + replies) to GitHub.
 #[tauri::command]
-pub fn push_github_comment_thread(
+pub async fn push_github_comment_thread(
     id: String,
     pr_number: Option<u64>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_github_comment_thread(&id, pr_number)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.push_github_comment_thread(&id, pr_number)
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Push a single unsynced local GitHub comment reply (parent must already be on GitHub).
 #[tauri::command]
-pub fn push_github_comment_reply(
+pub async fn push_github_comment_reply(
     reply_id: String,
     pr_number: Option<u64>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     if reply_id.starts_with("fr-") {
         return Err("Finding validation replies cannot be pushed individually — promote the finding instead.".to_string());
     }
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.push_github_comment_reply(&reply_id, pr_number)
-        .map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.push_github_comment_reply(&reply_id, pr_number)
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Submit pending local comments as a GitHub PR review with an explicit decision.
@@ -3319,7 +3417,16 @@ pub fn submit_github_pr_decision(
 /// GitHub card's "Comment / Review" action — distinct from line-anchored
 /// review comments handled by `submit_github_review`.
 #[tauri::command]
-pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+pub async fn post_github_pr_comment(
+    body: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || post_github_pr_comment_impl(body, &state)).await
+}
+
+/// `gh` network call; runs on the blocking pool so the window stays responsive.
+fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnapshot, String> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return Err("Comment body cannot be empty".to_string());
@@ -3327,7 +3434,7 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
 
     let (owner, repo, number) = {
         let app = state.app.lock().map_err(|e| e.to_string())?;
-        active_github_key(&app, &state)
+        active_github_key(&app, state)
             .ok_or_else(|| "No GitHub PR detected for the active tab".to_string())?
     };
 
@@ -3346,7 +3453,7 @@ pub fn post_github_pr_comment(body: String, state: State<AppState>) -> Result<Ap
     );
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(snap_from(&app, &state))
+    Ok(snap_from(&app, state))
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -4501,7 +4608,7 @@ pub async fn promote_to_comment(
             app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
         }
 
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -4590,7 +4697,7 @@ pub async fn promote_to_note(
             app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
         }
 
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -4628,25 +4735,29 @@ fn save_finding_promotions(
 /// Validate a comment, question, or finding with AI — adds a local reply on the card
 /// (finding responses in review.json; thread replies in sidecars).
 #[tauri::command]
-pub fn validate_with_ai(
+pub async fn validate_with_ai(
     thread_id: Option<String>,
     finding_id: Option<String>,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let resolved_finding = {
-        let app = state.app.lock().map_err(|e| e.to_string())?;
-        finding_id.or_else(|| {
-            thread_id
-                .as_ref()
-                .and_then(|tid| finding_id_for_thread(app.tab(), tid))
-        })
-    };
-    if let Some(fid) = resolved_finding {
-        return ask_ai_for_finding(fid, VALIDATE_CARD_AI_PROMPT.to_string(), state);
-    }
-    let resolved_thread =
-        thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
-    ask_ai(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), state)
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let resolved_finding = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            finding_id.or_else(|| {
+                thread_id
+                    .as_ref()
+                    .and_then(|tid| finding_id_for_thread(app.tab(), tid))
+            })
+        };
+        if let Some(fid) = resolved_finding {
+            return ask_ai_for_finding(fid, VALIDATE_CARD_AI_PROMPT.to_string(), &state);
+        }
+        let resolved_thread =
+            thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
+        ask_ai_impl(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), &state)
+    })
+    .await
 }
 
 /// Ask AI to elaborate on / answer a question thread — adds a local reply.
@@ -4654,8 +4765,12 @@ pub fn validate_with_ai(
 /// This is the question-flavored counterpart to `validate_with_ai`: questions
 /// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
 #[tauri::command]
-pub fn elaborate_with_ai(thread_id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    ask_ai(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), state)
+pub async fn elaborate_with_ai(
+    thread_id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || ask_ai_impl(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), &state)).await
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -4665,11 +4780,19 @@ pub fn elaborate_with_ai(thread_id: String, state: State<AppState>) -> Result<Ap
 /// the next snapshot poll. While the subprocess is running a synthetic
 /// "…thinking" reply is rendered (see `pending_ai_replies` in `AppState`).
 #[tauri::command]
-pub fn ask_ai(
+pub async fn ask_ai(
     thread_id: String,
     prompt: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || ask_ai_impl(thread_id, prompt, &state)).await
+}
+
+/// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
+/// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
+/// files) under the app lock, so callers run it on the blocking pool.
+fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
@@ -4880,7 +5003,7 @@ pub fn ask_ai(
 
     // Build snapshot before releasing locks (test path expects synchronous
     // visibility of the pending state).
-    let snap = snap_from(&app, &state);
+    let snap = snap_from(&app, state);
 
     // Release lock before spawning so the subprocess runs without holding the App mutex.
     drop(app);
@@ -4967,7 +5090,7 @@ fn lookup_finding_fields(
 fn ask_ai_for_finding(
     finding_id: String,
     prompt: String,
-    state: State<AppState>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
@@ -5103,7 +5226,7 @@ fn ask_ai_for_finding(
     let inv_for_thread = invocation;
     let model_for_thread = model_for_subprocess;
 
-    let snap = snap_from(&app, &state);
+    let snap = snap_from(&app, state);
     drop(app);
 
     std::thread::spawn(move || {
@@ -5135,32 +5258,48 @@ fn ask_ai_for_finding(
 }
 
 #[tauri::command]
-pub fn update_finding_response(
+pub async fn update_finding_response(
     finding_id: String,
     response_id: String,
     body: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let er_dir = app.tab().er_dir();
-    er_engine::ai::update_finding_response(&er_dir, &finding_id, &response_id, &body)
-        .map_err(|e| e.to_string())?;
-    app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        let er_dir = app.tab().er_dir();
+        er_engine::ai::update_finding_response(&er_dir, &finding_id, &response_id, &body)
+            .map_err(|e| e.to_string())?;
+        app.tab_mut().reload_ai_state();
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_finding_response(
+pub async fn delete_finding_response(
     finding_id: String,
     response_id: String,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let er_dir = app.tab().er_dir();
-    er_engine::ai::delete_finding_response(&er_dir, &finding_id, &response_id)
-        .map_err(|e| e.to_string())?;
-    app.tab_mut().reload_ai_state();
-    Ok(snap_from(&app, &state))
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        let er_dir = app.tab().er_dir();
+        er_engine::ai::delete_finding_response(&er_dir, &finding_id, &response_id)
+            .map_err(|e| e.to_string())?;
+        app.tab_mut().reload_ai_state();
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
 }
 
 fn finding_fields_for_ref(
@@ -6727,17 +6866,7 @@ pub async fn open_pr_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    let t_cmd = std::time::Instant::now();
-    run_blocking(move || {
-        // TEMP diagnostic: spawn_blocking dispatch latency (candidate 2 — queue wait).
-        log::info!(
-            "open_pr_review pr={} phase=queue_wait ms={}",
-            pr_number,
-            t_cmd.elapsed().as_millis()
-        );
-        open_pr_review_impl(project_id, pr_number, replace, hint, &state)
-    })
-    .await
+    run_blocking(move || open_pr_review_impl(project_id, pr_number, replace, hint, &state)).await
 }
 
 fn open_pr_review_impl(
@@ -6820,7 +6949,6 @@ fn open_pr_review_impl(
         head_branch_for_checkout
     };
     let checkout_root = resolve_head_checkout(&repo_root_for_checkout, &checkout_branch);
-    let tab_build_ms = t_tab_build.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_tab_build", t_tab_build);
     log::info!(
         "branch_open project={} branch={} phase=pr_open_cache hit={}",
@@ -6830,14 +6958,12 @@ fn open_pr_review_impl(
     );
     let t_app_lock = std::time::Instant::now();
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let app_lock_ms = t_app_lock.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
     // apply_managed_root + AI reload for the PR bucket (first-paint plan
     // step 1: three full reloads per open → one).
     place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
-    let tab_place_ms = t_place_tab.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
     // PR Diff, so the first snapshot already reflects the working-tree views.
@@ -6898,11 +7024,8 @@ fn open_pr_review_impl(
             });
         }
     }
-    let pr_diff_enter_ms = t_pr_diff.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "pr_diff_enter", t_pr_diff);
-    let t_recent = std::time::Instant::now();
     let _ = projects::record_recent_pr(&project_id, pr_number, &recent_title);
-    let record_recent_ms = t_recent.elapsed().as_millis();
     kick_meta_refresh(state, app.tab().repo_root.clone());
     let t_snapshot = std::time::Instant::now();
     let snapshot = if two_phase {
@@ -6913,7 +7036,6 @@ fn open_pr_review_impl(
     } else {
         snap_from_command(&app, state)
     };
-    let snap_build_ms = t_snapshot.elapsed().as_millis();
     log_branch_open_phase(&project_id, &branch_label, "snapshot_build", t_snapshot);
     log_branch_open_phase(&project_id, &branch_label, "total", t_total);
     kick_active_gh_status(&app, state);
@@ -6923,26 +7045,6 @@ fn open_pr_review_impl(
     // Background-fetch the PR's local git refs (skipped by the fast
     // `enter_pr_diff_preloaded` path) so later local-ref consumers find them.
     kick_pr_ref_fetch(&app, state);
-    // TEMP diagnostic: serialize cost + payload size (candidate 1 — snapshot serialize/IPC).
-    // `ser_ms`/`ser_bytes` estimate Tauri's post-return serialization; the IPC transfer +
-    // JS parse is then `invoke_ms - queue_wait - total - ser_ms`. Remove after diagnosis.
-    let t_ser = std::time::Instant::now();
-    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
-    log::info!(
-        "open_pr_review pr={} phase=summary cache_hit={} files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms={} record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
-        pr_number,
-        cache_hit,
-        snapshot.files.len(),
-        app_lock_ms,
-        tab_build_ms,
-        tab_place_ms,
-        pr_diff_enter_ms,
-        record_recent_ms,
-        snap_build_ms,
-        ser_bytes,
-        t_ser.elapsed().as_millis(),
-        t_total.elapsed().as_millis(),
-    );
     Ok(snapshot)
 }
 
@@ -7549,6 +7651,12 @@ pub fn refresh_project_pr_list(
     snap!(state)
 }
 
+/// Apply an inbox mutation the frontend has already painted optimistically.
+///
+/// Returns a chrome-only snapshot: the inbox is app-wide chrome, so there is no
+/// reason to rebuild files/AI/commits (git subprocesses included) for a
+/// read-state flip. The frontend merges it onto whatever view is showing.
+/// Runs on the blocking pool — callers wrap it in `run_blocking`.
 fn mutate_inbox(
     state: &AppState,
     command: &'static str,
@@ -7562,50 +7670,79 @@ fn mutate_inbox(
         f(&mut inbox);
     }
     crate::inbox::save_inbox_state(&state.inbox);
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    snap!(state)
+    // Clearing read items changes neither hashed inbox input (unread count,
+    // last refresh), so the bump is what lets the poll notice the change.
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, command);
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(chrome_snap_from(&app, state))
 }
 
 #[tauri::command]
-pub fn mark_inbox_item_read(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let now = now_ms();
-    mutate_inbox(&state, "mark_inbox_item_read", |inbox| {
-        inbox.mark_item_read(&id, now);
-    })
-}
-
-#[tauri::command]
-pub fn mark_all_inbox_read(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let now = now_ms();
-    mutate_inbox(&state, "mark_all_inbox_read", |inbox| {
-        inbox.mark_all_read(now);
-    })
-}
-
-#[tauri::command]
-pub fn mark_inbox_items_read(
-    ids: Vec<String>,
-    state: State<AppState>,
+pub async fn mark_inbox_item_read(
+    id: String,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    let now = now_ms();
-    mutate_inbox(&state, "mark_inbox_items_read", |inbox| {
-        inbox.mark_items_read(&ids, now);
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let now = now_ms();
+        mutate_inbox(&state, "mark_inbox_item_read", |inbox| {
+            inbox.mark_item_read(&id, now);
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_read_inbox_items(state: State<AppState>) -> Result<AppSnapshot, String> {
-    mutate_inbox(&state, "clear_read_inbox_items", |inbox| {
-        inbox.clear_read();
+pub async fn mark_all_inbox_read(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let now = now_ms();
+        mutate_inbox(&state, "mark_all_inbox_read", |inbox| {
+            inbox.mark_all_read(now);
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn clear_inbox_items(ids: Vec<String>, state: State<AppState>) -> Result<AppSnapshot, String> {
-    // Same contract as global trash: only already-read items are removed.
-    mutate_inbox(&state, "clear_inbox_items", |inbox| {
-        inbox.clear_read_items(&ids);
+pub async fn mark_inbox_items_read(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let now = now_ms();
+        mutate_inbox(&state, "mark_inbox_items_read", |inbox| {
+            inbox.mark_items_read(&ids, now);
+        })
     })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_read_inbox_items(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        mutate_inbox(&state, "clear_read_inbox_items", |inbox| {
+            inbox.clear_read();
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn clear_inbox_items(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        // Same contract as global trash: only already-read items are removed.
+        mutate_inbox(&state, "clear_inbox_items", |inbox| {
+            inbox.clear_read_items(&ids);
+        })
+    })
+    .await
 }
 
 #[tauri::command]
@@ -7627,16 +7764,54 @@ pub fn test_native_notification(state: State<AppState>) -> Result<(), String> {
     }
 }
 
+/// Open a notification's target. `new_tab` opens it in a fresh tab; the
+/// default replaces the active tab (the inbox dialog offers both).
 #[tauri::command]
 pub async fn open_inbox_item(
     id: String,
+    new_tab: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || open_inbox_item_impl(id, &state)).await
+    run_blocking(move || open_inbox_item_impl(id, new_tab.unwrap_or(false), &state)).await
 }
 
-fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, String> {
+/// Build a `PrOpenHint` for an inbox PR open by looking up the PR metadata
+/// in the cached PR list for the project's remote. Returns `None` if the PR
+/// is not in the cache or any required field is missing — the caller then
+/// falls back to the no-hint (async-miss) path.
+fn build_inbox_pr_hint(
+    pr_number: u64,
+    remote: Option<&str>,
+    state: &AppState,
+) -> Option<PrOpenHint> {
+    let remote_slug = remote?;
+    let key = normalize_remote_slug(remote_slug);
+    let cache = state.pr_cache.lock().ok()?;
+    let prs = cache.get(&key)?;
+    let pr = prs.iter().find(|p| p.number == pr_number)?;
+    if pr.base_ref.trim().is_empty()
+        || pr.head_ref.trim().is_empty()
+        || pr.head_oid.trim().is_empty()
+    {
+        return None;
+    }
+    Some(PrOpenHint {
+        base_ref: pr.base_ref.clone(),
+        head_ref: pr.head_ref.clone(),
+        head_oid: pr.head_oid.clone(),
+        updated_at: pr.updated_at.clone(),
+        title: pr.title.clone(),
+        author: pr.author.clone(),
+    })
+}
+
+fn open_inbox_item_impl(
+    id: String,
+    new_tab: bool,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    let replace = Some(!new_tab);
     let now = now_ms();
     let mut target = {
         let mut inbox = state.inbox.lock().map_err(|e| {
@@ -7662,10 +7837,15 @@ fn open_inbox_item_impl(id: String, state: &AppState) -> Result<AppSnapshot, Str
             );
         }
         if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            return open_pr_review_impl(project_id, pr_number, Some(true), None, state);
+            // Build a hint from the PR cache so the open can take the fast
+            // path (skip `gh pr view`, use cached diff) — same as the sidebar.
+            // Without a hint the code always takes the async-miss path, which
+            // historically has left the tab stuck on "Loading diff…" for inbox opens.
+            let hint = build_inbox_pr_hint(pr_number, target.remote.as_deref(), state);
+            return open_pr_review_impl(project_id, pr_number, replace, hint, state);
         }
         if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
-            return open_local_branch_impl(project_id, branch, Some(true), state);
+            return open_local_branch_impl(project_id, branch, replace, state);
         }
     }
 
@@ -7891,43 +8071,31 @@ pub fn open_project_branch(
 }
 
 #[tauri::command]
-pub fn dismiss_remote_pr(
+pub async fn dismiss_remote_pr(
     project_id: String,
     pr_number: u64,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    projects::dismiss_pr(&project_id, pr_number);
-    let root = state
-        .app
-        .lock()
-        .ok()
-        .map(|a| a.tab().repo_root.clone())
-        .unwrap_or_default();
-    kick_meta_refresh(&state, root);
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    snap!(state)
+    let state = state.inner().clone();
+    run_blocking(move || {
+        projects::dismiss_pr(&project_id, pr_number);
+        confirm_projects_chrome(&state, "projects_dismiss")
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn undismiss_remote_pr(
+pub async fn undismiss_remote_pr(
     project_id: String,
     pr_number: u64,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    projects::undismiss_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
-    let root = state
-        .app
-        .lock()
-        .ok()
-        .map(|a| a.tab().repo_root.clone())
-        .unwrap_or_default();
-    kick_meta_refresh(&state, root);
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    snap!(state)
+    let state = state.inner().clone();
+    run_blocking(move || {
+        projects::undismiss_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
+        confirm_projects_chrome(&state, "projects_undismiss")
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8128,40 +8296,47 @@ fn resolve_pr_title_for_project(
     Ok(format!("PR #{pr_number}"))
 }
 
-#[tauri::command]
-pub fn save_pr(
-    project_id: String,
-    pr_number: u64,
-    title: Option<String>,
-    state: State<AppState>,
-) -> Result<AppSnapshot, String> {
-    let title = resolve_pr_title_for_project(&project_id, pr_number, title, &state)?;
-    projects::save_pr(&project_id, pr_number, &title).map_err(|e| e.to_string())?;
-    let root = state
-        .app
-        .lock()
-        .ok()
-        .map(|a| a.tab().repo_root.clone())
-        .unwrap_or_default();
-    kick_meta_refresh(&state, root);
-    snap!(state)
+/// Confirm a projects.json mutation the frontend already painted (pin/ignore).
+///
+/// Chrome-only: the sidebar lists are chrome, so no files/AI/commits rebuild.
+/// The bump is required — `compute_chrome_revision` does not hash
+/// projects.json, so without it the poll would never notice the change.
+/// No `kick_meta_refresh`: that repopulates branch metadata (a git sweep over
+/// every project) which pinning never touches.
+fn confirm_projects_chrome(state: &AppState, reason: &'static str) -> Result<AppSnapshot, String> {
+    crate::profile_log::bump_desktop_revision(&state.desktop_revision, reason);
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(chrome_snap_from(&app, state))
 }
 
 #[tauri::command]
-pub fn unsave_pr(
+pub async fn save_pr(
     project_id: String,
     pr_number: u64,
-    state: State<AppState>,
+    title: Option<String>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
-    projects::unsave_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
-    let root = state
-        .app
-        .lock()
-        .ok()
-        .map(|a| a.tab().repo_root.clone())
-        .unwrap_or_default();
-    kick_meta_refresh(&state, root);
-    snap!(state)
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let title = resolve_pr_title_for_project(&project_id, pr_number, title, &state)?;
+        projects::save_pr(&project_id, pr_number, &title).map_err(|e| e.to_string())?;
+        confirm_projects_chrome(&state, "projects_pin")
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn unsave_pr(
+    project_id: String,
+    pr_number: u64,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        projects::unsave_pr(&project_id, pr_number).map_err(|e| e.to_string())?;
+        confirm_projects_chrome(&state, "projects_unpin")
+    })
+    .await
 }
 
 #[tauri::command]
@@ -8312,12 +8487,26 @@ pub async fn dismiss_finding(
 }
 
 #[tauri::command]
-pub fn promote_finding_to_comment(
+pub async fn promote_finding_to_comment(
     finding_id: String,
     body: Option<String>,
-    state: State<AppState>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || promote_finding_to_comment_impl(finding_id, body, view, &state)).await
+}
+
+fn promote_finding_to_comment_impl(
+    finding_id: String,
+    body: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+        return early;
+    }
 
     let er_dir = app.tab().er_dir();
 
@@ -8400,19 +8589,42 @@ pub fn promote_finding_to_comment(
         app.tab_mut().reload_ai_state();
     }
 
-    Ok(snap_from(&app, &state))
+    Ok(snap_from_confirmed(&app, state))
 }
 
 const FINDING_THREAD_STUB: &str = "Follow-up on this finding.";
 
 #[tauri::command]
-pub fn reply_to_finding(
+pub async fn reply_to_finding(
+    finding_id: String,
+    body: String,
+    ai_assist: bool,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || reply_to_finding_impl(finding_id, body, ai_assist, id, view, &state)).await
+}
+
+fn reply_to_finding_impl(
     finding_id: String,
     body: String,
     _ai_assist: bool,
-    state: State<AppState>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
 ) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+        return early;
+    }
+    // Reuse the id the frontend painted with (see `optimisticInvokeArgs`) so the
+    // confirming snapshot lands on the same row. Consumed by the first
+    // `submit_comment_text`: the stub root when a thread is created, else the reply.
+    if let Some(id) = id {
+        app.tab_mut().comment_id_override = Some(id);
+    }
 
     // v1: create a github comment that references the finding's location.
     let (target, finding_text) = {
@@ -8480,7 +8692,7 @@ pub fn reply_to_finding(
                 .ok_or_else(|| "Failed to create finding comment thread".to_string())?
         };
         drop(app);
-        return ask_ai(root_id, enriched_prompt, state);
+        return ask_ai_impl(root_id, enriched_prompt, state);
     }
 
     let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
@@ -8536,7 +8748,7 @@ pub fn reply_to_finding(
         .map_err(|e| e.to_string())?;
     }
 
-    Ok(snap_from(&app, &state))
+    Ok(snap_from_confirmed(&app, state))
 }
 
 #[tauri::command]
@@ -8589,7 +8801,7 @@ pub async fn update_thread_message(
 
         app.update_comment_text(&id, &text)
             .map_err(|e| e.to_string())?;
-        Ok(snap_from(&app, &state))
+        Ok(snap_from_confirmed(&app, &state))
     })
     .await
 }
@@ -8601,31 +8813,39 @@ use crate::export::{render_markdown, ExportOpts};
 /// Render the active tab's annotations as markdown and return the body to
 /// the UI for clipboard copy / preview.
 #[tauri::command]
-pub fn export_review(opts: ExportOpts, state: State<AppState>) -> Result<String, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    Ok(render_markdown(app.tab(), &opts))
+pub async fn export_review(opts: ExportOpts, state: State<'_, AppState>) -> Result<String, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(render_markdown(app.tab(), &opts))
+    })
+    .await
 }
 
 /// Render and write to disk. Empty `path` writes to `<comments_dir>/export.md`.
 /// Returns the resolved absolute path so the UI can show it in a toast.
 #[tauri::command]
-pub fn export_review_to_file(
+pub async fn export_review_to_file(
     opts: ExportOpts,
     path: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    let tab = app.tab();
-    let body = render_markdown(tab, &opts);
-    let target = if path.trim().is_empty() {
-        let dir = tab.comments_dir();
-        std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
-        format!("{dir}/export.md")
-    } else {
-        path
-    };
-    std::fs::write(&target, body).map_err(|e| format!("Failed to write {target}: {e}"))?;
-    Ok(target)
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        let tab = app.tab();
+        let body = render_markdown(tab, &opts);
+        let target = if path.trim().is_empty() {
+            let dir = tab.comments_dir();
+            std::fs::create_dir_all(&dir).map_err(|e| format!("Failed to create {dir}: {e}"))?;
+            format!("{dir}/export.md")
+        } else {
+            path
+        };
+        std::fs::write(&target, body).map_err(|e| format!("Failed to write {target}: {e}"))?;
+        Ok(target)
+    })
+    .await
 }
 
 /// Back-compat shim: delegate to `export_review_to_file` with all-defaults
@@ -10608,7 +10828,7 @@ mod tests {
             &gc_path.to_string_lossy(),
         )
         .unwrap();
-        assert!(changed);
+        assert_eq!(changed, Some(q_path.to_string_lossy().to_string()));
         let updated: ErQuestions =
             serde_json::from_str(&std::fs::read_to_string(&q_path).unwrap()).unwrap();
         assert!(updated.questions[0].resolved);
@@ -10660,7 +10880,7 @@ mod tests {
             &gc_path.to_string_lossy(),
         )
         .unwrap();
-        assert!(changed);
+        assert_eq!(changed, Some(gc_path.to_string_lossy().to_string()));
         let updated: ErGitHubComments =
             serde_json::from_str(&std::fs::read_to_string(&gc_path).unwrap()).unwrap();
         assert!(updated.comments[0].resolved);
@@ -11304,6 +11524,35 @@ mod tests {
             // Panel chrome used to rebuild a full snapshot on the main thread,
             // freezing the window before `[` / `\` / `]` took effect.
             "toggle_panel",
+            // Finding-thread actions: optimistic on the frontend, view-gated here.
+            "remove_finding_thread",
+            "promote_finding_to_comment",
+            "update_finding_response",
+            "delete_finding_response",
+            "reply_to_finding",
+            // AI card actions build prompt context under the app lock; the gh
+            // push/post commands are network round trips; export renders under
+            // the lock. All of them froze the window as sync commands.
+            "ask_ai",
+            "validate_with_ai",
+            "elaborate_with_ai",
+            "push_github_comments",
+            "push_github_comment_thread",
+            "push_github_comment_reply",
+            "post_github_pr_comment",
+            "export_review",
+            "export_review_to_file",
+            // App-wide chrome writes (inbox, pins, ignores): painted optimistically,
+            // confirmed with a chrome-only snapshot.
+            "mark_inbox_item_read",
+            "mark_all_inbox_read",
+            "mark_inbox_items_read",
+            "clear_read_inbox_items",
+            "clear_inbox_items",
+            "save_pr",
+            "unsave_pr",
+            "dismiss_remote_pr",
+            "undismiss_remote_pr",
         ];
         let wrappers = [
             "run_ai_triage_review",
@@ -11365,6 +11614,11 @@ mod tests {
                     | "unbulk_review_pillar"
                     | "add_ui_annotation"
                     | "delete_ui_annotation"
+                    | "remove_finding_thread"
+                    | "promote_finding_to_comment"
+                    | "update_finding_response"
+                    | "delete_finding_response"
+                    | "reply_to_finding"
             ) && !body.contains("abort_wrong_view")
             {
                 failures.push(format!(

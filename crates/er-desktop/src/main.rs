@@ -2,44 +2,23 @@
 // See lib.rs for the rationale behind these two crate-wide allows.
 #![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
 
-mod arena_commands;
-mod auto_triage;
-mod browser_proxy;
-mod browser_webview;
-mod commands;
-mod config_commands;
-mod dev_log;
-mod er_storage;
-mod export;
-mod frame_script;
-mod gh_status_cache;
-mod inbox;
-mod main_webview_policy;
-mod native_notify;
-mod persist;
-mod pr_cache;
-mod pr_open_cache;
-mod profile_log;
-mod projects;
-mod remote_pr_open_cache;
-mod snapshot;
-mod tabs;
-mod terminal;
-mod window_placement;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
 use tauri::Manager;
 
-use browser_webview::BrowserWebviewState;
-use commands::AppState;
-use er_engine::app::App;
-use frame_script::FRAME_SCRIPT;
-use snapshot::{
+use er_desktop::frame_script::FRAME_SCRIPT;
+use er_desktop::snapshot::{
     GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
     WatchStatusState,
 };
+use er_desktop::{
+    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
+    gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache, pr_open_cache,
+    profile_log, projects, snapshot, tabs, terminal, window_placement,
+};
+use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
+use er_engine::app::App;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -1462,10 +1441,25 @@ fn main() {
                                 {
                                     return None;
                                 }
-                                Some(g.tab_mut().refresh_diff_quick())
+                                Some(g.tab_mut().refresh_diff_quick_with_unmark())
                             });
                             match result {
                                 Some(Ok(())) => {
+                                    let unmark_count = app
+                                        .lock()
+                                        .ok()
+                                        .map(|mut g| {
+                                            std::mem::replace(
+                                                &mut g.tab_mut().pending_unmark_count,
+                                                0,
+                                            )
+                                        })
+                                        .unwrap_or(0);
+                                    if unmark_count > 0 {
+                                        log::info!(
+                                            "active-branch watcher: auto-unmarked {unmark_count} reviewed file(s) whose diff changed (branch={watched_branch})"
+                                        );
+                                    }
                                     profile_log::bump_desktop_revision(&rev, "watcher_refresh");
                                 }
                                 Some(Err(e)) => {
@@ -1965,6 +1959,7 @@ fn main() {
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,
             commands::open_inbox_item,
+            commands::change_base,
             commands::mark_inbox_item_read,
             commands::mark_all_inbox_read,
             commands::mark_inbox_items_read,

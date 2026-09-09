@@ -150,6 +150,10 @@
     includeFindings: boolean;
     includeAnnotations: boolean;
     onlyUnresolved: boolean;
+    includeCommentIds?: string[];
+    includeQuestionIds?: string[];
+    includeNoteIds?: string[];
+    includeFindingIds?: string[];
   };
 
   const NO_SECTIONS: ExportOpts = {

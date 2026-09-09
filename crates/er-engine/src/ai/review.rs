@@ -211,7 +211,6 @@ impl Finding {
     /// Whether this finding still demands the reviewer's attention. False
     /// when the user has fixed it (`resolved`) or the AI dismissed it as a
     /// false positive (`Confidence::Dropped`).
-    #[allow(dead_code)]
     pub const fn is_active(&self) -> bool {
         !self.resolved && !matches!(self.confidence, Confidence::Dropped)
     }
@@ -1212,26 +1211,6 @@ impl AiState {
         result
     }
 
-    /// Get GitHub comments data (for sync operations)
-    #[allow(dead_code)]
-    pub const fn github_comments_data(&self) -> Option<&ErGitHubComments> {
-        self.github_comments.as_ref()
-    }
-
-    /// Get questions data
-    #[allow(dead_code)]
-    pub const fn questions_data(&self) -> Option<&ErQuestions> {
-        self.questions.as_ref()
-    }
-
-    /// Whether a file has any questions (top-level, not replies)
-    #[allow(dead_code)]
-    pub fn file_has_questions(&self, path: &str) -> bool {
-        self.questions
-            .as_ref()
-            .is_some_and(|qs| qs.questions.iter().any(|q| q.file == path))
-    }
-
     /// Count of questions for a file (all questions, including replies)
     pub fn file_question_count(&self, path: &str) -> usize {
         if self.questions.is_some() {
@@ -1246,28 +1225,19 @@ impl AiState {
         0
     }
 
-    /// Get notes data
-    #[allow(dead_code)]
-    pub const fn notes_data(&self) -> Option<&ErNotes> {
-        self.notes.as_ref()
-    }
-
     /// Whether any local notes are loaded.
-    #[allow(dead_code)]
     pub fn has_notes(&self) -> bool {
         self.notes.as_ref().is_some_and(|ns| !ns.notes.is_empty())
     }
 
     /// Total count of private local drafts (questions + notes). These are the
     /// sidecars cleared together by the `z` cleanup action.
-    #[allow(dead_code)]
     pub fn local_draft_count(&self) -> usize {
         self.questions.as_ref().map_or(0, |q| q.questions.len())
             + self.notes.as_ref().map_or(0, |n| n.notes.len())
     }
 
     /// Count of notes for a file (all notes, including replies)
-    #[allow(dead_code)]
     pub fn file_note_count(&self, path: &str) -> usize {
         if self.notes.is_some() {
             self.ensure_index();
@@ -1279,16 +1249,6 @@ impl AiState {
                 .map_or(0, |counts| counts.2);
         }
         0
-    }
-
-    /// Whether a file has any GitHub comments (top-level, not replies)
-    #[allow(dead_code)]
-    pub fn file_has_github_comments(&self, path: &str) -> bool {
-        self.github_comments.as_ref().is_some_and(|gc| {
-            gc.comments
-                .iter()
-                .any(|c| c.file == path && c.in_reply_to.is_none())
-        })
     }
 
     /// Count of GitHub comments for a file (top-level only, not replies)
@@ -1342,21 +1302,6 @@ impl AiState {
             for q in &qs.questions {
                 if q.in_reply_to.is_none() {
                     result.push((q.file.clone(), q.hunk_index, q.id.clone()));
-                }
-            }
-        }
-        result.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
-        result
-    }
-
-    /// All notes across all files, ordered by file path then hunk index.
-    #[allow(dead_code)]
-    pub fn all_notes_ordered(&self) -> Vec<(String, Option<usize>, String)> {
-        let mut result = Vec::new();
-        if let Some(ns) = &self.notes {
-            for n in &ns.notes {
-                if n.in_reply_to.is_none() {
-                    result.push((n.file.clone(), n.hunk_index, n.id.clone()));
                 }
             }
         }
@@ -1505,20 +1450,6 @@ impl AiState {
             }
         }
         None
-    }
-
-    /// Replies to a question (question replies stored in .er-questions.json)
-    #[allow(dead_code)]
-    pub fn replies_for_question(&self, question_id: &str) -> Vec<CommentRef<'_>> {
-        let mut result = Vec::new();
-        if let Some(qs) = &self.questions {
-            for q in &qs.questions {
-                if q.in_reply_to.as_deref() == Some(question_id) {
-                    result.push(CommentRef::Question(q));
-                }
-            }
-        }
-        result
     }
 
     /// GitHub comments that reference a specific AI finding

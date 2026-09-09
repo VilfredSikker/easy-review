@@ -16,8 +16,9 @@ use crossterm::{
 use er_engine::app::{self, App, InputMode};
 use er_engine::{github, uninstall, watch};
 use input::{
-    handle_comment_input, handle_commit_input, handle_confirm_input, handle_filter_input,
-    handle_normal_input, handle_overlay_input, handle_remote_url_input, handle_search_input,
+    handle_base_branch_input, handle_comment_input, handle_commit_input, handle_confirm_input,
+    handle_filter_input, handle_normal_input, handle_overlay_input, handle_remote_url_input,
+    handle_search_input,
 };
 use ratatui::prelude::*;
 use std::io::{self, Write};
@@ -447,6 +448,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                         InputMode::Filter => handle_filter_input(app, key),
                         InputMode::Commit => handle_commit_input(app, key)?,
                         InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
+                        InputMode::BaseBranch => handle_base_branch_input(app, key)?,
                         InputMode::Normal => {
                             handle_normal_input(app, key, &watch_tx, &mut _watcher)?
                         }
@@ -472,7 +474,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             pending_refresh = false;
             let count = pending_file_count;
             pending_file_count = 0;
-            let _ = app.tab_mut().refresh_diff_quick();
+            let _ = app.tab_mut().refresh_diff_quick_with_unmark();
             let unmark_count = std::mem::replace(&mut app.tab_mut().pending_unmark_count, 0);
             if unmark_count > 0 {
                 app.notify(&format!(
@@ -497,6 +499,9 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
 
         // Poll background commands for completion
         app.check_commands();
+        // App-level background tasks (review / tour / triage / diagram) are
+        // also spawned from the TUI; poll and surface their completion too.
+        app.poll_background_tasks();
 
         // Drain agent log entries from background threads
         app.drain_agent_log();

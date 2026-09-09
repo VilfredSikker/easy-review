@@ -2,8 +2,6 @@ use crate::git::{DiffFile, LineType};
 
 /// Anchor data extracted from a comment for relocation matching
 pub struct CommentAnchor {
-    #[allow(dead_code)]
-    pub file: String,
     pub hunk_index: Option<usize>,
     pub line_start: Option<usize>,
     pub line_content: String,
@@ -313,16 +311,6 @@ mod tests {
         }
     }
 
-    #[allow(dead_code)]
-    fn del_line(content: &str, old: usize) -> DiffLine {
-        DiffLine {
-            line_type: LineType::Delete,
-            content: content.to_string(),
-            old_num: Some(old),
-            new_num: None,
-        }
-    }
-
     fn anchor(
         line_start: Option<usize>,
         content: &str,
@@ -330,7 +318,6 @@ mod tests {
         after: Vec<&str>,
     ) -> CommentAnchor {
         CommentAnchor {
-            file: "test.rs".to_string(),
             hunk_index: Some(0),
             line_start,
             line_content: content.to_string(),
@@ -457,7 +444,6 @@ mod tests {
         ]);
 
         let a = CommentAnchor {
-            file: "test.rs".to_string(),
             hunk_index: Some(0),
             line_start: None,
             line_content: String::new(),
@@ -537,7 +523,6 @@ mod tests {
         // Anchor at line 5; content was deleted; single context line matches at line 1, 11, …
         // Nearest match is line 1 (distance 4) or line 11 (distance 6) — both within 50.
         let near_anchor = CommentAnchor {
-            file: "test.yaml".to_string(),
             hunk_index: Some(0),
             line_start: Some(5),
             line_content: "  DELETED_LINE".to_string(),
@@ -556,7 +541,6 @@ mod tests {
         // Anchor at line 5 but context only matches at line 91 (distance 86 > 50).
         // "  field90: 90" appears exactly once in the file, at index 90 (new_num = 91).
         let far_anchor = CommentAnchor {
-            file: "test.yaml".to_string(),
             hunk_index: Some(0),
             line_start: Some(5),
             line_content: "  DELETED_LINE".to_string(),

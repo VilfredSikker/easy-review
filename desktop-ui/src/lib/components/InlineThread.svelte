@@ -93,6 +93,9 @@
   let confirmDeleteTimer: ReturnType<typeof setTimeout> | undefined;
 
   function deleteThread() {
+    // Guard before touching the confirm state: a blocked paint must not eat
+    // the user's confirm click.
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("delete_thread");
     if (thread.replies.length > 0 && !confirmingDelete) {
       confirmingDelete = true;
       clearTimeout(confirmDeleteTimer);
@@ -111,7 +114,7 @@
   function submitReply() {
     const text = replyText.trim();
     if (!text) return;
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("reply_to_thread", { parentId: thread.id, text });
     replyText = "";
     showReply = false;
@@ -130,7 +133,7 @@
   }
 
   function submitPromote(body: string) {
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("promote_to_comment", { id: thread.id, body });
     showPromote = false;
   }
@@ -185,7 +188,7 @@
 
   function submitEdit(body: string) {
     if (!editMessageId) return;
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     const id = editMessageId;
     void app.cmd("update_thread_message", { id, body });
     editMessageId = null;

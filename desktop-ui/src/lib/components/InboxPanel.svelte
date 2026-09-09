@@ -41,11 +41,18 @@
 
   function openInboxMessageModal(item: InboxItemSnapshot) {
     selectedInboxMessage = item;
-    app.cmd("mark_inbox_item_read", { id: item.id });
+    void app.cmd("mark_inbox_item_read", { id: item.id });
   }
 
   function closeInboxMessageModal() {
     selectedInboxMessage = null;
+  }
+
+  /** Open the selected notification's target in the active tab, or in a new one. */
+  function openSelectedInboxTarget(newTab: boolean) {
+    if (!selectedInboxMessage) return;
+    app.cmd("open_inbox_item", { id: selectedInboxMessage.id, newTab });
+    closeInboxMessageModal();
   }
 
   const inboxProjectOptions = $derived(
@@ -227,7 +234,7 @@
         <div class="flex-1"></div>
         <button
           type="button"
-          onclick={() => { app.cmd("mark_all_inbox_read"); }}
+          onclick={() => { void app.cmd("mark_all_inbox_read"); }}
           title="Mark all read"
           aria-label="Mark all read"
           class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
@@ -236,7 +243,7 @@
         </button>
         <button
           type="button"
-          onclick={() => { app.cmd("clear_read_inbox_items"); }}
+          onclick={() => { void app.cmd("clear_read_inbox_items"); }}
           title="Clear read"
           aria-label="Clear read"
           class="w-6 h-6 rounded flex items-center justify-center text-periwinkle hover:text-fg hover:bg-hover"
@@ -301,7 +308,7 @@
               onclick={(e) => {
                 e.stopPropagation();
                 if (groupUnread.length === 0) return;
-                app.cmd("mark_inbox_items_read", { ids: groupUnread });
+                void app.cmd("mark_inbox_items_read", { ids: groupUnread });
               }}
               title="Mark group read"
               aria-label="Mark {group.label} read"
@@ -315,7 +322,7 @@
               onclick={(e) => {
                 e.stopPropagation();
                 if (groupRead.length === 0) return;
-                app.cmd("clear_inbox_items", { ids: groupRead });
+                void app.cmd("clear_inbox_items", { ids: groupRead });
               }}
               title="Clear read in group"
               aria-label="Clear read in {group.label}"
@@ -352,12 +359,16 @@
     <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
       <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
       <button
+        class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover"
+        title="Open the target without replacing the current tab"
+        onclick={() => openSelectedInboxTarget(true)}
+      >
+        Open in new tab
+      </button>
+      <button
         class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
-        onclick={() => {
-          if (!selectedInboxMessage) return;
-          app.cmd("open_inbox_item", { id: selectedInboxMessage.id });
-          closeInboxMessageModal();
-        }}
+        title="Open the target in the current tab"
+        onclick={() => openSelectedInboxTarget(false)}
       >
         Open target
       </button>

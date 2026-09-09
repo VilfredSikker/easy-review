@@ -95,9 +95,11 @@
   function dismiss() {
     void app.cmd("dismiss_finding", { findingId: finding.id });
   }
-  async function reply() {
-    if (!replyText.trim()) return;
-    await app.cmd("reply_to_finding", { findingId: finding.id, body: replyText.trim(), aiAssist: false });
+  function reply() {
+    const body = replyText.trim();
+    if (!body) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("reply_to_finding");
+    void app.cmd("reply_to_finding", { findingId: finding.id, body, aiAssist: false });
     replyText = "";
   }
   async function askAi() {
@@ -123,7 +125,7 @@
 
   function submitEdit(body: string) {
     if (!editMessageId || !editOrigin) return;
-    if (!app.canPaintOptimistic()) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     const id = editMessageId;
     const origin = editOrigin;
     if (origin === "finding_response") {
@@ -146,20 +148,20 @@
     });
   }
 
-  async function deleteReply(replyId: string, origin: MergedReply["origin"]) {
+  function deleteReply(replyId: string, origin: MergedReply["origin"]) {
     if (!replyId) return;
     if (origin === "finding_response") {
-      await app.cmd("delete_finding_response", {
+      void app.cmd("delete_finding_response", {
         findingId: finding.id,
         responseId: replyId,
       });
     } else {
-      await app.cmd("delete_thread", { id: replyId });
+      void app.cmd("delete_thread", { id: replyId });
     }
   }
 
-  async function deleteConversation() {
-    await app.cmd("remove_finding_thread", { findingId: finding.id });
+  function deleteConversation() {
+    void app.cmd("remove_finding_thread", { findingId: finding.id });
   }
 
   function buildPromoteBody(): string {
@@ -179,8 +181,9 @@
     return parts.join("\n\n");
   }
 
-  async function submitPromote(body: string) {
-    await app.cmd("promote_finding_to_comment", { findingId: finding.id, body });
+  function submitPromote(body: string) {
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked("promote_finding_to_comment");
+    void app.cmd("promote_finding_to_comment", { findingId: finding.id, body });
     showPromote = false;
   }
 

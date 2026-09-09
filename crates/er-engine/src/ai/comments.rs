@@ -129,7 +129,6 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn file(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.file,
@@ -179,7 +178,6 @@ impl<'a> CommentRef<'a> {
         }
     }
 
-    #[allow(dead_code)]
     pub fn anchor_status(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.anchor_status,
@@ -198,7 +196,6 @@ impl<'a> CommentRef<'a> {
     }
 
     /// Whether this comment can be deleted by the user
-    #[allow(dead_code)]
     pub fn can_delete(&self) -> bool {
         match self {
             CommentRef::Question(_) | CommentRef::Note(_) => true,

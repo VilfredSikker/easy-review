@@ -23,3 +23,16 @@ describe("InboxPanel popover list", () => {
     expect(list).toContain("ids: groupRead");
   });
 });
+
+describe("InboxPanel message dialog", () => {
+  const dialog = src.slice(src.indexOf("{#if selectedInboxMessage}"));
+
+  it("offers opening the target in the current tab or in a new tab", () => {
+    expect(dialog).toContain("Open target");
+    expect(dialog).toContain("Open in new tab");
+    expect(dialog).toContain("openSelectedInboxTarget(false)");
+    expect(dialog).toContain("openSelectedInboxTarget(true)");
+    // Tauri maps camelCase args to the command's snake_case `new_tab`.
+    expect(src).toContain('app.cmd("open_inbox_item", { id: selectedInboxMessage.id, newTab })');
+  });
+});

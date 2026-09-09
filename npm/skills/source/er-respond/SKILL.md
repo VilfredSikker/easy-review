@@ -7,13 +7,37 @@ description: >
   branch.
 metadata:
   author: easy-review
-  version: "0.1.0"
+  version: "0.2.0"
 ---
 
 # Easy Review — respond (`er-respond`)
 
 Mutating. Questions get an answer. Notes are actionable implementation requests.
 See [`../_shared/REF_RESOLUTION.md`](../_shared/REF_RESOLUTION.md).
+
+## Handling rules
+
+- Question: Answer and discuss only. Do not edit code until the user approves a change.
+- Note: Apply the requested change unless the note is stale.
+- Finding: Validate against the current code. Fix only when explicitly requested.
+- Resolved: Take no action.
+- Stale: Reason about whether it still applies and where, then ask before acting on it.
+
+> A question remains discussion-only even when it proposes or recommends a code change.
+
+Resolved items are closed out. Skip them entirely — no reply, no change — unless
+the user names one. `pr_feedback_get` omits them by default; they only appear
+with `include_resolved: true`, or as `[resolved]` in a markdown export.
+
+Staleness does not travel over MCP — `pr_feedback_get` returns each item's
+`line_content` and the bucket's `diff_hash`, never a `stale` flag. Treat an item
+as stale when its `line_content` no longer matches the code at its anchor. A
+markdown export marks stale items `[stale]`; Desktop and the TUI dim them. On a
+stale item, work out where it now applies and whether it still holds, say so, and
+wait for the user to confirm before changing anything.
+
+These rules are also emitted as a preamble in every Easy Review markdown export,
+so a pasted export carries them without this skill installed.
 
 ## Local branch feedback
 
@@ -40,16 +64,17 @@ bucket and should not be mixed with the local workflow.
 ## Workflow
 
 1. **`pr_feedback_get`** first (unless user gave `type` + `id` explicitly).
-2. Classify the selected item and act on it:
-   - **Question** — answer it from the current code and review context. Do not
-     edit the worktree unless the user separately asks for a change.
-   - **Note** — treat it as an implementation request. Inspect the target
-     worktree, make the requested change, and run the narrowest relevant checks.
-     Preserve unrelated work. If the note is ambiguous or requires a broader
-     change than the user authorized, stop and ask for direction.
-   - **Finding** — respond with whether the finding is valid. Do not fix it
-     unless the user explicitly requests a fix or a review-fix workflow includes
-     it.
+2. Classify the selected item and act on it per **Handling rules** above. What
+   that means in practice:
+   - **Question** — answer from the current code and review context, citing
+     files and lines. Recommend a change in the reply when one is warranted,
+     then wait for the user.
+   - **Note** — inspect the target worktree, make the requested change, and run
+     the narrowest relevant checks. Preserve unrelated work. If the note is
+     ambiguous or requires a broader change than the user authorized, stop and
+     ask for direction.
+   - **Finding** — reply with whether it still holds against the current code,
+     and the evidence for that verdict.
 3. **`pr_feedback_reply`** after acting:
 
 ```json
@@ -71,5 +96,7 @@ bucket and should not be mixed with the local workflow.
 - A note is not complete when it has only been acknowledged. Implement the
   requested change before replying, then summarize the change and validation in
   the reply. Do not claim completion if implementation or validation is blocked.
+  A stale note is the exception — say what it now refers to and wait for the
+  user to confirm before changing anything.
 - Do not resolve or delete items (not supported via MCP yet).
 - Do not invent ids — use ids from `pr_feedback_get`.
