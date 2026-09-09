@@ -63,10 +63,18 @@ jobs:
   build-desktop:
     name: Build signed desktop DMG (macOS arm64)
     runs-on: macos-latest
-    # Signed DMG requires Apple signing secrets. When these aren't configured
-    # (e.g. forked repos, missing APPLE_SIGNING_IDENTITY) skip gracefully so
-    # the TUI/MCP release still publishes — the release job tolerates a missing DMG.
+    # A real signing failure (expired certificate, notary outage) must not take
+    # the release down — the release job tolerates a missing DMG.
     continue-on-error: true
+    # Job-level so the step `if:` conditions can read them; a step's own `env`
+    # is not visible to its own `if`.
+    env:
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -77,15 +85,49 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: Install Tauri CLI
+        # Gated with the rest: no certificate, no DMG, so don't spend minutes
+        # building a CLI nothing will use.
+        if: env.APPLE_CERTIFICATE != ''
         run: cargo install tauri-cli --locked --version "^2.0"
 
+      - name: Import Developer ID certificate
+        # `tauri-sign-release.sh` finds the identity with `security find-identity`,
+        # and a fresh runner's keychain is empty — APPLE_SIGNING_IDENTITY names an
+        # identity the runner does not hold, so codesign fails with
+        # "no identity found". Import the .p12 into a throwaway keychain.
+        #
+        # APPLE_CERTIFICATE is the base64 of an exported Developer ID Application
+        # .p12; APPLE_CERTIFICATE_PASSWORD is the password set during that export.
+        if: env.APPLE_CERTIFICATE != ''
+        run: |
+          set -euo pipefail
+          KEYCHAIN="$RUNNER_TEMP/er-signing.keychain-db"
+          KEYCHAIN_PASSWORD="$(uuidgen)"
+          CERT_PATH="$RUNNER_TEMP/certificate.p12"
+
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$APPLE_CERTIFICATE_PASSWORD" \
+            -T /usr/bin/codesign -T /usr/bin/security
+          rm -f "$CERT_PATH"
+          # Without a partition list codesign blocks on an interactive prompt
+          # that no one is there to answer.
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" > /dev/null
+          # Make it the search list so `find-identity` sees it. Replacing the
+          # login keychain is safe here: nothing else on the runner signs, and
+          # notarization authenticates with APPLE_PASSWORD, not the keychain.
+          security list-keychains -d user -s "$KEYCHAIN"
+          security find-identity -v -p codesigning "$KEYCHAIN"
+
       - name: Build signed + notarized DMG
+        # Gated on the certificate rather than left to fail: without it the build
+        # burns ten minutes only to die at codesign. No certificate, no DMG, and
+        # the upload below tolerates the absence.
+        if: env.APPLE_CERTIFICATE != ''
         run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-sign-release.sh
-        env:
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
 
       - name: Upload DMG
         uses: actions/upload-artifact@v4
@@ -93,6 +135,10 @@ jobs:
           name: desktop-dmg
           path: target/desktop/release/bundle/dmg/*.dmg
           if-no-files-found: ignore
+
+      - name: Remove signing keychain
+        if: always()
+        run: rm -f "$RUNNER_TEMP/er-signing.keychain-db" "$RUNNER_TEMP/certificate.p12"
 
   release:
     name: Create Release
