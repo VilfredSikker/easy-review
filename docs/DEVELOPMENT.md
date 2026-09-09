@@ -188,6 +188,31 @@ Output:
 
 Do **not** use `./scripts/tauri-build.sh` for distribution — it ad-hoc re-signs and would wipe Developer ID.
 
+### Signing in CI
+
+The release workflow's `build-desktop` job runs the same script, so it needs the
+identity's **private key** on the runner, not just its name. Export the
+certificate once and store it as a secret:
+
+```bash
+# Keychain Access → My Certificates → your "Developer ID Application" →
+# right-click → Export… → .p12, and set an export password.
+base64 -i DeveloperID.p12 | pbcopy   # paste as APPLE_CERTIFICATE
+```
+
+Repository secrets (Settings → Secrets and variables → Actions):
+
+| Secret | Value |
+| --- | --- |
+| `APPLE_CERTIFICATE` | base64 of the exported `.p12` |
+| `APPLE_CERTIFICATE_PASSWORD` | the export password you set |
+| `APPLE_ID`, `APPLE_PASSWORD`, `APPLE_TEAM_ID` | as in `.env.signing` |
+| `APPLE_SIGNING_IDENTITY` | optional, as locally |
+
+Without `APPLE_CERTIFICATE` the job skips the build and the release publishes
+the TUI and MCP binaries with no DMG — upload a locally signed one with
+`gh release upload v<version> "target/desktop/release/bundle/dmg/"*.dmg`.
+
 ### Verify
 
 ```bash
