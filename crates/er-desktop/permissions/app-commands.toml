@@ -43,6 +43,7 @@ commands.allow = [
   "resolve_thread",
   "refresh_diff",
   "force_refresh_diff",
+  "refresh_stack",
   "refresh_github_status",
   "pull_github_comments",
   "push_github_comments",

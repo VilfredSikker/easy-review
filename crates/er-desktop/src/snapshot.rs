@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
-use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
+use er_engine::app::{
+    AgentLogSource, App, CommandStatus, DiffMode, InputMode, StackState, TabState,
+};
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::{Deserialize, Serialize};
@@ -429,6 +431,11 @@ pub struct AppSnapshot {
     pub browser: BrowserSnapshot,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
+    /// `gh stack` state for the active tab's branch, driving the BranchCard
+    /// stack control. Present for every local tab — empty until the lazy
+    /// `refresh_stack` lookup lands — and `None` only for remote-PR tabs.
+    #[serde(default)]
+    pub stack: Option<StackSnapshot>,
     /// PR number detected for the active branch from the PR-list cache (sidebar
     /// match). Reliable regardless of whether gh-status has been fetched — drives
     /// the Local|PR Diff toggle.
@@ -1227,6 +1234,139 @@ pub struct GithubStatusSnapshot {
     pub last_updated: Option<String>,
     #[serde(default)]
     pub is_authored_by_me: bool,
+}
+
+/// `gh stack` (github/gh-stack) state for the active tab's branch — what the
+/// BranchCard's stack control renders.
+///
+/// Present for every tab whose viewed branch is a local checkout: `layers` is
+/// empty and `unavailable` is `None` until the control's lazy `refresh_stack`
+/// lookup lands, which is how the frontend distinguishes "not looked up yet"
+/// from a known-empty stack. `None` (the whole option) is for tabs with no such
+/// checkout — a remote-PR tab, or a local PR/branch view whose head isn't
+/// checked out — where `gh stack view` would describe some other branch.
+#[derive(Debug, Clone, Serialize)]
+pub struct StackSnapshot {
+    /// Trunk the stack is rooted on (e.g. `main`), rendered after the layers.
+    pub trunk: String,
+    /// One entry per stack layer, ordered top-of-stack first. A layer may not
+    /// have a PR yet; the trunk is not a layer, so `layers.len() == size`.
+    pub layers: Vec<StackLayerSnapshot>,
+    /// 1-based position of the viewed branch counted from the top of the stack
+    /// (`1 / 3` is the top layer). `None` when the current branch isn't a layer.
+    pub position: Option<usize>,
+    /// Layer count — the denominator of the `n / size` badge.
+    pub size: usize,
+    /// Why there is no stack when `gh stack` reports one (branch outside any
+    /// stack, extension not installed). `layers` is empty in that case.
+    pub unavailable: Option<String>,
+    /// True when `unavailable` is a *failed* lookup (no `gh`, auth, network)
+    /// rather than a definitive "no stack here", so the control stays available
+    /// to retry instead of hiding itself.
+    #[serde(default)]
+    pub retryable: bool,
+    /// True while a lookup is in flight, so the control can show a pending state.
+    #[serde(default)]
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StackLayerSnapshot {
+    /// Branch name of the layer.
+    pub branch: String,
+    /// `None` for a layer whose PR doesn't exist yet.
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+    /// State without the `current` marker: `open`, `merged`, `needs rebase`.
+    pub state: String,
+    /// True for the branch this tab is viewing — the highlighted row.
+    pub is_current: bool,
+    /// True when the layer has a PR that can be opened for review.
+    pub enabled: bool,
+    pub needs_rebase: bool,
+}
+
+/// Map the active tab's `gh stack` state onto the wire type.
+///
+/// `None` means there is no stack to show *and no lookup to offer*: the tab's
+/// viewed branch isn't the checkout `gh stack view` would read (remote PR, or a
+/// local PR/branch view whose head isn't checked out), so the frontend hides the
+/// control entirely. Every eligible tab gets `Some`, including one whose first
+/// lookup hasn't landed yet (empty `layers`, no `unavailable`): the control needs
+/// to be reachable to trigger that lazy `refresh_stack` lookup in the first
+/// place.
+fn snapshot_stack(tab: &TabState) -> Option<StackSnapshot> {
+    snapshot_stack_state(tab.local_checkout_root().is_some(), &tab.stack)
+}
+
+/// [`snapshot_stack`] over the two inputs that decide the shape, so the
+/// ineligible / not-yet-looked-up / known cases are unit-testable without a repo.
+fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnapshot> {
+    if !eligible {
+        return None;
+    }
+
+    let loading = state.loading;
+    let Some(info) = state.info.as_ref() else {
+        return Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: None,
+            retryable: false,
+            loading,
+        });
+    };
+
+    match info {
+        // A definitive "no stack here" hides the control; a *failed* lookup
+        // keeps it so the user can retry (the command also logs it).
+        er_engine::gh_stack::StackInfo::Unavailable(reason) => Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: Some(reason.clone()),
+            retryable: false,
+            loading,
+        }),
+        er_engine::gh_stack::StackInfo::Failed(reason) => Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: Some(reason.clone()),
+            retryable: true,
+            loading,
+        }),
+        er_engine::gh_stack::StackInfo::Stack(stack) => Some(StackSnapshot {
+            trunk: stack.trunk.clone(),
+            layers: stack
+                .entries
+                .iter()
+                .map(|entry| StackLayerSnapshot {
+                    branch: entry.branch.clone(),
+                    pr_number: entry.pr_number,
+                    pr_url: entry.pr_url.clone(),
+                    state: entry.status_label(),
+                    is_current: entry.is_current,
+                    enabled: entry.is_openable(),
+                    needs_rebase: entry.needs_rebase,
+                })
+                .collect(),
+            // 1-based counted from the top of the stack: the badge reads `2 / 4`.
+            position: stack
+                .entries
+                .iter()
+                .position(|entry| entry.is_current)
+                .map(|index| index + 1),
+            size: stack.entries.len(),
+            unavailable: None,
+            retryable: false,
+            loading,
+        }),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2363,6 +2503,8 @@ fn build_snapshot_inner(
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
 
+    let stack = snapshot_stack(tab);
+
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch,
@@ -2409,6 +2551,7 @@ fn build_snapshot_inner(
         ui_annotations,
         browser: browser_snapshot_from_tab(tab),
         github,
+        stack,
         detected_pr_number,
         diff_stale,
         bg_loading: loading
@@ -5009,5 +5152,101 @@ mod tests {
             2,
             "a changed worktree set must invalidate the cache and recompute"
         );
+    }
+
+    /// A tab whose viewed branch isn't a local checkout gets no control at all;
+    /// an eligible tab gets a snapshot even before the lazy lookup lands,
+    /// otherwise the control would be unreachable and could never trigger it.
+    #[test]
+    fn stack_snapshot_is_none_only_when_there_is_no_checkout() {
+        assert!(snapshot_stack_state(false, &StackState::default()).is_none());
+
+        let unknown = snapshot_stack_state(true, &StackState::default())
+            .expect("an eligible tab always has a stack snapshot");
+        assert!(unknown.layers.is_empty());
+        assert!(unknown.unavailable.is_none());
+        assert!(!unknown.retryable);
+        assert!(!unknown.loading);
+        assert!(unknown.trunk.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_reports_a_pending_lookup() {
+        let state = StackState {
+            loading: true,
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert!(snap.loading);
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_keeps_the_unavailable_reason() {
+        let state = StackState {
+            info: Some(er_engine::gh_stack::StackInfo::Unavailable(
+                "not in a stack".into(),
+            )),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(snap.unavailable.as_deref(), Some("not in a stack"));
+        assert!(
+            !snap.retryable,
+            "a definitive answer must not offer a retry"
+        );
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_surfaces_a_failed_lookup_reason() {
+        let state = StackState {
+            info: Some(er_engine::gh_stack::StackInfo::Failed(
+                "Failed to run `gh stack view`".into(),
+            )),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(
+            snap.unavailable.as_deref(),
+            Some("Failed to run `gh stack view`")
+        );
+        assert!(
+            snap.retryable,
+            "a failed lookup keeps the control retryable"
+        );
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_numbers_layers_from_the_top() {
+        use er_engine::gh_stack::{Stack, StackEntry, StackInfo};
+
+        let entry = |branch: &str, pr: u64, is_current: bool| StackEntry {
+            branch: branch.into(),
+            pr_number: Some(pr),
+            pr_url: Some(format!("https://github.com/o/r/pull/{pr}")),
+            pr_state: Some("OPEN".into()),
+            is_current,
+            is_merged: false,
+            is_queued: false,
+            needs_rebase: false,
+        };
+        // `entries` is already top-of-stack first.
+        let stack = Stack {
+            trunk: "main".into(),
+            current_branch: Some("feat/api".into()),
+            entries: vec![entry("feat/ui", 43, false), entry("feat/api", 42, true)],
+        };
+        let state = StackState {
+            info: Some(StackInfo::Stack(stack)),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(snap.size, 2);
+        assert_eq!(snap.position, Some(2));
+        assert_eq!(snap.trunk, "main");
+        assert_eq!(snap.layers[1].branch, "feat/api");
+        assert!(snap.layers[1].is_current);
     }
 }

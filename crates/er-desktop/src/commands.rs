@@ -1327,33 +1327,7 @@ pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
 }
 
 fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
-    if !allows_local_open(
-        tab.is_remote(),
-        tab.local_branch_view.is_some(),
-        tab.local_branch_checkout_root.is_some(),
-    ) {
-        return None;
-    }
-    // Local PR tabs (pr_head_ref set) are read-only review contexts unless the
-    // branch is explicitly checked out in a working tree/worktree.
-    if tab.local_branch_view.is_some() {
-        return tab.local_branch_checkout_root.as_deref();
-    }
-    Some(tab.repo_root.as_str())
-}
-
-const fn allows_local_open(
-    is_remote: bool,
-    has_local_branch_view: bool,
-    has_checkout_root: bool,
-) -> bool {
-    if is_remote {
-        return false;
-    }
-    if has_local_branch_view {
-        return has_checkout_root;
-    }
-    true
+    tab.local_checkout_root()
 }
 
 fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {
@@ -2734,6 +2708,65 @@ pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, Str
         Ok(snap_from(&app, &state))
     })
     .await
+}
+
+/// Fetch the `gh stack` (github/gh-stack) stack for the active tab's branch and
+/// return the refreshed snapshot.
+///
+/// `gh stack view` talks to GitHub, so the subprocess runs with the `App` lock
+/// released (the heavy-command rule) and the result is written back through
+/// `App::apply_stack_result`, which caches it on the tab for `build_snapshot`.
+/// Called lazily when the BranchCard stack control is first opened.
+#[tauri::command]
+pub async fn refresh_stack(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || refresh_stack_impl(&state)).await
+}
+
+fn refresh_stack_impl(state: &AppState) -> Result<AppSnapshot, String> {
+    // Under the lock: drop any cached stack so the claim below re-runs the
+    // lookup, request it, and take the claim (the repo root to query). A tab
+    // whose viewed branch isn't checked out requests nothing — `gh stack view`
+    // there would describe an unrelated branch.
+    let request = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().stack = er_engine::app::StackState::default();
+        app.request_stack_load();
+        app.take_stack_load_request()
+    };
+
+    // Lock released: `gh stack view` hits the network.
+    let result = request.map(|(tab_index, repo_root, lookup_seq)| {
+        let info = er_engine::gh_stack::load(&repo_root);
+        (tab_index, repo_root, lookup_seq, info)
+    });
+
+    let snapshot = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some((tab_index, repo_root, lookup_seq, info)) = result {
+            // The expected steady states (not in a stack, extension missing) are
+            // not errors. Anything else is a real failure — the control surfaces
+            // the reason so the user can retry, and this leaves a durable record
+            // for diagnosing a broken `gh` setup.
+            if let er_engine::gh_stack::StackInfo::Failed(reason) = &info {
+                let branch = app
+                    .tabs
+                    .get(tab_index)
+                    .map(|t| t.current_branch.as_str())
+                    .unwrap_or("");
+                log::error!(
+                    "er-desktop: `gh stack view` failed repo={repo_root} branch={branch}: {reason}"
+                );
+            }
+            app.apply_stack_result(tab_index, lookup_seq, info);
+        }
+        snap_from_command(&app, state)
+    };
+
+    // The cached stack lives in engine state that the content hash doesn't
+    // cover, so invalidate polling explicitly.
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snapshot)
 }
 
 /// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
@@ -10700,14 +10733,20 @@ mod tests {
 
     #[test]
     fn open_source_policy_allows_only_checked_out_local_contexts() {
-        // Working tree tab
-        assert!(allows_local_open(false, false, false));
-        // Remote PR tab
-        assert!(!allows_local_open(true, false, false));
-        // Local branch/PR view without checkout root
-        assert!(!allows_local_open(false, true, false));
-        // Local branch view with checkout root (tracked branch checked out)
-        assert!(allows_local_open(false, true, true));
+        // The policy itself lives on `TabState::local_checkout_root` (see the
+        // engine's tests); this pins the two roots it resolves to.
+        let mut working = er_engine::app::TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(local_source_root(&working), Some("/repo"));
+
+        let mut pr = er_engine::app::TabState::new_for_test(vec![]);
+        pr.repo_root = "/repo".into();
+        pr.remote_repo = Some("o/r".into());
+        pr.local_branch_view = Some("feat/pr-head".into());
+        pr.current_branch = "feat/pr-head".into();
+        assert_eq!(local_source_root(&pr), None);
+        pr.local_branch_checkout_root = Some("/wt".into());
+        assert_eq!(local_source_root(&pr), Some("/wt"));
     }
 
     #[test]

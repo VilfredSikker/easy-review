@@ -393,6 +393,47 @@ export interface GhReviewSummary {
   submitted_at: string;
 }
 
+/**
+ * `gh stack` (github/gh-stack) state for the active tab's branch, driving the
+ * BranchCard stack control.
+ *
+ * Present on every tab whose viewed branch is a local checkout — including
+ * before the first lookup, when `layers` is empty and `unavailable` is `null`
+ * (the control offers the lazy `refresh_stack` then). `null`/absent on tabs with
+ * no such checkout (remote-PR tabs, local PR views whose head isn't checked
+ * out), which is what hides the control.
+ */
+export interface StackSnapshot {
+  /** Trunk the stack is rooted on (`main`), shown after the layers. */
+  trunk: string;
+  /** One entry per stack layer, ordered top-of-stack first (may lack a PR). */
+  layers: StackLayerSnapshot[];
+  /** 1-based position counted from the top of the stack (`1 / 3` is the top). */
+  position: number | null;
+  /** Layer count — the denominator of the `n / size` badge. */
+  size: number;
+  /** Why there's no stack: branch outside any stack, extension not installed. */
+  unavailable: string | null;
+  /** `unavailable` is a failed lookup the control can retry (no `gh`, auth, network). */
+  retryable: boolean;
+  /** A lookup is in flight. */
+  loading: boolean;
+}
+
+export interface StackLayerSnapshot {
+  branch: string;
+  /** `null` for a layer whose PR doesn't exist yet. */
+  pr_number: number | null;
+  pr_url: string | null;
+  /** State without the `current` marker: `open`, `merged`, `needs rebase`. */
+  state: string;
+  /** True for the branch this tab is viewing — the highlighted row. */
+  is_current: boolean;
+  /** True when the layer has a PR that can be opened for review. */
+  enabled: boolean;
+  needs_rebase: boolean;
+}
+
 export interface GithubStatusSnapshot {
   owner: string;
   repo: string;
@@ -466,6 +507,11 @@ export interface AppSnapshot {
   browser?: BrowserSnapshot;
   /** Live GitHub status for the active tab (only when it's a remote PR with cached data). */
   github?: GithubStatusSnapshot | null;
+  /**
+   * `gh stack` stack for the active tab's branch. `null`/absent on tabs whose
+   * viewed branch isn't a local checkout (see {@link StackSnapshot}).
+   */
+  stack?: StackSnapshot | null;
   /** Which background fetches are currently in-flight. */
   bg_loading: LoadingFlags;
   /** Running/done/failed background AI commands for the active tab. */

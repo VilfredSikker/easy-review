@@ -1889,6 +1889,7 @@ fn main() {
             commands::resolve_thread,
             commands::refresh_diff,
             commands::force_refresh_diff,
+            commands::refresh_stack,
             commands::refresh_github_status,
             commands::pull_github_comments,
             commands::push_github_comments,
