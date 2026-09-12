@@ -21,6 +21,7 @@ to the consuming crates.
 | `uninstall.rs` | Plan/execute uninstall of config, managed data, cache, binaries, apps | — |
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
 | `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
+| `agent_run.rs` | Cancellable agent subprocesses: cancel flag + process-group kill, shared by the review, card-AI and tab-local spawn paths | — |
 | `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |
 
 ## Consumers
