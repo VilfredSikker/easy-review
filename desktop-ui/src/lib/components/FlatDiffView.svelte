@@ -40,6 +40,8 @@
     applyCollapsedFiles,
     computeUnifiedPairs,
     getCrossFileModel,
+    rowLineOnSide,
+    unifiedLineSide,
     type CrossFileModel,
     type CrossFileFlatRow,
     type PillarHeaderInfo,
@@ -75,6 +77,7 @@
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
   import { SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
+  import { findComposerAnchorRow, foldRowExtras } from "$lib/composerPlacement";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   const _spansAppliedKeys = new Set<string>();
@@ -112,10 +115,6 @@
 
   function syntaxHighlightingEnabled(): boolean {
     return true;
-  }
-
-  function unifiedLineSide(line: LineSnapshot): "old" | "new" {
-    return line.kind === "del" ? "old" : "new";
   }
 
   interface Props {
@@ -365,6 +364,56 @@
     overlaySerial++;
   }
 
+  // ── Composer anchor row ───────────────────────────────────────────────────
+  // The comment composer renders in flow directly below the last selected line's
+  // row, so the lines being commented on stay visible and the rows after them
+  // are pushed down instead of being covered.
+  const composerAnchorRowIdx = $derived.by((): number | null => {
+    if (!diffSel.hasSelection || diffSel.file === null || diffSel.end === null) return null;
+    const filePath = diffSel.file;
+    const fileStartRow = crossFileModel.fileStartRow.get(filePath);
+    if (fileStartRow === undefined) return null;
+    const file = files.find((f) => f.path === filePath);
+    if (!file) return null;
+    const splitRowsByHunk = crossFileModel.splitRowsByFile.get(filePath);
+    const side = diffSel.side;
+    return findComposerAnchorRow({
+      rows: crossFileModel.rows,
+      startRow: fileStartRow,
+      filePath,
+      lastLine: diffSel.last(),
+      lineAt: (idx) => rowLineOnSide(crossFileModel.rows[idx], file, splitRowsByHunk, side),
+    });
+  });
+
+  const composerAnchorIdentity = $derived(
+    composerAnchorRowIdx === null
+      ? null
+      : (crossFileModel.rows[composerAnchorRowIdx]?.identity ?? null),
+  );
+
+  /** Rendered height of the in-flow composer (ResizeObserver, integer px). */
+  let composerMeasuredPx = $state(0);
+  function onComposerHeight(px: number) {
+    if (px === composerMeasuredPx) return;
+    composerMeasuredPx = px;
+  }
+  $effect(() => {
+    if (!diffSel.composerOpen) composerMeasuredPx = 0;
+  });
+  /** Space the composer occupies in the row flow. Reserve it in the geometry so
+   *  scroll math, jump-to-row and the .hscroll height stay in step.
+   *
+   *  The reserve is kept even when the card renders through the floating
+   *  fallback: the fallback card is positioned at `composerTopPx`, which is this
+   *  same band, so the space stays occupied either way and the rows below never
+   *  jump as the card moves between the two. */
+  const composerReservePx = $derived(
+    diffSel.composerOpen && composerAnchorIdentity !== null
+      ? composerMeasuredPx || COMPOSER_APPROX_HEIGHT_PX
+      : 0,
+  );
+
   // ── Effective geometry (model + overlay) ──────────────────────────────────
   // baseGeometry = model row heights + measured overlay heights (threads/findings),
   // WITHOUT the Guide pillar padding (so pillar-pad can be derived from it without
@@ -430,23 +479,26 @@
     return pad;
   });
 
-  // effectiveGeometry = baseGeometry + Guide pillar padding. Everything
-  // downstream (virtual window, pillarSpans, scroll mapping) uses this.
+  // effectiveGeometry = baseGeometry + Guide pillar padding + composer reserve.
+  // Everything downstream (virtual window, pillarSpans, scroll mapping) uses this.
   const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
     const base = baseGeometry;
     const pad = pillarPadByRowIdentity;
-    if (pad.size === 0) return base;
-    const model = crossFileModel;
-    const offsets = new Array<number>(model.rows.length + 1);
-    offsets[0] = 0;
-    for (let i = 0; i < model.rows.length; i++) {
-      const baseH = base.cumulativeOffsets[i + 1] - base.cumulativeOffsets[i];
-      offsets[i + 1] = offsets[i] + baseH + (pad.get(model.rows[i].identity) ?? 0);
-    }
+    const composerAnchor = composerAnchorIdentity;
+    const composerPx = composerReservePx;
+    if (pad.size === 0 && composerPx === 0) return base;
+    const rows = crossFileModel.rows;
+    const offsets = foldRowExtras(base.cumulativeOffsets, (i) => {
+      const identity = rows[i].identity;
+      return (
+        (pad.get(identity) ?? 0) +
+        (composerPx !== 0 && identity === composerAnchor ? composerPx : 0)
+      );
+    });
     return {
       cumulativeOffsets: offsets,
-      totalHeight: offsets[model.rows.length],
-      rowCount: model.rows.length,
+      totalHeight: offsets[rows.length],
+      rowCount: rows.length,
     };
   });
 
@@ -1214,42 +1266,32 @@
   });
 
   // ── Composer position ─────────────────────────────────────────────────────
+  /** True when the anchor row is inside the rendered window, so the composer can
+   *  take its place in the row flow. Scrolled far enough away it falls back to
+   *  the absolutely-positioned card (kept mounted, never loses the draft). */
+  const composerInWindow = $derived(
+    composerAnchorRowIdx !== null &&
+      composerAnchorRowIdx >= vw.start &&
+      composerAnchorRowIdx < vw.end,
+  );
+
+  /** In-flow top of the composer, in .vscroll content space (the sticky file
+   *  header occupies STICKY_HEADER_PX above the row band). */
   const composerTopPx = $derived.by(() => {
-    if (!diffSel.hasSelection || diffSel.file === null || diffSel.end === null) return undefined;
-    const fileStartRow = crossFileModel.fileStartRow.get(diffSel.file);
-    if (fileStartRow === undefined) return undefined;
-    // Place composer below the last selected line row
-    const lastLn = diffSel.last();
-    const fileRows = crossFileModel.rows;
-    for (let i = fileStartRow; i < fileRows.length; i++) {
-      const row = fileRows[i];
-      if (row.filePath !== diffSel.file) break;
-      if (
-        (row.type === "content-unified" || row.type === "content-split") &&
-        i < effectiveGeometry.cumulativeOffsets.length - 1
-      ) {
-        const file = files.find((f) => f.path === diffSel.file);
-        if (!file) continue;
-        let lineNum: number | null = null;
-        if (row.type === "content-unified") {
-          const ln = file.hunks[row.hunkIdx]?.lines[row.lineIdx];
-          if (ln && unifiedLineSide(ln) === diffSel.side) {
-            lineNum = ln.new_num ?? ln.old_num ?? null;
-          }
-        } else {
-          const splitRowsByHunk = crossFileModel.splitRowsByFile.get(diffSel.file);
-          const sr = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
-          const activeSide = diffSel.side === "old" ? sr?.left : sr?.right;
-          lineNum = activeSide ? (activeSide.new_num ?? activeSide.old_num ?? null) : null;
-        }
-        if (lineNum === lastLn) {
-          // +40: StickyFileHeader is always h-10 in layout (visibility:hidden, not display:none)
-          // +8: breathing room so composer doesn't butt against the clicked line
-          return effectiveGeometry.cumulativeOffsets[i + 1] + 40 + 8;
-        }
-      }
-    }
-    return undefined;
+    const anchor = composerAnchorRowIdx;
+    if (anchor === null) return undefined;
+    const offsets = effectiveGeometry.cumulativeOffsets;
+    const end = offsets[anchor + 1];
+    if (end === undefined) return undefined;
+    return end - composerReservePx + STICKY_HEADER_PX;
+  });
+
+  /** Top of the anchor row itself — what the one-shot scroll keeps in view. */
+  const composerAnchorTopPx = $derived.by(() => {
+    const anchor = composerAnchorRowIdx;
+    if (anchor === null) return undefined;
+    const top = effectiveGeometry.cumulativeOffsets[anchor];
+    return top === undefined ? undefined : top + STICKY_HEADER_PX;
   });
 
   /** Split pane for the composer. Same `.split-diff-grid` as posted cards. */
@@ -1264,7 +1306,7 @@
     if (!diffSel.composerOpen || composerTopPx === undefined) return true;
     const viewTop = scrollTopLivePx + STICKY_HEADER_PX;
     const viewBottom = scrollTopLivePx + viewportHeightPx;
-    return viewTop <= composerTopPx + COMPOSER_APPROX_HEIGHT_PX && viewBottom >= composerTopPx;
+    return viewTop <= composerTopPx + composerReservePx && viewBottom >= composerTopPx;
   });
 
   const showGoBackToComment = $derived(
@@ -1272,13 +1314,11 @@
   );
 
   function scrollComposerIntoView() {
-    const top = composerTopPx;
+    const top = composerAnchorTopPx;
     if (top === undefined || !scrollEl) return;
-    const LINE_H = 20;
-    const selectedLineTop = top - LINE_H;
-    // Place the anchor line at 15% of the viewport height — comfortably above
-    // the card (which starts at `top`), so the clicked/selected line stays visible.
-    scrollEl.scrollTop = Math.max(0, selectedLineTop - Math.floor(viewportHeightPx * 0.15));
+    // Place the anchor row at 15% of the viewport height — the composer sits
+    // directly below it, so both the selected lines and the card stay visible.
+    scrollEl.scrollTop = Math.max(0, top - Math.floor(viewportHeightPx * 0.15));
   }
 
   $effect(() => {
@@ -1289,9 +1329,11 @@
     composerAutoScrolledKey = key;
     const st = scrollEl.scrollTop;
     const viewBottom = st + viewportHeightPx;
-    const LINE_H = 20;
-    const selectedLineTop = top - LINE_H;
-    const wouldScroll = selectedLineTop > st + viewportHeightPx * 0.5 || top > viewBottom;
+    const anchorTop = composerAnchorTopPx ?? top;
+    // Scroll when the card would land off the bottom of the viewport, or when
+    // the anchor sits in the lower half (the card below it would be cramped).
+    const wouldScroll =
+      top + composerReservePx > viewBottom || anchorTop > st + viewportHeightPx * 0.5;
     if (wouldScroll) scrollComposerIntoView();
   });
 
@@ -1631,28 +1673,18 @@
     if (idx < 0 || idx >= crossFileModel.rows.length) return null;
     const row = crossFileModel.rows[idx];
     if (row.filePath !== diffSel.file) return null;
+    if (row.type !== "content-unified" && row.type !== "content-split") return null;
 
-    if (row.type === "content-unified") {
-      const file = files.find((f) => f.path === row.filePath);
-      const line = file?.hunks[row.hunkIdx]?.lines[row.lineIdx];
-      if (!line) return null;
-      const side = unifiedLineSide(line);
-      if (side !== diffSel.side) return null;
-      const ln = line.new_num ?? line.old_num;
-      return ln !== null ? { line: ln, side } : null;
-    }
-
-    if (row.type === "content-split") {
-      if (diffSel.side === null) return null;
-      const splitRowsByHunk = crossFileModel.splitRowsByFile.get(row.filePath);
-      const splitRow = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
-      if (!splitRow) return null;
-      const activeSide = diffSel.side === "old" ? splitRow.left : splitRow.right;
-      const ln = activeSide ? (activeSide.new_num ?? activeSide.old_num ?? null) : null;
-      return ln !== null ? { line: ln, side: diffSel.side } : null;
-    }
-
-    return null;
+    const file = files.find((f) => f.path === row.filePath);
+    if (!file || diffSel.side === null) return null;
+    // A non-null result already means the row carries a line on that side.
+    const line = rowLineOnSide(
+      row,
+      file,
+      crossFileModel.splitRowsByFile.get(row.filePath),
+      diffSel.side,
+    );
+    return line === null ? null : { line, side: diffSel.side };
   }
 
   function lineInfoAtRow(idx: number) {
@@ -2250,13 +2282,28 @@
                    the next pillar's files start below the (taller) rail. -->
               <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
             {/if}
+            {#if diffSel.composerOpen && composerInWindow && rowIdx === composerAnchorRowIdx}
+              <!-- In flow, immediately below the last selected line: the composer
+                   takes real space so it never covers the lines it comments on or
+                   the code that follows them. flow-root keeps the card's own
+                   margins inside the measured height. -->
+              <div class="composer-flow-row" use:measureHeight={onComposerHeight}>
+                <DiffComposer placement={{ kind: "flow" }} splitPane={composerSplitPane} />
+              </div>
+            {/if}
           {/each}
         </div>
       </div>
 
-      {#if diffSel.composerOpen}
+      {#if diffSel.composerOpen && !composerInWindow}
+        <!-- Fallbacks, used only when the card cannot take its own space below
+             the selection. The draft lives in diffSel either way, so a card
+             remounted here keeps what was typed — focus is not re-taken (see
+             DiffComposer). The go-back pill returns to the anchor row. -->
         <DiffComposer
-          topPx={composerTopPx}
+          placement={composerTopPx === undefined
+            ? { kind: "sticky" }
+            : { kind: "absolute", topPx: composerTopPx }}
           splitPane={composerSplitPane}
         />
       {/if}
@@ -2341,5 +2388,11 @@
     overflow-y: auto;
     overflow-x: hidden;
     scroll-padding-bottom: var(--shell-bottom-chrome, 32px);
+  }
+  /* The comment composer, in flow below its anchor row. flow-root keeps the
+   * card's own margins inside the box, so the height measured here is exactly
+   * the space the row list gives up to it. */
+  .composer-flow-row {
+    display: flow-root;
   }
 </style>

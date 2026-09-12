@@ -32,6 +32,14 @@ class DiffSelection {
   startFileIndex = $state<number | null>(null);
   anchorClientX = $state(0);
   anchorClientY = $state(0);
+  /**
+   * Set when a selection opens the composer; the composer consumes it to focus
+   * its textarea exactly once. It lives here rather than in the component so a
+   * remount (the composer's anchor row scrolling out of the render window and
+   * back) cannot re-focus — `focus()` scrolls the focused element into view,
+   * which would drag the diff back to the comment every time.
+   */
+  focusPending = $state(false);
 
   /**
    * Start (or extend, when shift is held) a selection at the given line.
@@ -58,6 +66,7 @@ class DiffSelection {
       this.file = file ?? this.file;
       this.side = side;
       this.startRowIdx = startRowIdx ?? null;
+      this.focusPending = true;
     }
     this.dragging = true;
   }
@@ -116,6 +125,7 @@ class DiffSelection {
     this.side = null;
     this.startRowIdx = null;
     this.startFileIndex = null;
+    this.focusPending = false;
   }
 
   /** True when start/end are set (highlights during drag). */
