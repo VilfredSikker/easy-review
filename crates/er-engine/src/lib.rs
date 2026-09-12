@@ -4,6 +4,7 @@
 // form reads better. Clippy's nursery lint disagrees; we opt out crate-wide.
 #![allow(clippy::option_if_let_else)]
 
+pub mod agent_run;
 pub mod agent_slots;
 pub mod ai;
 #[cfg(feature = "ui")]
