@@ -2282,6 +2282,9 @@ impl TabState {
         }
         self.save_reviewed_files()?;
         self.current_branch = git_branch.to_string();
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        self.stack = StackState::default();
         self.sync_managed_storage();
         Ok(())
     }
@@ -13696,5 +13699,29 @@ mod tests {
         let (idx, root, _seq) = app.take_stack_load_request().expect("claim");
         assert_eq!(idx, 0);
         assert_eq!(root, "/wt");
+    }
+
+    #[test]
+    fn branch_change_drops_the_cached_stack() {
+        use crate::gh_stack::StackInfo;
+
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feat/a".to_string();
+        tab.sync_managed_storage();
+        tab.stack.info = Some(StackInfo::Unavailable("not in a stack".into()));
+
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        tab.apply_checkout_branch_storage_change("feat/b").unwrap();
+
+        assert_eq!(tab.current_branch, "feat/b");
+        assert!(tab.stack.info.is_none());
     }
 }
