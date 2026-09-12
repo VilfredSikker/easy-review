@@ -397,6 +397,9 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         String,
         Result<Vec<er_engine::model_discovery::DiscoveredModel>, String>,
     )>();
+    // Stacked-PR lookups (`gh stack view`) run on worker threads; each result
+    // carries the tab index and lookup id it belongs to.
+    let (stack_tx, stack_rx) = mpsc::channel::<(usize, u64, er_engine::gh_stack::StackInfo)>();
     let mut hint_rx = hint_rx;
     let mut pr_data_rx = pr_data_rx;
 
@@ -525,6 +528,22 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                 app.tab_mut().pr_data = Some(data);
                 pr_data_rx = None;
             }
+        }
+
+        // Run a requested stacked-PR lookup off the UI thread. `gh stack view`
+        // talks to GitHub, so it must never run inline: the Open hub shows a
+        // loading row and the rows fill in when the result lands below.
+        if let Some((tab_index, repo_root, lookup_seq)) = app.take_stack_load_request() {
+            let tx = stack_tx.clone();
+            std::thread::spawn(move || {
+                let info = er_engine::gh_stack::load(&repo_root);
+                let _ = tx.send((tab_index, lookup_seq, info));
+            });
+        }
+
+        // Apply finished stacked-PR lookups (fills in the Open hub in place)
+        while let Ok((tab_index, lookup_seq, info)) = stack_rx.try_recv() {
+            app.apply_stack_result(tab_index, lookup_seq, info);
         }
 
         // Spawn model discovery when requested (picker refresh / Refresh models)

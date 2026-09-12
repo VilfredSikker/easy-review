@@ -24,6 +24,11 @@ use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Process-wide id for `gh stack view` lookups, so a finished lookup can be
+/// matched to the tab+request that started it (see
+/// [`App::take_stack_load_request`] / [`App::apply_stack_result`]).
+static STACK_LOOKUP_SEQ: AtomicU64 = AtomicU64::new(1);
+
 fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
 }
@@ -548,6 +553,22 @@ pub enum HubAction {
     OpenPrInBrowser,
     /// Change the compare/base branch this tab diffs against
     SetBaseBranch,
+    /// Open a stacked PR (from `gh stack`) in a review tab. Carries the PR URL
+    /// so the existing remote-PR path can be reused unchanged.
+    OpenStackPr {
+        pr_number: u64,
+        pr_url: String,
+        branch: String,
+    },
+    /// Open a stacked PR in the browser. Secondary action of `OpenStackPr`
+    /// (the hub's `b` key).
+    OpenStackPrInBrowser {
+        pr_number: u64,
+        pr_url: String,
+        branch: String,
+    },
+    /// Re-run the `gh stack view` lookup for the active tab
+    RefreshStack,
     // Copy hub actions
     CopyFullFile,
     CopyFilePath,
@@ -566,6 +587,33 @@ pub enum HubAction {
 }
 
 // ── Per-Tab State ──
+
+/// `gh stack` state for a tab's branch.
+///
+/// The lookup shells out to `gh stack view --json` (which talks to GitHub), so
+/// it is never run inline: opening the Open hub *requests* the lookup
+/// (`loading`), the TUI/desktop spawns it on a worker thread (`request_seq`),
+/// and the result is applied on a later tick via [`App::apply_stack_result`].
+/// `info` caches the outcome — a stack or an "unavailable" reason — so reopening
+/// the hub is instant.
+#[derive(Debug, Clone, Default)]
+pub struct StackState {
+    /// Cached lookup result; `None` until the first lookup lands.
+    pub info: Option<crate::gh_stack::StackInfo>,
+    /// A lookup has been requested (the hub shows a loading row until it lands).
+    pub loading: bool,
+    /// Id of the in-flight lookup (0 = none). A result only applies while the
+    /// tab still carries the id it was requested under, so a lookup that
+    /// finished after the tab moved, was closed, or re-requested is dropped.
+    pub request_seq: u64,
+}
+
+impl StackState {
+    /// Rows for the hub's stack section, or `None` when nothing is known yet.
+    pub fn rows(&self) -> Option<Vec<crate::gh_stack::StackRow>> {
+        self.info.as_ref().map(|info| info.rows())
+    }
+}
 
 /// State for a single repo tab
 pub struct TabState {
@@ -767,6 +815,10 @@ pub struct TabState {
 
     /// Fetched PR overview data (loaded on startup if PR detected)
     pub pr_data: Option<PrOverviewData>,
+
+    /// `gh stack` stacked-PR state for this tab's branch. Fetched lazily when
+    /// the Open hub is opened, so the hub paints before `gh` returns.
+    pub stack: StackState,
 
     /// PR commit list from GitHub, newest first. PR review tabs use this for
     /// the commit scroller so it matches GitHub's PR Commits tab.
@@ -1433,6 +1485,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -1558,6 +1611,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -1677,6 +1731,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
@@ -1841,6 +1896,7 @@ impl TabState {
             storage_notice: None,
             last_diff_head_oid: None,
             pr_refs_fetched: false,
+            stack: StackState::default(),
         }
     }
 
@@ -1918,6 +1974,26 @@ impl TabState {
     /// Like remote, only the Branch mode is offered and write commands are hidden.
     pub const fn is_local_branch_view(&self) -> bool {
         self.local_branch_view.is_some()
+    }
+
+    /// The working tree whose checked-out branch is the branch this tab views,
+    /// or `None` when there isn't one.
+    ///
+    /// A plain working/branch tab *is* the main checkout, so that's `repo_root`.
+    /// A read-only local-branch/PR view only has one when the branch is checked
+    /// out somewhere (`local_branch_checkout_root`, set by the desktop branch
+    /// watcher) — otherwise `current_branch` is the PR head, not the checkout,
+    /// so anything that must run "in the viewed branch" (open-in-editor,
+    /// `gh stack view`) has to be skipped rather than run in `repo_root` against
+    /// some unrelated branch.
+    pub fn local_checkout_root(&self) -> Option<&str> {
+        if self.is_remote() {
+            return None;
+        }
+        if self.local_branch_view.is_some() {
+            return self.local_branch_checkout_root.as_deref();
+        }
+        Some(self.repo_root.as_str())
     }
 
     /// Whether the active diff is a local branch-vs-base diff (the "Local Diff"):
@@ -2206,6 +2282,9 @@ impl TabState {
         }
         self.save_reviewed_files()?;
         self.current_branch = git_branch.to_string();
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        self.stack = StackState::default();
         self.sync_managed_storage();
         Ok(())
     }
@@ -6914,6 +6993,11 @@ impl App {
 
     /// Open the Open modal hub (browse folders, switch worktree, remote PR, open in browser)
     pub fn open_open_hub(&mut self) {
+        // Ask for a `gh stack view` lookup on first open. The hub paints
+        // immediately with a loading row; the TUI runs the lookup off the UI
+        // thread (see `take_stack_load_request`) and fills the rows in later.
+        self.request_stack_load();
+
         let repo_root = self.tab().repo_root.clone();
         let has_worktrees = git::list_worktrees(&repo_root)
             .map(|wts| wts.len() > 1)
@@ -6974,6 +7058,12 @@ impl App {
             },
         ];
 
+        // ── Stacked PRs (gh stack) ──
+        // Sits above the current-PR section: on a stacked branch the stack, not
+        // a single PR, is what `o` is for.
+        items.push(Self::hub_header("── Stack ──"));
+        items.extend(self.stack_hub_items());
+
         if has_pr {
             items.push(HubItem {
                 label: "── Current PR ──".into(),
@@ -7003,6 +7093,246 @@ impl App {
             items,
             selected: first_selectable,
         });
+    }
+
+    /// A non-selectable section header for a modal hub.
+    fn hub_header(label: &str) -> HubItem {
+        HubItem {
+            label: label.into(),
+            hint: String::new(),
+            description: String::new(),
+            action: HubAction::Noop,
+            is_header: true,
+            enabled: false,
+        }
+    }
+
+    /// A selectable hub row: `label` is the primary text (branch name), `hint`
+    /// renders right after it in dim brackets (`#42`), `description` trails in
+    /// muted text (state).
+    fn hub_row(
+        label: &str,
+        hint: &str,
+        description: &str,
+        action: HubAction,
+        enabled: bool,
+    ) -> HubItem {
+        HubItem {
+            label: label.into(),
+            hint: hint.into(),
+            description: description.into(),
+            action,
+            is_header: false,
+            enabled,
+        }
+    }
+
+    /// Rows for the Open hub's `── Stack ──` section, in stack order (top of
+    /// the stack first, trunk last).
+    ///
+    /// Deliberately a thin map over [`crate::gh_stack::StackInfo::rows`]: the
+    /// ordering, PR labels and state text are owned and tested by `gh_stack`,
+    /// this only attaches the hub action each row should dispatch.
+    pub fn stack_hub_items(&self) -> Vec<HubItem> {
+        let tab = self.tab();
+
+        // `gh stack view` reads the checked-out branch's stack, so it's only
+        // meaningful when the branch this tab views is the checkout: a remote-PR
+        // tab has no local branch, and a local PR/branch view whose head isn't
+        // checked out would describe some unrelated branch.
+        if tab.is_remote() {
+            return vec![Self::hub_row(
+                "Stacked PRs",
+                "",
+                "Not available for remote PRs",
+                HubAction::Noop,
+                false,
+            )];
+        }
+        if tab.local_checkout_root().is_none() {
+            return vec![Self::hub_row(
+                "Stacked PRs",
+                "",
+                "Not available — this branch isn't checked out",
+                HubAction::Noop,
+                false,
+            )];
+        }
+
+        let Some(rows) = tab.stack.rows() else {
+            return vec![Self::hub_row(
+                "Loading stacked PRs…",
+                "",
+                "Reading gh stack view",
+                HubAction::Noop,
+                false,
+            )];
+        };
+
+        let mut items: Vec<HubItem> = rows
+            .into_iter()
+            .map(|row| {
+                let action = match (row.pr_number, row.pr_url) {
+                    (Some(pr_number), Some(pr_url)) => HubAction::OpenStackPr {
+                        pr_number,
+                        pr_url,
+                        branch: row.label.clone(),
+                    },
+                    // No PR yet (a fresh layer) or no URL to open — the row
+                    // still shows the branch, it just can't be selected.
+                    _ => HubAction::Noop,
+                };
+                Self::hub_row(&row.label, &row.hint, &row.description, action, row.enabled)
+            })
+            .collect();
+
+        // Only offer a refresh once there is something to refresh; the loading
+        // row already covers the first fetch.
+        items.push(Self::hub_row(
+            "Refresh stack",
+            "",
+            "Re-run gh stack view",
+            HubAction::RefreshStack,
+            true,
+        ));
+        items
+    }
+
+    /// Mark the active tab's stack as needing a lookup.
+    ///
+    /// Cheap and idempotent: it never shells out (the TUI does that off the UI
+    /// thread after [`App::take_stack_load_request`]), and a warm cache or an
+    /// in-flight request is left alone. Tabs whose viewed branch isn't checked
+    /// out (remote PRs, local PR views without a checkout) have no stack to read
+    /// — `gh stack view` would describe some other branch — so they're skipped.
+    pub fn request_stack_load(&mut self) {
+        let tab = self.tab_mut();
+        if tab.local_checkout_root().is_none() {
+            return;
+        }
+        if tab.stack.info.is_none() && !tab.stack.loading && tab.stack.request_seq == 0 {
+            tab.stack.loading = true;
+        }
+    }
+
+    /// Claim the next pending stack lookup, returning the tab index, the
+    /// checkout to run `gh stack view --json` in, and the lookup id.
+    ///
+    /// `None` in the common case (nothing pending, or already in flight). The TUI
+    /// spawns a worker thread for the returned request and hands the result back
+    /// to [`App::apply_stack_result`] with the id.
+    pub fn take_stack_load_request(&mut self) -> Option<(usize, String, u64)> {
+        let idx = self.tabs.iter().position(|tab| {
+            tab.stack.loading && tab.stack.request_seq == 0 && tab.local_checkout_root().is_some()
+        })?;
+        let seq = STACK_LOOKUP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tab = &mut self.tabs[idx];
+        let root = tab.local_checkout_root()?.to_string();
+        tab.stack.request_seq = seq;
+        Some((idx, root, seq))
+    }
+
+    /// Apply a finished stack lookup, identified by its `lookup_seq`.
+    ///
+    /// Tabs can close, reorder, or start a newer lookup while `gh stack view`
+    /// runs, so the result is matched to whichever tab still carries this lookup
+    /// id — a superseded or orphaned result is dropped rather than cached against
+    /// the wrong branch. Caches the value (including "no stack here" reasons) so
+    /// reopening the hub is instant, and refills the Open hub in place —
+    /// preserving the cursor — when that hub is up and still showing this tab.
+    pub fn apply_stack_result(
+        &mut self,
+        tab_index: usize,
+        lookup_seq: u64,
+        info: crate::gh_stack::StackInfo,
+    ) {
+        let idx = if self
+            .tabs
+            .get(tab_index)
+            .is_some_and(|tab| tab.stack.request_seq == lookup_seq)
+        {
+            tab_index
+        } else {
+            match self
+                .tabs
+                .iter()
+                .position(|tab| tab.stack.request_seq == lookup_seq)
+            {
+                Some(idx) => idx,
+                // The requesting tab was closed, or a newer lookup superseded
+                // this one.
+                None => return,
+            }
+        };
+        let tab = &mut self.tabs[idx];
+        tab.stack.info = Some(info);
+        tab.stack.loading = false;
+        tab.stack.request_seq = 0;
+
+        let active = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        let hub_is_open = matches!(
+            &self.overlay,
+            Some(OverlayData::ModalHub {
+                kind: HubKind::Open,
+                ..
+            })
+        );
+        if !hub_is_open || idx != active {
+            return;
+        }
+
+        let previous = match &self.overlay {
+            Some(OverlayData::ModalHub { selected, .. }) => *selected,
+            _ => 0,
+        };
+        self.open_open_hub();
+        if let Some(OverlayData::ModalHub {
+            selected, items, ..
+        }) = &mut self.overlay
+        {
+            // Keep the cursor where the user left it; the row count only
+            // changes on the first load (loading row -> stack rows).
+            if previous < items.len() {
+                *selected = previous;
+            }
+        }
+    }
+
+    /// Drop the cached stack and reopen the Open hub, which requests a fresh
+    /// lookup (the hub's "Refresh stack" row).
+    pub fn refresh_stack(&mut self) {
+        self.tab_mut().stack = StackState::default();
+        self.open_open_hub();
+    }
+
+    /// Secondary (browser) action for the selected modal-hub row.
+    ///
+    /// Stacked-PR rows carry one: `b` opens on GitHub the same PR that Enter
+    /// opens for review. Everything else returns `None`, so the generic modal
+    /// path is untouched.
+    pub fn overlay_secondary_hub_action(&self) -> Option<HubAction> {
+        let OverlayData::ModalHub {
+            items, selected, ..
+        } = self.overlay.as_ref()?
+        else {
+            return None;
+        };
+        let item = items.get(*selected)?;
+        if !item.enabled {
+            return None;
+        }
+        match &item.action {
+            HubAction::OpenStackPr {
+                pr_number,
+                pr_url,
+                branch,
+            } => Some(HubAction::OpenStackPrInBrowser {
+                pr_number: *pr_number,
+                pr_url: pr_url.clone(),
+                branch: branch.clone(),
+            }),
+            _ => None,
+        }
     }
 
     pub fn open_config_hub(&mut self) {
@@ -8167,6 +8497,7 @@ mod tests {
             storage_notice: None,
             last_diff_head_oid: None,
             pr_refs_fetched: false,
+            stack: StackState::default(),
         }
     }
 
@@ -13250,5 +13581,147 @@ mod tests {
         assert!(!er.join("summary.md").exists());
         assert!(!er.join("professor.json").exists());
         assert!(!experts.join("security.json").exists());
+    }
+
+    #[test]
+    fn stack_lookup_applies_only_to_its_own_request() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.active_tab = 0;
+        app.tabs[0].stack.loading = true;
+
+        let (idx, root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 0);
+        assert_eq!(root, "tab0");
+        assert_ne!(app.tabs[0].stack.request_seq, 0);
+
+        // A superseded/orphaned id must not be cached.
+        app.apply_stack_result(idx, seq + 1, StackInfo::Unavailable("stale".into()));
+        assert!(app.tabs[0].stack.info.is_none());
+        assert_ne!(
+            app.tabs[0].stack.request_seq, 0,
+            "the real lookup is still pending"
+        );
+
+        // The matching id lands and clears the pending flags.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("not in a stack".into()));
+        assert_eq!(
+            app.tabs[0].stack.info,
+            Some(StackInfo::Unavailable("not in a stack".into()))
+        );
+        assert!(!app.tabs[0].stack.loading);
+        assert_eq!(app.tabs[0].stack.request_seq, 0);
+    }
+
+    #[test]
+    fn stack_lookup_follows_its_tab_across_a_reorder() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].stack.loading = true;
+        let (idx, _root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 1);
+
+        // The requesting tab moves to the front while the lookup is in flight.
+        assert!(app.reorder_tabs(1, 0));
+
+        // The result still lands on the tab that asked for it, not on whatever
+        // tab now sits at the original index.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("not in a stack".into()));
+        assert_eq!(
+            app.tabs[0].stack.info,
+            Some(StackInfo::Unavailable("not in a stack".into()))
+        );
+        assert!(app.tabs[1].stack.info.is_none());
+        assert_eq!(app.tabs[0].stack.request_seq, 0);
+    }
+
+    #[test]
+    fn stack_lookup_for_a_closed_tab_is_dropped() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].stack.loading = true;
+        let (idx, _root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 1);
+
+        app.close_tab_at(idx);
+        assert_eq!(app.tabs.len(), 1);
+        // Doesn't panic and caches nothing: the requester is gone.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("gone".into()));
+        assert!(app.tabs.iter().all(|t| t.stack.info.is_none()));
+    }
+
+    #[test]
+    fn local_checkout_root_only_resolves_the_viewed_branch() {
+        // A plain working/branch tab runs in its own repo root.
+        let mut working = TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(working.local_checkout_root(), Some("/repo"));
+
+        // A remote-PR tab has no local checkout at all.
+        let mut remote = TabState::new_for_test(vec![]);
+        remote.remote_repo = Some("o/r".into());
+        assert_eq!(remote.local_checkout_root(), None);
+
+        // A local PR/branch view's `current_branch` is the PR head, *not* the
+        // checkout — so without a checkout root there is nothing safe to run in.
+        let mut pr = TabState::new_for_test(vec![]);
+        pr.repo_root = "/repo".into();
+        pr.remote_repo = Some("o/r".into());
+        pr.local_branch_view = Some("feat/pr-head".into());
+        pr.current_branch = "feat/pr-head".into();
+        assert_eq!(pr.local_checkout_root(), None);
+
+        // Unless the head is checked out in a worktree.
+        pr.local_branch_checkout_root = Some("/wt".into());
+        assert_eq!(pr.local_checkout_root(), Some("/wt"));
+    }
+
+    #[test]
+    fn stack_lookup_is_skipped_when_the_viewed_branch_is_not_checked_out() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("o/r".into());
+        tab.local_branch_view = Some("feat/pr-head".into());
+        tab.current_branch = "feat/pr-head".into();
+
+        app.request_stack_load();
+        assert!(!app.tabs[0].stack.loading);
+        assert!(app.take_stack_load_request().is_none());
+
+        // Once the branch is checked out, the lookup is eligible and runs in
+        // that checkout (a linked worktree), not the tab's repo root.
+        app.tab_mut().local_branch_checkout_root = Some("/wt".into());
+        app.request_stack_load();
+        assert!(app.tabs[0].stack.loading);
+        let (idx, root, _seq) = app.take_stack_load_request().expect("claim");
+        assert_eq!(idx, 0);
+        assert_eq!(root, "/wt");
+    }
+
+    #[test]
+    fn branch_change_drops_the_cached_stack() {
+        use crate::gh_stack::StackInfo;
+
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feat/a".to_string();
+        tab.sync_managed_storage();
+        tab.stack.info = Some(StackInfo::Unavailable("not in a stack".into()));
+
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        tab.apply_checkout_branch_storage_change("feat/b").unwrap();
+
+        assert_eq!(tab.current_branch, "feat/b");
+        assert!(tab.stack.info.is_none());
     }
 }

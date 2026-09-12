@@ -99,7 +99,14 @@ function loadCommentVisibility(): CommentVisibility {
   }
 }
 
-/** Commands that typically take 2-3s to complete on the backend. */
+/**
+ * Commands that typically take 2-3s to complete on the backend.
+ *
+ * `refresh_stack` (which shells out to `gh stack view`) is deliberately not
+ * here: it is a background refresh of one card, not a view switch, so it must
+ * not raise the full-screen "Switching review…" overlay or block optimistic
+ * paints.
+ */
 const SLOW_COMMANDS = new Set([
   "open_local_branch",
   "open_pr_review",

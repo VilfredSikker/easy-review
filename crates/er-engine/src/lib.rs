@@ -21,6 +21,7 @@ pub mod diagram_upload;
 pub mod env_path;
 #[cfg(feature = "ui")]
 pub mod export;
+pub mod gh_stack;
 pub mod git;
 pub mod github;
 #[cfg(feature = "highlight")]

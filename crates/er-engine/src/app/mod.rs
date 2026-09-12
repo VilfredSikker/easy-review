@@ -23,5 +23,5 @@ pub use state::{
     cleanup_review_artifacts, cleanup_reviews, cleanup_triage, AgentLogEntry, AgentLogSource,
     AiActionKind, App, BrowserLayout, CommandStatus, ConfigEditState, ConfirmAction, DiffMode,
     DirEntry, HubAction, HubItem, HubKind, InputMode, OverlayData, PanelsVisible, SplitSide,
-    TabState,
+    StackState, TabState,
 };
