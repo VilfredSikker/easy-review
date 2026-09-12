@@ -1,29 +1,46 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { SPLIT_ANNOTATION_TRAIL_PAD_PX } from "$lib/splitDiffLayout";
   import { app } from "$lib/stores/app.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
 
+  /**
+   * How the card sits in the diff:
+   * - `flow` — occupies real layout space in the row list, directly below the
+   *   selected lines (the normal case).
+   * - `absolute` — floating at a content offset, used when the anchor row is
+   *   outside the rendered window so the draft stays alive while scrolled away.
+   * - `sticky` — docked to the bottom of the diff viewport, used when the
+   *   selection has no rendered row to attach to (compacted file, lazy stub).
+   */
+  type ComposerPlacement =
+    | { kind: "flow" }
+    | { kind: "absolute"; topPx: number }
+    | { kind: "sticky" };
+
   interface Props {
-    /** Absolute top position in px. When set, renders absolute (flat mode); otherwise sticky. */
-    topPx?: number;
+    placement: ComposerPlacement;
     /** Split-view pane. Uses the same `.split-diff-grid` as posted annotation cards. */
     splitPane?: "old" | "new" | null;
   }
-  const { topPx, splitPane = null }: Props = $props();
+  const { placement, splitPane = null }: Props = $props();
+
+  const absoluteTopPx = $derived(placement.kind === "absolute" ? placement.topPx : undefined);
 
   const split = $derived(splitPane !== null);
   const canSubmit = $derived(diffSel.text.trim().length > 0);
   let composerEl: HTMLTextAreaElement | null = $state(null);
-  let didFocusForSelection = $state(false);
 
+  // Focus once per selection, using the store's pending flag so a remount of
+  // this card never re-focuses (the browser scrolls a focused element into view,
+  // which would drag the diff back to the comment). `preventScroll` leaves that
+  // decision to the diff view's own one-shot scroll.
   $effect(() => {
-    if (!diffSel.composerOpen) {
-      didFocusForSelection = false;
-      return;
-    }
-    if (didFocusForSelection || !composerEl) return;
-    didFocusForSelection = true;
-    queueMicrotask(() => composerEl?.focus());
+    if (!diffSel.focusPending || !composerEl) return;
+    untrack(() => {
+      diffSel.focusPending = false;
+    });
+    queueMicrotask(() => composerEl?.focus({ preventScroll: true }));
   });
 
   /**
@@ -95,11 +112,12 @@
 
 <div
   class={[
-    topPx !== undefined && "absolute left-0 right-0 z-20",
+    placement.kind === "absolute" && "absolute left-0 right-0 z-20",
+    placement.kind === "sticky" && "sticky bottom-0 left-0 right-0 z-20",
     split && ["annotation-inline-row", "annotation-split-row", "split-diff-grid"],
   ]}
   data-split-pane={split ? splitPane : undefined}
-  style={topPx !== undefined ? `top:${topPx}px` : undefined}
+  style={absoluteTopPx !== undefined ? `top:${absoluteTopPx}px` : undefined}
 >
   <div
     class={["min-w-0", split && "annotation-split-slot"]}
@@ -113,7 +131,6 @@
       onkeydown={() => {}}
       class={[
         cardClass,
-        topPx === undefined && "sticky bottom-0 left-0 right-0",
         diffSel.kind === "question" || diffSel.kind === "note"
           ? "border border-question/40 bg-card"
           : "border border-action/40 bg-card",
