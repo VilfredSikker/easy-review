@@ -243,8 +243,10 @@ impl AgentRunTimer {
     /// single number that says whether the cap, rather than the model, is
     /// setting wall-clock.
     ///
-    /// Every spawn site reports the same two extras, so they are parameters
-    /// rather than a caller-built field list; see `run_fields` for the names.
+    /// The four instrumented spawn sites all report the same two extras, so
+    /// they are parameters rather than a caller-built field list; see
+    /// `run_fields` for the names. Card AI and the arena arbiter hold no timer
+    /// and emit nothing, so this is not every site that spawns an agent.
     pub fn emit(self, label: &str, command: &str, ok: bool) {
         if !enabled() {
             return;
@@ -282,9 +284,9 @@ mod tests {
 
     #[test]
     fn run_fields_names_the_same_two_fields_every_spawn_reports() {
-        // The point of `emit_run` is that a new spawn path inherits the field
-        // names rather than reinventing them. Nothing reads this output at
-        // runtime, so without this the names could drift unnoticed.
+        // Sharing the names is the point: a new spawn path inherits them
+        // rather than reinventing them. Nothing reads this output at runtime,
+        // so without this test the names could drift unnoticed.
         let fields = run_fields("review", true);
         assert_eq!(fields[0], ("command", "review".to_string()));
         assert_eq!(fields[1], ("ok", "true".to_string()));

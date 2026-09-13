@@ -40,10 +40,10 @@ impl Drop for AgentSlotGuard<'_> {
 
 /// Tally a granted slot acquisition.
 ///
-/// Only the success path calls this. A cancelled waiter never held a slot, so
-/// counting it would inflate `acquires` and — because it has usually waited
-/// longer than a millisecond — let a cancelled wait read as evidence that the
-/// cap binds, which is the reading the plan's Phase 0 numbers lean on.
+/// Only the success path calls this: a cancelled waiter never held a slot, so
+/// counting it would inflate `acquires` and — usually having waited over a
+/// millisecond — also `blocked`, which is the reading the plan's Phase 0
+/// numbers lean on.
 ///
 /// Exists as a named function so the call sites can be counted in a test: the
 /// statistics themselves sit behind `ER_AGENT_TIMING`, and `enabled()` caches
@@ -84,9 +84,7 @@ impl SlotPool {
         let started = Instant::now();
         loop {
             if cancel.load(Ordering::SeqCst) {
-                // A cancelled waiter never held a slot, so it is not an
-                // acquisition; counting it would inflate `acquires` and let a
-                // cancelled wait read as evidence the cap binds.
+                // Deliberately does not record — see `record_grant`.
                 return None;
             }
             if *active < cap {
