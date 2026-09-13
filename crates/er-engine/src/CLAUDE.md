@@ -20,6 +20,7 @@ to the consuming crates.
 | `uninstall.rs` | Plan/execute uninstall of config, managed data, cache, binaries, apps | — |
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
 | `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
+| `agent_timing.rs` | Opt-in (`ER_AGENT_TIMING=1`) wall-clock marks for agent runs: slot wait, spawn, run | — |
 | `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |
 
 ## Consumers

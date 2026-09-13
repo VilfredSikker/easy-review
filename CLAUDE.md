@@ -41,7 +41,7 @@ Rust + Ratatui TUI. Six modules + a standalone GitHub integration file:
 - **`config.rs`** — Configuration system. Global-only: loads `~/.config/er/config.toml` (or `$XDG_CONFIG_HOME/er/config.toml`) with serde defaults — per-repo `.er-config.toml` config was removed. `ErConfig` struct holds `FeatureFlags`, `AgentConfig`, `DisplayConfig`, and `[watched]` glob patterns. Settings items for the overlay UI are defined here.
 - **`github.rs`** — GitHub CLI (`gh`) wrapper for PR integration. Parses PR URLs, checks out PR branches, resolves base branches, detects open PRs for current branch. Two-way comment sync: pull review comments from GitHub, push local comments back, reply to threads, delete comments. No API token needed — uses `gh auth`.
 
-The event loop in `main.rs` polls for keyboard input (100ms timeout) and checks for file watch events each tick. Watch events are debounced (200ms) to batch rapid changes. PR base hint check runs on a background thread to avoid blocking startup. No async runtime needed — crossterm polling + mpsc channels.
+The event loop in `main.rs` polls for keyboard input (`POLL_INTERVAL`, 50ms) and checks for file watch events each tick. Watch events are debounced (200ms) to batch rapid changes. PR base hint check runs on a background thread to avoid blocking startup. No async runtime needed — crossterm polling + mpsc channels.
 
 `crates/er-desktop` (Tauri backend) and `desktop-ui` (Svelte frontend) wrap the same `er-engine` core in a GUI shell — the frontend polls snapshots over Tauri IPC instead of rendering to a terminal. See File Map below for key files.
 

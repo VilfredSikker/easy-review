@@ -4936,7 +4936,11 @@ pub struct App {
     /// via [`App::clear_notification`] when its own timer expires.
     pub notification: Option<Notification>,
 
-    /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
+    /// Loop-iteration counter the TUI uses to throttle periodic work.
+    ///
+    /// The engine only holds it. The TUI increments it once per iteration and
+    /// owns the periods (its `AI_POLL_TICKS` / `WATCHED_RESCAN_TICKS`), since
+    /// only it knows how long an iteration takes.
     pub ai_poll_counter: u16,
 
     /// Input buffer for remote URL input mode
@@ -8375,7 +8379,8 @@ mod tests {
         let mut tab = make_test_tab(vec![]);
         tab.raw_diff = Some(raw.to_string());
         // b.rs is already reviewed, a.rs is not.
-        tab.reviewed.insert("b.rs".to_string(), "old-hash".to_string());
+        tab.reviewed
+            .insert("b.rs".to_string(), "old-hash".to_string());
 
         // Watch-path refresh: only reviewed files get cached, because only they
         // are consulted without a user action.
@@ -8469,7 +8474,10 @@ mod tests {
             !hash.is_empty(),
             "an eager refresh must let a later mark resolve a real hash"
         );
-        assert_eq!(hash, crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap());
+        assert_eq!(
+            hash,
+            crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap()
+        );
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
