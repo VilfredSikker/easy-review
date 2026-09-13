@@ -1913,6 +1913,7 @@ fn main() {
             commands::run_ai_triage_review,
             commands::run_pr_triage,
             commands::cancel_queued_review,
+            commands::cancel_running_review,
             commands::run_branch_triage,
             commands::list_ai_experts,
             commands::list_ai_reviewers,

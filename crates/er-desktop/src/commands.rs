@@ -2137,6 +2137,28 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
     Ok(snap_from(&app, &state))
 }
 
+/// Stop a running review.
+///
+/// The handle is cloned and the lock released *before* signalling: `kill`
+/// forks a process, and holding the app mutex across a fork would block every
+/// other command — including the poll that would show the stop took effect.
+#[tauri::command]
+pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let run = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        app.running_background_review(&id)
+    };
+    let Some(run) = run else {
+        return Err("No running review with that id".to_string());
+    };
+    run.kill();
+
+    // Re-read for the snapshot only after the signal is away.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
+
 #[tauri::command]
 pub fn patch_project_review_settings(
     project_id: String,

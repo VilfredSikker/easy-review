@@ -3545,37 +3545,52 @@ impl App {
         removed
     }
 
-    /// Stop a running background agent. Returns true when a task with that id
-    /// was running and has been signalled.
+    /// The running process for a background task, if it has one.
     ///
-    /// Signalling only. The worker owns the verdict, and reaches it after its
-    /// `wait` returns — which the kill causes — so this must not also write a
-    /// result, or a stopped run and a finished one would race to describe the
-    /// same task. The cancel flag is set first inside `kill`, so a worker
-    /// about to record an outcome already sees it even if the signal fails.
+    /// Returns the handle rather than stopping the run, because stopping it
+    /// forks a process and `AGENTS.md` forbids that under the app mutex. A
+    /// caller holding the lock clones this, releases, and *then* calls
+    /// [`crate::agent_run::AgentRunHandle::kill`]. A caller holding no lock
+    /// may kill straight away.
     ///
-    /// Unlike [`Self::cancel_queued_background_task`], which removes a task
-    /// that never started, this one leaves the task in place to wind down.
-    pub fn cancel_running_background_task(&mut self, id: &str) -> bool {
-        let Some(handle) = self.background_tasks.get(id) else {
-            return false;
-        };
-        handle.run.kill();
-        true
+    /// Signalling is all a stop does. The worker owns the verdict and reaches
+    /// it after its `wait` returns — which the kill causes — so a stop must
+    /// not also write a result, or a stopped run and a finished one would
+    /// race to describe the same task.
+    pub fn running_background_review(
+        &self,
+        id: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.background_tasks
+            .get(id)
+            .map(|h| std::sync::Arc::clone(&h.run))
     }
 
-    /// Stop a running tab-level command (the tab-command and configured-shell
-    /// paths). Returns true when a process with that name was running.
+    /// The running process for a tab-level command (the tab-command and
+    /// configured-shell paths), if it has one.
     ///
-    /// Signalling only, for the same reason as
-    /// [`Self::cancel_running_background_task`]: the worker that owns the
-    /// child writes the verdict after its `wait` returns.
-    pub fn cancel_running_command(&mut self, name: &str) -> bool {
-        let Some(run) = self.tab().command_runs.get(name) else {
-            return false;
-        };
-        run.kill();
-        true
+    /// Returns the handle for the same reason as
+    /// [`Self::running_background_review`]: kill forks, so the caller releases
+    /// the lock first.
+    pub fn running_command(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.tab().command_runs.get(name).map(std::sync::Arc::clone)
+    }
+
+    /// Every running tab-level command, by name.
+    ///
+    /// Collected into owned handles so the caller can release the borrow —
+    /// and, in the desktop, the lock — before signalling any of them.
+    pub fn running_commands(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<crate::agent_run::AgentRunHandle>)> {
+        self.tab()
+            .command_runs
+            .iter()
+            .map(|(name, run)| (name.clone(), std::sync::Arc::clone(run)))
+            .collect()
     }
 
     /// Snapshot of in-flight + recently finished background tasks. Includes

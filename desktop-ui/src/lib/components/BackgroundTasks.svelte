@@ -55,6 +55,8 @@
     title?: string;
     /** Queued pills can be cancelled — removes the task from the queue. */
     cancelTaskId?: string;
+    /** Running pills can be stopped — signals the agent process. */
+    stopTaskId?: string;
   };
 
   const pills = $derived.by<Pill[]>(() => {
@@ -67,6 +69,8 @@
         text: t.target_label
           ? `${t.label} running · ${truncate(t.target_label)}`
           : `${t.label} running`,
+        title: "Click ■ to stop",
+        stopTaskId: t.id,
       });
     } else if (running.length > 1) {
       out.push({
@@ -133,6 +137,13 @@
     void app.cmd("cancel_queued_review", { id: taskId });
   }
 
+  function stopRunning(taskId: string, event: MouseEvent) {
+    event.stopPropagation();
+    // Signals the process; the worker reports the outcome once its wait
+    // returns, so nothing is written here.
+    void app.cmd("cancel_running_review", { id: taskId });
+  }
+
   const rightOffset = $derived(avoidRightPanel ? rightPanelWidth + 16 : 24);
 </script>
 
@@ -175,6 +186,16 @@
           ></span>
           <span class="truncate">{pill.text}</span>
         </button>
+        {#if pill.stopTaskId}
+          <button
+            class="px-1.5 py-1 shrink-0 text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors rounded-sm cursor-pointer"
+            title="Stop this review"
+            aria-label="Stop running review"
+            onclick={(e) => stopRunning(pill.stopTaskId!, e)}
+          >
+            ■
+          </button>
+        {/if}
         {#if pill.cancelTaskId}
           <button
             class="px-1.5 py-1 shrink-0 text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors rounded-sm cursor-pointer"
