@@ -747,6 +747,13 @@ pub struct TabState {
     /// current against a diff they no longer match.
     pub last_ai_diff_hash: Option<String>,
 
+    /// Fast (non-cryptographic) hash of the branch diff at the last quick
+    /// refresh of a local-branch view, or `None` after a full one.
+    ///
+    /// Exists to answer "did the branch diff move?" cheaply, so the SHA-256
+    /// that staleness is measured against is only recomputed when it did.
+    pub last_quick_branch_hash: Option<String>,
+
     // ── Filter state ──
     /// Active filter expression (user-visible string)
     pub filter_expr: String,
@@ -1499,6 +1506,7 @@ impl TabState {
             branch_diff_hash: diff_hash,
             last_ai_check: None,
             last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1627,6 +1635,7 @@ impl TabState {
             branch_diff_hash: String::new(),
             last_ai_check: None,
             last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1749,6 +1758,7 @@ impl TabState {
             branch_diff_hash: String::new(),
             last_ai_check: None,
             last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1871,6 +1881,7 @@ impl TabState {
             branch_diff_hash: String::new(),
             last_ai_check: None,
             last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -3001,8 +3012,24 @@ impl TabState {
             if recompute_branch_hash {
                 self.diff_hash = crate::ai::compute_diff_hash(&raw);
                 self.branch_diff_hash = self.diff_hash.clone();
+                self.last_quick_branch_hash = None;
             } else {
-                self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                let fast = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                // A quick refresh used to leave `branch_diff_hash` where it
+                // was, so a HEAD move the app did not perform itself -- a
+                // commit from a terminal -- left `is_stale` false and findings
+                // rendering as current against a diff they no longer matched.
+                //
+                // The fast hash decides whether to pay for the SHA-256. On this
+                // view the common watch event is an uncommitted edit, which
+                // does not move the branch diff at all, so the expensive branch
+                // is the rare one.
+                let moved = self.last_quick_branch_hash.as_deref() != Some(fast.as_str());
+                self.last_quick_branch_hash = Some(fast.clone());
+                self.diff_hash = fast;
+                if moved {
+                    self.branch_diff_hash = crate::ai::compute_diff_hash(&raw);
+                }
             }
             log_branch_profile_phase(self, "local_branch_diff_hash", t_diff_hash);
 
@@ -8562,6 +8589,7 @@ mod tests {
             branch_diff_hash: String::new(),
             last_ai_check: None,
             last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -8820,6 +8848,82 @@ mod tests {
         assert_eq!(
             hash,
             crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap()
+        );
+    }
+
+    /// A repo with `main` and a `feature` branch one commit ahead.
+    fn init_repo_with_a_feature_branch() -> tempfile::TempDir {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "init"]);
+        git(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("a.txt"), "base\nfeature\n").unwrap();
+        git(&["commit", "-qam", "feature work"]);
+        git(&["checkout", "-q", "main"]);
+        dir
+    }
+
+    #[test]
+    fn a_quick_refresh_re_derives_staleness_when_the_branch_moves() {
+        // Phase 2 item 3. A quick refresh of a local-branch view used to leave
+        // `branch_diff_hash` where it was, so a HEAD move the app did not
+        // perform itself -- a commit from a terminal -- left `is_stale` false
+        // and findings rendering as current against a diff they no longer
+        // matched.
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.local_branch_view = Some("feature".to_string());
+        tab.local_branch_checkout_root = None;
+        tab.base_branch = "main".to_string();
+
+        tab.refresh_diff().expect("full refresh");
+        let before = tab.branch_diff_hash.clone();
+        assert!(!before.is_empty(), "a full refresh sets a real hash");
+
+        // A commit the app knows nothing about: nothing calls refresh_diff.
+        // It has to change the *diff*, so an empty commit will not do -- the
+        // branch diff would be identical and the hash rightly unchanged.
+        std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
+        for args in [
+            vec!["checkout", "-q", "feature"],
+            vec!["add", "b.txt"],
+            vec!["commit", "-qm", "from a terminal"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+        }
+
+        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+        let after = tab.branch_diff_hash.clone();
+        assert_ne!(
+            before, after,
+            "the quick refresh must re-derive the branch hash the diff moved"
+        );
+
+        // And a second quick refresh with nothing moved leaves it alone, so
+        // the fast-hash guard does not churn the value it was meant to hold.
+        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+        assert_eq!(
+            after, tab.branch_diff_hash,
+            "an unchanged branch must not re-derive a different hash"
         );
     }
 
