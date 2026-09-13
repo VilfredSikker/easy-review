@@ -7,17 +7,6 @@ use std::path::{Path, PathBuf};
 
 use crate::ErRoot;
 
-const MARKER_FILES: &[&str] = &[
-    "review.json",
-    "order.json",
-    "questions.json",
-    "github-comments.json",
-    "checklist.json",
-    "summary.md",
-    "reviewed",
-    "session.json",
-];
-
 /// Root of all managed review storage.
 ///
 /// Overridden by `ER_STORAGE_ROOT` when set — used by tests to write under a
@@ -203,112 +192,6 @@ pub fn use_repo_local_storage() -> bool {
     std::env::var("ER_REPO_LOCAL").as_deref() == Ok("1")
 }
 
-/// Whether the managed directory has any review artifacts yet.
-pub fn managed_dir_has_artifacts(dir: &Path) -> bool {
-    if !dir.is_dir() {
-        return false;
-    }
-    for name in MARKER_FILES {
-        if dir.join(name).exists() {
-            return true;
-        }
-    }
-    dir.join("experts").is_dir()
-}
-
-/// Legacy `~/.cache/er/...` path for a tab (pre-unification).
-pub fn legacy_cache_dir(
-    repo_root: &str,
-    remote_repo: Option<&str>,
-    pr_number: Option<u64>,
-    local_branch_view: Option<&str>,
-) -> Option<PathBuf> {
-    let home = std::env::var("HOME").ok()?;
-    if let (Some(slug), Some(n)) = (remote_repo, pr_number) {
-        let safe_slug = slug.replace('/', "-");
-        return Some(
-            PathBuf::from(&home)
-                .join(".cache/er/remote")
-                .join(format!("{safe_slug}-{n}")),
-        );
-    }
-    if let Some(branch) = local_branch_view {
-        let repo_slug = Path::new(repo_root)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("repo");
-        if let Some(pr_num) = pr_number {
-            return Some(
-                PathBuf::from(&home)
-                    .join(".cache/er/local")
-                    .join(repo_slug)
-                    .join(format!("pr-{pr_num}")),
-            );
-        }
-        let safe_branch = branch.replace('/', "-");
-        return Some(
-            PathBuf::from(&home)
-                .join(".cache/er/local")
-                .join(repo_slug)
-                .join(safe_branch),
-        );
-    }
-    None
-}
-
-/// Copy review artifacts from `src` into `dst` when `dst` is empty. Returns true if anything was copied.
-pub fn migrate_dir_if_empty(dst: &Path, src: &Path) -> std::io::Result<bool> {
-    if !src.is_dir() || managed_dir_has_artifacts(dst) {
-        return Ok(false);
-    }
-    let mut copied = false;
-    copy_dir_merge(src, dst, &mut copied)?;
-    Ok(copied)
-}
-
-fn copy_dir_merge(src: &Path, dst: &Path, copied: &mut bool) -> std::io::Result<()> {
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let ty = entry.file_type()?;
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        if ty.is_dir() {
-            copy_dir_merge(&src_path, &dst_path, copied)?;
-        } else if ty.is_file() && !dst_path.exists() {
-            std::fs::copy(&src_path, &dst_path)?;
-            *copied = true;
-        }
-    }
-    Ok(())
-}
-
-/// Migrate from repo `.er/` and legacy cache into managed dir when managed is empty.
-///
-/// Repo-root `.er/` is only used for working-tree tabs (`local_branch_view` is `None`).
-/// Read-only branch views must not inherit that directory — it usually belongs to
-/// whichever branch was last reviewed in the clone, not the branch being opened.
-pub fn migrate_into_managed(
-    managed_dir: &Path,
-    repo_root: &str,
-    remote_repo: Option<&str>,
-    pr_number: Option<u64>,
-    local_branch_view: Option<&str>,
-) -> std::io::Result<bool> {
-    if managed_dir_has_artifacts(managed_dir) {
-        return Ok(false);
-    }
-    let mut any = false;
-    if local_branch_view.is_none() {
-        let repo_er = PathBuf::from(repo_root).join(".er");
-        any |= migrate_dir_if_empty(managed_dir, &repo_er)?;
-    }
-    if let Some(legacy) = legacy_cache_dir(repo_root, remote_repo, pr_number, local_branch_view) {
-        any |= migrate_dir_if_empty(managed_dir, &legacy)?;
-    }
-    Ok(any)
-}
-
 /// Shared mutex for tests that mutate `ER_STORAGE_ROOT`.
 ///
 /// All tests setting `ER_STORAGE_ROOT` must hold this lock for the duration of the
@@ -357,52 +240,6 @@ mod tests {
         assert_eq!(agent_dir, session_dir);
         assert!(agent_dir.contains("test-repo"));
         assert!(agent_dir.contains("feature-branch"));
-    }
-
-    #[test]
-    fn migrate_skips_when_managed_has_files() {
-        let tmp = TempDir::new().unwrap();
-        let managed = tmp.path().join("managed");
-        let src = tmp.path().join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("review.json"), "{}").unwrap();
-        std::fs::create_dir_all(&managed).unwrap();
-        std::fs::write(managed.join("questions.json"), "[]").unwrap();
-        assert!(!migrate_dir_if_empty(&managed, &src).unwrap());
-        assert!(!managed.join("review.json").exists());
-    }
-
-    #[test]
-    fn migrate_copies_when_managed_empty() {
-        let tmp = TempDir::new().unwrap();
-        let managed = tmp.path().join("managed");
-        let src = tmp.path().join("src");
-        std::fs::create_dir_all(&src).unwrap();
-        std::fs::write(src.join("review.json"), r#"{"version":1}"#).unwrap();
-        assert!(migrate_dir_if_empty(&managed, &src).unwrap());
-        assert!(managed.join("review.json").exists());
-    }
-
-    #[test]
-    fn migrate_into_managed_skips_repo_er_for_local_branch_view() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path().join("repo");
-        let repo_er = repo_root.join(".er");
-        let managed = tmp.path().join("managed-branch");
-        std::fs::create_dir_all(&repo_er).unwrap();
-        std::fs::write(repo_er.join("review.json"), r#"{"version":1}"#).unwrap();
-        std::fs::create_dir_all(&managed).unwrap();
-
-        let copied = migrate_into_managed(
-            &managed,
-            &repo_root.to_string_lossy(),
-            None,
-            None,
-            Some("feature/foo"),
-        )
-        .unwrap();
-        assert!(!copied);
-        assert!(!managed.join("review.json").exists());
     }
 
     #[test]
@@ -486,18 +323,4 @@ mod tests {
         );
     }
 
-    #[test]
-    fn migrate_into_managed_uses_repo_er_for_working_tree() {
-        let tmp = TempDir::new().unwrap();
-        let repo_root = tmp.path().join("repo");
-        let repo_er = repo_root.join(".er");
-        let managed = tmp.path().join("managed-main");
-        std::fs::create_dir_all(&repo_er).unwrap();
-        std::fs::write(repo_er.join("review.json"), r#"{"version":1}"#).unwrap();
-
-        let copied =
-            migrate_into_managed(&managed, &repo_root.to_string_lossy(), None, None, None).unwrap();
-        assert!(copied);
-        assert!(managed.join("review.json").exists());
-    }
 }
