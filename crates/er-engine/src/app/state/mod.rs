@@ -4675,7 +4675,13 @@ impl TabState {
     ///
     /// Falls back to an empty string when the diff has no such file — the same
     /// sentinel the callers used before, which `auto_unmark_changed_reviewed`
-    /// treats as "unknown" and leaves alone.
+    /// treats as "unknown" and leaves alone. Once the raw diff is retained on
+    /// both parse branches that is the only way to reach it: every caller marks
+    /// a path taken from the current diff, which the retained raw diff contains.
+    ///
+    /// The sentinel stays a `String` rather than becoming an `Option` because it
+    /// is the persisted `reviewed` file format; narrowing it would churn that
+    /// format to express a case the guards above already make unreachable.
     pub fn per_file_hash(&self, path: &str) -> String {
         if let Some(hash) = self.current_per_file_hashes.get(path) {
             return hash.clone();
@@ -4689,6 +4695,14 @@ impl TabState {
     /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
     /// Also drops paths absent from the active diff (including legacy empty-hash lines).
     /// Returns the number of entries removed. Saves the file if any were removed.
+    ///
+    /// Precondition: must run immediately after
+    /// [`Self::refresh_per_file_hashes_and_unmark`], which has just populated
+    /// `current_per_file_hashes` for exactly the reviewed paths. This reads that
+    /// map directly and treats a miss as "the file is no longer in the diff" —
+    /// which is only true while the map was built for those keys in this pass.
+    /// Called against a partial or stale map, the same miss means "not cached",
+    /// and every uncached reviewed file would be wrongly cleared.
     fn auto_unmark_changed_reviewed(&mut self) -> usize {
         let orphan_count = self.prune_reviewed_not_in_diff();
 
