@@ -5053,37 +5053,42 @@ mod tests {
         );
     }
 
-    #[test]
-    fn merged_into_base_lists_only_merged_branches() {
-        use std::process::Command;
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_string_lossy().to_string();
-        let git = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(&root)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?} failed");
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@example.com"]);
-        git(&["config", "user.name", "t"]);
-        git(&["config", "commit.gpgsign", "false"]);
-        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
-        git(&["add", "f.txt"]);
-        git(&["commit", "-qm", "base"]);
+    /// A repo with one branch merged back into `main` and one left open —
+    /// the two cases `merged_into_base` has to tell apart.
+    fn init_repo_with_a_merged_and_an_open_branch() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "t@example.com"]);
+        run_git(root, &["config", "user.name", "t"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f.txt"), "one\n").unwrap();
+        run_git(root, &["add", "f.txt"]);
+        run_git(root, &["commit", "-qm", "base"]);
 
         // Merged back into main.
-        git(&["checkout", "-q", "-b", "merged-branch"]);
-        git(&["commit", "-q", "--allow-empty", "-m", "merged work"]);
-        git(&["checkout", "-q", "main"]);
-        git(&["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"]);
+        run_git(root, &["checkout", "-q", "-b", "merged-branch"]);
+        run_git(
+            root,
+            &["commit", "-q", "--allow-empty", "-m", "merged work"],
+        );
+        run_git(root, &["checkout", "-q", "main"]);
+        run_git(
+            root,
+            &["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"],
+        );
 
         // Branched from main and left alone.
-        git(&["checkout", "-q", "-b", "open-branch"]);
-        git(&["commit", "-q", "--allow-empty", "-m", "open work"]);
-        git(&["checkout", "-q", "main"]);
+        run_git(root, &["checkout", "-q", "-b", "open-branch"]);
+        run_git(root, &["commit", "-q", "--allow-empty", "-m", "open work"]);
+        run_git(root, &["checkout", "-q", "main"]);
+        tmp
+    }
+
+    #[test]
+    fn merged_into_base_lists_only_merged_branches() {
+        let dir = init_repo_with_a_merged_and_an_open_branch();
+        let root = dir.path().to_string_lossy().to_string();
 
         let merged = merged_into_base(&root, "main");
         assert!(merged.contains("merged-branch"), "got {merged:?}");
@@ -5104,28 +5109,8 @@ mod tests {
         // The guard used to sit duplicated at both call sites; this pins it
         // where it now lives. Above the threshold every branch renders
         // uncoloured, which is the same outcome as "nothing is merged".
-        use std::process::Command;
-        let dir = tempfile::tempdir().unwrap();
+        let dir = init_repo_with_a_merged_and_an_open_branch();
         let root = dir.path().to_string_lossy().to_string();
-        let git = |args: &[&str]| {
-            let out = Command::new("git")
-                .args(args)
-                .current_dir(&root)
-                .output()
-                .unwrap();
-            assert!(out.status.success(), "git {args:?} failed");
-        };
-        git(&["init", "-b", "main"]);
-        git(&["config", "user.email", "t@example.com"]);
-        git(&["config", "user.name", "t"]);
-        git(&["config", "commit.gpgsign", "false"]);
-        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
-        git(&["add", "f.txt"]);
-        git(&["commit", "-qm", "base"]);
-        git(&["checkout", "-q", "-b", "merged-branch"]);
-        git(&["commit", "-q", "--allow-empty", "-m", "merged work"]);
-        git(&["checkout", "-q", "main"]);
-        git(&["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"]);
 
         let at_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
         assert!(
