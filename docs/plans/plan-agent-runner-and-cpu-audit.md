@@ -544,11 +544,22 @@ as this one was.
 
 ### Phase 2 — Runner correctness and throughput
 
-**Add a per-agent timeout and make running reviews cancellable.** This is the
-highest-value runner change: today one hung agent holds a slot forever and stalls an
-entire arena round at the barrier join. Keep the `Child` on `BackgroundTaskHandle`
-(mirroring `ArenaRunHandle`) so cancel can `kill()` it, and give every spawn a
-wall-clock timeout. A timeout is what makes raising the cap safe.
+**Add a per-agent timeout and make running reviews cancellable.** **[done]**
+This is the highest-value runner change: today one hung agent holds a slot
+forever and stalls an entire arena round at the barrier join. Keep the `Child` on
+`BackgroundTaskHandle` (mirroring `ArenaRunHandle`) so cancel can `kill()` it,
+and give every spawn a wall-clock timeout. A timeout is what makes raising the
+cap safe.
+
+Landed as: `AgentRunHandle::arm_timeout` (a watchdog thread, not a polled
+deadline — the hang this exists for blocks the caller's reader threads before
+any wait is reached, so a poll would never run); all four spawn paths migrated;
+`App::running_background_review` / `running_command` hand out handles rather
+than killing, because `kill` forks and callers hold the app mutex; stop controls
+in both UIs. Default 15 minutes, configurable, and **zero resolves to the
+default** rather than to no limit — zero is what serde produces for an unset
+field, so reading it as "disabled" would switch the protection off for exactly
+the users who never touched the setting.
 
 **Close the ungated paths.** **[done]** Route B (`spawn_agent_prompt`), C (card
 AI) and F (`spawn_command`) through the same slot acquisition, and give the arena
@@ -562,7 +573,7 @@ queueing is felt directly: it is user-initiated, and it now sits behind up to
 window stays responsive; the wait is otherwise unbounded.
 
 **Re-derive `branch_diff_hash` on quick refreshes of a local-branch view.**
-Pre-existing, not a regression from this branch — the skip is byte-identical at
+**[done]** Pre-existing, not a regression from this branch — the skip is byte-identical at
 the base commit. On the local-branch path, `refresh_diff_impl` only assigns
 `branch_diff_hash` when `recompute_branch_hash` is true (`mod.rs:2910`), and
 `reload_ai_state` *reads* that field rather than recomputing it
