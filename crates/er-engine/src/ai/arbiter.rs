@@ -92,6 +92,10 @@ pub struct ArbiterEffect {
     pub merged: usize,
     /// Findings whose confidence the arbiter regraded.
     pub regraded: usize,
+    /// Verdicts that matched no finding. Non-zero means the file and the review
+    /// disagree — a stale hash, or keys that moved — and the pass did nothing.
+    /// Without this, a silent no-op looks exactly like a clean result.
+    pub unmatched: usize,
 }
 
 impl ArbiterEffect {
@@ -114,6 +118,9 @@ impl ArbiterEffect {
 pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview) -> ArbiterEffect {
     let mut effect = ArbiterEffect::default();
     if arbiter.diff_hash != review.diff_hash {
+        // Not silently: every verdict is reported as unapplied, because the
+        // grades exist but describe a diff this review is not.
+        effect.unmatched = arbiter.verdicts.len();
         return effect;
     }
 
@@ -123,15 +130,21 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
         .map(|v| (v.id.as_str(), v))
         .collect();
 
+    let mut matched: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for (path, file_review) in review.files.iter_mut() {
         for finding in &mut file_review.findings {
             let id = crate::arena::finding_key(path, finding.line_start, &finding.title);
             let Some(verdict) = by_id.get(id.as_str()) else {
                 continue;
             };
+            matched.insert(verdict.id.as_str());
             apply_verdict(finding, verdict, &mut effect);
         }
     }
+    // A verdict that matched nothing is the tell that the two sides disagree
+    // about the diff or the keys — the pass did nothing, and silence would let
+    // that read as "everything was fine".
+    effect.unmatched = by_id.len() - matched.len();
     effect
 }
 
@@ -399,7 +412,25 @@ mod tests {
             ),
         );
 
-        assert_eq!(effect, ArbiterEffect::default());
+        assert_eq!(
+            effect.unmatched, 1,
+            "the verdict exists but describes another diff — not a silent zero"
+        );
+        assert!(review.files["src/a.rs"].findings[0].is_active());
+    }
+
+    /// An arbiter file whose keys match nothing is reported, not ignored: the
+    /// pass did nothing and that looks identical to a clean result otherwise.
+    #[test]
+    fn verdicts_that_match_no_finding_are_counted() {
+        let mut review = review_with(vec![finding(Confidence::Confirmed)]);
+        let mut orphan = verdict(ArbiterRuling::Dropped, None);
+        orphan.id = finding_key("src/elsewhere.rs", Some(1), "a different claim");
+
+        let effect = merge_arbiter_into_review(&mut review, &arbiter(HASH, vec![orphan]));
+
+        assert_eq!(effect.unmatched, 1);
+        assert_eq!(effect.hidden(), 0);
         assert!(review.files["src/a.rs"].findings[0].is_active());
     }
 
@@ -416,7 +447,10 @@ mod tests {
             &arbiter(HASH, vec![verdict(ArbiterRuling::Dropped, None)]),
         );
 
-        assert_eq!(effect, ArbiterEffect::default());
+        assert_eq!(
+            effect.unmatched, 1,
+            "the verdict is orphaned by the new key, and says so"
+        );
         assert!(review.files["src/a.rs"].findings[0].is_active());
     }
 
