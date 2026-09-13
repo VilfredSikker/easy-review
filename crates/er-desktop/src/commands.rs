@@ -10775,6 +10775,7 @@ mod tests {
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("ok", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10794,6 +10795,7 @@ mod tests {
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("fail", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10816,6 +10818,7 @@ mod tests {
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("custom-response-text", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))

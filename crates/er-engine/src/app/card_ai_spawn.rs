@@ -20,6 +20,8 @@ pub struct CardAiInvocation {
     /// Process-wide concurrency cap this run waits on before spawning,
     /// resolved from config alongside the deadline.
     pub slot_cap: usize,
+    /// Shared ceiling across both workloads, resolved alongside `slot_cap`.
+    pub slot_ceiling: usize,
 }
 
 /// Resolve provider/command/args from config (mirrors background review selection).
@@ -96,6 +98,7 @@ pub fn plan_card_ai_invocation(
         env,
         timeout: config.ai_hub.effective_agent_timeout(),
         slot_cap: config.ai_hub.effective_max_concurrent_reviews(),
+        slot_ceiling: config.ai_hub.effective_max_concurrent_agents(),
     }
 }
 
@@ -211,7 +214,12 @@ pub fn run_card_ai_subprocess(
     // waits on directly, so it is the one where queueing is felt -- but a cap
     // that exempts the interactive path is not a cap, and the caller runs
     // under `run_blocking` so the UI stays responsive while it waits.
-    let Some(_slot) = crate::agent_slots::acquire(inv.slot_cap, run.cancel_flag()) else {
+    let Some(_slot) = crate::agent_slots::acquire(
+        crate::agent_slots::Workload::Background,
+        inv.slot_cap,
+        inv.slot_ceiling,
+        run.cancel_flag(),
+    ) else {
         return "Pending — invoke via CLI (stopped while waiting for a slot)".to_string();
     };
 
@@ -349,6 +357,7 @@ mod tests {
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -369,6 +378,7 @@ mod tests {
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(args
@@ -395,6 +405,7 @@ mod tests {
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
             slot_cap: 3,
+            slot_ceiling: 6,
         };
         let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
         assert_eq!(reply, "**Verdict**: Confirmed");

@@ -181,6 +181,18 @@ pub struct AiHubConfig {
     /// 0 means "use the default".
     #[serde(default)]
     pub agent_timeout_secs: u64,
+    /// Agent processes arena reviewer rounds may run at once. Separate from
+    /// `max_concurrent_reviews` so an arena run and a background review cannot
+    /// starve each other out of a shared pool. 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_arena_reviews: usize,
+    /// Hard ceiling on agent processes across *both* workloads.
+    ///
+    /// The per-workload caps say how big each may get; this says how big they
+    /// may get together, so raising one cannot quietly double the load. 0
+    /// means "use the default".
+    #[serde(default)]
+    pub max_concurrent_agents: usize,
 }
 
 /// Default cap on concurrently running agent processes.
@@ -193,6 +205,20 @@ pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
 /// value set elsewhere was silently kept but not selectable, and a value
 /// chosen from the picker could never reach the top of its own range.
 pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<usize> = 1..=16;
+
+/// Default cap on concurrent arena reviewer rounds.
+///
+/// Matches the background default: an arena round is a different shape of
+/// work, not a smaller one, and the shared ceiling is what keeps the pair
+/// bounded rather than a lower per-workload number.
+pub const DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS: usize = 3;
+
+/// Default hard ceiling across both workloads.
+///
+/// The sum of the two defaults, so each workload can reach its own cap when
+/// the other is idle, and neither can exceed it when both are busy.
+pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize =
+    DEFAULT_MAX_CONCURRENT_REVIEWS + DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS;
 
 /// Default wall-clock limit for one agent process.
 ///
@@ -228,6 +254,30 @@ impl AiHubConfig {
         } else {
             self.max_concurrent_reviews
         }
+    }
+
+    /// Effective arena reviewer cap — configured value, or the default.
+    pub const fn effective_max_concurrent_arena_reviews(&self) -> usize {
+        if self.max_concurrent_arena_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS
+        } else {
+            self.max_concurrent_arena_reviews
+        }
+    }
+
+    /// Effective ceiling across both workloads.
+    ///
+    /// Floored at each workload's own cap: a ceiling below a cap would make
+    /// that cap unreachable, which reads as a bug rather than as a limit.
+    pub fn effective_max_concurrent_agents(&self) -> usize {
+        let configured = if self.max_concurrent_agents == 0 {
+            DEFAULT_MAX_CONCURRENT_AGENTS
+        } else {
+            self.max_concurrent_agents
+        };
+        configured
+            .max(self.effective_max_concurrent_reviews())
+            .max(self.effective_max_concurrent_arena_reviews())
     }
 
     /// Effective per-agent deadline — configured value, or the default when

@@ -10,6 +10,7 @@ use super::storage::{
     save_run, ArenaPaths, ProgressEvent,
 };
 use super::voting::{apply_round3_verdicts, record_arbiter_ballots, severity_from_cross_check};
+use crate::agent_slots::Workload;
 use crate::ai::compute_diff_hash;
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, build_arena_round3_prompt,
@@ -574,10 +575,16 @@ fn run_round1_parallel(
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
-            // Wait for a global agent slot so several runs (or runs with many
-            // reviewers) can't spawn unbounded agent processes at once.
-            let cap = config.ai_hub.effective_max_concurrent_reviews();
-            let Some(_slot) = crate::agent_slots::acquire(cap, &cancel) else {
+            // Wait for an arena slot so several runs (or runs with many
+            // reviewers) can't spawn unbounded agent processes at once. The
+            // arena's own cap, charged against the shared ceiling: a
+            // background review and an arena round no longer take each
+            // other's slot.
+            let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+            let ceiling = config.ai_hub.effective_max_concurrent_agents();
+            let Some(_slot) =
+                crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
+            else {
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             };
@@ -714,8 +721,11 @@ fn run_round2_parallel(
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
-            let cap = config.ai_hub.effective_max_concurrent_reviews();
-            let Some(_slot) = crate::agent_slots::acquire(cap, &cancel) else {
+            let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+            let ceiling = config.ai_hub.effective_max_concurrent_agents();
+            let Some(_slot) =
+                crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
+            else {
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             };
@@ -1027,9 +1037,12 @@ fn run_supervisor(
     //
     // Reviewers have released theirs by now (their round joined), so this
     // normally does not wait. It can, if another arena run holds the slots.
-    let Some(_arbiter_slot) =
-        crate::agent_slots::acquire(config.ai_hub.effective_max_concurrent_reviews(), &cancel)
-    else {
+    let Some(_arbiter_slot) = crate::agent_slots::acquire(
+        Workload::Arena,
+        config.ai_hub.effective_max_concurrent_arena_reviews(),
+        config.ai_hub.effective_max_concurrent_agents(),
+        &cancel,
+    ) else {
         bail_cancelled!();
     };
     let arbiter_started = std::time::Instant::now();

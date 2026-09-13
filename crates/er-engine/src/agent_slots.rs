@@ -1,14 +1,18 @@
 //! Process-wide cap on concurrently running AI agent subprocesses.
 //!
-//! The background review queue (`App::poll_background_tasks` dispatch) and
-//! arena reviewer rounds acquire a slot here before spawning an agent process,
-//! so starting many reviews or several arena runs at once cannot fork more than
-//! `ai_hub.max_concurrent_reviews` of *those* processes in parallel.
+//! Every path that launches a provider CLI acquires a slot here first, so
+//! starting many reviews or several arena runs at once cannot fork more agent
+//! processes than the caps allow.
 //!
-//! This is not a cap on every spawn path. The tab-level `spawn_agent_prompt`,
-//! card AI, the configured shell command (`App::spawn_command`), and the arena
-//! arbiter spawn without taking a slot. See
-//! `docs/plans/plan-agent-runner-and-cpu-audit.md` for the full site list.
+//! Two caps, not one, because the two workloads starve each other. A long
+//! background review and a short arena round competing for a single pool means
+//! whichever arrives first wins; with separate caps each makes progress, and a
+//! shared ceiling still bounds the total so the machine is not asked to run
+//! both at full size at once.
+//!
+//! All three counters live under one mutex, so an acquisition that satisfies
+//! both conditions takes both in one step. Acquiring them one after the other
+//! would need a lock ordering and could deadlock.
 //!
 //! The pool is a counting semaphore built on `Mutex` + `Condvar` so it works
 //! from plain OS threads (no async runtime required). Waiters re-check a
@@ -18,8 +22,41 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
 use std::time::{Duration, Instant};
 
+/// Which cap a run is charged against.
+///
+/// Arena rounds are one workload because they are already bounded by their own
+/// round structure; everything a user starts directly is the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Workload {
+    Background,
+    Arena,
+}
+
+#[derive(Default)]
+struct PoolState {
+    total: usize,
+    background: usize,
+    arena: usize,
+}
+
+impl PoolState {
+    fn held(&self, workload: Workload) -> usize {
+        match workload {
+            Workload::Background => self.background,
+            Workload::Arena => self.arena,
+        }
+    }
+
+    fn held_mut(&mut self, workload: Workload) -> &mut usize {
+        match workload {
+            Workload::Background => &mut self.background,
+            Workload::Arena => &mut self.arena,
+        }
+    }
+}
+
 pub struct SlotPool {
-    active: Mutex<usize>,
+    state: Mutex<PoolState>,
     cv: Condvar,
 }
 
@@ -27,14 +64,19 @@ static GLOBAL: SlotPool = SlotPool::new();
 
 /// RAII guard for one agent slot. Dropping it frees the slot and wakes
 /// waiting spawners.
-pub struct AgentSlotGuard<'a>(&'a SlotPool);
+pub struct AgentSlotGuard<'a> {
+    pool: &'a SlotPool,
+    workload: Workload,
+}
 
 impl Drop for AgentSlotGuard<'_> {
     fn drop(&mut self) {
-        let mut active = self.0.active.lock().unwrap_or_else(|e| e.into_inner());
-        *active = active.saturating_sub(1);
-        drop(active);
-        self.0.cv.notify_all();
+        let mut state = self.pool.lock_state();
+        state.total = state.total.saturating_sub(1);
+        let held = state.held(self.workload).saturating_sub(1);
+        *state.held_mut(self.workload) = held;
+        drop(state);
+        self.pool.cv.notify_all();
     }
 }
 
@@ -68,16 +110,34 @@ fn grants() -> u64 {
 impl SlotPool {
     pub const fn new() -> Self {
         Self {
-            active: Mutex::new(0),
+            state: Mutex::new(PoolState {
+                total: 0,
+                background: 0,
+                arena: 0,
+            }),
             cv: Condvar::new(),
         }
     }
 
-    /// Block until a slot is free (active < cap) or `cancel` is set.
-    /// Returns `None` when cancelled while waiting.
-    pub fn acquire(&self, cap: usize, cancel: &AtomicBool) -> Option<AgentSlotGuard<'_>> {
+    fn lock_state(&self) -> std::sync::MutexGuard<'_, PoolState> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Block until this workload has room *and* the shared ceiling does, or
+    /// `cancel` is set. Returns `None` when cancelled while waiting.
+    ///
+    /// Both conditions are checked under the same lock and both counters move
+    /// in one step, so a caller can never hold one and wait for the other.
+    pub fn acquire(
+        &self,
+        workload: Workload,
+        cap: usize,
+        ceiling: usize,
+        cancel: &AtomicBool,
+    ) -> Option<AgentSlotGuard<'_>> {
         let cap = cap.max(1);
-        let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
+        let ceiling = ceiling.max(1);
+        let mut state = self.lock_state();
         // Started after the lock, so the measured span is slot contention.
         // Time spent acquiring the mutex is not that, and counting it would
         // make a busy mutex look like a saturated pool.
@@ -87,29 +147,43 @@ impl SlotPool {
                 // Deliberately does not record — see `record_grant`.
                 return None;
             }
-            if *active < cap {
-                *active += 1;
+            if state.held(workload) < cap && state.total < ceiling {
+                *state.held_mut(workload) += 1;
+                state.total += 1;
                 record_grant(started.elapsed());
-                return Some(AgentSlotGuard(self));
+                return Some(AgentSlotGuard {
+                    pool: self,
+                    workload,
+                });
             }
             let (guard, _) = self
                 .cv
-                .wait_timeout(active, Duration::from_millis(200))
+                .wait_timeout(state, Duration::from_millis(200))
                 .unwrap_or_else(|e| e.into_inner());
-            active = guard;
+            state = guard;
         }
     }
 
     /// Acquire without a cancel path.
-    pub fn acquire_blocking(&self, cap: usize) -> AgentSlotGuard<'_> {
+    pub fn acquire_blocking(
+        &self,
+        workload: Workload,
+        cap: usize,
+        ceiling: usize,
+    ) -> AgentSlotGuard<'_> {
         static NEVER: AtomicBool = AtomicBool::new(false);
-        self.acquire(cap, &NEVER)
+        self.acquire(workload, cap, ceiling, &NEVER)
             .expect("acquire with never-set cancel flag")
     }
 
-    /// Number of slots currently held.
+    /// Total slots currently held, across both workloads.
     pub fn active_count(&self) -> usize {
-        *self.active.lock().unwrap_or_else(|e| e.into_inner())
+        self.lock_state().total
+    }
+
+    /// Slots currently held by one workload.
+    pub fn active_for(&self, workload: Workload) -> usize {
+        self.lock_state().held(workload)
     }
 }
 
@@ -120,14 +194,19 @@ impl Default for SlotPool {
 }
 
 /// Block until a slot in the process-wide pool is free or `cancel` is set.
-pub fn acquire(cap: usize, cancel: &AtomicBool) -> Option<AgentSlotGuard<'static>> {
-    GLOBAL.acquire(cap, cancel)
+pub fn acquire(
+    workload: Workload,
+    cap: usize,
+    ceiling: usize,
+    cancel: &AtomicBool,
+) -> Option<AgentSlotGuard<'static>> {
+    GLOBAL.acquire(workload, cap, ceiling, cancel)
 }
 
 /// Acquire from the process-wide pool without a cancel path (background
 /// review queue — the App-level queue already bounds how many workers wait).
-pub fn acquire_blocking(cap: usize) -> AgentSlotGuard<'static> {
-    GLOBAL.acquire_blocking(cap)
+pub fn acquire_blocking(workload: Workload, cap: usize, ceiling: usize) -> AgentSlotGuard<'static> {
+    GLOBAL.acquire_blocking(workload, cap, ceiling)
 }
 
 /// Slots currently held in the process-wide pool. For debug output.
@@ -152,7 +231,7 @@ mod tests {
             let peak = Arc::clone(&peak);
             let current = Arc::clone(&current);
             handles.push(std::thread::spawn(move || {
-                let _slot = pool.acquire_blocking(2);
+                let _slot = pool.acquire_blocking(Workload::Background, 2, 2);
                 let now = current.fetch_add(1, Ordering::SeqCst) + 1;
                 peak.fetch_max(now, Ordering::SeqCst);
                 std::thread::sleep(Duration::from_millis(30));
@@ -167,15 +246,76 @@ mod tests {
     }
 
     #[test]
+    fn a_full_background_pool_does_not_starve_an_arena_round() {
+        // The starvation this split exists to remove: with one shared pool, a
+        // long background review holding every slot stopped arena rounds
+        // entirely, and vice versa.
+        let pool = SlotPool::new();
+        let cancel = AtomicBool::new(false);
+        let _background: Vec<_> = (0..2)
+            .map(|_| pool.acquire_blocking(Workload::Background, 2, 4))
+            .collect();
+
+        let arena = pool.acquire(Workload::Arena, 2, 4, &cancel);
+        assert!(
+            arena.is_some(),
+            "an arena round must not wait on background work"
+        );
+        assert_eq!(pool.active_for(Workload::Background), 2);
+        assert_eq!(pool.active_for(Workload::Arena), 1);
+    }
+
+    #[test]
+    fn the_shared_ceiling_bounds_both_workloads_together() {
+        // Per-workload caps say how big each may get; the ceiling says how big
+        // they may get together, so raising one cannot quietly double the load.
+        let pool = Arc::new(SlotPool::new());
+        let held: Vec<_> = (0..2)
+            .map(|_| pool.acquire_blocking(Workload::Background, 3, 3))
+            .chain(std::iter::once(pool.acquire_blocking(
+                Workload::Arena,
+                3,
+                3,
+            )))
+            .collect();
+        assert_eq!(pool.active_count(), 3);
+        assert!(
+            pool.active_for(Workload::Background) < 3,
+            "each workload is still under its own cap — only the ceiling is reached"
+        );
+
+        let pool2 = Arc::clone(&pool);
+        let waiter = std::thread::spawn(move || {
+            let cancel = AtomicBool::new(false);
+            pool2.acquire(Workload::Arena, 3, 3, &cancel).is_some()
+        });
+        std::thread::sleep(Duration::from_millis(150));
+        assert!(
+            !waiter.is_finished(),
+            "the ceiling must park a fourth run even with arena room to spare"
+        );
+
+        drop(held);
+        assert!(waiter.join().unwrap(), "and release it once a slot frees");
+        // The waiter's own guard went out of scope with its expression, so the
+        // pool is empty again rather than sitting at one.
+        assert_eq!(pool.active_count(), 0);
+    }
+
+    #[test]
     fn cancel_aborts_waiting() {
         let pool = Arc::new(SlotPool::new());
         let cancel = Arc::new(AtomicBool::new(false));
         // Hold both slots of a cap-2 pool.
-        let a = pool.acquire(2, &cancel).unwrap();
-        let b = pool.acquire(2, &cancel).unwrap();
+        let a = pool.acquire(Workload::Background, 2, 2, &cancel).unwrap();
+        let b = pool.acquire(Workload::Background, 2, 2, &cancel).unwrap();
         let pool2 = Arc::clone(&pool);
         let cancel2 = Arc::clone(&cancel);
-        let waiter = std::thread::spawn(move || pool2.acquire(2, &cancel2).is_none());
+        let waiter = std::thread::spawn(move || {
+            pool2
+                .acquire(Workload::Background, 2, 2, &cancel2)
+                .is_none()
+        });
         std::thread::sleep(Duration::from_millis(50));
         cancel.store(true, Ordering::SeqCst);
         assert!(waiter.join().unwrap(), "waiter should observe cancel");
@@ -192,13 +332,15 @@ mod tests {
         // must not land in either number.
         let pool = Arc::new(SlotPool::new());
         let cancel = Arc::new(AtomicBool::new(false));
-        let a = pool.acquire(1, &cancel).unwrap();
+        let a = pool.acquire(Workload::Background, 1, 1, &cancel).unwrap();
 
         let before = grants();
         let pool2 = Arc::clone(&pool);
         let cancel2 = Arc::clone(&cancel);
         let waiter = std::thread::spawn(move || {
-            let outcome = pool2.acquire(1, &cancel2).is_none();
+            let outcome = pool2
+                .acquire(Workload::Background, 1, 1, &cancel2)
+                .is_none();
             (outcome, grants())
         });
         std::thread::sleep(Duration::from_millis(50));
@@ -217,7 +359,7 @@ mod tests {
         // The same pool still tallies a real grant, so the assertion above is
         // about the cancel path and not about the counter being dead.
         let cancel3 = AtomicBool::new(false);
-        let _b = pool.acquire(1, &cancel3).unwrap();
+        let _b = pool.acquire(Workload::Background, 1, 1, &cancel3).unwrap();
         assert_eq!(grants(), before + 1, "a granted acquire is counted");
     }
 
@@ -231,14 +373,14 @@ mod tests {
         let holder = {
             let pool = Arc::clone(&pool);
             std::thread::spawn(move || {
-                let _slot = pool.acquire_blocking(1);
+                let _slot = pool.acquire_blocking(Workload::Background, 1, 1);
                 std::thread::sleep(Duration::from_millis(120));
             })
         };
         // Let the holder take the only slot before the waiter asks for it.
         std::thread::sleep(Duration::from_millis(20));
         let started = Instant::now();
-        let slot = pool.acquire_blocking(1);
+        let slot = pool.acquire_blocking(Workload::Background, 1, 1);
         let waited = started.elapsed();
         drop(slot);
         holder.join().unwrap();
@@ -252,7 +394,7 @@ mod tests {
     #[test]
     fn zero_cap_treated_as_one() {
         let pool = SlotPool::new();
-        let slot = pool.acquire_blocking(0);
+        let slot = pool.acquire_blocking(Workload::Background, 0, 0);
         assert_eq!(pool.active_count(), 1);
         drop(slot);
         assert_eq!(pool.active_count(), 0);

@@ -2103,6 +2103,7 @@ impl App {
         let log_tx = self.tab().log_tx.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
         let run = crate::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
@@ -2114,7 +2115,12 @@ impl App {
                 // agent runs through here. It waits for a slot like every
                 // other path -- a cap that covers some spawn sites is not a
                 // cap, and this one launches provider CLIs just like the rest.
-                let Some(_slot) = crate::agent_slots::acquire(slot_cap, run.cancel_flag()) else {
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
                     return Err(crate::agent_run::cancelled());
                 };
                 timer.mark_slot_acquired();
@@ -2448,6 +2454,7 @@ impl App {
         let log_tx = self.tab().log_tx.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
         let run = crate::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
@@ -2459,7 +2466,12 @@ impl App {
                 // admitted immediately, which is why `queue_ms` read ~0 here
                 // even with the cap saturated -- a measurement that recorded
                 // the absence of the gate rather than the absence of a queue.
-                let Some(_slot) = crate::agent_slots::acquire(slot_cap, run.cancel_flag()) else {
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
                     return Err(crate::agent_run::cancelled());
                 };
                 timer.mark_slot_acquired();
@@ -3076,6 +3088,7 @@ impl App {
         let command_name_fail = command_name.to_string();
         let command_name_emit = command_name.to_string();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
         // The worker owns one clone; the App keeps the other so a stop control
         // can reach the process. Built here, outside the thread, so the handle
@@ -3088,7 +3101,11 @@ impl App {
                 // Hard process-wide cap shared with arena reviewers. The
                 // App-level queue already bounds how many of these workers
                 // exist, so this only waits while arena rounds hold slots.
-                let _slot = crate::agent_slots::acquire_blocking(slot_cap);
+                let _slot = crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                );
                 timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
@@ -3893,10 +3910,17 @@ mod background_queue_tests {
             return;
         };
         let cap = app.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = app.config.ai_hub.effective_max_concurrent_agents();
 
         assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
         let held: Vec<_> = (0..cap)
-            .map(|_| crate::agent_slots::acquire_blocking(cap))
+            .map(|_| {
+                crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    cap,
+                    ceiling,
+                )
+            })
             .collect();
         assert!(
             !app.can_dispatch_task(cap),
