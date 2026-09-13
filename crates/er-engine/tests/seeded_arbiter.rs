@@ -206,4 +206,13 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
         graded.responses.is_empty(),
         "an agreeing verdict leaves no trail"
     );
+    // CONTEXT.md: a claim several producers raised carries all of them. Two
+    // experts raised this one, and that survives into the review rather than
+    // being flattened to whichever the merge happened to file it under.
+    assert_eq!(graded.raised_by, vec!["reliability", "security"]);
+    assert_eq!(
+        graded.raisers(),
+        vec!["reliability", "security"],
+        "the reader sees both"
+    );
 }

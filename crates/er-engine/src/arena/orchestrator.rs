@@ -582,6 +582,7 @@ fn arbiter_review_from_run(
                     _ => None,
                 },
                 rationale: f.rationale.clone(),
+                raised_by: f.raised_by.clone(),
             })
         })
         .collect();

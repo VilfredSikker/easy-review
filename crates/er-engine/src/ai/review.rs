@@ -213,6 +213,12 @@ pub struct Finding {
     /// to `lens` — the security lens can raise a correctness finding.
     #[serde(default)]
     pub category: String,
+    /// Every lens that raised this claim. `lens` names the one it is filed
+    /// under; this is the full set, so a claim several experts independently
+    /// found reads as such. Empty on sidecars written before it existed, and
+    /// treated as `[lens]` when read.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -332,6 +338,20 @@ impl Finding {
     /// `category` is left as it was — nothing can tell such a value apart from a
     /// finding genuinely categorised `professor`, and dropping a real defect kind
     /// costs more than showing one twice.
+    /// The full set of raisers, falling back to `lens` for a finding written
+    /// before `raised_by` existed. Never empty when the finding is attributed.
+    pub fn raisers(&self) -> Vec<&str> {
+        if self.raised_by.is_empty() {
+            if self.lens.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.lens.as_str()]
+            }
+        } else {
+            self.raised_by.iter().map(String::as_str).collect()
+        }
+    }
+
     pub fn lens_category_tag(&self) -> String {
         if self.lens == self.category {
             return self.lens.clone();
@@ -1815,6 +1835,7 @@ mod tests {
             severity,
             lens: String::new(),
             category: String::new(),
+            raised_by: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
@@ -1848,6 +1869,7 @@ mod tests {
             severity,
             lens: String::new(),
             category: String::new(),
+            raised_by: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,

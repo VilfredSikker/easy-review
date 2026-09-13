@@ -53,6 +53,10 @@ pub struct ArbiterVerdict {
     pub merged_into: Option<String>,
     #[serde(default)]
     pub rationale: String,
+    /// Every lens that raised this claim, so a finding several experts found
+    /// reads as one row from all of them rather than one row from the first.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
 }
 
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
@@ -131,6 +135,17 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
 }
 
 fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut ArbiterEffect) {
+    // The raiser set is the arbiter's, because it is the thing that saw every
+    // producer's version of the claim and merged them.
+    if !verdict.raised_by.is_empty() {
+        finding.raised_by = verdict.raised_by.clone();
+        if let Some(primary) = verdict.raised_by.first() {
+            if !verdict.raised_by.contains(&finding.lens) {
+                finding.lens = primary.clone();
+            }
+        }
+    }
+
     // The producer's original grade goes into the response trail rather than
     // being overwritten, so the disagreement between the two stays readable.
     if let Some(confidence) = verdict.confidence {
@@ -238,6 +253,7 @@ mod tests {
             confidence,
             merged_into: None,
             rationale: "Reproduced against the diff.".to_string(),
+            raised_by: Vec::new(),
         }
     }
 
@@ -325,6 +341,44 @@ mod tests {
                 "the UI can say how many it is not showing"
             );
         }
+    }
+
+    /// The arbiter is what saw every producer's version of a claim, so its
+    /// raiser set is the authoritative one.
+    #[test]
+    fn a_verdict_carries_the_full_raiser_set_onto_the_finding() {
+        let mut review = review_with(vec![finding(Confidence::Confirmed)]);
+        review.files.get_mut("src/a.rs").unwrap().findings[0].lens = "security".to_string();
+
+        let mut v = verdict(ArbiterRuling::Kept, None);
+        v.raised_by = vec!["reliability".to_string(), "security".to_string()];
+        merge_arbiter_into_review(&mut review, &arbiter(HASH, vec![v]));
+
+        let f = &review.files["src/a.rs"].findings[0];
+        assert_eq!(f.raised_by, vec!["reliability", "security"]);
+        assert_eq!(
+            f.lens, "security",
+            "the lens stays the one it is filed under"
+        );
+    }
+
+    /// A verdict from before `raised_by` existed leaves the finding's own
+    /// attribution alone rather than blanking it.
+    #[test]
+    fn a_verdict_without_raisers_does_not_clear_the_findings_own() {
+        let mut review = review_with(vec![finding(Confidence::Confirmed)]);
+        review.files.get_mut("src/a.rs").unwrap().findings[0].raised_by =
+            vec!["security".to_string()];
+
+        merge_arbiter_into_review(
+            &mut review,
+            &arbiter(HASH, vec![verdict(ArbiterRuling::Kept, None)]),
+        );
+
+        assert_eq!(
+            review.files["src/a.rs"].findings[0].raised_by,
+            vec!["security"]
+        );
     }
 
     /// Verdicts are graded against a diff. Applying them to a review written

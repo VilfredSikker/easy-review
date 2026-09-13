@@ -63,6 +63,7 @@ fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
         severity: latest_severity(f),
         lens,
         category: String::new(),
+        raised_by: f.raised_by.clone(),
         title: f.title.clone(),
         description: f.body.clone(),
         hunk_index: None,

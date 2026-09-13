@@ -301,6 +301,7 @@ mod tests {
             severity: RiskLevel::Medium,
             lens: String::new(),
             category: "correctness".to_string(),
+            raised_by: Vec::new(),
             title: title.to_string(),
             description: String::new(),
             hunk_index: Some(0),
