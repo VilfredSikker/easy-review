@@ -291,11 +291,17 @@ acquisitions. The arena takes the slot in the orchestrator (`orchestrator.rs:580
 `:718`) and only then calls `run_once`, which starts the timer and immediately
 marks slot-acquired (`arena/adapter.rs:113-116`) — so `queue_ms` is identically
 zero there by construction, and the 2142 ms wait reported below is structurally
-invisible to it. The app spawn sites do measure queue properly (timer started
-before acquisition, `comments.rs:2106`/`:2111`); these numbers came from the
-arena path and do not. The `spawn_ms` half stands on its own — a child sleeping
-300 ms reporting `spawn_ms=14` is a real measurement — so "spawn overhead is
-negligible" survives; "the queue is negligible" is not what this shows.
+invisible to it. Only the background-task path measures queue properly — timer
+started, then `acquire_blocking`, then `mark_slot_acquired`
+(`comments.rs:3028`/`:3034`). The other instrumented sites mark immediately
+because they take no slot at all: path F says so in as many words
+(`comments.rs:2106`/`:2111`, "No slot and no queue"), and the arena path's slot
+was taken by its caller. So `queue_ms=0` is structural on three of the four
+instrumented sites and cannot support a general "the queue is negligible".
+
+The `spawn_ms` half stands on its own — a child sleeping 300 ms reporting
+`spawn_ms=14` is a real measurement — so "spawn overhead is negligible"
+survives; "the queue is negligible" is not what this shows.
 
 ### Rounds set arena wall-clock; the cap binds only above itself
 
@@ -368,11 +374,13 @@ Worst class, because it misleads exactly the kind of reasoning this audit requir
 configuring "features and watched files". Per-repo config was removed; config is
 global-only. There is **no loading code left**, but stale user-facing strings still
 reference the file. **[corrected]** there are **3** runtime strings, not five, and
-they are in `app/state/mod.rs:6102`, `:6197` and one further site — the first pass
-cited `comments.rs` line numbers that belong to `app/state/mod.rs`. `docs/index.html`
-also tells users settings persist to `.er-config.toml` (around `:1204`, `:1268`,
-`:1272`). That is a live UX bug, not just doc drift: the app directs users to edit a
-file that does nothing.
+they are in `app/state/mod.rs` — `:4951` (a doc comment), `:6216` and `:6311`
+(the two `not_configured` strings), plus `er-tui/src/input/normal.rs:216`. Line
+numbers here were wrong twice; those are current as of the Phase 1 branch.
+`docs/index.html` also tells users settings persist to `.er-config.toml` (around
+`:1204`, `:1268`, `:1272`), and so do `docs/config-reference.md:10,239` and
+`docs/guide/configuration.html:24,183`. That is a live UX bug, not just doc drift:
+the app directs users to edit a file that does nothing.
 
 ### Incomplete reference tables
 
@@ -533,6 +541,23 @@ wall-clock timeout. A timeout is what makes raising the cap safe.
 slot (`orchestrator.rs:999`). **[corrected]** the first pass listed three ungated
 paths; there are four. Until then the cap is advisory.
 
+**Re-derive `branch_diff_hash` on quick refreshes of a local-branch view.**
+Pre-existing, not a regression from this branch — the skip is byte-identical at
+the base commit. On the local-branch path, `refresh_diff_impl` only assigns
+`branch_diff_hash` when `recompute_branch_hash` is true (`mod.rs:2910`), and
+`reload_ai_state` *reads* that field rather than recomputing it
+(`mod.rs:3366`/`:3369`). So a HEAD move the app did not perform itself — a commit
+from a terminal — arrives on the watch path as a quick refresh
+(`refresh_diff_quick_with_unmark`), leaves the hash where it was, and `is_stale`
+is never re-derived: findings keep rendering as current against a diff they no
+longer match. Committing from inside the app is unaffected, because
+`submit_commit` calls the full `refresh_diff` (`comments.rs:1616`).
+
+Note for whoever fixes it: removing the Phase 1 gate does not help. The reload it
+skips would have been passed the same stale hash, so it computed the same wrong
+answer — at the cost of re-reading every sidecar on every watch event. The fix is
+to move the hash, not to stop skipping.
+
 **Split the pool by workload.** Separate pools for background reviews and arena
 rounds, each with its own configurable cap (e.g. `ai_hub.max_concurrent_arena_reviews`
 alongside the existing key), sharing one hard ceiling on total processes. Removes the
@@ -598,13 +623,13 @@ Also fixed while verifying the list: root `CLAUDE.md` still gave the mtime-sort
 toggle as `Shift+R`, which this document corrects to `m` further up. That drift
 is not one of the six items, so it had no line to be marked done against.
 
-What remains from item 3: the three stale runtime strings that point users at
-the removed repo-local config file — `er-tui/src/input/normal.rs:216`, and the
-`not_configured` texts at `app/state/mod.rs:6214` and `:6309` — plus the
-`docs/index.html` references (3) and the doc comments at
-`app/state/mod.rs:4949` and `git/status.rs:936,946`. Those are a code change,
-and the item asks for them to be approved separately, so they have not been
-touched.
+What remains from item 3: the stale strings that point users at the removed
+repo-local config file — `er-tui/src/input/normal.rs:216` and the
+`not_configured` texts at `app/state/mod.rs:6216` and `:6311` — plus the doc
+comments at `app/state/mod.rs:4951` and `git/status.rs:936,946`, and four doc
+pages (`docs/index.html`, `docs/config-reference.md:10,239`,
+`docs/guide/configuration.html:24,183`). Those are a code change, and the item
+asks for them to be approved separately, so they have not been touched.
 
 1. Fix the `agent_slots` "before every agent subprocess spawn" claim in root
    `CLAUDE.md:82` and the "single hard cap" wording in `agent_slots.rs:5`, and state
