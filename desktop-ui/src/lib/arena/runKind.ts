@@ -30,7 +30,7 @@ export function isSingleReviewRun(
   return (config.reviewers?.length ?? 0) === 1;
 }
 
-/** Review-tab dropdown label for `run.config.agent_kind` (matches Rust `agent_label_for_category`). */
+/** Review-tab dropdown label for `run.config.agent_kind` (matches Rust `agent_label_for_id`). */
 export function agentLabelFromSnapshot(snap: ArenaRunSnapshot): string {
   const kind = snap.run.config.agent_kind;
   if (kind) {

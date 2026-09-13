@@ -1081,7 +1081,7 @@ pub struct FlatFinding {
     pub line: Option<usize>,
     pub hunk_index: Option<usize>,
     pub severity: String, // "high" | "med" | "low"
-    /// Set when finding comes from a specialized expert (`category` = expert id).
+    /// Set when the finding's `lens` names a specialized expert.
     pub expert_label: Option<String>,
     /// Agent that produced this finding (pill label): General, Security, Professor, …
     pub agent_label: String,
@@ -3837,10 +3837,9 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         line: f.line_start,
                         hunk_index: f.hunk_index,
                         severity: severity_str(&f.severity).to_string(),
-                        expert_label: er_engine::ai::expert_label_for_category(&f.category)
+                        expert_label: er_engine::ai::expert_label_for_id(&f.lens)
                             .map(|s| s.to_string()),
-                        agent_label: er_engine::ai::agent_label_for_category(&f.category)
-                            .to_string(),
+                        agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),
                         promoted_to: promotions
@@ -3883,11 +3882,11 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 .map(|pf| TriagePriorityFileSnapshot {
                     path: pf.path.clone(),
                     reason: pf.reason.clone(),
-                    risk: pf.risk.clone(),
+                    risk: pf.risk.as_str().to_string(),
                 })
                 .collect(),
             files_changed: t.diff_stats.files_changed,
-            approx_risk: t.diff_stats.approx_risk.clone(),
+            approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
         }
     });

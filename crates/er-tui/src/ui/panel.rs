@@ -348,7 +348,12 @@ fn render_file_detail<'a>(
                     };
                     // Word-wrap the title line: first line gets icon + confidence prefix,
                     // continuation lines get indent to align under text
-                    let title_text = format!("[{}] {}", finding.category, finding.title);
+                    let tag = finding.lens_category_tag();
+                    let title_text = if tag.is_empty() {
+                        finding.title.clone()
+                    } else {
+                        format!("[{tag}] {}", finding.title)
+                    };
                     let title_lines = word_wrap(&title_text, max_w);
                     for (i, wrapped) in title_lines.iter().enumerate() {
                         if i == 0 {

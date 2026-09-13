@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::git::DiffHunk;
+use super::relocate::{relocate_comment, CommentAnchor, RelocationResult};
+use crate::git::{DiffFile, DiffHunk};
 
 // ── Inline layer visibility ──
 
@@ -100,16 +101,46 @@ where
         .collect())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Deserialize a risk level, degrading an unrecognised value to `Info` rather
+/// than rejecting the sidecar that holds it. Models write free-form words here
+/// (`"moderate"`, `"unknown"`), and losing a whole triage verdict over one
+/// adjective is a worse trade than an imprecise tier.
+pub fn lenient_risk_level<'de, D>(deserializer: D) -> Result<RiskLevel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<RiskLevel>(v).ok())
+        .unwrap_or(RiskLevel::Info))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     High,
     Medium,
     Low,
+    /// Default: no signal. Also where an unrecognised value lands — see
+    /// `lenient_risk_level`.
+    #[default]
     Info,
 }
 
 impl RiskLevel {
+    /// Lowercase level name, matching serde's serialization: `"high"`,
+    /// `"medium"`, `"low"`, `"info"`. The desktop's file-risk dot uses its own
+    /// shorter vocabulary (`severity_str`, where `Medium` is `"med"`), so the
+    /// two are deliberately not interchangeable.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Info => "info",
+        }
+    }
+
     pub const fn symbol(&self) -> &'static str {
         match self {
             Self::High => "●",
@@ -148,10 +179,22 @@ pub struct EvidenceItem {
     pub note: String,
 }
 
+/// Lens id for findings produced by the general review pass — the fallback when
+/// nothing else claims a finding. See CONTEXT.md, "Lens".
+pub const GENERAL_LENS: &str = "general";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub id: String,
     pub severity: RiskLevel,
+    /// Who produced this finding — an expert id, or `general` / `professor` /
+    /// `arbiter`. Set at load time by whichever merge path owns the sidecar, so
+    /// a producer never writes it. See CONTEXT.md, "Lens". Empty on sidecars
+    /// written before the field existed; backfilled from the finding id prefix.
+    #[serde(default)]
+    pub lens: String,
+    /// What kind of defect this finding describes (`correctness`, …). Orthogonal
+    /// to `lens` — the security lens can raise a correctness finding.
     #[serde(default)]
     pub category: String,
     pub title: String,
@@ -164,6 +207,15 @@ pub struct Finding {
     pub line_start: Option<usize>,
     #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_end: Option<usize>,
+    /// Text of the line this finding anchors to, as it was when the finding was
+    /// written. Mirrors the comment types. Empty for file- and hunk-level
+    /// findings, which cannot go stale individually.
+    #[serde(default)]
+    pub line_content: String,
+    /// Runtime-only: the anchored line is no longer in the diff. Recomputed on
+    /// each refresh from `line_content`; never persisted.
+    #[serde(skip)]
+    pub stale: bool,
     #[serde(default)]
     pub suggestion: String,
     #[serde(default)]
@@ -213,6 +265,72 @@ impl Finding {
     /// false positive (`Confidence::Dropped`).
     pub const fn is_active(&self) -> bool {
         !self.resolved && !matches!(self.confidence, Confidence::Dropped)
+    }
+
+    /// Recompute `stale` against the current diff.
+    ///
+    /// A finding whose target line can no longer be found is suspect; one whose
+    /// line merely moved is not — the same distinction the comment path draws
+    /// with `relocate_comment`. Findings are never re-anchored, so the position
+    /// the reviewer wrote stays put and only the flag moves.
+    ///
+    /// `diff_file` is `None` when the file itself has left the diff, which is
+    /// the comment path's `Missing → Lost` case: an anchored finding there is
+    /// stale. A caller that merely hasn't parsed the file yet must not pass
+    /// `None` — see `TabState::refresh_finding_staleness`.
+    ///
+    /// File- and hunk-level findings carry no `line_content` and stay fresh:
+    /// `AiState::stale_files` already covers the file as a whole.
+    pub fn refresh_stale(&mut self, diff_file: Option<&DiffFile>) {
+        if self.line_content.is_empty() || self.line_start.is_none() {
+            self.stale = false;
+            return;
+        }
+        let Some(diff_file) = diff_file else {
+            self.stale = true;
+            return;
+        };
+        let anchor = CommentAnchor {
+            hunk_index: self.hunk_index,
+            line_start: self.line_start,
+            line_content: self.line_content.clone(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+        };
+        self.stale = matches!(relocate_comment(&anchor, diff_file), RelocationResult::Lost);
+    }
+
+    /// Compact `lens · category` tag for a finding row.
+    ///
+    /// Both are displayed (see CONTEXT.md), and either is skipped when empty. A
+    /// `general` lens is left out too — it is the fallback producer, and naming
+    /// it on every row of the general review is noise. So a general finding
+    /// shows its defect kind, an expert finding shows `security · correctness`,
+    /// and a professor insight shows `professor`.
+    ///
+    /// A repeated value collapses to one: sidecars written before the two fields
+    /// were separated stored the producer in `category`, so an old
+    /// `professor.json` would otherwise read `professor · professor`. The stored
+    /// `category` is left as it was — nothing can tell such a value apart from a
+    /// finding genuinely categorised `professor`, and dropping a real defect kind
+    /// costs more than showing one twice.
+    pub fn lens_category_tag(&self) -> String {
+        if self.lens == self.category {
+            return self.lens.clone();
+        }
+        let lens = if self.lens == GENERAL_LENS {
+            ""
+        } else {
+            self.lens.as_str()
+        };
+        match (lens.is_empty(), self.category.is_empty()) {
+            (false, false) => format!("{lens} · {}", self.category),
+            (false, true) => lens.to_string(),
+            (true, false) => self.category.clone(),
+            (true, true) => String::new(),
+        }
     }
 }
 
@@ -1525,6 +1643,7 @@ impl AiState {
 mod tests {
     use super::super::comments::{FeedbackComment, GitHubReviewComment, ReviewQuestion};
     use super::*;
+    use crate::git::LineType;
     use std::collections::HashMap;
 
     // ── Helpers ──
@@ -1553,16 +1672,135 @@ mod tests {
         }
     }
 
+    fn diff_line(line_type: LineType, content: &str, new_num: usize) -> crate::git::DiffLine {
+        crate::git::DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: Some(new_num),
+            new_num: Some(new_num),
+        }
+    }
+
+    fn make_diff_file(path: &str, lines: Vec<crate::git::DiffLine>) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: crate::git::FileStatus::Modified,
+            hunks: vec![crate::git::DiffHunk {
+                header: "@@ -1,3 +1,3 @@".to_string(),
+                old_start: 1,
+                old_count: lines.len(),
+                new_start: 1,
+                new_count: lines.len(),
+                lines,
+            }],
+            adds: 0,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 1,
+        }
+    }
+
+    /// Staleness is per-finding: a finding whose anchored line is gone goes
+    /// stale, while a sibling in the same file whose line merely moved stays
+    /// fresh. `stale_files` cannot draw that line — it marks the whole file.
+    #[test]
+    fn refresh_stale_is_per_finding() {
+        let file = make_diff_file(
+            "a.rs",
+            vec![
+                diff_line(LineType::Add, "// header", 1),
+                diff_line(LineType::Context, "fn foo() {", 2),
+                diff_line(LineType::Context, "    let kept = 1;", 3),
+            ],
+        );
+
+        let mut intact = make_finding_with_lines("a", Some(0), Some(3), None, RiskLevel::Low);
+        intact.line_content = "    let kept = 1;".to_string();
+
+        let mut deleted = make_finding_with_lines("b", Some(0), Some(2), None, RiskLevel::Low);
+        deleted.line_content = "    let gone = 2;".to_string();
+
+        // Content intact but shifted down a line by the insert above it.
+        let mut shifted = make_finding_with_lines("c", Some(0), Some(1), None, RiskLevel::Low);
+        shifted.line_content = "fn foo() {".to_string();
+
+        // Hunk-level: no anchored line, so it cannot go stale on its own.
+        let mut hunk_level = make_finding("d", Some(0), RiskLevel::Low);
+
+        for f in [&mut intact, &mut deleted, &mut shifted, &mut hunk_level] {
+            f.refresh_stale(Some(&file));
+        }
+
+        assert!(!intact.stale, "line still at its anchor");
+        assert!(deleted.stale, "anchored line is gone from the diff");
+        assert!(!shifted.stale, "line moved but is still present");
+        assert!(
+            !hunk_level.stale,
+            "hunk-level findings have no line to lose"
+        );
+    }
+
+    /// A file that has left the diff takes the verdict the comment path reaches
+    /// for a missing file: an anchored finding there is stale.
+    #[test]
+    fn refresh_stale_marks_a_missing_file_stale() {
+        let mut anchored = make_finding_with_lines("a", Some(0), Some(3), None, RiskLevel::Low);
+        anchored.line_content = "    let kept = 1;".to_string();
+
+        // No anchored line, so a missing file says nothing about it.
+        let mut hunk_level = make_finding("b", Some(0), RiskLevel::Low);
+
+        anchored.refresh_stale(None);
+        hunk_level.refresh_stale(None);
+
+        assert!(anchored.stale, "its file is gone from the diff");
+        assert!(!hunk_level.stale, "no anchored line to lose");
+    }
+
+    /// The row tag shows the producer only when it is not the `general`
+    /// fallback, so today's output is preserved for general review findings
+    /// while expert and professor findings keep their identity.
+    #[test]
+    fn lens_category_tag_skips_general_and_empty() {
+        let tagged = |lens: &str, category: &str| {
+            let mut f = make_finding("f", Some(0), RiskLevel::Low);
+            f.lens = lens.to_string();
+            f.category = category.to_string();
+            f.lens_category_tag()
+        };
+
+        assert_eq!(tagged(GENERAL_LENS, "correctness"), "correctness");
+        assert_eq!(tagged("security", "correctness"), "security · correctness");
+        assert_eq!(tagged("professor", ""), "professor");
+        // A sidecar old enough to carry no lens still renders its defect kind.
+        assert_eq!(tagged("", "correctness"), "correctness");
+        assert_eq!(tagged("", ""), "");
+    }
+
+    /// Before the two fields were separated, a producer name lived in
+    /// `category`. Backfill fills `lens` from it, and the tag must not then say
+    /// the same word twice.
+    #[test]
+    fn lens_category_tag_collapses_a_duplicated_value() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.lens = "professor".to_string();
+        f.category = "professor".to_string();
+        assert_eq!(f.lens_category_tag(), "professor");
+    }
+
     fn make_finding(id: &str, hunk_index: Option<usize>, severity: RiskLevel) -> Finding {
         Finding {
             id: id.to_string(),
             severity,
+            lens: String::new(),
             category: String::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
             line_start: None,
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,
@@ -1587,12 +1825,15 @@ mod tests {
         Finding {
             id: id.to_string(),
             severity,
+            lens: String::new(),
             category: String::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
             line_start,
             line_end,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,

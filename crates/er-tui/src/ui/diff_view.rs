@@ -2912,17 +2912,23 @@ fn render_finding_banner(
 
     let stale_tag = if file_stale { " [stale]" } else { "" };
 
-    let mut title_spans = vec![
-        Span::styled(format!("  {} ", finding.severity.symbol()), severity_style),
-        Span::styled(
-            format!("[{}]", finding.category),
+    let mut title_spans = vec![Span::styled(
+        format!("  {} ", finding.severity.symbol()),
+        severity_style,
+    )];
+    // A finding can carry neither a lens worth naming nor a defect kind, and an
+    // empty `[]` reads as a rendering fault.
+    let tag = finding.lens_category_tag();
+    if !tag.is_empty() {
+        title_spans.push(Span::styled(
+            format!("[{tag}]"),
             ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
-        ),
-        Span::styled(
-            format!(" {}{}", finding.title, stale_tag),
-            ratatui::style::Style::default().fg(styles::ORANGE()).bg(bg),
-        ),
-    ];
+        ));
+    }
+    title_spans.push(Span::styled(
+        format!(" {}{}", finding.title, stale_tag),
+        ratatui::style::Style::default().fg(styles::ORANGE()).bg(bg),
+    ));
     if focused {
         title_spans.push(Span::styled(
             "  ◆ focused",

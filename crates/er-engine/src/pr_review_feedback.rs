@@ -110,11 +110,18 @@ const fn severity_label(level: RiskLevel) -> &'static str {
     }
 }
 
-fn finding_source(category: &str) -> String {
-    if category.starts_with("professor:") {
+/// Which producer raised a finding, as a stable label for the exported item:
+/// `professor`, `expert:<id>`, or `review` for the general pass.
+///
+/// Reads the finding's `lens`. It used to read `category`, which held the
+/// producer only for arena-imported findings and now holds a defect kind.
+fn finding_source(lens: &str) -> String {
+    if lens == crate::ai::PROFESSOR_ID {
         "professor".to_string()
-    } else if let Some(rest) = category.strip_prefix("expert:") {
-        format!("expert:{rest}")
+    } else if lens.starts_with("expert:") {
+        lens.to_string()
+    } else if crate::ai::expert_by_id(lens).is_some() {
+        format!("expert:{lens}")
     } else {
         "review".to_string()
     }
@@ -152,7 +159,7 @@ fn finding_to_item(file: &str, f: &Finding) -> PrFindingItem {
         resolved: f.resolved,
         outside_diff: f.outside_diff,
         responses: f.responses.clone(),
-        source: finding_source(&f.category),
+        source: finding_source(&f.lens),
     }
 }
 
@@ -468,6 +475,21 @@ mod tests {
     use crate::ai::{Confidence, ErFileReview, ErReview, Finding};
     use std::collections::HashMap;
 
+    /// The source label comes from `lens`, which holds the flat producer
+    /// vocabulary — not `category`, which holds a defect kind.
+    #[test]
+    fn finding_source_reads_the_lens() {
+        assert_eq!(finding_source("security"), "expert:security");
+        assert_eq!(finding_source("simplifying"), "expert:simplifying");
+        assert_eq!(finding_source("professor"), "professor");
+        // Task-kind form, as arena-imported findings carry it.
+        assert_eq!(finding_source("expert:api"), "expert:api");
+        assert_eq!(finding_source("general"), "review");
+        assert_eq!(finding_source(""), "review");
+        // A defect kind is not a producer.
+        assert_eq!(finding_source("correctness"), "review");
+    }
+
     fn with_storage_root<F: FnOnce()>(f: F) {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
@@ -539,12 +561,15 @@ mod tests {
             let finding = Finding {
                 id: "f1".into(),
                 severity: RiskLevel::High,
-                category: "general".into(),
+                lens: String::new(),
+                category: "correctness".into(),
                 title: "Bug".into(),
                 description: "desc".into(),
                 hunk_index: None,
                 line_start: None,
                 line_end: None,
+                line_content: String::new(),
+                stale: false,
                 suggestion: String::new(),
                 related_files: vec![],
                 outside_diff: false,

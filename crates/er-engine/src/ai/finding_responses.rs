@@ -93,9 +93,9 @@ where
 /// `experts/*.json`) and apply `f` to it in whichever file it lives in.
 ///
 /// Expert and professor findings are merged into the in-memory review with a
-/// prefixed id and a rewritten `category`, but they are persisted in their own
-/// sidecars — so a validation reply for `sec-1` must be written back to
-/// `experts/security.json`, not `review.json` (which may not even exist).
+/// prefixed id and their producer recorded in `lens`, but they are persisted in
+/// their own sidecars — so a validation reply for `sec-1` must be written back
+/// to `experts/security.json`, not `review.json` (which may not even exist).
 fn with_finding_mut<F>(er_dir: &str, finding_id: &str, f: F) -> anyhow::Result<()>
 where
     F: FnOnce(&mut Finding) -> anyhow::Result<()>,
@@ -362,12 +362,15 @@ mod tests {
         let finding = Finding {
             id: "f1".to_string(),
             severity: RiskLevel::Medium,
-            category: "general".to_string(),
+            lens: String::new(),
+            category: "correctness".to_string(),
             title: "t".to_string(),
             description: "d".to_string(),
             hunk_index: None,
             line_start: None,
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,
@@ -415,12 +418,15 @@ mod tests {
         Finding {
             id: id.to_string(),
             severity: RiskLevel::High,
+            lens: String::new(),
             category: String::new(),
             title: "t".to_string(),
             description: "d".to_string(),
             hunk_index: None,
             line_start: None,
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,

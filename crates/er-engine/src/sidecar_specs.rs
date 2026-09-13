@@ -59,7 +59,7 @@ fn triage_schema() -> Value {
                 "type": "object",
                 "properties": {
                     "files_changed": { "type": "integer" },
-                    "approx_risk": { "type": "string", "enum": ["low", "medium", "high"] },
+                    "approx_risk": { "type": "string", "enum": ["high", "medium", "low", "info"] },
                     "domains": { "type": "array", "items": { "type": "string" } }
                 }
             },
@@ -83,7 +83,7 @@ fn triage_schema() -> Value {
                     "properties": {
                         "path": { "type": "string" },
                         "reason": { "type": "string" },
-                        "risk": { "type": "string" }
+                        "risk": { "type": "string", "enum": ["high", "medium", "low", "info"] }
                     }
                 }
             }
@@ -99,12 +99,19 @@ fn finding_schema() -> Value {
         "properties": {
             "id": { "type": "string" },
             "severity": { "type": "string", "enum": ["high", "medium", "low", "info"] },
-            "category": { "type": "string" },
+            "category": {
+                "type": "string",
+                "description": "Kind of defect (correctness, error-handling, …) — not the lens"
+            },
             "title": { "type": "string", "maxLength": 60 },
             "description": { "type": "string" },
             "hunk_index": { "type": ["integer", "null"], "minimum": 0 },
             "line_start": { "type": ["integer", "null"], "minimum": 0 },
             "line_end": { "type": ["integer", "null"], "minimum": 0 },
+            "line_content": {
+                "type": "string",
+                "description": "Exact text of the anchored line; drives per-finding staleness"
+            },
             "suggestion": { "type": "string" },
             "related_files": { "type": "array", "items": { "type": "string" } },
             "outside_diff": { "type": "boolean" },

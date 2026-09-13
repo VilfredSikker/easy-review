@@ -45,7 +45,7 @@ paths below use the repo-local `.er/` names, which are identical.
 `summary`, `agent_summaries`, `checklist`, `questions`, `github_comments`,
 `triage`, `diagrams`, legacy `feedback`, plus:
 - `is_stale` — true if any sidecar's `diff_hash` differs from the current diff
-- `stale_files` — per-file staleness set
+- `stale_files` — per-file staleness set (file-tree indicator); findings carry their own `stale` flag
 - `comment_index` — lazily-built `CommentIndexData` for O(1) per-file comment lookup
 
 **`InlineLayers`** — visibility toggles for inline annotation layers
@@ -54,10 +54,18 @@ paths below use the repo-local `.er/` names, which are identical.
 `FileDetail | AiSummary | PrOverview | SymbolRefs | AgentLog`).
 
 **`ErReview`** → `ErFileReview` → `Finding` — review contains per-file
-reviews, each containing findings with severity, category, description,
-suggestion, hunk references.
+reviews, each containing findings with severity, description, suggestion, hunk
+references, and two orthogonal labels: `lens` (which reviewer produced it —
+`security`, `general`, `professor`, …) and `category` (what kind of defect it
+describes). `lens` is assigned at load time by the merge path that owns the
+sidecar, never written by a producer; sidecars predating the field are
+attributed from the finding id prefix by `backfill_finding_lenses`.
+`line_content` holds the anchored line's text and drives per-finding `stale`.
 
 **`RiskLevel`** — `High | Medium | Low | Info` with display helpers.
+`as_str()` is the lowercase level name; the desktop snapshot has its own
+short display vocabulary (`severity_str`, `med` for `Medium`) for the file-risk
+dot.
 
 **`CommentRef`** — unified query enum wrapping `ReviewQuestion` (as either a
 `Question` or `Note` — notes reuse the `ReviewQuestion` shape and live in
@@ -72,7 +80,7 @@ suggestion, hunk references.
 
 ## Important Patterns
 
-- Global staleness (`is_stale`) dims the AI overlay; per-file staleness dims individual files/comments
+- Global staleness (`is_stale`) dims the AI overlay; staleness is per-artifact below that — per-file for the file tree, per-finding (`Finding::refresh_stale`, from `line_content`) and per-comment for the rows themselves
 - `AiState` preserves panel/review focus and cursor across reloads (handled by `TabState::reload_ai_state()`)
 - `er` writes `questions.json`, `notes.json`, and `github-comments.json` in full; all other sidecars are AI-owned (read-only as a whole). The exception is the finding *lifecycle*: `finding_responses.rs` (validation replies) and `finding_cleanup.rs` (resolve/remove) mutate findings in place across `review.json`, `professor.json`, and `experts/*.json`, routing each write to the sidecar that owns the finding (matched by the merge-time id prefix)
 - Findings link to hunks via `hunk_index: Option<usize>`, enabling inline display in the diff view

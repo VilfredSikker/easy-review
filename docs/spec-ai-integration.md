@@ -82,7 +82,7 @@ The core review file. Contains per-file risk assessments and per-hunk findings.
         {
           "id": "f1",
           "severity": "high",
-          "category": "security",
+          "category": "correctness",
           "title": "Token expiry not enforced",
           "description": "The new JWT is created without an `exp` claim. Tokens will never expire, creating a session fixation risk.",
           "hunk_index": 2,
@@ -105,7 +105,7 @@ The core review file. Contains per-file risk assessments and per-hunk findings.
 
 **Risk levels:** `"high"`, `"medium"`, `"low"`, `"info"`
 
-**Finding categories:** `"security"`, `"logic"`, `"performance"`, `"correctness"`, `"error-handling"`, `"style"`, `"testing"`
+**Finding categories:** the kind of defect — `"correctness"`, `"logic"`, `"error-handling"`, `"performance"`, `"testing"`, `"api-contract"`. Not the same as a finding's **lens**, which names who produced it (`"security"`, `"performance"`, … , `"general"`, `"professor"`) and is set by the loader rather than written by a producer.
 
 **Hunk targeting:** `hunk_index` is 0-based into the file's hunks array. `line_start`/`line_end` are new-file line numbers within that hunk (for precise annotation positioning). If both are null, the finding applies to the whole hunk.
 

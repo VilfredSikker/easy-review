@@ -76,7 +76,7 @@ pub fn merge_professor_into_review(
             });
         for mut finding in pfr.findings.clone() {
             finding.id = prefix_finding_id(&finding.id);
-            finding.category = PROFESSOR_ID.to_string();
+            finding.lens = PROFESSOR_ID.to_string();
             entry.findings.push(finding);
         }
     }
@@ -99,12 +99,15 @@ mod tests {
         Finding {
             id: id.to_string(),
             severity: RiskLevel::Info,
-            category: PROFESSOR_ID.to_string(),
+            lens: String::new(),
+            category: String::new(),
             title: "State machine".to_string(),
             description: "Explains transition".to_string(),
             hunk_index: Some(0),
             line_start: Some(10),
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: vec![],
             outside_diff: false,
@@ -117,6 +120,25 @@ mod tests {
             resolved_at: String::new(),
             promoted_to: None,
         }
+    }
+
+    /// The professor prompt no longer asks for `category`, so a sidecar written
+    /// to the current prompt omits it. That must still load.
+    #[test]
+    fn sidecar_without_a_category_deserializes() {
+        let json = r#"{
+            "version": 1,
+            "diff_hash": "h",
+            "files": {
+                "src/lib.rs": {
+                    "findings": [{ "id": "prof-1", "severity": "info", "title": "State machine" }]
+                }
+            }
+        }"#;
+        let review: ProfessorReview = serde_json::from_str(json).unwrap();
+        let f = &review.files["src/lib.rs"].findings[0];
+        assert_eq!(f.category, "");
+        assert_eq!(f.lens, "");
     }
 
     #[test]
@@ -147,7 +169,10 @@ mod tests {
         };
         merge_professor_into_review(&mut review, &prof, hash);
         assert_eq!(review.files["src/lib.rs"].findings[0].id, "prof-1");
-        assert_eq!(review.files["src/lib.rs"].findings[0].category, "professor");
+        assert_eq!(review.files["src/lib.rs"].findings[0].lens, "professor");
+        // Teaching insights carry no defect kind — the producer name used to
+        // land here, which made `category` mean two different things.
+        assert_eq!(review.files["src/lib.rs"].findings[0].category, "");
 
         let stale = ProfessorReview {
             diff_hash: "old".to_string(),
