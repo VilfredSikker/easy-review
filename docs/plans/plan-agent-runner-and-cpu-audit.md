@@ -10,6 +10,15 @@ adversarially re-verified by a second pass that was told to refute it; where the
 first pass was wrong the corrected statement is marked **[corrected]** and the
 original is shown so the error stays visible.
 
+**On the `file:line` cites.** They are a snapshot of the branch that wrote this,
+not a stable index. Three of them went stale during that branch's own review —
+each time because an edit above the cite shifted it — and a reader working from
+a slightly different revision will see the rest drift too. Treat a cite as a
+hint about where to look and confirm against the symbol, which is why most of
+them name a function or a constant as well. This document is otherwise the shape
+`CONTEXT.md` warns about: precise-looking references that rot. When the phases
+below are done, the cites should probably go rather than be maintained.
+
 ## Context
 
 `er` runs AI reviews by spawning an external CLI (`claude`, `codex`, `opencode`, …)
