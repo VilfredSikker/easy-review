@@ -3765,30 +3765,27 @@ impl TabState {
     /// needs a reload or findings keep rendering as current against a diff they
     /// no longer match.
     pub fn ai_state_is_current(&self) -> bool {
-        let sidecars_changed = match ai::latest_er_mtime(&self.er_dir()) {
-            Some(t) => self.last_ai_check.is_none_or(|last| t > last),
-            // Sidecars deleted: only a reload if we had loaded some.
-            None => self.last_ai_check.is_some(),
-        };
-        if sidecars_changed {
+        if self.sidecars_moved_since_last_check() {
             return false;
         }
         self.last_ai_diff_hash.as_deref() == Some(self.branch_diff_hash.as_str())
     }
 
-    pub fn check_ai_files_changed(&mut self) -> bool {
-        let latest_mtime = ai::latest_er_mtime(&self.er_dir());
-
-        let should_reload = match latest_mtime {
-            Some(t) => match self.last_ai_check {
-                Some(last_check) => t > last_check,
-                None => true,
-            },
-            // Files deleted — clear stale in-memory state if we had any
+    /// Whether the sidecar directory has moved since the last load.
+    ///
+    /// Three cases, and the third is the one that is easy to get backwards:
+    /// sidecars newer than the last check, no check yet but sidecars present
+    /// (never loaded), or sidecars gone when we had loaded some (deleted).
+    /// Shared so the two callers cannot drift on it.
+    fn sidecars_moved_since_last_check(&self) -> bool {
+        match ai::latest_er_mtime(&self.er_dir()) {
+            Some(t) => self.last_ai_check.is_none_or(|last| t > last),
             None => self.last_ai_check.is_some(),
-        };
+        }
+    }
 
-        if should_reload {
+    pub fn check_ai_files_changed(&mut self) -> bool {
+        if self.sidecars_moved_since_last_check() {
             self.reload_ai_state();
             return true;
         }

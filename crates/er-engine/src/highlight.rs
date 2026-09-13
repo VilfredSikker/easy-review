@@ -143,10 +143,10 @@ impl Highlighter {
         .or(by_name)
         .or(by_ext);
 
-        // Only reached for a file neither lookup knows — the case that used to
-        // read the file once per highlighted line. Memoised per filename, and
-        // the empty result is memoised too so a file that sniffs to nothing is
-        // not re-read either.
+        // Only reached for a file none of the lookups know — the case that used
+        // to read the file once per highlighted line. Memoised per filename,
+        // and the empty result is memoised too so a file that sniffs to nothing
+        // is not re-read either.
         if syntax.is_none() {
             syntax = match self.file_sniff.get(filename) {
                 Some(name) => name
@@ -166,6 +166,11 @@ impl Highlighter {
             };
         }
 
+        // Kept below the sniff deliberately: `find_syntax_by_extension` is
+        // case-insensitive, so `by_name`/`by_ext` already answer everything
+        // `ext_lower` can except for a dotfile whose name-without-dot happens to
+        // be a registered extension. Reordering it changes no filenames we can
+        // construct, so it stays where it is rather than moving on principle.
         let syntax = syntax
             .or_else(|| {
                 ext_lower
