@@ -245,6 +245,8 @@ export const aiWithFindings: AiSnapshot = {
   summary_markdown:
     "4 findings across 3 files. Two high-risk issues in variant-warning-copy.ts around fallback handling.",
   agent_summaries: {},
+  arbiter_dropped: 0,
+  arbiter_merged: 0,
   high: 2,
   med: 1,
   low: 1,
@@ -341,6 +343,8 @@ export const aiEmpty: AiSnapshot = {
   stale_reason: null,
   summary_markdown: null,
   agent_summaries: {},
+  arbiter_dropped: 0,
+  arbiter_merged: 0,
   high: 0,
   med: 0,
   low: 0,
@@ -425,7 +429,9 @@ function professorFinding(id: string, file: string, line: number, title: string)
 export const aiProfessorOnly: AiSnapshot = {
   fresh: false,
   stale_reason: "Review was generated for an older diff. Re-run or validate the review.",
-  summary_markdown: null,
+  summary_markdown: null,  arbiter_dropped: 0,
+  arbiter_merged: 0,
+
   agent_summaries: {
     Professor:
       "This branch adds replicate deviation APIs backed by a three-part hash and shared SQL CTEs.\n\nTests isolate pure helpers from DB/HTTP; the metric validation path still lacks 422 coverage.",
