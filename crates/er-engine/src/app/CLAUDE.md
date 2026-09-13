@@ -25,7 +25,7 @@ persistence. See `state/agent.md` for the `App` vs `TabState` vs desktop
 
 **`TabState`** — Per-review-target state (working tree, branch view, local PR, or remote PR). Contains:
 - Diff data: `files: Vec<DiffFile>`, `selected_file`, `current_hunk`, `current_line`
-- Mode: `DiffMode` (Branch/Unstaged/Staged/History), `base_branch`, `current_branch`
+- Mode: `DiffMode` (`Branch | Unstaged | Staged | History | Conflicts | Hidden | PrDiff | Tour`), `base_branch`, `current_branch`
 - Scroll: `diff_scroll`, `h_scroll`
 - Review tracking: `reviewed: HashSet<String>`, `show_unreviewed_only`, `filtered_reviewed_count()`
 - Filters: `filter_expr`, `filter_rules: Vec<FilterRule>`, `filter_history`, `filter_input`

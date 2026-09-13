@@ -286,6 +286,17 @@ Across 14 slot acquisitions the queue and spawn phases were sub-millisecond
 (`queue_ms=0 spawn_ms=0`); `run_ms` held everything. Instrument sanity check: a
 child sleeping 300 ms reports `spawn_ms=14 run_ms=353`.
 
+**[corrected]** The `queue_ms=0` half of that means nothing on these
+acquisitions. The arena takes the slot in the orchestrator (`orchestrator.rs:580`,
+`:718`) and only then calls `run_once`, which starts the timer and immediately
+marks slot-acquired (`arena/adapter.rs:113-116`) — so `queue_ms` is identically
+zero there by construction, and the 2142 ms wait reported below is structurally
+invisible to it. The app spawn sites do measure queue properly (timer started
+before acquisition, `comments.rs:2106`/`:2111`); these numbers came from the
+arena path and do not. The `spawn_ms` half stands on its own — a child sleeping
+300 ms reporting `spawn_ms=14` is a real measurement — so "spawn overhead is
+negligible" survives; "the queue is negligible" is not what this shows.
+
 ### Rounds set arena wall-clock; the cap binds only above itself
 
 Fake provider sleeping a fixed 2 s per reviewer and 1 s for the arbiter, driven
@@ -399,10 +410,13 @@ there.
 | `er-engine/src/highlight.rs:119` | Cache `SyntaxReference` per extension instead of re-resolving on every miss | **done** — the per-filename first-line sniff is memoised, which is the term that actually read the disk |
 | `er-tui/src/main.rs:435` | Redraw only when state is dirty; correct the tick constants to the real 50 ms period | **tick constants done; redraw gate deferred** — see below |
 
-Landed items carried three new tests: the annotation skip (counting annotation
-passes, not writes — a write count passes against the unoptimised code), marker/
-content-file invariants including the pre-upgrade marker, and the mtime sort from
-an unsorted list.
+Landed items carried three new tests in the first pass: the annotation skip
+(counting annotation passes, not writes — a write count passes against the
+unoptimised code), marker/content-file invariants including the pre-upgrade
+marker, and the mtime sort from an unsorted list. The later items added more:
+the per-file-hash set (including the eager-refresh regression), the lazy-hash
+skip, the two merged-branch tests, the probe backoff, and the notification
+trio.
 
 #### Why the redraw gate is deferred
 
@@ -462,6 +476,11 @@ the silent, permanent auto-unmark failure this section rules out above. The
 retention claim had been generalised from the constructors, which do keep it, and
 never checked against the refresh path. Fixed by retaining `raw_diff` in the eager
 branch too, which is bounded by the same 200 KB threshold that selected it.
+
+That retention has a second effect worth naming: `raw_diff_for_review` served every
+≤200 KB diff by shelling to git, and now answers from memory when the scope matches.
+It is the same threshold and the same guard, so it reads as intended, but it is a
+behaviour change and not only a bug fix.
 
 Three existing tests asserted the invariant a stronger way than the behaviour needs
 — that the map itself is fully populated — with the rationale "so newly-marked files
@@ -574,6 +593,10 @@ long-lived agent process via the CLI's streaming mode, or deleting/wiring up the
 **Status: 1, 2, 4, 5 and 6 done. 3 is half done.** They landed in the same
 branch as Phase 1 rather than in a later pass, because most were the same
 species of wrong claim the audit exists to find.
+
+Also fixed while verifying the list: root `CLAUDE.md` still gave the mtime-sort
+toggle as `Shift+R`, which this document corrects to `m` further up. That drift
+is not one of the six items, so it had no line to be marked done against.
 
 What remains from item 3: the three stale runtime strings that point users at
 the removed repo-local config file — `er-tui/src/input/normal.rs:216`, and the
