@@ -958,7 +958,10 @@ fn run_supervisor(
             &[
                 ("round", round.to_string()),
                 ("reviewers", active.len().to_string()),
-                ("elapsed_ms", round_started.elapsed().as_millis().to_string()),
+                (
+                    "elapsed_ms",
+                    round_started.elapsed().as_millis().to_string(),
+                ),
             ],
         );
         if cross_out.cancelled {

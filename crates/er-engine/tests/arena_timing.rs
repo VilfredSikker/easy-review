@@ -24,8 +24,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::arena::{
-    load_run, start_arena_run, ArenaPaths, ArenaRegistry, ArenaScope, ArenaStartParams, ReviewerRef,
-    RunStatus,
+    load_run, start_arena_run, ArenaPaths, ArenaRegistry, ArenaScope, ArenaStartParams,
+    ReviewerRef, RunStatus,
 };
 use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
 
@@ -74,7 +74,9 @@ esac
         ),
     )
     .expect("write fake provider");
-    let mut perms = fs::metadata(&script).expect("stat fake provider").permissions();
+    let mut perms = fs::metadata(&script)
+        .expect("stat fake provider")
+        .permissions();
     perms.set_mode(0o755);
     fs::set_permissions(&script, perms).expect("chmod fake provider");
     script

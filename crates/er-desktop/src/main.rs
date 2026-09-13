@@ -2140,9 +2140,7 @@ fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
     if changed {
         PROBE_INTERVAL_SECS
     } else {
-        current
-            .saturating_mul(2)
-            .min(PROBE_MAX_INTERVAL_SECS)
+        current.saturating_mul(2).min(PROBE_MAX_INTERVAL_SECS)
     }
 }
 
