@@ -317,8 +317,13 @@ fn render_file_detail<'a>(
                 if effect.unmatched > 0 {
                     lines.push(Line::from(vec![Span::styled(
                         format!(
-                            " {} arbiter verdict(s) no longer apply — re-run validation",
-                            effect.unmatched
+                            " {} arbiter {} no longer apply — re-run validation",
+                            effect.unmatched,
+                            if effect.unmatched == 1 {
+                                "verdict"
+                            } else {
+                                "verdicts"
+                            }
                         ),
                         Style::default().fg(styles::YELLOW()),
                     )]));

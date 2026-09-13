@@ -15,6 +15,11 @@ Question, Note, or Comment instead.
 the built-in producers (`general`, `professor`, `arbiter`). A finding merged from
 several producers carries all of them.
 
+**Raiser** — One of the lenses that produced a finding, in the plural. A finding
+filed under one lens (`Finding.lens`) can have several raisers (`Finding.raised_by`)
+when more than one producer found the same thing; the field is the set, the lens is
+the one it is filed under.
+
 **Category** — *What kind of defect* a finding describes (`correctness`, and
 siblings). Independent of Lens: the security lens can raise a correctness finding.
 Historically these two were collapsed into one field, which lost the category.

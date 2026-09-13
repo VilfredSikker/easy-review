@@ -1,18 +1,20 @@
-//! Collapse expert findings that describe the same issue.
+//! Collapse expert findings that describe the same issue, and assemble the run
+//! that validates them.
 //!
-//! The first step of the arbiter path, and the only one that needs no model
-//! call: the expert sidecars are already on disk, and the arena's existing
-//! duplicate proposer does the grouping. What the arbiter adds on top — a
-//! regraded confidence and a verdict per finding — is a later slice.
+//! The only step of the arbiter path that needs no model call: the expert
+//! sidecars are already on disk, and the arena's existing duplicate proposer
+//! does the grouping. The arbiter then rules on the result — a regraded
+//! confidence and a verdict per finding — which is one call however many experts
+//! contributed.
 
-use super::identity::finding_key;
 use super::merge::{propose_merge_candidates, raise_severity, severity_rank};
 use super::model::{
     ArenaConfig, ArenaFinding, ArenaRun, ArenaRunKind, ArenaScope, Ballot, CostEstimate,
     ReviewerRef, RoundLog, RunStatus, Verdict, Vote,
 };
 use super::orchestrator::resolve_reviewers;
-use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, Confidence, Finding};
+use crate::ai::finding_key;
+use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, Finding};
 use crate::config::ErConfig;
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -188,7 +190,7 @@ fn from_expert_finding(path: &str, finding: &Finding, lens: &str, id: String) ->
         raised_by: vec![lens.to_string()],
         // Nothing has judged these yet — that is the arbiter's job.
         verdict: Verdict::Pending,
-        confidence: confidence_score(finding.confidence),
+        confidence: finding.confidence.score(),
         rationale: finding.suggestion.clone(),
         rounds: vec![RoundLog {
             n: 1,
@@ -204,19 +206,6 @@ fn from_expert_finding(path: &str, finding: &Finding, lens: &str, id: String) ->
         evidence: finding.evidence.clone(),
         override_: None,
         accepted_at: None,
-    }
-}
-
-/// A self-reported confidence as the 0..1 the arena carries.
-///
-/// The thresholds mirror `arena_finding_to_review`, so a score round-trips back
-/// to the level it came from.
-const fn confidence_score(confidence: Confidence) -> f32 {
-    match confidence {
-        Confidence::Confirmed => 0.9,
-        Confidence::Tentative => 0.6,
-        Confidence::Informational => 0.3,
-        Confidence::Dropped => 0.0,
     }
 }
 
@@ -713,13 +702,5 @@ mod tests {
             .reviewers
             .iter()
             .all(|r| matches!(r.status, ReviewerRunStatus::Ok)));
-    }
-
-    #[test]
-    fn confidence_maps_onto_the_arena_scale() {
-        assert_eq!(confidence_score(Confidence::Confirmed), 0.9);
-        assert_eq!(confidence_score(Confidence::Tentative), 0.6);
-        assert_eq!(confidence_score(Confidence::Informational), 0.3);
-        assert_eq!(confidence_score(Confidence::Dropped), 0.0);
     }
 }

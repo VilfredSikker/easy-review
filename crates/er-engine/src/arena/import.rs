@@ -51,13 +51,7 @@ fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
         .as_deref()
         .map_or(GENERAL_LENS, lens_for_producer_id)
         .to_string();
-    let confidence = if f.confidence >= 0.75 {
-        Confidence::Confirmed
-    } else if f.confidence >= 0.5 {
-        Confidence::Tentative
-    } else {
-        Confidence::Informational
-    };
+    let confidence = Confidence::from_score(f.confidence);
     Finding {
         id: format!("arena-{}-{}", run.id, f.id),
         severity: latest_severity(f),

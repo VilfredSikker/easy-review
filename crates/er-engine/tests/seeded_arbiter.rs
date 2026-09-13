@@ -5,8 +5,9 @@
 //! One test in the file on purpose — `ER_FAKE_ARENA_DIR` is process-wide, and a
 //! second test here would race this one for it.
 
+use er_engine::ai::finding_key;
 use er_engine::arena::{
-    finding_key, load_run, start_seeded_run, ArenaPaths, ArenaRegistry, ArenaRunKind, RunStatus,
+    load_run, start_seeded_run, ArenaPaths, ArenaRegistry, ArenaRunKind, RunStatus,
     SeededStartParams, Verdict,
 };
 use serde_json::json;

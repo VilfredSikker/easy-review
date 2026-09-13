@@ -183,6 +183,33 @@ pub enum Confidence {
     Dropped,
 }
 
+impl Confidence {
+    /// This level as the 0..1 the arena carries.
+    ///
+    /// The pair with `from_score` has to stay a round trip: a grade written by
+    /// one mapping and read back by a diverging copy would silently change a
+    /// finding's confidence on the way through the arena.
+    pub const fn score(self) -> f32 {
+        match self {
+            Self::Confirmed => 0.9,
+            Self::Tentative => 0.6,
+            Self::Informational => 0.3,
+            Self::Dropped => 0.0,
+        }
+    }
+
+    /// The level a 0..1 score represents. Thresholds are `score`'s, inverted.
+    pub const fn from_score(score: f32) -> Self {
+        if score >= 0.75 {
+            Self::Confirmed
+        } else if score >= 0.5 {
+            Self::Tentative
+        } else {
+            Self::Informational
+        }
+    }
+}
+
 /// One read or grep result the AI used to justify (or revise) a finding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceItem {
@@ -324,20 +351,6 @@ impl Finding {
         self.stale = matches!(relocate_comment(&anchor, diff_file), RelocationResult::Lost);
     }
 
-    /// Compact `producers · category` tag for a finding row.
-    ///
-    /// Both are displayed (see CONTEXT.md), and either is skipped when empty. A
-    /// `general` raiser is left out — it is the fallback producer, and naming it
-    /// on every row of the general review is noise. So a general finding shows
-    /// its defect kind, an expert finding shows `security · correctness`, and a
-    /// claim two experts both found shows `reliability, security · correctness`.
-    ///
-    /// A repeated value collapses to one: sidecars written before the two fields
-    /// were separated stored the producer in `category`, so an old
-    /// `professor.json` would otherwise read `professor · professor`. The stored
-    /// `category` is left as it was — nothing can tell such a value apart from a
-    /// finding genuinely categorised `professor`, and dropping a real defect kind
-    /// costs more than showing one twice.
     /// The full set of raisers, falling back to `lens` for a finding written
     /// before `raised_by` existed. Never empty when the finding is attributed.
     pub fn raisers(&self) -> Vec<&str> {
@@ -361,18 +374,34 @@ impl Finding {
             .collect()
     }
 
+    /// Compact `producers · category` tag for a finding row.
+    ///
+    /// Both are displayed (see CONTEXT.md), and either is skipped when empty. A
+    /// `general` raiser is left out — it is the fallback producer, and naming it
+    /// on every row of the general review is noise. So a general finding shows
+    /// its defect kind, an expert finding shows `security · correctness`, and a
+    /// claim two experts both found shows `reliability, security · correctness`.
+    ///
+    /// A repeated value collapses to one: sidecars written before the two fields
+    /// were separated stored the producer in `category`, so an old
+    /// `professor.json` would otherwise read `professor · professor`. The stored
+    /// `category` is left as it was — nothing can tell such a value apart from a
+    /// finding genuinely categorised `professor`, and dropping a real defect kind
+    /// costs more than showing one twice.
     pub fn lens_category_tag(&self) -> String {
-        if self.lens == self.category {
-            return self.lens.clone();
-        }
         // Every raiser, not just the one it is filed under: a claim three experts
         // independently found reads as such on the row, which is the whole point
         // of merging them.
         let producers = self.named_raisers().join(", ");
-        match (producers.is_empty(), self.category.is_empty()) {
-            (false, false) => format!("{producers} · {}", self.category),
+        let collapsed = if self.lens == self.category {
+            ""
+        } else {
+            self.category.as_str()
+        };
+        match (producers.is_empty(), collapsed.is_empty()) {
+            (false, false) => format!("{producers} · {collapsed}"),
             (false, true) => producers,
-            (true, false) => self.category.clone(),
+            (true, false) => collapsed.to_string(),
             (true, true) => String::new(),
         }
     }
@@ -1696,6 +1725,19 @@ mod tests {
     use std::collections::HashMap;
 
     // ── Helpers ──
+
+    /// `score` and `from_score` have to be inverses: a grade written by one and
+    /// read back by the other must not change a finding's confidence.
+    #[test]
+    fn confidence_score_round_trips() {
+        for level in [
+            Confidence::Confirmed,
+            Confidence::Tentative,
+            Confidence::Informational,
+        ] {
+            assert_eq!(Confidence::from_score(level.score()), level);
+        }
+    }
 
     fn make_review_with_files(files: Vec<(&str, RiskLevel, Vec<Finding>)>) -> ErReview {
         let mut file_map = HashMap::new();

@@ -9,7 +9,7 @@
 
 use super::review::{AiResponse, Confidence, ErReview, Finding};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// `.er/arbiter.json`
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,10 +130,10 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
         .map(|v| (v.id.as_str(), v))
         .collect();
 
-    let mut matched: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut matched: HashSet<&str> = HashSet::new();
     for (path, file_review) in review.files.iter_mut() {
         for finding in &mut file_review.findings {
-            let id = crate::arena::finding_key(path, finding.line_start, &finding.title);
+            let id = super::identity::finding_key(path, finding.line_start, &finding.title);
             let Some(verdict) = by_id.get(id.as_str()) else {
                 continue;
             };
@@ -143,8 +143,13 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
     }
     // A verdict that matched nothing is the tell that the two sides disagree
     // about the diff or the keys — the pass did nothing, and silence would let
-    // that read as "everything was fine".
-    effect.unmatched = by_id.len() - matched.len();
+    // that read as "everything was fine". Counted over the verdicts as written,
+    // so a duplicated id in the file cannot flatter the total.
+    effect.unmatched = arbiter
+        .verdicts
+        .iter()
+        .filter(|v| !matched.contains(v.id.as_str()))
+        .count();
     effect
 }
 
@@ -160,6 +165,25 @@ fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut A
         }
     }
 
+    // A ruling that hides the finding settles its confidence outright, so the
+    // regrade is skipped: recording "regraded from tentative to confirmed" on a
+    // finding the arbiter then dropped would describe a grade nothing reads.
+    // `Confidence::Dropped` is also what `is_active()` reads, so a ruling the
+    // reviewer should stop acting on has to land there whichever it was.
+    match verdict.verdict {
+        ArbiterRuling::Dropped => {
+            finding.confidence = Confidence::Dropped;
+            effect.dropped += 1;
+            return;
+        }
+        ArbiterRuling::Merged => {
+            finding.confidence = Confidence::Dropped;
+            effect.merged += 1;
+            return;
+        }
+        ArbiterRuling::Kept | ArbiterRuling::Escalated => {}
+    }
+
     // The producer's original grade goes into the response trail rather than
     // being overwritten, so the disagreement between the two stays readable.
     if let Some(confidence) = verdict.confidence {
@@ -170,20 +194,6 @@ fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut A
             finding.confidence = confidence;
             effect.regraded += 1;
         }
-    }
-
-    // `Confidence::Dropped` is what `is_active()` reads, so a ruling the
-    // reviewer should stop acting on has to land there whichever it was.
-    match verdict.verdict {
-        ArbiterRuling::Dropped => {
-            finding.confidence = Confidence::Dropped;
-            effect.dropped += 1;
-        }
-        ArbiterRuling::Merged => {
-            finding.confidence = Confidence::Dropped;
-            effect.merged += 1;
-        }
-        ArbiterRuling::Kept | ArbiterRuling::Escalated => {}
     }
 }
 
@@ -221,9 +231,9 @@ const fn confidence_name(confidence: Confidence) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use super::super::identity::finding_key;
     use super::*;
     use crate::ai::review::{ErFileReview, RiskLevel};
-    use crate::arena::finding_key;
     use std::collections::HashMap;
 
     const HASH: &str = "diff-hash";
@@ -398,6 +408,35 @@ mod tests {
         );
     }
 
+    /// A ruling that hides a finding settles its confidence, so a verdict that
+    /// also carries a grade must not leave a trail for one.
+    #[test]
+    fn a_dropped_finding_records_no_regrade() {
+        let mut review = review_with(vec![finding(Confidence::Tentative)]);
+
+        let effect = merge_arbiter_into_review(
+            &mut review,
+            &arbiter(
+                HASH,
+                vec![verdict(ArbiterRuling::Dropped, Some(Confidence::Confirmed))],
+            ),
+        );
+
+        let f = &review.files["src/a.rs"].findings[0];
+        assert_eq!(f.confidence, Confidence::Dropped);
+        assert!(
+            f.responses.is_empty(),
+            "a hidden finding has no grade worth narrating"
+        );
+        assert_eq!(
+            effect,
+            ArbiterEffect {
+                dropped: 1,
+                ..Default::default()
+            }
+        );
+    }
+
     /// Verdicts are graded against a diff. Applying them to a review written
     /// against a different one would put a second opinion on the wrong code.
     #[test]
@@ -413,8 +452,12 @@ mod tests {
         );
 
         assert_eq!(
-            effect.unmatched, 1,
-            "the verdict exists but describes another diff — not a silent zero"
+            effect,
+            ArbiterEffect {
+                unmatched: 1,
+                ..Default::default()
+            },
+            "the verdict exists but describes another diff — reported, and nothing applied"
         );
         assert!(review.files["src/a.rs"].findings[0].is_active());
     }
@@ -429,8 +472,14 @@ mod tests {
 
         let effect = merge_arbiter_into_review(&mut review, &arbiter(HASH, vec![orphan]));
 
-        assert_eq!(effect.unmatched, 1);
-        assert_eq!(effect.hidden(), 0);
+        assert_eq!(
+            effect,
+            ArbiterEffect {
+                unmatched: 1,
+                ..Default::default()
+            },
+            "nothing was applied — a stray drop here would pass the old assertion"
+        );
         assert!(review.files["src/a.rs"].findings[0].is_active());
     }
 
@@ -448,7 +497,11 @@ mod tests {
         );
 
         assert_eq!(
-            effect.unmatched, 1,
+            effect,
+            ArbiterEffect {
+                unmatched: 1,
+                ..Default::default()
+            },
             "the verdict is orphaned by the new key, and says so"
         );
         assert!(review.files["src/a.rs"].findings[0].is_active());

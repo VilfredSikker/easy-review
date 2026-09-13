@@ -568,15 +568,7 @@ fn arbiter_review_from_run(
                 id: f.id.clone(),
                 file: f.file.clone(),
                 verdict,
-                // Same thresholds `arena_finding_to_review` reads back, so a
-                // grade survives the round trip.
-                confidence: Some(if f.confidence >= 0.75 {
-                    crate::ai::Confidence::Confirmed
-                } else if f.confidence >= 0.5 {
-                    crate::ai::Confidence::Tentative
-                } else {
-                    crate::ai::Confidence::Informational
-                }),
+                confidence: Some(crate::ai::Confidence::from_score(f.confidence)),
                 merged_into: match &f.verdict {
                     Verdict::Merged { into } => Some(into.clone()),
                     _ => None,

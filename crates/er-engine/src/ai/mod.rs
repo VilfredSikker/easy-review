@@ -13,12 +13,14 @@ pub mod scoped_merge;
 pub mod triage;
 
 pub mod arbiter;
+pub mod identity;
 pub use arbiter::*;
 pub use comments::*;
 pub use diagrams::*;
 pub use experts::*;
 pub use finding_cleanup::*;
 pub use finding_responses::*;
+pub use identity::*;
 pub use loader::*;
 pub use professor::*;
 pub use relocate::*;

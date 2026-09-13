@@ -165,7 +165,11 @@ impl App {
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
         let base_branch = tab.base_branch.clone();
-        let diff_hash = tab.branch_diff_hash.clone();
+        // Hashed from the diff this call actually hands the arbiter, rather than
+        // the tab's last refresh. They agree in the normal case; when they do
+        // not, the one that describes what was graded is the right one to
+        // record, because the overlay compares it against the review's.
+        let diff_hash = crate::ai::compute_diff_hash(&raw_diff);
         // An expert set generated alongside a review that has since gone stale
         // is still this generation's work — same accommodation as the merge.
         let review_hash = tab
