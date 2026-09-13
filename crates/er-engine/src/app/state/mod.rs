@@ -2538,8 +2538,8 @@ impl TabState {
     /// reviewed files whose diff changed. Used by the file-watcher paths so a
     /// live edit/stage/commit to an already-reviewed file clears the review
     /// marker without waiting for a full refresh. Keeps the fast whole-diff
-    /// hash for quick refreshes; per-file SHA-256 is recomputed so a later
-    /// mark/toggle reads a current hash for any file.
+    /// hash for quick refreshes, and hashes only the reviewed files; a later
+    /// mark resolves its own file's hash on demand via `per_file_hash`.
     pub fn refresh_diff_quick_with_unmark(&mut self) -> Result<()> {
         self.refresh_diff_impl(false, true, true)
     }
@@ -3072,7 +3072,12 @@ impl TabState {
             // Eager mode: full parse (fast enough for smaller diffs)
             self.files = git::parse_diff(&raw);
             self.file_headers.clear();
-            self.raw_diff = None;
+            // Retained even though eager parsing has no re-parse use for it:
+            // `per_file_hash` resolves a file's hash from here whenever the
+            // cached map misses, which is every newly-marked file. Dropping it
+            // silently disabled auto-unmark for files marked after a refresh.
+            // Bounded by the lazy threshold that selected this branch.
+            self.raw_diff = Some(raw.clone());
             self.lazy_mode = false;
 
             // Apply auto-compaction to low-value files
@@ -3159,9 +3164,10 @@ impl TabState {
         };
 
         // Refresh per-file hashes and auto-unmark reviewed files whose diff
-        // changed since they were marked. The full per-file map is always
-        // stored (mark/toggle reads it). Plain quick refreshes skip this pass
-        // unless the caller opts in (the file-watcher paths).
+        // changed since they were marked. Only reviewed files are hashed here;
+        // a mark resolves its own file's hash on demand via `per_file_hash`.
+        // Plain quick refreshes skip this pass unless the caller opts in (the
+        // file-watcher paths).
         if recompute_branch_hash || compute_per_file_hashes {
             let t = Instant::now();
             self.refresh_per_file_hashes_and_unmark(&raw, auto_unmark);
@@ -4644,21 +4650,16 @@ impl TabState {
     /// Recompute per-file diff hashes from `raw` and auto-unmark reviewed files
     /// whose stored hash no longer matches.
     ///
-    /// Always stores the FULL per-file hash map (not just reviewed paths):
-    /// `toggle_reviewed` reads this map when the user marks a file, so every
-    /// file in the diff must have a current hash or a newly-marked file would
-    /// store the empty sentinel and permanently dodge auto-unmark.
+    /// Caches hashes for `reviewed` paths only — those are the ones the
+    /// auto-unmark pass below consults without a user action. Every other path
+    /// is resolved on demand by `per_file_hash`, so a newly-marked file gets a
+    /// current hash without the refresh paying a SHA-256 per file in the diff.
     ///
     /// `auto_unmark` gates the removal itself — mode-switch refreshes pass false
     /// because diff content legitimately differs per mode. The result is stored
     /// in `pending_unmark_count` for the caller to surface.
     fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
-        // Only `reviewed` files are consulted without a user action, by the
-        // auto-unmark pass below. Every other path is resolved on demand by
-        // `per_file_hash`, so hashing the whole diff here — a SHA-256 per file
-        // on every watch event — was work nobody asked for.
-        let wanted: std::collections::HashSet<String> =
-            self.reviewed.keys().cloned().collect();
+        let wanted: HashSet<String> = self.reviewed.keys().cloned().collect();
         self.current_per_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
         if auto_unmark {
             self.pending_unmark_count = self.auto_unmark_changed_reviewed();
@@ -8380,6 +8381,69 @@ mod tests {
             tab.per_file_hash("b.rs"),
             tab.current_per_file_hashes["b.rs"]
         );
+    }
+
+    /// A temp git repo on `main` with one tracked file modified in the working
+    /// tree, so `refresh_diff` has a small unstaged diff to parse — small
+    /// enough to take the eager (non-lazy) branch.
+    fn init_repo_with_unstaged_change() -> tempfile::TempDir {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        Command::new("git")
+            .args(["add", "a.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_eager_refresh_retains_what_a_later_mark_needs_to_resolve_a_hash() {
+        // The other tests in this file seed `raw_diff` by hand, which would
+        // green-light a state production never reaches. This one goes through
+        // a real refresh on the eager branch — the common case, since only
+        // diffs over 200 KB go lazy.
+        let dir = init_repo_with_unstaged_change();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root).expect("tab for the temp repo");
+        tab.mode = DiffMode::Unstaged;
+
+        tab.refresh_diff().expect("refresh runs");
+
+        assert!(
+            !tab.lazy_mode,
+            "a one-line diff must take the eager branch this test is about"
+        );
+        let raw = tab
+            .raw_diff
+            .clone()
+            .expect("eager refresh must retain the raw diff");
+        let hash = tab.per_file_hash("a.txt");
+        assert!(
+            !hash.is_empty(),
+            "an eager refresh must let a later mark resolve a real hash"
+        );
+        assert_eq!(hash, crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap());
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {

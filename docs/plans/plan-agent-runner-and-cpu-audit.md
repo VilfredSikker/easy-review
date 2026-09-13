@@ -413,8 +413,19 @@ The real waste is that the map is built for *every* file when only `reviewed` fi
 are consulted without a user action. Landed as lazy resolution: the watch path
 caches hashes for `reviewed` paths only (`compute_per_file_hashes_for`), and the
 five mark paths resolve a single path on demand through a new
-`TabState::per_file_hash`, which falls back to the retained `raw_diff` (kept in both
-lazy and eager modes) and returns the same empty sentinel callers already handled.
+`TabState::per_file_hash`, which falls back to the retained `raw_diff` and returns
+the same empty sentinel callers already handled.
+
+**The first version of this was wrong, and shipped with the same defect it was
+supposed to remove.** It claimed the fallback worked because `raw_diff` "is kept in
+both lazy and eager modes". It was not: `refresh_diff_impl` set `raw_diff = None`
+in the eager branch, which is every diff at or under 200 KB — the common case. In
+eager mode `per_file_hash` therefore missed the cache, found no raw diff, returned
+the empty sentinel, and `auto_unmark_changed_reviewed` skipped it. That is verbatim
+the silent, permanent auto-unmark failure this section rules out above. The
+retention claim had been generalised from the constructors, which do keep it, and
+never checked against the refresh path. Fixed by retaining `raw_diff` in the eager
+branch too, which is bounded by the same 200 KB threshold that selected it.
 
 Three existing tests asserted the invariant a stronger way than the behaviour needs
 — that the map itself is fully populated — with the rationale "so newly-marked files
@@ -422,14 +433,20 @@ store a real hash". They now assert that behaviour through `per_file_hash`, whic
 the accessor every mark path uses, and one of them also asserts the map is *empty*
 when nothing is reviewed. **These three tests were deliberately changed, not
 weakened to pass**: the behaviour they name is still asserted, and it was a test in
-that set that caught the first draft of this change, because tests 1 and 3 were
-passing only by reading the cache and never exercising the fallback. Setting
-`raw_diff` in each now exercises the path production actually takes.
+that set that caught the first draft, because two of them were passing only by
+reading the cache and never exercising the fallback.
+
+A fourth test now runs a real `refresh_diff` against a temp git repo, because all of
+the above seed `raw_diff` by hand and so would green-light a state production never
+reaches. That hand-seeding is exactly how the eager-mode defect survived a green
+suite: the guards proved the fallback *works*, never that it is *live*.
 
 The residual hazard is a future reader that touches `current_per_file_hashes`
 directly instead of `per_file_hash`: it would silently get an empty hash for an
 unreviewed file, which `auto_unmark_changed_reviewed` treats as "unknown" and skips.
-No production site bypasses the accessor today.
+`auto_unmark_changed_reviewed` is the one such reader left, and it is correct by
+construction — it only ever looks up `reviewed` paths, which are exactly what the
+cache holds. Any *new* direct reader would be wrong.
 
 **An mtime-only gate breaks staleness.** `reload_ai_state` passes `branch_diff_hash`
 into `load_ai_state`, and that is where each sidecar's recorded `diff_hash` is
