@@ -951,6 +951,14 @@ pub struct TabState {
     /// Status of each named command (keyed by command name like "summary", "test", etc.)
     pub command_status: std::collections::HashMap<String, CommandStatus>,
 
+    /// The running process for each named command, so a stop can reach it.
+    ///
+    /// Keyed like `command_status`, and inserted and removed alongside it —
+    /// an entry here with no `Running` status, or the reverse, means one of
+    /// the two maps was updated without the other.
+    pub command_runs:
+        std::collections::HashMap<String, std::sync::Arc<crate::agent_run::AgentRunHandle>>,
+
     /// Sender for streaming agent log entries from background threads
     pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
 
@@ -1539,6 +1547,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1664,6 +1673,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1785,6 +1795,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1905,6 +1916,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -8595,6 +8607,7 @@ mod tests {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),

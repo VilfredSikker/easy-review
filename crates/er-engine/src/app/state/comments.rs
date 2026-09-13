@@ -2101,6 +2101,10 @@ impl App {
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
@@ -2109,17 +2113,22 @@ impl App {
                 // agent runs through here. No slot and no queue, so like the
                 // tab-command path it is admitted immediately.
                 timer.mark_slot_acquired();
-                let mut child = std::process::Command::new("sh")
+                let mut cmd_builder = std::process::Command::new("sh");
+                cmd_builder
                     .args(["-c", &cmd])
                     .current_dir(&repo_root)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
+                    .stderr(std::process::Stdio::piped());
+                let mut child = run
+                    .spawn(&mut cmd_builder)
                     .with_context(|| format!("Failed to run {}", name_owned))?;
+                let child_id = child.id();
                 timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx.clone();
                 let cmd_name_out = name_owned.clone();
@@ -2158,12 +2167,24 @@ impl App {
                     stderr_lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for {}", name_owned))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for {}", name_owned))?;
                 let _ = stdout_handle.join();
                 let accumulated_stderr = stderr_handle.join().unwrap_or_default();
                 timer.mark_finished();
+
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
 
                 if !status.success() {
                     let stderr_text = accumulated_stderr.join("\n");
@@ -2191,6 +2212,7 @@ impl App {
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
     }
@@ -2419,6 +2441,10 @@ impl App {
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
@@ -2509,13 +2535,16 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
+                let child_id = child.id();
                 timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 // Accumulate stdout for debug log while also streaming to agent log.
                 // When output is stream-json (default for claude), parse events into
@@ -2570,12 +2599,24 @@ impl App {
                     lines
                 });
 
-                let status = child.wait().with_context(|| {
+                let child = run.take_child(child_id).with_context(|| {
+                    format!("Lost the handle for {} ({})", name_owned, agent_cmd)
+                })?;
+                let status = run.wait_for(child).with_context(|| {
                     format!("Failed to wait for {} ({})", name_owned, agent_cmd)
                 })?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
                 timer.mark_finished();
+
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
 
                 // Full transcript with accumulated stdout + stderr, opt-in.
                 if debug_agent_log_enabled() {
@@ -2612,6 +2653,7 @@ impl App {
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
     }
@@ -3519,6 +3561,20 @@ impl App {
             return false;
         };
         handle.run.kill();
+        true
+    }
+
+    /// Stop a running tab-level command (the tab-command and configured-shell
+    /// paths). Returns true when a process with that name was running.
+    ///
+    /// Signalling only, for the same reason as
+    /// [`Self::cancel_running_background_task`]: the worker that owns the
+    /// child writes the verdict after its `wait` returns.
+    pub fn cancel_running_command(&mut self, name: &str) -> bool {
+        let Some(run) = self.tab().command_runs.get(name) else {
+            return false;
+        };
+        run.kill();
         true
     }
 
