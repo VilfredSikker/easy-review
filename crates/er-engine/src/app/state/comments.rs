@@ -3520,9 +3520,7 @@ impl App {
     /// tasks so the UI shows them like any other review failure.
     fn dispatch_pending_background_tasks(&mut self) {
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        while !self.pending_background_tasks.is_empty()
-            && self.running_background_task_count() < cap
-        {
+        while !self.pending_background_tasks.is_empty() && self.can_dispatch_task(cap) {
             let Some(pending) = self.pending_background_tasks.pop_front() else {
                 break;
             };
@@ -3541,6 +3539,23 @@ impl App {
                 self.notify_long(&msg);
             }
         }
+    }
+
+    /// Whether a queued review can start now.
+    ///
+    /// Two questions, and they are not the same one. The App's own count is
+    /// its queueing policy, and it is what the desktop's queued pills show —
+    /// deterministic, because the count moves the moment a task dispatches.
+    /// The slot pool is the real limit, and it is shared with arena reviewers,
+    /// card AI and tab commands.
+    ///
+    /// Checking only the first put work in flight that could not start: with
+    /// an arena holding every slot, a dispatched review showed as `Running`
+    /// while parked inside `acquire`, indistinguishable from running. Checking
+    /// only the second would race — the slot is taken on another thread, so a
+    /// second task could dispatch in the window before the first acquires.
+    fn can_dispatch_task(&self, cap: usize) -> bool {
+        self.running_background_task_count() < cap && crate::agent_slots::active_count() < cap
     }
 
     /// Remove a queued (not yet started) review task. Returns true when a
@@ -3743,16 +3758,66 @@ mod background_queue_tests {
     /// spawned "reviews" run long enough to observe queue state. Returns
     /// None when git isn't available (test then silently skips, matching
     /// the pattern in background.rs).
+    /// Serializes the tests below, which share the process-wide slot pool.
+    ///
+    /// `agent_slots` is one pool for the whole process, and dispatch now asks
+    /// it whether a slot is free rather than counting only this App's own
+    /// tasks. So a slot held by one test changes another's dispatch decision,
+    /// and these run in parallel by default. Holding this for the duration
+    /// keeps each test's view of the pool its own.
+    static POOL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Held for the duration of one pool-sensitive test.
+    ///
+    /// Serializing is not enough on its own: a spawned agent outlives the test
+    /// body that started it, so it keeps its slot after the lock is released
+    /// and the next test inherits a pool it does not own. The `Drop` waits for
+    /// the pool to drain, which is what makes the next test's view its own.
+    struct PoolGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while crate::agent_slots::active_count() > 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+
+    fn serial() -> PoolGuard {
+        PoolGuard(POOL_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
         let tmp =
             std::env::temp_dir().join(format!("er-bg-queue-test-{}-{}", std::process::id(), cap));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).ok()?;
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(&tmp)
-            .output()
-            .ok()?;
+        // `git init` alone leaves HEAD unborn, so `rev-parse --abbrev-ref HEAD`
+        // yields nothing and `App::new_with_args` fails with "Failed to
+        // determine current branch". That made this helper return None for
+        // every caller, and every caller skips silently on None — so five
+        // tests in this module had never run at all.
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
+        std::fs::write(tmp.join("seed.txt"), "seed\n").ok()?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
         let mut app = App::new_with_args(&[tmp.to_string_lossy().to_string()]).ok()?;
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
@@ -3762,6 +3827,7 @@ mod background_queue_tests {
 
     #[test]
     fn excess_reviews_queue_and_dedup() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3814,7 +3880,36 @@ mod background_queue_tests {
     }
 
     #[test]
+    fn a_saturated_slot_pool_stops_the_app_dispatching() {
+        // The App's own running count is zero here, so the old condition would
+        // have dispatched — and the task would have shown as "Running" while
+        // parked inside `acquire`, which is the state this exists to prevent.
+        //
+        // Hold every slot to stand in for an arena run doing the same. The
+        // pool is process-wide, so this must take all `cap` rather than assume
+        // it starts empty: once held, nobody else can be in it.
+        let _serial = serial();
+        let Some((app, tmp)) = test_app(1) else {
+            return;
+        };
+        let cap = app.config.ai_hub.effective_max_concurrent_reviews();
+
+        assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
+        let held: Vec<_> = (0..cap)
+            .map(|_| crate::agent_slots::acquire_blocking(cap))
+            .collect();
+        assert!(
+            !app.can_dispatch_task(cap),
+            "a full pool must stop dispatch even with nothing running here"
+        );
+
+        drop(held);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn queued_task_snapshots_current_selection_without_override() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3847,12 +3942,19 @@ mod background_queue_tests {
             Some("gpt-5.6-luna"),
             "queued task keeps the selection from enqueue time"
         );
+        // Effort is normalised against the model when the selection syncs, so
+        // a literal here would be asserting that normalisation rather than
+        // what this test is about. The claim is that the queued task holds
+        // what was resolved at enqueue, not what the palette says later.
+        let enqueued_effort = queued.ai_selection.as_ref().and_then(|s| s.effort.clone());
+        app.current_ai_effort = Some("low".into());
         assert_eq!(
-            queued
+            app.pending_background_tasks[0]
                 .ai_selection
                 .as_ref()
-                .and_then(|s| s.effort.as_deref()),
-            Some("high")
+                .and_then(|s| s.effort.clone()),
+            enqueued_effort,
+            "a later effort change must not retarget a queued task"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3860,11 +3962,40 @@ mod background_queue_tests {
 
     #[test]
     fn dispatch_launches_queued_when_slot_frees() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(2) else {
             return;
         };
-        // Fast-exiting agent: completion frees a slot on the next poll.
-        app.config.agent.args = vec!["0".to_string()];
+        // A fast-exiting agent, installed in the hub rather than via
+        // `config.agent`: the background path resolves its command from the
+        // hub providers, and `App::new_with_args` loads the *user's* global
+        // config, so leaving this to `config.agent` ran a real provider and
+        // took 24 s. Completion frees a slot on the next poll.
+        let fake = tmp.join("fake-agent");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).unwrap();
+        }
+        app.config.ai_hub.providers.clear();
+        app.config.ai_hub.default_provider = Some("fake".to_string());
+        app.config.ai_hub.providers.insert(
+            "fake".to_string(),
+            AiProviderConfig {
+                command: fake.to_string_lossy().to_string(),
+                args: vec!["{prompt}".to_string()],
+                models: vec![AiModelConfig {
+                    id: "m".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.config.ai_hub.default_model = Some("m".to_string());
+        app.current_ai_provider = Some("fake".to_string());
+        app.current_ai_model = Some("m".to_string());
 
         for branch in ["a", "b", "c"] {
             app.spawn_background_triage_review(target(&tmp, branch), "p".into(), true)
@@ -3883,7 +4014,9 @@ mod background_queue_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "queued task was never dispatched"
+                "queued task was never dispatched: running={} slots_in_use={}",
+                app.running_background_task_count(),
+                crate::agent_slots::active_count()
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -3900,6 +4033,7 @@ mod background_queue_tests {
         // a concurrently finishing spawn could skip its own write.
         std::env::set_var("ER_DEBUG", "1");
 
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3949,9 +4083,17 @@ mod background_queue_tests {
         }
 
         let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
+        // Assert the flag rather than its position. The literal adjacency this
+        // used to require broke when `--add-dir` started being injected ahead
+        // of it, and the claim -- Codex is told not to read the user's config
+        // -- was true the whole time.
+        let command_line = debug_log
+            .lines()
+            .find(|l| l.starts_with("command: "))
+            .unwrap_or("");
         assert!(
-            debug_log.contains("codex exec --ignore-user-config"),
-            "debug log should show isolated Codex invocation:\n{debug_log}"
+            command_line.contains("exec") && command_line.contains("--ignore-user-config"),
+            "debug log should show an isolated Codex invocation:\n{debug_log}"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
