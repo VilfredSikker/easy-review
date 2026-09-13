@@ -188,12 +188,17 @@ pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
 
 /// Default wall-clock limit for one agent process.
 ///
-/// Deliberately generous. The asymmetry is not close: cutting off a review
-/// that was still working destroys work the user waited for and cannot
-/// recover, while letting a hung one sit a little longer costs a slot. At the
-/// measured ~60 s of provider latency per reviewer this is roughly fifteen
-/// reviewers deep, so a run that reaches it has stopped making progress
-/// rather than merely being slow. Lower it if your providers are fast.
+/// Deliberately generous, because the asymmetry is not close: cutting off a
+/// review that was still working destroys work the user waited for and cannot
+/// recover, while letting a hung one sit a little longer costs a slot.
+///
+/// The number is a judgement, not a measurement. Phase 0 timed ~60 s of
+/// provider latency, but for `claude -p "Reply with exactly the word ok and
+/// nothing else."` — a trivial prompt — so that is a floor on the round trip,
+/// not what a review costs. A real review reads files and thinks, and nobody
+/// has timed one. Fifteen minutes is chosen to sit well clear of that
+/// unknown rather than because it is known to be safe. Lower it if you know
+/// your providers and diffs finish faster than this.
 pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 900;
 
 /// A validated provider/model/effort choice used by ordinary AI actions.
