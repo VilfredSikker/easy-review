@@ -9,7 +9,7 @@ use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
 use super::triage::load_triage_review;
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
 use std::path::Path;
 
@@ -54,42 +54,7 @@ pub fn compute_diff_hash_fast(raw_diff: &str) -> u64 {
 /// Split a combined diff into per-file sections and hash each one.
 /// Returns a map of file path → SHA-256 hash of that file's diff section.
 pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
-    let mut hashes = HashMap::new();
-    let mut current_file: Option<String> = None;
-    let mut current_section = String::new();
-
-    for line in raw_diff.lines() {
-        if line.starts_with("diff --git a/") {
-            // Flush previous section
-            if let Some(ref file) = current_file {
-                let hash = compute_diff_hash(&current_section);
-                hashes.insert(file.clone(), hash);
-            }
-            // Parse file path from "diff --git a/path b/path"
-            // For renames ("diff --git a/old.rs b/new.rs") this extracts the old path,
-            // so per-file staleness lookups keyed by the new path miss renamed files.
-            let path = line
-                .strip_prefix("diff --git a/")
-                .and_then(|rest| rest.split(" b/").next())
-                .unwrap_or("")
-                .to_string();
-            current_file = Some(path);
-            current_section.clear();
-            current_section.push_str(line);
-            current_section.push('\n');
-        } else if current_file.is_some() {
-            current_section.push_str(line);
-            current_section.push('\n');
-        }
-    }
-
-    // Flush last section
-    if let Some(file) = current_file {
-        let hash = compute_diff_hash(&current_section);
-        hashes.insert(file, hash);
-    }
-
-    hashes
+    section_hashes(raw_diff, None)
 }
 
 /// Per-file hashes for the named paths only.
@@ -103,10 +68,25 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
 /// Hashes for a wanted path are identical to [`compute_per_file_hashes`].
 pub fn compute_per_file_hashes_for(
     raw_diff: &str,
-    wanted: &std::collections::HashSet<String>,
+    wanted: &HashSet<String>,
 ) -> HashMap<String, String> {
+    section_hashes(raw_diff, Some(wanted))
+}
+
+/// Hash of a single file's diff section, or `None` when the diff has no such
+/// file. Used to resolve a file's hash at the moment it is marked reviewed,
+/// after the watch path has stopped caching hashes for every file.
+pub fn compute_per_file_hash(raw_diff: &str, path: &str) -> Option<String> {
+    let mut wanted = HashSet::new();
+    wanted.insert(path.to_string());
+    section_hashes(raw_diff, Some(&wanted)).remove(path)
+}
+
+/// One pass over the diff. `None` hashes every section; `Some(set)` hashes only
+/// those paths, leaving the others unaccumulated as well as unhashed.
+fn section_hashes(raw_diff: &str, wanted: Option<&HashSet<String>>) -> HashMap<String, String> {
     let mut hashes = HashMap::new();
-    if wanted.is_empty() {
+    if matches!(wanted, Some(w) if w.is_empty()) {
         return hashes;
     }
     let mut current_file: Option<String> = None;
@@ -121,14 +101,16 @@ pub fn compute_per_file_hashes_for(
                     hashes.insert(file, compute_diff_hash(&current_section));
                 }
             }
-            // Path extraction matches `compute_per_file_hashes`, including its
-            // rename caveat: "diff --git a/old.rs b/new.rs" yields the old path.
+            // Parse file path from "diff --git a/path b/path".
+            // For renames ("diff --git a/old.rs b/new.rs") this extracts the old
+            // path, so per-file staleness lookups keyed by the new path miss
+            // renamed files.
             let path = line
                 .strip_prefix("diff --git a/")
                 .and_then(|rest| rest.split(" b/").next())
                 .unwrap_or("")
                 .to_string();
-            current_wanted = wanted.contains(&path);
+            current_wanted = wanted.is_none_or(|w| w.contains(&path));
             current_file = Some(path);
             current_section.clear();
             if current_wanted {
@@ -149,15 +131,6 @@ pub fn compute_per_file_hashes_for(
     }
 
     hashes
-}
-
-/// Hash of a single file's diff section, or `None` when the diff has no such
-/// file. Used to resolve a file's hash at the moment it is marked reviewed,
-/// after the watch path has stopped caching hashes for every file.
-pub fn compute_per_file_hash(raw_diff: &str, path: &str) -> Option<String> {
-    let mut wanted = std::collections::HashSet::new();
-    wanted.insert(path.to_string());
-    compute_per_file_hashes_for(raw_diff, &wanted).remove(path)
 }
 
 /// True when `stored` names the same branch as `expected` (exact or slug match).
