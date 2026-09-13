@@ -102,10 +102,11 @@ impl ArbiterEffect {
 
 /// Apply `arbiter` to `review` in place.
 ///
-/// Matching runs on the content-addressed id: `sha1(file + canonical(title))`,
-/// the same key `arena::seeded` grouped on. An unchanged claim keeps its
-/// verdict across re-runs; a reworded one gets a new id and its old verdict is
-/// orphaned rather than misapplied.
+/// Matching runs on the same key `arena::seeded` grouped on —
+/// `sha1(file + line + canonical(title))`. An unchanged claim at an unchanged
+/// anchor keeps its verdict across re-runs; a reworded claim, or one whose
+/// anchor moved, gets a new key and its old verdict is orphaned rather than
+/// applied to something the arbiter never read.
 ///
 /// A verdict is only applied when the arbiter's `diff_hash` is the diff the
 /// review was written against — grading a diff that has since moved would be
@@ -124,7 +125,7 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
 
     for (path, file_review) in review.files.iter_mut() {
         for finding in &mut file_review.findings {
-            let id = crate::arena::finding_id(path, "", &finding.title);
+            let id = crate::arena::finding_key(path, finding.line_start, &finding.title);
             let Some(verdict) = by_id.get(id.as_str()) else {
                 continue;
             };
@@ -209,17 +210,20 @@ const fn confidence_name(confidence: Confidence) -> &'static str {
 mod tests {
     use super::*;
     use crate::ai::review::{ErFileReview, RiskLevel};
-    use crate::arena::finding_id;
+    use crate::arena::finding_key;
     use std::collections::HashMap;
 
     const HASH: &str = "diff-hash";
     const TITLE: &str = "unchecked user input";
 
+    /// Anchored at line 10, which `verdict()` keys on — the anchor is part of
+    /// the key, so a fixture without one would never match a verdict.
     fn finding(confidence: Confidence) -> Finding {
         serde_json::from_value(serde_json::json!({
             "id": "f-1",
             "severity": "high",
             "title": TITLE,
+            "line_start": 10,
             "confidence": confidence_name(confidence),
         }))
         .expect("a minimal finding deserializes")
@@ -247,7 +251,7 @@ mod tests {
 
     fn verdict(ruling: ArbiterRuling, confidence: Option<Confidence>) -> ArbiterVerdict {
         ArbiterVerdict {
-            id: finding_id("src/a.rs", "", TITLE),
+            id: finding_key("src/a.rs", Some(10), TITLE),
             file: "src/a.rs".to_string(),
             verdict: ruling,
             confidence,

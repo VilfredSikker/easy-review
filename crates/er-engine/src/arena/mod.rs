@@ -19,7 +19,7 @@ mod voting;
 
 pub use adapter::is_cancelled_error;
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};
-pub use identity::{canonical_finding_text, finding_id};
+pub use identity::{canonical_finding_text, finding_id, finding_key};
 pub use import::import_arena_findings_to_review;
 pub use model::{ARENA_ARBITER_ROUND, *};
 pub use orchestrator::{

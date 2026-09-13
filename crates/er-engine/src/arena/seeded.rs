@@ -5,7 +5,7 @@
 //! duplicate proposer does the grouping. What the arbiter adds on top — a
 //! regraded confidence and a verdict per finding — is a later slice.
 
-use super::identity::finding_id;
+use super::identity::finding_key;
 use super::merge::{propose_merge_candidates, raise_severity, severity_rank};
 use super::model::{
     ArenaConfig, ArenaFinding, ArenaRun, ArenaRunKind, ArenaScope, Ballot, CostEstimate,
@@ -53,23 +53,17 @@ pub fn dedupe_expert_findings(
         };
         for (path, file_review) in &expert.files {
             for finding in &file_review.findings {
-                let id = finding_id(path, "", &finding.title);
+                let id = finding_key(path, finding.line_start, &finding.title);
                 match out.iter_mut().find(|f| f.id == id) {
                     // The same claim from a second expert: keep one row, record
-                    // both raisers, take the worse severity.
+                    // both raisers, take the worse severity. Same key means same
+                    // file, same anchor and same claim — two issues sharing a
+                    // title are different keys now.
                     Some(existing) => {
                         if !existing.raised_by.iter().any(|r| r == def.id) {
                             existing.raised_by.push(def.id.to_string());
                         }
                         raise_severity(existing, 1, finding.severity);
-                        // The id keys on file + title, so two *different* issues
-                        // that happen to share a title in one file land here as
-                        // well. Differing anchors are the tell, and the second
-                        // one's text is kept as a child rather than dropped.
-                        if existing.line != finding.line_start {
-                            let child = from_expert_finding(path, finding, def.id, id.clone());
-                            existing.merged_children.push(child);
-                        }
                     }
                     None => out.push(from_expert_finding(path, finding, def.id, id)),
                 }
@@ -557,21 +551,38 @@ mod tests {
 
         let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
-        assert_eq!(out.len(), 1, "one id, so one row");
-        assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
-        assert_eq!(out[0].merged_children.len(), 1);
-
-        // Which anchor lands on the survivor is settled by the sorted expert
-        // order rather than by filesystem order; what matters here is that
-        // neither claim is discarded.
-        let mut anchors: Vec<Option<usize>> = vec![out[0].line];
-        anchors.extend(out[0].merged_children.iter().map(|c| c.line));
+        // The key carries the anchor line, so these are different claims and
+        // stay two rows. Title alone could not tell them apart, and merging them
+        // would have quietly dropped one.
+        assert_eq!(out.len(), 2, "different anchors, different findings");
+        let mut anchors: Vec<Option<usize>> = out.iter().map(|f| f.line).collect();
         anchors.sort();
-        assert_eq!(anchors, vec![Some(10), Some(400)], "both anchors survive");
-        assert!(out[0].body.contains("missing null check"));
-        assert!(out[0].merged_children[0]
-            .body
-            .contains("missing null check"));
+        assert_eq!(anchors, vec![Some(10), Some(400)]);
+        for finding in &out {
+            assert_eq!(finding.raised_by.len(), 1, "each has its own raiser");
+            assert!(finding.merged_children.is_empty());
+        }
+    }
+
+    /// The same claim at the same anchor from two experts is still one row.
+    #[test]
+    fn the_same_claim_at_the_same_anchor_still_merges() {
+        let dir = tempdir().unwrap();
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "missing null check", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "reliability",
+            &[("src/a.rs", "missing null check", 10)],
+        );
+
+        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
     }
 
     /// The run's reviewers are the experts that actually raised something —

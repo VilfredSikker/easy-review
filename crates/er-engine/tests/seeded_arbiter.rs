@@ -6,7 +6,7 @@
 //! second test here would race this one for it.
 
 use er_engine::arena::{
-    finding_id, load_run, start_seeded_run, ArenaPaths, ArenaRegistry, ArenaRunKind, RunStatus,
+    finding_key, load_run, start_seeded_run, ArenaPaths, ArenaRegistry, ArenaRunKind, RunStatus,
     SeededStartParams, Verdict,
 };
 use serde_json::json;
@@ -67,9 +67,12 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
             "src/a.rs": {
                 "risk": "high",
                 "findings": [{
-                    "id": "f-1",
+                    "id": "sec-1",
                     "severity": "high",
                     "title": "unchecked user input",
+                    "line_start": 10,
+                    "lens": "security",
+                    "raised_by": ["security"],
                     "confidence": "confirmed"
                 }]
             }
@@ -81,7 +84,9 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
     // The arbiter's answer, keyed by the id the dedupe will compute. The fake
     // harness reads `round<N>.json` off a process-wide counter, so every round
     // gets the same content rather than guessing where the counter lands.
-    let id = finding_id("src/a.rs", "", "unchecked user input");
+    // The key carries the anchor line, so it has to match where the experts
+    // anchored the finding.
+    let id = finding_key("src/a.rs", Some(10), "unchecked user input");
     let fake = tmp.path().join("fake");
     std::fs::create_dir_all(&fake).unwrap();
     let arbiter_output = json!({
