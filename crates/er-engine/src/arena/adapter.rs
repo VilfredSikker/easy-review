@@ -163,7 +163,7 @@ fn run_once(
     };
 
     timer.mark_finished();
-    timer.emit_run("arena_child", &cmd.command, status.success());
+    timer.emit("arena_child", &cmd.command, status.success());
 
     if cancel.load(Ordering::SeqCst) {
         anyhow::bail!("cancelled");

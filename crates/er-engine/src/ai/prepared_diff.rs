@@ -50,6 +50,7 @@ pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> 
         let _ = std::fs::write(dir.join(".diff-tmp.sha256"), &hash);
     }
 
+    #[cfg(test)]
     crate::agent_timing::record_annotate_pass();
     let annotated = annotate_diff_raw(raw);
     if content_changed(dir, ".diff-annotated.sha256", &hash, "diff-annotated") {

@@ -107,8 +107,8 @@ thread_local! {
 /// Exists so a test can prove the pass was *skipped*. Counting writes cannot
 /// show that: the write was already conditional before the skip was added, so
 /// a write-counting test would pass against the unoptimised code too.
+#[cfg(test)]
 pub fn record_annotate_pass() {
-    #[cfg(test)]
     ANNOTATE_PASSES.with(|c| c.set(c.get() + 1));
 }
 
@@ -237,10 +237,15 @@ impl AgentRunTimer {
         )
     }
 
-    /// Emit the phase breakdown under `label`. `wait_pct` is slot wait as a
-    /// percentage of the child's runtime — the single number that says whether
-    /// the cap, rather than the model, is setting wall-clock.
-    pub fn emit(self, label: &str, extra: &[(&str, String)]) {
+    /// Emit the phase breakdown for a run of `command` at spawn site `label`.
+    ///
+    /// `wait_pct` is slot wait as a percentage of the child's runtime — the
+    /// single number that says whether the cap, rather than the model, is
+    /// setting wall-clock.
+    ///
+    /// Every spawn site reports the same two extras, so they are parameters
+    /// rather than a caller-built field list; see `run_fields` for the names.
+    pub fn emit(self, label: &str, command: &str, ok: bool) {
         if !enabled() {
             return;
         }
@@ -258,27 +263,15 @@ impl AgentRunTimer {
             "wait_pct",
             format!("{}", p.queue_ms.saturating_mul(100) / p.run_ms.max(1)),
         ));
-        for (k, v) in extra {
-            fields.push((k, v.clone()));
-        }
+        fields.extend(run_fields(command, ok));
         emit("run", &fields);
-    }
-
-    /// Emit for a spawn site that has a command name and an outcome.
-    ///
-    /// Every spawn path reports the same two fields, and a new one should not
-    /// have to rediscover their names. The per-phase marks stay at the call
-    /// site — they sit at different points in each path's control flow, so
-    /// they can't be folded in here.
-    pub fn emit_run(self, label: &str, command: &str, ok: bool) {
-        self.emit(label, &run_fields(command, ok));
     }
 }
 
 /// The two fields every spawn site reports alongside the phase breakdown.
 ///
-/// Named here so a new spawn path does not have to guess them; see
-/// `run_fields_names_the_same_two_fields_every_spawn_reports`.
+/// Split out so the names are reachable from a test: the emitting path sits
+/// behind `ER_AGENT_TIMING`, which `enabled()` resolves once per process.
 fn run_fields(command: &str, ok: bool) -> [(&'static str, String); 2] {
     [("command", command.to_string()), ("ok", ok.to_string())]
 }
