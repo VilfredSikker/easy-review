@@ -1085,6 +1085,11 @@ pub struct FlatFinding {
     pub expert_label: Option<String>,
     /// Agent that produced this finding (pill label): General, Security, Professor, …
     pub agent_label: String,
+    /// Every lens that raised this claim, not just the one it is filed under.
+    /// More than one means several experts independently found it, which is what
+    /// merging them into a single row was for.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -3849,6 +3854,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         expert_label: er_engine::ai::expert_label_for_id(&f.lens)
                             .map(|s| s.to_string()),
                         agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
+                        raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),
                         promoted_to: promotions

@@ -373,6 +373,14 @@
                       style={agentPillStyle(label)}
                     >{label}</span>
                   {/if}
+                  {#if finding.raised_by.length > 1}
+                    <!-- Several experts independently found this, which is why
+                         they are one row — say so rather than showing only the
+                         lens it happens to be filed under. -->
+                    <span class="text-[9px] text-fg-3 shrink-0"
+                      >raised by {finding.raised_by.join(", ")}</span
+                    >
+                  {/if}
                 </div>
                 <div class="text-[13px] text-fg-2 leading-snug">{finding.title}</div>
               </div>
@@ -412,9 +420,11 @@
     <button
       type="button"
       onclick={() => arena.validateFindings()}
-      disabled={!ai.has_review_json}
+      disabled={!(ai.has_review_json || Object.keys(ai.agent_summaries).length > 0)}
       class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
-      title="Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
+      title={Object.keys(ai.agent_summaries).length > 0
+        ? "Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
+        : "Run the expert reviewers first — this validates what they produced"}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
         <path d="M20 6L9 17l-5-5"/>

@@ -270,6 +270,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
     {
       id: "finding-2",
@@ -283,6 +284,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
     {
       id: "finding-medium-1",
@@ -295,7 +297,9 @@ export const aiWithFindings: AiSnapshot = {
       promoted_to: null,
       thread_id: null,
       expert_label: null,
-      agent_label: "General",
+      agent_label: "Security",
+      // Two lenses independently raised this, so the row says so.
+      raised_by: ["reliability", "security"],
     },
     {
       id: "finding-4",
@@ -309,6 +313,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
   ],
   file_risks: [],
@@ -422,6 +427,7 @@ function professorFinding(id: string, file: string, line: number, title: string)
     thread_id: null,
     expert_label: null,
     agent_label: "Professor",
+    raised_by: [],
   };
 }
 
@@ -491,6 +497,7 @@ export const aiMultiAgent: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "Security",
+      raised_by: [],
     },
   ],
   high: 3,

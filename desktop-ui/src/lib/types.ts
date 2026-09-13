@@ -163,6 +163,8 @@ export interface FlatFinding {
   expert_label: string | null;
   /** Agent that produced this finding (General, Security, Professor, …). */
   agent_label: string;
+  /** Every lens that raised it; more than one means several experts found it. */
+  raised_by: string[];
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */

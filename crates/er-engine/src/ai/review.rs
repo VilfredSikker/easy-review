@@ -324,13 +324,13 @@ impl Finding {
         self.stale = matches!(relocate_comment(&anchor, diff_file), RelocationResult::Lost);
     }
 
-    /// Compact `lens · category` tag for a finding row.
+    /// Compact `producers · category` tag for a finding row.
     ///
     /// Both are displayed (see CONTEXT.md), and either is skipped when empty. A
-    /// `general` lens is left out too — it is the fallback producer, and naming
-    /// it on every row of the general review is noise. So a general finding
-    /// shows its defect kind, an expert finding shows `security · correctness`,
-    /// and a professor insight shows `professor`.
+    /// `general` raiser is left out — it is the fallback producer, and naming it
+    /// on every row of the general review is noise. So a general finding shows
+    /// its defect kind, an expert finding shows `security · correctness`, and a
+    /// claim two experts both found shows `reliability, security · correctness`.
     ///
     /// A repeated value collapses to one: sidecars written before the two fields
     /// were separated stored the producer in `category`, so an old
@@ -352,18 +352,26 @@ impl Finding {
         }
     }
 
+    /// The producers worth naming on a row: every raiser except the `general`
+    /// fallback, which is noise on the general review's own findings.
+    pub fn named_raisers(&self) -> Vec<&str> {
+        self.raisers()
+            .into_iter()
+            .filter(|raiser| *raiser != GENERAL_LENS)
+            .collect()
+    }
+
     pub fn lens_category_tag(&self) -> String {
         if self.lens == self.category {
             return self.lens.clone();
         }
-        let lens = if self.lens == GENERAL_LENS {
-            ""
-        } else {
-            self.lens.as_str()
-        };
-        match (lens.is_empty(), self.category.is_empty()) {
-            (false, false) => format!("{lens} · {}", self.category),
-            (false, true) => lens.to_string(),
+        // Every raiser, not just the one it is filed under: a claim three experts
+        // independently found reads as such on the row, which is the whole point
+        // of merging them.
+        let producers = self.named_raisers().join(", ");
+        match (producers.is_empty(), self.category.is_empty()) {
+            (false, false) => format!("{producers} · {}", self.category),
+            (false, true) => producers,
             (true, false) => self.category.clone(),
             (true, true) => String::new(),
         }
@@ -1816,6 +1824,30 @@ mod tests {
         // A sidecar old enough to carry no lens still renders its defect kind.
         assert_eq!(tagged("", "correctness"), "correctness");
         assert_eq!(tagged("", ""), "");
+    }
+
+    /// A claim several experts independently found names all of them on the
+    /// row — that is what merging them was for.
+    #[test]
+    fn lens_category_tag_names_every_raiser() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.category = "correctness".to_string();
+        f.lens = "security".to_string();
+        f.raised_by = vec!["reliability".to_string(), "security".to_string()];
+
+        assert_eq!(f.lens_category_tag(), "reliability, security · correctness");
+    }
+
+    /// The general pass is the fallback producer, so it is not named even when
+    /// it appears in the raiser set alongside a real lens.
+    #[test]
+    fn lens_category_tag_drops_the_general_raiser() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.category = "correctness".to_string();
+        f.raised_by = vec!["general".to_string(), "security".to_string()];
+
+        assert_eq!(f.lens_category_tag(), "security · correctness");
+        assert!(f.named_raisers().contains(&"security"));
     }
 
     /// Before the two fields were separated, a producer name lived in
