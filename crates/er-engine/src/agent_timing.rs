@@ -246,7 +246,9 @@ impl AgentRunTimer {
         }
         let p = self.phases();
         let mut fields: Vec<(&str, String)> = vec![
-            ("path", label.to_string()),
+            // `site`, not `kind` — `emit` already writes `kind=run` in front,
+            // and a second `kind=` key would be ambiguous.
+            ("site", label.to_string()),
             ("queue_ms", p.queue_ms.to_string()),
             ("spawn_ms", p.spawn_ms.to_string()),
             ("run_ms", p.run_ms.to_string()),
