@@ -398,6 +398,136 @@ pub fn start_arena_run(
     Ok(run_id)
 }
 
+/// Where a seeded run reads from and what it covers.
+pub struct SeededStartParams {
+    /// The active view bucket's sidecar directory — expert files in, run out.
+    pub er_dir: String,
+    pub branch_ref: String,
+    pub base_branch: String,
+    pub scope: ArenaScope,
+    pub diff_hash: String,
+    /// The loaded review's hash, so an expert set from the same generation as a
+    /// stale review still counts. Empty when no review is loaded.
+    pub review_hash: String,
+    /// Overrides the hub default arbiter when the caller picked one.
+    pub arbiter: Option<ReviewerRef>,
+}
+
+/// Rule on the deduped expert findings, without running a debate.
+///
+/// The cheap path: triage picks the lenses, the experts run, and this grades
+/// what they produced. Spawned like `start_arena_run` so the run shows up in the
+/// arena list, honours cancellation, and reports through the same progress
+/// events — but the only model call is the arbiter's, however many experts ran.
+///
+/// Returns `None` when there are no expert findings to validate, so a caller
+/// offers the action only when it would do something.
+pub fn start_seeded_run(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    repo_root: String,
+    params: SeededStartParams,
+) -> Result<Option<String>> {
+    let findings = super::seeded::dedupe_expert_findings(
+        &params.er_dir,
+        &params.diff_hash,
+        &params.review_hash,
+    );
+    if findings.is_empty() {
+        return Ok(None);
+    }
+
+    let arbiter = match params.arbiter.clone() {
+        Some(arbiter) => arbiter,
+        None => default_arbiter_from_hub(&config.ai_hub)
+            .context("no arbiter model available in ai_hub")?,
+    };
+
+    let run_id = new_run_id();
+    let paths = ArenaPaths::for_run(Path::new(&params.er_dir), &run_id);
+    let run = super::seeded::build_seeded_run(
+        &config,
+        super::seeded::SeededRunParams {
+            id: run_id.clone(),
+            diff_hash: params.diff_hash.clone(),
+            base_branch: params.base_branch.clone(),
+            branch_ref: params.branch_ref.clone(),
+            scope: params.scope,
+            arbiter,
+        },
+        findings,
+    )?;
+    save_run(&paths, &run)?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_handle = Arc::clone(&cancel);
+    let children = Arc::new(Mutex::new(Vec::new()));
+    let children_handle = Arc::clone(&children);
+    let status = Arc::new(Mutex::new(RunStatus::Running { round: 1 }));
+    let status_handle = Arc::clone(&status);
+    let registry_thread = Arc::clone(&registry);
+    let run_id_thread = run_id.clone();
+    let paths_clone = paths.clone();
+
+    let join = thread::spawn(move || {
+        let ctx = ArbiterCtx {
+            registry: &registry_thread,
+            config: &config,
+            repo_root: &repo_root,
+            paths: &paths_clone,
+            cancel: &cancel,
+            children: &children,
+            status: &status,
+        };
+        let mut run = match load_run(&paths_clone) {
+            Ok(run) => run,
+            Err(e) => {
+                crate::dev_log::arena_line(format!("seeded {run_id_thread}: load failed: {e:#}"));
+                registry_thread.release_run(&run_id_thread);
+                return;
+            }
+        };
+        let effort = run.config.effort.clone();
+        let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
+        match outcome {
+            Ok(ArbiterOutcome::Cancelled) => {}
+            Ok(ArbiterOutcome::Judged) => {
+                run.status = RunStatus::Complete;
+                run.completed_at = Some(crate::app::chrono_now());
+                *status.lock().unwrap() = RunStatus::Complete;
+                let _ = save_run(&paths_clone, &run);
+                emit(
+                    &registry_thread,
+                    &paths_clone,
+                    &ProgressEvent::RunComplete {
+                        run_id: run_id_thread.clone(),
+                    },
+                );
+            }
+            Err(e) => {
+                crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
+                *status.lock().unwrap() = RunStatus::Failed;
+                run.status = RunStatus::Failed;
+                run.completed_at = Some(crate::app::chrono_now());
+                let _ = save_run(&paths_clone, &run);
+            }
+        }
+        registry_thread.release_run(&run_id_thread);
+        registry_thread.notify_progress();
+    });
+
+    registry.insert(
+        run_id.clone(),
+        ArenaRunHandle {
+            cancel: cancel_handle,
+            children: children_handle,
+            status: status_handle,
+            join: Some(join),
+        },
+    );
+    Ok(Some(run_id))
+}
+
 /// Start one arena/single run per agent group (parallel supervisors).
 pub fn start_arena_batch(
     registry: Arc<ArenaRegistry>,

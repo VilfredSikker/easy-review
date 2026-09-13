@@ -26,8 +26,9 @@ pub use orchestrator::{
     arbiter_display_label, build_arena_diff_preview, default_arbiter_from_hub,
     effective_arena_rounds, estimate_batch_cost_usd, estimate_cost_usd, estimate_latency_sec,
     min_survivors_required, reconcile_stale_runs, resolve_arbiter, scope_git_mode,
-    start_arena_batch, start_arena_run, AgentGroupStart, ArenaBatchStartParams, ArenaDiffPreview,
-    ArenaStartParams, ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1, DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
+    start_arena_batch, start_arena_run, start_seeded_run, AgentGroupStart, ArenaBatchStartParams,
+    ArenaDiffPreview, ArenaStartParams, SeededStartParams, ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1,
+    DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
 };
 pub use projections::{
     build_arbiter_view, build_funnel, build_matrix, build_snapshot, build_snapshot_with_config,
