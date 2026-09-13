@@ -117,6 +117,17 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
             scope: er_engine::arena::ArenaScope::Branch,
             diff_hash: HASH.to_string(),
             review_hash: String::new(),
+            raw_diff: concat!(
+                "diff --git a/src/a.rs b/src/a.rs\n",
+                "--- a/src/a.rs\n",
+                "+++ b/src/a.rs\n",
+                "@@ -1,3 +1,4 @@\n",
+                " fn handle(input: &str) {\n",
+                "+    let key = format!(\"cache:{input}\");\n",
+                "     store.get(&key)\n",
+                " }\n",
+            )
+            .to_string(),
             arbiter: None,
         },
     );

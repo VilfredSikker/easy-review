@@ -20,6 +20,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `professor.rs` | Learning/teaching insights (`professor.json`) |
 | `diagrams.rs` | Mermaid diagram sidecars (`diagrams/*.json`) + preset catalog |
 | `finding_cleanup.rs` / `finding_responses.rs` | Finding lifecycle: cleanup and AI responses |
+| `arbiter.rs` | `arbiter.json` — verdicts over findings, merged into the review at load |
 | `relocate.rs` | Re-anchor findings/comments when the diff shifts |
 
 ## Sidecar Files
@@ -32,6 +33,7 @@ paths below use the repo-local `.er/` names, which are identical.
 | `summary.md` | (raw text) | Markdown summary of overall changes |
 | `checklist.json` | `ErChecklist` | Review checklist items |
 | `triage.json` | `TriageReview` | Fast branch scan / routing verdict |
+| `arbiter.json` | `ArbiterReview` | An arbiter's verdicts over findings. **Overlay**: merged into the review at load, never imported into it, so `review.json` keeps its three writers. Content-addressed ids, so a reworded claim orphans its old verdict instead of inheriting it. |
 | `professor.json` | — | Teaching insights |
 | `experts/*.json` | — | Domain-specific expert findings |
 | `diagrams/*.json` | `ErDiagram` | Mermaid diagrams of the diff (mental-model / subsystems / flows / custom). Presets overwrite in place; custom diagrams accumulate as timestamped ids. Per-view-bucket like triage/review. **Host-owned write:** the agent runs read-only and emits JSON on stdout; `persist_diagram_from_agent_stdout` validates and atomically writes only this path (prompt-injection confinement). |

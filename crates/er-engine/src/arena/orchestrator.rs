@@ -409,6 +409,9 @@ pub struct SeededStartParams {
     /// The loaded review's hash, so an expert set from the same generation as a
     /// stale review still counts. Empty when no review is loaded.
     pub review_hash: String,
+    /// The branch diff, saved so the arbiter can read the hunks its findings
+    /// point at. Empty means it grades on the findings alone.
+    pub raw_diff: String,
     /// Overrides the hub default arbiter when the caller picked one.
     pub arbiter: Option<ReviewerRef>,
 }
@@ -457,6 +460,9 @@ pub fn start_seeded_run(
         },
         findings,
     )?;
+    if !params.raw_diff.trim().is_empty() {
+        save_diff_patch(&paths, &params.raw_diff)?;
+    }
     save_run(&paths, &run)?;
 
     let cancel = Arc::new(AtomicBool::new(false));
@@ -1237,7 +1243,21 @@ fn run_arbiter(
     save_run(paths, run)?;
 
     let summary = json!({ "findings": run.findings });
-    let prompt = build_arena_round3_prompt(&summary.to_string());
+    // The hunks the findings point at, so a drop is a judgement about code
+    // rather than about a claim. Missing patch file degrades to no excerpt
+    // rather than failing the run — the arbiter grades on the findings alone,
+    // as it did before this existed.
+    let anchored = std::fs::read_to_string(paths.diff_patch())
+        .map(|raw| {
+            let targets: Vec<(String, Option<usize>)> = run
+                .findings
+                .iter()
+                .map(|f| (f.file.clone(), f.line))
+                .collect();
+            crate::ai::prepared_diff::hunks_for_findings(&raw, &targets)
+        })
+        .unwrap_or_default();
+    let prompt = build_arena_round3_prompt(&summary.to_string(), &anchored);
     let cmd = resolve_provider_command(
         &config.ai_hub,
         &arbiter_ref.provider_id,

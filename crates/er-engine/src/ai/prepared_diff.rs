@@ -123,6 +123,66 @@ pub fn annotate_diff_raw(raw: &str) -> String {
     out
 }
 
+/// The hunks that `targets` anchor to, as a diff excerpt.
+///
+/// An arbiter that only sees the findings is judging claims about code it cannot
+/// read, and dropping one as wrong is exactly that judgement. Sending the hunks
+/// the findings point at keeps the cost proportional to how many findings there
+/// are, not to how big the diff is: N findings anchor to at most N hunks whether
+/// the change is 50 lines or 5,000.
+///
+/// Each target is a `(path, line)` pair; a `None` line (a hunk-level finding)
+/// takes the file's first hunk. Paths and lines that no longer match the diff
+/// contribute nothing, so a stale finding cannot drag an unrelated hunk in.
+pub fn hunks_for_findings(raw_diff: &str, targets: &[(String, Option<usize>)]) -> String {
+    let files = crate::git::parse_diff(raw_diff);
+    let mut out = String::new();
+    let mut seen: Vec<(String, usize)> = Vec::new();
+
+    for (path, line) in targets {
+        let Some(file) = files.iter().find(|f| &f.path == path) else {
+            continue;
+        };
+        let found = file.hunks.iter().enumerate().find(|(_, hunk)| match line {
+            Some(target) => hunk.lines.iter().any(|dl| dl.new_num == Some(*target)),
+            None => true,
+        });
+        let Some((index, hunk)) = found else {
+            continue;
+        };
+        // Two findings in one hunk share it rather than repeating it.
+        if seen.contains(&(path.clone(), index)) {
+            continue;
+        }
+        seen.push((path.clone(), index));
+
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str("--- a/");
+        out.push_str(path);
+        out.push_str("\n+++ b/");
+        out.push_str(path);
+        out.push('\n');
+        out.push_str(&hunk.header);
+        out.push('\n');
+        for dl in &hunk.lines {
+            out.push(line_prefix(dl.line_type));
+            out.push_str(&dl.content);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+const fn line_prefix(line_type: crate::git::LineType) -> char {
+    match line_type {
+        crate::git::LineType::Add => '+',
+        crate::git::LineType::Delete => '-',
+        crate::git::LineType::Context | crate::git::LineType::Fold(_) => ' ',
+    }
+}
+
 /// New-side start number from `@@ -old(,count)? +new(,count)? @@ ...`.
 fn parse_hunk_new_start(rest: &str) -> Option<i64> {
     let plus_idx = rest.find('+')?;
@@ -148,6 +208,74 @@ mod tests {
     use super::*;
 
     const FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n-fn baz() {}\n fn qux() {}\n";
+
+    #[test]
+    fn hunks_for_findings_takes_only_the_anchored_hunk() {
+        let diff = concat!(
+            "diff --git a/src/a.rs b/src/a.rs\n",
+            "--- a/src/a.rs\n",
+            "+++ b/src/a.rs\n",
+            "@@ -1,3 +1,4 @@\n",
+            " fn first() {}\n",
+            "+    let key = input;\n",
+            " }\n",
+            "@@ -40,3 +41,3 @@\n",
+            " fn far_away() {}\n",
+            "-    old();\n",
+            "+    new();\n",
+            " }\n",
+        );
+
+        let out = hunks_for_findings(diff, &[("src/a.rs".to_string(), Some(2))]);
+
+        assert!(
+            out.contains("let key = input"),
+            "the anchored hunk is there"
+        );
+        assert!(
+            !out.contains("far_away"),
+            "the rest of the diff is not paid for"
+        );
+        assert!(out.starts_with("--- a/src/a.rs"), "a real diff excerpt");
+    }
+
+    #[test]
+    fn hunks_for_findings_dedupes_and_skips_unmatched_targets() {
+        let diff = concat!(
+            "diff --git a/src/a.rs b/src/a.rs\n",
+            "--- a/src/a.rs\n",
+            "+++ b/src/a.rs\n",
+            "@@ -1,3 +1,4 @@\n",
+            " fn first() {}\n",
+            "+    let key = input;\n",
+            " }\n",
+        );
+
+        let out = hunks_for_findings(
+            diff,
+            &[
+                // Two findings in the same hunk, one of them on the added line.
+                ("src/a.rs".to_string(), Some(2)),
+                ("src/a.rs".to_string(), None),
+                // A file the diff no longer contains.
+                ("src/gone.rs".to_string(), Some(1)),
+                // A line the hunk does not cover.
+                ("src/a.rs".to_string(), Some(900)),
+            ],
+        );
+
+        assert_eq!(
+            out.matches("fn first() {}").count(),
+            1,
+            "one hunk is sent once, however many findings anchor to it"
+        );
+        assert!(!out.contains("gone.rs"));
+    }
+
+    #[test]
+    fn hunks_for_findings_without_targets_is_empty() {
+        assert!(hunks_for_findings(FIXTURE_DIFF, &[]).is_empty());
+    }
 
     #[test]
     fn ensure_artifacts_writes_once_then_skips_identical_content() {
