@@ -62,8 +62,18 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
     let review_path = er_dir.join("review.json");
     let review = json!({
         "version": 1,
-        "diff_hash": "some-other-hash",
-        "files": { "src/a.rs": { "risk": "high", "findings": [] } }
+        "diff_hash": HASH,
+        "files": {
+            "src/a.rs": {
+                "risk": "high",
+                "findings": [{
+                    "id": "f-1",
+                    "severity": "high",
+                    "title": "unchecked user input",
+                    "confidence": "confirmed"
+                }]
+            }
+        }
     });
     let before = serde_json::to_string_pretty(&review).unwrap();
     std::fs::write(&review_path, &before).unwrap();
@@ -163,5 +173,26 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
         std::fs::read_to_string(&review_path).unwrap(),
         before,
         "review.json is byte-identical: the seeded pass writes its own sidecar only"
+    );
+
+    // The verdicts landed in their own sidecar, and the review picks them up on
+    // the next load — the overlay is what makes the grade visible.
+    let arbiter_path = er_dir.join("arbiter.json");
+    assert!(arbiter_path.is_file(), "arbiter.json was written");
+
+    let state = er_engine::ai::load_ai_state(&er_dir.to_string_lossy(), HASH, None);
+    let graded = &state.review.expect("review loads").files["src/a.rs"].findings[0];
+    assert_eq!(
+        graded.confidence,
+        er_engine::ai::Confidence::Confirmed,
+        "0.92 grades back to confirmed"
+    );
+    assert_eq!(
+        state.arbiter_effect.regraded, 0,
+        "the expert already said confirmed, so there is nothing to regrade"
+    );
+    assert!(
+        graded.responses.is_empty(),
+        "an agreeing verdict leaves no trail"
     );
 }

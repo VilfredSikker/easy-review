@@ -101,6 +101,22 @@ where
         .collect())
 }
 
+/// Deserialize a verdicts array, skipping entries that fail to parse instead of
+/// rejecting the whole `arbiter.json`. Same trade as `lenient_findings`: losing
+/// one verdict beats losing every grade in the file.
+pub fn lenient_verdicts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<super::arbiter::ArbiterVerdict>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
+}
+
 /// Deserialize a risk level, degrading an unrecognised value to `Info` rather
 /// than rejecting the sidecar that holds it. Models write free-form words here
 /// (`"moderate"`, `"unknown"`), and losing a whole triage verdict over one
@@ -621,6 +637,10 @@ pub struct AiState {
     pub tour_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
+    /// What the arbiter's verdicts hid or regraded on the loaded review. The
+    /// hidden findings are still in `review` — carrying `Confidence::Dropped` —
+    /// so a UI can list them rather than only counting them.
+    pub arbiter_effect: super::arbiter::ArbiterEffect,
     /// Lazily-built comment index for O(1) lookups.
     /// `None` means unbuilt; rebuilt on first query after invalidation.
     comment_index: RefCell<Option<CommentIndexData>>,
@@ -644,6 +664,7 @@ impl Default for AiState {
             is_stale: false,
             tour_stale: false,
             stale_files: HashSet::new(),
+            arbiter_effect: super::arbiter::ArbiterEffect::default(),
             comment_index: RefCell::new(None),
         }
     }

@@ -12,6 +12,8 @@ mod review;
 pub mod scoped_merge;
 pub mod triage;
 
+pub mod arbiter;
+pub use arbiter::*;
 pub use comments::*;
 pub use diagrams::*;
 pub use experts::*;

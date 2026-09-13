@@ -309,6 +309,14 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
+    // Overlay arbiter verdicts last, so they grade every finding the merges
+    // above put into the review rather than only the review's own.
+    if let Some(arbiter) = super::arbiter::load_arbiter_review(er_dir) {
+        if let Some(review) = state.review.as_mut() {
+            state.arbiter_effect = super::arbiter::merge_arbiter_into_review(review, &arbiter);
+        }
+    }
+
     // Load .er/diagrams/*.json (mermaid diagrams — one file per generated diagram)
     state.diagrams = load_diagrams(er_dir, current_diff_hash);
 

@@ -468,6 +468,8 @@ pub fn start_seeded_run(
     let registry_thread = Arc::clone(&registry);
     let run_id_thread = run_id.clone();
     let paths_clone = paths.clone();
+    let er_dir = params.er_dir.clone();
+    let diff_hash = params.diff_hash.clone();
 
     let join = thread::spawn(move || {
         let ctx = ArbiterCtx {
@@ -496,6 +498,13 @@ pub fn start_seeded_run(
                 run.completed_at = Some(crate::app::chrono_now());
                 *status.lock().unwrap() = RunStatus::Complete;
                 let _ = save_run(&paths_clone, &run);
+                // The review's copy of the verdicts. The run record above is the
+                // arena's; this is the overlay the review loads, so `review.json`
+                // keeps its three writers (ADR 0001).
+                let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
+                if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
+                    crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
+                }
                 emit(
                     &registry_thread,
                     &paths_clone,
@@ -526,6 +535,58 @@ pub fn start_seeded_run(
         },
     );
     Ok(Some(run_id))
+}
+
+/// The review-facing view of a finished run's verdicts.
+///
+/// Only findings the arbiter actually ruled on become verdicts: a `Pending`
+/// finding was never judged, and writing it as one would claim a grade that
+/// does not exist.
+fn arbiter_review_from_run(
+    run: &ArenaRun,
+    run_id: &str,
+    diff_hash: &str,
+) -> crate::ai::ArbiterReview {
+    let verdicts = run
+        .findings
+        .iter()
+        .filter_map(|f| {
+            let verdict = match &f.verdict {
+                Verdict::Kept => crate::ai::ArbiterRuling::Kept,
+                Verdict::Escalated => crate::ai::ArbiterRuling::Escalated,
+                Verdict::Merged { .. } => crate::ai::ArbiterRuling::Merged,
+                Verdict::Dropped => crate::ai::ArbiterRuling::Dropped,
+                Verdict::Pending => return None,
+            };
+            Some(crate::ai::ArbiterVerdict {
+                id: f.id.clone(),
+                file: f.file.clone(),
+                verdict,
+                // Same thresholds `arena_finding_to_review` reads back, so a
+                // grade survives the round trip.
+                confidence: Some(if f.confidence >= 0.75 {
+                    crate::ai::Confidence::Confirmed
+                } else if f.confidence >= 0.5 {
+                    crate::ai::Confidence::Tentative
+                } else {
+                    crate::ai::Confidence::Informational
+                }),
+                merged_into: match &f.verdict {
+                    Verdict::Merged { into } => Some(into.clone()),
+                    _ => None,
+                },
+                rationale: f.rationale.clone(),
+            })
+        })
+        .collect();
+
+    crate::ai::ArbiterReview {
+        version: 1,
+        diff_hash: diff_hash.to_string(),
+        created_at: crate::app::chrono_now(),
+        run_id: run_id.to_string(),
+        verdicts,
+    }
 }
 
 /// Start one arena/single run per agent group (parallel supervisors).
