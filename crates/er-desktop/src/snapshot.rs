@@ -2733,6 +2733,40 @@ fn build_worktrees(
         .collect()
 }
 
+/// Local branches merged into `base_branch`, from one `git branch --merged`.
+///
+/// Replaces a `merge-base --is-ancestor` per branch, which spawned a git
+/// process for every local branch on every meta refresh — 100+ on a repo with
+/// 100 branches — all asking the same question of the same base. Empty when the
+/// answer cannot be established, which callers read as "nothing is merged",
+/// matching the per-branch form's `.unwrap_or(false)`.
+fn merged_into_base(repo_root: &str, base_branch: &str) -> std::collections::HashSet<String> {
+    if base_branch.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    std::process::Command::new("git")
+        .args([
+            "branch",
+            "--merged",
+            base_branch,
+            // `--format` drops the `* `/`+ ` prefixes `git branch` adds for the
+            // current and worktree branches, so the output is bare names.
+            "--format=%(refname:short)",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn build_tracked_branches(
     repo_root: &str,
     base_branch: &str,
@@ -2758,6 +2792,11 @@ fn build_tracked_branches(
     let text = String::from_utf8_lossy(&out.stdout);
 
     let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = if skip_merged {
+        std::collections::HashSet::new()
+    } else {
+        merged_into_base(repo_root, base_branch)
+    };
 
     // Build the full list first, then filter to the curated set (tracked ∪ {current}).
     let all: Vec<BranchInfo> = text
@@ -2775,16 +2814,7 @@ fn build_tracked_branches(
                 Some(upstream_raw)
             };
             let is_current = name == current_branch;
-            let is_merged = if skip_merged || name == base_branch {
-                false
-            } else {
-                std::process::Command::new("git")
-                    .args(["merge-base", "--is-ancestor", &name, base_branch])
-                    .current_dir(repo_root)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            };
+            let is_merged = !skip_merged && name != base_branch && merged.contains(&name);
             let worktree_path = worktrees
                 .iter()
                 .find(|w| w.branch == name)
@@ -2858,6 +2888,11 @@ fn build_auto_branches(
     let text = String::from_utf8_lossy(&out.stdout);
 
     let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = if skip_merged {
+        std::collections::HashSet::new()
+    } else {
+        merged_into_base(repo_root, base_branch)
+    };
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
     let dismissed_set: std::collections::HashSet<&str> =
@@ -2890,16 +2925,7 @@ fn build_auto_branches(
         } else {
             Some(upstream_raw)
         };
-        let is_merged = if skip_merged || name == base_branch {
-            false
-        } else {
-            std::process::Command::new("git")
-                .args(["merge-base", "--is-ancestor", &name, base_branch])
-                .current_dir(repo_root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let is_merged = !skip_merged && name != base_branch && merged.contains(&name);
         let worktree_path = worktrees
             .iter()
             .find(|w| w.branch == name)
@@ -5009,5 +5035,51 @@ mod tests {
             2,
             "a changed worktree set must invalidate the cache and recompute"
         );
+    }
+
+    #[test]
+    fn merged_into_base_lists_only_merged_branches() {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-qm", "base"]);
+
+        // Merged back into main.
+        git(&["checkout", "-q", "-b", "merged-branch"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "merged work"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"]);
+
+        // Branched from main and left alone.
+        git(&["checkout", "-q", "-b", "open-branch"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "open work"]);
+        git(&["checkout", "-q", "main"]);
+
+        let merged = merged_into_base(&root, "main");
+        assert!(merged.contains("merged-branch"), "got {merged:?}");
+        assert!(merged.contains("main"), "the base is merged into itself");
+        assert!(
+            !merged.contains("open-branch"),
+            "an unmerged branch must not be listed: {merged:?}"
+        );
+
+        // An unresolvable base yields nothing rather than a wrong answer —
+        // the same outcome the per-branch form's `.unwrap_or(false)` gave.
+        assert!(merged_into_base(&root, "no-such-base").is_empty());
+        assert!(merged_into_base(&root, "").is_empty());
     }
 }
