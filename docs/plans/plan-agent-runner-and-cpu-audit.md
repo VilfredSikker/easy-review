@@ -383,7 +383,7 @@ there.
 | `er-engine/src/ai/prepared_diff.rs:34` | `ensure_diff_artifacts` builds and hashes the annotated diff on every call, then only *writes* it conditionally. Annotation is deterministic, so unchanged raw implies unchanged annotated: skip both the O(n) build and its SHA-256 when `diff-tmp` is already current and `diff-annotated` is present | **done** |
 | `er-engine/src/app/state/mod.rs:4404` | Stat once into a `Vec<(idx, mtime)>`, then sort — removes `2n log n` syscalls | **done** |
 | `er-engine/src/app/state/mod.rs:2913` | Gate the unconditional `reload_ai_state()` on the watch path — but on *sidecars changed OR `branch_diff_hash` moved*, not on the mtime check alone | **done** |
-| `er-engine/src/app/state/mod.rs:2531` | Stop hashing every file on each watch event. **[corrected — the original instruction was wrong]** see below | open |
+| `er-engine/src/app/state/mod.rs:4662` | Stop hashing every file on each watch event. **[corrected — the original instruction was wrong]** see below | **done** |
 | `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` | open |
 | `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops | open |
 | `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies | open |
@@ -410,10 +410,26 @@ The result is that auto-unmark stops working permanently, with no error — revi
 markers would simply stop clearing when the underlying file changed.
 
 The real waste is that the map is built for *every* file when only `reviewed` files
-are consulted without a user action. The correct fix is lazy resolution: the watch
-path caches hashes for `reviewed` paths only, and the mark paths resolve a single
-path on demand from the retained `raw_diff` (retained in both lazy and eager modes).
-Still open.
+are consulted without a user action. Landed as lazy resolution: the watch path
+caches hashes for `reviewed` paths only (`compute_per_file_hashes_for`), and the
+five mark paths resolve a single path on demand through a new
+`TabState::per_file_hash`, which falls back to the retained `raw_diff` (kept in both
+lazy and eager modes) and returns the same empty sentinel callers already handled.
+
+Three existing tests asserted the invariant a stronger way than the behaviour needs
+— that the map itself is fully populated — with the rationale "so newly-marked files
+store a real hash". They now assert that behaviour through `per_file_hash`, which is
+the accessor every mark path uses, and one of them also asserts the map is *empty*
+when nothing is reviewed. **These three tests were deliberately changed, not
+weakened to pass**: the behaviour they name is still asserted, and it was a test in
+that set that caught the first draft of this change, because tests 1 and 3 were
+passing only by reading the cache and never exercising the fallback. Setting
+`raw_diff` in each now exercises the path production actually takes.
+
+The residual hazard is a future reader that touches `current_per_file_hashes`
+directly instead of `per_file_hash`: it would silently get an empty hash for an
+unreviewed file, which `auto_unmark_changed_reviewed` treats as "unknown" and skips.
+No production site bypasses the accessor today.
 
 **An mtime-only gate breaks staleness.** `reload_ai_state` passes `branch_diff_hash`
 into `load_ai_state`, and that is where each sidecar's recorded `diff_hash` is

@@ -1094,11 +1094,7 @@ pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot
     {
         let tab = app.tab_mut();
         if tab.active_diff_files().iter().any(|f| f.path == path) {
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = tab.per_file_hash(&path);
             tab.reviewed.insert(path, hash);
             tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
@@ -1178,11 +1174,7 @@ pub async fn bulk_review_pillar(
             let paths = pillar_file_paths(tab, &pillar_id);
             let mut changed = false;
             for path in paths {
-                let hash = tab
-                    .current_per_file_hashes
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_default();
+                let hash = tab.per_file_hash(&path);
                 tab.reviewed.insert(path, hash);
                 changed = true;
             }

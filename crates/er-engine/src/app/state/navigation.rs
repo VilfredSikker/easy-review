@@ -1480,11 +1480,7 @@ impl TabState {
         if self.reviewed.contains_key(&path) {
             self.reviewed.remove(&path);
         } else {
-            let hash = self
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = self.per_file_hash(&path);
             self.reviewed.insert(path, hash);
         }
         let _ = self.save_reviewed_files();
@@ -1508,11 +1504,7 @@ impl TabState {
                 .unwrap_or_default()
         };
         for path in paths {
-            let hash = self
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = self.per_file_hash(&path);
             self.reviewed.insert(path, hash);
         }
         let _ = self.save_reviewed_files();

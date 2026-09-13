@@ -4653,10 +4653,36 @@ impl TabState {
     /// because diff content legitimately differs per mode. The result is stored
     /// in `pending_unmark_count` for the caller to surface.
     fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
-        self.current_per_file_hashes = ai::compute_per_file_hashes(raw);
+        // Only `reviewed` files are consulted without a user action, by the
+        // auto-unmark pass below. Every other path is resolved on demand by
+        // `per_file_hash`, so hashing the whole diff here — a SHA-256 per file
+        // on every watch event — was work nobody asked for.
+        let wanted: std::collections::HashSet<String> =
+            self.reviewed.keys().cloned().collect();
+        self.current_per_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
         if auto_unmark {
             self.pending_unmark_count = self.auto_unmark_changed_reviewed();
         }
+    }
+
+    /// Per-file diff hash for `path`.
+    ///
+    /// Prefers the cached map, which the watch path fills for `reviewed` files
+    /// only, and otherwise derives the hash from the retained raw diff. Marking
+    /// a file is a user action, so one targeted hash here is far cheaper than
+    /// hashing every file on every watch event.
+    ///
+    /// Falls back to an empty string when the diff has no such file — the same
+    /// sentinel the callers used before, which `auto_unmark_changed_reviewed`
+    /// treats as "unknown" and leaves alone.
+    pub fn per_file_hash(&self, path: &str) -> String {
+        if let Some(hash) = self.current_per_file_hashes.get(path) {
+            return hash.clone();
+        }
+        self.raw_diff
+            .as_deref()
+            .and_then(|raw| ai::compute_per_file_hash(raw, path))
+            .unwrap_or_default()
     }
 
     /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
@@ -7787,11 +7813,7 @@ impl App {
             // Store the current per-file hash so we can detect when the diff changes.
             // Falls back to empty string if the file isn't in the current diff (shouldn't
             // happen normally, but guards against a race between parse and toggle).
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = tab.per_file_hash(&path);
             tab.reviewed.insert(path.clone(), hash);
         }
         tab.reviewed_revision += 1;
@@ -8315,6 +8337,51 @@ mod tests {
         );
     }
 
+    #[test]
+    fn marking_a_file_after_a_watch_refresh_still_records_its_hash() {
+        let raw = concat!(
+            "diff --git a/a.rs b/a.rs\n",
+            "+a-change\n",
+            "diff --git a/b.rs b/b.rs\n",
+            "+b-change\n",
+        );
+        let mut tab = make_test_tab(vec![]);
+        tab.raw_diff = Some(raw.to_string());
+        // b.rs is already reviewed, a.rs is not.
+        tab.reviewed.insert("b.rs".to_string(), "old-hash".to_string());
+
+        // Watch-path refresh: only reviewed files get cached, because only they
+        // are consulted without a user action.
+        tab.refresh_per_file_hashes_and_unmark(raw, false);
+        assert!(
+            tab.current_per_file_hashes.contains_key("b.rs"),
+            "reviewed files are cached for auto-unmark"
+        );
+        assert!(
+            !tab.current_per_file_hashes.contains_key("a.rs"),
+            "unreviewed files are not hashed on the watch path"
+        );
+
+        // Marking a.rs must still record a real hash. An empty one would be
+        // skipped by auto_unmark_changed_reviewed, silently disabling
+        // auto-unmark for this file forever.
+        let stored = tab.per_file_hash("a.rs");
+        assert!(
+            !stored.is_empty(),
+            "a newly marked file must get a real hash, not the empty fallback"
+        );
+        assert_eq!(
+            stored,
+            crate::ai::compute_per_file_hash(raw, "a.rs").unwrap()
+        );
+
+        // A cached path still resolves from the cache.
+        assert_eq!(
+            tab.per_file_hash("b.rs"),
+            tab.current_per_file_hashes["b.rs"]
+        );
+    }
+
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
         DiffHunk {
             header: "@@ -1,3 +1,4 @@".to_string(),
@@ -8693,7 +8760,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_unmark_refresh_keeps_full_map_and_unmarks_changed_reviewed_file() {
+    fn quick_unmark_refresh_unmarks_changed_reviewed_file() {
         let mut tab = make_test_tab(vec![
             make_file("a.json", vec![], 1, 0),
             make_file("b.json", vec![], 1, 0),
@@ -8703,29 +8770,42 @@ mod tests {
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         tab.pending_unmark_count = 0;
         // The raw changed, so the marked file's section hash differs and it
-        // auto-unmarks; the full map still contains every file's current hash.
-        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        // auto-unmarks.
+        let raw = changed_reviewed_diff_raw();
+        // A refresh always retains the raw diff; `per_file_hash` falls back to it.
+        tab.raw_diff = Some(raw.clone());
+        tab.refresh_per_file_hashes_and_unmark(&raw, true);
         assert!(tab.reviewed.is_empty());
         assert_eq!(tab.pending_unmark_count, 1);
-        assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "full per-file map must be kept so newly-marked files store a real hash"
+        // The map now caches only reviewed files, so this guarantee is stated
+        // through the accessor every mark path uses: a newly-marked file must
+        // still resolve a real hash.
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "a newly-marked file must store a real hash"
         );
     }
 
     #[test]
-    fn quick_unmark_refresh_keeps_full_hash_map_when_nothing_reviewed() {
+    fn nothing_reviewed_still_resolves_a_real_hash_for_a_later_mark() {
         let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
         tab.pending_unmark_count = 7;
-        // Nothing marked reviewed: hashes still refresh (a later mark of this
-        // file reads a real hash); the unmark pass finds nothing stale, so the
+        let raw = changed_reviewed_diff_raw();
+        tab.raw_diff = Some(raw.clone());
+        // Nothing marked reviewed: the unmark pass finds nothing stale, so the
         // counter is reset to 0 (its contract: 0 = nothing to surface).
-        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        tab.refresh_per_file_hashes_and_unmark(&raw, true);
         assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "the map must be populated even with zero reviewed files"
+            tab.current_per_file_hashes.is_empty(),
+            "no file is reviewed, so the watch path caches nothing"
         );
         assert_eq!(tab.pending_unmark_count, 0);
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "a later mark must resolve a real hash even with nothing reviewed"
+        );
     }
 
     #[test]
@@ -8734,13 +8814,16 @@ mod tests {
         tab.reviewed
             .insert("a.json".to_string(), "stored".to_string());
         tab.pending_unmark_count = 7;
-        // auto_unmark=false (mode switch): hashes refresh, nothing unmarks.
-        tab.refresh_per_file_hashes_and_unmark(&reviewed_diff_raw(), false);
+        let raw = reviewed_diff_raw();
+        tab.raw_diff = Some(raw.clone());
+        // auto_unmark=false (mode switch): nothing unmarks.
+        tab.refresh_per_file_hashes_and_unmark(&raw, false);
         assert_eq!(tab.pending_unmark_count, 7);
         assert!(tab.reviewed.contains_key("a.json"));
-        assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "mode-switch refresh must still populate hashes for newly-marked files"
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "mode-switch refresh must still resolve hashes for newly-marked files"
         );
     }
 

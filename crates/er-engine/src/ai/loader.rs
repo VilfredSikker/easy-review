@@ -92,6 +92,74 @@ pub fn compute_per_file_hashes(raw_diff: &str) -> HashMap<String, String> {
     hashes
 }
 
+/// Per-file hashes for the named paths only.
+///
+/// Same sectioning and path extraction as [`compute_per_file_hashes`], but a
+/// section whose file is not wanted is skipped without being accumulated or
+/// hashed. That is the point: a watch-event refresh only needs hashes for the
+/// files whose review state something consults without a user action, and
+/// hashing the rest is the cost this removes.
+///
+/// Hashes for a wanted path are identical to [`compute_per_file_hashes`].
+pub fn compute_per_file_hashes_for(
+    raw_diff: &str,
+    wanted: &std::collections::HashSet<String>,
+) -> HashMap<String, String> {
+    let mut hashes = HashMap::new();
+    if wanted.is_empty() {
+        return hashes;
+    }
+    let mut current_file: Option<String> = None;
+    let mut current_section = String::new();
+    let mut current_wanted = false;
+
+    for line in raw_diff.lines() {
+        if line.starts_with("diff --git a/") {
+            // Flush previous section
+            if let Some(file) = current_file.take() {
+                if current_wanted {
+                    hashes.insert(file, compute_diff_hash(&current_section));
+                }
+            }
+            // Path extraction matches `compute_per_file_hashes`, including its
+            // rename caveat: "diff --git a/old.rs b/new.rs" yields the old path.
+            let path = line
+                .strip_prefix("diff --git a/")
+                .and_then(|rest| rest.split(" b/").next())
+                .unwrap_or("")
+                .to_string();
+            current_wanted = wanted.contains(&path);
+            current_file = Some(path);
+            current_section.clear();
+            if current_wanted {
+                current_section.push_str(line);
+                current_section.push('\n');
+            }
+        } else if current_file.is_some() && current_wanted {
+            current_section.push_str(line);
+            current_section.push('\n');
+        }
+    }
+
+    // Flush last section
+    if let Some(file) = current_file {
+        if current_wanted {
+            hashes.insert(file, compute_diff_hash(&current_section));
+        }
+    }
+
+    hashes
+}
+
+/// Hash of a single file's diff section, or `None` when the diff has no such
+/// file. Used to resolve a file's hash at the moment it is marked reviewed,
+/// after the watch path has stopped caching hashes for every file.
+pub fn compute_per_file_hash(raw_diff: &str, path: &str) -> Option<String> {
+    let mut wanted = std::collections::HashSet::new();
+    wanted.insert(path.to_string());
+    compute_per_file_hashes_for(raw_diff, &wanted).remove(path)
+}
+
 /// True when `stored` names the same branch as `expected` (exact or slug match).
 pub fn storage_branches_match(expected: &str, stored: &str) -> bool {
     if expected == stored {
@@ -1006,5 +1074,85 @@ mod tests {
         let h1 = compute_per_file_hashes(diff_v1);
         let h2 = compute_per_file_hashes(diff_v2);
         assert_ne!(h1["x.rs"], h2["x.rs"]);
+    }
+
+    // ── compute_per_file_hashes_for ──
+
+    const MULTI_DIFF: &str = concat!(
+        "diff --git a/foo.rs b/foo.rs\n",
+        "index abc..def 100644\n",
+        "--- a/foo.rs\n",
+        "+++ b/foo.rs\n",
+        "@@ -1,2 +1,3 @@\n",
+        "+line1\n",
+        " context\n",
+        "diff --git a/bar.rs b/bar.rs\n",
+        "index 111..222 100644\n",
+        "+line2\n",
+        "diff --git a/baz.rs b/baz.rs\n",
+        "+line3\n",
+    );
+
+    #[test]
+    fn targeted_hashes_match_the_full_pass_exactly() {
+        // The targeted pass must not drift from the full one — same hash for
+        // the same file, with the same section boundaries. Every subset is
+        // checked because a wanted file's section must include its own header
+        // lines whether or not the files before it were skipped.
+        let full = compute_per_file_hashes(MULTI_DIFF);
+
+        for wanted in [
+            vec!["foo.rs"],
+            vec!["bar.rs"],
+            vec!["baz.rs"],
+            vec!["foo.rs", "baz.rs"],
+            vec!["bar.rs", "baz.rs"],
+            vec!["foo.rs", "bar.rs", "baz.rs"],
+        ] {
+            let set: std::collections::HashSet<String> =
+                wanted.iter().map(|s| s.to_string()).collect();
+            let targeted = compute_per_file_hashes_for(MULTI_DIFF, &set);
+            assert_eq!(
+                targeted.len(),
+                wanted.len(),
+                "only wanted files are returned for {wanted:?}"
+            );
+            for path in &wanted {
+                assert_eq!(
+                    targeted[*path], full[*path],
+                    "hash for {path} must match the full pass"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn targeted_hashes_omit_unwanted_files() {
+        let wanted: std::collections::HashSet<String> =
+            ["foo.rs".to_string()].into_iter().collect();
+        let hashes = compute_per_file_hashes_for(MULTI_DIFF, &wanted);
+        assert_eq!(hashes.len(), 1);
+        assert!(hashes.contains_key("foo.rs"));
+        assert!(!hashes.contains_key("bar.rs"));
+        assert!(!hashes.contains_key("baz.rs"));
+    }
+
+    #[test]
+    fn targeted_hashes_empty_wanted_is_empty() {
+        let hashes = compute_per_file_hashes_for(MULTI_DIFF, &std::collections::HashSet::new());
+        assert!(hashes.is_empty());
+    }
+
+    #[test]
+    fn single_file_hash_matches_the_full_pass() {
+        let full = compute_per_file_hashes(MULTI_DIFF);
+        assert_eq!(
+            compute_per_file_hash(MULTI_DIFF, "bar.rs").unwrap(),
+            full["bar.rs"]
+        );
+        assert!(
+            compute_per_file_hash(MULTI_DIFF, "absent.rs").is_none(),
+            "a path absent from the diff has no hash"
+        );
     }
 }
