@@ -92,6 +92,32 @@ pub fn slot_wait_stats() -> SlotWaitStats {
     }
 }
 
+// ------------------------------------------------------- prepared-diff passes
+
+// Annotation passes performed on this thread. Test-only, and thread-local so a
+// test can assert its own delta while other tests in the binary run
+// concurrently against their own counters.
+#[cfg(test)]
+thread_local! {
+    static ANNOTATE_PASSES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Record one full annotation pass over a prepared diff.
+///
+/// Exists so a test can prove the pass was *skipped*. Counting writes cannot
+/// show that: the write was already conditional before the skip was added, so
+/// a write-counting test would pass against the unoptimised code too.
+pub fn record_annotate_pass() {
+    #[cfg(test)]
+    ANNOTATE_PASSES.with(|c| c.set(c.get() + 1));
+}
+
+/// Annotation passes performed on this thread. Tests only.
+#[cfg(test)]
+pub fn annotate_passes() -> u64 {
+    ANNOTATE_PASSES.with(|c| c.get())
+}
+
 // ------------------------------------------------------------------ emitting
 
 /// Write one measurement line to stderr. No-op when timing is off.
