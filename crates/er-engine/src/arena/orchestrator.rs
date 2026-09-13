@@ -1020,6 +1020,18 @@ fn run_supervisor(
             round: total_rounds,
         },
     );
+    // The arbiter takes a slot like every other agent. It used to be exempt,
+    // which meant an arena could fork one more provider CLI than the cap
+    // allows -- precisely when the cap was saturated, which is the moment the
+    // exemption mattered.
+    //
+    // Reviewers have released theirs by now (their round joined), so this
+    // normally does not wait. It can, if another arena run holds the slots.
+    let Some(_arbiter_slot) =
+        crate::agent_slots::acquire(config.ai_hub.effective_max_concurrent_reviews(), &cancel)
+    else {
+        bail_cancelled!();
+    };
     let arbiter_started = std::time::Instant::now();
     let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
         Ok(v) => v,
@@ -1028,8 +1040,8 @@ fn run_supervisor(
         }
         Err(e) => return Err(e),
     };
-    // The arbiter holds no slot and cannot be overlapped: its wall time adds
-    // straight onto the run and no cap change shortens it.
+    // The arbiter cannot be overlapped: its wall time adds straight onto the
+    // run and no cap change shortens it.
     crate::agent_timing::emit(
         "arena_round",
         &[

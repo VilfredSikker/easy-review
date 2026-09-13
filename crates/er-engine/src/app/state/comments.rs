@@ -2102,6 +2102,7 @@ impl App {
 
         let log_tx = self.tab().log_tx.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let run = crate::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
@@ -2110,8 +2111,12 @@ impl App {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // Sixth spawn path: a configured shell command. The summary
-                // agent runs through here. No slot and no queue, so like the
-                // tab-command path it is admitted immediately.
+                // agent runs through here. It waits for a slot like every
+                // other path -- a cap that covers some spawn sites is not a
+                // cap, and this one launches provider CLIs just like the rest.
+                let Some(_slot) = crate::agent_slots::acquire(slot_cap, run.cancel_flag()) else {
+                    return Err(crate::agent_run::cancelled());
+                };
                 timer.mark_slot_acquired();
                 let mut cmd_builder = std::process::Command::new("sh");
                 cmd_builder
@@ -2442,6 +2447,7 @@ impl App {
 
         let log_tx = self.tab().log_tx.clone();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let run = crate::agent_run::AgentRunHandle::new();
         let run_for_tab = std::sync::Arc::clone(&run);
         let run_name = name.to_string();
@@ -2449,9 +2455,13 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                // This path takes no slot, so it is admitted immediately:
-                // `queue_ms` should read ~0 here while the background path's
-                // reads as long as the cap is saturated.
+                // Waits for a slot like the background path. It used to be
+                // admitted immediately, which is why `queue_ms` read ~0 here
+                // even with the cap saturated -- a measurement that recorded
+                // the absence of the gate rather than the absence of a queue.
+                let Some(_slot) = crate::agent_slots::acquire(slot_cap, run.cancel_flag()) else {
+                    return Err(crate::agent_run::cancelled());
+                };
                 timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 

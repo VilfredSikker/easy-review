@@ -86,14 +86,19 @@ instrumentation itself moved several `comments.rs` citations by 12-27 lines.
 
 ### Six spawn sites, two gates, uneven coverage
 
+**Phase 2 closed the gaps in the "Slot?" column.** Every path that launches a
+provider CLI now waits on the same pool, so the cap is a cap rather than
+advice. The column below is what Phase 0 found, kept because the unevenness is
+why the phase exists.
+
 | # | Path | Spawn site | Slot? | Queue? | Wait style |
 |---|------|-----------|-------|--------|-----------|
 | A | Background task (review / expert / tour / triage / professor / diagram) | `app/state/comments.rs:3081` | yes (`:2991`) | yes | piped, 2 reader threads, blocking `wait()` (`:3141`) |
-| B | Tab-level command (`spawn_agent_prompt`) | `comments.rs:2462` | **no** | **no** | piped, 2 reader threads, blocking `wait()` (`:2530`) |
-| C | Card AI (ask / validate / elaborate / finding reply) | `app/card_ai_spawn.rs:195` | **no** | **no** | `cmd.output()`, fully buffered |
-| D | Arena reviewer / arbiter | `arena/adapter.rs:119` | reviewers yes (`orchestrator.rs:580`, `:718`); **arbiter no** (`:999`) | n/a | concurrent pipe readers, blocking `wait()` |
+| B | Tab-level command (`spawn_agent_prompt`) | `comments.rs:2462` | ~~**no**~~ **yes** (Phase 2) | ~~**no**~~ **yes** | piped, 2 reader threads, blocking `wait()` (`:2530`) |
+| C | Card AI (ask / validate / elaborate / finding reply) | `app/card_ai_spawn.rs:195` | ~~**no**~~ **yes** (Phase 2) | ~~**no**~~ **yes** | ~~`cmd.output()`~~ spawned child, bounded pipes |
+| D | Arena reviewer / arbiter | `arena/adapter.rs:119` | reviewers yes (`orchestrator.rs:580`, `:718`); arbiter ~~**no**~~ **yes** (Phase 2) | n/a | concurrent pipe readers, blocking `wait()` |
 | E | Model discovery | `model_discovery.rs:76` | n/a | n/a | `try_wait()` loop, 10 s timeout |
-| F | Configured shell command — the summary agent runs here **[corrected]** | `comments.rs:2036` → `sh -c` at `:2084` | **no** | **no** | piped, 2 reader threads, blocking `wait()` |
+| F | Configured shell command — the summary agent runs here **[corrected]** | `comments.rs:2036` → `sh -c` at `:2084` | ~~**no**~~ **yes** (Phase 2) | ~~**no**~~ **yes** | piped, 2 reader threads, blocking `wait()` |
 
 **[corrected]** The first pass listed five sites and called the enumeration
 complete. `App::spawn_command` spawns `sh -c <configured command>` with no slot
@@ -545,10 +550,16 @@ entire arena round at the barrier join. Keep the `Child` on `BackgroundTaskHandl
 (mirroring `ArenaRunHandle`) so cancel can `kill()` it, and give every spawn a
 wall-clock timeout. A timeout is what makes raising the cap safe.
 
-**Close the ungated paths.** Route B (`spawn_agent_prompt`), C (card AI) and F
-(`spawn_command`) through the same slot acquisition, and give the arena arbiter a
-slot (`orchestrator.rs:999`). **[corrected]** the first pass listed three ungated
-paths; there are four. Until then the cap is advisory.
+**Close the ungated paths.** **[done]** Route B (`spawn_agent_prompt`), C (card
+AI) and F (`spawn_command`) through the same slot acquisition, and give the arena
+arbiter a slot (`orchestrator.rs:999`). **[corrected]** the first pass listed
+three ungated paths; there are four.
+
+Each path acquires with its own run handle's cancel flag, so a stopped run stops
+waiting for a slot as well as running. Card AI waits too, which is the one place
+queueing is felt directly: it is user-initiated, and it now sits behind up to
+`max_concurrent_reviews` running reviews. It runs under `run_blocking`, so the
+window stays responsive; the wait is otherwise unbounded.
 
 **Re-derive `branch_diff_hash` on quick refreshes of a local-branch view.**
 Pre-existing, not a regression from this branch — the skip is byte-identical at

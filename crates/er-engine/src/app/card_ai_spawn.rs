@@ -17,6 +17,9 @@ pub struct CardAiInvocation {
     /// place that needs it, and it must not be re-resolved there against a
     /// config the caller may since have changed.
     pub timeout: std::time::Duration,
+    /// Process-wide concurrency cap this run waits on before spawning,
+    /// resolved from config alongside the deadline.
+    pub slot_cap: usize,
 }
 
 /// Resolve provider/command/args from config (mirrors background review selection).
@@ -92,6 +95,7 @@ pub fn plan_card_ai_invocation(
         uses_stream_json,
         env,
         timeout: config.ai_hub.effective_agent_timeout(),
+        slot_cap: config.ai_hub.effective_max_concurrent_reviews(),
     }
 }
 
@@ -202,6 +206,15 @@ pub fn run_card_ai_subprocess(
     // that never created a child at all, which is why it could not be stopped
     // and could not time out.
     let run = crate::agent_run::AgentRunHandle::new();
+
+    // Waits for a slot, like every other spawn path. This is the path a user
+    // waits on directly, so it is the one where queueing is felt -- but a cap
+    // that exempts the interactive path is not a cap, and the caller runs
+    // under `run_blocking` so the UI stays responsive while it waits.
+    let Some(_slot) = crate::agent_slots::acquire(inv.slot_cap, run.cancel_flag()) else {
+        return "Pending — invoke via CLI (stopped while waiting for a slot)".to_string();
+    };
+
     let result = {
         let mut cmd = Command::new(&inv.command);
         cmd.args(&args)
@@ -335,6 +348,7 @@ mod tests {
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -354,6 +368,7 @@ mod tests {
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(args
@@ -379,6 +394,7 @@ mod tests {
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
             timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
         };
         let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
         assert_eq!(reply, "**Verdict**: Confirmed");
