@@ -6,6 +6,16 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+/// Whether a completed agent run writes its full transcript to
+/// `debug-agent.log`.
+///
+/// Off by default. The write formatted the whole of stdout and stderr into a
+/// third copy of strings the reader threads already held, on every run, to
+/// produce a file nothing reads unless someone is debugging a spawn.
+fn debug_agent_log_enabled() -> bool {
+    std::env::var("ER_DEBUG").is_ok()
+}
+
 fn mint_comment_id(prefix: &str) -> String {
     let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!(
@@ -2552,24 +2562,28 @@ impl App {
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
                 timer.mark_finished();
 
-                // Write debug log with accumulated stdout + stderr
-                let debug_content = format!(
-                    "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    name_owned,
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                // Full transcript with accumulated stdout + stderr, opt-in.
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        name_owned,
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
-                    anyhow::bail!(
-                        "{} failed (see {}/debug-agent.log)",
-                        name_owned,
-                        er_dir_path
-                    );
+                    // Only point at the transcript when there is one to read.
+                    let detail = if debug_agent_log_enabled() {
+                        format!(" (full transcript in {er_dir_path}/debug-agent.log)")
+                    } else {
+                        " (set ER_DEBUG=1 for the full transcript)".to_string()
+                    };
+                    anyhow::bail!("{} failed{detail}", name_owned);
                 }
 
                 Ok(())
@@ -3173,15 +3187,17 @@ impl App {
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
                 timer.mark_finished();
 
-                let debug_content = format!(
-                    "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
                     let stderr_snip = {
@@ -3754,6 +3770,10 @@ mod background_queue_tests {
     #[cfg(unix)]
     fn background_codex_review_ignores_user_config() {
         use std::os::unix::fs::PermissionsExt;
+        // The transcript this test inspects is opt-in, so turn it on. Left set
+        // for the rest of the binary rather than removed: clear it mid-run and
+        // a concurrently finishing spawn could skip its own write.
+        std::env::set_var("ER_DEBUG", "1");
 
         let Some((mut app, tmp)) = test_app(1) else {
             return;
