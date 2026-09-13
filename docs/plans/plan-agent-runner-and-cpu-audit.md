@@ -1,6 +1,7 @@
 # AI Agent Runners & CPU-Hot Path Audit
 
-Status: **Phase 0 complete and measured. Phases 1-4 proposed, not started.**
+Status: **Phases 0 and 1 complete. Phase 1's redraw gate is deferred with its
+reason; Phases 2-4 not started.**
 
 Phase 0 instrumentation has landed (`er-engine/src/agent_timing.rs`, plus call
 sites in `agent_slots.rs`, `app/state/comments.rs`, `arena/adapter.rs`,
@@ -384,16 +385,33 @@ there.
 | `er-engine/src/app/state/mod.rs:4404` | Stat once into a `Vec<(idx, mtime)>`, then sort — removes `2n log n` syscalls | **done** |
 | `er-engine/src/app/state/mod.rs:2913` | Gate the unconditional `reload_ai_state()` on the watch path — but on *sidecars changed OR `branch_diff_hash` moved*, not on the mtime check alone | **done** |
 | `er-engine/src/app/state/mod.rs:4662` | Stop hashing every file on each watch event. **[corrected — the original instruction was wrong]** see below | **done** |
-| `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` | open |
-| `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops | open |
-| `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies | open |
-| `er-engine/src/highlight.rs:119` | Cache `SyntaxReference` per extension instead of re-resolving on every miss | open |
-| `er-tui/src/main.rs:435` | Redraw only when state is dirty; correct the tick constants to the real 50 ms period | open |
+| `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` | **done** |
+| `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops | **done** — backs off while the tip is unchanged, resets on change |
+| `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies | **done** — gated; the reader-thread append was not needed once the write stopped happening |
+| `er-engine/src/highlight.rs:119` | Cache `SyntaxReference` per extension instead of re-resolving on every miss | **done** — the per-filename first-line sniff is memoised, which is the term that actually read the disk |
+| `er-tui/src/main.rs:435` | Redraw only when state is dirty; correct the tick constants to the real 50 ms period | **tick constants done; redraw gate deferred** — see below |
 
 Landed items carried three new tests: the annotation skip (counting annotation
 passes, not writes — a write count passes against the unoptimised code), marker/
 content-file invariants including the pre-upgrade marker, and the mtime sort from
 an unsorted list.
+
+#### Why the redraw gate is deferred
+
+The tick-constant half is fixed: three timers were written against a 100 ms
+period on a loop that polls at 50 ms, so the AI poll ran at 0.5 s instead of 1 s,
+the watched-file rescan at 2.5 s instead of 5 s (doubling the `git check-ignore`
+spawn rate), and notifications cleared after 1 s instead of 2.
+
+The dirty gate is not implemented, deliberately. Skipping the draw on an idle
+frame is only safe if *every* state mutation sets a dirty flag, and three of them
+are invisible to the loop: `check_commands`, `poll_background_tasks` and
+`drain_agent_log` all return `()`. A task retiring on the frame after its last
+log entry would never be rendered — a stale frame in a TUI whose whole value is
+live updates. Doing it properly means giving those three functions a change
+report, which is a wide change whose riskiest part (missing a mutation site) is
+the part a test cannot reach without a loop harness. That trade does not pay for
+a #6-ranked idle-CPU win.
 
 #### The watch-path item was wrong as written
 
