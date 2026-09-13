@@ -1959,18 +1959,34 @@ impl App {
     // ── Notifications ──
 
     pub fn notify(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        // Ticks come from the TUI's event loop, which polls every 50 ms — so
-        // this is 2 s, not the 1 s the old 20 assumed from a 100 ms period.
-        self.watch_message_max_ticks = 40;
+        self.set_notification(msg, false);
     }
 
-    /// Like notify but persists for ~5 seconds — for important results.
+    /// Like [`Self::notify`], flagged so a UI can leave it up longer.
     pub fn notify_long(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 100; // 5 s at the TUI's 50 ms poll
+        self.set_notification(msg, true);
+    }
+
+    /// Store `msg` as the current notification, stamping it with a fresh seq.
+    ///
+    /// `seq` comes from a process-wide counter rather than from what's already
+    /// stored, so a repeat of the same text still counts as a new message and
+    /// clearing the field does not rewind the numbering.
+    fn set_notification(&mut self, msg: &str, long: bool) {
+        self.notification = Some(Notification {
+            message: msg.to_string(),
+            seq: NOTIFICATION_SEQ.fetch_add(1, Ordering::Relaxed) + 1,
+            long,
+        });
+    }
+
+    /// Drop the current message.
+    ///
+    /// The TUI calls this when its dwell timer expires. The desktop never does:
+    /// its snapshots only arrive when the revision counter moves, so it dedupes
+    /// on [`Notification::seq`] and lets the message sit in the snapshot.
+    pub fn clear_notification(&mut self) {
+        self.notification = None;
     }
 
     // ── Background Commands ──
@@ -2604,16 +2620,6 @@ impl App {
             .insert(name.to_string(), CommandStatus::Running);
         self.notify(&format!("{} started...", name));
         Ok(())
-    }
-
-    pub fn tick(&mut self) {
-        if self.watch_message.is_some() {
-            self.watch_message_ticks += 1;
-            if self.watch_message_ticks > self.watch_message_max_ticks {
-                self.watch_message = None;
-                self.watch_message_ticks = 0;
-            }
-        }
     }
 
     /// Spawn an app-level background general review (`kind` = `review`).

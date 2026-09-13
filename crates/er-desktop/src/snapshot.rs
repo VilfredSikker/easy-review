@@ -412,7 +412,9 @@ pub struct AppSnapshot {
     pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
     pub projects: Vec<ProjectSnapshot>,
-    pub notification: Option<String>,
+    /// Last message the engine was asked to surface, with the seq stamp the
+    /// frontend dedupes on. Never cleared here — see `App::notification`.
+    pub notification: Option<er_engine::app::Notification>,
     /// When Some, the active tab is a read-only diff of this local branch.
     pub local_branch: Option<String>,
     /// True when the viewed local branch is checked out (project root or worktree).
@@ -2399,7 +2401,7 @@ fn build_snapshot_inner(
             build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root)
         },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
-        notification: app.watch_message.clone(),
+        notification: app.notification.clone(),
         local_branch: tab.local_branch_view.clone(),
         local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
         unstaged_stat,

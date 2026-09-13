@@ -24,6 +24,11 @@ use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
+/// Source of [`Notification::seq`]. Process-wide so a number is never handed out
+/// twice, even across an `App` rebuild — a UI that remembers the last seq it
+/// showed must never see that seq again, or it will swallow the message.
+static NOTIFICATION_SEQ: AtomicU64 = AtomicU64::new(0);
+
 fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
 }
@@ -4888,6 +4893,22 @@ impl Default for PanelsVisible {
     }
 }
 
+/// A message for a UI to surface once.
+///
+/// The engine owns *what was said* and *how many times*; each UI owns how long
+/// it stays on screen. `seq` advances on every `notify`, including a repeat of
+/// identical text, so a UI can tell a fresh message from a snapshot it has
+/// already shown. That matters on the desktop, where the field is never cleared
+/// and a snapshot arrives only when the revision counter moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notification {
+    pub message: String,
+    /// Advances on every `notify`/`notify_long`; never reused.
+    pub seq: u64,
+    /// Messages worth a longer dwell than the UI's default.
+    pub long: bool,
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -4907,14 +4928,13 @@ pub struct App {
     /// Whether watch mode is active
     pub watching: bool,
 
-    /// Last watch notification message
-    pub watch_message: Option<String>,
-
-    /// Ticks since last watch notification (for auto-clearing)
-    pub watch_message_ticks: u16,
-
-    /// How many ticks the current notification should persist (default 20 ≈ 2s)
-    pub watch_message_max_ticks: u16,
+    /// The message a UI should surface, with the stamp saying whether it's new.
+    ///
+    /// Deliberately outlives the on-screen dwell: the desktop shows one toast
+    /// per [`Notification::seq`] and never clears the field, so a message that
+    /// lands between two polls is still shown once. The TUI clears it itself
+    /// via [`App::clear_notification`] when its own timer expires.
+    pub notification: Option<Notification>,
 
     /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
     pub ai_poll_counter: u16,
@@ -5112,9 +5132,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 40,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5158,9 +5176,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 40,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5198,9 +5214,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 40,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5233,9 +5247,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 40,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -9971,9 +9983,7 @@ mod tests {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 40,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -13544,5 +13554,61 @@ mod tests {
         assert!(!er.join("summary.md").exists());
         assert!(!er.join("professor.json").exists());
         assert!(!experts.join("security.json").exists());
+    }
+
+    // ── Notifications ──
+    //
+    // `seq` is process-wide, so these assert ordering rather than exact values:
+    // tests run in parallel and share the counter.
+
+    #[test]
+    fn a_repeated_notification_still_gets_a_fresh_seq() {
+        // The desktop dedupes on `seq` and never sees the field cleared, so a
+        // repeated message that reused a number would be swallowed silently.
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("review started...");
+        let first = app.notification.clone().expect("first notification");
+        app.notify("review started...");
+        let second = app.notification.clone().expect("second notification");
+
+        assert_eq!(first.message, second.message);
+        assert!(
+            second.seq > first.seq,
+            "a repeat must advance the seq, got {} then {}",
+            first.seq,
+            second.seq
+        );
+    }
+
+    #[test]
+    fn clearing_a_notification_does_not_rewind_the_seq() {
+        // The TUI clears on its dwell timer. A UI still holding the cleared
+        // seq must not treat the next message as one it has already shown.
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("models updated");
+        let before = app.notification.as_ref().expect("notification").seq;
+
+        app.clear_notification();
+        assert!(app.notification.is_none());
+
+        app.notify("models updated");
+        let after = app.notification.as_ref().expect("notification").seq;
+
+        assert!(
+            after > before,
+            "clearing must not reuse a seq, got {before} then {after}"
+        );
+    }
+
+    #[test]
+    fn notify_long_is_flagged_for_a_longer_dwell() {
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("short");
+        assert!(!app.notification.as_ref().expect("notification").long);
+        app.notify_long("long");
+        assert!(app.notification.as_ref().expect("notification").long);
     }
 }

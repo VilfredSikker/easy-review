@@ -31,6 +31,15 @@ use watch::{FileWatcher, WatchEvent};
 /// this, so changing it changes their real period.
 const POLL_INTERVAL: Duration = Duration::from_millis(50);
 
+/// How long the TUI leaves a notification up, by `Notification::long`.
+///
+/// The engine stamps each message and leaves it set; this is the TUI's own
+/// dwell time on it, measured on the wall clock rather than in ticks — a busy
+/// iteration (a refresh in flight) stretches a tick count past its nominal
+/// period, so the old 40-tick timer ran long exactly when the loop was busiest.
+const NOTIFICATION_DWELL: Duration = Duration::from_secs(2);
+const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
+
 /// Terminal UI for reviewing git diffs
 #[derive(Parser)]
 #[command(name = "er", version, about)]
@@ -414,6 +423,10 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     let mut session_dirty = false;
     let mut session_save_deadline = Instant::now();
 
+    // Notification dwell — the seq last seen, and when to clear it
+    let mut notification_seq = 0u64;
+    let mut notification_clear_at: Option<Instant> = None;
+
     // Start watching by default (disabled in remote mode — no local files to watch)
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
@@ -591,8 +604,25 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             app.tab().save_session();
         }
 
-        // Tick — used for auto-clearing notifications
-        app.tick();
+        // Notification dwell: a fresh seq restarts the timer, and clearing at
+        // the deadline is ours to do — the engine leaves the message set.
+        if let Some(n) = app.notification.as_ref() {
+            if n.seq != notification_seq {
+                notification_seq = n.seq;
+                let dwell = if n.long {
+                    NOTIFICATION_DWELL_LONG
+                } else {
+                    NOTIFICATION_DWELL
+                };
+                notification_clear_at = Some(Instant::now() + dwell);
+            }
+        }
+        if let Some(at) = notification_clear_at {
+            if Instant::now() >= at {
+                app.clear_notification();
+                notification_clear_at = None;
+            }
+        }
 
         if app.should_quit {
             // Save session on quit

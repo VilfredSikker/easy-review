@@ -75,7 +75,7 @@ when the diff changes.
 - `refresh_watched_files()` — re-discovers watched files from glob patterns, verifies gitignore status
 - `reload_ai_state()` — preserves review focus/cursor across reloads
 - `check_ai_files_changed()` — compares sidecar mtimes against `last_ai_check`; triggers reload if changed
-- `notify(msg)` + `tick()` — notification auto-clears after 40 ticks (~2 seconds at the TUI's real 50ms poll; `notify_long` uses 100 ticks for ~5s)
+- `notify(msg)` / `notify_long(msg)` — set `App.notification`, stamping it with a fresh `seq` from a process-wide counter (so a repeat of the same text counts as new). The engine does not time it out: the TUI clears it via `clear_notification()` after its own wall-clock dwell (`NOTIFICATION_DWELL` / `_LONG` in `er-tui/src/main.rs`), and the desktop never clears it, raising one toast per `seq` instead
 - `apply_filter_expr()` — parses filter expression into rules, updates history (MRU, deduped, max 20)
 - `filtered_reviewed_count()` — single-pass reviewed count among filtered files; returns `None` when no filter active
 - Filter rules: `Glob` (include/exclude by pattern), `Status` (added/modified/deleted/renamed), `Size` (line count threshold)

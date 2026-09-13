@@ -111,6 +111,19 @@ export interface TourFileRef {
   related?: RelatedFileRef[];
 }
 
+/**
+ * A message the engine wants surfaced.
+ *
+ * Dedupe on `seq`, which advances on every notify — including a repeat of the
+ * same text. The backend leaves this set forever, so comparing `message` would
+ * swallow the second occurrence of any identical toast.
+ */
+export interface NotificationSnapshot {
+  message: string;
+  seq: number;
+  long: boolean;
+}
+
 export interface PillarSnapshot {
   id: string;
   title: string;
@@ -457,7 +470,7 @@ export interface AppSnapshot {
   local_branch: string | null;
   /** True when the viewed local branch is checked out (enables Unstaged/Staged/Commits scopes). */
   local_branch_checked_out?: boolean;
-  notification: string | null;
+  notification: NotificationSnapshot | null;
   tabs: TabSummary[];
   active_tab: number;
   /** Browser-view annotations for the active tab. */
