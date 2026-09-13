@@ -963,7 +963,77 @@ fn run_supervisor(
     }
 
     // Arbiter phase (after all reviewer cross-check rounds)
-    cancelled!();
+    let ctx = ArbiterCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel: &cancel,
+        children: &children,
+        status: &status,
+    };
+    if matches!(
+        run_arbiter(&ctx, &mut run, run_effort.as_deref())?,
+        ArbiterOutcome::Cancelled
+    ) {
+        return Ok(());
+    }
+
+    run.status = RunStatus::Complete;
+    run.completed_at = Some(crate::app::chrono_now());
+    *status.lock().unwrap() = RunStatus::Complete;
+    save_run(paths, &run)?;
+    emit(registry, paths, &ProgressEvent::RunComplete { run_id });
+    Ok(())
+}
+
+/// The supervisor's ambient scope, bundled so the arbiter call can be shared by
+/// the normal path and the seeded one without a ten-argument signature.
+struct ArbiterCtx<'a> {
+    registry: &'a ArenaRegistry,
+    config: &'a ErConfig,
+    repo_root: &'a str,
+    paths: &'a ArenaPaths,
+    cancel: &'a AtomicBool,
+    children: &'a Arc<Mutex<Vec<Child>>>,
+    status: &'a Mutex<RunStatus>,
+}
+
+/// Whether the arbiter pass ruled, or the run was cancelled under it.
+///
+/// Cancellation is an outcome rather than an error: the call site marks the run
+/// cancelled and returns `Ok(())`, and both paths need that.
+enum ArbiterOutcome {
+    Judged,
+    Cancelled,
+}
+
+/// One arbiter call over `run.findings`, applying its verdicts in place.
+///
+/// Shared by the normal path (after every cross-check round) and the seeded path
+/// (straight from the expert dedupe). The caller owns what follows — marking the
+/// run complete, or returning early on cancellation.
+fn run_arbiter(
+    ctx: &ArbiterCtx<'_>,
+    run: &mut ArenaRun,
+    run_effort: Option<&str>,
+) -> Result<ArbiterOutcome> {
+    let ArbiterCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel,
+        children,
+        status,
+    } = *ctx;
+    let round = run.config.rounds;
+    let run_id = run.id.clone();
+
+    if cancel.load(Ordering::SeqCst) || registry.is_cancelled(&run_id) {
+        return cancel_run(ctx, run);
+    }
+
     let arbiter_ref = &run.config.arbiter;
     let arbiter_label = arbiter_display_label(&config.ai_hub, arbiter_ref);
     emit(
@@ -971,13 +1041,9 @@ fn run_supervisor(
         paths,
         &ProgressEvent::ArbiterStarted { arbiter_label },
     );
-    *status.lock().unwrap() = RunStatus::Running {
-        round: total_rounds,
-    };
-    run.status = RunStatus::Running {
-        round: total_rounds,
-    };
-    save_run(paths, &run)?;
+    *status.lock().unwrap() = RunStatus::Running { round };
+    run.status = RunStatus::Running { round };
+    save_run(paths, run)?;
 
     let summary = json!({ "findings": run.findings });
     let prompt = build_arena_round3_prompt(&summary.to_string());
@@ -985,7 +1051,7 @@ fn run_supervisor(
         &config.ai_hub,
         &arbiter_ref.provider_id,
         &arbiter_ref.model_id,
-        run_effort.as_deref(),
+        run_effort,
         Some(paths.root.to_string_lossy().as_ref()),
     )?;
     emit(
@@ -993,14 +1059,12 @@ fn run_supervisor(
         paths,
         &ProgressEvent::ReviewerThinking {
             reviewer_id: ARBITER_REVIEWER_ID.to_string(),
-            round: total_rounds,
+            round,
         },
     );
-    let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
+    let v = match run_provider_json(&cmd, &prompt, repo_root, cancel, children) {
         Ok(v) => v,
-        Err(e) if is_cancelled_error(&e) => {
-            bail_cancelled!();
-        }
+        Err(e) if is_cancelled_error(&e) => return cancel_run(ctx, run),
         Err(e) => return Err(e),
     };
     let r3 = super::schema::validate_round3_output(&v)?;
@@ -1026,13 +1090,24 @@ fn run_supervisor(
             },
         );
     }
+    Ok(ArbiterOutcome::Judged)
+}
 
-    run.status = RunStatus::Complete;
+/// Mark the run cancelled and announce it, preserving what `bail_cancelled!`
+/// did at the call site before this was extracted.
+fn cancel_run(ctx: &ArbiterCtx<'_>, run: &mut ArenaRun) -> Result<ArbiterOutcome> {
+    run.status = RunStatus::Cancelled;
     run.completed_at = Some(crate::app::chrono_now());
-    *status.lock().unwrap() = RunStatus::Complete;
-    save_run(paths, &run)?;
-    emit(registry, paths, &ProgressEvent::RunComplete { run_id });
-    Ok(())
+    save_run(ctx.paths, run)?;
+    *ctx.status.lock().unwrap() = RunStatus::Cancelled;
+    emit(
+        ctx.registry,
+        ctx.paths,
+        &ProgressEvent::RunComplete {
+            run_id: run.id.clone(),
+        },
+    );
+    Ok(ArbiterOutcome::Cancelled)
 }
 
 fn mark_reviewer_failed(run: &mut ArenaRun, id: &str, reason: &str) {
