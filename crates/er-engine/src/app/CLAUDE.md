@@ -34,7 +34,7 @@ persistence. See `state/agent.md` for the `App` vs `TabState` vs desktop
 - Watched: `watched_config`, `watched_files`, `selected_watched`, `show_watched`, `watched_not_ignored`
 - Performance: `hunk_offsets`, `mem_budget`, `lazy_mode`, `raw_diff` + byte offsets
 
-**`DiffMode`** — `Branch | Unstaged | Staged | History`. Each has a `git_mode()` string for `git_diff_raw`.
+**`DiffMode`** — `Branch | Unstaged | Staged | History | Conflicts | Hidden | PrDiff | Tour`. Each has a `git_mode()` string for `git_diff_raw`.
 
 **`InputMode`** — `Normal | Search | Comment | Confirm | Filter | Commit | RemoteUrl`. Determines which input handler runs in the TUI event loop.
 
@@ -65,9 +65,9 @@ Review sidecars live under the managed storage root resolved by
 | `checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
 | `snapshots/` | Raw file copies | `update_watched_snapshot()` |
 
-`.er-config.toml` (repo root, read-only here) configures features and watched
-files. `reviewed` is deleted when empty. Comments are marked stale per-comment
-when the diff changes.
+Config is global-only (`~/.config/er/config.toml`; there is no per-repo
+`.er-config.toml`). `reviewed` is deleted when empty. Comments are marked stale
+per-comment when the diff changes.
 
 ## Important Patterns
 

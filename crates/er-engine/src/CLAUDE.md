@@ -21,6 +21,7 @@ to the consuming crates.
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
 | `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
 | `agent_timing.rs` | Opt-in (`ER_AGENT_TIMING=1`) wall-clock marks for agent runs: slot wait, spawn, run | — |
+| `agent_runtime.rs` | **Unwired** — declared in `lib.rs` but referenced nowhere. Its invocation/artifact contracts are duplicated by `card_ai_spawn.rs` and the `app/state` spawn paths. | — |
 | `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |
 
 ## Consumers

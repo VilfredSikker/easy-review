@@ -563,6 +563,15 @@ long-lived agent process via the CLI's streaming mode, or deleting/wiring up the
 
 ### Documentation corrections
 
+**Status: 1, 2, 4, 5 and 6 done. 3 is half done.** They landed in the same
+branch as Phase 1 rather than in a later pass, because most were the same
+species of wrong claim the audit exists to find.
+
+What remains from item 3: the three stale runtime strings that point users at
+the removed repo-local config file, and the `docs/index.html` references. Those
+are a code change, and the item asks for them to be approved separately, so they
+have not been touched.
+
 1. Fix the `agent_slots` "before every agent subprocess spawn" claim in root
    `CLAUDE.md:82` and the "single hard cap" wording in `agent_slots.rs:5`, and state
    the six real spawn sites with their gate coverage.
