@@ -623,6 +623,15 @@ Also fixed while verifying the list: root `CLAUDE.md` still gave the mtime-sort
 toggle as `Shift+R`, which this document corrects to `m` further up. That drift
 is not one of the six items, so it had no line to be marked done against.
 
+Two places carried it, and only one is fixed. The live description now says `m`;
+the v1.1 roadmap entry (`CLAUDE.md:152`) still says `Shift+R`, and `Shift+R` now
+binds `refresh_diff`. It was left alone deliberately: that section is labelled
+historical and unmaintained, this repo's history for the input handler is
+squashed to one commit, and there is no way to tell whether v1.1 genuinely
+shipped that key. Correcting it would be rewriting history on a guess. Whoever
+picks this up should either confirm the v1.1 binding or drop the roadmap's key
+notation entirely.
+
 What remains from item 3: the stale strings that point users at the removed
 repo-local config file — `er-tui/src/input/normal.rs:216` and the
 `not_configured` texts at `app/state/mod.rs:6216` and `:6311` — plus the doc
