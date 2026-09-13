@@ -3089,12 +3089,14 @@ impl TabState {
         // Clear per-file context overrides — diff content has changed
         self.context_overrides.clear();
 
+        // Refresh mtime cache once per diff load (avoids per-frame fs::metadata calls).
+        // Must run before the sort: the sort reads this cache rather than statting
+        // once per comparison.
+        self.refresh_mtime_cache();
+
         if self.sort_by_mtime {
             self.sort_files_by_mtime();
         }
-
-        // Refresh mtime cache once per diff load (avoids per-frame fs::metadata calls)
-        self.refresh_mtime_cache();
 
         // Update memory budget
         self.update_mem_budget();
@@ -4393,24 +4395,40 @@ impl TabState {
         Ok(())
     }
 
-    /// Sort files by filesystem mtime (newest first)
+    /// Sort files by filesystem mtime (newest first).
+    ///
+    /// Reads [`Self::mtime_cache`], which the caller populates via
+    /// [`Self::refresh_mtime_cache`] first. Statting inside the comparator cost
+    /// about `2n log n` syscalls per refresh — 500 files is roughly 9000
+    /// `fs::metadata` calls — plus a `format!` per comparison.
     fn sort_files_by_mtime(&mut self) {
-        use std::fs;
         use std::time::SystemTime;
+
+        // Callers refresh first. This covers one that does not: with an empty
+        // cache every mtime reads as UNIX_EPOCH and the sort would silently
+        // become a no-op rather than an obviously wrong order.
+        if self.mtime_cache.len() < self.files.len() {
+            self.refresh_mtime_cache();
+        }
 
         // In lazy mode this breaks the index correspondence between self.files and
         // self.file_headers that ensure_file_parsed() relies on.
-        let repo_root = self.repo_root.clone();
-        self.files.sort_by(|a, b| {
-            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
-                .and_then(|m| m.modified())
+        let mut files = std::mem::take(&mut self.files);
+        files.sort_by(|a, b| {
+            let mtime_a = self
+                .mtime_cache
+                .get(&a.path)
+                .copied()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
-                .and_then(|m| m.modified())
+            let mtime_b = self
+                .mtime_cache
+                .get(&b.path)
+                .copied()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             // Newest first (reverse chronological)
             mtime_b.cmp(&mtime_a)
         });
+        self.files = files;
     }
 
     /// Populate `mtime_cache` with one `fs::metadata` call per diff file.
@@ -8180,6 +8198,49 @@ mod tests {
             compacted: false,
             raw_hunk_count: 0,
         }
+    }
+
+    #[test]
+    fn mtime_sort_reads_the_cache_newest_first() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for (name, offset) in [("old.rs", 0u64), ("mid.rs", 10), ("new.rs", 20)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, name).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(base + Duration::from_secs(offset))
+                .unwrap();
+        }
+
+        fn order(tab: &TabState) -> Vec<String> {
+            tab.files.iter().map(|f| f.path.clone()).collect()
+        }
+        let expected = vec!["new.rs", "mid.rs", "old.rs"];
+
+        // Deliberately not mtime order, so an untouched list cannot pass.
+        let mut tab = make_test_tab(vec![
+            make_file("old.rs", vec![], 1, 1),
+            make_file("new.rs", vec![], 1, 1),
+            make_file("mid.rs", vec![], 1, 1),
+        ]);
+        tab.repo_root = dir.path().to_string_lossy().to_string();
+
+        // A caller that never refreshed still sorts, rather than silently
+        // leaving the list alone because every cached mtime is absent.
+        tab.mtime_cache.clear();
+        tab.sort_files_by_mtime();
+        assert_eq!(order(&tab), expected, "unrefreshed caller");
+
+        // Production order: refresh once, then sort from the cache.
+        tab.mtime_cache.clear();
+        tab.refresh_mtime_cache();
+        tab.sort_files_by_mtime();
+        assert_eq!(order(&tab), expected, "refresh then sort");
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
