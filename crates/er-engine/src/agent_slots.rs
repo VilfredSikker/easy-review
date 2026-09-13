@@ -1,10 +1,15 @@
 //! Process-wide cap on concurrently running AI agent subprocesses.
 //!
-//! Both the background review queue (`App::poll_background_tasks` dispatch)
-//! and arena reviewer rounds acquire a slot here before spawning an agent
-//! process. This guarantees a single hard cap across every spawn path —
-//! starting many reviews or several arena runs at once can never fork more
-//! than `ai_hub.max_concurrent_reviews` agent processes in parallel.
+//! Two callers acquire a slot here before spawning: the background review
+//! queue (`App::poll_background_tasks` dispatch) and arena reviewer rounds.
+//! This is deliberately reported as covering *those two paths only* — it is
+//! not a cap on every spawn. `App::spawn_agent_prompt` (the TUI AI Hub, one
+//! call per action name), `run_card_ai_subprocess` (desktop card AI),
+//! `App::spawn_command` and `model_discovery::run_models_command` all spawn
+//! the configured agent CLI without taking a slot, so several can run at once
+//! on top of `ai_hub.max_concurrent_reviews`. Closing that gap means routing
+//! each of those through this pool; until then, don't describe the cap as
+//! global — the review queue does gate on it, so the queue's own limit holds.
 //!
 //! The pool is a counting semaphore built on `Mutex` + `Condvar` so it works
 //! from plain OS threads (no async runtime required). Waiters re-check a

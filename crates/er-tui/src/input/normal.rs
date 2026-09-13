@@ -213,7 +213,7 @@ pub fn handle_normal_input(
         KeyCode::Char('W') => {
             let tab = app.tab_mut();
             if tab.watched_config.paths.is_empty() {
-                app.notify("No watched paths in .er-config.toml");
+                app.notify("No watched paths configured — add them in the config hub (,)");
             } else {
                 tab.show_watched = !tab.show_watched;
                 if tab.show_watched {
