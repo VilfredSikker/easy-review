@@ -948,8 +948,9 @@ fn main() {
         let probe_app = Arc::clone(&app_arc);
         let probe_cache = Arc::clone(&branch_base_remote_oid);
         let probe_rev = Arc::clone(&desktop_revision);
+        let mut probe_interval_secs = PROBE_INTERVAL_SECS;
         std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            std::thread::sleep(std::time::Duration::from_secs(probe_interval_secs));
 
             // Phase 1: brief lock — capture the active branch tab's identity.
             let identity = {
@@ -966,9 +967,13 @@ fn main() {
                 }
             };
             let Some((repo_root, base_short)) = identity else {
+                // Not probing at all, so re-arm: a branch view appearing later
+                // should get its first probe at the fast cadence.
+                probe_interval_secs = PROBE_INTERVAL_SECS;
                 continue;
             };
             if base_short.is_empty() {
+                probe_interval_secs = PROBE_INTERVAL_SECS;
                 continue;
             }
 
@@ -990,6 +995,9 @@ fn main() {
                 _ => None,
             };
             let Some(oid) = oid else {
+                // Probe failed. Treat as unchanged and back off, so a flaky
+                // network is not hammered at the fast cadence.
+                probe_interval_secs = next_probe_interval_secs(probe_interval_secs, false);
                 continue;
             };
 
@@ -1009,6 +1017,7 @@ fn main() {
             if changed {
                 profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
             }
+            probe_interval_secs = next_probe_interval_secs(probe_interval_secs, changed);
         });
     }
 
@@ -2113,6 +2122,30 @@ fn active_root_from_projects() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Base cadence for the branch-base staleness probe: one `git ls-remote` a
+/// minute while origin's tip is moving.
+const PROBE_INTERVAL_SECS: u64 = 60;
+
+/// Ceiling the probe backs off to while that tip stays put.
+const PROBE_MAX_INTERVAL_SECS: u64 = 300;
+
+/// Next probe interval in seconds.
+///
+/// The probe is a network call on a loop that runs for the whole session, and a
+/// review can sit on one branch for hours. Backing off while the tip is
+/// unchanged bounds that steady-state traffic; any change snaps straight back
+/// to the base cadence, so a tip that actually moves is still seen within a
+/// minute.
+fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
+    if changed {
+        PROBE_INTERVAL_SECS
+    } else {
+        current
+            .saturating_mul(2)
+            .min(PROBE_MAX_INTERVAL_SECS)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2451,5 +2484,27 @@ mod tests {
         assert!(names.contains(&"authorization"));
         assert!(!names.contains(&"host"));
         assert!(!names.iter().any(|n| n.starts_with("sec-")));
+    }
+
+    #[test]
+    fn probe_interval_backs_off_while_the_base_tip_is_unchanged() {
+        let mut interval = PROBE_INTERVAL_SECS;
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, 120, "backs off while nothing moves");
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, 240);
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(
+            interval, PROBE_MAX_INTERVAL_SECS,
+            "capped rather than growing without bound"
+        );
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, PROBE_MAX_INTERVAL_SECS, "stays at the cap");
+
+        assert_eq!(
+            next_probe_interval_secs(interval, true),
+            PROBE_INTERVAL_SECS,
+            "a tip that moved snaps back to the fast cadence"
+        );
     }
 }
