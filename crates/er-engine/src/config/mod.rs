@@ -176,10 +176,25 @@ pub struct AiHubConfig {
     /// 0 means "use the default".
     #[serde(default)]
     pub max_concurrent_reviews: usize,
+    /// Wall-clock limit for a single agent process, in seconds. A run past it
+    /// is killed and reported as timed out rather than held open forever.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub agent_timeout_secs: u64,
 }
 
 /// Default cap on concurrently running agent processes.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+/// Default wall-clock limit for one agent process.
+///
+/// Deliberately generous. The asymmetry is not close: cutting off a review
+/// that was still working destroys work the user waited for and cannot
+/// recover, while letting a hung one sit a little longer costs a slot. At the
+/// measured ~60 s of provider latency per reviewer this is roughly fifteen
+/// reviewers deep, so a run that reaches it has stopped making progress
+/// rather than merely being slow. Lower it if your providers are fast.
+pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 900;
 
 /// A validated provider/model/effort choice used by ordinary AI actions.
 ///
@@ -200,6 +215,19 @@ impl AiHubConfig {
         } else {
             self.max_concurrent_reviews
         }
+    }
+
+    /// Effective per-agent deadline — configured value, or the default when
+    /// unset. Zero resolves to the default rather than to "no limit": a run
+    /// with no deadline is the failure this setting exists to prevent, so the
+    /// off switch is a very large number, not a zero someone set by accident.
+    pub const fn effective_agent_timeout(&self) -> std::time::Duration {
+        let secs = if self.agent_timeout_secs == 0 {
+            DEFAULT_AGENT_TIMEOUT_SECS
+        } else {
+            self.agent_timeout_secs
+        };
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -1948,6 +1976,33 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── agent timeout ──
+
+    #[test]
+    fn an_unset_agent_timeout_takes_the_default_rather_than_no_limit() {
+        // Zero is the serde default for a field nobody set. Reading it as "no
+        // limit" would disable the protection for exactly the users who never
+        // touched the setting, which is most of them.
+        let hub = AiHubConfig::default();
+        assert_eq!(hub.agent_timeout_secs, 0);
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn a_configured_agent_timeout_wins() {
+        let hub = AiHubConfig {
+            agent_timeout_secs: 120,
+            ..Default::default()
+        };
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(120)
+        );
+    }
 
     // ── ai_hub supplementation ──
 

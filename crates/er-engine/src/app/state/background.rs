@@ -154,6 +154,12 @@ pub struct HostWriteDiagram {
 /// this; one entry per task id.
 pub struct BackgroundTaskHandle {
     pub task: BackgroundTask,
+    /// The running agent process, for a stop control and the deadline.
+    ///
+    /// Held here rather than inside the worker so the App can reach it — the
+    /// worker keeps its own clone, and `AgentRunHandle` is built for exactly
+    /// that split. Nothing calls `kill` on it yet; the timeout watchdog does.
+    pub run: std::sync::Arc<crate::agent_run::AgentRunHandle>,
     /// One-shot result channel; produces `Ok(())` on success or an `Err`
     /// describing the failure when the subprocess finishes.
     pub result_rx: std::sync::mpsc::Receiver<anyhow::Result<()>>,

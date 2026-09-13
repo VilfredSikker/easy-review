@@ -3024,6 +3024,12 @@ impl App {
         let command_name_fail = command_name.to_string();
         let command_name_emit = command_name.to_string();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        // The worker owns one clone; the App keeps the other so a stop control
+        // can reach the process. Built here, outside the thread, so the handle
+        // exists before anything can try to stop it.
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_task = std::sync::Arc::clone(&run);
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
@@ -3129,13 +3135,18 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
+                let child_id = child.id();
                 timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                // Hand ownership over only once the pipes are off it, so a
+                // timeout firing here still reaches the process.
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx_thread.clone();
                 let stdout_handle = std::thread::spawn(move || -> Vec<String> {
@@ -3182,12 +3193,26 @@ impl App {
                     lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for review ({agent_cmd})"))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
                 timer.mark_finished();
+
+                // The verdict, read once the child is reaped and the pipes are
+                // drained. Timeout first: a run killed by its deadline also
+                // has `cancel` set, and "you stopped this" would be the wrong
+                // story to tell about it.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
 
                 if debug_agent_log_enabled() {
                     let debug_content = format!(
@@ -3277,6 +3302,7 @@ impl App {
             task_id.clone(),
             BackgroundTaskHandle {
                 task,
+                run: run_for_task,
                 result_rx,
                 log_rx,
                 recent_log: std::collections::VecDeque::new(),
@@ -3475,6 +3501,25 @@ impl App {
             self.notify("review removed from queue");
         }
         removed
+    }
+
+    /// Stop a running background agent. Returns true when a task with that id
+    /// was running and has been signalled.
+    ///
+    /// Signalling only. The worker owns the verdict, and reaches it after its
+    /// `wait` returns — which the kill causes — so this must not also write a
+    /// result, or a stopped run and a finished one would race to describe the
+    /// same task. The cancel flag is set first inside `kill`, so a worker
+    /// about to record an outcome already sees it even if the signal fails.
+    ///
+    /// Unlike [`Self::cancel_queued_background_task`], which removes a task
+    /// that never started, this one leaves the task in place to wind down.
+    pub fn cancel_running_background_task(&mut self, id: &str) -> bool {
+        let Some(handle) = self.background_tasks.get(id) else {
+            return false;
+        };
+        handle.run.kill();
+        true
     }
 
     /// Snapshot of in-flight + recently finished background tasks. Includes
