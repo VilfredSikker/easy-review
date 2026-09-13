@@ -107,6 +107,7 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
     }
 
     std::env::set_var("ER_FAKE_ARENA_DIR", &fake);
+    let calls_before = er_engine::arena::fake_arena_call_count();
 
     let mut config = er_engine::config::ErConfig::default();
     er_engine::config::supplement_ai_hub(&mut config.ai_hub);
@@ -176,6 +177,13 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
         "the two experts raised one issue, so one finding"
     );
     assert_eq!(run.findings[0].raised_by, vec!["reliability", "security"]);
+    // The path's whole economic argument: one arbiter call however many experts
+    // contributed. Two experts ran here, and the count must not follow them.
+    assert_eq!(
+        er_engine::arena::fake_arena_call_count() - calls_before,
+        1,
+        "exactly one arbiter call, not one per expert"
+    );
     assert_eq!(
         run.findings[0].verdict,
         Verdict::Kept,

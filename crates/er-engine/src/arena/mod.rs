@@ -17,7 +17,7 @@ mod seeded;
 mod storage;
 mod voting;
 
-pub use adapter::is_cancelled_error;
+pub use adapter::{fake_arena_call_count, is_cancelled_error};
 pub use agents::{agent_meta, list_arena_agent_kinds, AgentMeta};
 pub use identity::finding_id;
 pub use import::import_arena_findings_to_review;

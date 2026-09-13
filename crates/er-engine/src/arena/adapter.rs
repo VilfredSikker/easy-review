@@ -92,14 +92,25 @@ pub fn run_provider_json(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("provider failed")))
 }
 
+/// How many fake provider responses this process has served.
+///
+/// The seeded path's whole economic argument is that it costs *one* arbiter call
+/// however many experts contributed, and that is only assertable by counting.
+static FAKE_ARENA_CALLS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// Test hook: read `round1.json`, `round2.json`, or `round3.json` from a directory (in order).
 pub fn fake_arena_json_from_dir(dir: &str) -> Result<Value> {
-    static ROUND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
-    let n = ROUND.fetch_add(1, Ordering::SeqCst).min(3);
-    let path = std::path::Path::new(dir).join(format!("round{n}.json"));
+    let n = FAKE_ARENA_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+    let path = std::path::Path::new(dir).join(format!("round{}.json", n.min(3)));
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("read fake arena fixture {}", path.display()))?;
     serde_json::from_str(&text).context("parse fake arena json")
+}
+
+/// Provider responses served so far. A test records this before and after a run
+/// and asserts the delta — see `seeded_arbiter.rs`.
+pub fn fake_arena_call_count() -> u8 {
+    FAKE_ARENA_CALLS.load(Ordering::SeqCst)
 }
 
 #[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
