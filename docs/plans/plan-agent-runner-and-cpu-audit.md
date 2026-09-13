@@ -403,6 +403,16 @@ period on a loop that polls at 50 ms, so the AI poll ran at 0.5 s instead of 1 s
 the watched-file rescan at 2.5 s instead of 5 s (doubling the `git check-ignore`
 spawn rate), and notifications cleared after 1 s instead of 2.
 
+The notification timer has since left the tick model entirely. Counting ticks
+made the dwell stretch with loop load — the count advances once per iteration,
+so a refresh in flight pushed "2 seconds" well past that — and `er-desktop`
+never called `tick()` at all, so on that side the message was never cleared and
+the frontend's text-based dedupe silently dropped every repeat. The engine now
+stamps each message with a `seq` and leaves it set; the TUI clears it on a
+wall-clock deadline, and the desktop raises one toast per `seq`. That also
+removes the coupling this correction had introduced between an engine constant
+and the TUI's poll rate.
+
 The dirty gate is not implemented, deliberately. Skipping the draw on an idle
 frame is only safe if *every* state mutation sets a dirty flag, and three of them
 are invisible to the loop: `check_commands`, `poll_background_tasks` and
