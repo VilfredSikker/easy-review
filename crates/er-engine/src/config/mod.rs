@@ -186,6 +186,14 @@ pub struct AiHubConfig {
 /// Default cap on concurrently running agent processes.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
 
+/// Accepted range for `ai_hub.max_concurrent_reviews`.
+///
+/// One definition, because the picker and the setter behind it disagreed:
+/// the settings UI offered 1-6 while the write path accepted 1-16, so a
+/// value set elsewhere was silently kept but not selectable, and a value
+/// chosen from the picker could never reach the top of its own range.
+pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<usize> = 1..=16;
+
 /// Default wall-clock limit for one agent process.
 ///
 /// Deliberately generous, because the asymmetry is not close: cutting off a
