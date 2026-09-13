@@ -2769,6 +2769,30 @@ fn merged_into_base(repo_root: &str, base_branch: &str) -> std::collections::Has
         .unwrap_or_default()
 }
 
+/// How many worktrees a repo may have before the merged-branch check is skipped.
+///
+/// `git branch --merged` lists every local branch, so on a repo with many
+/// worktrees the check costs more than the colouring it drives is worth. Above
+/// this, callers see "nothing merged" and render every branch uncoloured.
+const MAX_WORKTREES_FOR_MERGED_CHECK: usize = 10;
+
+/// Branches merged into `base_branch`, for the callers that colour a branch
+/// list.
+///
+/// Empty when the check is skipped (too many worktrees) or the answer cannot be
+/// established (no base branch, git failed) — callers treat all three alike, so
+/// they only need `contains`.
+fn merged_branches(
+    repo_root: &str,
+    base_branch: &str,
+    worktree_count: usize,
+) -> std::collections::HashSet<String> {
+    if worktree_count > MAX_WORKTREES_FOR_MERGED_CHECK {
+        return std::collections::HashSet::new();
+    }
+    merged_into_base(repo_root, base_branch)
+}
+
 fn build_tracked_branches(
     repo_root: &str,
     base_branch: &str,
@@ -2793,12 +2817,7 @@ fn build_tracked_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
-    let merged = if skip_merged {
-        std::collections::HashSet::new()
-    } else {
-        merged_into_base(repo_root, base_branch)
-    };
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     // Build the full list first, then filter to the curated set (tracked ∪ {current}).
     let all: Vec<BranchInfo> = text
@@ -2816,7 +2835,7 @@ fn build_tracked_branches(
                 Some(upstream_raw)
             };
             let is_current = name == current_branch;
-            let is_merged = !skip_merged && name != base_branch && merged.contains(&name);
+            let is_merged = name != base_branch && merged.contains(&name);
             let worktree_path = worktrees
                 .iter()
                 .find(|w| w.branch == name)
@@ -2889,12 +2908,7 @@ fn build_auto_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
-    let merged = if skip_merged {
-        std::collections::HashSet::new()
-    } else {
-        merged_into_base(repo_root, base_branch)
-    };
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
     let dismissed_set: std::collections::HashSet<&str> =
@@ -2927,7 +2941,7 @@ fn build_auto_branches(
         } else {
             Some(upstream_raw)
         };
-        let is_merged = !skip_merged && name != base_branch && merged.contains(&name);
+        let is_merged = name != base_branch && merged.contains(&name);
         let worktree_path = worktrees
             .iter()
             .find(|w| w.branch == name)
@@ -5083,5 +5097,50 @@ mod tests {
         // the same outcome the per-branch form's `.unwrap_or(false)` gave.
         assert!(merged_into_base(&root, "no-such-base").is_empty());
         assert!(merged_into_base(&root, "").is_empty());
+    }
+
+    #[test]
+    fn merged_branches_skips_the_check_above_the_worktree_threshold() {
+        // The guard used to sit duplicated at both call sites; this pins it
+        // where it now lives. Above the threshold every branch renders
+        // uncoloured, which is the same outcome as "nothing is merged".
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            let out = Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(dir.path().join("f.txt"), "one\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-q", "-b", "merged-branch"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "merged work"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"]);
+
+        let at_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
+        assert!(
+            at_limit.contains("merged-branch"),
+            "at the threshold the check still runs: {at_limit:?}"
+        );
+
+        let over_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK + 1);
+        assert!(
+            over_limit.is_empty(),
+            "past the threshold the check is skipped: {over_limit:?}"
+        );
+        assert!(
+            merged_branches(&root, "", 0).is_empty(),
+            "an empty base has nothing to compare against"
+        );
     }
 }
