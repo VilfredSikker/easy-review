@@ -139,8 +139,8 @@ er https://github.com/owner/repo/pull/42</code></pre>
       <li><strong>Auto-compaction</strong> — lock files, generated code, minified assets, and files over ~500 lines are
       compacted automatically: their hunks are cleared from memory and shown as a single collapsed entry. Press
       <kbd>Enter</kbd> to expand one on demand.</li>
-      <li><strong>Two-phase lazy parsing</strong> — diffs above ~5,000 lines get a header-only scan for the file list,
-      and individual files are parsed only when you navigate to them.</li>
+      <li><strong>Two-phase lazy parsing</strong> — diffs above roughly 200&nbsp;KB get a header-only scan for the file
+      list, and individual files are parsed only when you navigate to them.</li>
       <li><strong>Viewport rendering</strong> — only the rows visible on screen (plus a small buffer) are ever built, so
       a 5,000-line file renders like a 60-line one.</li>
     </ul>

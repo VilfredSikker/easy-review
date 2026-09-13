@@ -186,15 +186,21 @@ check:
 check-ui:
     cd desktop-ui && bun run check
 
-# All static checks: rustfmt, clippy, and the frontend type-check.
+# Verify agent-facing docs cite files, links and ADRs that still exist.
+# Catches the rot that prose acquires silently — see docs/agents/writing-docs.md.
 [group('lint')]
-lint: fmt-check clippy check-ui
+docs-check:
+    ./scripts/docs-check.sh
+
+# All static checks: rustfmt, clippy, the frontend type-check, and the docs check.
+[group('lint')]
+lint: fmt-check clippy check-ui docs-check
 
 # ───────────────────────────────── aggregates ────────────────────────────────────
 
-# Mirror the GitHub CI gate: format, clippy, tests, headless engine builds.
+# Mirror the GitHub CI gate: format, clippy, tests, docs check, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy test build-engine-headless
+ci: fmt-check clippy docs-check test build-engine-headless
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]

@@ -8,7 +8,7 @@ home.
 - [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, test, lint, dev, and release mechanics.
 - [`docs/adr/`](docs/adr/) — numbered decisions and why they were made. Read the ones covering your area, and cite the number rather than restating the decision.
 - [`crates/er-desktop/agent.md`](crates/er-desktop/agent.md), [`desktop-ui/agent.md`](desktop-ui/agent.md) — desktop backend and frontend notes.
-- [`CONTEXT.md`](CONTEXT.md), [`docs/agents/`](docs/agents/) — project vocabulary, issue tracking, triage labels.
+- [`CONTEXT.md`](CONTEXT.md), [`docs/agents/`](docs/agents/) — project vocabulary, issue tracking, triage labels, and [how to write these docs](docs/agents/writing-docs.md).
 
 ## Build / Test / Lint / Run
 

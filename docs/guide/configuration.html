@@ -12,24 +12,29 @@
     <p class="eyebrow">Core Concepts</p>
     <h1>Configuration</h1>
     <p class="lead">
-      <code>er</code> is configured with TOML — there are no required CLI flags. Settings are deep-merged: a global file
-      provides shared defaults, and a per-repo file overrides individual fields. The desktop app exposes most of these
-      through a settings GUI.
+      <code>er</code> is configured with TOML — there are no required CLI flags. One file holds everything: any key it
+      omits falls back to the built-in default. Settings apply live and save as you change them, so there is no unsaved
+      state to lose. The desktop app exposes most of these through a settings GUI.
     </p>
 
     <h2>Where config lives</h2>
     <table>
-      <thead><tr><th>Location</th><th>Scope</th><th>Priority</th></tr></thead>
+      <thead><tr><th>Location</th><th>Scope</th></tr></thead>
       <tbody>
-        <tr><td><code>.er-config.toml</code> (repo root)</td><td>Per-repo</td><td>Highest</td></tr>
-        <tr><td><code>~/.config/er/config.toml</code></td><td>Global</td><td>Middle</td></tr>
-        <tr><td>built-in</td><td>Defaults</td><td>Lowest</td></tr>
+        <tr><td><code>config.toml</code> in <code>easy-review</code>'s app-data directory</td><td>Everything</td></tr>
+        <tr><td>built-in</td><td>Defaults, used for any key the file omits</td></tr>
       </tbody>
     </table>
     <p>
-      Merging is deep and per-field: a repo file only needs to specify what differs from your global config. Everything
-      else inherits from global, then from the built-in defaults. A complete annotated template ships as
-      <code>config.toml.example</code> in the repository.
+      There is <strong>one</strong> config file, shared by every repo — there is no per-repo override. On macOS it lives
+      at <code>~/Library/Application Support/easy-review/config.toml</code>; elsewhere it is the platform app-data
+      directory plus <code>easy-review</code>. <code>ER_CONFIG_PATH</code> overrides the file and
+      <code>ER_STORAGE_ROOT</code> moves the whole data directory, config included.
+    </p>
+    <p>
+      <code>~/.config/er/</code> still exists, but holds only the desktop app's <code>projects.json</code> and
+      <code>tabs.json</code>. A <code>~/.config/er/config.toml</code> from an older install is copied into the managed
+      location once, on first run, and then left alone — editing it afterwards does nothing.
     </p>
 
     <h2>Live editing <span class="pill tui">terminal</span></h2>
@@ -170,7 +175,7 @@ diff_mode = <span class="tok-str">"content"</span>                  <span class=
     </p>
 
     <h2>Worked example</h2>
-    <p>Global (<code>~/.config/er/config.toml</code>) holds preferences shared across repos:</p>
+    <p>The single config file, with every key you leave out falling back to its default:</p>
     <pre><code>[features]
 view_conflicts = <span class="tok-key">false</span>
 
@@ -179,17 +184,12 @@ tab_width  = <span class="tok-key">2</span>
 wrap_lines = <span class="tok-key">true</span>
 
 [watched]
-paths = [<span class="tok-str">".work/**/*"</span>, <span class="tok-str">".er/**/*"</span>]</code></pre>
-    <p>Per-repo (<code>.er-config.toml</code>) overrides only what differs:</p>
-    <pre><code>[display]
-tab_width = <span class="tok-key">4</span>
-
-[watched]
 paths     = [<span class="tok-str">".work/**/*"</span>, <span class="tok-str">".er/**/*"</span>, <span class="tok-str">"logs/**/*.log"</span>]
 diff_mode = <span class="tok-str">"snapshot"</span></code></pre>
     <p>
-      Result: <code>view_conflicts</code> and <code>wrap_lines</code> come from global; <code>tab_width = 4</code> and
-      the extra watched path come from the repo file.
+      Watched paths are the one setting that is repo-specific in <em>effect</em>: the globs are global, but each only
+      matches inside the repo you are reviewing. If you need different watched paths per project, that is the reason —
+      there is no per-repo file to put them in.
     </p>
   </main>
   <script src="assets/docs.js"></script>

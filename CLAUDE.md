@@ -17,11 +17,14 @@ Binary name is `er`. Run it from any git repo.
   touch the area you are about to change. Add one when a decision is hard to
   reverse, would surprise a reader, or came from a real trade-off.
 - **`docs/DEVELOPMENT.md`** — build, test, and release mechanics.
+- **`docs/agents/writing-docs.md`** — the rules for writing and maintaining any
+  of the above. Read it before editing a doc.
 - **`AGENTS.md`** — routing for tools other than Claude Code.
 
 The code carries what and how; these files carry why. A comment that restates
 what the code does is noise — the code already says it, and the restatement is
-what rots.
+what rots. Run `just docs-check` after editing docs: it verifies every file,
+link and ADR reference still resolves.
 
 ## Build & run
 
