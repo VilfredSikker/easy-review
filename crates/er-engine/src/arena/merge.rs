@@ -83,13 +83,7 @@ pub fn findings_from_round1(
                 if !existing.raised_by.contains(reviewer_id) {
                     existing.raised_by.push(reviewer_id.clone());
                 }
-                let cur = existing.severity_by_round.get(&1).copied();
-                if cur
-                    .map(|c| severity_rank(c) < severity_rank(sev))
-                    .unwrap_or(true)
-                {
-                    existing.severity_by_round.insert(1, sev);
-                }
+                raise_severity(existing, 1, sev);
             } else {
                 let mut severity_by_round = BTreeMap::new();
                 severity_by_round.insert(1, sev);
@@ -124,6 +118,21 @@ pub fn findings_from_round1(
     }
     propose_merge_candidates(&mut out);
     out
+}
+
+/// Record `severity` for `round`, keeping whichever is worse.
+///
+/// Three callers need this — round-1 assembly, the seeded dedupe's id merge, and
+/// its group collapse — and a merge that quietly downgraded a severity is the
+/// kind of bug that only shows up as a finding nobody looked at.
+pub(crate) fn raise_severity(finding: &mut ArenaFinding, round: u8, severity: RiskLevel) {
+    let worse = finding
+        .severity_by_round
+        .get(&round)
+        .is_none_or(|current| severity_rank(*current) < severity_rank(severity));
+    if worse {
+        finding.severity_by_round.insert(round, severity);
+    }
 }
 
 /// Higher is worse. Shared with the seeded dedupe, which picks the most severe

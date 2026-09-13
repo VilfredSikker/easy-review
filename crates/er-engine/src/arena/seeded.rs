@@ -6,7 +6,7 @@
 //! regraded confidence and a verdict per finding — is a later slice.
 
 use super::identity::finding_id;
-use super::merge::{propose_merge_candidates, severity_rank};
+use super::merge::{propose_merge_candidates, raise_severity, severity_rank};
 use super::model::{ArenaFinding, Ballot, RoundLog, Verdict, Vote};
 use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, Confidence, Finding};
 use std::collections::{BTreeMap, HashMap};
@@ -30,8 +30,15 @@ pub fn dedupe_expert_findings(
     current_diff_hash: &str,
     review_hash: &str,
 ) -> Vec<ArenaFinding> {
+    // `load_expert_reviews` reads the directory in filesystem order, which is
+    // not stable across machines or runs. Left alone it would decide which
+    // claim survives a collision, which raiser is listed first, and which row
+    // comes out on top — all of it content the UI shows.
+    let mut experts = load_expert_reviews(er_dir);
+    experts.sort_by(|a, b| a.expert_id.cmp(&b.expert_id));
+
     let mut out: Vec<ArenaFinding> = Vec::new();
-    for expert in load_expert_reviews(er_dir) {
+    for expert in experts {
         if !expert_hash_accepted(&expert, review_hash, current_diff_hash) {
             continue;
         }
@@ -48,11 +55,14 @@ pub fn dedupe_expert_findings(
                         if !existing.raised_by.iter().any(|r| r == def.id) {
                             existing.raised_by.push(def.id.to_string());
                         }
-                        let worse = existing.severity_by_round.get(&1).is_none_or(|current| {
-                            severity_rank(*current) < severity_rank(finding.severity)
-                        });
-                        if worse {
-                            existing.severity_by_round.insert(1, finding.severity);
+                        raise_severity(existing, 1, finding.severity);
+                        // The id keys on file + title, so two *different* issues
+                        // that happen to share a title in one file land here as
+                        // well. Differing anchors are the tell, and the second
+                        // one's text is kept as a child rather than dropped.
+                        if existing.line != finding.line_start {
+                            let child = from_expert_finding(path, finding, def.id, id.clone());
+                            existing.merged_children.push(child);
                         }
                     }
                     None => out.push(from_expert_finding(path, finding, def.id, id)),
@@ -63,9 +73,6 @@ pub fn dedupe_expert_findings(
 
     propose_merge_candidates(&mut out);
     let mut collapsed = collapse_groups(out);
-    // `load_expert_reviews` reads the directory in filesystem order, so without
-    // this the same sidecars produce a different raiser order on another
-    // machine — and a different `raised_by`, which is content the UI shows.
     for finding in &mut collapsed {
         finding.raised_by.sort();
     }
@@ -198,13 +205,7 @@ fn collapse_one(mut group: Vec<ArenaFinding>) -> ArenaFinding {
             }
         }
         for (round, severity) in &child.severity_by_round {
-            let worse = survivor
-                .severity_by_round
-                .get(round)
-                .is_none_or(|current| severity_rank(*current) < severity_rank(*severity));
-            if worse {
-                survivor.severity_by_round.insert(*round, *severity);
-            }
+            raise_severity(&mut survivor, *round, *severity);
         }
         survivor.merged_children.push(child);
     }
@@ -431,6 +432,43 @@ mod tests {
         let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
 
         assert!(out.is_empty());
+    }
+
+    /// The id keys on file + title, so two genuinely different issues sharing a
+    /// title in one file collide. They collapse — the id has to stay unique per
+    /// row — but the second claim's text survives as a child instead of being
+    /// dropped on the floor.
+    #[test]
+    fn a_title_collision_keeps_the_second_claims_text() {
+        let dir = tempdir().unwrap();
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "missing null check", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "reliability",
+            &[("src/a.rs", "missing null check", 400)],
+        );
+
+        let out = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+
+        assert_eq!(out.len(), 1, "one id, so one row");
+        assert_eq!(out[0].raised_by, vec!["reliability", "security"]);
+        assert_eq!(out[0].merged_children.len(), 1);
+
+        // Which anchor lands on the survivor is settled by the sorted expert
+        // order rather than by filesystem order; what matters here is that
+        // neither claim is discarded.
+        let mut anchors: Vec<Option<usize>> = vec![out[0].line];
+        anchors.extend(out[0].merged_children.iter().map(|c| c.line));
+        anchors.sort();
+        assert_eq!(anchors, vec![Some(10), Some(400)], "both anchors survive");
+        assert!(out[0].body.contains("missing null check"));
+        assert!(out[0].merged_children[0]
+            .body
+            .contains("missing null check"));
     }
 
     #[test]
