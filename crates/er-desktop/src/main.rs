@@ -2133,9 +2133,12 @@ const PROBE_MAX_INTERVAL_SECS: u64 = 300;
 ///
 /// The probe is a network call on a loop that runs for the whole session, and a
 /// review can sit on one branch for hours. Backing off while the tip is
-/// unchanged bounds that steady-state traffic; any change snaps straight back
-/// to the base cadence, so a tip that actually moves is still seen within a
-/// minute.
+/// unchanged bounds that steady-state traffic to a probe every five minutes.
+///
+/// The cost of that: once backed off, a change is only *noticed* at the next
+/// probe, so a branch that starts moving after a long idle wait is up to
+/// `PROBE_MAX_INTERVAL_SECS` away from being seen. The snap back to the base
+/// cadence happens on detection, not on the change itself.
 fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
     if changed {
         PROBE_INTERVAL_SECS

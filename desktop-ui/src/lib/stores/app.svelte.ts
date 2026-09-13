@@ -64,6 +64,12 @@ export interface LogEntry {
 
 const MAX_LOGS = 500;
 
+/**
+ * Dwell for a backend notification flagged `long` — the desktop's counterpart
+ * to the TUI's `NOTIFICATION_DWELL_LONG`. Overrides `showToast`'s default.
+ */
+const TOAST_LONG_MS = 8_000;
+
 export type DiffViewMode = "unified" | "split";
 export type MainViewMode = "diff" | "agent-output" | "export-review" | "settings";
 const DIFF_VIEW_MODE_KEY = "er.diffViewMode";
@@ -353,7 +359,11 @@ class AppStore {
       lower.includes("no ")
         ? "error"
         : "success";
-    this.showToast(kind, message);
+    // `long` is the engine's "worth leaving up longer" flag; the desktop owns
+    // how long that is, same as the TUI does with its own dwell constants.
+    const durationMs =
+      notification.long && kind !== "error" ? TOAST_LONG_MS : undefined;
+    this.showToast(kind, message, durationMs);
     return true;
   }
 
