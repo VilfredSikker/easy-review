@@ -39,6 +39,17 @@
   let estimateLoading = $state(false);
   let estimateError = $state<string | null>(null);
   let estimateSeq = 0;
+
+  /**
+   * The engine clamps rounds to its own maximum (`effective_arena_rounds`), so
+   * a picker that offers more than this reports rounds nobody will run. The
+   * limit comes from the estimate rather than a hardcoded number so the two
+   * cannot drift apart again; 3 is only the pre-load fallback.
+   */
+  const maxRounds = $derived(estimate?.max_rounds ?? 3);
+  const ROUND_OPTIONS = $derived(
+    Array.from({ length: maxRounds }, (_, i) => i + 1),
+  );
   /** `provider::model` for round-final arbiter (independent of reviewers). */
   let arbiterKey = $state<string | null>(null);
   let reviewerMode = $state<LauncherReviewerMode>("models");
@@ -55,7 +66,6 @@
     { id: "selected", label: "Selected" },
   ];
 
-  const ROUND_OPTIONS = [1, 2, 3, 4, 5] as const;
 
   function pairKey(p: string, m: string) {
     return `${p}::${m}`;
@@ -257,13 +267,11 @@
   );
 
   const roundsHint = $derived(
-    rounds === 1
+    rounds <= 1
       ? "Propose only — no cross-check or arbiter"
       : rounds === 2
         ? "Propose + 1 cross-check, then arbiter"
-        : rounds === 3
-          ? "Propose + 2 cross-checks, then arbiter"
-          : `${rounds} reviewer rounds + arbiter`,
+        : `Propose + ${rounds - 1} cross-checks, then arbiter`,
   );
 
   const footerEstimate = $derived(
@@ -383,7 +391,7 @@
             req: {
               scope: gitScope,
               files: scope === "selected" ? files : undefined,
-              rounds: Math.min(5, Math.max(1, Number(rounds))),
+              rounds: Math.min(maxRounds, Math.max(1, Number(rounds))),
               arbiter: rounds >= 2 ? arbiterRef ?? undefined : undefined,
               groups: agentGroups.map((g) => ({
                 agent_kind: g.agent_kind,
@@ -396,7 +404,7 @@
               reviewers: picked,
               scope: gitScope,
               files: scope === "selected" ? files : undefined,
-              rounds: isArena ? Math.min(5, Math.max(1, Number(rounds))) : 1,
+              rounds: isArena ? Math.min(maxRounds, Math.max(1, Number(rounds))) : 1,
               arbiter: isArena && rounds >= 2 ? arbiterRef ?? undefined : undefined,
             },
           });
@@ -537,7 +545,7 @@
           agent_groups: agentGroups,
           scope: gitScope,
           files,
-          rounds: Math.min(5, Math.max(1, Number(rounds))),
+          rounds: Math.min(maxRounds, Math.max(1, Number(rounds))),
           arbiter: rounds >= 2 ? arbiterRef ?? undefined : undefined,
           confirm: exceedsCostLimit && costApproved,
           effort: arenaRunEffort(),
@@ -548,7 +556,7 @@
           reviewers: picked,
           scope: gitScope,
           files,
-          rounds: isArena ? Math.min(5, Math.max(1, Number(rounds))) : 1,
+          rounds: isArena ? Math.min(maxRounds, Math.max(1, Number(rounds))) : 1,
           arbiter: isArena && rounds >= 2 ? arbiterRef ?? undefined : undefined,
           confirm: exceedsCostLimit && costApproved,
           effort: arenaRunEffort(),

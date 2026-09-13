@@ -190,6 +190,7 @@ pub fn arena_estimate_batch(
             &app.config.ai_hub,
         ),
         cost_limit_usd: er_engine::arena::DEFAULT_COST_LIMIT_USD,
+        max_rounds: er_engine::arena::ARENA_ROUNDS_V1,
     })
 }
 
