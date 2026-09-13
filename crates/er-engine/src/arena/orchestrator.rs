@@ -838,6 +838,7 @@ fn run_supervisor(
         },
     );
 
+    let round1_started = std::time::Instant::now();
     cancelled!();
     let round1 = run_round1_parallel(
         registry,
@@ -850,6 +851,17 @@ fn run_supervisor(
         &cancel,
         &children,
     )?;
+    crate::agent_timing::emit(
+        "arena_round",
+        &[
+            ("round", "1".to_string()),
+            ("reviewers", reviewers.len().to_string()),
+            (
+                "elapsed_ms",
+                round1_started.elapsed().as_millis().to_string(),
+            ),
+        ],
+    );
     if round1.cancelled {
         bail_cancelled!();
     }
@@ -926,6 +938,7 @@ fn run_supervisor(
             .into_iter()
             .cloned()
             .collect();
+        let round_started = std::time::Instant::now();
         cancelled!();
         let cross_out = run_round2_parallel(
             registry,
@@ -940,6 +953,14 @@ fn run_supervisor(
             &cancel,
             &children,
         )?;
+        crate::agent_timing::emit(
+            "arena_round",
+            &[
+                ("round", round.to_string()),
+                ("reviewers", active.len().to_string()),
+                ("elapsed_ms", round_started.elapsed().as_millis().to_string()),
+            ],
+        );
         if cross_out.cancelled {
             bail_cancelled!();
         }
@@ -996,6 +1017,7 @@ fn run_supervisor(
             round: total_rounds,
         },
     );
+    let arbiter_started = std::time::Instant::now();
     let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
         Ok(v) => v,
         Err(e) if is_cancelled_error(&e) => {
@@ -1003,6 +1025,19 @@ fn run_supervisor(
         }
         Err(e) => return Err(e),
     };
+    // The arbiter holds no slot and cannot be overlapped: its wall time adds
+    // straight onto the run and no cap change shortens it.
+    crate::agent_timing::emit(
+        "arena_round",
+        &[
+            ("round", "arbiter".to_string()),
+            ("reviewers", "1".to_string()),
+            (
+                "elapsed_ms",
+                arbiter_started.elapsed().as_millis().to_string(),
+            ),
+        ],
+    );
     let r3 = super::schema::validate_round3_output(&v)?;
     let _ = save_arbiter_output(paths, &v);
     apply_round3_verdicts(&mut run.findings, &r3, run.config.auto_accept_threshold);

@@ -12,7 +12,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Condvar, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub struct SlotPool {
     active: Mutex<usize>,
@@ -46,13 +46,16 @@ impl SlotPool {
     /// Returns `None` when cancelled while waiting.
     pub fn acquire(&self, cap: usize, cancel: &AtomicBool) -> Option<AgentSlotGuard<'_>> {
         let cap = cap.max(1);
+        let started = Instant::now();
         let mut active = self.active.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if cancel.load(Ordering::SeqCst) {
+                crate::agent_timing::record_slot_wait(started.elapsed());
                 return None;
             }
             if *active < cap {
                 *active += 1;
+                crate::agent_timing::record_slot_wait(started.elapsed());
                 return Some(AgentSlotGuard(self));
             }
             let (guard, _) = self
@@ -145,6 +148,34 @@ mod tests {
         drop(a);
         drop(b);
         assert_eq!(pool.active_count(), 0);
+    }
+
+    #[test]
+    fn contended_acquire_parks_the_second_spawner() {
+        // Phase 0 shape: once the cap is reached a second spawner blocks here
+        // for as long as the holder runs. This is exactly the time the
+        // App-level queue cannot see, which is why a task parked at this line
+        // is still reported to the user as "running".
+        let pool = Arc::new(SlotPool::new());
+        let holder = {
+            let pool = Arc::clone(&pool);
+            std::thread::spawn(move || {
+                let _slot = pool.acquire_blocking(1);
+                std::thread::sleep(Duration::from_millis(120));
+            })
+        };
+        // Let the holder take the only slot before the waiter asks for it.
+        std::thread::sleep(Duration::from_millis(20));
+        let started = Instant::now();
+        let slot = pool.acquire_blocking(1);
+        let waited = started.elapsed();
+        drop(slot);
+        holder.join().unwrap();
+        assert!(
+            waited >= Duration::from_millis(50),
+            "second spawner should park behind the cap, waited {waited:?}"
+        );
+        assert_eq!(pool.active_count(), 0, "all slots released");
     }
 
     #[test]

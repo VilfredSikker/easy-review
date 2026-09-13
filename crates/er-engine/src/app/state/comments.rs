@@ -2075,7 +2075,12 @@ impl App {
         let log_tx = self.tab().log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
+                // Sixth spawn path: a configured shell command. The summary
+                // agent runs through here. No slot and no queue, so like the
+                // tab-command path it is admitted immediately.
+                timer.mark_slot_acquired();
                 let mut child = std::process::Command::new("sh")
                     .args(["-c", &cmd])
                     .current_dir(&repo_root)
@@ -2083,6 +2088,7 @@ impl App {
                     .stderr(std::process::Stdio::piped())
                     .spawn()
                     .with_context(|| format!("Failed to run {}", name_owned))?;
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
@@ -2129,6 +2135,7 @@ impl App {
                     .with_context(|| format!("Failed to wait for {}", name_owned))?;
                 let _ = stdout_handle.join();
                 let accumulated_stderr = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
                 if !status.success() {
                     let stderr_text = accumulated_stderr.join("\n");
@@ -2147,7 +2154,12 @@ impl App {
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit(
+                "shell_command",
+                &[("command", name_owned), ("ok", ok.to_string())],
+            );
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
@@ -2384,7 +2396,12 @@ impl App {
         let log_tx = self.tab().log_tx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
+                // This path takes no slot, so it is admitted immediately:
+                // `queue_ms` should read ~0 here while the background path's
+                // reads as long as the cap is saturated.
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -2470,6 +2487,7 @@ impl App {
                 let mut child = cmd
                     .spawn()
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
@@ -2532,6 +2550,7 @@ impl App {
                 })?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
                 // Write debug log with accumulated stdout + stderr
                 let debug_content = format!(
@@ -2555,7 +2574,12 @@ impl App {
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit(
+                "tab_command",
+                &[("command", name_owned), ("ok", ok.to_string())],
+            );
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
@@ -2982,13 +3006,16 @@ impl App {
         let command_name_stdout = command_name.to_string();
         let command_name_stderr = command_name.to_string();
         let command_name_fail = command_name.to_string();
+        let command_name_emit = command_name.to_string();
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // Hard process-wide cap shared with arena reviewers. The
                 // App-level queue already bounds how many of these workers
                 // exist, so this only waits while arena rounds hold slots.
                 let _slot = crate::agent_slots::acquire_blocking(slot_cap);
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -3089,6 +3116,7 @@ impl App {
                 let mut child = cmd
                     .spawn()
                     .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
@@ -3143,6 +3171,7 @@ impl App {
                     .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
                 let debug_content = format!(
                     "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
@@ -3221,7 +3250,12 @@ impl App {
                 }
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = result_tx.send(result);
+            timer.emit(
+                "background",
+                &[("command", command_name_emit), ("ok", ok.to_string())],
+            );
         });
 
         self.background_tasks.insert(

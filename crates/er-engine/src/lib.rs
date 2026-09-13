@@ -5,6 +5,7 @@
 #![allow(clippy::option_if_let_else)]
 
 pub mod agent_slots;
+pub mod agent_timing;
 pub mod ai;
 #[cfg(feature = "ui")]
 pub mod app;
