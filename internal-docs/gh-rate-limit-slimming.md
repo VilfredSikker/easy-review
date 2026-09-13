@@ -162,19 +162,26 @@ will not cover it.
 - `new_remote` (`gh_pr_metadata_remote`/`diff_remote`/`commits_remote`) — tab-existence dedup; once per
   unique remote PR per session. The old 300s auto-refresh loop was explicitly removed (`main.rs:845–853`).
 - `prefetch_pr_open` — 150ms frontend debounce + cache hit + in-flight dedup.
-- **Spawned AI agents** — arena agents have **no** gh permission; review agents use `git diff`
-  (`prepared_diff=true`) on all desktop paths. (The `agent_runtime.rs:168` `Bash(gh pr *)` allowlist is
-  not exercised by the desktop review paths.) Verified at the permission layer: desktop review/expert/
-  triage/professor/validate spawns all use `build_*_prepared_diff` prompts whose `--allowedTools` list
-  (`comments.rs`, `prepared_diff` branch) has **no** `Bash(gh …)`; in headless `--print` mode a tool
-  outside the allowlist is *denied*, so a prepared review cannot call gh even if prompted to. Arena
-  access profiles are both `PreparedArtifacts` (no gh). The theoretical ceiling, if a gh-capable profile
-  (`RemoteArtifacts`, or the non-prepared review branch) were ever wired to a desktop review, is
-  *unbounded gh-per-agent* (the allowlist is a gate, not a quota) × the agent-slot cap
-  (`max_concurrent_reviews`, default 3 when unset or 0; the TUI picker offers 1–6 and the desktop
-  apply path accepts 1–16) — and, per the `run_gh` scope note above, no Rust-side
-  mechanism would throttle it. The invariant that keeps reviews at **0** gh calls is "reviews stay
-  `prepared_diff` / gh stays off the agent allowlist."
+- **Spawned AI agents** — review agents use `git diff` (`prepared_diff=true`) on all desktop paths.
+  Verified at the permission layer **for Claude**: desktop review/expert/triage/professor/validate
+  spawns use `build_*_prepared_diff` prompts whose `--allowedTools` list (`comments.rs`,
+  `prepared_diff` branch) has **no** `Bash(gh …)`, and in headless `--print` mode a tool outside the
+  allowlist is denied, so a prepared review cannot call gh even if prompted to. The theoretical ceiling,
+  if the non-prepared review branch were ever wired to a desktop review, is *unbounded gh-per-agent*
+  (the allowlist is a gate, not a quota) × the agent-slot cap (`max_concurrent_reviews`, default 3 when
+  unset or 0; the TUI picker offers 1–6 and the desktop apply path accepts 1–16) — and, per the `run_gh`
+  scope note above, no Rust-side mechanism would throttle it.
+
+  **Arena is not covered by that argument.** An earlier version of this note concluded arena had no gh
+  permission because its access profiles were `PreparedArtifacts` — but `AgentAccessProfile` and its
+  variants exist only inside `crates/er-engine/src/agent_runtime.rs`, a module with no callers. Arena
+  builds its argv from the provider's own args and spawns them unchanged
+  (`arena/adapter.rs:119`), with no `--allowedTools` and no `--disallowedTools` anywhere in
+  `arena/`. Whatever an arena reviewer can reach comes from the provider CLI's own headless
+  defaults, not from `er`. Treat arena's gh exposure as **unverified** rather than zero.
+
+  The invariant that keeps *review* at **0** gh calls is "reviews stay `prepared_diff` / gh stays off
+  the Claude allowlist." It says nothing about arena.
 - **TUI event loop / watcher / input handlers** — **zero** gh calls in any poll/tick path; all TUI gh
   calls are user-key-driven.
 - `ensure_gh_installed` / `gh auth status` — startup once-shot.

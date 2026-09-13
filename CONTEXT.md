@@ -21,9 +21,10 @@ and unstaged changes, its history.
 _Avoid_: branch mode, working view
 
 **PR diff view**:
-The view of a pull request's head against its base. On a local PR tab this is a
-different diff from the local branch view, even though both describe the same
-branch.
+The view of a pull request's head against its base. On a local PR tab this can
+differ from the local branch view — it does whenever the branch has unpushed
+commits, or the checked-out head is not the PR head — but the two are the same
+diff when local HEAD is the PR head, which is the common case.
 _Avoid_: remote mode, PR mode
 
 **Sidecar**:

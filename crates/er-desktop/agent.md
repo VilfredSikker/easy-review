@@ -55,6 +55,41 @@ a DOM element, and the shell layers over it normally.
 without calling `persist_app_tabs`, so the new active index is lost on restart.
 `crates/er-desktop/src/commands.rs`.
 
+**A stub tab's first refresh must never run inline under the lock.** `select_tab` and
+`close_tab` return the stub immediately with `loading.tab_diff` set, hand the real
+refresh to `kick_deferred_tab_refresh` on a worker thread, and let the loaded diff
+arrive through the ordinary revision-event poll — as a later poll, never as the
+command's own result. Running it inline serializes every other command behind a
+multi-second `git diff` and parse, and the frontend shows "Loading diff…" in the
+meantime, so an empty pane right after a tab switch is this working, not a bug.
+`docs/adr/0032-deferred-stub-tab-load.md`.
+
+**Poll invalidation is derived, not declared.** `compute_content_revision` and
+`compute_chrome_revision` hash an explicit list of snapshot fields, and `poll_impl`
+decides whether to send anything by comparing the recomputed values against
+`last_sent_*`. A new snapshot field that is not added to that list yields
+`snapshot: null` forever — the fallback timer does not save you, because the poll's
+own comparison keeps answering nothing. `desktop_revision` is one of the chrome hash
+inputs, and that is the entire reason a bump-only change ever delivers; removing it
+reads as dropping a redundant, always-changing input and silently breaks every bump.
+`docs/adr/0034-derived-poll-invalidation.md`.
+
+**`poll` is a tick, not a read.** `poll_impl` calls `check_commands()`,
+`poll_background_tasks()` — which dispatches queued review spawns as slots free — and
+`check_ai_files_changed()`, the mtime scan that notices sidecars an external agent
+wrote. None of those has another desktop caller, so queued tasks and externally
+written sidecars advance only while the frontend keeps polling. That is a second,
+independent reason not to touch the 30s interval.
+
+**Two diff hashes with different contracts.** `compute_diff_hash` is SHA-256,
+persisted in sidecars; `compute_diff_hash_fast` is a `DefaultHasher` u64 rendered as
+16 hex characters, for in-process change detection only — never persist it or compare
+it across processes. `TabState.diff_hash` holds whichever the last refresh produced,
+which is why the tour-staleness check branches on `diff_hash.len() == 64`. Comparing
+`diff_hash` against a sidecar's stored hash is the obvious thing to do in a loader,
+and after a watch refresh it is a guaranteed mismatch that looks exactly like
+staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reason.
+
 ## Rules with consequences
 
 - Keep `App` lock scopes small: capture context, then run `gh`, `git`, or an agent
@@ -68,6 +103,10 @@ without calling `persist_app_tabs`, so the new active index is lost on restart.
   Shiki runs in the frontend worker.
 - Call `persist_app_tabs` after any new path that mutates `app.tabs` or
   `app.active_tab`. Never from `poll` / `get_snapshot`.
+- Pick `snap_from_confirmed` or `snap_from_command` by asking whether the frontend
+  already holds this content — the choice sets the revision markers and so decides
+  whether the next poll resends. It is invisible in the response body.
+  `docs/adr/0033-snapshot-returning-helpers.md`.
 - `submit_github_review` is high risk: submit only valid, unsynced local comments, and
   mark them synced only after GitHub confirms.
 - Reviewing a PR must not touch the user's worktree; use fetched refs and the PR tab

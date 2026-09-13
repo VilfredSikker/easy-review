@@ -30,13 +30,14 @@ already runs.
 - A new AI capability is a prompt plus a spawn path. Prompts are compiled in, so
   a prompt and its caller ship and are edited as one unit
   (`docs/adr/0023-self-contained-agent-prompts.md`).
-- The exit status is the only success signal. The check a run would actually want
-  — every artifact the contract names rewritten, with a matching hash — was
-  written once (`ArtifactBaseline::capture` / `validate`) and had no caller
-  outside its own tests; that module has since been removed rather than left
-  dead. A sidecar whose stored hash disagrees with the current diff is marked
-  stale, not refused (`docs/adr/0010-staleness-is-two-conditions.md`). If the
-  check is wanted, it has to be written again and wired to a caller this time.
+- The exit status is the only success signal from a spawn. The stricter check —
+  every artifact the contract names rewritten, with a matching hash — was written
+  once, as `ArtifactBaseline::capture` / `validate` in
+  `crates/er-engine/src/agent_runtime.rs`, and had no caller outside its own
+  tests. It is not the only such check in the tree: `sidecar_upload` parses each
+  sidecar and compares its `diff_hash` before writing, but that guards the upload
+  path, not a spawn. A sidecar whose stored hash disagrees with the current diff
+  is marked stale rather than refused (`docs/adr/0010-staleness-is-two-conditions.md`).
 - The agent runs with the process's own permissions. Where a prompt carries
   untrusted diff content, the write stays with the host and the agent's output
   arrives on stdout (`docs/adr/0022-host-written-diagram-sidecars.md`).

@@ -24,8 +24,11 @@ leaving a `.prev.json` beside it.
 **Agent-emitted, host-written:** `diagrams/*.json`. The diagram agent runs
 read-only and prints its JSON on stdout; the host parses and writes the file.
 Never hand that agent a write path — its prompt carries untrusted diff content,
-so `Write` there is a prompt-injection primitive. Anything else an agent must
-persist durably goes through the same parse-validate-write path.
+so `Write` there is a prompt-injection primitive. Read-only is enforced per CLI
+family (Claude allowlist, OpenCode permission env, Codex `--sandbox read-only`,
+Cursor `--mode plan`) and the `--add-dir` grant is withheld from the two that
+have no allowlist. Anything an agent must persist durably goes through the same
+parse-validate-write path.
 `docs/adr/0022-host-written-diagram-sidecars.md`.
 
 Privacy is a property of which file the data is in, so no push path can reach a

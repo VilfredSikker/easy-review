@@ -2,7 +2,7 @@
 
 Review, expert, professor, triage and diagram spawns enter a FIFO queue in `App.pending_background_tasks`, bounded by `ai_hub.max_concurrent_reviews` (default 3, meaning an unset or zero value; the TUI picker offers 1–6 and the desktop apply path accepts 1–16), and `er_engine::agent_slots` is a process-wide counting semaphore acquired before the spawn so that simultaneous arena runs cannot multiply the process count. A burst of review actions has to queue — with no bound, each click forks another provider process. Queued tasks render as a cancellable "queued" pill; `poll_background_tasks` dispatches them as slots free.
 
-Two paths acquire a slot today: the background review queue dispatch and arena reviewer rounds. `spawn_agent_prompt`, `card_ai_spawn`, `spawn_command` and `model_discovery::run_models_command` spawn without one.
+Three call sites acquire a slot today: the background review queue dispatch, and arena reviewer rounds 1 and 2. Everything else spawns unbounded — `spawn_agent_prompt` (the TUI AI Hub), `card_ai_spawn`, `spawn_command`, `model_discovery::run_models_command`, and **the arena arbiter**, which is the easy one to miss: it emits its progress under the same reviewer id as a round, so a reader folds it into "arena reviewer rounds" and concludes it is capped. It is not, and `start_arena_batch` starts one run per group, each with its own arbiter.
 
 ## Consequences
 
