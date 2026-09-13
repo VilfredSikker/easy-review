@@ -681,6 +681,14 @@ pub struct TabState {
     /// Timestamp of last .er-* file check (to avoid re-reading every tick)
     pub last_ai_check: Option<std::time::SystemTime>,
 
+    /// `branch_diff_hash` as of the last AI-state load.
+    ///
+    /// Staleness is derived from each sidecar's recorded `diff_hash` against
+    /// the current branch hash, so the diff moving is itself a reason to
+    /// reload — an mtime-only check would leave old findings rendering as
+    /// current against a diff they no longer match.
+    pub last_ai_diff_hash: Option<String>,
+
     // ── Filter state ──
     /// Active filter expression (user-visible string)
     pub filter_expr: String,
@@ -1420,6 +1428,7 @@ impl TabState {
             diff_hash: diff_hash.clone(),
             branch_diff_hash: diff_hash,
             last_ai_check: None,
+            last_ai_diff_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1545,6 +1554,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1664,6 +1674,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1783,6 +1794,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -2908,9 +2920,13 @@ impl TabState {
             self.rebuild_hunk_offsets();
             self.mtime_cache.clear();
             self.update_mem_budget();
-            // Reload AI sidecar for this branch's comment directory
+            // Reload AI sidecar for this branch's comment directory. Gated so a
+            // watch event that changed neither the sidecars nor `branch_diff_hash`
+            // does not re-read and re-parse every one of them.
             let t_ai_reload = Instant::now();
-            self.reload_ai_state();
+            if !self.ai_state_is_current() {
+                self.reload_ai_state();
+            }
             log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
             // Full refreshes and quick-with-unmark refreshes recompute per-file
             // hashes; plain quick refreshes skip the SHA-256 pass.
@@ -3425,6 +3441,7 @@ impl TabState {
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(er_dir);
+        self.last_ai_diff_hash = Some(self.branch_diff_hash.clone());
     }
 
     /// Reload github comments from cache in remote mode.
@@ -3723,6 +3740,26 @@ impl TabState {
     }
 
     /// Check if .er-* files have been updated since last load (called on tick)
+    /// Whether the loaded AI state is still valid for this tab.
+    ///
+    /// False when the sidecar files changed on disk, or when the branch diff
+    /// moved since the last load. The second condition is the one that is easy
+    /// to drop: `is_stale` comes from comparing each sidecar's recorded
+    /// `diff_hash` against the current branch hash, so a diff-only change still
+    /// needs a reload or findings keep rendering as current against a diff they
+    /// no longer match.
+    pub fn ai_state_is_current(&self) -> bool {
+        let sidecars_changed = match ai::latest_er_mtime(&self.er_dir()) {
+            Some(t) => self.last_ai_check.is_none_or(|last| t > last),
+            // Sidecars deleted: only a reload if we had loaded some.
+            None => self.last_ai_check.is_some(),
+        };
+        if sidecars_changed {
+            return false;
+        }
+        self.last_ai_diff_hash.as_deref() == Some(self.branch_diff_hash.as_str())
+    }
+
     pub fn check_ai_files_changed(&mut self) -> bool {
         let latest_mtime = ai::latest_er_mtime(&self.er_dir());
 
@@ -8127,6 +8164,7 @@ mod tests {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -8241,6 +8279,40 @@ mod tests {
         tab.refresh_mtime_cache();
         tab.sort_files_by_mtime();
         assert_eq!(order(&tab), expected, "refresh then sort");
+    }
+
+    #[test]
+    fn a_moved_branch_diff_invalidates_the_loaded_ai_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        // Point at an empty dir so only the diff-hash stamp can decide.
+        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.last_ai_check = None;
+        tab.branch_diff_hash = "hash-a".to_string();
+        tab.last_ai_diff_hash = Some("hash-a".to_string());
+
+        assert!(tab.ai_state_is_current(), "nothing moved since the load");
+
+        tab.branch_diff_hash = "hash-b".to_string();
+        assert!(
+            !tab.ai_state_is_current(),
+            "a moved branch diff must force a reload even though no sidecar changed"
+        );
+    }
+
+    #[test]
+    fn a_tab_that_never_loaded_ai_state_is_not_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.last_ai_check = None;
+        tab.last_ai_diff_hash = None;
+        tab.branch_diff_hash = "hash-a".to_string();
+
+        assert!(
+            !tab.ai_state_is_current(),
+            "a tab with no load behind it must reload rather than trust an empty stamp"
+        );
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
