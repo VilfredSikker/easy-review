@@ -2184,10 +2184,7 @@ impl App {
             })();
             let ok = result.is_ok();
             let _ = tx.send(result);
-            timer.emit(
-                "shell_command",
-                &[("command", name_owned), ("ok", ok.to_string())],
-            );
+            timer.emit_run("shell_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
@@ -2608,10 +2605,7 @@ impl App {
             })();
             let ok = result.is_ok();
             let _ = tx.send(result);
-            timer.emit(
-                "tab_command",
-                &[("command", name_owned), ("ok", ok.to_string())],
-            );
+            timer.emit_run("tab_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
@@ -3276,10 +3270,7 @@ impl App {
             })();
             let ok = result.is_ok();
             let _ = result_tx.send(result);
-            timer.emit(
-                "background",
-                &[("command", command_name_emit), ("ok", ok.to_string())],
-            );
+            timer.emit_run("background", &command_name_emit, ok);
         });
 
         self.background_tasks.insert(

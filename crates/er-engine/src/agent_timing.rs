@@ -179,7 +179,9 @@ impl RunPhases {
         // `from` is always known; `to` is the mark that may be missing. Reading
         // them the other way round makes every span saturate to zero.
         let since = |from: Instant, to: Option<Instant>| -> u64 {
-            to.map_or(0, |to| to.saturating_duration_since(from).as_millis() as u64)
+            to.map_or(0, |to| {
+                to.saturating_duration_since(from).as_millis() as u64
+            })
         };
         Self {
             queue_ms: since(started, slot_acquired),
@@ -227,7 +229,12 @@ impl AgentRunTimer {
 
     /// Phase split so far.
     pub fn phases(&self) -> RunPhases {
-        RunPhases::from_marks(self.started, self.slot_acquired, self.spawned, self.finished)
+        RunPhases::from_marks(
+            self.started,
+            self.slot_acquired,
+            self.spawned,
+            self.finished,
+        )
     }
 
     /// Emit the phase breakdown under `label`. `wait_pct` is slot wait as a
@@ -254,11 +261,42 @@ impl AgentRunTimer {
         }
         emit("run", &fields);
     }
+
+    /// Emit for a spawn site that has a command name and an outcome.
+    ///
+    /// Every spawn path reports the same two fields, and a new one should not
+    /// have to rediscover their names. The per-phase marks stay at the call
+    /// site — they sit at different points in each path's control flow, so
+    /// they can't be folded in here.
+    pub fn emit_run(self, label: &str, command: &str, ok: bool) {
+        self.emit(label, &run_fields(command, ok));
+    }
+}
+
+/// The two fields every spawn site reports alongside the phase breakdown.
+///
+/// Named here so a new spawn path does not have to guess them; see
+/// `run_fields_names_the_same_two_fields_every_spawn_reports`.
+fn run_fields(command: &str, ok: bool) -> [(&'static str, String); 2] {
+    [("command", command.to_string()), ("ok", ok.to_string())]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn run_fields_names_the_same_two_fields_every_spawn_reports() {
+        // The point of `emit_run` is that a new spawn path inherits the field
+        // names rather than reinventing them. Nothing reads this output at
+        // runtime, so without this the names could drift unnoticed.
+        let fields = run_fields("review", true);
+        assert_eq!(fields[0], ("command", "review".to_string()));
+        assert_eq!(fields[1], ("ok", "true".to_string()));
+
+        let failed = run_fields("triage", false);
+        assert_eq!(failed[1], ("ok", "false".to_string()));
+    }
 
     #[test]
     fn phases_split_the_run() {
@@ -313,7 +351,11 @@ mod tests {
         std::thread::sleep(Duration::from_millis(60));
         t.mark_finished();
         let p = t.phases();
-        assert!(p.run_ms >= 50, "child time lands in run_ms, got {}", p.run_ms);
+        assert!(
+            p.run_ms >= 50,
+            "child time lands in run_ms, got {}",
+            p.run_ms
+        );
         // The phases tile the run. Each is truncated to whole milliseconds
         // independently, so the parts can sum to up to 2ms below the total.
         let parts = p.queue_ms + p.spawn_ms + p.run_ms;
