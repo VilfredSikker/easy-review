@@ -656,9 +656,14 @@ pub struct TabState {
     /// (backwards compat) — those entries are never auto-unmarked.
     pub reviewed: HashMap<String, String>,
 
-    /// Per-file diff hashes for the current refresh (volatile, not persisted).
-    /// Used to detect when a reviewed file's diff has changed since it was marked.
-    pub current_per_file_hashes: HashMap<String, String>,
+    /// Diff hashes for the files in `reviewed`, for the current refresh
+    /// (volatile, not persisted).
+    ///
+    /// Holds *only* reviewed paths — the name is the contract. A lookup miss
+    /// means "not a reviewed file", not "no such file in the diff", so read it
+    /// through [`Self::per_file_hash`] unless you are the auto-unmark pass
+    /// (which fills it and depends on that reading).
+    pub reviewed_file_hashes: HashMap<String, String>,
 
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
@@ -1424,7 +1429,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1550,7 +1555,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1670,7 +1675,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1790,7 +1795,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -2593,7 +2598,7 @@ impl TabState {
 
         self.base_branch = resolved;
         // The diff scope changes — per-file review hashes are stale.
-        self.current_per_file_hashes.clear();
+        self.reviewed_file_hashes.clear();
         self.pending_unmark_count = 0;
         // Local PR tabs cache fetched refs; force a re-fetch against the new base.
         self.pr_refs_fetched = false;
@@ -4665,7 +4670,7 @@ impl TabState {
     /// in `pending_unmark_count` for the caller to surface.
     fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
         let wanted: HashSet<String> = self.reviewed.keys().cloned().collect();
-        self.current_per_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
+        self.reviewed_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
         if auto_unmark {
             self.pending_unmark_count = self.auto_unmark_changed_reviewed();
         }
@@ -4688,7 +4693,7 @@ impl TabState {
     /// is the persisted `reviewed` file format; narrowing it would churn that
     /// format to express a case the guards above already make unreachable.
     pub fn per_file_hash(&self, path: &str) -> String {
-        if let Some(hash) = self.current_per_file_hashes.get(path) {
+        if let Some(hash) = self.reviewed_file_hashes.get(path) {
             return hash.clone();
         }
         self.raw_diff
@@ -4703,7 +4708,7 @@ impl TabState {
     ///
     /// Precondition: must run immediately after
     /// [`Self::refresh_per_file_hashes_and_unmark`], which has just populated
-    /// `current_per_file_hashes` for exactly the reviewed paths. This reads that
+    /// `reviewed_file_hashes` for exactly the reviewed paths. This reads that
     /// map directly and treats a miss as "the file is no longer in the diff" —
     /// which is only true while the map was built for those keys in this pass.
     /// Called against a partial or stale map, the same miss means "not cached",
@@ -4718,7 +4723,7 @@ impl TabState {
                 if stored_hash.is_empty() {
                     return None;
                 }
-                let current_hash = self.current_per_file_hashes.get(path);
+                let current_hash = self.reviewed_file_hashes.get(path);
                 match current_hash {
                     Some(h) if h == stored_hash => None,
                     _ => Some(path.clone()),
@@ -8208,7 +8213,7 @@ mod tests {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -8386,11 +8391,11 @@ mod tests {
         // are consulted without a user action.
         tab.refresh_per_file_hashes_and_unmark(raw, false);
         assert!(
-            tab.current_per_file_hashes.contains_key("b.rs"),
+            tab.reviewed_file_hashes.contains_key("b.rs"),
             "reviewed files are cached for auto-unmark"
         );
         assert!(
-            !tab.current_per_file_hashes.contains_key("a.rs"),
+            !tab.reviewed_file_hashes.contains_key("a.rs"),
             "unreviewed files are not hashed on the watch path"
         );
 
@@ -8408,10 +8413,7 @@ mod tests {
         );
 
         // A cached path still resolves from the cache.
-        assert_eq!(
-            tab.per_file_hash("b.rs"),
-            tab.current_per_file_hashes["b.rs"]
-        );
+        assert_eq!(tab.per_file_hash("b.rs"), tab.reviewed_file_hashes["b.rs"]);
     }
 
     /// A temp git repo on `main` with one tracked file modified in the working
@@ -8808,8 +8810,8 @@ mod tests {
     #[test]
     fn auto_unmark_keeps_reviewed_file_with_unchanged_diff() {
         let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
-        tab.current_per_file_hashes = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
-        let stored = tab.current_per_file_hashes["a.json"].clone();
+        tab.reviewed_file_hashes = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+        let stored = tab.reviewed_file_hashes["a.json"].clone();
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         assert_eq!(tab.auto_unmark_changed_reviewed(), 0);
         assert_eq!(tab.reviewed.len(), 1);
@@ -8823,8 +8825,7 @@ mod tests {
         let stored = original["a.json"].clone();
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         let revision_before = tab.reviewed_revision;
-        tab.current_per_file_hashes =
-            crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
+        tab.reviewed_file_hashes = crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
         assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
         assert!(tab.reviewed.is_empty());
         assert_eq!(tab.reviewed_revision, revision_before + 1);
@@ -8895,7 +8896,7 @@ mod tests {
         // counter is reset to 0 (its contract: 0 = nothing to surface).
         tab.refresh_per_file_hashes_and_unmark(&raw, true);
         assert!(
-            tab.current_per_file_hashes.is_empty(),
+            tab.reviewed_file_hashes.is_empty(),
             "no file is reviewed, so the watch path caches nothing"
         );
         assert_eq!(tab.pending_unmark_count, 0);
