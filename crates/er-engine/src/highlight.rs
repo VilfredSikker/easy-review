@@ -38,6 +38,15 @@ pub struct Highlighter {
     theme_set: ThemeSet,
     cache: HashMap<u64, CachedLine>,
     gen: u64,
+    /// First-line sniff result per filename, as a resolved syntax name.
+    ///
+    /// `find_syntax_for_file` opens the file and reads its first line whenever
+    /// the filename and extension lookups miss, and caches nothing of its own —
+    /// `first_line_cache` inside syntect memoises the regex matching, not the
+    /// read. So an unrecognised file did one disk read per highlighted line.
+    /// The name is stored rather than the `&SyntaxReference` because that
+    /// borrows from `syntax_set` and would make this struct self-referential.
+    file_sniff: HashMap<String, Option<String>>,
 }
 
 impl Highlighter {
@@ -60,6 +69,7 @@ impl Highlighter {
             theme_set,
             cache: HashMap::new(),
             gen: 0,
+            file_sniff: HashMap::new(),
         }
     }
 
@@ -107,25 +117,62 @@ impl Highlighter {
                 | Some("vue")
                 | Some("astro")
         );
-        let syntax = if force_ts {
+        // The two lookups `find_syntax_for_file` does before it reaches for the
+        // disk. Kept as hash lookups so the common case never touches the file.
+        let path = std::path::Path::new(filename);
+        let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let raw_ext = path.extension().and_then(|x| x.to_str()).unwrap_or("");
+        let by_name = if file_name.is_empty() {
+            None
+        } else {
+            self.syntax_set.find_syntax_by_extension(file_name)
+        };
+        let by_ext = if raw_ext.is_empty() {
+            None
+        } else {
+            self.syntax_set.find_syntax_by_extension(raw_ext)
+        };
+
+        let mut syntax = if force_ts {
             self.syntax_set
                 .find_syntax_by_extension("ts")
                 .or_else(|| self.syntax_set.find_syntax_by_name("TypeScript"))
         } else {
             None
         }
-        .or_else(|| {
-            self.syntax_set
-                .find_syntax_for_file(filename)
-                .ok()
-                .flatten()
-        })
-        .or_else(|| {
-            ext_lower
-                .as_deref()
-                .and_then(|ext| self.syntax_set.find_syntax_by_extension(ext))
-        })
-        .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
+        .or(by_name)
+        .or(by_ext);
+
+        // Only reached for a file neither lookup knows — the case that used to
+        // read the file once per highlighted line. Memoised per filename, and
+        // the empty result is memoised too so a file that sniffs to nothing is
+        // not re-read either.
+        if syntax.is_none() {
+            syntax = match self.file_sniff.get(filename) {
+                Some(name) => name
+                    .as_deref()
+                    .and_then(|n| self.syntax_set.find_syntax_by_name(n)),
+                None => {
+                    let name = self
+                        .syntax_set
+                        .find_syntax_for_file(filename)
+                        .ok()
+                        .flatten()
+                        .map(|s| s.name.clone());
+                    self.file_sniff.insert(filename.to_string(), name.clone());
+                    name.as_deref()
+                        .and_then(|n| self.syntax_set.find_syntax_by_name(n))
+                }
+            };
+        }
+
+        let syntax = syntax
+            .or_else(|| {
+                ext_lower
+                    .as_deref()
+                    .and_then(|ext| self.syntax_set.find_syntax_by_extension(ext))
+            })
+            .unwrap_or_else(|| self.syntax_set.find_syntax_plain_text());
 
         let theme = self
             .theme_set
@@ -246,6 +293,38 @@ mod tests {
             distinct.len() > 2,
             "expected Svelte fallback to give TS-like highlighting, got: {:?}",
             distinct
+        );
+    }
+
+    #[test]
+    fn first_line_sniff_is_memoised_per_filename() {
+        // A file syntect knows by neither name nor extension, so resolution
+        // depends on reading its first line.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("script_without_extension");
+        std::fs::write(&path, "#!/usr/bin/env python\n").unwrap();
+        let name = path.to_string_lossy().to_string();
+
+        let mut h = Highlighter::new();
+        let first = h.highlight_line("def foo():", &name, "OneHalfDark");
+        assert!(
+            first.len() > 1,
+            "the first-line sniff should have resolved a real syntax, got {:?}",
+            first.iter().map(|s| &s.text).collect::<Vec<_>>()
+        );
+        assert_eq!(h.file_sniff.len(), 1, "one filename memoised");
+
+        // Take the file away. A second line cannot re-read it, so anything but
+        // the memoised syntax means the sniff ran again and fell through to
+        // plain text. Different line, same filename: the content cache misses,
+        // the filename memo is what carries the result.
+        std::fs::remove_file(&path).unwrap();
+        let second = h.highlight_line("class Bar:", &name, "OneHalfDark");
+        assert!(
+            second.len() > 1,
+            "the sniffed syntax must survive the file disappearing, i.e. be memoised; \
+             got {:?}",
+            second.iter().map(|s| &s.text).collect::<Vec<_>>()
         );
     }
 
