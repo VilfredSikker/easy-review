@@ -3,8 +3,8 @@ use crate::arena::{
     import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
     save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
     ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
-    ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams,
-    Verdict,
+    ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef,
+    SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -13,6 +13,20 @@ use std::sync::Arc;
 
 use super::App;
 use super::TabState;
+
+/// The `diff_hash` a review's sidecars carry, which is what a verdict's hash has
+/// to match for the overlay to apply.
+///
+/// Read off disk rather than recomputed, because the callers do not all hash the
+/// same bytes: the desktop pipeline filters review-ignore globs out of the diff
+/// before preparing it, the TUI does not. Recomputing here would produce a hash
+/// the review and its expert sidecars disagree with, and since the overlay
+/// compares against theirs, every verdict would silently fail to apply — with a
+/// UI line telling the user to re-run validation, which could never help.
+fn review_diff_hash(er_dir: &str, raw_diff: &str) -> String {
+    crate::ai::prepared_diff::diff_tmp_hash(er_dir)
+        .unwrap_or_else(|| crate::ai::compute_diff_hash(raw_diff))
+}
 
 /// Load a run's summary, memoized by `run.json` mtime+size.
 ///
@@ -165,11 +179,7 @@ impl App {
             .clone()
             .unwrap_or_else(|| tab.current_branch.clone());
         let base_branch = tab.base_branch.clone();
-        // Hashed from the diff this call actually hands the arbiter, rather than
-        // the tab's last refresh. They agree in the normal case; when they do
-        // not, the one that describes what was graded is the right one to
-        // record, because the overlay compares it against the review's.
-        let diff_hash = crate::ai::compute_diff_hash(&raw_diff);
+        let diff_hash = review_diff_hash(&er_dir, &raw_diff);
         // An expert set generated alongside a review that has since gone stale
         // is still this generation's work — same accommodation as the merge.
         let review_hash = tab
@@ -304,6 +314,17 @@ impl App {
         let er_path = er_dir.to_string_lossy().into_owned();
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
+        // A seeded run's verdicts reach the review through `arbiter.json`, which
+        // merges at load. Importing them as well would do the write ADR 0001
+        // routed around — `review.json` gains a fourth writer, and
+        // `import_arena_findings_to_review` re-stamps its `diff_hash` with this
+        // run's, marking a review that may be newer as matching a different diff.
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            anyhow::bail!(
+                "a seeded run's verdicts are applied from arbiter.json on load; \
+                 there is nothing to import into review.json"
+            );
+        }
         let ids = finding_ids.as_deref();
         let n = import_arena_findings_to_review(&er_path, &mut run, ids)?;
         save_run(&paths, &run)?;
@@ -450,6 +471,34 @@ mod tests {
     use crate::arena::ArenaScope;
     use crate::git;
     use std::process::Command;
+
+    /// The recorded hash wins over a recomputed one. This is the review-ignore
+    /// case: the desktop filters globs out before preparing the diff, so the
+    /// bytes this function is handed hash differently from the bytes the review
+    /// and its sidecars were built from. Recomputing made every verdict fail to
+    /// apply, silently.
+    #[test]
+    fn review_diff_hash_prefers_what_the_agent_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let prepared = "sha-the-agent-recorded";
+        std::fs::write(dir.path().join(".diff-tmp.sha256"), prepared).unwrap();
+
+        assert_eq!(
+            review_diff_hash(er, "a diff that would hash differently"),
+            prepared,
+            "the on-disk marker decides, not the bytes passed in"
+        );
+    }
+
+    #[test]
+    fn review_diff_hash_falls_back_to_hashing_the_raw_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let raw = "diff --git a/x b/x\n";
+
+        assert_eq!(review_diff_hash(er, raw), crate::ai::compute_diff_hash(raw));
+    }
 
     fn init_repo_with_branches() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

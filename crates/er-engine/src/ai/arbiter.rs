@@ -137,8 +137,12 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
             let Some(verdict) = by_id.get(id.as_str()) else {
                 continue;
             };
-            matched.insert(verdict.id.as_str());
-            apply_verdict(finding, verdict, &mut effect);
+            // Two rows can share a key — the expert merge does not dedupe, so a
+            // claim two experts raised is two review rows. The verdict applies to
+            // both so the display stays consistent, but it is *one* ruling, and
+            // the counters say so rather than reporting it twice.
+            let first_application = matched.insert(verdict.id.as_str());
+            apply_verdict(finding, verdict, &mut effect, first_application);
         }
     }
     // A verdict that matched nothing is the tell that the two sides disagree
@@ -153,7 +157,12 @@ pub fn merge_arbiter_into_review(review: &mut ErReview, arbiter: &ArbiterReview)
     effect
 }
 
-fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut ArbiterEffect) {
+fn apply_verdict(
+    finding: &mut Finding,
+    verdict: &ArbiterVerdict,
+    effect: &mut ArbiterEffect,
+    first_application: bool,
+) {
     // The raiser set is the arbiter's, because it is the thing that saw every
     // producer's version of the claim and merged them.
     if !verdict.raised_by.is_empty() {
@@ -173,12 +182,16 @@ fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut A
     match verdict.verdict {
         ArbiterRuling::Dropped => {
             finding.confidence = Confidence::Dropped;
-            effect.dropped += 1;
+            if first_application {
+                effect.dropped += 1;
+            }
             return;
         }
         ArbiterRuling::Merged => {
             finding.confidence = Confidence::Dropped;
-            effect.merged += 1;
+            if first_application {
+                effect.merged += 1;
+            }
             return;
         }
         ArbiterRuling::Kept | ArbiterRuling::Escalated => {}
@@ -192,7 +205,9 @@ fn apply_verdict(finding: &mut Finding, verdict: &ArbiterVerdict, effect: &mut A
                 .responses
                 .push(regrade_response(finding, confidence, verdict));
             finding.confidence = confidence;
-            effect.regraded += 1;
+            if first_application {
+                effect.regraded += 1;
+            }
         }
     }
 }
@@ -406,6 +421,30 @@ mod tests {
             review.files["src/a.rs"].findings[0].raised_by,
             vec!["security"]
         );
+    }
+
+    /// One ruling, two rows carrying the same key: the expert merge does not
+    /// dedupe, so a claim two experts raised is two review rows. Both hide — the
+    /// display stays consistent — but the count says one, not two.
+    #[test]
+    fn one_verdict_over_two_rows_is_counted_once() {
+        let mut review = review_with(vec![
+            finding(Confidence::Confirmed),
+            finding(Confidence::Confirmed),
+        ]);
+
+        let effect = merge_arbiter_into_review(
+            &mut review,
+            &arbiter(HASH, vec![verdict(ArbiterRuling::Dropped, None)]),
+        );
+
+        let rows = &review.files["src/a.rs"].findings;
+        assert!(
+            rows.iter().all(|f| !f.is_active()),
+            "both rows take the ruling"
+        );
+        assert_eq!(effect.dropped, 1, "but it is one ruling, counted once");
+        assert_eq!(effect.unmatched, 0);
     }
 
     /// A ruling that hides a finding settles its confidence, so a verdict that
