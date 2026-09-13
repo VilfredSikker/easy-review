@@ -294,6 +294,23 @@ fn render_file_detail<'a>(
                         .fg(styles::PURPLE())
                         .add_modifier(Modifier::BOLD),
                 )]));
+                // A filter that hides things without saying so is how people
+                // stop trusting it, so the arbiter's rulings are counted here
+                // rather than the list just being shorter.
+                let effect = tab.ai.arbiter_effect;
+                if effect.hidden() > 0 {
+                    let mut parts = Vec::new();
+                    if effect.dropped > 0 {
+                        parts.push(format!("{} dropped", effect.dropped));
+                    }
+                    if effect.merged > 0 {
+                        parts.push(format!("{} merged", effect.merged));
+                    }
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {} by arbiter", parts.join(", ")),
+                        Style::default().fg(styles::DIM()),
+                    )]));
+                }
                 lines.push(Line::from(""));
 
                 for finding in sorted_findings {

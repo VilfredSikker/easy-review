@@ -340,6 +340,19 @@
         <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
+      {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0}
+        <!-- A list that is quietly shorter is how people stop trusting it, so
+             the arbiter's rulings are counted rather than silently omitted. -->
+        <p class="mb-1.5 text-[10px] text-fg-3">
+          {[
+            ai.arbiter_dropped > 0 ? `${ai.arbiter_dropped} dropped` : "",
+            ai.arbiter_merged > 0 ? `${ai.arbiter_merged} merged` : "",
+          ]
+            .filter(Boolean)
+            .join(", ")} by arbiter
+        </p>
+      {/if}
+
       <div class="findings-list space-y-1.5">
       {#each filtered as finding (finding.id)}
         {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}

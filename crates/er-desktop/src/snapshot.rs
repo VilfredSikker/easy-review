@@ -1124,6 +1124,13 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Findings the arbiter ruled out, so the card can say how many it is not
+    /// showing instead of the list just being shorter.
+    #[serde(default)]
+    pub arbiter_dropped: usize,
+    /// Findings the arbiter folded into another.
+    #[serde(default)]
+    pub arbiter_merged: usize,
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
@@ -2669,6 +2676,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        arbiter_dropped: 0,
+        arbiter_merged: 0,
         file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
@@ -3925,6 +3934,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        arbiter_dropped: ai.arbiter_effect.dropped,
+        arbiter_merged: ai.arbiter_effect.merged,
         file_risks,
         has_review_json,
         eligible_comment_count,

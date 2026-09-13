@@ -1242,6 +1242,14 @@ fn run_arbiter(
     run.status = RunStatus::Running { round };
     save_run(paths, run)?;
 
+    // The arbiter is an agent process like any reviewer, so it waits for a
+    // global slot too. Without this, N seeded runs would start N arbiters at
+    // once — the seeded path has no reviewer loop to hold a slot on its behalf.
+    let cap = config.ai_hub.effective_max_concurrent_reviews();
+    let Some(_slot) = crate::agent_slots::acquire(cap, cancel) else {
+        return cancel_run(ctx, run);
+    };
+
     let summary = json!({ "findings": run.findings });
     // The hunks the findings point at, so a drop is a judgement about code
     // rather than about a claim. Missing patch file degrades to no excerpt

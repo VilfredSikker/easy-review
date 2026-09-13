@@ -239,6 +239,10 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Findings the arbiter ruled out, or folded into another. Reported so the
+   *  card can say how many it is not showing. */
+  arbiter_dropped: number;
+  arbiter_merged: number;
   /** Per-file risk assessments from review.json (not counted as findings). */
   file_risks: FileRiskSnapshot[];
   /** Whether `{er_dir}/review.json` exists (batch validate target). */
