@@ -382,7 +382,8 @@ there.
 |------|--------|--------|
 | `er-engine/src/ai/prepared_diff.rs:34` | `ensure_diff_artifacts` builds and hashes the annotated diff on every call, then only *writes* it conditionally. Annotation is deterministic, so unchanged raw implies unchanged annotated: skip both the O(n) build and its SHA-256 when `diff-tmp` is already current and `diff-annotated` is present | **done** |
 | `er-engine/src/app/state/mod.rs:4404` | Stat once into a `Vec<(idx, mtime)>`, then sort — removes `2n log n` syscalls | **done** |
-| `er-engine/src/app/state/mod.rs:2531` | Pass `compute_per_file_hashes = false` on the watch path; gate `reload_ai_state()` (`:2913`) on the existing `check_ai_files_changed` mtime check instead of calling it unconditionally | open — riskiest |
+| `er-engine/src/app/state/mod.rs:2913` | Gate the unconditional `reload_ai_state()` on the watch path — but on *sidecars changed OR `branch_diff_hash` moved*, not on the mtime check alone | **done** |
+| `er-engine/src/app/state/mod.rs:2531` | Stop hashing every file on each watch event. **[corrected — the original instruction was wrong]** see below | open |
 | `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` | open |
 | `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops | open |
 | `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies | open |
@@ -393,6 +394,43 @@ Landed items carried three new tests: the annotation skip (counting annotation
 passes, not writes — a write count passes against the unoptimised code), marker/
 content-file invariants including the pre-upgrade marker, and the mtime sort from
 an unsorted list.
+
+#### The watch-path item was wrong as written
+
+The original instruction was "pass `compute_per_file_hashes = false` on the watch
+path; gate `reload_ai_state()` on the existing `check_ai_files_changed` mtime
+check". Both halves are wrong, and both fail silently rather than loudly.
+
+**`compute_per_file_hashes = false` breaks review tracking.** `current_per_file_hashes`
+is not only read by auto-unmark: all four mark-reviewed paths read it for the file
+being marked, which by definition is not yet in `reviewed`. With the map empty they
+would store an empty hash, and `auto_unmark_changed_reviewed` explicitly skips
+entries whose stored hash is empty (`if stored_hash.is_empty() { return None; }`).
+The result is that auto-unmark stops working permanently, with no error — review
+markers would simply stop clearing when the underlying file changed.
+
+The real waste is that the map is built for *every* file when only `reviewed` files
+are consulted without a user action. The correct fix is lazy resolution: the watch
+path caches hashes for `reviewed` paths only, and the mark paths resolve a single
+path on demand from the retained `raw_diff` (retained in both lazy and eager modes).
+Still open.
+
+**An mtime-only gate breaks staleness.** `reload_ai_state` passes `branch_diff_hash`
+into `load_ai_state`, and that is where each sidecar's recorded `diff_hash` is
+compared to produce `is_stale`. The diff moving is therefore itself a reason to
+reload: with an mtime-only gate, a diff-only change leaves old findings rendering as
+current against a diff they no longer match. Landed with the gate reading
+sidecars-changed **or** diff-moved, tracked by a new `last_ai_diff_hash` stamp set
+alongside `last_ai_check` in `finish_ai_reload`.
+
+#### What this says about the verification pass
+
+The adversarial pass confirmed the *code structure* of this item — that
+`refresh_diff_quick_with_unmark` really is `(false, true, true)` and that
+`reload_ai_state` really is unconditional. It did not evaluate the *remediation*,
+which is where both errors were. A verified claim is not a verified fix; the
+Phase 1 table items should be re-read against the code before being implemented,
+as this one was.
 
 ### Phase 2 — Runner correctness and throughput
 
