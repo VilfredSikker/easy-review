@@ -305,6 +305,9 @@ fn render_file_detail<'a>(
                 if effect.merged > 0 {
                     parts.push(format!("{} merged", effect.merged));
                 }
+                if effect.regraded > 0 {
+                    parts.push(format!("{} regraded", effect.regraded));
+                }
                 if !parts.is_empty() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {} by arbiter", parts.join(", ")),

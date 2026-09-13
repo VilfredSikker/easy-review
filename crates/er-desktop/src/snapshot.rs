@@ -1140,6 +1140,9 @@ pub struct AiSnapshot {
     /// describe this review.
     #[serde(default)]
     pub arbiter_unmatched: usize,
+    /// Findings whose confidence the arbiter regraded.
+    #[serde(default)]
+    pub arbiter_regraded: usize,
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
@@ -2688,6 +2691,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         arbiter_dropped: 0,
         arbiter_merged: 0,
         arbiter_unmatched: 0,
+        arbiter_regraded: 0,
         file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
@@ -3948,6 +3952,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         arbiter_dropped: ai.arbiter_effect.dropped,
         arbiter_merged: ai.arbiter_effect.merged,
         arbiter_unmatched: ai.arbiter_effect.unmatched,
+        arbiter_regraded: ai.arbiter_effect.regraded,
         file_risks,
         has_review_json,
         eligible_comment_count,

@@ -349,13 +349,14 @@
         </p>
       {/if}
 
-      {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0}
+      {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0 || ai.arbiter_regraded > 0}
         <!-- A list that is quietly shorter is how people stop trusting it, so
              the arbiter's rulings are counted rather than silently omitted. -->
         <p class="mb-1.5 text-[10px] text-fg-3">
           {[
             ai.arbiter_dropped > 0 ? `${ai.arbiter_dropped} dropped` : "",
             ai.arbiter_merged > 0 ? `${ai.arbiter_merged} merged` : "",
+            ai.arbiter_regraded > 0 ? `${ai.arbiter_regraded} regraded` : "",
           ]
             .filter(Boolean)
             .join(", ")} by arbiter

@@ -248,6 +248,8 @@ export interface AiSnapshot {
   /** Verdicts that matched no finding — the grades exist but no longer describe
    *  this review, so re-running validation is what fixes it. */
   arbiter_unmatched: number;
+  /** Findings whose confidence the arbiter regraded. */
+  arbiter_regraded: number;
   /** Per-file risk assessments from review.json (not counted as findings). */
   file_risks: FileRiskSnapshot[];
   /** Whether `{er_dir}/review.json` exists (batch validate target). */

@@ -248,6 +248,7 @@ export const aiWithFindings: AiSnapshot = {
   arbiter_dropped: 0,
   arbiter_merged: 0,
   arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   high: 2,
   med: 1,
   low: 1,
@@ -352,6 +353,7 @@ export const aiEmpty: AiSnapshot = {
   arbiter_dropped: 0,
   arbiter_merged: 0,
   arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   high: 0,
   med: 0,
   low: 0,
@@ -441,6 +443,7 @@ export const aiProfessorOnly: AiSnapshot = {
   arbiter_dropped: 0,
   arbiter_merged: 0,
   arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   agent_summaries: {
     Professor:
       "This branch adds replicate deviation APIs backed by a three-part hash and shared SQL CTEs.\n\nTests isolate pure helpers from DB/HTTP; the metric validation path still lacks 422 coverage.",

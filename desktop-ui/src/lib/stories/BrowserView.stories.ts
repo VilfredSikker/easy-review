@@ -67,6 +67,7 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       arbiter_dropped: 0,
       arbiter_merged: 0,
       arbiter_unmatched: 0,
+      arbiter_regraded: 0,
       file_risks: [],
       has_review_json: false,
       eligible_comment_count: 0,
