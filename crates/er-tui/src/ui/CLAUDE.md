@@ -1,79 +1,46 @@
-# ui/ — Rendering
+# ui/ — rendering surface
 
-All Ratatui rendering for the terminal `er`. No state mutation — reads `App`
-and produces frames. `draw()` applies the configured theme each frame, then
-splits the screen and routes to sub-renderers.
+Read-only over `App`: renderers take `&App` and produce frames. Nothing here
+mutates state, runs an event loop, or is async. State a renderer needs must
+already exist on `App`/`TabState` — derive it in the engine rather than
+computing it mid-frame (`docs/adr/0006-engine-state-is-the-ui-contract.md`).
 
-## Files
+Overlays render last and `Clear` their area first. A popup drawn before the
+panels, or without `Clear`, shows the frame underneath through it.
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Top-level layout: bar heights, screen split, routes to sub-renderers |
-| `styles.rs` | All colors and `Style` helpers. Single source of truth. |
-| `themes.rs` | Theme registry (semantic tokens + per-theme syntect theme) |
-| `highlight.rs` | TUI adapter over `er_engine::highlight::Highlighter` with content-hash LRU cache |
-| `diff_view.rs` | Right panel: viewport-based diff rendering, inline comments/findings, sticky file header, compacted files, History mode multi-file diff |
-| `file_tree.rs` | Left panel: file list with status/risk indicators, watched files section (commit list in History mode) |
-| `panel.rs` | Side panel content renderers: FileDetail, AiSummary, PrOverview |
-| `status_bar.rs` | Top bar (tabs/branch/modes) + bottom bar (hints or input), AI status badges |
-| `overlay.rs` | Modal popups: worktree picker, directory browser, filter history |
-| `settings.rs` | Settings overlay (live config editing) |
-| `utils.rs` | Shared utilities (`word_wrap`) |
+## Rendering invariants
 
-## Layout (mod.rs)
+**Viewport-based rendering.** Only visible rows are built. The diff view
+virtualizes above `VIRTUALIZE_THRESHOLD` (200 total diff lines), building lines
+from `scroll - 20` to `scroll + height + 20` and exiting early past that; the
+file tree slices the visible window before constructing `ListItem`s. Building
+every `Line` for the file and letting the widget clip it is a performance
+regression nothing catches — a 20-row viewport goes from ~60 built lines to
+5,000.
 
-Screen splits into three vertical zones:
+**The diff view pads its slice.** Visible rows are pre-sliced and padded with
+bg-styled empty `Line`s to the full inner height. Ratatui's double buffer reuses
+the previous frame's cells for rows below a `Paragraph`'s last line, so a short
+line vector bleeds stale content. Dropping the padding, or going back to
+`Paragraph::scroll()` for vertical scroll, brings that back.
 
-```
-┌─────────────────────────────────────────┐
-│ top bar (2-3 rows: tabs + branch + modes)│
-├──────────────┬──────────────────────────┤
-│ file tree    │ diff view                │
-│ (32 cols)    │ (rest)    [+ side panel] │
-├──────────────┴──────────────────────────┤
-│ bottom bar (1+ rows: hints or input)    │
-└─────────────────────────────────────────┘
-```
+**Highlight cache.** `er_engine::highlight::Highlighter` keys its LRU cache by
+line content + filename + syntect theme name, 10,000 entries, evicting a
+quarter. Content, not position — that is what makes scrolling and frame-to-frame
+re-render hit; a key by line index turns it into a miss. The theme name is part
+of the key, so switching themes refills it. Desktop highlights in Shiki instead
+(`docs/adr/0014-client-side-highlighting.md`).
 
-The side panel appears when `tab.panel` is `Some(PanelContent)` (cycled with
-the panel toggle keys); inline annotation visibility is controlled by
-`InlineLayers`, not a view mode.
+The TUI adapter converts the engine's `#RRGGBB` spans to ratatui `Color` and
+layers each on a base style that already carries the diff row background, so
+only the foreground is overridden. A highlight span that sets its own style
+drops the add/del row tint.
 
-## styles.rs / themes.rs — Color System
+## Color
 
-Semantic tokens resolved through the active theme: background layers
-(`bg` → `surface` → `panel` → `border`), diff colors (`add`/`del`/`hunk`),
-accents, and interactive states. Rule: never use raw `Color::*` outside
-`styles.rs`/`themes.rs`.
-
-## highlight.rs — Syntax Highlighting
-
-Thin adapter over the engine's syntect-based `Highlighter`. Theme comes from
-`themes.rs` (`syntect_theme` per theme). Results are cached by content+filename
-hash with LRU eviction; the base style carries the diff background color while
-syntax highlighting overrides only the foreground.
-
-## diff_view.rs — Diff Rendering
-
-Viewport-based: only builds `Line` objects for visible rows (+ buffer) above
-the virtualization threshold. Each hunk gets a header line with a `▶` marker on
-the current hunk, gutter (old/new line numbers + `│`), and syntax-highlighted
-content. Inline comment and finding banners render after their target line.
-Stale AI data renders dimmed with a `[stale]` tag. Compacted files render a
-summary row expandable with `Enter`. A sticky file path header pins the current
-file at the top of the viewport.
-
-## status_bar.rs — Dynamic Height Bars
-
-Both bars compute their height before layout because they word-wrap to fit
-terminal width. Top bar: tab row (if multi-tab) + branch info + mode
-indicators. Bottom bar: packed key hints in Normal mode, input prompt in
-Search/Comment/Filter modes. `build_hints(app)` is context-sensitive.
-
-## Important Patterns
-
-- `f.render_widget(Clear, popup)` in overlay.rs — clears background before rendering popup
-- `shorten_path()` in file_tree.rs truncates directories with `…/filename` to fit column width
-- Finding banners truncated to `area.width - 6` with ellipsis
-- `render_watched()` in diff_view.rs handles content and snapshot diff display for watched files (plain styled spans, no syntax highlighting)
-- file_tree.rs renders watched files below a `── watched ──` separator with ◉ icon (⚠ if not gitignored), relative timestamps
+Renderers resolve tokens through `styles.rs` accessors; raw `Color::*` values
+exist only in the token tables in `themes.rs` and in the hex conversion in
+`highlight.rs`. A color written anywhere else breaks every theme except the one
+it was picked in. The active theme is process-global, refreshed from config at
+the top of `draw()` so a settings change restyles live, and graphite until the
+first frame (`docs/adr/0030-shared-theme-tokens.md`).

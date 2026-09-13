@@ -1,115 +1,41 @@
 # AGENTS.md
 
-Orientation for coding agents working in this repo. `CLAUDE.md` is the full
-architecture and conventions reference; this file covers build/test commands,
-environment gotchas, and a map of the desktop app, which spans three layers.
+Pointer index for coding agents other than Claude Code. Codex, Cursor, and Gemini
+discover this filename and read nothing else, so it holds only what has no other
+home.
 
-## Branching
-
-- **Bug fixes:** PRs to `main`.
-- **Everything else:** PRs to the **current release branch** — the highest
-  `release/v*` on origin. Never hardcode it; resolve it:
-
-  ```bash
-  git fetch origin --quiet   # remote refs go stale, and a failed fetch is silent
-  git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/v*' \
-    | sort -V | tail -1
-  ```
-
-- Release branches include release notes.
+- [`CLAUDE.md`](CLAUDE.md) — architecture, module and layer boundaries, conventions, traps.
+- [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) — build, test, lint, dev, and release mechanics.
+- [`docs/adr/`](docs/adr/) — numbered decisions and why they were made. Read the ones covering your area, and cite the number rather than restating the decision.
+- [`crates/er-desktop/agent.md`](crates/er-desktop/agent.md), [`desktop-ui/agent.md`](desktop-ui/agent.md) — desktop backend and frontend notes.
+- [`CONTEXT.md`](CONTEXT.md), [`docs/agents/`](docs/agents/) — project vocabulary, issue tracking, triage labels.
 
 ## Build / Test / Lint / Run
 
-A [`just`](https://just.systems) front-end wraps these (`just` to list, e.g.
-`just run`, `just test`, `just lint`, `just ci`). It delegates to the same
-scripts/aliases below, so either form works.
+[`just`](https://just.systems) is the front-end: bare `just` lists recipes, and
+`just run`, `just test`, `just install`, `just lint`, `just ci` cover the common
+ones. It delegates to the wrapper scripts in `scripts/`, which own the split
+target dirs. Cargo aliases, per-crate dev loops, desktop dev, and signing live in
+[`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md).
 
-| Task | Command |
-|------|---------|
-| Build TUI (dev) | `./scripts/er-tui.sh build -p er-tui` or `cargo tui-build` (needs `.cargo/bin` on `PATH`; see `.envrc`) |
-| Build TUI (release) | `./scripts/er-tui.sh build --release -p er-tui` or `cargo tui-release` |
-| Install binary | `cargo tui-install` or `cargo install --path crates/er-tui` |
-| Run TUI | `er` (from any git repo) or `cargo tui-run` |
-| Test TUI/engine | `./scripts/er-tui.sh test -p er-engine -p er-tui` or `cargo tui-test` |
-| Test desktop backend | `cargo test -p er-desktop` |
-| Build Easy Review MCP | `cargo build -p er-mcp` (stdio server; setup: `docs/guide/mcp.html`) |
-| npm MCP launcher | `npm/er-mcp` — `npx -y easy-review-mcp` (downloads release binary) |
-| Install ER agent skills | `bunx @easy-review/skills` or `npx @easy-review/skills` — see `npm/skills/` |
-| Test skills installer | `just test-skills-npm` |
-| Herdr plugin | `tools/herdr-easy-review` — `herdr plugin install …/tools/herdr-easy-review`; `just test-herdr-plugin` |
-| Desktop dev | `./scripts/tauri-dev.sh` |
-| Desktop release (local/ad-hoc) | `./scripts/tauri-build.sh` or `cargo desktop-release` |
-| Desktop signed release | `just sign` (or `just sign-release-desktop`) — guide: [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) (`.env.signing`) |
-| Frontend checks | `cd desktop-ui && bun run check && bun test src` |
-| Test full workspace | `cargo test --workspace` (slow — builds Tauri) |
-| Reclaim `target/` disk | `./scripts/cargo-gc.sh` (also runs from dev scripts) |
-| Clippy | `cargo clippy --workspace --all-targets -- -D warnings` |
-| Format check | `cargo fmt --all -- --check` |
-| CRAP tool tests (positive + negative gate fixtures) | `just crap-test` |
-| CRAP metric (coverage + complexity, CI gate) | `just crap` (needs `cargo llvm-cov`; see `docs/quality-checks.md`) |
-| Mutation testing (on demand, not scheduled) | `just mutants` (stamps `quality/mutants-last-run.txt`); `just mutants-stale` shows the age — needs `cargo-mutants` |
-| Debug mode | `ER_DEBUG=1 er` (overwrites `/tmp/er_debug.log` each git diff) |
+## Traps
 
-## Environment Gotchas
-
-- **`target/` bloat**: `cargo test` / `cargo build` without `-p` compile **er-desktop** (Tauri) into shared `target/`, which can grow to tens of GB. Use `./scripts/er-tui.sh` for TUI work (`target/tui`), `./scripts/tauri-dev.sh` for desktop (`target/desktop`). Run `./scripts/cargo-gc.sh` to prune.
-- **Rust toolchain**: needs Rust **1.88+** (`rmcp` 3 / MCP 2026-07-28). The cloud install hook [`scripts/cloud-agent-install.sh`](scripts/cloud-agent-install.sh) runs `rustup update stable` **only when** `rustc` is missing or < 1.88 — unconditional `rustup update` fails on overlayfs (EXDEV) when updating a baked system toolchain.
-- **TUI requires a terminal**: `er` renders via crossterm/ratatui, so it must run inside a real terminal (e.g. a tmux session), not a headless pipe.
-- **No external services**: no databases, Docker, or network services. The only runtime dependency is `git` (and optionally `gh` for GitHub PR features).
-- **Review sidecars**: AI sidecar files live in managed app data by default (see "Managed review storage" in `CLAUDE.md`). Set `ER_REPO_LOCAL=1` to use repo-local `.er/` instead.
+- **The TUI needs a real terminal.** `er` renders through crossterm/ratatui, so a
+  headless or piped invocation fails. Run it in a pty — a tmux session is the
+  usual answer.
+- **`ER_DEBUG=1 er` rewrites `/tmp/er_debug.log` on every git diff call.** The
+  file holds only the most recent call's command, exit code, and stderr, so
+  copy it out before the next refresh. (`crates/er-engine/src/git/status.rs`)
 
 ## GitHub repo metadata
 
-Topics, description, and homepage live on GitHub, not in git. `VilfredSikker/easy-review` must keep the `herdr-plugin` topic (Herdr marketplace) plus product topics for search:
+Topics, description, and homepage live on GitHub, not in git.
+`VilfredSikker/easy-review` must keep the `herdr-plugin` topic (Herdr
+marketplace) plus product topics for search:
 
-`ai-code-review`, `cli`, `code-review`, `desktop-app`, `developer-tools`, `diff`, `git`, `github`, `herdr`, `mcp`, `model-context-protocol`, `pull-requests`, `ratatui`, `rust`, `svelte`, `tauri`, `tui`.
+`ai-code-review`, `cli`, `code-review`, `desktop-app`, `developer-tools`,
+`diff`, `git`, `github`, `herdr`, `mcp`, `model-context-protocol`,
+`pull-requests`, `ratatui`, `rust`, `svelte`, `tauri`, `tui`.
 
-Set with `gh repo edit --add-topic …`. Description is the one-line GitHub blurb. Homepage points at the docs site.
-
-## Desktop App Shape
-
-Three active surfaces:
-
-- `crates/er-engine`: UI-agnostic review engine — git/diff state, comments, AI sidecar models, tabs, session state.
-- `crates/er-desktop`: Tauri backend bridge — commands, snapshot wire types, desktop caches, background threads, browser proxy, tabs/projects persistence, terminal sessions, export. See [`crates/er-desktop/agent.md`](crates/er-desktop/agent.md).
-- `desktop-ui`: Svelte frontend — consumes `AppSnapshot`, calls Tauri commands through `app.cmd`, owns browser-only UI state (diff rendering mode, keyboard routing, drawer state, scroll/selection).
-
-The central contract is snapshot-on-command plus polling:
-
-1. Frontend calls a Tauri command.
-2. Backend mutates `App` or desktop-owned caches.
-3. Backend returns a full `AppSnapshot`.
-4. Frontend polling calls `poll`, which returns a full snapshot only when the computed revision changes.
-
-## Desktop Working Rules
-
-- Keep state ownership explicit: engine state in `App`/`TabState`; desktop-only cache and background state in `AppState`; frontend ephemeral UI state in Svelte stores.
-- Never hold the app mutex during network or subprocess work. Capture the minimum context under lock, release it, run the slow operation, then apply the result and bump `desktop_revision`.
-- Any desktop-owned background mutation must invalidate polling — bump `desktop_revision` or the UI won't refresh.
-- User-visible failures should produce durable Rust `log::error!` entries with repo, tab, branch/PR, command, and stderr/status context — not transient frontend-only logs.
-- Treat Rust `AppSnapshot` and `desktop-ui/src/lib/types.ts` as one wire contract: add fields in both places and keep optional/default handling stable.
-- Prefer read-only PR review; don't use checkout-based flows unless the user explicitly wants to mutate the worktree.
-- Hot paths that amplify freezes: snapshot construction, syntax highlighting, JSON serialization, browser proxy response size, Svelte DOM row counts.
-
-## Feature Map
-
-- Multi-tab review: `crates/er-engine/src/app/state/mod.rs`, `crates/er-desktop/src/tabs.rs`, `desktop-ui/src/lib/components/TabStrip.svelte`.
-- Projects/sidebar PR lists: `crates/er-desktop/src/projects.rs`, `crates/er-desktop/src/pr_cache.rs`, `crates/er-desktop/src/snapshot.rs`, `desktop-ui/src/lib/components/LeftSidebar.svelte`.
-- Background AI review tasks: `crates/er-engine/src/app/state/background.rs`, `crates/er-engine/src/app/state/comments.rs`, `desktop-ui/src/lib/components/BackgroundTasks.svelte`, `desktop-ui/src/lib/components/AgentOutputCard.svelte`.
-- GitHub status/review submission: `crates/er-desktop/src/commands.rs`, `crates/er-engine/src/github.rs`, `crates/er-engine/src/app/state/github_sync.rs`, `desktop-ui/src/lib/components/BranchCard.svelte`, `desktop-ui/src/lib/components/CommentsCard.svelte`.
-- Stacked PRs (both UIs): `crates/er-engine/src/gh_stack.rs` (model + parse), `crates/er-engine/src/github.rs` (`gh stack view --json`), `crates/er-engine/src/app/state/mod.rs` (`TabState::stack`, hub section), `crates/er-desktop/src/commands.rs` (`refresh_stack`), `desktop-ui/src/lib/stackControl.ts` (row/badge logic), `desktop-ui/src/lib/components/BranchCard.svelte` (the dropdown).
-- Browser annotations: `crates/er-desktop/src/main.rs`, `crates/er-desktop/src/commands.rs`, `crates/er-engine/src/ai/comments.rs`, `desktop-ui/src/lib/components/BrowserView.svelte`, `desktop-ui/src/lib/components/AnnotationOverlay.svelte`, `desktop-ui/src/lib/stores/browserUrl.ts`.
-- Diff rendering: `crates/er-desktop/src/snapshot.rs`, `crates/er-engine/src/app/state/navigation.rs`, `desktop-ui/src/lib/components/DiffView.svelte`, `desktop-ui/src/lib/splitRows.ts`, `desktop-ui/src/lib/stores/diffSelection.svelte.ts`, `desktop-ui/src/lib/stores/diffScroll.svelte.ts`.
-- Export: `crates/er-desktop/src/export.rs`, `desktop-ui/src/lib/components/ExportModal.svelte`.
-- Terminal drawer: `crates/er-desktop/src/terminal.rs`, `desktop-ui/src/lib/components/Terminal.svelte`, `desktop-ui/src/lib/stores/terminal.svelte.ts`.
-- Desktop-managed review storage: `crates/er-desktop/src/er_storage.rs`, `crates/er-desktop/src/tabs.rs`, `TabState::er_root`.
-
-## Investigating Desktop Issues
-
-1. Identify the feature area from the map above.
-2. Inspect the Svelte component and store that initiates the command.
-3. Inspect the matching Tauri command in `crates/er-desktop/src/commands.rs`.
-4. Determine whether the command mutates engine state, desktop cache state, or files under managed storage.
-5. Confirm in `build_snapshot` that the changed state actually reaches the frontend.
-6. Check polling invalidation: `compute_poll_revision`, `desktop_revision`, and snapshot hash inputs.
-7. Add or update tests at the lowest layer that owns the behavior, then run the narrowest relevant check.
+Set with `gh repo edit --add-topic …`. Description is the one-line GitHub blurb;
+homepage points at the docs site.

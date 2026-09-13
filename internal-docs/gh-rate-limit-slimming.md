@@ -171,7 +171,8 @@ will not cover it.
   access profiles are both `PreparedArtifacts` (no gh). The theoretical ceiling, if a gh-capable profile
   (`RemoteArtifacts`, or the non-prepared review branch) were ever wired to a desktop review, is
   *unbounded gh-per-agent* (the allowlist is a gate, not a quota) × the agent-slot cap
-  (`max_concurrent_reviews`, default 3, max 16) — and, per the `run_gh` scope note above, no Rust-side
+  (`max_concurrent_reviews`, default 3 when unset or 0; the TUI picker offers 1–6 and the desktop
+  apply path accepts 1–16) — and, per the `run_gh` scope note above, no Rust-side
   mechanism would throttle it. The invariant that keeps reviews at **0** gh calls is "reviews stay
   `prepared_diff` / gh stays off the agent allowlist."
 - **TUI event loop / watcher / input handlers** — **zero** gh calls in any poll/tick path; all TUI gh

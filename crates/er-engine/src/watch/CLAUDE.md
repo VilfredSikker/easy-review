@@ -1,20 +1,37 @@
-# watch/ — File System Watcher
+# watch/ — file watching
 
-Debounced file watching using `notify` + `notify-debouncer-mini`. Single file module.
+`notify` + `notify-debouncer-mini`, one file. It reports that files changed; it
+never decides when to refresh.
 
-## mod.rs
+## The debounce belongs to the caller
 
-**`FileWatcher`** — wraps a `Debouncer<RecommendedWatcher>`. Created with `FileWatcher::new(root, debounce_ms, tx)`.
+`FileWatcher::new(root, debounce_ms, tx)` takes the interval as an argument.
+There is no module constant and no config key. The TUI passes 500ms, the
+desktop 250ms, and the TUI adds its own 200ms coalescing window on top, so a
+burst of edits produces one refresh.
 
-- Watches the repo root recursively
-- 500ms debounce (configurable)
-- Lets `.git/index` (staging) and `.git/refs/` (commits) through, skips other `.git/` noise and `.er/` (written by `er` itself)
-- Sends `WatchEvent::FilesChanged(Vec<String>)` over the provided `mpsc::Sender`
+## What it watches
 
-## Lifecycle
+`root`, recursively, plus the two paths under `.git/` that matter: `index`
+(staging) and `refs/` (commits). The rest of `.git/` is filtered out, as is any
+path containing `/.er/` — er's own writes (session saves, reviewed markers,
+comments) would otherwise refresh it against its own output.
 
-The watcher is RAII-based: storing the `FileWatcher` keeps it alive, dropping it stops watching. In main.rs it's held as `Option<FileWatcher>` — the `w` key toggles between `Some(new watcher)` and `None`.
+AI sidecars never arrive this way. Under managed storage they sit outside the
+repo root; under `ER_REPO_LOCAL` the `/.er/` filter drops them. They are polled
+instead, by `check_ai_files_changed()` comparing `er_dir()` mtimes.
 
-Events are received in the main loop via `watch_rx.try_recv()` (non-blocking). On receiving a watch event, `App::refresh_diff()` is called to reload the diff.
+## Kept alive by RAII, started automatically
 
-Note: `.er-*` AI file changes are NOT detected by the watcher. They're polled separately every tick via `check_ai_files_changed()` using file mtime comparison.
+Holding the `FileWatcher` is what keeps it running. The TUI holds
+`Option<FileWatcher>` from launch — `w` toggles it, remote mode skips it. The
+desktop holds it in a thread that re-targets when the active tab's checkout
+changes, which is why it can watch a linked worktree instead of the repo root.
+
+## Traps
+
+- Watcher errors are dropped. Hitting the OS watch limit (inotify ENOSPC) stops
+  live updates with nothing surfaced.
+- Send failures are dropped on purpose — a dead receiver means the loop exited.
+- Consumers drain non-blocking with `try_recv()`. A refresh auto-unmarks the
+  reviewed files whose diff content actually changed.

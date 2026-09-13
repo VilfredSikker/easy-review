@@ -1,43 +1,53 @@
-# Stores Agent Guide
+# Stores
 
-Stores coordinate frontend-only state around the backend snapshot. They should not become a second source of truth for review data.
+`desktop-ui/src/lib/stores/` — one store per file plus the pure helpers they import. The directory is the map. This file holds only the rules that span it.
 
-## Store Map
+## State ownership
 
-- `app.svelte.ts`: owns `AppSnapshot`, polling, `app.cmd`, toasts, frontend logs, diff view mode, comment visibility, and coarse command loading flags.
-- `browser.svelte.ts`: browser drawer state, current URL, annotation mode, and pending annotation interaction state.
-- `browserHost.ts`: native review-browser webview lifecycle (`browser_ensure`, bounds sync) and `browser://message` events.
-- `browserUrl.ts`: canonical URL conversion between real URLs and the Tauri proxy schemes (fallback iframe).
-- `keyboard.ts`: global shortcut registration and command routing.
-- `diffSelection.svelte.ts`: selected diff range and selected old/new side for comments/questions.
-- `diffScroll.svelte.ts`: scroll positions and current file tracking for continuous diff.
-- `terminal.svelte.ts`: terminal drawer/session frontend state.
+- `app.snapshot` is backend truth at rest: render from it, read loading state from it (`app.switching`, `app.refreshing`, `snapshot.bg_loading`), never infer backend state from toasts.
+- While a review write is in flight the store runs ahead of the backend on purpose. An optimistic write paints the record into `app.snapshot` and re-applies it over every incoming snapshot until the backend's own copy lands (`keepOptimisticOps`). The store is a second source of truth for in-flight review records — that is the point of the layer, and the pending-op list is what keeps the record alive across a poll.
+- localStorage holds frontend preferences only: diff view mode, comment visibility, drawer sizes, scroll offsets. Never review data.
 
-## Rules
+## Optimistic writes (ADR 0017)
 
-- `app.snapshot` is backend truth. Stores may cache UI preferences or in-progress interactions only.
-- Keep polling simple. If the UI needs fresh data, fix backend revision invalidation before increasing poll frequency.
-- `app.cmd` should remain the default mutation path because it standardizes snapshots, toasts, logs, and loading flags.
-- Use direct `invoke` only for commands with non-snapshot return values, such as export preview or provider lists.
-- LocalStorage keys should be stable and prefixed enough to avoid collisions.
-- Keyboard handlers must avoid firing while textareas, inputs, terminal focus, or browser annotation modals are active.
+- Contract: paint, register the op, confirm over IPC. `cmdOptimistic` applies the op before its first `await`, so a composer can close immediately; the op rolls back only if the call fails or the view identity moved on. A successful global op is never rolled back.
+- Skipping the registration undoes the paint. Each snapshot replaces `app.snapshot` wholesale, and anything not held as a pending op is gone — the record flashes in and reverts.
+- A command listed in `OPTIMISTIC_COMMANDS` with no branch in `buildOptimisticOp` returns null, and `cmdOptimistic` then drops the action: no paint, no IPC, no error. Add both.
+- Paint gate: `canPaintOptimistic()` refuses while a tab switch is in flight. A refused paint calls `explainPaintBlocked()` and leaves the composer draft intact — a click that does nothing reads as a frozen app.
+- Composers fire `void app.cmd(...)` and clear their draft after, never `await`.
+- `optimisticChain` serializes optimistic IPC so a reply lands on the id its parent just created.
 
-## URL Canonicalization
+## Command wrapper vs raw invoke (ADR 0018)
 
-Browser annotations depend on stable page identity. Use helpers in `browserUrl.ts` rather than hand-parsing URLs in components.
+Default is `app.cmd`: it ingests the returned snapshot, carries the tab-change ordering and the loading flags, routes failures to the banner + toast + log, and covers the optimistic commands.
 
-Current expectations:
+Raw `invoke` is for commands whose result must not replace the live snapshot:
 
-- Primary: native child webview loads real `http://localhost` URLs; messages use `browser://message` (see `browserHost.ts`).
-- Fallback: `erp://` / `erps://` proxy iframe when native webview is unavailable (`browser_proxy.rs`).
-- `fromProxyUrl` returns the real URL for UI display and page matching.
-- `sameBrowserUrl` prevents iframe reload feedback loops.
-- Page-scoped annotation matching should use the canonical page key agreed with the backend, not raw user input.
-- Prefer `http://localhost:PORT` over `127.0.0.1` — different origins for cookies and the proxy’s same-origin redirect logic.
+- a non-snapshot return — `export_review`, `get_background_task_log`, `list_available_branches`, the `arena_*` reads the arena store polls itself;
+- the settings panel, which keeps its own `GetConfigHubResponse` state (`get_config_hub`, `apply_config_patch`, the AI provider editor) and bypasses the snapshot contract on purpose;
+- `toggle_panel`, which paints the layout locally first.
 
-## Loading And Errors
+A raw `invoke` reports its own failure; nothing else will.
 
-- Slow tab/branch/PR commands set `app.switching`.
-- `force_refresh_diff` sets `app.refreshing`.
-- Backend background activity renders from `snapshot.bg_loading` or `snapshot.background_tasks`.
-- Errors should go through `pushLog` and `showToast`; avoid silent `catch` blocks except for expected polling/window-close noise.
+## Ordering guards
+
+Snapshots arrive out of order (poll, command response, revision event), so each path defends itself:
+
+- `snapshotGeneration` — a poll that started before a newer command or merge is discarded (`isStaleSnapshotGeneration`).
+- `tabChangeGeneration` + `shouldDropCommandSnapshot` — a command snapshot for another tab is dropped unless the command is a tab change; a failed tab change restores `lastConfirmedSnapshot`.
+- `tabChangeInvokeQueue` (`createLatestInvokeQueue`) — tab-change invokes serialize, and a superseded one resolves to `LATEST_INVOKE_SKIPPED`, which the caller must ignore rather than apply.
+- `pollInFlight` / `pollPending` — a revision event during a poll coalesces into one follow-up, not a second invoke.
+
+Any new async path that assigns `this.snapshot` needs one of these.
+
+## Poll model (ADR 0011)
+
+The backend pushes `er://revision` when its desktop revision advances; the frontend answers by invoking `poll`. The 30s timer is a safety net for a dropped event or a listener that has not attached yet — it was 2s when polling was the primary mechanism. A stale-looking UI points at missing backend revision invalidation; shortening the interval hides that.
+
+## Browser URL identity
+
+Annotation matching keys on a canonical URL: use the `browserUrl.ts` helpers, never hand-parsed URLs in components. Dev URLs must stay on `localhost` — `127.0.0.1` is a different origin for cookies and for the proxy's same-origin redirect.
+
+## Keyboard
+
+One global handler in `keyboard.ts`; components register no global shortcuts and stop propagation in their own inputs. Guard scope: focus inside the terminal (`.xterm`) swallows everything except Cmd/Ctrl+T; bare keys stop at fields (`INPUT`/`TEXTAREA`/`SELECT`, contentEditable) and at an open modal; a few named chords opt out of the field guard. Escape is owned by the handler, first match wins: palette → modal stack → popover / search bar → diff selection → identifier highlight → annotation composer → blur the field.
