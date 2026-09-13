@@ -57,7 +57,7 @@ export interface ReviewerRef {
   agent_kind?: string;
 }
 
-export type ArenaRunKind = "models" | "agent";
+export type ArenaRunKind = "models" | "agent" | "seeded";
 
 export interface ArenaConfig {
   reviewers: ReviewerRef[];

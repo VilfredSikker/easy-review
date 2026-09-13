@@ -67,6 +67,9 @@ pub enum ArenaRunKind {
     #[default]
     Models,
     Agent,
+    /// No debate: findings come from the expert sidecars, and the arbiter rules
+    /// on them directly. A validation pass, not a run of reviewers arguing.
+    Seeded,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

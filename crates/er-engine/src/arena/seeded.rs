@@ -7,8 +7,14 @@
 
 use super::identity::finding_id;
 use super::merge::{propose_merge_candidates, raise_severity, severity_rank};
-use super::model::{ArenaFinding, Ballot, RoundLog, Verdict, Vote};
+use super::model::{
+    ArenaConfig, ArenaFinding, ArenaRun, ArenaRunKind, ArenaScope, Ballot, CostEstimate,
+    ReviewerRef, RoundLog, RunStatus, Verdict, Vote,
+};
+use super::orchestrator::resolve_reviewers;
 use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, Confidence, Finding};
+use crate::config::ErConfig;
+use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
 
 /// Collapse the expert findings under `er_dir` into one finding per issue.
@@ -77,6 +83,102 @@ pub fn dedupe_expert_findings(
         finding.raised_by.sort();
     }
     collapsed
+}
+
+/// Every lens that raised something in `findings`, deduplicated and sorted.
+///
+/// This is the run's reviewer list: an expert that contributed a finding is a
+/// reviewer on the seeded run, and an expert that contributed nothing is not.
+pub fn contributing_lenses(findings: &[ArenaFinding]) -> Vec<String> {
+    let mut lenses: Vec<&str> = findings
+        .iter()
+        .flat_map(|f| f.raised_by.iter().map(String::as_str))
+        .collect();
+    lenses.sort_unstable();
+    lenses.dedup();
+    lenses.into_iter().map(str::to_string).collect()
+}
+
+/// What a seeded run needs that cannot be read off the findings.
+pub struct SeededRunParams {
+    pub id: String,
+    pub diff_hash: String,
+    pub base_branch: String,
+    pub branch_ref: String,
+    pub scope: ArenaScope,
+    /// The model that will do the ruling.
+    pub arbiter: ReviewerRef,
+}
+
+/// Assemble the run record for a seeded pass over already-deduped findings.
+///
+/// `status` is `Queued`: nothing has run yet. The caller saves this and hands it
+/// to the executor, which is what actually reaches the arbiter.
+pub fn build_seeded_run(
+    config: &ErConfig,
+    params: SeededRunParams,
+    findings: Vec<ArenaFinding>,
+) -> Result<ArenaRun> {
+    // The experts are ordinary agent spawns, so they carry the hub's default
+    // selection rather than the arbiter's — these records only label the run,
+    // but a reviewer list naming the arbiter's model would be a lie the process
+    // matrix repeats.
+    let provider_id = config
+        .ai_hub
+        .default_provider
+        .clone()
+        .unwrap_or_else(|| params.arbiter.provider_id.clone());
+    let model_id = config
+        .ai_hub
+        .default_model
+        .clone()
+        .unwrap_or_else(|| params.arbiter.model_id.clone());
+
+    let refs: Vec<ReviewerRef> = contributing_lenses(&findings)
+        .into_iter()
+        .map(|lens| ReviewerRef {
+            provider_id: provider_id.clone(),
+            model_id: model_id.clone(),
+            agent_kind: Some(format!("expert:{lens}")),
+        })
+        .collect();
+    let reviewers = resolve_reviewers(config, &refs)?;
+
+    Ok(ArenaRun {
+        id: params.id,
+        title: Some(format!("Validate {} expert findings", findings.len())),
+        branch_ref: params.branch_ref,
+        base_branch: params.base_branch,
+        scope: params.scope,
+        diff_hash: params.diff_hash,
+        created_at: crate::app::chrono_now(),
+        completed_at: None,
+        status: RunStatus::Queued,
+        config: ArenaConfig {
+            reviewers: refs,
+            // Two rounds so the run never satisfies `total_rounds < 2`, the
+            // short circuit that finalises single-round runs and skips the
+            // arbiter entirely. Nothing debates; the round count is a guard.
+            rounds: 2,
+            arbiter: params.arbiter,
+            auto_accept_threshold: 0.75,
+            scope: params.scope,
+            files: None,
+            run_kind: ArenaRunKind::Seeded,
+            agent_kind: None,
+            effort: config.ai_hub.default_effort.clone(),
+        },
+        reviewers,
+        findings,
+        accepted_finding_ids: Vec::new(),
+        // No reviewer calls happen, so the only spend is the arbiter's one pass,
+        // which the executor records once it knows the real usage.
+        cost_estimate: CostEstimate {
+            tokens_in: 0,
+            tokens_out: 0,
+            usd: 0.0,
+        },
+    })
 }
 
 fn from_expert_finding(path: &str, finding: &Finding, lens: &str, id: String) -> ArenaFinding {
@@ -231,6 +333,7 @@ fn worst_severity(finding: &ArenaFinding) -> crate::ai::RiskLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::arena::model::ReviewerRunStatus;
     use serde_json::json;
     use std::path::Path;
     use tempfile::tempdir;
@@ -469,6 +572,136 @@ mod tests {
         assert!(out[0].merged_children[0]
             .body
             .contains("missing null check"));
+    }
+
+    /// The run's reviewers are the experts that actually raised something —
+    /// `min_survivors_required` and the process matrix both read that list, and
+    /// the seeded path has no round 1 to fill it in.
+    #[test]
+    fn contributing_lenses_names_every_raiser_once() {
+        let dir = tempdir().unwrap();
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "unchecked input", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "reliability",
+            &[("src/a.rs", "unchecked input", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "patterns",
+            &[("src/b.rs", "missing null check", 5)],
+        );
+
+        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+        let lenses = contributing_lenses(&findings);
+
+        assert_eq!(lenses, vec!["patterns", "reliability", "security"]);
+    }
+
+    #[test]
+    fn contributing_lenses_is_empty_without_findings() {
+        assert!(contributing_lenses(&[]).is_empty());
+    }
+
+    /// The seeded path exists to reach the arbiter, so the run must never be
+    /// shaped like the single-round case that finalises verdicts without it.
+    #[test]
+    fn a_seeded_run_is_not_shaped_like_the_single_round_short_circuit() {
+        let config = ErConfig::default();
+        let findings = vec![];
+        let run = build_seeded_run(
+            &config,
+            SeededRunParams {
+                id: "arena-seeded-1".to_string(),
+                diff_hash: HASH.to_string(),
+                base_branch: "main".to_string(),
+                branch_ref: "feature".to_string(),
+                scope: ArenaScope::Branch,
+                arbiter: ReviewerRef {
+                    provider_id: "anthropic".to_string(),
+                    model_id: "opus".to_string(),
+                    agent_kind: None,
+                },
+            },
+            findings,
+        )
+        .expect("builds without providers in the hub");
+
+        assert_eq!(run.config.run_kind, ArenaRunKind::Seeded);
+        assert!(
+            run.config.rounds >= 2,
+            "a run with fewer than 2 rounds skips the arbiter entirely"
+        );
+        assert_eq!(run.status, RunStatus::Queued);
+    }
+
+    /// Reviewers are labelled with the expert that raised the finding, and the
+    /// hub default is what an ordinary agent spawn uses.
+    #[test]
+    fn a_seeded_run_lists_its_contributing_experts_as_reviewers() {
+        let dir = tempdir().unwrap();
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "unchecked input", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "testing",
+            &[("src/b.rs", "no negative case", 4)],
+        );
+        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+
+        // `resolve_reviewers` looks providers up in the hub, and a bare
+        // `ErConfig::default()` has an empty one — the catalog is what a real
+        // load seeds it with.
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let provider_id = config
+            .ai_hub
+            .default_provider
+            .clone()
+            .expect("catalog names a default provider");
+        let model_id = config
+            .ai_hub
+            .default_model
+            .clone()
+            .expect("catalog names a default model");
+
+        let run = build_seeded_run(
+            &config,
+            SeededRunParams {
+                id: "arena-seeded-2".to_string(),
+                diff_hash: HASH.to_string(),
+                base_branch: "main".to_string(),
+                branch_ref: "feature".to_string(),
+                scope: ArenaScope::Branch,
+                arbiter: ReviewerRef {
+                    provider_id,
+                    model_id,
+                    agent_kind: None,
+                },
+            },
+            findings,
+        )
+        .expect("builds");
+
+        assert_eq!(run.config.reviewers.len(), 2);
+        let kinds: Vec<&str> = run
+            .config
+            .reviewers
+            .iter()
+            .filter_map(|r| r.agent_kind.as_deref())
+            .collect();
+        assert_eq!(kinds, vec!["expert:security", "expert:testing"]);
+        assert!(run
+            .reviewers
+            .iter()
+            .all(|r| matches!(r.status, ReviewerRunStatus::Ok)));
     }
 
     #[test]

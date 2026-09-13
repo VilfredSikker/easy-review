@@ -1149,7 +1149,11 @@ fn active_reviewers<'a>(run: &'a ArenaRun, all: &'a [Reviewer]) -> Vec<&'a Revie
         .collect()
 }
 
-fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Reviewer>> {
+/// Build the `Reviewer` records for a set of refs, each marked `Ok`.
+///
+/// Shared with the seeded path, which has no round 1 to run: without these the
+/// survivor count and the process matrix would both read empty.
+pub(super) fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Reviewer>> {
     let mut out = Vec::new();
     for (i, rf) in refs.iter().enumerate() {
         let provider = config
