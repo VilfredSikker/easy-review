@@ -10750,6 +10750,8 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let body = with_fake_claude("ok", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10766,6 +10768,8 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let body = with_fake_claude("fail", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10785,6 +10789,8 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let body = with_fake_claude("custom-response-text", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))

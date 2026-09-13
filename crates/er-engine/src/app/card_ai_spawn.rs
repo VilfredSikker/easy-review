@@ -12,6 +12,11 @@ pub struct CardAiInvocation {
     pub uses_stream_json: bool,
     /// Extra process environment (OpenCode read-only permissions).
     pub env: Vec<(String, String)>,
+    /// Wall-clock limit for this run, resolved from config when the invocation
+    /// is planned. Carried on the invocation because the spawn is the only
+    /// place that needs it, and it must not be re-resolved there against a
+    /// config the caller may since have changed.
+    pub timeout: std::time::Duration,
 }
 
 /// Resolve provider/command/args from config (mirrors background review selection).
@@ -86,6 +91,7 @@ pub fn plan_card_ai_invocation(
         is_claude_compatible: is_claude,
         uses_stream_json,
         env,
+        timeout: config.ai_hub.effective_agent_timeout(),
     }
 }
 
@@ -191,13 +197,36 @@ pub fn run_card_ai_subprocess(
         }
     }
 
+    // Spawned through the run handle rather than `cmd.output()`, so card AI
+    // gets the same deadline as the other spawn paths. It was the one path
+    // that never created a child at all, which is why it could not be stopped
+    // and could not time out.
+    let run = crate::agent_run::AgentRunHandle::new();
     let result = {
         let mut cmd = Command::new(&inv.command);
-        cmd.args(&args).current_dir(&inv.work_dir);
+        cmd.args(&args)
+            .current_dir(&inv.work_dir)
+            // `cmd.output()` set these itself; spawning by hand means asking.
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         for (key, value) in &inv.env {
             cmd.env(key, value);
         }
-        cmd.output()
+        match run.spawn(&mut cmd) {
+            Ok(child) => {
+                let id = child.id();
+                run.register(child);
+                run.arm_timeout(inv.timeout);
+                match run.take_child(id) {
+                    Some(child) => run.wait_for_output(child).map_err(anyhow::Error::from),
+                    // Unreachable: `register` just put it there under this id.
+                    // Reported as a spawn failure rather than panicking, since
+                    // this path's contract is to hand back a string.
+                    None => Err(anyhow::anyhow!("card AI: lost its own child")),
+                }
+            }
+            Err(e) => Err(e),
+        }
     };
 
     match result {
@@ -216,6 +245,16 @@ pub fn run_card_ai_subprocess(
             }
         }
         Ok(out) => {
+            // Reported through this path's usual string rather than the engine
+            // error types: card AI hands back display text, and a caller that
+            // has to tell a timeout from a crash here would need the signature
+            // changed for it.
+            if run.is_timed_out() {
+                return format!(
+                    "Pending — invoke via CLI ({})",
+                    crate::agent_run::timed_out(inv.timeout)
+                );
+            }
             let err = String::from_utf8_lossy(&out.stderr);
             format!(
                 "Pending — invoke via CLI ({} exited {}: {})",
@@ -294,6 +333,8 @@ mod tests {
             is_claude_compatible: false,
             uses_stream_json: false,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -311,6 +352,8 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(args
@@ -334,6 +377,8 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: true,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
         };
         let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
         assert_eq!(reply, "**Verdict**: Confirmed");
@@ -424,6 +469,23 @@ mod tests {
             .windows(2)
             .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
         assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
+    }
+
+    #[test]
+    fn the_planned_invocation_carries_the_configured_deadline() {
+        // The spawn reads the limit off the invocation, so a plan that dropped
+        // it would leave card AI as the one path with no deadline -- exactly
+        // the state this changed.
+        let mut config = ErConfig::default();
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
+        assert_eq!(
+            inv.timeout,
+            std::time::Duration::from_secs(crate::config::DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+
+        config.ai_hub.agent_timeout_secs = 120;
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
+        assert_eq!(inv.timeout, std::time::Duration::from_secs(120));
     }
 
     #[test]

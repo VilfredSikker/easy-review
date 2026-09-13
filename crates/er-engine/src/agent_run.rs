@@ -277,6 +277,19 @@ impl AgentRunHandle {
         status
     }
 
+    /// [`Self::wait_for`] for callers that want the pipes collected too.
+    ///
+    /// A separate method rather than `wait_for` plus the callers reading pipes
+    /// themselves, because `wait_with_output` drains stdout and stderr
+    /// *concurrently*. Reading them in sequence deadlocks as soon as the child
+    /// fills the buffer of the pipe nobody is reading yet — which for an agent
+    /// writing a JSON event per line is not a large amount of output.
+    pub fn wait_for_output(&self, child: Child) -> std::io::Result<std::process::Output> {
+        let out = child.wait_with_output();
+        self.mark_finished();
+        out
+    }
+
     /// Record the leader's pid. Not "only the first": a handle describes one
     /// run, and later spawns on the same handle are a caller bug rather than
     /// something worth silently supporting.
