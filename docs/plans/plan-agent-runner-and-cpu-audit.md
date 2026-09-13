@@ -378,16 +378,21 @@ there.
 
 ### Phase 1 — Avoidable CPU (low risk, highest leverage)
 
-| File | Change |
-|------|--------|
-| `er-engine/src/app/state/mod.rs:2531` | Pass `compute_per_file_hashes = false` on the watch path; gate `reload_ai_state()` (`:2913`) on the existing `check_ai_files_changed` mtime check instead of calling it unconditionally |
-| `er-engine/src/app/state/mod.rs:4404` | Stat once into a `Vec<(idx, mtime)>`, then sort — removes `2n log n` syscalls |
-| `er-engine/src/ai/prepared_diff.rs:34` | `ensure_diff_artifacts` builds and hashes the annotated diff on every call, then only *writes* it conditionally. Annotation is deterministic, so unchanged raw implies unchanged annotated: skip both the O(n) build and its SHA-256 when `diff-tmp` is already current and `diff-annotated` is present |
-| `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` |
-| `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops |
-| `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies |
-| `er-engine/src/highlight.rs:119` | Cache `SyntaxReference` per extension instead of re-resolving on every miss |
-| `er-tui/src/main.rs:435` | Redraw only when state is dirty; correct the tick constants to the real 50 ms period |
+| File | Change | Status |
+|------|--------|--------|
+| `er-engine/src/ai/prepared_diff.rs:34` | `ensure_diff_artifacts` builds and hashes the annotated diff on every call, then only *writes* it conditionally. Annotation is deterministic, so unchanged raw implies unchanged annotated: skip both the O(n) build and its SHA-256 when `diff-tmp` is already current and `diff-annotated` is present | **done** |
+| `er-engine/src/app/state/mod.rs:4404` | Stat once into a `Vec<(idx, mtime)>`, then sort — removes `2n log n` syscalls | **done** |
+| `er-engine/src/app/state/mod.rs:2531` | Pass `compute_per_file_hashes = false` on the watch path; gate `reload_ai_state()` (`:2913`) on the existing `check_ai_files_changed` mtime check instead of calling it unconditionally | open — riskiest |
+| `er-desktop/src/snapshot.rs:2782, :2897` | Replace the per-branch `merge-base --is-ancestor` loop with one `git branch --merged <base>` | open |
+| `er-desktop/src/main.rs:951` | TTL the `git ls-remote` branch-base probe, matching its sibling loops | open |
+| `er-engine/src/app/state/comments.rs` (`debug-agent.log` write) | Gate it behind `ER_DEBUG`; when enabled, append from the reader threads rather than buffering three copies | open |
+| `er-engine/src/highlight.rs:119` | Cache `SyntaxReference` per extension instead of re-resolving on every miss | open |
+| `er-tui/src/main.rs:435` | Redraw only when state is dirty; correct the tick constants to the real 50 ms period | open |
+
+Landed items carried three new tests: the annotation skip (counting annotation
+passes, not writes — a write count passes against the unoptimised code), marker/
+content-file invariants including the pre-upgrade marker, and the mtime sort from
+an unsorted list.
 
 ### Phase 2 — Runner correctness and throughput
 
