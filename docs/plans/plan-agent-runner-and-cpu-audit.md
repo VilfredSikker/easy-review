@@ -306,6 +306,14 @@ through the real `start_arena_run` → `run_supervisor` path:
   **zero** blocked acquisitions. Run C recorded `blocked=2 max_wait_ms=2142` — a
   reviewer waiting exactly one reviewer-latency for a slot.
 
+  **[corrected]** These numbers predate a tightening of the metric. `started`
+  used to be taken before the pool's mutex, so mutex-acquisition time counted as
+  slot wait, and a cancelled waiter recorded an acquisition it never got. Both
+  are fixed; `acquires` now means grants and `blocked` means grants that waited
+  ≥1 ms. The conclusion is unaffected — run C is 5 reviewers against a cap of 3,
+  so exactly two must wait, and a 2142 ms wait is two orders of magnitude above
+  any mutex hold. The absolute values would move slightly on a re-run.
+
 At real provider latency (~60 s, measured above) the default 3-reviewer /
 3-round arena is roughly four serial reviewer latencies plus the arbiter, and it
 is already under the cap. Raising `max_concurrent_reviews` does nothing for it;
