@@ -13,7 +13,8 @@ to the consuming crates.
 | `ai/` | AI review data model, sidecar loader, prompts, comment storage | `review.rs`, `loader.rs` |
 | `arena/` | Multi-reviewer "arena" runs (orchestrator + registry) | `orchestrator.rs` |
 | `watch/` | Debounced file system watcher | `mod.rs` |
-| `github.rs` | GitHub CLI (`gh`) integration: PRs, comment sync, status | — |
+| `github.rs` | GitHub CLI (`gh`) integration: PRs, comment sync, status, `gh stack view` wrapper | — |
+| `gh_stack.rs` | Stacked-PR model: `gh stack view --json` parse, top-of-stack-first rows, unavailable reasons | — |
 | `sync.rs` | Pure sync core (no `App` dependency): comment merge + anchor resolution, remote diff fetch | — |
 | `config.rs` | `ErConfig`, feature flags, settings items, TOML load/save | — |
 | `storage.rs` | Managed review storage paths (repo/branch/view-bucket slugs) | — |
@@ -21,6 +22,7 @@ to the consuming crates.
 | `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
 | `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
 | `agent_timing.rs` | Opt-in (`ER_AGENT_TIMING=1`) wall-clock marks for agent runs: slot wait, spawn, run | — |
+| `agent_run.rs` | Cancellable agent subprocesses: cancel flag + process-group kill, shared by the review, card-AI and tab-local spawn paths | — |
 | `agent_runtime.rs` | **Unwired** — declared in `lib.rs` but referenced nowhere. Its invocation/artifact contracts are duplicated by `card_ai_spawn.rs` and the `app/state` spawn paths. | — |
 | `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |
 
@@ -41,6 +43,7 @@ each crate's own docs (`crates/er-tui/src/ui/CLAUDE.md`,
 Parses GitHub PR URLs (`owner/repo/pull/N`) and shells out to `gh` — never the
 HTTP API directly. Covers: PR metadata (`gh pr view`), read-only PR diffs,
 checkout, base-branch resolution, open-PR detection for the current branch
-(base hint), and two-way review comment sync (pull/push/reply/delete).
+(base hint), two-way review comment sync (pull/push/reply/delete), and
+`gh_stack_view_json` (the `gh stack view --json` wrapper used by `gh_stack.rs`).
 `REMOTE_PR_MAX_CHANGED_FILES` / `REMOTE_PR_MAX_LINE_CHANGES` guard pathological
 remote PRs.

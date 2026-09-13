@@ -185,6 +185,21 @@ er --target release/v2                    <span class="cmt"># diff against a spe
       (repositories and worktrees), <kbd>,</kbd> the settings hub, and <kbd>?</kbd> the searchable help hub.
     </p>
 
+    <h2>Stacked PRs</h2>
+    <p>
+      On a branch that belongs to a <a href="https://github.com/github/gh-stack">stack</a>, the open hub
+      (<kbd>o</kbd>) grows a <code>── Stack ──</code> section: one row per layer, ordered top-of-stack first,
+      each showing its branch name and PR number, with the layer's state (<code>open</code>, <code>merged</code>,
+      <code>queued</code>, <code>needs rebase</code>) and the trunk closing the list. <kbd>Enter</kbd> opens
+      that PR for review, <kbd>b</kbd> opens it on GitHub.
+    </p>
+    <p>
+      The list comes from the <code>gh stack</code> extension
+      (<code>gh extension install github/gh-stack</code>); <code>gh stack view</code> runs on a background
+      thread, so the hub opens instantly with a loading row. When the extension isn't installed, or the
+      current branch isn't part of a stack, the section explains why instead of going blank.
+    </p>
+
     <h2>Syntax highlighting</h2>
     <p>
       The terminal uses <code>syntect</code> for highlighting, with a content-hash cache so unchanged lines are never

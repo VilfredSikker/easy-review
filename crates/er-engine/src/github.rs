@@ -1543,6 +1543,40 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
     Ok((base.to_string(), head.to_string()))
 }
 
+/// Run `gh stack view --json` (github/gh-stack extension) for the repo at
+/// `repo_root` and return its stdout.
+///
+/// A non-zero exit is an expected steady state — the branch may not be in a
+/// stack, or the extension may not be installed — so `gh`'s stderr diagnostic is
+/// returned as the error message and surfaced to the user as the reason.
+pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["stack", "view", "--json"])
+        .current_dir(repo_root)
+        // `gh stack view` opens an interactive TUI under a TTY; the JSON flag
+        // avoids it, and these env vars keep any prompt from blocking the
+        // worker thread that runs this.
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .context("Failed to run `gh stack view`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.trim();
+        return Err(anyhow::anyhow!(
+            "{}",
+            if reason.is_empty() {
+                "gh stack view failed"
+            } else {
+                reason
+            }
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Fetch PR overview data for a remote repo (no local clone needed).
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
     let repo_slug = format!("{}/{}", owner, repo);

@@ -120,6 +120,14 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Char('b') => {
+            // Secondary action for the selected row. Only stacked-PR rows define
+            // one (open on GitHub); everywhere else this is a no-op.
+            if let Some(action) = app.overlay_secondary_hub_action() {
+                app.overlay = None;
+                dispatch_hub_action(app, action)?;
+            }
+        }
         KeyCode::Enter => {
             app.overlay_select()?;
             // Dispatch pending hub action if overlay_select set one
@@ -133,6 +141,40 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Open a PR on GitHub via `gh pr view --web`.
+///
+/// `gh` outlives the caller, so the child is spawned detached and reaped on its
+/// own thread; the TUI never waits on a browser launch. `remote_repo` is the
+/// `owner/repo` slug passed as `-R` when the PR is not in the current repo.
+/// Returns whether the process was spawned.
+fn spawn_gh_pr_view_web(repo_root: &str, pr_number: u64, remote_repo: Option<&str>) -> bool {
+    let mut args = vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--web".to_string(),
+    ];
+    if let Some(slug) = remote_repo {
+        args.push("-R".to_string());
+        args.push(slug.to_string());
+    }
+    match std::process::Command::new("gh")
+        .args(&args)
+        .current_dir(repo_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
@@ -431,32 +473,41 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             }
         }
         HubAction::OpenPrInBrowser => {
-            let repo_root = app.tab().repo_root.clone();
             if let Some(pr_number) = app.tab().pr_number {
-                let mut args = vec![
-                    "pr".to_string(),
-                    "view".to_string(),
-                    pr_number.to_string(),
-                    "--web".to_string(),
-                ];
-                if let Some(ref slug) = app.tab().remote_repo {
-                    args.push("-R".to_string());
-                    args.push(slug.clone());
-                }
-                if let Ok(mut child) = std::process::Command::new("gh")
-                    .args(&args)
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
+                let repo_root = app.tab().repo_root.clone();
+                let remote_repo = app.tab().remote_repo.clone();
+                spawn_gh_pr_view_web(&repo_root, pr_number, remote_repo.as_deref());
                 app.notify("Opening PR in browser...");
             }
         }
+        HubAction::OpenStackPr {
+            pr_number,
+            pr_url,
+            branch,
+        } => {
+            // Reuse the remote-PR review path: it focuses an already-open tab for
+            // this PR or opens a new one backed by `gh pr view`. A stacked layer
+            // is reviewed as its own PR, so the diff is that layer's, not the
+            // whole stack's.
+            if let Err(e) = app.open_remote_url(&pr_url) {
+                app.notify(&format!("Failed to open {branch} (#{pr_number}): {e}"));
+            }
+        }
+        HubAction::OpenStackPrInBrowser {
+            pr_number,
+            pr_url,
+            branch,
+        } => {
+            let repo_root = app.tab().repo_root.clone();
+            // A layer can live in another repo than the tab (when the tab is a
+            // remote PR), so prefer the URL's slug over the tab's remote.
+            let slug =
+                github::parse_github_pr_url(&pr_url).map(|r| format!("{}/{}", r.owner, r.repo));
+            if spawn_gh_pr_view_web(&repo_root, pr_number, slug.as_deref()) {
+                app.notify(&format!("Opening {branch} (#{pr_number}) in browser..."));
+            }
+        }
+        HubAction::RefreshStack => app.refresh_stack(),
         HubAction::CopyFullFile => {
             app.copy_full_file()?;
         }

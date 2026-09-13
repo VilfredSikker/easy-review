@@ -6,7 +6,7 @@ use ratatui::{
 };
 
 use super::styles;
-use er_engine::app::{DirEntry, HubItem, HubKind, OverlayData, Worktree};
+use er_engine::app::{DirEntry, HubAction, HubItem, HubKind, OverlayData, Worktree};
 
 /// Render the active overlay on top of the main UI
 /// Note: ConfigHub overlay is rendered separately in ui/mod.rs since it needs App access.
@@ -448,8 +448,15 @@ fn render_modal_hub(
         })
         .collect();
 
+    // Rows with a secondary action advertise it (stacked PRs: `b` opens the PR
+    // on GitHub, Enter opens it for review).
+    let has_secondary = items
+        .iter()
+        .any(|item| item.enabled && matches!(item.action, HubAction::OpenStackPr { .. }));
     let close_hint = if is_help {
         "Esc=close"
+    } else if has_secondary {
+        "Enter=review, b=browser, Esc=close"
     } else {
         "Enter=select, Esc=close"
     };

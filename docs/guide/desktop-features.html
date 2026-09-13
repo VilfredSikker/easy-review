@@ -167,6 +167,31 @@
       <code>export.md</code> — useful for a review summary in a PR description or a writeup.
     </p>
 
+    <h2>Stacked PRs</h2>
+    <p>
+      When the branch a tab is showing belongs to a <a href="https://github.com/github/gh-stack">stack</a>,
+      the branch header (the <strong>Branch card</strong> in the right panel) grows a stack control next to
+      the branch name:
+    </p>
+    <ul>
+      <li><strong>Position badge</strong> — <code>2 / 4</code> reads as the second layer from the top of a
+      four-layer stack, with your layer highlighted in the dropdown.</li>
+      <li><strong>Switch layers</strong> — open the dropdown and pick any other layer to review that PR,
+      replacing the current view (hold <kbd>Cmd</kbd>/<kbd>Ctrl</kbd> to keep the current tab and open a new
+      one). Layers whose PR doesn't exist yet show a branch you can't select.</li>
+      <li><strong>Refresh</strong> — the header's refresh button re-runs <code>gh stack view</code>, for after
+      a push or rebase.</li>
+    </ul>
+    <p>
+      The list comes from the <code>gh stack</code> extension
+      (<code>gh extension install github/gh-stack</code>). It's fetched on demand the first time you open the
+      control — never on tab load — and cached per tab. Until that first lookup a PR branch shows a quiet
+      <code>Stack</code> placeholder to open; a branch that isn't in a stack then drops the control, and a branch
+      without a PR never shows it. Because <code>gh stack view</code> reads the checked-out branch, the control
+      only appears when the branch the tab shows is actually checked out — a remote PR, or a local PR whose head
+      lives only in a fetched ref, has nothing to read.
+    </p>
+
     <h2>Tabs, projects, and PRs</h2>
     <ul>
       <li><strong>Persistent tabs</strong> — open repos, branches, and PRs as tabs that survive restarts; drag to reorder.</li>
