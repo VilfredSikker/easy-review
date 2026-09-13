@@ -26,6 +26,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
 
+/// Event-loop poll timeout — how long a frame waits for input before the loop
+/// runs its timers. Tick-based timers in the loop are stated as multiples of
+/// this, so changing it changes their real period.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
 /// Terminal UI for reviewing git diffs
 #[derive(Parser)]
 #[command(name = "er", version, about)]
@@ -425,6 +430,13 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         }
     };
 
+    // Ticks between AI-sidecar polls (1 s) and watched-file rescans (5 s).
+    // Expressed as multiples of the poll timeout below, which is the rate the
+    // loop actually runs at: written as bare tick counts they silently ran at
+    // half the intended period, doubling the `git check-ignore` spawn rate.
+    const AI_POLL_TICKS: u16 = 20;
+    const WATCHED_RESCAN_TICKS: u16 = 100;
+
     loop {
         // Update terminal width for resize calculations
         if let Ok(size) = terminal.size() {
@@ -435,7 +447,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         terminal.draw(|f| ui::draw(f, app, hl))?;
 
         // Poll for events with a timeout (lets us process watch events too)
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = event::read()? {
                 // Route keys: overlay takes priority, then search, then normal
                 if app.overlay.is_some() {
@@ -491,9 +503,11 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             }
         }
 
-        // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
+        // Check for .er-* file changes (throttled to 1 s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
+        if app.ai_poll_counter.is_multiple_of(AI_POLL_TICKS)
+            && app.tab_mut().check_ai_files_changed()
+        {
             app.notify("✓ AI data refreshed");
         }
 
@@ -506,8 +520,8 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Drain agent log entries from background threads
         app.drain_agent_log();
 
-        // Rescan watched files (every 50 ticks ≈ 5s)
-        if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(50) {
+        // Rescan watched files (5 s)
+        if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(WATCHED_RESCAN_TICKS) {
             app.tab_mut().refresh_watched_files();
         }
 

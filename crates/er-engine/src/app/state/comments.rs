@@ -1961,14 +1961,16 @@ impl App {
     pub fn notify(&mut self, msg: &str) {
         self.watch_message = Some(msg.to_string());
         self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 20; // ~2s
+        // Ticks come from the TUI's event loop, which polls every 50 ms — so
+        // this is 2 s, not the 1 s the old 20 assumed from a 100 ms period.
+        self.watch_message_max_ticks = 40;
     }
 
     /// Like notify but persists for ~5 seconds — for important results.
     pub fn notify_long(&mut self, msg: &str) {
         self.watch_message = Some(msg.to_string());
         self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 50; // ~5s
+        self.watch_message_max_ticks = 100; // 5 s at the TUI's 50 ms poll
     }
 
     // ── Background Commands ──
