@@ -340,6 +340,15 @@
         <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
+      {#if ai.arbiter_unmatched > 0}
+        <!-- The arbiter's grades exist but no longer describe this review, so
+             nothing was applied. Saying so beats a card that looks unchanged. -->
+        <p class="mb-1.5 text-[10px] text-risk-med">
+          {ai.arbiter_unmatched} arbiter verdict{ai.arbiter_unmatched === 1 ? "" : "s"} no longer
+          apply — re-run validation
+        </p>
+      {/if}
+
       {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0}
         <!-- A list that is quietly shorter is how people stop trusting it, so
              the arbiter's rulings are counted rather than silently omitted. -->

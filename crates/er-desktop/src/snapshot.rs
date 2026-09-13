@@ -1136,6 +1136,10 @@ pub struct AiSnapshot {
     /// Findings the arbiter folded into another.
     #[serde(default)]
     pub arbiter_merged: usize,
+    /// Verdicts that matched no finding — the grades exist but no longer
+    /// describe this review.
+    #[serde(default)]
+    pub arbiter_unmatched: usize,
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
@@ -2683,6 +2687,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         findings: Vec::new(),
         arbiter_dropped: 0,
         arbiter_merged: 0,
+        arbiter_unmatched: 0,
         file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
@@ -3942,6 +3947,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         findings,
         arbiter_dropped: ai.arbiter_effect.dropped,
         arbiter_merged: ai.arbiter_effect.merged,
+        arbiter_unmatched: ai.arbiter_effect.unmatched,
         file_risks,
         has_review_json,
         eligible_comment_count,

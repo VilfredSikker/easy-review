@@ -298,17 +298,29 @@ fn render_file_detail<'a>(
                 // stop trusting it, so the arbiter's rulings are counted here
                 // rather than the list just being shorter.
                 let effect = tab.ai.arbiter_effect;
-                if effect.hidden() > 0 {
-                    let mut parts = Vec::new();
-                    if effect.dropped > 0 {
-                        parts.push(format!("{} dropped", effect.dropped));
-                    }
-                    if effect.merged > 0 {
-                        parts.push(format!("{} merged", effect.merged));
-                    }
+                let mut parts = Vec::new();
+                if effect.dropped > 0 {
+                    parts.push(format!("{} dropped", effect.dropped));
+                }
+                if effect.merged > 0 {
+                    parts.push(format!("{} merged", effect.merged));
+                }
+                if !parts.is_empty() {
                     lines.push(Line::from(vec![Span::styled(
                         format!(" {} by arbiter", parts.join(", ")),
                         Style::default().fg(styles::DIM()),
+                    )]));
+                }
+                // Verdicts that matched nothing mean the arbiter's grades exist
+                // but no longer describe this review — worth saying, because the
+                // pass did nothing and that reads as a clean result otherwise.
+                if effect.unmatched > 0 {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(
+                            " {} arbiter verdict(s) no longer apply — re-run validation",
+                            effect.unmatched
+                        ),
+                        Style::default().fg(styles::YELLOW()),
                     )]));
                 }
                 lines.push(Line::from(""));
