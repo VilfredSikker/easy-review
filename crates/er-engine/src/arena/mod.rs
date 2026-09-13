@@ -13,6 +13,7 @@ mod orchestrator;
 mod projections;
 mod registry;
 mod schema;
+mod seeded;
 mod storage;
 mod voting;
 
@@ -37,6 +38,7 @@ pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,
 };
+pub use seeded::dedupe_expert_findings;
 pub use storage::{
     append_progress_event, delete_run_dir, latest_arena_mtime, list_run_ids, load_run,
     parse_progress_state, save_run, ArenaPaths, ArenaProgressState, ProgressEvent,

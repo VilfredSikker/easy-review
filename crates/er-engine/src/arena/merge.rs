@@ -126,7 +126,9 @@ pub fn findings_from_round1(
     out
 }
 
-const fn severity_rank(s: RiskLevel) -> u8 {
+/// Higher is worse. Shared with the seeded dedupe, which picks the most severe
+/// member of a group as the survivor.
+pub(crate) const fn severity_rank(s: RiskLevel) -> u8 {
     match s {
         RiskLevel::High => 3,
         RiskLevel::Medium => 2,
