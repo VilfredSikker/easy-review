@@ -60,7 +60,7 @@ We ship **two separate products** with different jobs and UX, on **one shared cl
 
 ### Integration contract
 
-- **Payload:** a `TechProfPackage` — one package is one artifact (quiz, tour, flashcard deck, or playground) plus an optional `source_ref` (e.g. `branch:…`, `pr:42`). The schema is owned by TechProfessor.
+- **Payload:** a `TechProfPackage` — one package is one artifact (quiz, tour, flashcard deck, playground, exam, syllabus, or showcase) plus an optional `source_ref` (e.g. `branch:…`, `pr:42`). The schema is owned by TechProfessor; this list mirrors its `TechProfPackage.type` union, which is what `POST /api/ingest` validates against.
 - **Entry point:** `POST {PUBLIC_APP_ORIGIN}/api/ingest` → returns session links. Callers holding only a source can ask TechProfessor to generate instead.
 - **Idempotency:** upsert on `source_ref`; re-ingest updates, never duplicates.
 - **Callers:** CI, agent skills, EasyReview (Phase 3), manual curl. The contract is `TechProfessor/internal-docs/integrations.md`.
@@ -80,7 +80,7 @@ TechProfessor is a **SvelteKit fullstack app** on a Node/Vercel runtime serving 
 
 - **Web is the primary profile.** A GitHub App replaces local git: branch/PR diffs, file reads, and repo search run server-side through installation tokens, read-only.
 - **Mobile:** the web app is an installable PWA. Store presence comes later, from the same codebase.
-- **Teams:** users create orgs, invite by email, and share repos/sessions into a team space (`org_id`). Reads are RLS-driven, writes owner-only, and per-person state (answers, attempts, bookmarks) stays personal.
+- **Teams:** users create orgs, invite by email, and share repos/sessions into a team space (`team_id` — on `tp_repos`, `tp_groups`, `tp_sessions` and `tp_packages`). An org (`tp_organizations`) is the billing umbrella above it and is not the team-space key. Reads are RLS-driven, writes owner-only, and per-person state (answers, attempts, bookmarks) stays personal.
 
 Detail: `TechProfessor/internal-docs/web-first-ssr-migration.md`, `multi-view-strategy.md`.
 

@@ -68,7 +68,7 @@ flowchart TB
   Desktop -->|optional subscribe| Hub
 ```
 
-Local git (branches, worktrees, file watch, meta cache) stays desktop-only. Remote-only tabs never run the multi-project meta git loop.
+Local git (branches, worktrees, file watch, meta cache) stays desktop-only. The multi-project meta git loop still runs on a remote-only tab — it just halves its cadence (120s instead of 60s), so a remote tab is quieter rather than silent. That sweep is the dominant background cost the profiling section below is about, so do not read "remote" as "no local git work".
 
 ---
 
