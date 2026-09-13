@@ -1,9 +1,10 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
     import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
-    save_run, scope_git_mode, start_arena_batch, start_arena_run, ArenaBatchStartParams,
-    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry, ArenaRunSnapshot, ArenaScope,
-    ArenaStartParams, HumanOverride, ReviewerRef, Verdict,
+    save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
+    ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef, SeededStartParams,
+    Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -145,6 +146,65 @@ impl App {
         ));
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
+    }
+
+    /// Validate the current tab's expert findings with a seeded arbiter pass.
+    ///
+    /// The cheap path end to end: the experts already ran, so this dedupes what
+    /// they produced and makes one arbiter call. Returns the run id, or `None`
+    /// when there is nothing to validate — a caller can then say so rather than
+    /// starting a run that would rule on nothing.
+    pub fn arena_start_seeded(&mut self) -> Result<Option<String>> {
+        let tab = self.tab();
+        let raw_diff = tab.raw_diff_for_arena(ArenaScope::Branch, None)?;
+        let repo_root = tab.repo_root.clone();
+        let er_dir = tab.er_dir();
+        let er_key = er_dir.clone();
+        let branch_ref = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        let base_branch = tab.base_branch.clone();
+        let diff_hash = tab.branch_diff_hash.clone();
+        // An expert set generated alongside a review that has since gone stale
+        // is still this generation's work — same accommodation as the merge.
+        let review_hash = tab
+            .ai
+            .review
+            .as_ref()
+            .map(|r| r.diff_hash.clone())
+            .unwrap_or_default();
+        let config = self.config.clone();
+        let registry = Arc::clone(&self.arena_registry);
+
+        let run_id = start_seeded_run(
+            registry,
+            config,
+            repo_root,
+            SeededStartParams {
+                er_dir,
+                branch_ref,
+                base_branch,
+                scope: ArenaScope::Branch,
+                diff_hash,
+                review_hash,
+                raw_diff,
+                arbiter: None,
+            },
+        )?;
+
+        let Some(run_id) = run_id else {
+            return Ok(None);
+        };
+        self.active_arena_runs
+            .entry(er_key.clone())
+            .or_default()
+            .push(run_id.clone());
+        crate::dev_log::arena_line(format!(
+            "App::arena_start_seeded ok run_id={run_id} er_dir={er_key}"
+        ));
+        self.notify(&format!("Validating findings ({run_id})"));
+        Ok(Some(run_id))
     }
 
     pub fn arena_start_batch(&mut self, mut batch: ArenaBatchStartParams) -> Result<Vec<String>> {

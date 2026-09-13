@@ -168,6 +168,7 @@ commands.allow = [
   "arena_estimate_batch",
   "arena_start",
   "arena_start_batch",
+  "arena_validate_findings",
   "arena_accept_findings",
   "arena_progress",
   "arena_get",

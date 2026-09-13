@@ -406,6 +406,21 @@
   {/if}
 
   <div class="mt-2 flex flex-col gap-1">
+    <!-- The cheap path: triage picks the lenses, the experts run, and this makes
+         one arbiter pass over what they produced — merging duplicates and
+         regrading confidence. -->
+    <button
+      type="button"
+      onclick={() => arena.validateFindings()}
+      disabled={!ai.has_review_json}
+      class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
+      title="Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
+        <path d="M20 6L9 17l-5-5"/>
+      </svg>
+      <span class="whitespace-nowrap">Validate findings</span>
+    </button>
     <button
       type="button"
       onclick={copyFindingsJson}
