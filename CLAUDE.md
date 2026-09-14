@@ -23,8 +23,19 @@ Binary name is `er`. Run it from any git repo.
 
 The code carries what and how; these files carry why. A comment that restates
 what the code does is noise — the code already says it, and the restatement is
-what rots. Run `just docs-check` after editing docs: it verifies every file,
-link and ADR reference still resolves.
+what rots.
+
+This is measured, not stylistic. An audit of these docs found **39% of their
+checkable claims wrong**, and the failures sat in file tables, module inventories
+and type listings — not in the reasoning, which held up. So do not add those
+shapes back: the tree shows the files, and a hand-maintained list of them is
+wrong within a release.
+
+Run `just docs-check` after editing docs. It verifies every file, link and ADR
+reference still resolves, and fails if an inventory table or heading reappears in
+an instruction doc. Add an ADR when a decision is hard to reverse, would surprise
+a reader, or came from a real trade-off — `docs/adr/` is where the why goes, and
+citing one by number beats restating it.
 
 ## Build & run
 

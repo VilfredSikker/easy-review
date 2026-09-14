@@ -182,6 +182,39 @@ fi
 echo "  $nave navigation entries checked"
 echo
 
+# ── 6: the shape that rots ────────────────────────────────────────────────────
+# The clean removed file tables, module inventories and type listings from the
+# agent docs, because they restate the code and then drift from it. Nothing
+# regenerates them, so a new one is a new source of rot — and this shape, not a
+# broken citation, is what produced the 39% error rate the clean was about.
+#
+# Scoped to the docs an agent reads as INSTRUCTIONS — CLAUDE.md, agent.md,
+# CONTEXT.md — because those are the ones that must stay why-shaped. A reference
+# doc (config-reference, DEVELOPMENT, quality-checks) legitimately holds tables:
+# a reader looks things up there, and looking it up is the point. An ADR table is
+# a decision, not an inventory. Neither is checked.
+echo "Doc shape:"
+shapes=0
+for doc in $DOCS; do
+  [ -f "$doc" ] || continue
+  case "$doc" in
+    *CLAUDE.md | *agent.md | CONTEXT.md) ;;
+    *) continue ;;
+  esac
+  while IFS= read -r line; do
+    [ -n "$line" ] || continue
+    shapes=$((shapes + 1))
+    note "$doc has an inventory table — restating the tree, which rots: $line"
+  done < <(grep -nE '^\| *(File|Module|Key file|Key type|Type|Field|Struct) ' "$doc" 2>/dev/null)
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    shapes=$((shapes + 1))
+    note "$doc has an inventory heading: $h"
+  done < <(grep -nE '^#{2,3} +(Files|Module Map|Type Reference|Structs|Key Types)$' "$doc" 2>/dev/null)
+done
+[ "$shapes" -eq 0 ] && echo "  no inventory shapes (the rot pattern) found"
+echo
+
 if [ "$fail" -ne 0 ]; then
   echo "docs-check: FAILED — fix the citations above."
   echo "See docs/agents/writing-docs.md. A citation that no longer resolves is a"
