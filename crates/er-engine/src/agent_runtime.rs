@@ -721,6 +721,131 @@ mod tests {
         std::fs::write(dir.join("summary.md"), "Review summary").unwrap();
     }
 
+    /// Is this module actually equivalent to the live paths that duplicate it?
+    ///
+    /// Phase 4 of `docs/plans/plan-agent-runner-and-cpu-audit.md` asks whether
+    /// to wire this module into the spawn paths or delete it, and says 1339
+    /// lines of dead code are the cost of not deciding. The decision needs one
+    /// fact nobody has: whether it resolves the *same* invocation the live path
+    /// does. This is that check, against card AI — the closest analogue, since
+    /// both end up at a read-only provider CLI.
+    ///
+    /// A failing assertion here is a finding, not a broken test: it means the
+    /// two have drifted, and deleting this module would delete behaviour.
+    /// Both paths with no hub provider configured — the legacy `[agent]`
+    /// fallback. The happy path agreeing says nothing about this one, and this
+    /// is the branch where a delegation would silently change behaviour.
+    #[test]
+    fn what_the_runtime_resolves_versus_card_ai_with_no_hub_provider() {
+        let mut config = ErConfig::default();
+        config.ai_hub.providers.clear();
+        config.ai_hub.default_provider = None;
+        config.ai_hub.default_model = None;
+        config.agent.command = "claude".to_string();
+        config.agent.args = vec![
+            "--print".to_string(),
+            "-p".to_string(),
+            "{prompt}".to_string(),
+        ];
+
+        let (via_runtime, via_card) = card_ai_equivalent(&config, "", "");
+        assert!(
+            !via_runtime.is_empty() && !via_card.is_empty(),
+            "the fallback must still resolve something on both sides"
+        );
+        assert_eq!(
+            via_runtime, via_card,
+            "the legacy fallback is the branch a delegation could quietly change"
+        );
+    }
+
+    fn card_ai_equivalent(
+        config: &ErConfig,
+        provider: &str,
+        model: &str,
+    ) -> (Vec<String>, Vec<String>) {
+        let work_dir = "/repo".to_string();
+        let via_runtime = resolve_invocation(
+            config,
+            AgentInvocationRequest {
+                selection: AgentSelection::Runtime {
+                    provider_id: Some(provider),
+                    model_id: Some(model),
+                },
+                task: &AgentTaskKind::CardReply,
+                effort: None,
+                effort_override: None,
+                work_dir: work_dir.clone(),
+                access: AgentAccessProfile::ReadOnly,
+                live_logs: false,
+            },
+        )
+        .map(|inv| {
+            let mut argv = vec![inv.command];
+            argv.extend(inv.args);
+            argv
+        })
+        .unwrap_or_default();
+
+        let card = crate::app::plan_card_ai_invocation(
+            config,
+            Some(provider),
+            Some(model),
+            None,
+            work_dir,
+        );
+        let mut argv = vec![card.command];
+        argv.extend(card.args);
+        (via_runtime, argv)
+    }
+
+    #[test]
+    fn what_the_runtime_resolves_versus_what_card_ai_resolves() {
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+
+        // Every catalog provider with every model it ships, not a hand-picked
+        // pair: a divergence that only shows on one family is exactly the kind
+        // that would survive a spot check and bite after a deletion.
+        let combos: Vec<(String, String)> = config
+            .ai_hub
+            .providers
+            .iter()
+            .flat_map(|(pid, p)| {
+                p.models
+                    .iter()
+                    .map(move |m| (pid.clone(), m.id.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert!(combos.len() >= 4, "catalog should offer several models");
+
+        let mut divergent = Vec::new();
+        for (provider, model) in &combos {
+            let (via_runtime, via_card) = card_ai_equivalent(&config, provider, model);
+            assert!(
+                !via_runtime.is_empty() && !via_card.is_empty(),
+                "{provider}/{model}: both paths must resolve something to compare"
+            );
+            if via_runtime != via_card {
+                divergent.push(format!(
+                    "{provider}/{model}\n  runtime: {via_runtime:?}\n  card:    {via_card:?}"
+                ));
+            }
+        }
+
+        // A failure here is the Phase 4 finding, not a broken test: it means
+        // the two have drifted and deleting this module would delete behaviour
+        // the live path does not reproduce.
+        assert!(
+            divergent.is_empty(),
+            "the runtime and card AI disagree on {} of {} provider/model pairs:\n{}",
+            divergent.len(),
+            combos.len(),
+            divergent.join("\n")
+        );
+    }
+
     fn codex_config() -> ErConfig {
         let mut config = ErConfig::default();
         crate::config::supplement_ai_hub(&mut config.ai_hub);

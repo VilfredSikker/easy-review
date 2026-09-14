@@ -1,6 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, inject_provider_effort, ErConfig};
+use crate::config::{agent_command_uses_stream_json, ErConfig};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -32,69 +32,65 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id, family) =
-        if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
-            if let Some(provider) = config.ai_hub.providers.get(&pid) {
-                let mut args = provider.args.clone();
-                let family = provider.cli_family();
-                let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
-                if let Some(mid) = &resolved_model_id {
-                    if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                        crate::config::extend_provider_model_args(family, &mut args, &model.args);
-                    }
-                }
-                let is_claude = crate::config::agent_command_is_claude(&provider.command);
-                (
-                    provider.command.clone(),
-                    args,
-                    is_claude,
-                    Some(pid.to_string()),
-                    resolved_model_id,
-                    family,
-                )
-            } else {
-                fallback_agent(config)
-            }
-        } else {
-            fallback_agent(config)
-        };
-
-    // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode,
-    // paired with a read-only permission object so asks cannot mutate the tree.
-    let mut env = Vec::new();
-    if let Some(pair) = crate::config::apply_opencode_readonly_spawn(family, &mut args) {
-        env.push(pair);
-    }
-
-    let uses_stream_json =
-        agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
-
-    if is_claude {
-        inject_read_only_tools(&mut args);
-    }
-    let effort = crate::config::resolve_effort_for_model(
-        &config.ai_hub,
-        &config.agent,
-        resolved_provider_id.as_deref(),
-        resolved_model_id.as_deref(),
-        runtime_effort,
-        None,
+    // One resolution path. `agent_runtime` was written to be exactly this and
+    // then nothing called it, which left 1339 lines dead and this another copy
+    // of the same rules.
+    //
+    // The delegation is pinned by two tests in `agent_runtime`:
+    // `what_the_runtime_resolves_versus_what_card_ai_resolves` compares argv
+    // across every catalog provider and model, and its `..._with_no_hub_provider`
+    // sibling covers the legacy `[agent]` fallback -- the branch a delegation
+    // could quietly change, and the one a happy-path check would miss.
+    let resolved = crate::agent_runtime::resolve_invocation(
+        config,
+        crate::agent_runtime::AgentInvocationRequest {
+            selection: crate::agent_runtime::AgentSelection::Runtime {
+                provider_id,
+                model_id,
+            },
+            task: &crate::agent_runtime::AgentTaskKind::CardReply,
+            effort: runtime_effort,
+            effort_override: None,
+            work_dir: work_dir.clone(),
+            access: crate::agent_runtime::AgentAccessProfile::ReadOnly,
+            live_logs: false,
+        },
     );
-    inject_provider_effort(
-        family,
-        &mut args,
-        resolved_model_id.as_deref(),
-        effort.as_deref(),
-    );
-    // Card AI returns text on stdout; the host persists replies. No managed
-    // storage --add-dir is required (and would be overly broad for Codex).
+
+    let (command, args, work_dir, family, output_protocol, env) = match resolved {
+        Ok(inv) => (
+            inv.command,
+            inv.args,
+            inv.work_dir,
+            inv.family,
+            inv.output_protocol,
+            inv.env,
+        ),
+        // Unreachable in practice — `resolve_invocation` falls back internally
+        // rather than failing — but this path's contract is a display string,
+        // so a resolution failure has to produce a shape rather than a panic.
+        Err(_) => (
+            config.agent.command.clone(),
+            config.agent.args.clone(),
+            work_dir,
+            crate::config::CliFamily::detect(&config.agent.command),
+            crate::agent_runtime::OutputProtocol::Plain,
+            Vec::new(),
+        ),
+    };
+
+    // Kept as the old derivation rather than read off `output_protocol`: the
+    // protocol does not carry the command-family guard, so a non-CLI command
+    // with a `stream-json` argument would flip this field under the mapping.
+    let uses_stream_json = agent_command_uses_stream_json(&command)
+        && output_protocol == crate::agent_runtime::OutputProtocol::ClaudeStreamJson;
 
     CardAiInvocation {
         command,
+        is_claude_compatible: family == crate::config::CliFamily::Claude,
+        uses_stream_json,
         args,
         work_dir,
-        is_claude_compatible: is_claude,
-        uses_stream_json,
         env,
         timeout: config.ai_hub.effective_agent_timeout(),
         slot_cap: config.ai_hub.effective_max_concurrent_reviews(),
@@ -102,43 +98,10 @@ pub fn plan_card_ai_invocation(
     }
 }
 
-fn fallback_agent(
-    config: &ErConfig,
-) -> (
-    String,
-    Vec<String>,
-    bool,
-    Option<String>,
-    Option<String>,
-    crate::config::CliFamily,
-) {
-    let cmd = config.agent.command.clone();
-    let is_claude = crate::config::agent_command_is_claude(&cmd);
-    let family = crate::config::CliFamily::detect(&cmd);
-    (
-        cmd,
-        config.agent.args.clone(),
-        is_claude,
-        None,
-        (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
-        family,
-    )
-}
-
-fn inject_read_only_tools(args: &mut Vec<String>) {
-    const TOOLS: &[&str] = &[
-        "Read",
-        "Bash(grep *)",
-        "Bash(rg *)",
-        "Bash(git grep*)",
-        "Bash(git show*)",
-        "Bash(git log*)",
-    ];
-    for rule in TOOLS.iter().rev() {
-        args.insert(0, rule.to_string());
-        args.insert(0, "--allowedTools".to_string());
-    }
-}
+// `fallback_agent` and `inject_read_only_tools` lived here and are gone:
+// `agent_runtime::resolve_invocation` owns both the `[agent]` fallback and the
+// read-only tool list, and the delegation above is pinned against this file's
+// former behaviour by the differential tests in that module.
 
 /// Build argv: Claude uses `--append-system-prompt`; other CLIs (e.g. Codex) fold
 /// system context into the `{prompt}` placeholder or trailing prompt arg.
