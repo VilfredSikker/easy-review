@@ -3010,11 +3010,17 @@ fn is_gh_review_422(err: &anyhow::Error) -> bool {
 }
 
 #[tauri::command]
-pub fn submit_github_review(
+pub async fn submit_github_review(
     mode: String,
     summary: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    // The body refreshes the diff (`refetch_and_refresh_diff`), which shells out
+    // to git while holding the app lock. On the main thread that freezes the
+    // window for the length of the diff — the failure ADR 0015 exists to
+    // prevent, on the Submit review button.
+    let state = state.inner().clone();
+    run_blocking(move || {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
 
@@ -3329,6 +3335,8 @@ pub fn submit_github_review(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
     Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
