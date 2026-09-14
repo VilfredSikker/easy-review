@@ -2107,7 +2107,9 @@ pub fn gh_pr_push_comment_remote(
             cmd.arg("-f").arg(arg);
         }
     }
-    let output = cmd.output_timed(crate::proc::GH_TIMEOUT).context("Failed to push comment to GitHub")?;
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to push comment to GitHub")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2253,7 +2255,9 @@ fn post_pr_review(
     if let Some(root) = repo_root {
         cmd.current_dir(root);
     }
-    let output = cmd.output_timed(crate::proc::GH_TIMEOUT).context("Failed to submit PR review")?;
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to submit PR review")?;
 
     drop(tmp);
 

@@ -2838,12 +2838,9 @@ fn worktrees_meta_cached(
     compute: impl FnOnce() -> WorktreeMetaMap,
 ) -> WorktreeMetaMap {
     if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
-        if let Some(idx) = guard
-            .iter()
-            .position(|(cached_key, computed_at, _)| {
-                *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL
-            })
-        {
+        if let Some(idx) = guard.iter().position(|(cached_key, computed_at, _)| {
+            *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL
+        }) {
             // Move to the back so the cap drops the least recently used entry,
             // not merely the oldest.
             let entry = guard.remove(idx);
@@ -2970,9 +2967,7 @@ pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
 
     std::thread::spawn(move || {
         let (wts, key) = worktrees_list_and_key(&pair.0, &pair.1);
-        let _ = worktrees_meta_cached(key, || {
-            compute_worktrees_meta(&wts, &pair.0, &pair.1)
-        });
+        let _ = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, &pair.0, &pair.1));
         if let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() {
             if g.as_ref() == Some(&pair) {
                 *g = None;

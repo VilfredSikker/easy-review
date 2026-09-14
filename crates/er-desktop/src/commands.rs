@@ -9131,15 +9131,12 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
         // network work below runs outside the critical section. Re-resolve the
         // tab by index + repo_root in case tabs changed while this worker was
         // starting.
-        let inputs = app_arc
-            .lock()
-            .ok()
-            .and_then(|app| {
-                app.tabs
-                    .get(idx)
-                    .filter(|tab| tab.repo_root == expect_root)
-                    .and_then(|tab| tab.pr_refresh_inputs())
-            });
+        let inputs = app_arc.lock().ok().and_then(|app| {
+            app.tabs
+                .get(idx)
+                .filter(|tab| tab.repo_root == expect_root)
+                .and_then(|tab| tab.pr_refresh_inputs())
+        });
 
         // Phase 2 — no lock: the head fetch, the gh lookup, and the base fetch.
         // Timed on its own so `lazy_tab_refresh` can say whether a slow load was
@@ -10089,10 +10086,7 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
         app.tab_mut().check_ai_files_changed();
         // Identity for the off-lock warm kicked below, captured while the guard
         // is held so the worker needs no lock of its own.
-        warm_target = (
-            app.tab().repo_root.clone(),
-            app.tab().base_branch.clone(),
-        );
+        warm_target = (app.tab().repo_root.clone(), app.tab().base_branch.clone());
     }
     // Warm the worktree-metadata cache off the critical section. Pass two builds
     // the snapshot with the lock held, and a cold entry there pays the entire
