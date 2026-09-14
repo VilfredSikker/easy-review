@@ -354,14 +354,39 @@
     overlaySerial++;
   });
 
-  function onHeightChange(identity: string, actualPx: number) {
-    if (diffSel.dragging) return;
-    const current = overlayHeights.get(identity);
-    if (current === actualPx) return;
+  // Heights arrive one row at a time from the ResizeObserver, so a measurement
+  // pass calls this once per visible row — and each call copied the whole map
+  // and bumped `overlaySerial`, invalidating every derived that reads it. On a
+  // long file that was one full rebuild per row per frame.
+  //
+  // Coalesced to a single flush per frame instead. A row rendered before its
+  // flush lands uses its previous height for at most one frame; the measured
+  // overlay corrects it, which is the same drift-correction this overlay
+  // already relies on.
+  let pendingHeights = new Map<string, number>();
+  let heightFlushQueued = false;
+
+  function flushHeights() {
+    heightFlushQueued = false;
+    if (pendingHeights.size === 0) return;
     const next = new Map(overlayHeights);
-    next.set(identity, actualPx);
+    for (const [id, px] of pendingHeights) next.set(id, px);
+    pendingHeights = new Map();
     overlayHeights = next;
     overlaySerial++;
+  }
+
+  function onHeightChange(identity: string, actualPx: number) {
+    if (diffSel.dragging) return;
+    // Check the pending value too: without it, a row that reports twice before
+    // the flush would queue a redundant entry (and a redundant rebuild).
+    const settled = pendingHeights.get(identity) ?? overlayHeights.get(identity);
+    if (settled === actualPx) return;
+    pendingHeights.set(identity, actualPx);
+    if (!heightFlushQueued) {
+      heightFlushQueued = true;
+      requestAnimationFrame(flushHeights);
+    }
   }
 
   // ── Composer anchor row ───────────────────────────────────────────────────
