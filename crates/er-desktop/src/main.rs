@@ -19,6 +19,7 @@ use er_desktop::{
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
+use er_engine::proc::CommandTimeoutExt;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -948,8 +949,9 @@ fn main() {
         let probe_app = Arc::clone(&app_arc);
         let probe_cache = Arc::clone(&branch_base_remote_oid);
         let probe_rev = Arc::clone(&desktop_revision);
+        let mut probe_interval_secs = PROBE_INTERVAL_SECS;
         std::thread::spawn(move || loop {
-            std::thread::sleep(std::time::Duration::from_secs(60));
+            std::thread::sleep(std::time::Duration::from_secs(probe_interval_secs));
 
             // Phase 1: brief lock — capture the active branch tab's identity.
             let identity = {
@@ -966,9 +968,13 @@ fn main() {
                 }
             };
             let Some((repo_root, base_short)) = identity else {
+                // Not probing at all, so re-arm: a branch view appearing later
+                // should get its first probe at the fast cadence.
+                probe_interval_secs = PROBE_INTERVAL_SECS;
                 continue;
             };
             if base_short.is_empty() {
+                probe_interval_secs = PROBE_INTERVAL_SECS;
                 continue;
             }
 
@@ -976,7 +982,7 @@ fn main() {
             let out = std::process::Command::new("git")
                 .args(["ls-remote", "origin", &base_short])
                 .current_dir(&repo_root)
-                .output();
+                .output_timed(er_engine::proc::GIT_FETCH_TIMEOUT);
             let oid = match out {
                 Ok(o) if o.status.success() => {
                     let stdout = String::from_utf8_lossy(&o.stdout);
@@ -990,6 +996,9 @@ fn main() {
                 _ => None,
             };
             let Some(oid) = oid else {
+                // Probe failed. Treat as unchanged and back off, so a flaky
+                // network is not hammered at the fast cadence.
+                probe_interval_secs = next_probe_interval_secs(probe_interval_secs, false);
                 continue;
             };
 
@@ -1009,6 +1018,7 @@ fn main() {
             if changed {
                 profile_log::bump_desktop_revision(&probe_rev, "branch_stale_probe");
             }
+            probe_interval_secs = next_probe_interval_secs(probe_interval_secs, changed);
         });
     }
 
@@ -1644,31 +1654,74 @@ fn main() {
                 let Some(idx) = next_idx else {
                     break;
                 };
-                let Ok(mut g) = warmer_app.lock() else { break };
-                if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
-                    continue;
-                }
-                g.tabs[idx].needs_initial_refresh = false;
-                let t = std::time::Instant::now();
-                let is_local_pr = g.tabs[idx].pr_number.is_some() && !g.tabs[idx].is_remote();
-                let res = if is_local_pr {
-                    g.tabs[idx].refetch_and_refresh_diff()
-                } else {
-                    g.tabs[idx].refresh_diff()
+
+                // Phase 1 — brief lock: claim the tab and capture what the fetch
+                // needs, then release. The network legs must not run with the
+                // guard held: a `gh` round trip here blocks every command the
+                // user can issue, and this loop runs while they are working.
+                let inputs = {
+                    let Ok(mut g) = warmer_app.lock() else { break };
+                    if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
+                        continue;
+                    }
+                    g.tabs[idx].needs_initial_refresh = false;
+                    g.tabs[idx].pr_refresh_inputs()
                 };
-                drop(g);
+
+                // Phase 2 — no lock: the PR's network legs, if this tab has any.
+                // Timed separately from the rebuild, because this is the leg that
+                // reaches the network and the only one that can stall. The warmup
+                // log used to report the rebuild alone, which left the fetch — the
+                // part worth watching — invisible.
+                let mut fetch_failed = false;
+                let t_fetch = std::time::Instant::now();
+                let fetched = inputs.and_then(|inputs| {
+                    match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            log::warn!("background tab warmup fetch failed: {e}");
+                            fetch_failed = true;
+                            None
+                        }
+                    }
+                });
+                let fetch_ms = t_fetch.elapsed().as_millis();
+
+                // Phase 3 — brief lock: apply and rebuild the diff. `None` means a
+                // failed fetch, which leaves the stub alone rather than rebuilding
+                // against refs that could not be refreshed; phase 2 logged why.
+                let t = std::time::Instant::now();
+                let res = if fetch_failed {
+                    None
+                } else {
+                    let Ok(mut g) = warmer_app.lock() else { break };
+                    let Some(tab) = g.tabs.get_mut(idx) else {
+                        break;
+                    };
+                    if let Some(result) = fetched {
+                        tab.apply_pr_refresh(result);
+                    }
+                    Some(tab.refresh_diff())
+                };
                 match res {
-                    Ok(()) => {
+                    Some(Ok(())) => {
+                        let refresh_ms = t.elapsed().as_millis();
                         profile_log::profile_log(
                             "background_tab_warmup",
                             &[
                                 ("tab_idx", idx.to_string()),
-                                ("ms", t.elapsed().as_millis().to_string()),
+                                // Split so a slow warmup says which leg cost it:
+                                // `fetch_ms` is the network, `refresh_ms` is the
+                                // local diff rebuild. `ms` is the sum of both.
+                                ("fetch_ms", fetch_ms.to_string()),
+                                ("refresh_ms", refresh_ms.to_string()),
+                                ("ms", (fetch_ms + refresh_ms).to_string()),
                             ],
                         );
                         profile_log::bump_desktop_revision(&warmer_rev, "background_tab_warmup");
                     }
-                    Err(e) => log::warn!("background tab warmup failed: {e}"),
+                    Some(Err(e)) => log::warn!("background tab warmup failed: {e}"),
+                    None => {}
                 }
                 // Yield between tabs so the UI thread can grab the mutex if needed.
                 std::thread::sleep(std::time::Duration::from_millis(150));
@@ -1904,6 +1957,7 @@ fn main() {
             commands::run_ai_triage_review,
             commands::run_pr_triage,
             commands::cancel_queued_review,
+            commands::cancel_running_review,
             commands::run_branch_triage,
             commands::list_ai_experts,
             commands::list_ai_reviewers,
@@ -2112,6 +2166,31 @@ fn active_root_from_projects() -> Option<String> {
         .find(|p| &p.id == active_id)
         .map(|p| p.root_path.clone())
         .filter(|s| !s.is_empty())
+}
+
+/// Base cadence for the branch-base staleness probe: one `git ls-remote` a
+/// minute while origin's tip is moving.
+const PROBE_INTERVAL_SECS: u64 = 60;
+
+/// Ceiling the probe backs off to while that tip stays put.
+const PROBE_MAX_INTERVAL_SECS: u64 = 300;
+
+/// Next probe interval in seconds.
+///
+/// The probe is a network call on a loop that runs for the whole session, and a
+/// review can sit on one branch for hours. Backing off while the tip is
+/// unchanged bounds that steady-state traffic to a probe every five minutes.
+///
+/// The cost of that: once backed off, a change is only *noticed* at the next
+/// probe, so a branch that starts moving after a long idle wait is up to
+/// `PROBE_MAX_INTERVAL_SECS` away from being seen. The snap back to the base
+/// cadence happens on detection, not on the change itself.
+fn next_probe_interval_secs(current: u64, changed: bool) -> u64 {
+    if changed {
+        PROBE_INTERVAL_SECS
+    } else {
+        current.saturating_mul(2).min(PROBE_MAX_INTERVAL_SECS)
+    }
 }
 
 #[cfg(test)]
@@ -2452,5 +2531,27 @@ mod tests {
         assert!(names.contains(&"authorization"));
         assert!(!names.contains(&"host"));
         assert!(!names.iter().any(|n| n.starts_with("sec-")));
+    }
+
+    #[test]
+    fn probe_interval_backs_off_while_the_base_tip_is_unchanged() {
+        let mut interval = PROBE_INTERVAL_SECS;
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, 120, "backs off while nothing moves");
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, 240);
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(
+            interval, PROBE_MAX_INTERVAL_SECS,
+            "capped rather than growing without bound"
+        );
+        interval = next_probe_interval_secs(interval, false);
+        assert_eq!(interval, PROBE_MAX_INTERVAL_SECS, "stays at the cap");
+
+        assert_eq!(
+            next_probe_interval_secs(interval, true),
+            PROBE_INTERVAL_SECS,
+            "a tip that moved snaps back to the fast cadence"
+        );
     }
 }

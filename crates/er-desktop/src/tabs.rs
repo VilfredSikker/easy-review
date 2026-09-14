@@ -428,6 +428,16 @@ mod tests {
             .current_dir(path)
             .status()
             .expect("git config name");
+        // Isolate from the developer's global config. With `commit.gpgsign`
+        // set globally this commit goes through a signing agent, and the
+        // `status()` below is ignored and stderr nulled -- so a signing
+        // failure leaves HEAD unborn and the test fails with "Failed to
+        // determine current branch", which says nothing about the cause.
+        std::process::Command::new("git")
+            .args(["config", "commit.gpgsign", "false"])
+            .current_dir(path)
+            .status()
+            .expect("git config gpgsign");
         std::fs::write(path.join("README"), "x").expect("write readme");
         std::process::Command::new("git")
             .args(["add", "README"])

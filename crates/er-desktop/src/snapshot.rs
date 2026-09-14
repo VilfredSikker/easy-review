@@ -414,7 +414,9 @@ pub struct AppSnapshot {
     pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
     pub projects: Vec<ProjectSnapshot>,
-    pub notification: Option<String>,
+    /// Last message the engine was asked to surface, with the seq stamp the
+    /// frontend dedupes on. Never cleared here — see `App::notification`.
+    pub notification: Option<er_engine::app::Notification>,
     /// When Some, the active tab is a read-only diff of this local branch.
     pub local_branch: Option<String>,
     /// True when the viewed local branch is checked out (project root or worktree).
@@ -1388,8 +1390,10 @@ pub struct WorktreeSnapshot {
     pub is_pr: bool,
     pub pr_number: Option<u64>,
     pub is_merged: bool,
-    /// The repo (owner/repo slug) this worktree belongs to, from its own git
-    /// remote — may differ from the active project's remote.
+    /// The repo (owner/repo slug) this worktree belongs to. Worktrees of one
+    /// repository share a `.git/config`, so every row of a given list carries
+    /// the same value; it may still differ from the active *project's* remote,
+    /// which can point at a different repository entirely.
     #[serde(default)]
     pub remote: Option<String>,
 }
@@ -2541,7 +2545,7 @@ fn build_snapshot_inner(
             build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root)
         },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
-        notification: app.watch_message.clone(),
+        notification: app.notification.clone(),
         local_branch: tab.local_branch_view.clone(),
         local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
         unstaged_stat,
@@ -2574,7 +2578,7 @@ fn build_snapshot_inner(
                     .recent_log
                     .iter()
                     .map(|e| AgentLogSnapshot {
-                        command_name: e.command_name.clone(),
+                        command_name: e.command_name.to_string(),
                         source: match &e.source {
                             AgentLogSource::Stdout => "stdout".to_string(),
                             AgentLogSource::Stderr => "stderr".to_string(),
@@ -2770,7 +2774,7 @@ fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
         .take(200)
         .rev()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 AgentLogSource::Stdout => "stdout".to_string(),
                 AgentLogSource::Stderr => "stderr".to_string(),
@@ -2791,45 +2795,77 @@ struct WorktreesMetaKey {
 /// Per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed by worktree path.
 type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool, Option<String>)>;
 
-/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
+/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed
+/// by path.
 ///
-/// `build_worktrees` runs on every snapshot build (every ~2s poll). The cheap
-/// `list_worktrees` call stays live so add/remove/branch-switch is reflected
-/// within one poll, but `detect_pr_meta` spawns `git config` + `git merge-base`
-/// per worktree — ~2N subprocesses that dominate snapshot construction. The set
-/// rarely changes, so cache that meta keyed on a fingerprint of the worktree set:
-/// add/remove/switch changes the fingerprint → cache miss → recompute, and a TTL
-/// backstops `is_merged` drift when the set is unchanged.
-static WORKTREES_META_CACHE: Mutex<
-    Option<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>,
-> = Mutex::new(None);
-const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+/// `build_worktrees` runs on every snapshot build that carries content. The
+/// cheap `list_worktrees` call stays live so add/remove/branch-switch is
+/// reflected within one poll, while the per-worktree metadata is cached keyed on
+/// a fingerprint of the worktree set: add/remove/switch changes the fingerprint
+/// → cache miss → recompute, and a TTL backstops `is_merged` drift when the set
+/// is unchanged.
+///
+/// A miss costs four git processes for the whole list — `list_worktrees`, the
+/// remote, the branch merges, and `git branch --merged` — and no network. What
+/// the builder must not do is move any of those inside the per-worktree loop:
+/// every worktree of a repository shares its config and refs, so per-row
+/// lookups ask the same question N times, on the snapshot path, with the App
+/// lock held. See `build_worktrees`.
+///
+/// More than one entry, because reviewing a few PRs at once means alternating
+/// between tabs whose `base_branch` differs, and `base_branch` is part of the
+/// key: with a single slot, every switch drops the entry the other tab needs and
+/// rebuilds it on the way back. Entries are about a kilobyte for a nine-worktree
+/// repo, so the cap costs nothing worth measuring.
+static WORKTREES_META_CACHE: Mutex<Vec<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>> =
+    Mutex::new(Vec::new());
+
+/// Entries kept before the least recently used is dropped.
+const WORKTREES_META_CACHE_CAP: usize = 8;
+
+/// How long an entry may go unrefreshed before the next use rebuilds it.
+///
+/// Generous on purpose, because the fingerprint carries each worktree's tip: a
+/// commit, a rebase, or a branch switch invalidates the exact key immediately,
+/// with no help from this timer. All the TTL still covers is drift the
+/// fingerprint cannot see — the base branch advancing from somewhere other than
+/// this machine — and a few minutes of staleness in a merged-branch colouring
+/// costs far less than a rebuild on every tab switch.
+const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn worktrees_meta_cached(
     key: WorktreesMetaKey,
     compute: impl FnOnce() -> WorktreeMetaMap,
 ) -> WorktreeMetaMap {
-    if let Ok(guard) = WORKTREES_META_CACHE.lock() {
-        if let Some((cached_key, computed_at, value)) = guard.as_ref() {
-            if *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL {
-                return value.clone();
-            }
+    if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
+        if let Some(idx) = guard.iter().position(|(cached_key, computed_at, _)| {
+            *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL
+        }) {
+            // Move to the back so the cap drops the least recently used entry,
+            // not merely the oldest.
+            let entry = guard.remove(idx);
+            let value = entry.2.clone();
+            guard.push(entry);
+            return value;
         }
     }
     let value = compute();
     if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
-        *guard = Some((key, std::time::Instant::now(), value.clone()));
+        guard.retain(|(cached_key, _, _)| *cached_key != key);
+        guard.push((key, std::time::Instant::now(), value.clone()));
+        while guard.len() > WORKTREES_META_CACHE_CAP {
+            guard.remove(0);
+        }
     }
     value
 }
 
-fn build_worktrees(
+/// The worktree list, plus the cache key its contents fingerprint to.
+fn worktrees_list_and_key(
     repo_root: &str,
     base_branch: &str,
-    current_root: &str,
-) -> Vec<WorktreeSnapshot> {
+) -> (Vec<er_engine::git::Worktree>, WorktreesMetaKey) {
     let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
-    let skip_merged = wts.len() > 10;
 
     let fingerprint = {
         use std::hash::{Hash, Hasher};
@@ -2837,6 +2873,17 @@ fn build_worktrees(
         for wt in &wts {
             wt.path.hash(&mut h);
             wt.branch.hash(&mut h);
+            // The tip, not only the branch name. `is_merged` compares tips, so
+            // without this a commit or a rebase moves the answer while path and
+            // branch stay put, and nothing in the key changes.
+            //
+            // Free: the oid arrives in the same `git worktree list --porcelain`
+            // output this function already runs. The base branch's own tip is
+            // deliberately NOT probed here — that would need a `rev-parse` on
+            // every build (this block runs before the cache check, so per build
+            // and not per miss) to save a miss that costs less than the probe.
+            // Base drift stays on the TTL floor.
+            wt.head.hash(&mut h);
         }
         h.finish()
     };
@@ -2845,17 +2892,98 @@ fn build_worktrees(
         base_branch: base_branch.to_string(),
         fingerprint,
     };
+    (wts, key)
+}
 
-    let meta = worktrees_meta_cached(key, || {
-        wts.iter()
-            .map(|wt| {
-                let (is_pr, pr_number, is_merged) =
-                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
-                let remote = crate::projects::resolve_repo_remote(&wt.path);
-                (wt.path.clone(), (is_pr, pr_number, is_merged, remote))
-            })
-            .collect()
+/// Per-worktree metadata for a worktree list, from repository-wide lookups.
+///
+/// Every worktree `git worktree list` reports belongs to this repository and
+/// reads the same `.git/config` and the same refs, so the remote and the branch
+/// lookups are all per-repo values: each is read once here and shared across the
+/// rows, rather than asked once per row. A per-worktree loop over these is N
+/// identical subprocesses for one answer, on the snapshot path with the App lock
+/// held.
+fn compute_worktrees_meta(
+    wts: &[er_engine::git::Worktree],
+    repo_root: &str,
+    base_branch: &str,
+) -> WorktreeMetaMap {
+    let repo_remote = crate::projects::resolve_repo_remote(repo_root);
+    let merges = pr_branch_merges(repo_root);
+    let merged = merged_branches(repo_root, base_branch, wts.len());
+    wts.iter()
+        .map(|wt| {
+            let (is_pr, pr_number, is_merged) =
+                detect_pr_meta(&merges, &merged, &wt.branch, base_branch);
+            (
+                wt.path.clone(),
+                (is_pr, pr_number, is_merged, repo_remote.clone()),
+            )
+        })
+        .collect()
+}
+
+/// A warm worker for this (repo, base) pair is already running.
+static WORKTREES_WARM_IN_FLIGHT: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Populate the worktree-metadata cache from a caller that is *not* holding the
+/// App lock.
+///
+/// `build_worktrees` runs inside the poll's critical section, so a cold entry
+/// there pays the whole computation with the lock held. Poll pass one releases
+/// the lock before pass two, which is where this is kicked from.
+///
+/// Gated on this pair's entry age, because the poll ticks every ~2s: warming on
+/// every tick would run a `git worktree list` thirty times more often than the
+/// TTL requires, which costs more than the miss it avoids. The gate matches the
+/// key's first two fields, so it never computes the fingerprint (which needs
+/// `list_worktrees`) just to ask whether a warm is due.
+pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
+    if repo_root.is_empty() {
+        return;
+    }
+    // Comfortably inside the TTL, so the active pair's entry never expires —
+    // the timer is then only reachable by a pair nobody is looking at.
+    const WARM_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+    let age = WORKTREES_META_CACHE.lock().ok().and_then(|g| {
+        g.iter()
+            .find(|(k, _, _)| k.repo_root == repo_root && k.base_branch == base_branch)
+            .map(|(_, at, _)| at.elapsed())
     });
+    if age.is_some_and(|a| a < WARM_AFTER) {
+        return;
+    }
+
+    let pair = (repo_root.to_string(), base_branch.to_string());
+    {
+        let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() else {
+            return;
+        };
+        if g.as_ref() == Some(&pair) {
+            return; // a warm for this pair is already running
+        }
+        *g = Some(pair.clone());
+    }
+
+    std::thread::spawn(move || {
+        let (wts, key) = worktrees_list_and_key(&pair.0, &pair.1);
+        let _ = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, &pair.0, &pair.1));
+        if let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() {
+            if g.as_ref() == Some(&pair) {
+                *g = None;
+            }
+        }
+    });
+}
+
+fn build_worktrees(
+    repo_root: &str,
+    base_branch: &str,
+    current_root: &str,
+) -> Vec<WorktreeSnapshot> {
+    let (wts, key) = worktrees_list_and_key(repo_root, base_branch);
+
+    let meta = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, repo_root, base_branch));
 
     wts.into_iter()
         .map(|wt| {
@@ -2874,6 +3002,64 @@ fn build_worktrees(
             }
         })
         .collect()
+}
+
+/// Local branches merged into `base_branch`, from one `git branch --merged`.
+///
+/// Replaces a `merge-base --is-ancestor` per branch, which spawned a git
+/// process for every local branch on every meta refresh — 100+ on a repo with
+/// 100 branches — all asking the same question of the same base. Empty when the
+/// answer cannot be established, which callers read as "nothing is merged",
+/// matching the per-branch form's `.unwrap_or(false)`.
+fn merged_into_base(repo_root: &str, base_branch: &str) -> std::collections::HashSet<String> {
+    if base_branch.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    std::process::Command::new("git")
+        .args([
+            "branch",
+            "--merged",
+            base_branch,
+            // `--format` drops the `* `/`+ ` prefixes `git branch` adds for the
+            // current and worktree branches, so the output is bare names.
+            "--format=%(refname:short)",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How many worktrees a repo may have before the merged-branch check is skipped.
+///
+/// `git branch --merged` lists every local branch, so on a repo with many
+/// worktrees the check costs more than the colouring it drives is worth. Above
+/// this, callers see "nothing merged" and render every branch uncoloured.
+const MAX_WORKTREES_FOR_MERGED_CHECK: usize = 10;
+
+/// Branches merged into `base_branch`, for the callers that colour a branch
+/// list.
+///
+/// Empty when the check is skipped (too many worktrees) or the answer cannot be
+/// established (no base branch, git failed) — callers treat all three alike, so
+/// they only need `contains`.
+fn merged_branches(
+    repo_root: &str,
+    base_branch: &str,
+    worktree_count: usize,
+) -> std::collections::HashSet<String> {
+    if worktree_count > MAX_WORKTREES_FOR_MERGED_CHECK {
+        return std::collections::HashSet::new();
+    }
+    merged_into_base(repo_root, base_branch)
 }
 
 fn build_tracked_branches(
@@ -2900,7 +3086,7 @@ fn build_tracked_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     // Build the full list first, then filter to the curated set (tracked ∪ {current}).
     let all: Vec<BranchInfo> = text
@@ -2918,16 +3104,7 @@ fn build_tracked_branches(
                 Some(upstream_raw)
             };
             let is_current = name == current_branch;
-            let is_merged = if skip_merged || name == base_branch {
-                false
-            } else {
-                std::process::Command::new("git")
-                    .args(["merge-base", "--is-ancestor", &name, base_branch])
-                    .current_dir(repo_root)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            };
+            let is_merged = name != base_branch && merged.contains(&name);
             let worktree_path = worktrees
                 .iter()
                 .find(|w| w.branch == name)
@@ -3000,7 +3177,7 @@ fn build_auto_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
     let dismissed_set: std::collections::HashSet<&str> =
@@ -3033,16 +3210,7 @@ fn build_auto_branches(
         } else {
             Some(upstream_raw)
         };
-        let is_merged = if skip_merged || name == base_branch {
-            false
-        } else {
-            std::process::Command::new("git")
-                .args(["merge-base", "--is-ancestor", &name, base_branch])
-                .current_dir(repo_root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let is_merged = name != base_branch && merged.contains(&name);
         let worktree_path = worktrees
             .iter()
             .find(|w| w.branch == name)
@@ -3948,44 +4116,55 @@ pub fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     })
 }
 
+/// Every `branch.<name>.merge` value in the repository, in one git call.
+///
+/// Branch config is repository-wide, so this answers for every worktree at once
+/// and belongs outside any per-worktree loop.
+fn pr_branch_merges(repo_root: &str) -> HashMap<String, String> {
+    let Ok(out) = std::process::Command::new("git")
+        .args(["config", "--local", "--get-regexp", r"^branch\..*\.merge$"])
+        .current_dir(repo_root)
+        .output()
+    else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            let name = key.strip_prefix("branch.")?.strip_suffix(".merge")?;
+            Some((name.to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Per-worktree PR metadata, from repository-wide lookups.
+///
+/// `merges` and `merged` are read once for the repository rather than per
+/// worktree: refs and branch config both live in the shared `.git`, so every
+/// worktree would get the same answer anyway. The per-worktree form spawned two
+/// git processes per row — eighteen on a nine-worktree repo — on the snapshot
+/// path, with the App lock held.
 fn detect_pr_meta(
-    worktree_path: &str,
+    merges: &HashMap<String, String>,
+    merged: &std::collections::HashSet<String>,
     branch: &str,
     base: &str,
-    skip_merged: bool,
 ) -> (bool, Option<u64>, bool) {
-    let mut is_pr = false;
-    let mut pr_number: Option<u64> = None;
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["config", "--get", &format!("branch.{}.merge", branch)])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if out.status.success() {
-            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Some(rest) = val.strip_prefix("refs/pull/") {
-                if let Some(num_str) = rest.strip_suffix("/head") {
-                    if let Ok(n) = num_str.parse::<u64>() {
-                        is_pr = true;
-                        pr_number = Some(n);
-                    }
-                }
-            }
-        }
-    }
+    let pr_number = merges
+        .get(branch)
+        .and_then(|val| val.strip_prefix("refs/pull/"))
+        .and_then(|rest| rest.strip_suffix("/head"))
+        .and_then(|n| n.parse::<u64>().ok());
 
-    let is_merged = if skip_merged || base.is_empty() || branch == base {
-        false
-    } else {
-        std::process::Command::new("git")
-            .args(["merge-base", "--is-ancestor", branch, base])
-            .current_dir(worktree_path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
+    // `merged` is already empty when the check is skipped or the base is
+    // unknown — see `merged_branches` — so only the self-compare needs a guard.
+    let is_merged = !base.is_empty() && branch != base && merged.contains(branch);
 
-    (is_pr, pr_number, is_merged)
+    (pr_number.is_some(), pr_number, is_merged)
 }
 
 fn status_str(status: &FileStatus) -> String {
@@ -5151,6 +5330,125 @@ mod tests {
             calls.get(),
             2,
             "a changed worktree set must invalidate the cache and recompute"
+        );
+    }
+
+    #[test]
+    fn worktrees_meta_cache_holds_entries_for_different_base_branches() {
+        use std::cell::Cell;
+
+        // The workflow this cap exists for: a few PRs open at once, alternating
+        // between tabs whose base branch differs. `base_branch` is part of the
+        // key, so a single-slot cache evicted the other tab on every switch and
+        // rebuilt it on the way back.
+        let calls = Cell::new(0u32);
+        let key_for = |base: &str| WorktreesMetaKey {
+            repo_root: "/two-base-repo".to_string(),
+            base_branch: base.to_string(),
+            // Distinct fingerprints so this test never collides with cached
+            // state other suites left in the shared static.
+            fingerprint: 0x0BAD_F00D,
+        };
+
+        let _ = worktrees_meta_cached(key_for("main"), || {
+            calls.set(calls.get() + 1);
+            HashMap::from([("/wt".to_string(), (false, None, false, None))])
+        });
+        let _ = worktrees_meta_cached(key_for("release/v1"), || {
+            calls.set(calls.get() + 1);
+            HashMap::from([("/wt".to_string(), (false, None, false, None))])
+        });
+        assert_eq!(calls.get(), 2);
+
+        // Both keys must still hit: neither evicted the other.
+        let _ = worktrees_meta_cached(key_for("main"), || {
+            calls.set(calls.get() + 1);
+            HashMap::new()
+        });
+        let _ = worktrees_meta_cached(key_for("release/v1"), || {
+            calls.set(calls.get() + 1);
+            HashMap::new()
+        });
+        assert_eq!(
+            calls.get(),
+            2,
+            "switching between two base branches must not rebuild either entry"
+        );
+    }
+
+    /// A repo with one branch merged back into `main` and one left open —
+    /// the two cases `merged_into_base` has to tell apart.
+    fn init_repo_with_a_merged_and_an_open_branch() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "t@example.com"]);
+        run_git(root, &["config", "user.name", "t"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f.txt"), "one\n").unwrap();
+        run_git(root, &["add", "f.txt"]);
+        run_git(root, &["commit", "-qm", "base"]);
+
+        // Merged back into main.
+        run_git(root, &["checkout", "-q", "-b", "merged-branch"]);
+        run_git(
+            root,
+            &["commit", "-q", "--allow-empty", "-m", "merged work"],
+        );
+        run_git(root, &["checkout", "-q", "main"]);
+        run_git(
+            root,
+            &["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"],
+        );
+
+        // Branched from main and left alone.
+        run_git(root, &["checkout", "-q", "-b", "open-branch"]);
+        run_git(root, &["commit", "-q", "--allow-empty", "-m", "open work"]);
+        run_git(root, &["checkout", "-q", "main"]);
+        tmp
+    }
+
+    #[test]
+    fn merged_into_base_lists_only_merged_branches() {
+        let dir = init_repo_with_a_merged_and_an_open_branch();
+        let root = dir.path().to_string_lossy().to_string();
+
+        let merged = merged_into_base(&root, "main");
+        assert!(merged.contains("merged-branch"), "got {merged:?}");
+        assert!(merged.contains("main"), "the base is merged into itself");
+        assert!(
+            !merged.contains("open-branch"),
+            "an unmerged branch must not be listed: {merged:?}"
+        );
+
+        // An unresolvable base yields nothing rather than a wrong answer —
+        // the same outcome the per-branch form's `.unwrap_or(false)` gave.
+        assert!(merged_into_base(&root, "no-such-base").is_empty());
+        assert!(merged_into_base(&root, "").is_empty());
+    }
+
+    #[test]
+    fn merged_branches_skips_the_check_above_the_worktree_threshold() {
+        // The guard used to sit duplicated at both call sites; this pins it
+        // where it now lives. Above the threshold every branch renders
+        // uncoloured, which is the same outcome as "nothing is merged".
+        let dir = init_repo_with_a_merged_and_an_open_branch();
+        let root = dir.path().to_string_lossy().to_string();
+
+        let at_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
+        assert!(
+            at_limit.contains("merged-branch"),
+            "at the threshold the check still runs: {at_limit:?}"
+        );
+
+        let over_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK + 1);
+        assert!(
+            over_limit.is_empty(),
+            "past the threshold the check is skipped: {over_limit:?}"
+        );
+        assert!(
+            merged_branches(&root, "", 0).is_empty(),
+            "an empty base has nothing to compare against"
         );
     }
 

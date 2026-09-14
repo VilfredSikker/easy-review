@@ -6,6 +6,16 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+/// Whether a completed agent run writes its full transcript to
+/// `debug-agent.log`.
+///
+/// Off by default. The write formatted the whole of stdout and stderr into a
+/// third copy of strings the reader threads already held, on every run, to
+/// produce a file nothing reads unless someone is debugging a spawn.
+fn debug_agent_log_enabled() -> bool {
+    std::env::var("ER_DEBUG").is_ok()
+}
+
 fn mint_comment_id(prefix: &str) -> String {
     let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!(
@@ -1949,16 +1959,34 @@ impl App {
     // ── Notifications ──
 
     pub fn notify(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 20; // ~2s
+        self.set_notification(msg, false);
     }
 
-    /// Like notify but persists for ~5 seconds — for important results.
+    /// Like [`Self::notify`], flagged so a UI can leave it up longer.
     pub fn notify_long(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 50; // ~5s
+        self.set_notification(msg, true);
+    }
+
+    /// Store `msg` as the current notification, stamping it with a fresh seq.
+    ///
+    /// `seq` comes from a process-wide counter rather than from what's already
+    /// stored, so a repeat of the same text still counts as a new message and
+    /// clearing the field does not rewind the numbering.
+    fn set_notification(&mut self, msg: &str, long: bool) {
+        self.notification = Some(Notification {
+            message: msg.to_string(),
+            seq: NOTIFICATION_SEQ.fetch_add(1, Ordering::Relaxed) + 1,
+            long,
+        });
+    }
+
+    /// Drop the current message.
+    ///
+    /// The TUI calls this when its dwell timer expires. The desktop never does:
+    /// its snapshots only arrive when the revision counter moves, so it dedupes
+    /// on [`Notification::seq`] and lets the message sit in the snapshot.
+    pub fn clear_notification(&mut self) {
+        self.notification = None;
     }
 
     // ── Background Commands ──
@@ -2062,30 +2090,56 @@ impl App {
         std::fs::create_dir_all(&er_dir)?;
 
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let mut child = std::process::Command::new("sh")
+                // Sixth spawn path: a configured shell command. The summary
+                // agent runs through here. It waits for a slot like every
+                // other path -- a cap that covers some spawn sites is not a
+                // cap, and this one launches provider CLIs just like the rest.
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
+                    return Err(crate::agent_run::cancelled());
+                };
+                timer.mark_slot_acquired();
+                let mut cmd_builder = std::process::Command::new("sh");
+                cmd_builder
                     .args(["-c", &cmd])
                     .current_dir(&repo_root)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
+                    .stderr(std::process::Stdio::piped());
+                let mut child = run
+                    .spawn(&mut cmd_builder)
                     .with_context(|| format!("Failed to run {}", name_owned))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx.clone();
                 let cmd_name_out = name_owned.clone();
@@ -2124,11 +2178,24 @@ impl App {
                     stderr_lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for {}", name_owned))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for {}", name_owned))?;
                 let _ = stdout_handle.join();
                 let accumulated_stderr = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
+
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
 
                 if !status.success() {
                     let stderr_text = accumulated_stderr.join("\n");
@@ -2147,13 +2214,16 @@ impl App {
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit("shell_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
     }
@@ -2161,11 +2231,24 @@ impl App {
     /// Drain all pending agent log entries from the channel into `agent_log`.
     /// Called each tick. Auto-scrolls the AgentLog panel when new entries arrive.
     pub fn drain_agent_log(&mut self) {
+        /// Most entries one tab may take in a single tick.
+        ///
+        /// A chatty agent can out-produce the loop, and draining without a
+        /// bound means one tick does unbounded work — the frame stretches, the
+        /// backlog grows, and the next tick is worse. Whatever is left stays in
+        /// the channel for the next tick.
+        const MAX_PER_TICK: usize = 500;
+
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let mut received = false;
-            while let Ok(entry) = tab.log_rx.try_recv() {
+            let mut taken = 0usize;
+            while taken < MAX_PER_TICK {
+                let Ok(entry) = tab.log_rx.try_recv() else {
+                    break;
+                };
                 tab.agent_log.push_back(entry);
                 received = true;
+                taken += 1;
                 if tab.agent_log.len() > 5000 {
                     tab.agent_log.pop_front();
                 }
@@ -2208,7 +2291,7 @@ impl App {
                             tab.command_status.insert(name.clone(), CommandStatus::Done);
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} completed", name),
                             });
@@ -2226,7 +2309,7 @@ impl App {
                                 .insert(name.clone(), CommandStatus::Failed(msg.clone()));
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} failed: {}", name, msg),
                             });
@@ -2370,21 +2453,41 @@ impl App {
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
 
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = prompt.to_string();
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
+                // Waits for a slot like the background path. It used to be
+                // admitted immediately, which is why `queue_ms` read ~0 here
+                // even with the cap saturated -- a measurement that recorded
+                // the absence of the gate rather than the absence of a queue.
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
+                    return Err(crate::agent_run::cancelled());
+                };
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -2467,12 +2570,16 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 // Accumulate stdout for debug log while also streaming to agent log.
                 // When output is stream-json (default for claude), parse events into
@@ -2527,53 +2634,63 @@ impl App {
                     lines
                 });
 
-                let status = child.wait().with_context(|| {
+                let child = run.take_child(child_id).with_context(|| {
+                    format!("Lost the handle for {} ({})", name_owned, agent_cmd)
+                })?;
+                let status = run.wait_for(child).with_context(|| {
                     format!("Failed to wait for {} ({})", name_owned, agent_cmd)
                 })?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
-                // Write debug log with accumulated stdout + stderr
-                let debug_content = format!(
-                    "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    name_owned,
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
+
+                // Full transcript with accumulated stdout + stderr, opt-in.
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        name_owned,
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
-                    anyhow::bail!(
-                        "{} failed (see {}/debug-agent.log)",
-                        name_owned,
-                        er_dir_path
-                    );
+                    // Only point at the transcript when there is one to read.
+                    let detail = if debug_agent_log_enabled() {
+                        format!(" (full transcript in {er_dir_path}/debug-agent.log)")
+                    } else {
+                        " (set ER_DEBUG=1 for the full transcript)".to_string()
+                    };
+                    anyhow::bail!("{} failed{detail}", name_owned);
                 }
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit("tab_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
-    }
-
-    pub fn tick(&mut self) {
-        if self.watch_message.is_some() {
-            self.watch_message_ticks += 1;
-            if self.watch_message_ticks > self.watch_message_max_ticks {
-                self.watch_message = None;
-                self.watch_message_ticks = 0;
-            }
-        }
     }
 
     /// Spawn an app-level background general review (`kind` = `review`).
@@ -2973,22 +3090,36 @@ impl App {
 
         let _ = log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: command_name.to_string(),
+            command_name: std::sync::Arc::from(command_name),
             source: AgentLogSource::Status,
             text: format!("{command_name} started ({})", target.display_label()),
         });
 
         let log_tx_thread = log_tx;
-        let command_name_stdout = command_name.to_string();
-        let command_name_stderr = command_name.to_string();
-        let command_name_fail = command_name.to_string();
+        let command_name_stdout: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_stderr: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_fail: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_emit: std::sync::Arc<str> = std::sync::Arc::from(command_name);
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        // The worker owns one clone; the App keeps the other so a stop control
+        // can reach the process. Built here, outside the thread, so the handle
+        // exists before anything can try to stop it.
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_task = std::sync::Arc::clone(&run);
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // Hard process-wide cap shared with arena reviewers. The
                 // App-level queue already bounds how many of these workers
                 // exist, so this only waits while arena rounds hold slots.
-                let _slot = crate::agent_slots::acquire_blocking(slot_cap);
+                let _slot = crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                );
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -3086,12 +3217,18 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                // Hand ownership over only once the pipes are off it, so a
+                // timeout firing here still reaches the process.
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx_thread.clone();
                 let stdout_handle = std::thread::spawn(move || -> Vec<String> {
@@ -3138,21 +3275,38 @@ impl App {
                     lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for review ({agent_cmd})"))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
-                let debug_content = format!(
-                    "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                // The verdict, read once the child is reaped and the pipes are
+                // drained. Timeout first: a run killed by its deadline also
+                // has `cancel` set, and "you stopped this" would be the wrong
+                // story to tell about it.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
+
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
                     let stderr_snip = {
@@ -3221,13 +3375,16 @@ impl App {
                 }
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = result_tx.send(result);
+            timer.emit("background", &command_name_emit, ok);
         });
 
         self.background_tasks.insert(
             task_id.clone(),
             BackgroundTaskHandle {
                 task,
+                run: run_for_task,
                 result_rx,
                 log_rx,
                 recent_log: std::collections::VecDeque::new(),
@@ -3351,7 +3508,7 @@ impl App {
             if let Some(handle) = self.background_tasks.get_mut(&id) {
                 handle.recent_log.push_back(AgentLogEntry {
                     timestamp: std::time::Instant::now(),
-                    command_name: "review".to_string(),
+                    command_name: std::sync::Arc::from("review"),
                     source: AgentLogSource::Status,
                     text: status_msg.clone(),
                 });
@@ -3393,9 +3550,7 @@ impl App {
     /// tasks so the UI shows them like any other review failure.
     fn dispatch_pending_background_tasks(&mut self) {
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        while !self.pending_background_tasks.is_empty()
-            && self.running_background_task_count() < cap
-        {
+        while !self.pending_background_tasks.is_empty() && self.can_dispatch_task(cap) {
             let Some(pending) = self.pending_background_tasks.pop_front() else {
                 break;
             };
@@ -3416,6 +3571,23 @@ impl App {
         }
     }
 
+    /// Whether a queued review can start now.
+    ///
+    /// Two questions, and they are not the same one. The App's own count is
+    /// its queueing policy, and it is what the desktop's queued pills show —
+    /// deterministic, because the count moves the moment a task dispatches.
+    /// The slot pool is the real limit, and it is shared with arena reviewers,
+    /// card AI and tab commands.
+    ///
+    /// Checking only the first put work in flight that could not start: with
+    /// an arena holding every slot, a dispatched review showed as `Running`
+    /// while parked inside `acquire`, indistinguishable from running. Checking
+    /// only the second would race — the slot is taken on another thread, so a
+    /// second task could dispatch in the window before the first acquires.
+    fn can_dispatch_task(&self, cap: usize) -> bool {
+        self.running_background_task_count() < cap && crate::agent_slots::active_count() < cap
+    }
+
     /// Remove a queued (not yet started) review task. Returns true when a
     /// matching task was found and removed.
     pub fn cancel_queued_background_task(&mut self, id: &str) -> bool {
@@ -3426,6 +3598,54 @@ impl App {
             self.notify("review removed from queue");
         }
         removed
+    }
+
+    /// The running process for a background task, if it has one.
+    ///
+    /// Returns the handle rather than stopping the run, because stopping it
+    /// forks a process and `AGENTS.md` forbids that under the app mutex. A
+    /// caller holding the lock clones this, releases, and *then* calls
+    /// [`crate::agent_run::AgentRunHandle::kill`]. A caller holding no lock
+    /// may kill straight away.
+    ///
+    /// Signalling is all a stop does. The worker owns the verdict and reaches
+    /// it after its `wait` returns — which the kill causes — so a stop must
+    /// not also write a result, or a stopped run and a finished one would
+    /// race to describe the same task.
+    pub fn running_background_review(
+        &self,
+        id: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.background_tasks
+            .get(id)
+            .map(|h| std::sync::Arc::clone(&h.run))
+    }
+
+    /// The running process for a tab-level command (the tab-command and
+    /// configured-shell paths), if it has one.
+    ///
+    /// Returns the handle for the same reason as
+    /// [`Self::running_background_review`]: kill forks, so the caller releases
+    /// the lock first.
+    pub fn running_command(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.tab().command_runs.get(name).map(std::sync::Arc::clone)
+    }
+
+    /// Every running tab-level command, by name.
+    ///
+    /// Collected into owned handles so the caller can release the borrow —
+    /// and, in the desktop, the lock — before signalling any of them.
+    pub fn running_commands(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<crate::agent_run::AgentRunHandle>)> {
+        self.tab()
+            .command_runs
+            .iter()
+            .map(|(name, run)| (name.clone(), std::sync::Arc::clone(run)))
+            .collect()
     }
 
     /// Snapshot of in-flight + recently finished background tasks. Includes
@@ -3568,16 +3788,66 @@ mod background_queue_tests {
     /// spawned "reviews" run long enough to observe queue state. Returns
     /// None when git isn't available (test then silently skips, matching
     /// the pattern in background.rs).
+    /// Serializes the tests below, which share the process-wide slot pool.
+    ///
+    /// `agent_slots` is one pool for the whole process, and dispatch now asks
+    /// it whether a slot is free rather than counting only this App's own
+    /// tasks. So a slot held by one test changes another's dispatch decision,
+    /// and these run in parallel by default. Holding this for the duration
+    /// keeps each test's view of the pool its own.
+    static POOL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Held for the duration of one pool-sensitive test.
+    ///
+    /// Serializing is not enough on its own: a spawned agent outlives the test
+    /// body that started it, so it keeps its slot after the lock is released
+    /// and the next test inherits a pool it does not own. The `Drop` waits for
+    /// the pool to drain, which is what makes the next test's view its own.
+    struct PoolGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while crate::agent_slots::active_count() > 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+
+    fn serial() -> PoolGuard {
+        PoolGuard(POOL_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
         let tmp =
             std::env::temp_dir().join(format!("er-bg-queue-test-{}-{}", std::process::id(), cap));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).ok()?;
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(&tmp)
-            .output()
-            .ok()?;
+        // `git init` alone leaves HEAD unborn, so `rev-parse --abbrev-ref HEAD`
+        // yields nothing and `App::new_with_args` fails with "Failed to
+        // determine current branch". That made this helper return None for
+        // every caller, and every caller skips silently on None — so five
+        // tests in this module had never run at all.
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
+        std::fs::write(tmp.join("seed.txt"), "seed\n").ok()?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
         let mut app = App::new_with_args(&[tmp.to_string_lossy().to_string()]).ok()?;
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
@@ -3587,6 +3857,7 @@ mod background_queue_tests {
 
     #[test]
     fn excess_reviews_queue_and_dedup() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3639,7 +3910,43 @@ mod background_queue_tests {
     }
 
     #[test]
+    fn a_saturated_slot_pool_stops_the_app_dispatching() {
+        // The App's own running count is zero here, so the old condition would
+        // have dispatched — and the task would have shown as "Running" while
+        // parked inside `acquire`, which is the state this exists to prevent.
+        //
+        // Hold every slot to stand in for an arena run doing the same. The
+        // pool is process-wide, so this must take all `cap` rather than assume
+        // it starts empty: once held, nobody else can be in it.
+        let _serial = serial();
+        let Some((app, tmp)) = test_app(1) else {
+            return;
+        };
+        let cap = app.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = app.config.ai_hub.effective_max_concurrent_agents();
+
+        assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
+        let held: Vec<_> = (0..cap)
+            .map(|_| {
+                crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    cap,
+                    ceiling,
+                )
+            })
+            .collect();
+        assert!(
+            !app.can_dispatch_task(cap),
+            "a full pool must stop dispatch even with nothing running here"
+        );
+
+        drop(held);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn queued_task_snapshots_current_selection_without_override() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3672,12 +3979,19 @@ mod background_queue_tests {
             Some("gpt-5.6-luna"),
             "queued task keeps the selection from enqueue time"
         );
+        // Effort is normalised against the model when the selection syncs, so
+        // a literal here would be asserting that normalisation rather than
+        // what this test is about. The claim is that the queued task holds
+        // what was resolved at enqueue, not what the palette says later.
+        let enqueued_effort = queued.ai_selection.as_ref().and_then(|s| s.effort.clone());
+        app.current_ai_effort = Some("low".into());
         assert_eq!(
-            queued
+            app.pending_background_tasks[0]
                 .ai_selection
                 .as_ref()
-                .and_then(|s| s.effort.as_deref()),
-            Some("high")
+                .and_then(|s| s.effort.clone()),
+            enqueued_effort,
+            "a later effort change must not retarget a queued task"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3685,11 +3999,40 @@ mod background_queue_tests {
 
     #[test]
     fn dispatch_launches_queued_when_slot_frees() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(2) else {
             return;
         };
-        // Fast-exiting agent: completion frees a slot on the next poll.
-        app.config.agent.args = vec!["0".to_string()];
+        // A fast-exiting agent, installed in the hub rather than via
+        // `config.agent`: the background path resolves its command from the
+        // hub providers, and `App::new_with_args` loads the *user's* global
+        // config, so leaving this to `config.agent` ran a real provider and
+        // took 24 s. Completion frees a slot on the next poll.
+        let fake = tmp.join("fake-agent");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).unwrap();
+        }
+        app.config.ai_hub.providers.clear();
+        app.config.ai_hub.default_provider = Some("fake".to_string());
+        app.config.ai_hub.providers.insert(
+            "fake".to_string(),
+            AiProviderConfig {
+                command: fake.to_string_lossy().to_string(),
+                args: vec!["{prompt}".to_string()],
+                models: vec![AiModelConfig {
+                    id: "m".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.config.ai_hub.default_model = Some("m".to_string());
+        app.current_ai_provider = Some("fake".to_string());
+        app.current_ai_model = Some("m".to_string());
 
         for branch in ["a", "b", "c"] {
             app.spawn_background_triage_review(target(&tmp, branch), "p".into(), true)
@@ -3708,7 +4051,9 @@ mod background_queue_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "queued task was never dispatched"
+                "queued task was never dispatched: running={} slots_in_use={}",
+                app.running_background_task_count(),
+                crate::agent_slots::active_count()
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -3720,7 +4065,12 @@ mod background_queue_tests {
     #[cfg(unix)]
     fn background_codex_review_ignores_user_config() {
         use std::os::unix::fs::PermissionsExt;
+        // The transcript this test inspects is opt-in, so turn it on. Left set
+        // for the rest of the binary rather than removed: clear it mid-run and
+        // a concurrently finishing spawn could skip its own write.
+        std::env::set_var("ER_DEBUG", "1");
 
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3770,9 +4120,17 @@ mod background_queue_tests {
         }
 
         let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
+        // Assert the flag rather than its position. The literal adjacency this
+        // used to require broke when `--add-dir` started being injected ahead
+        // of it, and the claim -- Codex is told not to read the user's config
+        // -- was true the whole time.
+        let command_line = debug_log
+            .lines()
+            .find(|l| l.starts_with("command: "))
+            .unwrap_or("");
         assert!(
-            debug_log.contains("codex exec --ignore-user-config"),
-            "debug log should show isolated Codex invocation:\n{debug_log}"
+            command_line.contains("exec") && command_line.contains("--ignore-user-config"),
+            "debug log should show an isolated Codex invocation:\n{debug_log}"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);

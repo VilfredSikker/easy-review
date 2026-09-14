@@ -1094,11 +1094,7 @@ pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot
     {
         let tab = app.tab_mut();
         if tab.active_diff_files().iter().any(|f| f.path == path) {
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = tab.per_file_hash(&path);
             tab.reviewed.insert(path, hash);
             tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
@@ -1178,11 +1174,7 @@ pub async fn bulk_review_pillar(
             let paths = pillar_file_paths(tab, &pillar_id);
             let mut changed = false;
             for path in paths {
-                let hash = tab
-                    .current_per_file_hashes
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_default();
+                let hash = tab.per_file_hash(&path);
                 tab.reviewed.insert(path, hash);
                 changed = true;
             }
@@ -2145,6 +2137,28 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
     Ok(snap_from(&app, &state))
 }
 
+/// Stop a running review.
+///
+/// The handle is cloned and the lock released *before* signalling: `kill`
+/// forks a process, and holding the app mutex across a fork would block every
+/// other command — including the poll that would show the stop took effect.
+#[tauri::command]
+pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let run = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        app.running_background_review(&id)
+    };
+    let Some(run) = run else {
+        return Err("No running review with that id".to_string());
+    };
+    run.kill();
+
+    // Re-read for the snapshot only after the signal is away.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
+
 #[tauri::command]
 pub fn patch_project_review_settings(
     project_id: String,
@@ -3043,11 +3057,16 @@ fn is_gh_review_422(err: &anyhow::Error) -> bool {
 }
 
 #[tauri::command]
-pub fn submit_github_review(
+pub async fn submit_github_review(
     mode: String,
     summary: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Off the main thread: this refreshes the diff, reads anchors and shells
+    // out to `gh`, all under the App lock. As a sync command it held the one
+    // thread that also pumps the window for the whole of that.
+    crate::commands::run_blocking(move || {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
 
@@ -3362,6 +3381,8 @@ pub fn submit_github_review(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
     Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
@@ -5993,7 +6014,11 @@ fn build_local_branch_tab(
     // PR links, the GitHub status card, and the PR-list cache all key on the
     // right repo.
     new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
-    new_tab.sync_managed_storage();
+    // Light: re-roots managed storage and reloads the reviewed markers without
+    // the AI reload. The refresh below reaches its own AI gate once
+    // `branch_diff_hash` is set, so the full sync would read every sidecar
+    // twice on the open path.
+    new_tab.sync_managed_storage_light();
     let t_local_refresh = std::time::Instant::now();
     match new_tab.refresh_diff_without_remote_fetch_quick() {
         Ok(()) => {
@@ -6033,6 +6058,21 @@ fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), St
     }
 }
 
+/// Background branch-refresh workers currently running, keyed
+/// `(repo_root, branch)`.
+///
+/// The frontend dedups repeats of the *same* branch, but a run of clicks across
+/// different branches stacked one worker per click, each paying its own network
+/// fetch — and every worker whose tab is no longer active still pays, then
+/// discards the result.
+static BRANCH_REFRESH_IN_FLIGHT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn branch_refresh_finished(key: &(String, String)) {
+    if let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() {
+        g.retain(|k| k != key);
+    }
+}
+
 fn kick_background_branch_refresh(
     app_state: Arc<Mutex<App>>,
     desktop_revision: Arc<AtomicU64>,
@@ -6040,11 +6080,43 @@ fn kick_background_branch_refresh(
     branch_name: String,
     base_branch: String,
 ) {
+    let flight_key = (repo_root.clone(), branch_name.clone());
+    {
+        let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() else {
+            return;
+        };
+        if g.contains(&flight_key) {
+            return; // this branch is already being refreshed
+        }
+        g.push(flight_key.clone());
+    }
     std::thread::spawn(move || {
         // Fetch the base branch from origin so the local diff is up-to-date.
         let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
+        // Where the local remote-tracking ref pointed before the fetch. If the
+        // fetch does not move it, the diff cannot have changed and the
+        // lock-held full refresh below is pure cost. That is the steady state:
+        // most opens find origin's base tip exactly where it already was.
+        let remote_ref = format!("origin/{base_strip}");
+        let oid_before = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+        let t_worker = std::time::Instant::now();
         match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
             Ok(base_ref) => {
+                let oid_after = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+                // A first materialisation (`before` was None) counts as moved.
+                let moved = oid_before.is_none() || oid_before != oid_after;
+                // This worker was the one leg of a branch open with no phase
+                // log, so its duration was invisible in profile output.
+                log::info!(
+                    "branch_open branch={} phase=background_branch_refresh ms={} moved={}",
+                    branch_name,
+                    t_worker.elapsed().as_millis(),
+                    moved
+                );
+                if !moved {
+                    branch_refresh_finished(&flight_key);
+                    return;
+                }
                 let mut refreshed_active_tab = false;
                 if let Ok(mut app) = app_state.lock() {
                     let active_tab = app.active_tab;
@@ -6076,6 +6148,7 @@ fn kick_background_branch_refresh(
                 );
             }
         }
+        branch_refresh_finished(&flight_key);
     });
 }
 
@@ -7171,7 +7244,15 @@ fn open_pr_review_miss_async(
     // would duplicate the network call.
     kick_pr_ref_fetch(&app, state);
     let t_ser = std::time::Instant::now();
-    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
+    // Measuring the snapshot means serializing the whole thing — every file and
+    // hunk — and Tauri already serializes the same value again for IPC. That is
+    // a second full pass over the payload on the open path, and this one runs
+    // while the App lock is still held. Only the profiled build pays for it.
+    let ser_bytes = if crate::profile_log::profile_enabled() {
+        serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0)
+    } else {
+        0
+    };
     log::info!(
         "open_pr_review pr={} phase=summary cache_hit=false files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms=0 record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
         pr_number,
@@ -8094,7 +8175,9 @@ pub fn open_project_branch(
     // project's remote — resolve it from this repo's git remote (see
     // `build_local_branch_tab`).
     new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
-    new_tab.sync_managed_storage();
+    // Light, as in `build_local_branch_tab`: the refresh below reloads the AI
+    // sidecars through its own gate, so a full sync duplicates that read.
+    new_tab.sync_managed_storage_light();
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -9044,29 +9127,80 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let loading = Arc::clone(&state.loading);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
-        let t = std::time::Instant::now();
-        if let Ok(mut app) = app_arc.lock() {
-            // Re-resolve the tab by index + repo_root in case tabs changed
-            // while this worker waited for the lock.
-            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
-                let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
-                let result = if is_local_pr {
-                    tab.refetch_and_refresh_diff()
-                } else {
-                    tab.refresh_diff()
-                };
-                if let Err(e) = result {
-                    log::error!("er-desktop: deferred tab refresh failed: {e}");
+        // Phase 1 — brief lock: capture the fetch inputs and release, so the
+        // network work below runs outside the critical section. Re-resolve the
+        // tab by index + repo_root in case tabs changed while this worker was
+        // starting.
+        let inputs = app_arc.lock().ok().and_then(|app| {
+            app.tabs
+                .get(idx)
+                .filter(|tab| tab.repo_root == expect_root)
+                .and_then(|tab| tab.pr_refresh_inputs())
+        });
+
+        // Phase 2 — no lock: the head fetch, the gh lookup, and the base fetch.
+        // Timed on its own so `lazy_tab_refresh` can say whether a slow load was
+        // the network or the local rebuild.
+        let mut fetched = None;
+        let mut fetch_failed = false;
+        let t_fetch = std::time::Instant::now();
+        if let Some(inputs) = inputs {
+            // A restored stub normally already has its refs on disk, and the
+            // fetches would re-download them. Probed here, where no lock is
+            // held, so the check costs a `git rev-parse` and nothing else.
+            let already_present = er_engine::github::ref_exists_locally(
+                &inputs.repo_root,
+                &format!("refs/er/pr/{}/head", inputs.pr_number),
+            );
+            if !already_present {
+                match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                    Ok(result) => fetched = Some(result),
+                    Err(e) => {
+                        log::error!("er-desktop: deferred tab pr fetch failed: {e}");
+                        fetch_failed = true;
+                    }
                 }
             }
         }
+
+        let fetch_ms = t_fetch.elapsed().as_millis();
+
+        // Phase 3 — brief lock: apply, then rebuild the diff.
+        let t_refresh = std::time::Instant::now();
+        if let Ok(mut app) = app_arc.lock() {
+            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
+                // A failed fetch leaves the tab as it was, rather than rebuilding
+                // the diff from refs that could not be refreshed.
+                if !fetch_failed {
+                    match fetched {
+                        Some(result) => tab.apply_pr_refresh(result),
+                        // Skipped the fetch because the refs are already on disk,
+                        // so nothing has recorded the oid this diff is about to be
+                        // built against. Without it the staleness probe has an
+                        // unknown to compare and stays silent, showing a diff that
+                        // is behind the PR head with no pill.
+                        None => tab.seed_last_diff_head_oid_from_local_ref(),
+                    }
+                    if let Err(e) = tab.refresh_diff() {
+                        log::error!("er-desktop: deferred tab refresh failed: {e}");
+                    }
+                }
+            }
+        }
+        let refresh_ms = t_refresh.elapsed().as_millis();
         if let Ok(mut l) = loading.lock() {
             l.tab_diff = false;
         }
         desktop_revision.fetch_add(1, Ordering::Relaxed);
         crate::profile_log::profile_log(
             "lazy_tab_refresh",
-            &[("ms", t.elapsed().as_millis().to_string())],
+            &[
+                // `fetch_ms` is the network legs, `refresh_ms` the local rebuild.
+                // Without the split a slow load gives no clue which it was.
+                ("fetch_ms", fetch_ms.to_string()),
+                ("refresh_ms", refresh_ms.to_string()),
+                ("ms", (fetch_ms + refresh_ms).to_string()),
+            ],
         );
     });
 }
@@ -9095,42 +9229,101 @@ pub fn kick_post_open_offload(app: &App, state: &AppState) {
     let desktop_revision = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        if let Ok(mut app) = app_arc.lock() {
+
+        /// What this worker owes, decided under the first brief lock.
+        enum Work {
+            /// The tab is gone, or is no longer the one we were asked to load.
+            Nothing,
+            /// Cache-hit path: the AI reload ran in phase 1 and nothing is left.
+            Done,
+            /// Fallback path with nothing to fetch: refresh the diff as it stands.
+            RefreshOnly,
+            /// Fallback path on a local PR tab: fetch these first.
+            Fetch(er_engine::app::PrRefreshInputs),
+        }
+
+        // Phase 1 — brief lock: decide what to do, and capture the fetch inputs
+        // if there are any. The network legs run below with the guard released,
+        // because holding it across them blocks every command the user can see.
+        let work = if let Ok(mut app) = app_arc.lock() {
             // Re-resolve the tab by index + identity in case tabs changed while
             // the worker waited for the lock.
-            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+            match app.tabs.get_mut(idx).filter(|t| {
                 t.repo_root == expect_root
                     && t.pr_number == expect_pr
                     && t.local_branch_view == expect_local_view
             }) {
-                let result = if tab.needs_initial_refresh {
+                Some(tab) if tab.needs_initial_refresh => {
                     // Fallback path (no head oid / 0-file PR): the diff was not
                     // loaded synchronously — fetch it here, same as the
                     // deferred-tab-refresh worker.
                     tab.needs_initial_refresh = false;
-                    if tab.pr_number.is_some() && !tab.is_remote() {
-                        tab.refetch_and_refresh_diff()
-                    } else {
-                        tab.refresh_diff()
+                    match tab.pr_refresh_inputs() {
+                        Some(inputs) => Work::Fetch(inputs),
+                        None => Work::RefreshOnly,
                     }
-                } else {
+                }
+                Some(tab) => {
                     // Common cache-hit path: the diff is already loaded; only
                     // the AI sidecar reload was deferred.
                     tab.reload_ai_state();
-                    Ok(())
-                };
-                if let Err(e) = result {
+                    Work::Done
+                }
+                None => Work::Nothing,
+            }
+        } else {
+            Work::Nothing
+        };
+
+        // Phase 2 — no lock: the PR's network legs, when the fallback path needs them.
+        let mut fetch_failed = false;
+        let fetched = match &work {
+            Work::Fetch(inputs) => match er_engine::app::TabState::fetch_pr_refresh(inputs) {
+                Ok(result) => Some(result),
+                Err(e) => {
                     log::error!(
-                        "er-desktop: post-open offload failed for pr={:?} root={}: {e}",
+                        "er-desktop: post-open offload fetch failed for pr={:?} root={}: {e}",
                         expect_pr,
                         expect_root
                     );
+                    fetch_failed = true;
+                    None
                 }
-                // No persist here: `place_tab` already wrote tabs.json on the
-                // open critical path and the reload changes no persisted field
-                // (TabDescriptor has no mode/AI state).
+            },
+            _ => None,
+        };
+
+        // Phase 3 — brief lock: apply and rebuild the diff. Skipped when the fetch
+        // failed, which leaves the tab as it was rather than rebuilding against
+        // refs that could not be refreshed.
+        if !matches!(work, Work::Nothing | Work::Done) && !fetch_failed {
+            if let Ok(mut app) = app_arc.lock() {
+                if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                    t.repo_root == expect_root
+                        && t.pr_number == expect_pr
+                        && t.local_branch_view == expect_local_view
+                }) {
+                    match fetched {
+                        Some(result) => tab.apply_pr_refresh(result),
+                        // Rebuild from the local PR ref without fetching, so
+                        // record the oid it is built against — otherwise the
+                        // staleness probe has an unknown on one side and shows
+                        // no pill for a diff that is behind the PR head.
+                        None => tab.seed_last_diff_head_oid_from_local_ref(),
+                    }
+                    if let Err(e) = tab.refresh_diff() {
+                        log::error!(
+                            "er-desktop: post-open offload failed for pr={:?} root={}: {e}",
+                            expect_pr,
+                            expect_root
+                        );
+                    }
+                }
             }
         }
+        // No persist here: `place_tab` already wrote tabs.json on the open
+        // critical path and the reload changes no persisted field
+        // (TabDescriptor has no mode/AI state).
         if let Ok(mut l) = loading.lock() {
             l.tab_diff = false;
         }
@@ -9369,9 +9562,6 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let repo_root = tab.repo_root.clone();
     let base_branch = tab.base_branch.clone();
     let head_ref = format!("refs/er/pr/{}/head", pr_number);
-    if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
-        return; // refs already materialized (e.g. by an earlier sync)
-    }
     let key = (repo_root.clone(), pr_number);
     {
         let Ok(mut g) = state.pr_ref_fetch_in_flight.lock() else {
@@ -9386,6 +9576,16 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let desktop_rev = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
+        // Probed here rather than on the caller's thread. The in-flight set
+        // above dedupes by (repo_root, pr_number), so this `git rev-parse`
+        // costs one subprocess per unique PR instead of one per open, and the
+        // open path stops paying for it at all.
+        if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
+            if let Ok(mut g) = in_flight.lock() {
+                g.remove(&key);
+            }
+            return; // refs already materialized (e.g. by an earlier sync)
+        }
         // Independent fetches — run them in parallel like the open path does.
         let (head_res, base_res) = std::thread::scope(|s| {
             let head_root = repo_root.clone();
@@ -9851,35 +10051,53 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
 
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
-    let lock_t0 = std::time::Instant::now();
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let lock_wait_ms = lock_t0.elapsed().as_millis();
-    // Drain pending agent log entries and check for completed commands.
-    app.drain_agent_log();
-    // Consume completed command receivers — updates command_status to done/failed
-    // and emits completion log entries. Agent-written sidecars have newer mtimes
-    // than the last check, so the .er reload below picks them up via the mtime
-    // comparison (no forced last_ai_check reset — O5).
-    app.check_commands();
-    // Same lifecycle for app-level background tasks (cross-tab reviews).
-    // Only log poll diagnostics when there's actually a task in flight to avoid
-    // flooding stderr every 2 seconds during normal use.
-    let pre = app.background_task_snapshots().len();
-    let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
-    if debug_bg {
-        eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
-    }
-    app.poll_background_tasks();
-    let post = app.background_task_snapshots().len();
-    if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
-        eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
-    }
-    process_ai_task_inbox(&app, state);
-    // Drain again so completion/failure log entries are visible in this poll.
-    app.drain_agent_log();
-    // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
-    app.tab_mut().check_ai_files_changed();
 
+    // Pass one: the calls that mutate. A short lock, released before the
+    // snapshot re-takes it — so a `select_file` or `set_mode` arriving
+    // mid-poll waits for this pass rather than for the whole snapshot build.
+    let lock_t0 = std::time::Instant::now();
+    let warm_target;
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // Drain pending agent log entries and check for completed commands.
+        app.drain_agent_log();
+        // Consume completed command receivers — updates command_status to
+        // done/failed and emits completion log entries. Agent-written sidecars
+        // have newer mtimes than the last check, so the .er reload below picks
+        // them up via the mtime comparison (no forced last_ai_check reset — O5).
+        app.check_commands();
+        // Same lifecycle for app-level background tasks (cross-tab reviews).
+        // Only log poll diagnostics when there's actually a task in flight to
+        // avoid flooding stderr every 2 seconds during normal use.
+        let pre = app.background_task_snapshots().len();
+        let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
+        if debug_bg {
+            eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
+        }
+        app.poll_background_tasks();
+        let post = app.background_task_snapshots().len();
+        if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
+            eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
+        }
+        process_ai_task_inbox(&app, state);
+        // Drain again so completion/failure log entries are visible in this poll.
+        app.drain_agent_log();
+        // Check if .er/ AI files changed — cheap mtime check, reloads if yes.
+        app.tab_mut().check_ai_files_changed();
+        // Identity for the off-lock warm kicked below, captured while the guard
+        // is held so the worker needs no lock of its own.
+        warm_target = (app.tab().repo_root.clone(), app.tab().base_branch.clone());
+    }
+    // Warm the worktree-metadata cache off the critical section. Pass two builds
+    // the snapshot with the lock held, and a cold entry there pays the entire
+    // fan-out inside it; warming here means the next build reads a warm entry.
+    // No-op unless the cached entry is actually getting old (see the fn).
+    crate::snapshot::kick_worktrees_warm(&warm_target.0, &warm_target.1);
+    let lock_wait_ms = lock_t0.elapsed().as_millis();
+
+    // Pass two: re-take for the revisions and the snapshot, so the two agree
+    // with each other. Nothing between here and the snapshot releases it.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
     let chrome_revision = compute_chrome_revision(state);
@@ -10363,7 +10581,7 @@ pub fn get_background_task_log(
     let log: Vec<AgentLogSnapshot> = entries
         .iter()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
                 er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
@@ -10758,6 +10976,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("ok", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10774,6 +10996,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("fail", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10793,6 +11019,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("custom-response-text", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))

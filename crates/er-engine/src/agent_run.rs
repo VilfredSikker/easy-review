@@ -53,7 +53,9 @@ use std::process::{Child, Command};
 #[cfg(any(unix, windows))]
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 /// Marker error returned by a worker whose run was stopped.
 ///
@@ -82,6 +84,39 @@ pub fn is_run_cancelled(err: &anyhow::Error) -> bool {
     err.downcast_ref::<RunCancelled>().is_some()
 }
 
+/// Marker error returned by a worker whose run hit its deadline.
+///
+/// Distinct from [`RunCancelled`] because the two need different words: "you
+/// stopped this" and "this ran too long" send a reader to different fixes, and
+/// both are different again from a genuine failure of the agent.
+#[derive(Debug)]
+pub struct RunTimedOut {
+    limit: Duration,
+}
+
+impl std::fmt::Display for RunTimedOut {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let secs = self.limit.as_secs();
+        if secs >= 60 {
+            write!(f, "agent run exceeded its {} minute limit", secs / 60)
+        } else {
+            write!(f, "agent run exceeded its {secs} second limit")
+        }
+    }
+}
+
+impl std::error::Error for RunTimedOut {}
+
+/// Build the error for a run that hit its deadline.
+pub fn timed_out(limit: Duration) -> anyhow::Error {
+    anyhow::Error::new(RunTimedOut { limit })
+}
+
+/// Did this error come from a run hitting its deadline?
+pub fn is_run_timed_out(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<RunTimedOut>().is_some()
+}
+
 /// A cancellable run: the flag, the live children, and the process group.
 ///
 /// Held as `Arc<AgentRunHandle>`; the owning registry keeps one clone and the
@@ -104,7 +139,19 @@ pub struct AgentRunHandle {
     children: Mutex<Vec<Child>>,
     /// Pid of the leader, recorded at spawn.
     pid: Mutex<Option<i32>>,
+    /// Set by [`AgentRunHandle::arm_timeout`] when the deadline passes, before
+    /// it signals. Separate from `cancel` because a worker returning after a
+    /// stop needs to say which of the two happened: a user who pressed stop
+    /// does not want "timed out", and a timeout is not something the user did.
+    timed_out: AtomicBool,
 }
+
+/// How often the timeout watchdog re-checks whether the run is over.
+///
+/// Only costs a wakeup per running agent, and agents are capped by the slot
+/// pool. Short enough that a run killed at its deadline is noticed promptly,
+/// long enough not to spin.
+const TIMEOUT_POLL: Duration = Duration::from_millis(100);
 
 impl AgentRunHandle {
     /// Handles are always shared, so there is no plain-`Self` constructor and
@@ -118,7 +165,50 @@ impl AgentRunHandle {
             pgid: Mutex::new(None),
             children: Mutex::new(Vec::new()),
             pid: Mutex::new(None),
+            timed_out: AtomicBool::new(false),
         })
+    }
+
+    /// Kill the run if it is still going `limit` after this call.
+    ///
+    /// A watchdog thread rather than a deadline polled inside the worker,
+    /// because the hang this exists for is an agent that never closes its
+    /// stdout — which blocks the caller's reader threads *before* it ever
+    /// reaches a `wait`. Polling there would never run. Killing the process
+    /// group closes the pipes, so the watchdog unblocks whichever stage is
+    /// stuck, not just the wait.
+    ///
+    /// Idempotent and safe to call once per run; `limit` of zero arms nothing,
+    /// which is how a caller disables it.
+    pub fn arm_timeout(self: &Arc<Self>, limit: Duration) {
+        if limit.is_zero() {
+            return;
+        }
+        let handle = Arc::clone(self);
+        std::thread::spawn(move || {
+            let deadline = Instant::now() + limit;
+            while Instant::now() < deadline {
+                if handle.is_finished() {
+                    return;
+                }
+                std::thread::sleep(TIMEOUT_POLL.min(limit));
+            }
+            if handle.is_finished() {
+                return;
+            }
+            // Set before signalling: the worker's verdict reads this after
+            // `wait` returns, and the signal is what makes it return.
+            handle.timed_out.store(true, Ordering::SeqCst);
+            handle.kill();
+        });
+    }
+
+    /// Did this run hit its deadline rather than being stopped by a user?
+    ///
+    /// Meaningful only after the worker has settled; both flags are false on a
+    /// run that finished on its own.
+    pub fn is_timed_out(&self) -> bool {
+        self.timed_out.load(Ordering::SeqCst)
     }
 
     /// Has this run been stopped? Workers consult this before every
@@ -185,6 +275,19 @@ impl AgentRunHandle {
         let status = child.wait();
         self.mark_finished();
         status
+    }
+
+    /// [`Self::wait_for`] for callers that want the pipes collected too.
+    ///
+    /// A separate method rather than `wait_for` plus the callers reading pipes
+    /// themselves, because `wait_with_output` drains stdout and stderr
+    /// *concurrently*. Reading them in sequence deadlocks as soon as the child
+    /// fills the buffer of the pipe nobody is reading yet — which for an agent
+    /// writing a JSON event per line is not a large amount of output.
+    pub fn wait_for_output(&self, child: Child) -> std::io::Result<std::process::Output> {
+        let out = child.wait_with_output();
+        self.mark_finished();
+        out
     }
 
     /// Record the leader's pid. Not "only the first": a handle describes one
@@ -422,6 +525,133 @@ mod tests {
         let err = cancelled().context("while reviewing");
         assert!(is_run_cancelled(&err));
         assert!(!is_run_cancelled(&anyhow::anyhow!("boom")));
+    }
+
+    #[test]
+    fn run_timed_out_is_distinguishable_from_cancelled() {
+        let err = timed_out(Duration::from_secs(900)).context("while reviewing");
+        assert!(is_run_timed_out(&err));
+        assert!(
+            !is_run_cancelled(&err),
+            "a timeout is not something the user did"
+        );
+
+        let stopped = cancelled();
+        assert!(!is_run_timed_out(&stopped));
+        assert!(!is_run_timed_out(&anyhow::anyhow!("boom")));
+    }
+
+    #[test]
+    fn the_timeout_message_reads_in_the_unit_it_was_given() {
+        // A 900 the reader has to divide by 60 is a worse error message than
+        // one that already says 15.
+        assert_eq!(
+            timed_out(Duration::from_secs(900)).to_string(),
+            "agent run exceeded its 15 minute limit"
+        );
+        assert_eq!(
+            timed_out(Duration::from_secs(45)).to_string(),
+            "agent run exceeded its 45 second limit"
+        );
+    }
+
+    /// A run that outlives its deadline is killed and says so.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_past_its_deadline_is_killed_and_reported_as_timed_out() {
+        let handle = AgentRunHandle::new();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("30").stdout(Stdio::null()).stderr(Stdio::null());
+        let child = handle.spawn(&mut cmd).expect("spawn");
+        let id = child.id();
+        handle.register(child);
+        handle.arm_timeout(Duration::from_millis(150));
+
+        let child = handle.take_child(id).expect("registered");
+        let status = handle.wait_for(child).expect("wait_for returns on a kill");
+
+        assert!(handle.is_timed_out(), "the watchdog must set the flag");
+        assert!(handle.is_cancelled(), "and the kill path still sets cancel");
+        assert!(
+            !status.success(),
+            "sleep 30 must not have been allowed to finish"
+        );
+    }
+
+    /// The case the watchdog exists for: a child that never closes its stdout.
+    ///
+    /// Polling a deadline inside the worker would not fire here, because the
+    /// caller is blocked reading the pipe and never reaches a `wait`. Killing
+    /// the process group closes the pipe, which is what unblocks it.
+    #[cfg(unix)]
+    #[test]
+    fn a_child_holding_its_stdout_open_is_still_stopped() {
+        let handle = AgentRunHandle::new();
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "sleep 30"])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
+        let mut child = handle.spawn(&mut cmd).expect("spawn");
+        let id = child.id();
+        let mut stdout = child.stdout.take().expect("piped stdout");
+        handle.register(child);
+        handle.arm_timeout(Duration::from_millis(150));
+
+        // This is the blocking read that a polled deadline never gets past.
+        let mut buf = String::new();
+        use std::io::Read;
+        let read = stdout.read_to_string(&mut buf);
+
+        assert!(
+            read.is_ok(),
+            "the pipe must close when the group is killed, not error"
+        );
+        assert!(buf.is_empty(), "the child wrote nothing: {buf:?}");
+        assert!(handle.is_timed_out());
+
+        let child = handle.take_child(id).expect("registered");
+        handle.wait_for(child).expect("reap");
+    }
+
+    /// A run that finishes inside its deadline leaves the flag clear.
+    #[cfg(unix)]
+    #[test]
+    fn a_run_inside_its_deadline_is_not_marked_timed_out() {
+        let handle = AgentRunHandle::new();
+        let mut cmd = Command::new("true");
+        cmd.stdout(Stdio::null()).stderr(Stdio::null());
+        let child = handle.spawn(&mut cmd).expect("spawn");
+        let id = child.id();
+        handle.register(child);
+        handle.arm_timeout(Duration::from_secs(30));
+
+        let child = handle.take_child(id).expect("registered");
+        assert!(handle.wait_for(child).expect("wait").success());
+
+        // Long enough that a watchdog which ignored `is_finished` would fire.
+        std::thread::sleep(Duration::from_millis(250));
+        assert!(
+            !handle.is_timed_out(),
+            "a finished run must not be marked timed out by a late watchdog"
+        );
+    }
+
+    /// A zero limit arms nothing, which is how a caller turns it off.
+    #[cfg(unix)]
+    #[test]
+    fn a_zero_deadline_arms_no_watchdog() {
+        let handle = AgentRunHandle::new();
+        let mut cmd = Command::new("sleep");
+        cmd.arg("1").stdout(Stdio::null()).stderr(Stdio::null());
+        let child = handle.spawn(&mut cmd).expect("spawn");
+        let id = child.id();
+        handle.register(child);
+        handle.arm_timeout(Duration::ZERO);
+
+        let child = handle.take_child(id).expect("registered");
+        let status = handle.wait_for(child).expect("wait");
+        assert!(status.success(), "sleep 1 must have been left alone");
+        assert!(!handle.is_timed_out());
     }
 
     /// After reaping, the pid is free for reuse, so `kill` must stop

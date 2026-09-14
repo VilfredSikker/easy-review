@@ -27,6 +27,7 @@ import {
   snapshotViewParts,
 } from "../snapshotChrome";
 import { resolveOmittedHunks } from "../snapshotDelta";
+import { shouldShowNotification } from "../snapshotNotification";
 import { DEFAULT_SYNTAX_THEME_ID } from "../syntaxThemes";
 import {
   TabSnapshotCache,
@@ -37,7 +38,7 @@ import {
   tabSnapshotCacheKey,
   tabSnapshotCacheKeyFromTab,
 } from "../tabSnapshotCache";
-import type { AppSnapshot, PollResponse } from "../types";
+import type { AppSnapshot, NotificationSnapshot, PollResponse } from "../types";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { rightRail } from "./rightRail.svelte";
@@ -62,6 +63,12 @@ export interface LogEntry {
 }
 
 const MAX_LOGS = 500;
+
+/**
+ * Dwell for a backend notification flagged `long` — the desktop's counterpart
+ * to the TUI's `NOTIFICATION_DWELL_LONG`. Overrides `showToast`'s default.
+ */
+const TOAST_LONG_MS = 8_000;
 
 export type DiffViewMode = "unified" | "split";
 export type MainViewMode = "diff" | "agent-output" | "export-review" | "settings";
@@ -206,7 +213,8 @@ class AppStore {
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
   private toastId = 0;
-  private lastSnapshotNotification: string | null = null;
+  /** The last backend notification shown, so a repeat still shows. */
+  private lastSnapshotNotification: NotificationSnapshot | null = null;
   // Safety-net interval — the backend pushes a `er://revision` event on every
   // state change, so this is just a fallback in case an event is dropped or
   // the listener hasn't attached yet. Used to be 2s when polling was the
@@ -340,14 +348,14 @@ class AppStore {
   }
 
   private syncSnapshotToast(snapshot: AppSnapshot | null): boolean {
-    const message = snapshot?.notification ?? null;
-    if (message === null) {
-      this.lastSnapshotNotification = null;
+    const notification = snapshot?.notification ?? null;
+    if (notification === null) return false;
+    if (!shouldShowNotification(notification, this.lastSnapshotNotification)) {
       return false;
     }
-    if (message === this.lastSnapshotNotification) return false;
 
-    this.lastSnapshotNotification = message;
+    this.lastSnapshotNotification = notification;
+    const message = notification.message;
     const lower = message.toLowerCase();
     const kind: "success" | "error" =
       lower.includes("failed") ||
@@ -358,7 +366,11 @@ class AppStore {
       lower.includes("no ")
         ? "error"
         : "success";
-    this.showToast(kind, message);
+    // `long` is the engine's "worth leaving up longer" flag; the desktop owns
+    // how long that is, same as the TUI does with its own dwell constants.
+    const durationMs =
+      notification.long && kind !== "error" ? TOAST_LONG_MS : undefined;
+    this.showToast(kind, message, durationMs);
     return true;
   }
 

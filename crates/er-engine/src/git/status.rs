@@ -1,3 +1,4 @@
+use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
 use std::path::Path;
 use std::process::Command;
@@ -26,6 +27,11 @@ pub struct CommitInfo {
 pub struct Worktree {
     pub path: String,
     pub branch: String,
+    /// The commit this worktree has checked out, from the `HEAD <oid>` line of
+    /// `git worktree list --porcelain`. Carried so callers that cache worktree
+    /// metadata have a change signal to key on, instead of a timer: a commit,
+    /// a rebase, or a branch switch all move it.
+    pub head: String,
 }
 
 /// File change status in git
@@ -147,6 +153,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     };
 
+    // Targeted `rev-parse` probes, not a `for-each-ref` enumeration: enumerating
+    // every local and remote-tracking ref costs more on a large repo than the
+    // few names this chain asks about, and `for-each-ref` does not populate
+    // `%(HEAD)`, so the current-branch exclusion has to come from somewhere else.
     let current = run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
     // Try upstream tracking branch
@@ -479,6 +489,7 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
     let mut worktrees = Vec::new();
     let mut current_path = String::new();
     let mut current_branch = String::new();
+    let mut current_head = String::new();
 
     for line in stdout.lines() {
         if let Some(path) = line.strip_prefix("worktree ") {
@@ -491,12 +502,16 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
                     } else {
                         current_branch.clone()
                     },
+                    head: current_head.clone(),
                 });
             }
             current_path = path.to_string();
             current_branch.clear();
+            current_head.clear();
         } else if let Some(branch) = line.strip_prefix("branch refs/heads/") {
             current_branch = branch.to_string();
+        } else if let Some(oid) = line.strip_prefix("HEAD ") {
+            current_head = oid.trim().to_string();
         } else if line == "detached" {
             current_branch = "(detached)".to_string();
         }
@@ -511,6 +526,7 @@ pub fn list_worktrees(repo_root: &str) -> Result<Vec<Worktree>> {
             } else {
                 current_branch
             },
+            head: current_head,
         });
     }
 
@@ -570,7 +586,7 @@ pub fn git_push(repo_root: &str) -> Result<String> {
     let output = Command::new("git")
         .args(["push"])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
         .context("Failed to run git push")?;
 
     if !output.status.success() {
@@ -1266,6 +1282,75 @@ mod tests {
 
         let base = detect_base_branch_in(root.to_str().unwrap()).unwrap();
         assert_eq!(base, "stack/foo-bar");
+    }
+
+    /// A throwaway repo checked out on `branch`, carrying the given extra local
+    /// branches and remote-tracking refs, all pointing at one commit.
+    fn repo_with_refs(branch: &str, heads: &[&str], remotes: &[&str]) -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-b", branch, "--quiet"]);
+        std::fs::write(root.join("f.txt"), "x\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-m", "init", "--no-gpg-sign"]);
+        for head in heads {
+            git(&["branch", head, "HEAD"]);
+        }
+        for remote in remotes {
+            git(&["update-ref", &format!("refs/remotes/{remote}"), "HEAD"]);
+        }
+        dir
+    }
+
+    #[test]
+    fn detect_base_branch_prefers_main_over_master() {
+        let dir = repo_with_refs("feature", &["master", "main"], &[]);
+        assert_eq!(
+            detect_base_branch_in(dir.path().to_str().unwrap()).unwrap(),
+            "main"
+        );
+    }
+
+    #[test]
+    fn detect_base_branch_skips_the_checked_out_branch() {
+        // Checked out on `main` with only `develop` alongside: the answer must
+        // not be `main`, because the branch being viewed is never its own base.
+        let dir = repo_with_refs("main", &["develop"], &[]);
+        assert_eq!(
+            detect_base_branch_in(dir.path().to_str().unwrap()).unwrap(),
+            "develop"
+        );
+    }
+
+    #[test]
+    fn detect_base_branch_falls_back_to_the_remote_tracking_branch() {
+        let dir = repo_with_refs("feature", &[], &["origin/main"]);
+        assert_eq!(
+            detect_base_branch_in(dir.path().to_str().unwrap()).unwrap(),
+            "origin/main"
+        );
+    }
+
+    #[test]
+    fn detect_base_branch_returns_main_when_nothing_matches() {
+        // The documented last resort: no candidate branch of any kind exists.
+        let dir = repo_with_refs("feature", &[], &[]);
+        assert_eq!(
+            detect_base_branch_in(dir.path().to_str().unwrap()).unwrap(),
+            "main"
+        );
     }
 
     // ── parse_shortstat ──

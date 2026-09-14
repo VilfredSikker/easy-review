@@ -24,9 +24,14 @@ use std::sync::Mutex;
 static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Write `diff-tmp` and `diff-annotated` under `er_dir` when their content
-///
 /// changed since the last command, and return the SHA-256 of `raw` — the
 /// `diff_hash` the agent must record (contract: SHA-256 of `diff-tmp`).
+///
+/// Both markers record the **raw** hash they were derived from, not the hash
+/// of the file they name. `diff-annotated` is a pure function of `raw`, so one
+/// hash then proves both artifacts current and the whole preparation can be
+/// skipped — previously every call rebuilt the annotated string and hashed it
+/// again, only to discard both when the write turned out to be unnecessary.
 ///
 /// Content files are written via tmp+rename (atomic): with the hash pinned
 /// into the prompt, a torn read would silently mismatch the pinned hash
@@ -35,22 +40,42 @@ pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> 
     let _guard = ARTIFACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Path::new(er_dir);
     let hash = crate::ai::compute_diff_hash(raw);
+
+    if artifacts_current(dir, &hash) {
+        return Ok(hash);
+    }
+
     if content_changed(dir, ".diff-tmp.sha256", &hash, "diff-tmp") {
         atomic_write(dir, "diff-tmp", raw)?;
         let _ = std::fs::write(dir.join(".diff-tmp.sha256"), &hash);
     }
+
+    #[cfg(test)]
+    crate::agent_timing::record_annotate_pass();
     let annotated = annotate_diff_raw(raw);
-    let annotated_hash = crate::ai::compute_diff_hash(&annotated);
-    if content_changed(
-        dir,
-        ".diff-annotated.sha256",
-        &annotated_hash,
-        "diff-annotated",
-    ) {
+    if content_changed(dir, ".diff-annotated.sha256", &hash, "diff-annotated") {
         atomic_write(dir, "diff-annotated", &annotated)?;
-        let _ = std::fs::write(dir.join(".diff-annotated.sha256"), &annotated_hash);
+        let _ = std::fs::write(dir.join(".diff-annotated.sha256"), &hash);
     }
     Ok(hash)
+}
+
+/// Whether both artifacts on disk were already derived from `hash`.
+///
+/// The content files must exist as well as the markers: a surviving marker
+/// must never suppress a rewrite for a missing content file
+/// (review-fix-loop F6).
+fn artifacts_current(dir: &Path, hash: &str) -> bool {
+    dir.join("diff-tmp").exists()
+        && dir.join("diff-annotated").exists()
+        && marker_matches(dir, ".diff-tmp.sha256", hash)
+        && marker_matches(dir, ".diff-annotated.sha256", hash)
+}
+
+fn marker_matches(dir: &Path, marker: &str, hash: &str) -> bool {
+    std::fs::read_to_string(dir.join(marker))
+        .map(|prev| prev.trim() == hash)
+        .unwrap_or(false)
 }
 
 /// tmp+rename write (same pattern as the durable sidecar writers).
@@ -241,5 +266,72 @@ mod tests {
             "[h1 L-11] -fn nine() {}\n",
         );
         assert_eq!(annotate_diff_raw(diff), expected);
+    }
+
+    #[test]
+    fn unchanged_diff_skips_the_annotation_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+
+        ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        let after_first = crate::agent_timing::annotate_passes();
+
+        ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        assert_eq!(
+            crate::agent_timing::annotate_passes(),
+            after_first,
+            "repeat calls on an unchanged diff must not rebuild the annotation"
+        );
+
+        let changed = FIXTURE_DIFF.replace("fn bar() {}", "fn bar2() {}");
+        ensure_diff_artifacts(er_dir, &changed).unwrap();
+        assert_eq!(
+            crate::agent_timing::annotate_passes(),
+            after_first + 1,
+            "a changed diff must be re-annotated"
+        );
+    }
+
+    #[test]
+    fn artifacts_current_needs_both_markers_and_both_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let hash = ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        let path = Path::new(er_dir);
+
+        assert!(
+            artifacts_current(path, &hash),
+            "freshly written artifacts are current"
+        );
+        assert!(
+            !artifacts_current(path, "0000"),
+            "a different raw is not current"
+        );
+
+        // A marker that outlives its content file must not suppress the rewrite.
+        std::fs::remove_file(path.join("diff-annotated")).unwrap();
+        assert!(
+            !artifacts_current(path, &hash),
+            "missing content file is not current"
+        );
+        ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        assert!(
+            path.join("diff-annotated").exists(),
+            "the missing file is rebuilt"
+        );
+
+        // Markers written by an older build recorded the annotated hash, not
+        // the raw one. Those must read as stale exactly once, not be trusted.
+        std::fs::write(path.join(".diff-annotated.sha256"), "legacy-annotated-hash").unwrap();
+        assert!(
+            !artifacts_current(path, &hash),
+            "a pre-upgrade marker is not current"
+        );
+        ensure_diff_artifacts(er_dir, FIXTURE_DIFF).unwrap();
+        assert!(
+            artifacts_current(path, &hash),
+            "rewriting restores the new marker semantics"
+        );
     }
 }

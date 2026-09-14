@@ -107,49 +107,62 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
 }
 
 #[tauri::command]
-pub fn apply_config_patch(
+pub async fn apply_config_patch(
     patch: ConfigPatch,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let repo_root = app.tab().repo_root.clone();
-    let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    apply_config_side_effects(&mut app, watched_changed);
-    // Only resync session selection when AI Hub defaults actually changed —
-    // theme/display patches must not wipe a palette pick.
-    if patch.key.starts_with("ai_hub.") {
-        app.sync_ai_selection_from_defaults();
-    }
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
-    let providers = list_providers_inner(&app);
-    let default_selection = app
-        .config
-        .ai_hub
-        .resolve_default_selection(&app.config.agent);
-    Ok(GetConfigHubResponse {
-        settings,
-        providers,
-        active_effort: default_selection.effort,
-        warnings: Vec::new(),
-        family_options: family_options(),
+    let state = state.inner().clone();
+    // Off the main thread: this writes the config to disk, runs the side
+    // effects (watched-file re-discovery), and builds the whole settings
+    // snapshot, all under the App lock.
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let repo_root = app.tab().repo_root.clone();
+        let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        apply_config_side_effects(&mut app, watched_changed);
+        // Only resync session selection when AI Hub defaults actually changed —
+        // theme/display patches must not wipe a palette pick.
+        if patch.key.starts_with("ai_hub.") {
+            app.sync_ai_selection_from_defaults();
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let settings = desktop_settings_snapshot(&app.config, &repo_root);
+        let providers = list_providers_inner(&app);
+        let default_selection = app
+            .config
+            .ai_hub
+            .resolve_default_selection(&app.config.agent);
+        Ok(GetConfigHubResponse {
+            settings,
+            providers,
+            active_effort: default_selection.effort,
+            warnings: Vec::new(),
+            family_options: family_options(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    drop(app);
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.notify("Saved to global config");
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn save_config_global_cmd(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Off the main thread: writes the config file, then builds a full
+    // snapshot, both under the App lock.
+    crate::commands::run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        drop(app);
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.notify("Saved to global config");
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Uninstall ───────────────────────────────────────────────────────────────
@@ -420,174 +433,191 @@ pub async fn refresh_ai_models(
 }
 
 #[tauri::command]
-pub fn upsert_ai_provider(
+pub async fn upsert_ai_provider(
     provider: ProviderUpsertDto,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    use er_engine::config::{
-        save_config, split_shell_args, validate_provider_config, AiProviderConfig,
-    };
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        use er_engine::config::{
+            save_config, split_shell_args, validate_provider_config, AiProviderConfig,
+        };
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let id = provider.id.trim().to_string();
-    let original_id = provider
-        .original_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && *s != id.as_str())
-        .map(|s| s.to_string());
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let id = provider.id.trim().to_string();
+        let original_id = provider
+            .original_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != id.as_str())
+            .map(|s| s.to_string());
 
-    let mut existing_models = Vec::new();
-    let mut existing_tombstones = Vec::new();
-    let source_key = original_id.as_deref().unwrap_or(id.as_str());
-    if let Some(prev) = app.config.ai_hub.providers.get(source_key) {
-        existing_models = prev.models.clone();
-        existing_tombstones = prev.removed_catalog_models.clone();
-    }
-
-    let cfg = AiProviderConfig {
-        label: provider.label.filter(|s| !s.trim().is_empty()),
-        command: provider.command,
-        args: split_shell_args(&provider.args),
-        family: provider.family.filter(|s| !s.trim().is_empty()),
-        models_command: provider
-            .models_command
-            .map(|s| split_shell_args(&s))
-            .unwrap_or_default(),
-        models: existing_models,
-        removed_catalog_models: existing_tombstones,
-    };
-    let warnings = validate_provider_config(&id, &cfg)?;
-
-    let renamed_from = original_id.clone();
-    if let Some(old) = original_id {
-        app.config.ai_hub.providers.remove(&old);
-        if app.config.ai_hub.default_provider.as_deref() == Some(old.as_str()) {
-            app.config.ai_hub.default_provider = Some(id.clone());
+        let mut existing_models = Vec::new();
+        let mut existing_tombstones = Vec::new();
+        let source_key = original_id.as_deref().unwrap_or(id.as_str());
+        if let Some(prev) = app.config.ai_hub.providers.get(source_key) {
+            existing_models = prev.models.clone();
+            existing_tombstones = prev.removed_catalog_models.clone();
         }
-    }
-    app.config.ai_hub.providers.insert(id.clone(), cfg);
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str()) || renamed_from.is_some()
-    {
-        app.sync_ai_selection_from_defaults();
-    }
-    bump_revision(&state);
-    Ok(hub_response_with_warnings(&app, warnings))
+
+        let cfg = AiProviderConfig {
+            label: provider.label.filter(|s| !s.trim().is_empty()),
+            command: provider.command,
+            args: split_shell_args(&provider.args),
+            family: provider.family.filter(|s| !s.trim().is_empty()),
+            models_command: provider
+                .models_command
+                .map(|s| split_shell_args(&s))
+                .unwrap_or_default(),
+            models: existing_models,
+            removed_catalog_models: existing_tombstones,
+        };
+        let warnings = validate_provider_config(&id, &cfg)?;
+
+        let renamed_from = original_id.clone();
+        if let Some(old) = original_id {
+            app.config.ai_hub.providers.remove(&old);
+            if app.config.ai_hub.default_provider.as_deref() == Some(old.as_str()) {
+                app.config.ai_hub.default_provider = Some(id.clone());
+            }
+        }
+        app.config.ai_hub.providers.insert(id.clone(), cfg);
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str())
+            || renamed_from.is_some()
+        {
+            app.sync_ai_selection_from_defaults();
+        }
+        bump_revision(&state);
+        Ok(hub_response_with_warnings(&app, warnings))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_ai_provider(
+pub async fn delete_ai_provider(
     provider_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    use er_engine::config::{remove_ai_provider, save_config};
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        use er_engine::config::{remove_ai_provider, save_config};
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let id = provider_id.trim().to_string();
-    if id.is_empty() {
-        return Err("provider_id must not be empty".into());
-    }
-    remove_ai_provider(&mut app.config.ai_hub, &id);
-    let agent = app.config.agent.clone();
-    if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str()) {
-        let selection = app.config.ai_hub.resolve_default_selection(&agent);
-        app.config.ai_hub.default_provider = selection.provider_id;
-        app.config.ai_hub.default_model = selection.model_id;
-    }
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    app.sync_ai_selection_from_defaults();
-    bump_revision(&state);
-    Ok(hub_response(&app))
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let id = provider_id.trim().to_string();
+        if id.is_empty() {
+            return Err("provider_id must not be empty".into());
+        }
+        remove_ai_provider(&mut app.config.ai_hub, &id);
+        let agent = app.config.agent.clone();
+        if app.config.ai_hub.default_provider.as_deref() == Some(id.as_str()) {
+            let selection = app.config.ai_hub.resolve_default_selection(&agent);
+            app.config.ai_hub.default_provider = selection.provider_id;
+            app.config.ai_hub.default_model = selection.model_id;
+        }
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        app.sync_ai_selection_from_defaults();
+        bump_revision(&state);
+        Ok(hub_response(&app))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn upsert_ai_model(
+pub async fn upsert_ai_model(
     provider_id: String,
     model: ModelUpsertDto,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    use er_engine::config::{
-        save_config, split_shell_args, validate_provider_config, AiModelConfig,
-    };
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        use er_engine::config::{
+            save_config, split_shell_args, validate_provider_config, AiModelConfig,
+        };
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let pid = provider_id.trim().to_string();
-    let provider = app
-        .config
-        .ai_hub
-        .providers
-        .get_mut(&pid)
-        .ok_or_else(|| format!("unknown provider: {pid}"))?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let pid = provider_id.trim().to_string();
+        let provider = app
+            .config
+            .ai_hub
+            .providers
+            .get_mut(&pid)
+            .ok_or_else(|| format!("unknown provider: {pid}"))?;
 
-    let new_id = model.id.trim().to_string();
-    if new_id.is_empty() {
-        return Err("model id must not be empty".into());
-    }
-    let original_id = model
-        .original_id
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty() && *s != new_id.as_str())
-        .map(|s| s.to_string());
-
-    if let Some(old) = &original_id {
-        provider.models.retain(|m| m.id != *old);
-    } else {
-        provider.models.retain(|m| m.id != new_id);
-    }
-
-    provider.models.push(AiModelConfig {
-        id: new_id.clone(),
-        label: model.label.filter(|s| !s.trim().is_empty()),
-        description: model.description.filter(|s| !s.trim().is_empty()),
-        args: split_shell_args(&model.args),
-        cost_per_1k_in: model.cost_per_1k_in,
-        cost_per_1k_out: model.cost_per_1k_out,
-        avg_latency_ms: model.avg_latency_ms,
-        effort_levels: model.effort_levels,
-        discovered: false,
-    });
-
-    let warnings_provider = provider.clone();
-    let warnings = validate_provider_config(&pid, &warnings_provider)?;
-
-    if let Some(old) = original_id {
-        if app.config.ai_hub.default_model.as_deref() == Some(old.as_str())
-            && app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
-        {
-            app.config.ai_hub.default_model = Some(new_id);
+        let new_id = model.id.trim().to_string();
+        if new_id.is_empty() {
+            return Err("model id must not be empty".into());
         }
-    }
+        let original_id = model
+            .original_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && *s != new_id.as_str())
+            .map(|s| s.to_string());
 
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    bump_revision(&state);
-    Ok(hub_response_with_warnings(&app, warnings))
+        if let Some(old) = &original_id {
+            provider.models.retain(|m| m.id != *old);
+        } else {
+            provider.models.retain(|m| m.id != new_id);
+        }
+
+        provider.models.push(AiModelConfig {
+            id: new_id.clone(),
+            label: model.label.filter(|s| !s.trim().is_empty()),
+            description: model.description.filter(|s| !s.trim().is_empty()),
+            args: split_shell_args(&model.args),
+            cost_per_1k_in: model.cost_per_1k_in,
+            cost_per_1k_out: model.cost_per_1k_out,
+            avg_latency_ms: model.avg_latency_ms,
+            effort_levels: model.effort_levels,
+            discovered: false,
+        });
+
+        let warnings_provider = provider.clone();
+        let warnings = validate_provider_config(&pid, &warnings_provider)?;
+
+        if let Some(old) = original_id {
+            if app.config.ai_hub.default_model.as_deref() == Some(old.as_str())
+                && app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
+            {
+                app.config.ai_hub.default_model = Some(new_id);
+            }
+        }
+
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        bump_revision(&state);
+        Ok(hub_response_with_warnings(&app, warnings))
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn delete_ai_model(
+pub async fn delete_ai_model(
     provider_id: String,
     model_id: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    use er_engine::config::{remove_ai_model, save_config};
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        use er_engine::config::{remove_ai_model, save_config};
 
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let pid = provider_id.trim().to_string();
-    let mid = model_id.trim().to_string();
-    remove_ai_model(&mut app.config.ai_hub, &pid, &mid)?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let pid = provider_id.trim().to_string();
+        let mid = model_id.trim().to_string();
+        remove_ai_model(&mut app.config.ai_hub, &pid, &mid)?;
 
-    if app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
-        && app.config.ai_hub.default_model.as_deref() == Some(mid.as_str())
-    {
-        let agent = app.config.agent.clone();
-        let selection = app.config.ai_hub.resolve_default_selection(&agent);
-        app.config.ai_hub.default_model = selection.model_id;
-    }
+        if app.config.ai_hub.default_provider.as_deref() == Some(pid.as_str())
+            && app.config.ai_hub.default_model.as_deref() == Some(mid.as_str())
+        {
+            let agent = app.config.agent.clone();
+            let selection = app.config.ai_hub.resolve_default_selection(&agent);
+            app.config.ai_hub.default_model = selection.model_id;
+        }
 
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    app.sync_ai_selection_from_defaults();
-    bump_revision(&state);
-    Ok(hub_response(&app))
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        app.sync_ai_selection_from_defaults();
+        bump_revision(&state);
+        Ok(hub_response(&app))
+    })
+    .await
 }

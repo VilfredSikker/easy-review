@@ -77,8 +77,8 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
     status_bar::render_bottom_bar(f, outer[2], app);
 
     // Watch notification overlay
-    if let Some(ref msg) = app.watch_message {
-        status_bar::render_watch_notification(f, f.area(), msg);
+    if let Some(ref notification) = app.notification {
+        status_bar::render_watch_notification(f, f.area(), &notification.message);
     }
 
     // Popup overlay (worktree picker, directory browser, config hub)

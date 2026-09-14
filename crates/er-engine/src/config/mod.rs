@@ -176,10 +176,64 @@ pub struct AiHubConfig {
     /// 0 means "use the default".
     #[serde(default)]
     pub max_concurrent_reviews: usize,
+    /// Wall-clock limit for a single agent process, in seconds. A run past it
+    /// is killed and reported as timed out rather than held open forever.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub agent_timeout_secs: u64,
+    /// Agent processes arena reviewer rounds may run at once. Separate from
+    /// `max_concurrent_reviews` so an arena run and a background review cannot
+    /// starve each other out of a shared pool. 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_arena_reviews: usize,
+    /// Hard ceiling on agent processes across *both* workloads.
+    ///
+    /// The per-workload caps say how big each may get; this says how big they
+    /// may get together, so raising one cannot quietly double the load. 0
+    /// means "use the default".
+    #[serde(default)]
+    pub max_concurrent_agents: usize,
 }
 
 /// Default cap on concurrently running agent processes.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+/// Accepted range for `ai_hub.max_concurrent_reviews`.
+///
+/// One definition, because the picker and the setter behind it disagreed:
+/// the settings UI offered 1-6 while the write path accepted 1-16, so a
+/// value set elsewhere was silently kept but not selectable, and a value
+/// chosen from the picker could never reach the top of its own range.
+pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<usize> = 1..=16;
+
+/// Default cap on concurrent arena reviewer rounds.
+///
+/// Matches the background default: an arena round is a different shape of
+/// work, not a smaller one, and the shared ceiling is what keeps the pair
+/// bounded rather than a lower per-workload number.
+pub const DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS: usize = 3;
+
+/// Default hard ceiling across both workloads.
+///
+/// The sum of the two defaults, so each workload can reach its own cap when
+/// the other is idle, and neither can exceed it when both are busy.
+pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize =
+    DEFAULT_MAX_CONCURRENT_REVIEWS + DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS;
+
+/// Default wall-clock limit for one agent process.
+///
+/// Deliberately generous, because the asymmetry is not close: cutting off a
+/// review that was still working destroys work the user waited for and cannot
+/// recover, while letting a hung one sit a little longer costs a slot.
+///
+/// The number is a judgement, not a measurement. Phase 0 timed ~60 s of
+/// provider latency, but for `claude -p "Reply with exactly the word ok and
+/// nothing else."` — a trivial prompt — so that is a floor on the round trip,
+/// not what a review costs. A real review reads files and thinks, and nobody
+/// has timed one. Fifteen minutes is chosen to sit well clear of that
+/// unknown rather than because it is known to be safe. Lower it if you know
+/// your providers and diffs finish faster than this.
+pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 900;
 
 /// A validated provider/model/effort choice used by ordinary AI actions.
 ///
@@ -200,6 +254,43 @@ impl AiHubConfig {
         } else {
             self.max_concurrent_reviews
         }
+    }
+
+    /// Effective arena reviewer cap — configured value, or the default.
+    pub const fn effective_max_concurrent_arena_reviews(&self) -> usize {
+        if self.max_concurrent_arena_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS
+        } else {
+            self.max_concurrent_arena_reviews
+        }
+    }
+
+    /// Effective ceiling across both workloads.
+    ///
+    /// Floored at each workload's own cap: a ceiling below a cap would make
+    /// that cap unreachable, which reads as a bug rather than as a limit.
+    pub fn effective_max_concurrent_agents(&self) -> usize {
+        let configured = if self.max_concurrent_agents == 0 {
+            DEFAULT_MAX_CONCURRENT_AGENTS
+        } else {
+            self.max_concurrent_agents
+        };
+        configured
+            .max(self.effective_max_concurrent_reviews())
+            .max(self.effective_max_concurrent_arena_reviews())
+    }
+
+    /// Effective per-agent deadline — configured value, or the default when
+    /// unset. Zero resolves to the default rather than to "no limit": a run
+    /// with no deadline is the failure this setting exists to prevent, so the
+    /// off switch is a very large number, not a zero someone set by accident.
+    pub const fn effective_agent_timeout(&self) -> std::time::Duration {
+        let secs = if self.agent_timeout_secs == 0 {
+            DEFAULT_AGENT_TIMEOUT_SECS
+        } else {
+            self.agent_timeout_secs
+        };
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -1948,6 +2039,33 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── agent timeout ──
+
+    #[test]
+    fn an_unset_agent_timeout_takes_the_default_rather_than_no_limit() {
+        // Zero is the serde default for a field nobody set. Reading it as "no
+        // limit" would disable the protection for exactly the users who never
+        // touched the setting, which is most of them.
+        let hub = AiHubConfig::default();
+        assert_eq!(hub.agent_timeout_secs, 0);
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn a_configured_agent_timeout_wins() {
+        let hub = AiHubConfig {
+            agent_timeout_secs: 120,
+            ..Default::default()
+        };
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(120)
+        );
+    }
 
     // ── ai_hub supplementation ──
 
