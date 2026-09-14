@@ -37,8 +37,9 @@
       <em>stale</em>. Re-run the relevant action from the AI Hub.</li>
       <li><strong>Check the layer.</strong> In the terminal, press <kbd>A</kbd> to make sure the AI-findings layer is
       visible.</li>
-      <li><strong>Try fixtures.</strong> Run <code>scripts/generate-test-fixtures.sh</code> in your repo to confirm the
-      overlay renders at all.</li>
+      <li><strong>Try fixtures.</strong> Run <code>scripts/generate-test-fixtures.sh</code> in your repo, then open
+      <code>er</code> with <code>ER_REPO_LOCAL=1</code> — the script writes a repo <code>.er/</code>, which is only read
+      in that mode. That confirms the overlay renders at all.</li>
     </ul>
 
     <h3>GitHub features are missing or failing</h3>
@@ -50,16 +51,16 @@
 
     <h3>The diff is not updating</h3>
     <p>
-      Watch mode should refresh on saves, staging, and commits. Confirm the <span style="color:var(--green)">● WATCH</span>
-      indicator is on (toggle with <kbd>w</kbd>), and press <kbd>R</kbd> to force a manual refresh. Watch uses a ~500ms
-      debounce, so a burst of changes lands as one update.
+      Watch mode should refresh on saves, staging, and commits. Confirm the
+      <span style="color:var(--green)">● WATCHING</span> indicator is on (toggle with <kbd>w</kbd>), and press
+      <kbd>R</kbd> to force a manual refresh. Watch uses a ~500ms debounce, so a burst of changes lands as one update.
     </p>
 
     <h3>A huge file is collapsed and I can't see it</h3>
     <p>
-      Lock files, generated code, and files over ~500 lines are <strong>auto-compacted</strong> — shown as a single
-      collapsed entry to keep things fast. Press <kbd>Enter</kbd> on it to expand on demand. See
-      <a href="diff-modes.html#performance-with-large-diffs">large-diff performance</a>.
+      Lock files, generated code, and files whose diff runs past ~2,000 lines are <strong>auto-compacted</strong> — shown
+      as a single collapsed entry to keep things fast. Press <kbd>Enter</kbd> on it to expand on demand. See
+      <a href="diff-modes.html">large-diff performance</a>.
     </p>
 
     <h3><code>er</code> exits immediately or renders nothing</h3>
@@ -83,15 +84,18 @@
 
     <h3>Does <code>er</code> run AI or send my code anywhere?</h3>
     <p>
-      No. <code>er</code> does not run AI models and has no backend, telemetry, or analytics. It shells out to your local
-      <code>git</code> (and optionally <code>gh</code>) and reads artifacts that AI tools <em>you</em> run write to disk.
-      You bring your own AI tool and credentials, and you are the customer of those providers.
+      Not by itself. <code>er</code> bundles no model and has no backend, telemetry, or analytics. It shells out to your
+      local <code>git</code> (and optionally <code>gh</code>) and reads artifacts from disk. When you run an AI action —
+      from the AI Hub, a finding's AI action, or a background review — it launches the agent CLI <em>you</em> configured, and
+      that tool is the one that talks to a provider, under your credentials. You bring your own AI tool, and you are the
+      customer of that provider.
     </p>
 
     <h3>Which AI tools work with it?</h3>
     <p>
-      Any tool you can drive from the command line. The included skills target Claude Code, and the AI Hub config ships
-      presets for Claude, Codex, and Cursor. See <a href="configuration.html#ai-hub">AI Hub configuration</a>.
+      Any tool you can drive from the command line. The AI Hub config ships presets for Claude, Codex, Cursor, and
+      OpenCode, and the bundled skills install into Claude Code, Cursor, and Codex. See
+      <a href="configuration.html#ai-hub">AI Hub configuration</a>.
     </p>
 
     <h3>Do I have to use AI at all?</h3>
@@ -122,10 +126,12 @@
 
     <h3>Is the desktop app released?</h3>
     <p>
-      The desktop app is available by building from source with <code>./scripts/tauri-dev.sh</code> or
-      <code>./scripts/tauri-build.sh</code>. A signed direct-download <code>.dmg</code> is coming soon; until then,
-      see <a href="installation.html#install-from-source">Installation → Install from source</a>. The
-      <code>er</code> terminal binary ships as a prebuilt release on the
+      Yes. Releases carry a prebuilt, signed and notarized <code>.dmg</code> for Apple Silicon Macs — a release without
+      one means the signing step failed, so fall back to the source build. Intel Macs, Linux, and Windows are not
+      packaged: build those from source with <code>./scripts/tauri-dev.sh</code> for development or
+      <code>./scripts/tauri-build.sh</code> for a release bundle. See
+      <a href="installation.html#desktop-app">Installation → Desktop app</a>. The <code>er</code> terminal binary ships as
+      a prebuilt release on the
       <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>.
     </p>
 

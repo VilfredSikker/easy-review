@@ -23,7 +23,7 @@
         <div class="chrome">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
           <span class="ttl">er — easy-review</span>
-          <span class="right c-green">● WATCH</span>
+          <span class="right c-green">● WATCHING</span>
         </div>
         <div class="erbar">
           <div class="modes">
@@ -31,7 +31,8 @@
             <span class="mode on">1 Branch</span>
             <span class="mode">2 Unstaged</span>
             <span class="mode">3 Staged</span>
-            <span class="mode">4 History</span>
+            <span class="mode">4 PR Diff</span>
+            <span class="mode">5 History</span>
             <span class="c-muted">·</span><span class="c-blue">PR #42</span>
             <span class="c-green">✓3</span><span class="c-red">✗1</span>
           </div>
@@ -71,7 +72,7 @@
               <span><b>n/N</b> hunks</span><span class="sep">·</span>
               <span><b>c</b> comment</span><span class="sep">·</span>
               <span><b>q</b> question</span><span class="sep">·</span>
-              <span><b>v</b> AI view</span><span class="sep">·</span>
+              <span><b>A</b> AI toggle</span><span class="sep">·</span>
               <span><b>U</b> next unreviewed</span>
             </div>
           </div>
@@ -118,7 +119,7 @@
       <a class="card" href="tui.html">
         <div class="card-eyebrow">Terminal</div>
         <h3>The <code>er</code> TUI</h3>
-        <p>A single static binary. Keyboard-driven, instant startup, runs anywhere a terminal does — perfect next to Claude Code in a split pane.</p>
+        <p>A single, self-contained binary. Keyboard-driven, instant startup, runs anywhere a terminal does — perfect next to Claude Code in a split pane.</p>
       </a>
       <a class="card" href="desktop.html">
         <div class="card-eyebrow">Desktop</div>
@@ -129,7 +130,7 @@
 
     <h2>What you can do with it</h2>
     <ul>
-      <li><strong>Read diffs in six modes</strong> — branch, unstaged, staged, commit history, merge conflicts, and hidden/ignored files.</li>
+      <li><strong>Read diffs in six modes</strong> — branch, unstaged, staged, commit history, merge conflicts, and hidden/ignored files, plus a dedicated PR diff view and an AI-generated guided tour.</li>
       <li><strong>Follow changes live</strong> — watch mode refreshes the diff as files are saved, staged, and committed.</li>
       <li><strong>Track your progress</strong> — mark files reviewed, filter to what is left, jump to the next unreviewed file.</li>
       <li><strong>Leave three kinds of notes</strong> — private questions for yourself or your AI, private notes for agent hand-off, and GitHub comments that sync to a pull request.</li>

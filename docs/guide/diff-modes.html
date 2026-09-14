@@ -29,20 +29,20 @@
             <span class="mode on">1 Branch</span>
             <span class="mode">2 Unstaged</span>
             <span class="mode">3 Staged</span>
-            <span class="mode">4 History</span>
-            <span class="mode">5 Conflicts</span>
-            <span class="mode">6 Hidden</span>
-            <span class="c-muted">·</span><span class="c-blue">PR #42</span>
+            <span class="mode">4 PR Diff</span>
+            <span class="mode">5 History</span>
+            <span class="mode">6 Conflicts</span>
+            <span class="mode">7 Hidden</span>
           </div>
-          <div class="stat"><span class="c-green">● WATCH</span></div>
+          <div class="stat"><span class="c-green">● WATCHING</span></div>
         </div>
         <div class="bottom">
-          <span><b>1</b>–<b>6</b> switch mode</span><span class="sep">·</span>
+          <span><b>1</b>–<b>7</b> switch mode</span><span class="sep">·</span>
           <span><b>m</b> sort by recency</span><span class="sep">·</span>
           <span class="c-muted">enabled modes are numbered in order — disabling one closes the gap</span>
         </div>
       </div>
-      <figcaption>The mode bar lives along the top. The active mode (<strong>1 Branch</strong>) is highlighted; a detected pull request appears to the right. Press a number to switch instantly.</figcaption>
+      <figcaption>The mode bar lives along the top. The active mode (<strong>1 Branch</strong>) is highlighted; a tab that knows its pull request gets a <strong>PR Diff</strong> tab of its own, here at 4. Press a number to switch instantly.</figcaption>
     </figure>
 
     <h2>The six modes at a glance</h2>
@@ -60,7 +60,8 @@
     <div class="callout note">
       <span class="ico">◆</span>
       <div><p>Tab numbers are assigned dynamically to the modes that are <em>enabled</em>. If you disable a mode in
-      <a href="configuration.html">configuration</a>, the remaining modes renumber so there are no gaps.</p></div>
+      <a href="configuration.html">configuration</a>, the remaining modes renumber so there are no gaps — and a tab that
+      knows its PR number, or has a guided tour, adds a numbered tab of its own.</p></div>
     </div>
 
     <h2>Branch <span class="pill both">both</span></h2>
@@ -80,8 +81,9 @@
     <p>
       What is in the index and would go into your next commit. From the terminal you can <strong>stage or unstage</strong>
       the current file with <kbd>s</kbd>, and in staged mode you can commit and push without leaving <code>er</code>
-      (<kbd>Ctrl</kbd>+<kbd>P</kbd>). After you commit, <code>er</code> automatically switches to a view of exactly what
-      you just committed (<code>git diff HEAD~1 HEAD</code>) so you can confirm it before moving on.
+      (<kbd>c</kbd> writes the commit, <kbd>Ctrl</kbd>+<kbd>P</kbd> pushes). After you commit, <code>er</code>
+      automatically switches to a view of exactly what you just committed (<code>git diff HEAD~1 HEAD</code>) so you can
+      confirm it before moving on.
     </p>
 
     <h2>History <span class="pill both">both</span></h2>
@@ -107,19 +109,22 @@
 
     <h2>Pull request mode <span class="pill both">both</span></h2>
     <p>
-      Not a number key — you enter it by opening a PR. From the terminal:
+      You enter it by opening a PR. From the terminal:
     </p>
     <pre><code>er --pr 42
 er https://github.com/owner/repo/pull/42</code></pre>
     <p>
-      In PR mode the right-hand panel shows CI checks, reviewer decisions, and labels, and comment sync targets that
-      pull request. The desktop app has a “PR Diff” toggle and a paste-a-URL modal. PR review can be done against remote
-      refs without checking out the branch. See <a href="github.html">GitHub &amp; Pull Requests</a>.
+      In PR mode the right-hand panel shows CI checks and reviewer decisions, and comment sync targets that
+      pull request. The desktop app's PR card also shows labels; the terminal panel does not. In the terminal the PR diff is one of the numbered tabs too: a tab that knows its PR number carries
+      a <strong>PR Diff</strong> tab — after Staged when there is a working tree to review, and on its own when there is
+      not. The desktop app has a “PR Diff” toggle and a paste-a-URL modal. PR review can be done against remote refs
+      without checking out the branch. See <a href="github.html">GitHub &amp; Pull Requests</a>.
     </p>
 
     <h2>Guided tour <span class="pill both">both</span></h2>
     <p>
-      When a guided tour exists for the branch (generated in the desktop app — see
+      When a guided tour exists for the branch (generated from the AI Hub in either app — in the terminal press
+      <kbd>a</kbd> and pick Generate guided tour; see
       <a href="skills.html">AI Hub Actions → Generate guided tour</a>), a <strong>Tour</strong> tab appears next to
       the working-tree modes. It presents the same branch diff reordered and grouped into narrative
       <em>pillars</em>, so you can walk the change story-first. In the terminal, <kbd>k</kbd>/<kbd>j</kbd> move
@@ -136,11 +141,11 @@ er https://github.com/owner/repo/pull/42</code></pre>
     <h2>Performance with large diffs</h2>
     <p><code>er</code> is built to stay fast even on enormous diffs. Three mechanisms do the heavy lifting:</p>
     <ul>
-      <li><strong>Auto-compaction</strong> — lock files, generated code, minified assets, and files over ~500 lines are
-      compacted automatically: their hunks are cleared from memory and shown as a single collapsed entry. Press
-      <kbd>Enter</kbd> to expand one on demand.</li>
-      <li><strong>Two-phase lazy parsing</strong> — diffs above ~5,000 lines get a header-only scan for the file list,
-      and individual files are parsed only when you navigate to them.</li>
+      <li><strong>Auto-compaction</strong> — lock files, generated code, minified assets, and files whose diff runs
+      past ~2,000 lines are compacted automatically: their hunks are cleared from memory and shown as a single
+      collapsed entry. Press <kbd>Enter</kbd> to expand one on demand.</li>
+      <li><strong>Two-phase lazy parsing</strong> — diffs above roughly 200&nbsp;KB get a header-only scan for the file
+      list, and individual files are parsed only when you navigate to them.</li>
       <li><strong>Viewport rendering</strong> — only the rows visible on screen (plus a small buffer) are ever built, so
       a 5,000-line file renders like a 60-line one.</li>
     </ul>

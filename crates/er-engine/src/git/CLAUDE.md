@@ -1,49 +1,32 @@
-# git/ — Git Operations
+# git/ — git subprocess and diff parsing
 
-Pure diff parsing + shelling out to git. No application state, no UI.
+Everything that spawns `git` or reads `git diff` output. No application state,
+no UI: this module returns data and the caller decides what it means.
 
-## Files
+## Boundaries
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Re-exports public types and functions |
-| `diff.rs` | `parse_diff()` — unified diff text to structured data; header-only lazy scan; compaction |
-| `status.rs` | All git commands (diff, staging, branches, worktrees, commit log, watched files) |
+- Git is a subprocess, never a linked library. No `git2`/`gix` dependency, and
+  don't add one. `git`'s behaviour is the spec, so a disagreement between `er`
+  and `git` is a bug in `er`. `docs/adr/0001-shell-out-to-git.md`.
+- Every git subprocess in the workspace is spawned from `status.rs`. A new git
+  command goes there, not in the caller.
+- `diff.rs` parses text and spawns nothing.
 
-## diff.rs — Parser
+## Parser contract
 
-**Input:** Raw unified diff text from `git diff`.
-**Output:** `Vec<DiffFile>`, each containing `Vec<DiffHunk>`, each containing `Vec<DiffLine>`.
+Input is raw unified diff text from `git diff`; output is the structured tree
+(`DiffFile` → `DiffHunk` → `DiffLine`). A line-by-line state machine over
+`diff --git`, `new file`/`deleted file`/`rename from`, `@@` headers and
+`+`/`-`/space content; it skips `index`, `---`, `+++`, mode and similarity
+lines, and `\ No newline at end of file`.
 
-Key types:
-- `DiffFile` — `{ path, status: FileStatus, hunks, adds, dels }`
-- `DiffHunk` — `{ header, old_start, old_count, new_start, new_count, lines }`
-- `DiffLine` — `{ line_type: LineType, content, old_num, new_num }`
-- `FileStatus` — `Added | Modified | Deleted | Renamed(String) | Copied(String)`
+A hunk's `lines` describe the diff, not the file: `Fold(n)` is synthetic,
+inserted by the in-process context fold, carrying no line numbers and standing
+for `n` context lines the fold removed.
 
-The parser is a line-by-line state machine. It handles: `diff --git` headers, `new file`/`deleted file`/`rename from`, `@@` hunk headers, and content lines (`+`/`-`/space). Skips `index`, `---`, `+++`, `similarity index`, mode lines, and `\ No newline at end of file`.
+Parser tests live in `diff.rs`.
 
-Has extensive unit tests covering edge cases (renames, mode-only, no-newline markers, multi-hunk files).
+## Every invocation passes `--no-color` and `--no-ext-diff`
 
-## status.rs — Git Commands
-
-All git commands pass `--no-color` and `--no-ext-diff` (prevents difftastic/delta from intercepting).
-
-Key functions:
-- `get_repo_root() / get_repo_root_in(dir)` — `git rev-parse --show-toplevel`
-- `get_current_branch_in(repo_root)` — `git rev-parse --abbrev-ref HEAD`
-- `detect_base_branch_in(repo_root)` — fallback chain: upstream tracking → main → master → develop → dev → origin/*
-- `git_diff_raw(mode, base, repo_root)` — runs `git diff` with mode-specific args
-- `git_stage_file / git_unstage_file` — `git add` / `git reset HEAD`
-- `list_worktrees(repo_root)` — parses `git worktree list --porcelain`
-- `discover_watched_files(repo_root, patterns)` — glob-matches patterns, returns `Vec<WatchedFile>` with path/mtime/size
-- `gitignored_paths(repo_root, paths)` — batched `git check-ignore -z --stdin`; returns the ignored subset of `paths` in one subprocess (for watched-file safety warnings)
-- `save_snapshot(repo_root, rel_path)` — copies file to `.er/snapshots/` for snapshot diff mode
-- `read_watched_file_content(repo_root, rel_path)` — reads file content, detects binary (null byte in first 8KB)
-- `diff_watched_file_snapshot(repo_root, rel_path)` — runs `git diff --no-index` between snapshot and current file
-
-Debug logging: when `$ER_DEBUG` is set, `git_diff_raw` writes the raw command and output to `/tmp/er_debug.log`.
-
-## Important Patterns
-
-- `detect_base_branch_impl` uses a closure for running git commands — avoids code duplication between `_in` and non-`_in` variants.
+Without them a user with difftastic or delta configured gets output the parser
+cannot read. Any new call site passes both.

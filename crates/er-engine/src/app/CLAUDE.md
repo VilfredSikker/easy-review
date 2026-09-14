@@ -1,81 +1,57 @@
-# app/ — Application State
+# app/ — application state
 
-All state lives here. No rendering, no I/O beyond git commands and file
-persistence. See `state/agent.md` for the `App` vs `TabState` vs desktop
-`AppState` ownership boundary.
+All review state, and the operations on it. No rendering, no event loop, no
+async: the front ends read this state and draw it.
 
-## Files
+## Ownership boundary
 
-| File | Purpose |
-|------|---------|
-| `mod.rs` | Re-exports `App`, `TabState`, enums |
-| `state/mod.rs` | Core types (`App`, `TabState`, `DiffMode`, `InputMode`, overlays), diff refresh, review tracking, tabs, watched files, persistence |
-| `state/navigation.rs` | File/hunk/line movement, lazy parsing, scroll state, split-diff helpers |
-| `state/comments.rs` | Comment/question lifecycle, AI review spawning, background task polling |
-| `state/github_sync.rs` | GitHub comment sync capture/fetch/apply flow |
-| `state/background.rs` | App-level background review task identity and lifecycle |
-| `state/arena.rs` | Arena (multi-reviewer) run start/promotion glue |
-| `state/preload.rs` | Background branch-scope diff preload (desktop) — one-shot consume + validation |
-| `filter.rs` | Composable filter system (parse, apply, presets) |
-| `card_ai_context.rs` / `card_ai_spawn.rs` | Per-card AI invocation context + subprocess spawn |
+`TabState` is one review target — working tree, branch view, local PR, or remote
+PR. `App` owns what has to survive a tab switch: the open tabs and active index,
+the AI provider/model selection, and app-level background review tasks that keep
+running while the user navigates elsewhere. Caches that exist only for the
+desktop (GitHub list/status caches, loading flags, terminal sessions) belong to
+`crates/er-desktop`'s `AppState`. Which side of the line a new field goes on is
+`crates/er-engine/src/app/state/agent.md`.
 
-## Key Types
-
-**`App`** — Top-level state. Owns `tabs: Vec<TabState>`, `active_tab`, `input_mode`, `should_quit`, `overlay`, config, background tasks, watch state.
-
-**`TabState`** — Per-review-target state (working tree, branch view, local PR, or remote PR). Contains:
-- Diff data: `files: Vec<DiffFile>`, `selected_file`, `current_hunk`, `current_line`
-- Mode: `DiffMode` (Branch/Unstaged/Staged/History), `base_branch`, `current_branch`
-- Scroll: `diff_scroll`, `h_scroll`
-- Review tracking: `reviewed: HashSet<String>`, `show_unreviewed_only`, `filtered_reviewed_count()`
-- Filters: `filter_expr`, `filter_rules: Vec<FilterRule>`, `filter_history`, `filter_input`
-- AI: `ai: AiState` (loaded from review sidecar files)
-- Comments: comment textarea state, `comment_file`, `comment_hunk`, `comment_line_num`
-- Watched: `watched_config`, `watched_files`, `selected_watched`, `show_watched`, `watched_not_ignored`
-- Performance: `hunk_offsets`, `mem_budget`, `lazy_mode`, `raw_diff` + byte offsets
-
-**`DiffMode`** — `Branch | Unstaged | Staged | History`. Each has a `git_mode()` string for `git_diff_raw`.
-
-**`InputMode`** — `Normal | Search | Comment | Confirm | Filter | Commit | RemoteUrl`. Determines which input handler runs in the TUI event loop.
-
-**`OverlayData`** — Modal overlays: worktree picker, directory browser, filter history, hubs, config hub.
-
-## Navigation Model
-
-- `next_file/prev_file` — moves `selected_file` index, resets hunk/line. Seamlessly transitions into/out of watched files section when `show_watched` is true.
-- `next_hunk/prev_hunk` — moves `current_hunk`, resets `current_line` to `None`
-- `next_line/prev_line` — sets `current_line: Some(i)`, crosses hunk boundaries automatically
-- `scroll_to_current_hunk()` — computes scroll offset for the current hunk position via `HunkOffsets`
-
-`current_line: Option<usize>` — `None` = hunk-level navigation (n/N keys). `Some(i)` = line-level (arrow keys). Hunk keys reset it to `None`.
-
-`selected_watched: Option<usize>` — `None` = cursor is in diff files section. `Some(idx)` = cursor is on a watched file. Navigation flows from diff files into watched files and back.
+Never widen an existing field so a second front end can read something else out
+of it. The engine compiles for both, so nothing flags it, and it breaks at
+runtime in whichever one the change was not written for.
+`docs/adr/0006-engine-state-is-the-ui-contract.md`.
 
 ## Persistence
 
-Review sidecars live under the managed storage root resolved by
-`TabState::er_dir()` (see `storage.rs`; `ER_REPO_LOCAL=1` falls back to repo
-`.er/`):
+Sidecars resolve through `crates/er-engine/src/storage.rs`: one bucket per view
+under `<storage_root>/repos/<repo>/branches/<branch>/`, with PR artifacts
+separately at `<storage_root>/repos/<repo>/prs/pr-<N>/`. `storage_root` is
+`$ER_STORAGE_ROOT`, else the platform app-data dir plus `easy-review`.
 
-| File | Format | Written by |
-|------|--------|------------|
-| `reviewed` | Plaintext, one path per line | `save_reviewed_files()` |
-| `questions.json` | JSON | `submit_comment()` (questions) |
-| `github-comments.json` | JSON | `submit_comment()` (GitHub comments) |
-| `checklist.json` | JSON (`ErChecklist`) | `review_toggle_checklist()` |
-| `snapshots/` | Raw file copies | `update_watched_snapshot()` |
+| Sidecar | Resolves to |
+|---|---|
+| `reviewed`, `questions.json`, `notes.json`, `checklist.json`, `snapshots/` | the active view bucket |
+| `github-comments.json` | the PR bucket, whatever view is active |
 
-`.er-config.toml` (repo root, read-only here) configures features and watched
-files. `reviewed` is deleted when empty. Comments are marked stale per-comment
-when the diff changes.
+Never build one of these paths by hand. `reviewed` is deleted rather than emptied
+when nothing is reviewed. Scoping exceptions and why they exist:
+`docs/adr/0003-managed-review-storage.md`,
+`docs/adr/0004-per-view-artifact-scoping.md`,
+`docs/adr/0007-three-comment-stores.md`.
 
-## Important Patterns
+Config is global-only at `<storage_root>/config.toml`. `~/.config/er/config.toml`
+is a copy-once migration source and nothing else — leave it on disk. There is no
+per-repo config file; do not add one back.
+`docs/adr/0005-global-only-config.md`.
 
-- `refresh_diff()` — re-runs git diff, re-parses, recomputes `diff_hash`, reloads AI state, clamps selection indices
-- `refresh_watched_files()` — re-discovers watched files from glob patterns, verifies gitignore status
-- `reload_ai_state()` — preserves review focus/cursor across reloads
-- `check_ai_files_changed()` — compares sidecar mtimes against `last_ai_check`; triggers reload if changed
-- `notify(msg)` + `tick()` — notification auto-clears after 20 ticks (~2 seconds at 100ms poll)
-- `apply_filter_expr()` — parses filter expression into rules, updates history (MRU, deduped, max 20)
-- `filtered_reviewed_count()` — single-pass reviewed count among filtered files; returns `None` when no filter active
-- Filter rules: `Glob` (include/exclude by pattern), `Status` (added/modified/deleted/renamed), `Size` (line count threshold)
+`ER_REPO_LOCAL=1` opts into repo `.er/` for debugging. Nothing imports a repo
+`.er/` automatically.
+
+## Traps
+
+- **Switching mode can change the bucket.** `set_mode` reloads the managed root,
+  `reviewed` and the AI state when it does, and that reload must run before the
+  diff refresh and the selection restore — the restore is what clamps the cursor
+  into the new file list.
+- **`gh stack` lookups never run inline.** They shell out to GitHub, so opening
+  the Open hub only requests the lookup; a worker thread runs it and the result
+  lands on a later tick, applied only while the tab still carries the
+  `request_seq` it was requested under. A lookup that finished after the tab
+  moved, closed or was re-requested is dropped.
