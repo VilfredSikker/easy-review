@@ -107,49 +107,62 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
 }
 
 #[tauri::command]
-pub fn apply_config_patch(
+pub async fn apply_config_patch(
     patch: ConfigPatch,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<GetConfigHubResponse, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let repo_root = app.tab().repo_root.clone();
-    let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    apply_config_side_effects(&mut app, watched_changed);
-    // Only resync session selection when AI Hub defaults actually changed —
-    // theme/display patches must not wipe a palette pick.
-    if patch.key.starts_with("ai_hub.") {
-        app.sync_ai_selection_from_defaults();
-    }
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
-    let providers = list_providers_inner(&app);
-    let default_selection = app
-        .config
-        .ai_hub
-        .resolve_default_selection(&app.config.agent);
-    Ok(GetConfigHubResponse {
-        settings,
-        providers,
-        active_effort: default_selection.effort,
-        warnings: Vec::new(),
-        family_options: family_options(),
+    let state = state.inner().clone();
+    // Off the main thread: this writes the config to disk, runs the side
+    // effects (watched-file re-discovery), and builds the whole settings
+    // snapshot, all under the App lock.
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let repo_root = app.tab().repo_root.clone();
+        let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        apply_config_side_effects(&mut app, watched_changed);
+        // Only resync session selection when AI Hub defaults actually changed —
+        // theme/display patches must not wipe a palette pick.
+        if patch.key.starts_with("ai_hub.") {
+            app.sync_ai_selection_from_defaults();
+        }
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let settings = desktop_settings_snapshot(&app.config, &repo_root);
+        let providers = list_providers_inner(&app);
+        let default_selection = app
+            .config
+            .ai_hub
+            .resolve_default_selection(&app.config.agent);
+        Ok(GetConfigHubResponse {
+            settings,
+            providers,
+            active_effort: default_selection.effort,
+            warnings: Vec::new(),
+            family_options: family_options(),
+        })
     })
+    .await
 }
 
 #[tauri::command]
-pub fn save_config_global_cmd(state: State<AppState>) -> Result<AppSnapshot, String> {
-    let app = state.app.lock().map_err(|e| e.to_string())?;
-    save_config(&app.config).map_err(|e| e.to_string())?;
-    drop(app);
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    app.notify("Saved to global config");
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+pub async fn save_config_global_cmd(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Off the main thread: writes the config file, then builds a full
+    // snapshot, both under the App lock.
+    crate::commands::run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        save_config(&app.config).map_err(|e| e.to_string())?;
+        drop(app);
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.notify("Saved to global config");
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Uninstall ───────────────────────────────────────────────────────────────
