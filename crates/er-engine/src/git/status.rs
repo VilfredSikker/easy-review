@@ -933,7 +933,7 @@ pub fn git_diff_commit(hash: &str, repo_root: &str) -> Result<String> {
 
 // ── Watched Files ──
 
-/// A git-ignored file opted into visibility via .er-config.toml
+/// A git-ignored file opted into visibility via the config's `[watched]` globs
 #[derive(Debug, Clone)]
 pub struct WatchedFile {
     pub path: String,
@@ -943,7 +943,7 @@ pub struct WatchedFile {
 
 /// Join a watched-file relative path onto a root directory, rejecting paths
 /// that would escape it (absolute paths or `..` components). `rel_path` comes
-/// from user-configured glob patterns in `.er-config.toml`, so it is not
+/// from user-configured `[watched]` glob patterns, so it is not
 /// trusted to stay inside the repository.
 fn join_within(root: &str, rel_path: &str) -> Result<std::path::PathBuf> {
     use std::path::Component;

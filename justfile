@@ -231,14 +231,17 @@ crap-report:
     cargo run -p er-crap -- --lcov lcov.info --path crates/er-engine --path crates/er-tui
 
 # Mutation-test the engine on demand; stamps quality/mutants-last-run.txt (not scheduled — see docs/quality-checks.md).
+#
+# cargo-mutants exits 2 when mutants survive — the usual result, and the reason a baseline is
+# wanted at all. Two things conspire to swallow it: just stops the recipe on the first failing
+# line, and `set shell` above runs every line under `bash -eu`, which exits before `rc=$?` can
+# capture the status. Testing for failure inside an `if` condition sidesteps both — conditions
+# are exempt from `set -e`. Only 0 (all caught) and 2 (survivors) count as a completed run;
+# anything else leaves the log alone rather than claiming a baseline never produced.
 [group('quality')]
 mutants:
     @command -v cargo-mutants >/dev/null || { echo "missing cargo-mutants — install with: cargo binstall cargo-mutants"; exit 1; }
-    cargo mutants -p er-engine
-    mkdir -p quality
-    date +%F > quality/mutants-last-run.txt
-    @echo "HTML report: mutants.out/mutants.html"
-    @echo "Recorded last run in quality/mutants-last-run.txt"
+    @if cargo mutants -p er-engine; then rc=0; else rc=$?; fi; if [ $rc -eq 0 ] || [ $rc -eq 2 ]; then mkdir -p quality; date +%F > quality/mutants-last-run.txt; echo "Recorded last run in quality/mutants-last-run.txt"; else echo "Did not record a run date: cargo-mutants exited $rc (only 0 = all caught and 2 = survivors are completed runs)."; fi; echo "HTML report: mutants.out/mutants.html"; exit $rc
 
 # Show the age of the last mutation run; exit 1 when stale (default 30 days).
 [group('quality')]
