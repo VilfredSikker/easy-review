@@ -1353,12 +1353,12 @@ fn run_arbiter(
     let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
     let ceiling = config.ai_hub.effective_max_concurrent_agents();
     let Some(_arbiter_slot) =
-        crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
+        crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, cancel)
     else {
         return cancel_run(ctx, run);
     };
     let arbiter_started = std::time::Instant::now();
-    let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
+    let v = match run_provider_json(&cmd, &prompt, repo_root, cancel, children) {
         Ok(v) => v,
         Err(e) if is_cancelled_error(&e) => return cancel_run(ctx, run),
         Err(e) => return Err(e),
