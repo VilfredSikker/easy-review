@@ -557,8 +557,20 @@ fn run_round1_parallel(
     let paths = paths.clone();
     let storage_dir = paths.root.to_string_lossy().into_owned();
     let mut handles = Vec::new();
-    for reviewer in reviewers {
-        let reviewer = reviewer.clone();
+    // One thread per reviewer parked the surplus inside `acquire`, so thread
+    // count tracked the reviewer count rather than the cap. A bounded pool of
+    // workers consuming a queue keeps the thread count at the cap and lets the
+    // surplus wait as data rather than as parked stacks.
+    let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+    let worker_count = reviewers.len().min(arena_cap.max(1));
+    let queue = Arc::new(Mutex::new(
+        reviewers
+            .iter()
+            .cloned()
+            .collect::<std::collections::VecDeque<_>>(),
+    ));
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
         let config = Arc::clone(&config);
         let effort = effort.clone();
         let repo_root = repo_root.clone();
@@ -570,11 +582,20 @@ fn run_round1_parallel(
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
         let cancelled = Arc::clone(&cancelled);
-        handles.push(thread::spawn(move || {
+        // `emit` needs the registry, which cannot move into a 'static thread;
+        // its notify half can, and the file half comes from `paths`.
+        let notify_progress = Arc::clone(&registry.notify);
+        handles.push(thread::spawn(move || loop {
             if cancel.load(Ordering::SeqCst) {
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
+            // Taken one at a time: a worker holds a slot for the reviewer it
+            // is running and picks up the next when that finishes. Running out
+            // of queue is how a worker retires.
+            let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
+                return;
+            };
             // Wait for an arena slot so several runs (or runs with many
             // reviewers) can't spawn unbounded agent processes at once. The
             // arena's own cap, charged against the shared ceiling: a
@@ -601,7 +622,10 @@ fn run_round1_parallel(
                         .lock()
                         .unwrap()
                         .push((reviewer.id.clone(), e.to_string()));
-                    return;
+                    // `continue`, not `return`: this worker still has the rest
+                    // of the queue to get through. Returning here would retire
+                    // the worker and silently drop every reviewer behind it.
+                    continue;
                 }
             };
             let prompt = build_arena_round1_prompt_agent(
@@ -613,6 +637,19 @@ fn run_round1_parallel(
                 Ok(v) => match super::schema::validate_round1_output(&v) {
                     Ok(out) => {
                         let _ = save_round_output(&paths, 1, &reviewer.id, &v);
+                        // Announced here rather than after the join, so the UI
+                        // tracks the slowest reviewer instead of the batch:
+                        // every reviewer's "done" used to land in one burst
+                        // once the last one finished.
+                        let _ = append_progress_event(
+                            &paths,
+                            &ProgressEvent::ReviewerDone {
+                                reviewer_id: reviewer.id.clone(),
+                                round: 1,
+                                findings_count: out.findings.len(),
+                            },
+                        );
+                        notify_progress();
                         ok.lock().unwrap().push((reviewer.id.clone(), out));
                     }
                     Err(e) => {
@@ -702,13 +739,23 @@ fn run_round2_parallel(
     let paths = paths.clone();
     let storage_dir = paths.root.to_string_lossy().into_owned();
     let mut handles = Vec::new();
-    for reviewer in reviewers {
-        let reviewer = reviewer.clone();
+    // Same bounded pool as round 1: threads at the cap, surplus as data.
+    let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+    let worker_count = reviewers.len().min(arena_cap.max(1));
+    let queue = Arc::new(Mutex::new(
+        reviewers
+            .iter()
+            .cloned()
+            .collect::<std::collections::VecDeque<_>>(),
+    ));
+    for _ in 0..worker_count {
+        let queue = Arc::clone(&queue);
         let config = Arc::clone(&config);
         let effort = effort.clone();
         let repo_root = repo_root.clone();
         let patch_path = patch_path.clone();
         let findings_json = Arc::clone(&findings_json);
+        let notify_progress = Arc::clone(&registry.notify);
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
@@ -716,11 +763,14 @@ fn run_round2_parallel(
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
         let cancelled = Arc::clone(&cancelled);
-        handles.push(thread::spawn(move || {
+        handles.push(thread::spawn(move || loop {
             if cancel.load(Ordering::SeqCst) {
                 cancelled.store(true, Ordering::SeqCst);
                 return;
             }
+            let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
+                return;
+            };
             let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
             let ceiling = config.ai_hub.effective_max_concurrent_agents();
             let Some(_slot) =
@@ -742,7 +792,9 @@ fn run_round2_parallel(
                         .lock()
                         .unwrap()
                         .push((reviewer.id.clone(), e.to_string()));
-                    return;
+                    // `continue`, not `return` — see round 1: returning here
+                    // would retire the worker and drop the rest of the queue.
+                    continue;
                 }
             };
             let prompt =
@@ -751,6 +803,16 @@ fn run_round2_parallel(
                 Ok(v) => match super::schema::validate_round2_output(&v) {
                     Ok(out) => {
                         let _ = save_round_output(&paths, round, &reviewer.id, &v);
+                        // Announced as it completes — see round 1.
+                        let _ = append_progress_event(
+                            &paths,
+                            &ProgressEvent::ReviewerDone {
+                                reviewer_id: reviewer.id.clone(),
+                                round,
+                                findings_count: out.ballots.len(),
+                            },
+                        );
+                        notify_progress();
                         ok.lock().unwrap().push((reviewer.id.clone(), out));
                     }
                     Err(e) => {
@@ -878,18 +940,9 @@ fn run_supervisor(
     for (id, reason) in round1.failed {
         mark_reviewer_failed(&mut run, &id, &reason);
     }
+    // `ReviewerDone` is emitted by each worker as it finishes, so nothing is
+    // announced here — doing it again would double the events.
     let round1_ok = round1.ok;
-    for (reviewer_id, out) in &round1_ok {
-        emit(
-            registry,
-            paths,
-            &ProgressEvent::ReviewerDone {
-                reviewer_id: reviewer_id.clone(),
-                round: 1,
-                findings_count: out.findings.len(),
-            },
-        );
-    }
     save_run(paths, &run)?;
 
     let min_survivors = min_survivors_required(run.reviewers.len());
@@ -980,18 +1033,8 @@ fn run_supervisor(
         for (id, reason) in cross_out.failed {
             mark_reviewer_failed(&mut run, &id, &reason);
         }
+        // `ReviewerDone` is emitted by each worker as it finishes — see round 1.
         let cross_ok = cross_out.ok;
-        for (reviewer_id, out) in &cross_ok {
-            emit(
-                registry,
-                paths,
-                &ProgressEvent::ReviewerDone {
-                    reviewer_id: reviewer_id.clone(),
-                    round,
-                    findings_count: out.ballots.len(),
-                },
-            );
-        }
         severity_from_cross_check(&mut run.findings, &cross_ok, round);
         save_run(paths, &run)?;
     }
