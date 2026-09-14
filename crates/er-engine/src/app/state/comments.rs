@@ -2944,9 +2944,7 @@ impl App {
         // — so a read-only run withholds it and narrows the sandbox instead.
         let readonly_run = host_write_diagram.is_some();
         let storage_access = match family {
-            crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor
-                if readonly_run =>
-            {
+            crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
                 None
             }
             _ => Some(target.er_dir.as_str()),
