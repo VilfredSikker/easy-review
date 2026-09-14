@@ -166,6 +166,22 @@ done
 echo "  $ulinks user-facing links checked"
 echo
 
+# ── 5: the guide's navigation model ───────────────────────────────────────────
+# The sidebar is injected by assets/docs.js, so it is invisible to the href scan
+# above: a NAV entry pointing at a deleted page would 404 silently, and nothing
+# else in the tree would notice.
+echo "Guide navigation:"
+nave=0
+if [ -f docs/guide/assets/docs.js ]; then
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    nave=$((nave + 1))
+    [ -f "docs/guide/$f" ] || note "docs/guide/assets/docs.js NAV lists '$f' — no such page"
+  done < <(grep -oE "file: *'[a-zA-Z0-9_.-]+\.html'" docs/guide/assets/docs.js | sed "s/.*'\(.*\)'/\1/" | sort -u)
+fi
+echo "  $nave navigation entries checked"
+echo
+
 if [ "$fail" -ne 0 ]; then
   echo "docs-check: FAILED — fix the citations above."
   echo "See docs/agents/writing-docs.md. A citation that no longer resolves is a"
