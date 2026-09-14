@@ -25,7 +25,8 @@
       and its base. The base branch is detected automatically from your upstream tracking branch, falling back to
       <code>main</code>, <code>master</code>, <code>develop</code>, then <code>dev</code>. You did not have to specify it.
     </p>
-    <p>You will see three regions: a file list on the left, the diff in the center, and a context panel on the right.
+    <p>You will see a file list on the left and the diff beside it. The context panel on the right starts closed —
+    press <kbd>p</kbd> to cycle it open (file detail, AI summary, PR overview, agent log).
     The top bar shows the available diff modes and any detected pull request; the bottom bar shows key hints.</p>
 
     <h2>2. Move around</h2>
@@ -44,9 +45,11 @@
 
     <h2>3. Switch diff modes</h2>
     <p>Press a number key to change what you are looking at:</p>
-    <pre><code><span class="cmt"># 1  branch diff (vs base)     4  commit history</span>
-<span class="cmt"># 2  unstaged changes          5  merge conflicts</span>
-<span class="cmt"># 3  staged changes            6  hidden / ignored files</span></code></pre>
+    <pre><code><span class="cmt"># 1  branch diff (vs base)     3  staged changes</span>
+<span class="cmt"># 2  unstaged changes          4  commit history</span></code></pre>
+    <p>The numbers are positions, not fixed labels: a tab that knows its pull request slots <strong>PR Diff</strong> in
+    after Staged, and a guided tour adds one after History. <strong>Merge conflicts</strong> appears only while a merge
+    is in progress, and <strong>hidden / ignored files</strong> only when you have <code>[watched]</code> paths configured.</p>
     <p>See <a href="diff-modes.html">Diff Modes</a> for what each one shows and when to reach for it.</p>
 
     <h2>4. Track your progress</h2>
@@ -65,13 +68,13 @@
       <thead><tr><th>Key</th><th>Type</th><th>Goes to</th></tr></thead>
       <tbody>
         <tr><td><kbd>q</kbd></td><td>Private <strong>question</strong> (yellow)</td><td>Stays local; read by your AI tools</td></tr>
-        <tr><td><kbd>q</kbd> or <kbd>c</kbd>, then <kbd>Ctrl</kbd>+<kbd>t</kbd></td><td>Private <strong>note</strong> (yellow, 📝)</td><td>Stays local; an instruction to hand to an agent</td></tr>
+        <tr><td><kbd>q</kbd>, then <kbd>Ctrl</kbd>+<kbd>t</kbd></td><td>Private <strong>note</strong> (yellow, 📝)</td><td>Stays local; an instruction to hand to an agent</td></tr>
         <tr><td><kbd>c</kbd></td><td><strong>GitHub comment</strong> (cyan)</td><td>Syncs to a pull request</td></tr>
       </tbody>
     </table>
-    <p>Each anchors to the current line (extend the selection with <kbd>Shift</kbd>+<kbd>↓</kbd>/<kbd>↑</kbd>);
-    while composing, <kbd>Ctrl</kbd>+<kbd>t</kbd> cycles the draft type. Read more in
-    <a href="comments.html">Comments &amp; Questions</a>.</p>
+    <p>Each anchors to the current line; <kbd>Shift</kbd>+<kbd>↓</kbd>/<kbd>↑</kbd> extends a line selection, which
+    the copy hub (<kbd>y</kbd>) uses as its scope. While composing, <kbd>Ctrl</kbd>+<kbd>t</kbd> cycles the draft type
+    — question → note → comment. Read more in <a href="comments.html">Comments &amp; Questions</a>.</p>
 
     <h2>6. Add AI analysis (optional)</h2>
     <p>This is where <code>er</code> earns its name. The quickest way is the built-in <strong>AI Hub</strong>: press
@@ -94,7 +97,7 @@
     <h2>7. Watch it stay live</h2>
     <p>
       Watch mode is on by default. Leave <code>er</code> open while your AI assistant edits code: every save, stage,
-      and commit refreshes the diff within a fraction of a second. The <span style="color:var(--green)">● WATCH</span>
+      and commit refreshes the diff within a fraction of a second. The <span style="color:var(--green)">● WATCHING</span>
       indicator in the top bar shows it is active; toggle it with <kbd>w</kbd>.
     </p>
 

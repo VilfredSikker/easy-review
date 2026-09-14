@@ -31,8 +31,8 @@
         <tr>
           <td>2</td>
           <td><code>er</code></td>
-          <td><kbd>A</kbd> / <kbd>J</kbd> / <kbd>K</kbd></td>
-          <td>Findings appear inline (toggle the layer with <kbd>A</kbd>); jump between them with <kbd>J</kbd>/<kbd>K</kbd></td>
+          <td><kbd>A</kbd> / <kbd>Ctrl</kbd>+<kbd>j</kbd> / <kbd>Ctrl</kbd>+<kbd>k</kbd></td>
+          <td>Findings appear inline (toggle the layer with <kbd>A</kbd>); jump between findings with <kbd>Ctrl</kbd>+<kbd>j</kbd> / <kbd>Ctrl</kbd>+<kbd>k</kbd> — <kbd>J</kbd>/<kbd>K</kbd> move between comments and questions instead</td>
         </tr>
         <tr>
           <td>3</td>
@@ -45,7 +45,7 @@
           <td>AI Hub (TUI only)</td>
           <td><strong>Answer questions</strong></td>
           <td>
-            Reads your questions, responds, archives them.<br>
+            Reads your questions, appends an AI answer to each, and marks them resolved.<br>
             <em>Desktop: use the Notes panel instead — there is no Hub action for this.</em>
           </td>
         </tr>
@@ -62,7 +62,7 @@
             TUI: Git hub (<kbd>g</kbd>) → <strong>Push comments to GitHub</strong><br>
             Desktop: Comments card → <strong>Push to GitHub</strong>
           </td>
-          <td>Validates freshness, posts findings to the GitHub PR as inline comments</td>
+          <td>Posts your local comments to the GitHub PR as inline comments</td>
         </tr>
       </tbody>
     </table>
@@ -97,7 +97,7 @@
         <p>
           <strong>TUI:</strong> Press <kbd>a</kbd> → <strong>Specialized review</strong> → a sub-menu lists all 8 experts; select one to run it.<br>
           <strong>Desktop:</strong> Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Run reviewers…</strong> → a
-          <strong>Choose reviewers</strong> multi-select appears (General + 8 experts + Professor); toggle with
+          <strong>Choose reviewers</strong> multi-select appears (Triage + General + 8 experts + Professor); toggle with
           <kbd>Space</kbd> and confirm with <strong>Run N reviewer(s)</strong>. You can run multiple in one go.
         </p>
       </div>
@@ -125,8 +125,9 @@
       </tbody>
     </table>
     <p>
-      Fast branch scan: first impression, routing verdict (ready for full review / needs work / trivial),
-      priority files. Writes <code>triage.json</code>. Useful before committing to a full review.
+      Fast branch scan: first impression, a routing verdict on what to run next (General review, one or more
+      expert lenses, Arena debate, Professor, or skip deep review), and priority files. Writes
+      <code>triage.json</code>. Useful before committing to a full review.
     </p>
 
     <h3>Professor</h3>
@@ -162,10 +163,11 @@
       <div>
         <p>
           <strong>TUI only:</strong> Press <kbd>a</kbd> → <strong>Answer questions</strong>. This action is
-          disabled until you have added at least one question with the <kbd>q</kbd> key. It reads your
+          disabled until you have an unresolved question (<kbd>q</kbd> adds one). It reads your
           questions, generates AI responses, and updates <code>questions.json</code>.<br>
           <strong>Desktop:</strong> There is no Hub action for answering questions. Questions are managed in
-          the <strong>Notes panel</strong> — add questions with <kbd>q</kbd> and AI responses appear there.
+          the <strong>Notes panel</strong> — add one by selecting lines in the diff and switching the draft type
+          to Question (<kbd>Ctrl</kbd>+<kbd>t</kbd> cycles comment → question → note); AI replies appear there.
         </p>
       </div>
     </div>
@@ -188,11 +190,11 @@
       <span class="ico">◆</span>
       <div>
         <p>
-          <strong>Desktop only:</strong> Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Generate tour</strong>
+          <strong>TUI:</strong> Press <kbd>a</kbd> → <strong>Generate guided tour</strong>; run it again to regenerate.
+          Once a tour exists, a <strong>Tour</strong> entry appears in the mode list to read it.<br>
+          <strong>Desktop:</strong> Press <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> → <strong>Generate tour</strong>
           (or <strong>Regenerate tour</strong> if one already exists). A "Re-run guide" button also appears in the
-          Guide tab when the tour is stale. Writes <code>tour.json</code>.<br>
-          <strong>TUI:</strong> The TUI can navigate an existing tour in Guide / Tour mode, but it cannot
-          generate one. Generate the tour in the desktop app first.
+          Guide tab when the tour is stale. Writes <code>tour.json</code>.
         </p>
       </div>
     </div>
@@ -216,9 +218,9 @@
       <span class="ico">◆</span>
       <div>
         <p>
-          <strong>Desktop only — and not in the ⌘K AI menu.</strong> The Arena lives in the
-          <strong>Review panel</strong> Arena card: use <strong>Run as Arena</strong> or
-          <strong>Promote to Arena</strong> there.<br>
+          <strong>Desktop only — and not in the ⌘K AI menu.</strong> Reach it from <kbd>Cmd</kbd>+<kbd>K</kbd> →
+          <strong>PR</strong> → <strong>Open AI review arena</strong>, or from the <strong>Review panel</strong> Arena
+          card: use <strong>Run as Arena</strong> or <strong>Promote to Arena</strong> there.<br>
           <strong>TUI:</strong> Arena is not available in the TUI.
         </p>
       </div>

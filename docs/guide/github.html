@@ -23,7 +23,8 @@
     <pre><code>gh auth login</code></pre>
     <p>
       <code>er</code> shells out to <code>gh</code> and reuses that authentication. There is no separate token to
-      configure, and GitHub features simply stay hidden if <code>gh</code> is not available.
+      configure and nothing to register inside <code>er</code>: a missing or unauthenticated <code>gh</code> shows up
+      as an error on the action you ran, or as an empty PR panel.
     </p>
 
     <h2>Opening a pull request</h2>
@@ -31,8 +32,11 @@
     <pre><code><span class="cmt"># by number, in the current repo</span>
 er --pr 42
 
-<span class="cmt"># by full URL (any repo)</span>
-er https://github.com/owner/repo/pull/42</code></pre>
+<span class="cmt"># by full URL, from inside a clone of that repo</span>
+er https://github.com/owner/repo/pull/42
+
+<span class="cmt"># from any directory, no local clone</span>
+er --remote https://github.com/owner/repo/pull/42</code></pre>
     <p>
       The desktop app offers a “PR Diff” toggle in the branch context bar and a paste-a-URL modal
       (<kbd>Cmd</kbd>+<kbd>Shift</kbd>+<kbd>O</kbd>). PR review works against remote refs, so you can review a pull
@@ -52,7 +56,7 @@ er https://github.com/owner/repo/pull/42</code></pre>
     <ul>
       <li><strong>CI checks</strong> — build, tests, and other checks with pass/fail/running status.</li>
       <li><strong>Reviewers</strong> — who approved, who requested changes, who is still pending.</li>
-      <li><strong>Labels</strong> — the PR's labels.</li>
+      <li><strong>Description</strong> — the PR body.</li>
       <li><strong>Title &amp; base</strong> — e.g. <code>feat/auth-refactor → main</code>.</li>
     </ul>
 
@@ -73,14 +77,17 @@ er https://github.com/owner/repo/pull/42</code></pre>
       <a href="comments.html">Comments &amp; Questions</a>).
     </p>
 
-    <h2>Publishing an AI review to a PR</h2>
+    <h2>Publishing your review to a PR</h2>
     <p>
       Publishing happens inside <code>er</code> itself. In the <strong>TUI</strong>, open the Git hub (<kbd>g</kbd>)
-      and choose <strong>Push comments to GitHub</strong>; in the <strong>Desktop app</strong>, open the Comments card and use
-      <em>Push to GitHub</em> — either <em>Push as review</em> (all at once) or push individual comments. Both paths
-      validate freshness against the current diff before posting, and send your AI findings plus GitHub comments as
-      inline review comments — the bridge from a local <code>er</code> session to a review your team sees on GitHub.
-      See <a href="skills.html">AI Hub Actions</a>.
+      and choose <strong>Push comments to GitHub</strong> — <kbd>r</kbd> bundles the pending comments into one review,
+      <kbd>i</kbd> posts each on its own; in the <strong>Desktop app</strong>, open the Comments card and use
+      <em>Push to GitHub</em> — <em>As review</em> (one submission carrying the pending comments) or
+      <em>Individually</em>. What GitHub receives is your GitHub comments: AI findings, questions, and notes are private
+      to your machine until you promote one to a comment in the desktop app. The desktop refreshes the diff before
+      submitting a review and skips comments whose lines are no longer in it; that submission is the bridge from a
+      local <code>er</code> session to a review your team sees on GitHub. See
+      <a href="skills.html">AI Hub Actions</a>.
     </p>
 
     <h2>Staging, committing, and pushing <span class="pill tui">terminal</span></h2>
