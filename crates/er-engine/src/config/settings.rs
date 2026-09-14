@@ -189,6 +189,24 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
                 .collect(),
             value: config.ai_hub.effective_max_concurrent_reviews().to_string(),
         },
+        ConfigHubFieldDto::Cycle {
+            key: "ai_hub.max_concurrent_arena_reviews".into(),
+            label: "Max parallel arena reviewers".into(),
+            description: "Arena reviewers running at once, on its own cap so an arena run and a background review cannot starve each other".into(),
+            options: MAX_CONCURRENT_REVIEWS_RANGE
+                .map(|n| n.to_string())
+                .collect(),
+            value: config.ai_hub.effective_max_concurrent_arena_reviews().to_string(),
+        },
+        ConfigHubFieldDto::Cycle {
+            key: "ai_hub.max_concurrent_agents".into(),
+            label: "Max agents overall".into(),
+            description: "Hard ceiling across both workloads, so raising one cap cannot double the load".into(),
+            options: MAX_CONCURRENT_REVIEWS_RANGE
+                .map(|n| n.to_string())
+                .collect(),
+            value: config.ai_hub.effective_max_concurrent_agents().to_string(),
+        },
         ConfigHubFieldDto::Bool {
             key: "features.model_discovery".into(),
             label: "Model discovery".into(),
