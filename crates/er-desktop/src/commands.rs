@@ -9872,35 +9872,44 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
 
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
-    let lock_t0 = std::time::Instant::now();
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let lock_wait_ms = lock_t0.elapsed().as_millis();
-    // Drain pending agent log entries and check for completed commands.
-    app.drain_agent_log();
-    // Consume completed command receivers — updates command_status to done/failed
-    // and emits completion log entries. Agent-written sidecars have newer mtimes
-    // than the last check, so the .er reload below picks them up via the mtime
-    // comparison (no forced last_ai_check reset — O5).
-    app.check_commands();
-    // Same lifecycle for app-level background tasks (cross-tab reviews).
-    // Only log poll diagnostics when there's actually a task in flight to avoid
-    // flooding stderr every 2 seconds during normal use.
-    let pre = app.background_task_snapshots().len();
-    let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
-    if debug_bg {
-        eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
-    }
-    app.poll_background_tasks();
-    let post = app.background_task_snapshots().len();
-    if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
-        eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
-    }
-    process_ai_task_inbox(&app, state);
-    // Drain again so completion/failure log entries are visible in this poll.
-    app.drain_agent_log();
-    // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
-    app.tab_mut().check_ai_files_changed();
 
+    // Pass one: the calls that mutate. A short lock, released before the
+    // snapshot re-takes it — so a `select_file` or `set_mode` arriving
+    // mid-poll waits for this pass rather than for the whole snapshot build.
+    let lock_t0 = std::time::Instant::now();
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // Drain pending agent log entries and check for completed commands.
+        app.drain_agent_log();
+        // Consume completed command receivers — updates command_status to
+        // done/failed and emits completion log entries. Agent-written sidecars
+        // have newer mtimes than the last check, so the .er reload below picks
+        // them up via the mtime comparison (no forced last_ai_check reset — O5).
+        app.check_commands();
+        // Same lifecycle for app-level background tasks (cross-tab reviews).
+        // Only log poll diagnostics when there's actually a task in flight to
+        // avoid flooding stderr every 2 seconds during normal use.
+        let pre = app.background_task_snapshots().len();
+        let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
+        if debug_bg {
+            eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
+        }
+        app.poll_background_tasks();
+        let post = app.background_task_snapshots().len();
+        if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
+            eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
+        }
+        process_ai_task_inbox(&app, state);
+        // Drain again so completion/failure log entries are visible in this poll.
+        app.drain_agent_log();
+        // Check if .er/ AI files changed — cheap mtime check, reloads if yes.
+        app.tab_mut().check_ai_files_changed();
+    }
+    let lock_wait_ms = lock_t0.elapsed().as_millis();
+
+    // Pass two: re-take for the revisions and the snapshot, so the two agree
+    // with each other. Nothing between here and the snapshot releases it.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
     let chrome_revision = compute_chrome_revision(state);
