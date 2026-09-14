@@ -4,6 +4,7 @@
 // form reads better. Clippy's nursery lint disagrees; we opt out crate-wide.
 #![allow(clippy::option_if_let_else)]
 
+pub mod agent_run;
 pub mod agent_slots;
 pub mod ai;
 #[cfg(feature = "ui")]
@@ -15,7 +16,6 @@ pub use config::{
     apply_config_field, config_hub_items_for_scope, desktop_settings_snapshot, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot, SettingsScope,
 };
-pub mod agent_runtime;
 pub mod dev_log;
 pub mod diagram_upload;
 pub mod env_path;

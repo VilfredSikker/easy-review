@@ -12,8 +12,9 @@
     <p class="eyebrow">Getting Started</p>
     <h1>Installation</h1>
     <p class="lead">
-      The terminal app (<code>er</code>) is a single binary you can install in seconds. The desktop app is
-      currently built from source. Both need <code>git</code>; everything else is optional.
+      The terminal app (<code>er</code>) is a single binary you can install in seconds. The desktop app ships as a
+      prebuilt macOS <code>.dmg</code> and can also be built from source. Both need <code>git</code>; everything else
+      is optional.
     </p>
 
     <h2>Requirements</h2>
@@ -24,7 +25,8 @@
         <tr><td><strong>gh</strong> (GitHub CLI)</td><td>Pull request features</td><td>Optional. Used for PR metadata and two-way comment sync. Install from <a href="https://cli.github.com" target="_blank" rel="noopener">cli.github.com</a> and run <code>gh auth login</code>. No API token to manage.</td></tr>
         <tr><td>An AI coding tool</td><td>AI review</td><td>Optional. e.g. Claude Code, Codex, or Cursor. You bring your own tool and credentials.</td></tr>
         <tr><td><strong>Rust 1.88+</strong></td><td>Building from source</td><td>Not needed if you use the install script. The workspace uses the 2021 edition; <code>er-mcp</code> needs 1.88 for <code>rmcp</code> 3.</td></tr>
-        <tr><td><strong>Node.js / Bun</strong></td><td>Desktop UI dev</td><td>Only for working on the desktop frontend.</td></tr>
+        <tr><td><strong>Bun</strong></td><td>Building the desktop</td><td>The desktop frontend is built with <code>bun</code>; <code>./scripts/tauri-dev.sh</code> and <code>./scripts/tauri-build.sh</code> run <code>bun install</code> for you on first run. Not needed for the terminal app.</td></tr>
+        <tr><td><strong>Node 18+</strong></td><td><code>npx easy-review-mcp</code></td><td>Only for the npm launcher for the MCP server, if you use it instead of the Rust binary.</td></tr>
       </tbody>
     </table>
 
@@ -38,7 +40,7 @@
 curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --dir /usr/local/bin
 
 <span class="cmt"># a specific released version</span>
-curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --version v0.3.0</code></pre>
+curl -fsSL https://raw.githubusercontent.com/VilfredSikker/easy-review/main/install.sh | bash -s -- --version v0.4.18</code></pre>
 
     <div class="callout note">
       <span class="ico">◆</span>
@@ -62,17 +64,18 @@ er</code></pre>
     <h2 id="desktop-app">Desktop app <span class="pill desktop">desktop</span></h2>
     <div class="callout note">
       <span class="ico">◆</span>
-      <div><p>The desktop app is installed by <a href="#install-from-source">building from source</a> (below). A signed
-      direct-download <code>.dmg</code> is <strong>coming soon</strong> — distributing one requires an Apple Developer
-      Program membership for code signing and notarization. The install script and <code>cargo install</code> only cover
-      the <code>er</code> terminal binary.</p></div>
+      <div><p>Releases carry a prebuilt, signed and notarized <code>.dmg</code> for <strong>Apple&nbsp;Silicon</strong>
+      Macs. For Intel Macs, Linux, and Windows, <a href="#install-from-source">build from source</a> (below). The install
+      script and <code>cargo install</code> only cover the <code>er</code> terminal binary.</p></div>
     </div>
 
-    <h3>Direct download <span class="pill desktop">Coming soon</span></h3>
-    <p>A prebuilt, code-signed <code>.dmg</code> for <strong>Apple&nbsp;Silicon</strong> Macs will be offered on the
-    <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>
-    once signing is set up. Until then, clone the repository and build locally (next section). Intel Macs, Linux, and
-    Windows are not planned as prebuilt downloads — build those from source as well.</p>
+    <h3>Direct download <span class="pill desktop">macOS</span></h3>
+    <p>Take the <code>.dmg</code> from the
+    <a href="https://github.com/VilfredSikker/easy-review/releases" target="_blank" rel="noopener">Releases page</a>,
+    open it, and drag <strong>Easy Review</strong> into Applications. Signed and notarized builds open normally; if
+    Gatekeeper blocks one, right-click the app and choose <strong>Open</strong>. A failed signing step does not block a
+    release, so a release without a <code>.dmg</code> means falling back to the source build (next section). Intel Macs,
+    Linux, and Windows are not packaged as prebuilt downloads — build those from source as well.</p>
 
     <h3 id="install-from-source">Install from source</h3>
     <p>Clone the repo and run the desktop app in development, or build a release bundle for your machine:</p>
@@ -85,9 +88,11 @@ cd easy-review
 
     <h4>Build a release bundle</h4>
     <pre><code>./scripts/tauri-build.sh</code></pre>
-    <p>On macOS this produces an <code>Easy Review.app</code> under the desktop build target (set
-    <code>ER_SKIP_DMG=0</code> to also produce a <code>.dmg</code>). Building requires <code>cargo-tauri</code> and
-    the platform WebView dependencies (WebKit/GTK on Linux).</p>
+    <p>On macOS this produces <code>Easy Review.app</code> under
+    <code>target/desktop/release/bundle/macos/</code> and copies it to <code>/Applications</code> (set
+    <code>ER_SKIP_DMG=0</code> to also produce a <code>.dmg</code>, or <code>ER_SKIP_INSTALL=1</code> to skip the
+    copy). Building requires Rust, the Tauri CLI (<code>cargo install tauri-cli --locked</code>), <code>bun</code> for
+    the frontend, and the platform WebView dependencies (WebKit/GTK on Linux).</p>
 
     <div class="callout tip">
       <span class="ico">✦</span>
@@ -126,7 +131,7 @@ er uninstall --keep-apps  <span class="cmt"># leave binaries / .app</span></code
 
     <p>What gets removed by default:</p>
     <ul>
-      <li><code>~/.config/er/</code> (and the platform config dir) — config, projects, tabs, caches</li>
+      <li>The platform config dir — <code>~/Library/Application Support/er/</code> on macOS, <code>~/.config/er/</code> on Linux: the desktop's <code>projects.json</code> and <code>tabs.json</code>, plus a legacy <code>config.toml</code> from an older install if one is still there</li>
       <li>Managed review storage under <code>…/easy-review/</code> (see <a href="storage.html">Review Storage</a>), plus Tauri bundle data dirs when present</li>
       <li>Legacy <code>~/.cache/er/</code></li>
       <li>The <code>er</code> binary (common install locations) and <code>Easy Review.app</code> when found</li>

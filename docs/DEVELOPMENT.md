@@ -9,6 +9,8 @@ Cargo workspace at the repo root:
 | `er-engine` | library | Core logic (git, AI sidecars, state) — shared by TUI and desktop |
 | `er-tui` | `er` binary | Terminal UI |
 | `er-desktop` | `er-desktop` binary | Tauri desktop shell |
+| `er-mcp` | `er-mcp` binary | MCP stdio server exposing the PR review API |
+| `er-crap` | `er-crap` binary | CRAP-metric reporter behind the quality gate |
 | `desktop-ui` | Vite bundle | Svelte frontend (bundled by Tauri at build time) |
 
 Run Rust commands from the **repo root** unless noted. Prefer scoped builds — compiling the whole workspace pulls in Tauri and can bloat `target/` to tens of GB.

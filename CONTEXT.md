@@ -1,83 +1,130 @@
-# Context
+# easy-review
 
-Glossary for `er`. Terms only — no design decisions, no implementation. When a term
-here conflicts with how code or a spec uses a word, this file wins and the code is
-wrong.
+`er` is a review tool for diffs, built for the case where an AI writes changes
+faster than a person can read them. Review artifacts accumulate against a diff
+and are addressed by the view that produced them.
 
-## Review artifacts
+This file is the vocabulary. It defines what things *are*. For why the system
+is shaped this way, see [`docs/adr/`](./docs/adr/).
 
-**Finding** — A single claim about the code under review, anchored to a file and
-usually a line. Produced by a reviewer, not by a human. A human's input is a
-Question, Note, or Comment instead.
+## Language
 
-**Lens** — *Who* produced a finding: an expert (`security`, `performance`,
-`reliability`, `testing`, `api`, `patterns`, `simplifying`, `mentorship`), or one of
-the built-in producers (`general`, `professor`, `arbiter`). A finding merged from
-several producers carries all of them.
+**View bucket**:
+The partition of review artifacts belonging to one view of one branch. A single
+tab can produce several, and artifacts from one bucket are not visible in
+another.
+_Avoid_: scope, namespace, section
 
-**Category** — *What kind of defect* a finding describes (`correctness`, and
-siblings). Independent of Lens: the security lens can raise a correctness finding.
-Historically these two were collapsed into one field, which lost the category.
+**Local branch view**:
+The view of a branch's own work — its diff against the base branch, its staged
+and unstaged changes, its history.
+_Avoid_: branch mode, working view
 
-**Severity** — How bad the defect is if real. Scale: high / medium / low / info.
+**PR diff view**:
+The view of a pull request's head against its base. On a local PR tab this can
+differ from the local branch view — it does whenever the branch has unpushed
+commits, or the checked-out head is not the PR head — but the two are the same
+diff when local HEAD is the PR head, which is the common case.
+_Avoid_: remote mode, PR mode
 
-**Confidence** — How sure we are the finding is real. Scale: confirmed / tentative /
-informational / dropped. Distinct from Severity: a confirmed typo and a tentative
-data-loss bug are both meaningful, in opposite ways. Self-reported by whichever lens
-raised the finding until an Arbiter regrades it.
+**Sidecar**:
+A file holding review artifacts for one bucket. Sidecars are written next to
+each other in managed storage and are read back by both the TUI and the desktop
+app.
+_Avoid_: state file, cache, metadata
 
-**Verdict** — An Arbiter's ruling on a finding: kept, merged into another finding,
-dropped, or escalated. A verdict is an opinion *about* a finding, not part of it.
+**Diff mode**:
+Which diff a tab is currently showing. Modes are not interchangeable views of
+one diff — several describe genuinely different changes.
+_Avoid_: view mode, screen
 
-## Reviewers
+**Tab**:
+One independent review target, with its own diff, selection, and artifacts.
+_Avoid_: session, workspace, pane
 
-**Expert** — A reviewer with a single lens, run on demand. Experts are chosen before
-a run; there is no concept of hiding an expert's output after the fact. If you do not
-want a lens, do not run it.
+**Finding**:
+A remark an AI review produced about a specific place in the diff. Findings
+belong to the AI that wrote them; a person reads them and acts, and does not
+edit them.
+_Avoid_: issue, comment, annotation
 
-**Arbiter** — A reviewer that judges other reviewers' findings rather than the code
-alone: it merges duplicates, regrades confidence, and drops claims it cannot
-substantiate. It reads the code the findings point at.
+**Question**:
+Something the reviewer wants answered. Private to the reviewer, and it never
+reaches a pull request.
+_Avoid_: query, TODO
 
-**Arena** — Several reviewers reviewing the same diff in successive rounds, each
-round seeing the previous round's findings. A debate. Distinct from an Arbiter pass,
-which is a single judgement over findings that already exist.
+**Note**:
+An instruction the reviewer intends to hand to an agent. Private, like a
+question, and distinct from it by intent rather than by storage.
+_Avoid_: todo, task, action item
 
-**Triage** — A fast first scan that decides what is worth reviewing and by which
-lenses. It routes; it does not produce findings.
+**GitHub comment**:
+A review comment belonging to a pull request, which syncs with GitHub in both
+directions. Distinct from a question or a note, which are private by
+construction.
+_Avoid_: PR comment, review comment, thread
 
-## Ranking
+**Promote**:
+To turn a private question or note into a GitHub comment. The move is
+deliberate, one-way, and always an explicit act by the reviewer.
+_Avoid_: publish, share, export
 
-**Risk** — A reviewer's judgement of how dangerous a file's change is. An opinion,
-available only after a review has run.
+**Reviewed**:
+A file the reviewer has finished with. Reviewed files are hidden or dimmed, and
+the mark is cleared automatically when that file's diff changes, so the mark
+never outlives the content it was given to.
+_Avoid_: approved, done, checked
 
-**Importance** — How much of the codebase depends on a file, independent of any
-review that has run. Independent of Risk and frequently in disagreement with it; the
-disagreement is informative. The article that prompted this vocabulary calls the same
-idea *blast radius*.
+**Stale**:
+Said of an artifact whose diff has moved since it was produced. Two distinct
+conditions share the word and are tracked separately: a *finding* is stale when
+the diff it was generated against no longer matches, and a *comment* is stale
+when the line it was anchored to can no longer be found.
+_Avoid_: outdated, invalid, expired
 
-## Human input
+**Tour**:
+A guided walkthrough that reorders a diff into a narrative. A tour is bound to
+the diff it was generated from, and is regenerated rather than edited when that
+diff moves.
+_Avoid_: guide, walkthrough, explainer
 
-**Question** — Something the reviewer wants answered. Private, never pushed
-anywhere.
+**Pillar**:
+One section of a tour — a group of related changes presented together.
+_Avoid_: section, chapter, group
 
-**Note** — An instruction intended for a coding agent. Private, never pushed.
+**Arena**:
+A review run in which several reviewers work the same diff independently and
+their findings are then judged against each other. Chosen when a single pass is
+not trusted enough to act on.
+_Avoid_: panel, tribunal, multi-review
 
-**Comment** — Feedback on a pull request, shared with whoever can see that pull
-request.
+**Triage**:
+A cheap first pass that classifies a diff and recommends where to look, without
+reviewing it. Its output routes review effort; it is not itself a review.
+_Avoid_: scan, summary, overview
 
-**Checklist** — Outcomes a human confirms rather than code a human reads: the schema
-change is reviewed, the tests cover the behaviour, the public surface is unchanged.
+**Hub**:
+A modal list of actions or settings opened from a key. Distinct from an overlay
+that displays information rather than offering choices.
+_Avoid_: menu, dialog, palette
 
-## Storage and freshness
+**Base hint**:
+A notice that the branch's detected base differs from the base its pull request
+targets. It informs; it does not switch anything.
+_Avoid_: warning, mismatch, conflict
 
-**Sidecar** — A file holding review artifacts, kept outside the tracked tree. Each
-producer owns its own sidecar and never writes another's.
+**Watched file**:
+A file that git ignores and that the reviewer has asked to see anyway, tracked
+against a saved baseline.
+_Avoid_: untracked file, ignored file, extra file
 
-**View bucket** — A diff a reviewer is looking at, as a unit of storage. One branch
-can be reviewed as several diffs (the local branch, the pull request), and each keeps
-its own artifacts.
+**Agent slot**:
+A permit to run one AI subprocess. Slots exist so a burst of review actions
+cannot start more agent processes than the machine or the provider will
+tolerate.
+_Avoid_: worker, thread, lock
 
-**Stale** — Generated against a diff that has since changed. Granularity matters and
-differs by artifact: a *file* is stale when its content moved since the review ran; a
-*finding* or *comment* is stale when the specific lines it points at moved.
+**AI Hub**:
+The set of AI actions `er` offers over a diff. The hub builds the prompt and
+runs the agent; it does not itself reason about the code.
+_Avoid_: AI panel, copilot, assistant

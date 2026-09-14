@@ -1,7 +1,4 @@
-# 1. Arbiter verdicts are a load-time overlay with content-addressed ids
-
-Date: 2026-09-12
-Status: Accepted
+# Arbiter verdicts are a load-time overlay with content-addressed ids
 
 ## Context
 

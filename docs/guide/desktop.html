@@ -20,9 +20,9 @@
 
     <div class="callout warn">
       <span class="ico">▲</span>
-      <div><p>The desktop app is in <strong>active development</strong>. It is built from source today (it is not part of
-      the published releases yet), and details such as exact keyboard shortcuts may change. See
-      <a href="installation.html#desktop-app">Installation</a> for build steps.</p></div>
+      <div><p>The desktop app is in <strong>active development</strong>. Apple Silicon Macs can install a signed,
+      notarized <code>.dmg</code> from a release; other platforms are built from source. Details such as exact keyboard
+      shortcuts may change. See <a href="installation.html#desktop-app">Installation</a> for both.</p></div>
     </div>
 
     <h2>How it relates to the terminal app</h2>
@@ -74,7 +74,7 @@
             <div class="code" style="border-top:1px solid var(--border)">
               <div class="card ai">
                 <div class="hd"><span class="c-orange">⚠ Security</span><span class="c-muted">inline thread · Ask AI ↗</span></div>
-                <div class="c-dim">Token TTL not checked — promote to GitHub?</div>
+                <div class="c-dim">Token TTL not checked — promote to comment?</div>
               </div>
             </div>
           </div>
@@ -96,12 +96,12 @@
         <div class="bottom">
           <span><b>⌘K</b> commands</span><span class="sep">·</span>
           <span><b>⌘A</b> select all</span><span class="sep">·</span>
-          <span><b>⌘F</b> find usages</span><span class="sep">·</span>
+          <span><b>⌘F</b> diff search</span><span class="sep">·</span>
           <span><b>d</b> split ↔ unified</span><span class="sep">·</span>
           <span><b>⌘T</b> terminal drawer</span>
         </div>
       </div>
-      <figcaption>The desktop app — persistent tabs, a branch context bar with a Local&nbsp;↔&nbsp;PR toggle, a side-by-side split diff with intra-line <span style="color:var(--green)">word-diff</span> highlighting, inline AI threads with “Ask AI” / “promote to GitHub”, and a four-tab right panel (Branch · Review · Notes · Context).</figcaption>
+      <figcaption>The desktop app — persistent tabs, a branch context bar with a Local&nbsp;↔&nbsp;PR toggle, a side-by-side split diff with intra-line <span style="color:var(--green)">word-diff</span> highlighting, inline AI threads with “Ask AI” / “promote to comment”, and a four-tab right panel (Branch · Review · Notes · Context).</figcaption>
     </figure>
 
     <table>
@@ -111,7 +111,7 @@
         <tr><td><strong>Branch context bar</strong></td><td>Current branch, base comparison, PR number, change summary, and a Local&nbsp;Branch ↔ PR&nbsp;Diff toggle.</td></tr>
         <tr><td><strong>Left sidebar</strong></td><td>Collapsible file tree with search, plus a project / branch / PR picker for switching context.</td></tr>
         <tr><td><strong>Diff view</strong> (center)</td><td>Unified or split diff with inline threads, AI findings, and intra-line word-diff highlighting.</td></tr>
-        <tr><td><strong>Right panel</strong></td><td>Four tabs — Branch (git/PR status), Review (AI findings, summary, arena history), Notes (questions &amp; GitHub comments), and Context (Mermaid diagrams of the diff).</td></tr>
+        <tr><td><strong>Right panel</strong></td><td>Four tabs — Branch (git/PR status and GitHub comments), Review (AI findings, summary, arena history), Notes (questions and local notes), and Context (Mermaid diagrams of the diff).</td></tr>
         <tr><td><strong>Browser</strong> (optional)</td><td>An embedded webview for docs, design systems, or APIs, with an annotation mode.</td></tr>
         <tr><td><strong>Terminal drawer</strong> (bottom)</td><td>A resizable embedded shell for running commands without leaving the app.</td></tr>
       </tbody>
@@ -120,10 +120,10 @@
     <h2>Command surfaces</h2>
     <p>Everything is reachable from the <strong>command palette</strong> (<kbd>Cmd</kbd>+<kbd>K</kbd>):</p>
     <ul>
-      <li><strong>Top level</strong> — navigation, PR actions, settings, export, and files in the current diff.
+      <li><strong>Top level</strong> — navigation, PR actions (including the arena), settings, export, and files in the current diff.
       Letter shortcuts jump to items. Press <kbd>/</kbd> (or choose <em>Focus search</em>) to type a filter.
       Search is not focused on open.</li>
-      <li><strong>AI submenu</strong> — run a review, launch the arena, triage, professor, generate a tour or diagrams,
+      <li><strong>AI submenu</strong> — run a review, triage, professor, generate a tour or diagrams,
       pick a provider and model, choose specialized reviewers, validate findings, and more. Letter shortcuts and arrow
       keys work inside nested menus.</li>
     </ul>
@@ -133,15 +133,15 @@
     <table>
       <thead><tr><th>Capability</th><th>Desktop</th><th>Terminal</th></tr></thead>
       <tbody>
-        <tr><td>Split-mode (side-by-side) diff</td><td>Yes</td><td>—</td></tr>
+        <tr><td>Split-mode (side-by-side) diff</td><td>Yes</td><td>Config hub (off by default)</td></tr>
         <tr><td>Intra-line word-diff highlighting</td><td>Yes</td><td>—</td></tr>
         <tr><td>Embedded terminal drawer</td><td>Yes</td><td>—</td></tr>
         <tr><td>Embedded browser + page annotations</td><td>Yes</td><td>—</td></tr>
-        <tr><td>Multi-model review arena</td><td>Full UI (bracket / matrix / funnel)</td><td>CLI output</td></tr>
+        <tr><td>Multi-model review arena</td><td>Full UI (bracket / matrix / funnel)</td><td>—</td></tr>
         <tr><td>Settings as a GUI</td><td>Yes</td><td>Overlay + TOML</td></tr>
         <tr><td>Persistent, drag-to-reorder tabs</td><td>Yes</td><td>Session tabs</td></tr>
         <tr><td>Reference “find usages” popover</td><td>Yes</td><td>—</td></tr>
-        <tr><td>Export review to markdown</td><td>Preview + copy/save</td><td>—</td></tr>
+        <tr><td>Export review to markdown</td><td>Preview + copy/save</td><td>Shift+E → clipboard</td></tr>
         <tr><td>Mermaid diagrams (Context tab)</td><td>Yes</td><td>—</td></tr>
         <tr><td>Keyboard-driven, zero-dependency, instant start</td><td>—</td><td>Yes</td></tr>
       </tbody>
@@ -154,8 +154,8 @@
       assistant edits, stages, and commits. The embedded <strong>terminal drawer</strong> means the assistant can run
       <em>inside</em> the app — open Claude Code in the drawer, review its changes in the diff above, and drop
       questions or notes inline as they come up. Run reviews from the command palette (<kbd>Cmd</kbd>+<kbd>K</kbd> →
-      <strong>AI</strong>); findings, triage, guided tour, and Mermaid diagrams land in the Review, Guide, and Context
-      panels automatically.
+      <strong>AI</strong>); findings and triage land in the Review tab, Mermaid diagrams in Context, and a generated
+      tour turns the diff into its Guide mode.
     </p>
 
     <h2>Running it</h2>
