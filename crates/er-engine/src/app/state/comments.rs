@@ -2090,12 +2090,12 @@ impl App {
         std::fs::create_dir_all(&er_dir)?;
 
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
@@ -2231,11 +2231,24 @@ impl App {
     /// Drain all pending agent log entries from the channel into `agent_log`.
     /// Called each tick. Auto-scrolls the AgentLog panel when new entries arrive.
     pub fn drain_agent_log(&mut self) {
+        /// Most entries one tab may take in a single tick.
+        ///
+        /// A chatty agent can out-produce the loop, and draining without a
+        /// bound means one tick does unbounded work — the frame stretches, the
+        /// backlog grows, and the next tick is worse. Whatever is left stays in
+        /// the channel for the next tick.
+        const MAX_PER_TICK: usize = 500;
+
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let mut received = false;
-            while let Ok(entry) = tab.log_rx.try_recv() {
+            let mut taken = 0usize;
+            while taken < MAX_PER_TICK {
+                let Ok(entry) = tab.log_rx.try_recv() else {
+                    break;
+                };
                 tab.agent_log.push_back(entry);
                 received = true;
+                taken += 1;
                 if tab.agent_log.len() > 5000 {
                     tab.agent_log.pop_front();
                 }
@@ -2278,7 +2291,7 @@ impl App {
                             tab.command_status.insert(name.clone(), CommandStatus::Done);
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} completed", name),
                             });
@@ -2296,7 +2309,7 @@ impl App {
                                 .insert(name.clone(), CommandStatus::Failed(msg.clone()));
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} failed: {}", name, msg),
                             });
@@ -2440,13 +2453,13 @@ impl App {
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
 
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = prompt.to_string();
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
@@ -3077,16 +3090,16 @@ impl App {
 
         let _ = log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: command_name.to_string(),
+            command_name: std::sync::Arc::from(command_name),
             source: AgentLogSource::Status,
             text: format!("{command_name} started ({})", target.display_label()),
         });
 
         let log_tx_thread = log_tx;
-        let command_name_stdout = command_name.to_string();
-        let command_name_stderr = command_name.to_string();
-        let command_name_fail = command_name.to_string();
-        let command_name_emit = command_name.to_string();
+        let command_name_stdout: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_stderr: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_fail: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_emit: std::sync::Arc<str> = std::sync::Arc::from(command_name);
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
         let agent_timeout = self.config.ai_hub.effective_agent_timeout();
@@ -3495,7 +3508,7 @@ impl App {
             if let Some(handle) = self.background_tasks.get_mut(&id) {
                 handle.recent_log.push_back(AgentLogEntry {
                     timestamp: std::time::Instant::now(),
-                    command_name: "review".to_string(),
+                    command_name: std::sync::Arc::from("review"),
                     source: AgentLogSource::Status,
                     text: status_msg.clone(),
                 });

@@ -2576,7 +2576,7 @@ fn build_snapshot_inner(
                     .recent_log
                     .iter()
                     .map(|e| AgentLogSnapshot {
-                        command_name: e.command_name.clone(),
+                        command_name: e.command_name.to_string(),
                         source: match &e.source {
                             AgentLogSource::Stdout => "stdout".to_string(),
                             AgentLogSource::Stderr => "stderr".to_string(),
@@ -2772,7 +2772,7 @@ fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
         .take(200)
         .rev()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 AgentLogSource::Stdout => "stdout".to_string(),
                 AgentLogSource::Stderr => "stderr".to_string(),

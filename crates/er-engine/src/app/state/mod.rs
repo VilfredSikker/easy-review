@@ -4991,7 +4991,11 @@ pub enum AgentLogSource {
 #[derive(Debug, Clone)]
 pub struct AgentLogEntry {
     pub timestamp: std::time::Instant,
-    pub command_name: String,
+    /// Shared, not owned: every line of a run carries the same name, and an
+    /// agent writing a JSON event per line allocates thousands of copies of a
+    /// string that never changes. `Arc<str>` rather than `Arc<String>` so the
+    /// allocation is one block.
+    pub command_name: std::sync::Arc<str>,
     pub source: AgentLogSource,
     pub text: String,
 }

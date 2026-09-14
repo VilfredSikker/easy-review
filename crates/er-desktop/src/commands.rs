@@ -3057,11 +3057,16 @@ fn is_gh_review_422(err: &anyhow::Error) -> bool {
 }
 
 #[tauri::command]
-pub fn submit_github_review(
+pub async fn submit_github_review(
     mode: String,
     summary: String,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Off the main thread: this refreshes the diff, reads anchors and shells
+    // out to `gh`, all under the App lock. As a sync command it held the one
+    // thread that also pumps the window for the whole of that.
+    crate::commands::run_blocking(move || {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
 
@@ -3376,6 +3381,8 @@ pub fn submit_github_review(
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.tab_mut().reload_ai_state();
     Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Submit a bare PR review decision (APPROVE / REQUEST_CHANGES / COMMENT) from
@@ -10377,7 +10384,7 @@ pub fn get_background_task_log(
     let log: Vec<AgentLogSnapshot> = entries
         .iter()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
                 er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),

@@ -247,7 +247,7 @@ impl TabState {
     pub(crate) fn push_synthetic_log(&mut self, name: &str, text: String, source: AgentLogSource) {
         self.agent_log.push_back(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source,
             text,
         });
