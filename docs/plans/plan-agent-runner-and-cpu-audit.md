@@ -1,8 +1,10 @@
 # AI Agent Runners & CPU-Hot Path Audit
 
-Status: **Phases 0, 1, 2 and 3 complete. Phase 4 has no trigger defined — see
-its section. Two items are deferred with their reasons: Phase 1's redraw gate,
-and Phase 3's incremental `baseGeometry` patch, which does not hold up.**
+Status: **Phases 0-4 complete.** Phase 4 had no trigger defined, so its one
+actionable item was settled on evidence rather than on a target that does not
+exist: `agent_runtime` is wired up rather than deleted. Deferred with their
+reasons: Phase 1's redraw gate, and Phase 3's incremental `baseGeometry` patch,
+which does not hold up.
 
 Phase 0 instrumentation has landed (`er-engine/src/agent_timing.rs`, plus call
 sites in `agent_slots.rs`, `app/state/comments.rs`, `arena/adapter.rs`,
@@ -708,15 +710,25 @@ Two of its three candidates also need something that does not exist yet:
   streaming/attach mode with a stable protocol; the prompts currently rely on
   one-shot `-p` invocations. This is a research question, not a scheduled item.
 
-**The third candidate is live and is a decision, not a task.** `agent_runtime.rs`
-is 1339 lines — `AgentTaskKind`, `AgentInvocation` / `resolve_invocation`,
-`build_argv`, `decode_final_text`, `ArtifactContract` — referenced by nothing but
-its own `pub mod` in `lib.rs` and one doc cross-reference from `agent_run.rs`. Its
-job is what `card_ai_spawn.rs` (`build_card_ai_argv`, `extract_reply_from_stdout`)
-and the `app/state` spawn paths already do. Either it becomes the shared
-resolution path those call, or it goes. **Not done here**: it is 1339 lines
-someone wrote deliberately, and deleting it is the user's call rather than a
-cleanup to slip into a performance branch.
+**The third candidate is done — wired up, not deleted.** `agent_runtime.rs` was
+1339 lines referenced by nothing but its own `pub mod` and one doc
+cross-reference, duplicating what `card_ai_spawn.rs` already did
+(`fallback_agent`, the read-only tool list, model-arg and effort injection).
+Choosing between "wire it up" and "delete it" needed a fact nobody had recorded:
+whether the two resolve the *same* invocation. Two tests now answer it —
+argv compared across every catalog provider and model, plus the legacy
+`[agent]` fallback, which is the branch a happy-path check would miss.
+
+They passed on both sides, so `plan_card_ai_invocation` now delegates to
+`resolve_invocation`, and `fallback_agent` / `inject_read_only_tools` are gone.
+The differential tests are kept: after the delegation they stop comparing two
+implementations, but they still pin the field mapping
+(`family` → `is_claude_compatible`, and `uses_stream_json`'s own derivation,
+which cannot be read off `OutputProtocol` — that type has no command-family
+guard).
+
+The other two spawn paths (`app/state/comments.rs`) still resolve their own way.
+They are the same kind of duplicate, and the same test shape would settle them.
 
 ### Documentation corrections
 
