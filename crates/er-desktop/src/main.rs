@@ -19,6 +19,7 @@ use er_desktop::{
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
+use er_engine::proc::CommandTimeoutExt;
 
 /// Inject the annotation content script before `</head>` (or `</body>` as fallback).
 fn inject_script(mut html: Vec<u8>) -> Vec<u8> {
@@ -981,7 +982,7 @@ fn main() {
             let out = std::process::Command::new("git")
                 .args(["ls-remote", "origin", &base_short])
                 .current_dir(&repo_root)
-                .output();
+                .output_timed(er_engine::proc::GIT_FETCH_TIMEOUT);
             let oid = match out {
                 Ok(o) if o.status.success() => {
                     let stdout = String::from_utf8_lossy(&o.stdout);
@@ -1653,31 +1654,75 @@ fn main() {
                 let Some(idx) = next_idx else {
                     break;
                 };
-                let Ok(mut g) = warmer_app.lock() else { break };
-                if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
-                    continue;
-                }
-                g.tabs[idx].needs_initial_refresh = false;
-                let t = std::time::Instant::now();
-                let is_local_pr = g.tabs[idx].pr_number.is_some() && !g.tabs[idx].is_remote();
-                let res = if is_local_pr {
-                    g.tabs[idx].refetch_and_refresh_diff()
-                } else {
-                    g.tabs[idx].refresh_diff()
+
+                // Phase 1 — brief lock: claim the tab and capture what the fetch
+                // needs, then release. The network legs must not run with the
+                // guard held: a `gh` round trip here blocks every command the
+                // user can issue, and this loop runs while they are working.
+                let inputs = {
+                    let Ok(mut g) = warmer_app.lock() else { break };
+                    if idx >= g.tabs.len() || !g.tabs[idx].needs_initial_refresh {
+                        continue;
+                    }
+                    g.tabs[idx].needs_initial_refresh = false;
+                    g.tabs[idx].pr_refresh_inputs()
                 };
-                drop(g);
+
+                // Phase 2 — no lock: the PR's network legs, if this tab has any.
+                // Timed separately from the rebuild, because this is the leg that
+                // reaches the network and the only one that can stall. The warmup
+                // log used to report the rebuild alone, which left the fetch — the
+                // part worth watching — invisible.
+                let mut fetch_failed = false;
+                let t_fetch = std::time::Instant::now();
+                let fetched = inputs.and_then(|inputs| {
+                    match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                        Ok(result) => Some(result),
+                        Err(e) => {
+                            log::warn!("background tab warmup fetch failed: {e}");
+                            fetch_failed = true;
+                            None
+                        }
+                    }
+                });
+                let fetch_ms = t_fetch.elapsed().as_millis();
+
+                // Phase 3 — brief lock: apply and rebuild the diff. `None` means a
+                // failed fetch, which leaves the stub alone: the pre-split
+                // `refetch_and_refresh_diff` errored out before reaching its own
+                // refresh, and phase 2 already logged the cause.
+                let t = std::time::Instant::now();
+                let res = if fetch_failed {
+                    None
+                } else {
+                    let Ok(mut g) = warmer_app.lock() else { break };
+                    let Some(tab) = g.tabs.get_mut(idx) else {
+                        break;
+                    };
+                    if let Some(result) = fetched {
+                        tab.apply_pr_refresh(result);
+                    }
+                    Some(tab.refresh_diff())
+                };
                 match res {
-                    Ok(()) => {
+                    Some(Ok(())) => {
+                        let refresh_ms = t.elapsed().as_millis();
                         profile_log::profile_log(
                             "background_tab_warmup",
                             &[
                                 ("tab_idx", idx.to_string()),
-                                ("ms", t.elapsed().as_millis().to_string()),
+                                // Split so a slow warmup says which leg cost it:
+                                // `fetch_ms` is the network, `refresh_ms` is the
+                                // local diff rebuild. `ms` is the sum of both.
+                                ("fetch_ms", fetch_ms.to_string()),
+                                ("refresh_ms", refresh_ms.to_string()),
+                                ("ms", (fetch_ms + refresh_ms).to_string()),
                             ],
                         );
                         profile_log::bump_desktop_revision(&warmer_rev, "background_tab_warmup");
                     }
-                    Err(e) => log::warn!("background tab warmup failed: {e}"),
+                    Some(Err(e)) => log::warn!("background tab warmup failed: {e}"),
+                    None => {}
                 }
                 // Yield between tabs so the UI thread can grab the mutex if needed.
                 std::thread::sleep(std::time::Duration::from_millis(150));
