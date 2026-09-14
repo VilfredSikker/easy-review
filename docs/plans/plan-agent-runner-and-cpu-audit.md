@@ -1,7 +1,8 @@
 # AI Agent Runners & CPU-Hot Path Audit
 
-Status: **Phases 0 and 1 complete. Phase 1's redraw gate is deferred with its
-reason; Phases 2-4 not started.**
+Status: **Phases 0, 1, 2 and 3 complete. Phase 4 has no trigger defined — see
+its section. Two items are deferred with their reasons: Phase 1's redraw gate,
+and Phase 3's incremental `baseGeometry` patch, which does not hold up.**
 
 Phase 0 instrumentation has landed (`er-engine/src/agent_timing.rs`, plus call
 sites in `agent_slots.rs`, `app/state/comments.rs`, `arena/adapter.rs`,
@@ -621,28 +622,101 @@ channel with drop-oldest, since it is a log.
 and models. Do not drop the CLI for the API: the prompts rely on the agent's own tool
 access to the repo.
 
+### Phase 2 status: done
+
+All eight items landed. Three of them turned out to be different from how this
+document described them, and the corrections are the useful part:
+
+- **The cheaper round 2 was already the case.** `build_arena_round2_prompt`
+  sends the round-1 findings array plus a diff path and asks for one vote per
+  finding — exactly the "feed it round 1's findings rather than a fresh full
+  review" this item proposed. Nothing to change.
+- **Item 5's fix needed a test that had never run.** `test_app` ran `git init`
+  without a commit, so HEAD was unborn, `App::new_with_args` failed with
+  "Failed to determine current branch", and the helper returns `None` — on
+  which every caller skips silently. Five of seven tests in
+  `background_queue_tests` had never executed, including the one covering the
+  dispatch behaviour the item changes. Fixing the helper turned on three more
+  failures, all stale expectations rather than product bugs.
+- **A second silent skip, in er-desktop.** `tabs.rs`'s `init_git_repo` never
+  disabled `commit.gpgsign`, so its test commits went through the developer's
+  signing agent; the helper nulls stderr and ignores the exit code, so a signing
+  failure left HEAD unborn. Four tests passed and failed depending on whether
+  1Password happened to be running.
+
+Also corrected: item 1's default is a **judgement, not a measurement**. The
+only latency figure Phase 0 produced was ~60 s for
+`claude -p "Reply with exactly the word ok and nothing else."` — a trivial
+prompt — so it is a floor on the round trip, not what a review costs.
+
 ### Phase 3 — UI isolation
 
-Extend `run_blocking` to the remaining heavy sync commands and widen the test at
-`commands.rs:11493`. Priority: `arena_start` / `arena_start_batch`
-(`arena_commands.rs:197`, `:241`, currently main-thread git + file IO),
-`submit_github_review` (`commands.rs:3013`, git + `gh` under the lock),
+**[done, with one exclusion]** Extend `run_blocking` to the remaining heavy sync
+commands and widen the test at `commands.rs:11493`. Priority: `arena_start` /
+`arena_start_batch` (`arena_commands.rs:197`, `:241`, currently main-thread git +
+file IO), `submit_github_review` (`commands.rs:3013`, git + `gh` under the lock),
 `open_worktree` (`:5898`), then the `config_commands.rs` set.
 
-Shrink the poll critical section: take a short lock for `drain_agent_log` /
-`check_commands` / `poll_background_tasks`, release, then re-take for the snapshot
-build. Move the sidecar parse in `reload_ai_state` off the lock where the caller
-allows it.
+**`open_worktree` is deliberately not converted**, though this list names it. Its
+first act is `rfd::FileDialog::pick_folder()`, which on macOS must run on the main
+thread — its blocking is a requirement, not slowness, and wrapping it would break
+the dialog rather than speed anything up.
 
-Frontend: coalesce `overlaySerial` bumps to a rAF in `onHeightChange`
-(`FlatDiffView.svelte:358`), and patch `baseGeometry` (`:372`) incrementally instead
-of rebuilding every offset.
+Everything else on the list is converted: the two arena commands,
+`submit_github_review`, and the config set (`apply_config_patch`,
+`save_config_global_cmd`, and the four provider/model upserts and deletes).
+`get_config_hub` stays sync on purpose — it reads state and builds a response
+without touching disk, so it is a lock hold rather than IO work.
+
+**[done]** Shrink the poll critical section: take a short lock for
+`drain_agent_log` / `check_commands` / `poll_background_tasks`, release, then
+re-take for the snapshot build. `poll_impl` now runs the mutating calls under one
+short lock and re-takes for the revisions and the snapshot together, so the two
+agree with each other.
+
+**[not needed — the seam already exists]** Move the sidecar parse in
+`reload_ai_state` off the lock where the caller allows it. `preload.rs` already
+implements exactly this shape and the desktop already uses it: a brief lock
+captures the load inputs, the parse runs outside, and a brief write-back installs
+`preloaded_branch_ai`, which `reload_ai_state` adopts via `take_preloaded_branch_ai`.
+The remaining in-lock parse is the one behind `check_ai_files_changed`'s mtime
+gate, so it happens when the sidecars actually changed — the reload is not a
+per-poll cost.
+
+Frontend: **[done]** coalesce `overlaySerial` bumps to a rAF in `onHeightChange`.
+**[not done — the suggestion does not hold]** patch `baseGeometry` incrementally.
+It is a *cumulative* offset array, so changing one row's height still costs O(n)
+to fix every offset after it; the rebuild is not the cost being paid. The number
+of rebuilds per frame was, and the rAF coalescing fixes that.
 
 ### Phase 4 — Re-evaluate
 
-Only if Phases 1–3 miss the target: per-viewport `SNAPSHOT_DIFF_LINE_BUDGET`, a warm
-long-lived agent process via the CLI's streaming mode, or deleting/wiring up the dead
-`agent_runtime.rs` surface.
+**This phase has no trigger.** It says "only if Phases 1–3 miss the target", and
+the document never states what the target is — no latency budget, no CPU figure,
+no before/after threshold anywhere in it. As written, Phase 4 cannot start
+because nothing says whether it should.
+
+Two of its three candidates also need something that does not exist yet:
+
+- **Per-viewport `SNAPSHOT_DIFF_LINE_BUDGET`.** `SNAPSHOT_DIFF_LINE_BUDGET =
+  15_000` is a global cap on the IPC diff payload. Making it per-viewport is a
+  protocol change — the frontend's `resolveOmittedHunks` self-heal and the
+  differential `delta_key` bookkeeping both key off what was sent — and there is
+  no measurement saying the global budget binds in practice. Worth doing when a
+  real session shows it, not before.
+- **A warm long-lived agent process.** Depends on provider CLIs offering a
+  streaming/attach mode with a stable protocol; the prompts currently rely on
+  one-shot `-p` invocations. This is a research question, not a scheduled item.
+
+**The third candidate is live and is a decision, not a task.** `agent_runtime.rs`
+is 1339 lines — `AgentTaskKind`, `AgentInvocation` / `resolve_invocation`,
+`build_argv`, `decode_final_text`, `ArtifactContract` — referenced by nothing but
+its own `pub mod` in `lib.rs` and one doc cross-reference from `agent_run.rs`. Its
+job is what `card_ai_spawn.rs` (`build_card_ai_argv`, `extract_reply_from_stdout`)
+and the `app/state` spawn paths already do. Either it becomes the shared
+resolution path those call, or it goes. **Not done here**: it is 1339 lines
+someone wrote deliberately, and deleting it is the user's call rather than a
+cleanup to slip into a performance branch.
 
 ### Documentation corrections
 
