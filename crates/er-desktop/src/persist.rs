@@ -24,11 +24,11 @@ pub fn save_json_atomic(path: &Path, payload: &impl serde::Serialize) -> io::Res
     }
     let tmp = path.with_extension("json.tmp");
 
-    // Stream straight into the tmp file instead of building the whole document
-    // as a String first. The open-diff cache carries every raw diff it holds —
-    // measured at ~2.9 MB on this machine — and the old form materialized all of
-    // it, plus the doubling reallocations, before writing a single byte. Same
-    // ordering (serialize, then rename) and the same cleanup on failure.
+    // Stream straight into the tmp file rather than building the whole document
+    // as a String first. These payloads are large — the open-diff cache holds
+    // every raw diff it has, megabytes' worth — and materializing one costs the
+    // allocation plus its doubling reallocations before a byte is written.
+    // Same ordering (serialize, then rename) and the same cleanup on failure.
     let write = || -> io::Result<()> {
         let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
         serde_json::to_writer_pretty(&mut writer, payload).map_err(|e| {
@@ -123,9 +123,8 @@ mod tests {
 
     #[test]
     fn serialize_failure_cleans_up_the_tmp_file() {
-        // The streamed form creates the tmp file before serializing, so a
-        // serializer that fails mid-write must not leave the tmp behind — the
-        // old form could not fail here, having serialized to a String first.
+        // The tmp file is created before serializing, so a serializer that fails
+        // mid-write must not leave it behind.
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cache.json");
         assert!(save_json_atomic(&path, &FailsToSerialize).is_err());

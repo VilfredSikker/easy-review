@@ -1688,9 +1688,8 @@ fn main() {
                 let fetch_ms = t_fetch.elapsed().as_millis();
 
                 // Phase 3 — brief lock: apply and rebuild the diff. `None` means a
-                // failed fetch, which leaves the stub alone: the pre-split
-                // `refetch_and_refresh_diff` errored out before reaching its own
-                // refresh, and phase 2 already logged the cause.
+                // failed fetch, which leaves the stub alone rather than rebuilding
+                // against refs that could not be refreshed; phase 2 logged why.
                 let t = std::time::Instant::now();
                 let res = if fetch_failed {
                     None

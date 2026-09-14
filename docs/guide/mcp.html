@@ -20,7 +20,9 @@
     <h2>Prerequisites</h2>
     <ul>
       <li><strong>git</strong> and <strong>gh</strong> on <code>PATH</code> (<code>gh auth login</code>)</li>
-      <li>Optional: Easy Review projects at <code>~/.config/er/projects.json</code> (Desktop writes this) so you can omit <code>repo=</code></li>
+      <li>Optional: Easy Review projects in the desktop's <code>projects.json</code> —
+        <code>~/Library/Application Support/er/projects.json</code> on macOS,
+        <code>~/.config/er/projects.json</code> on Linux — so you can omit <code>repo=</code></li>
       <li>Node 18+ (for the npm launcher) <em>or</em> a Rust toolchain (to build from source)</li>
     </ul>
 
@@ -28,8 +30,10 @@
 
     <h3>npm</h3>
     <p>
-      The <code>easy-review-mcp</code> package runs the MCP server. On first use it downloads
-      <code>er-mcp</code> from the matching GitHub Release and caches it locally.
+      The <code>easy-review-mcp</code> package runs the MCP server. npm installs the prebuilt
+      <code>er-mcp</code> binary for your platform as an optional dependency, so a normal install
+      downloads nothing extra. If that package is unavailable, the launcher falls back to the
+      matching GitHub Release, caches it locally, and reuses the cached copy.
     </p>
     <pre><code>npx -y easy-review-mcp</code></pre>
     <p>Supported hosts: macOS arm64/x64, Linux x64.
@@ -217,7 +221,7 @@ args = ["-y", "easy-review-mcp"]</code></pre>
 
     <h2>Troubleshooting</h2>
     <ul>
-      <li><strong>Claude stuck on “connecting…”</strong> — first run downloads a binary; on macOS Gatekeeper may block it. Clear quarantine and reconnect:
+      <li><strong>Claude stuck on “connecting…”</strong> — if the launcher had to download a binary, macOS Gatekeeper may block it. Clear quarantine and reconnect:
         <pre><code>xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
 <span class="cmt"># then in Claude: /mcp → easy-review → Reconnect</span></code></pre>
         Or skip npx and point at a local binary:

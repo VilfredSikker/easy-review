@@ -29,8 +29,8 @@
     <p>
       <code>er</code> does not reimplement git. It runs <code>git diff</code> and friends and parses the unified diff
       output into a structured model: each <strong>file</strong> contains <strong>hunks</strong>, and each hunk contains
-      <strong>lines</strong>. Every git invocation passes <code>--no-color</code> and <code>--no-ext-diff</code>, so
-      external diff tools like difftastic or delta never interfere. Because git is always installed and battle-tested,
+      <strong>lines</strong>. Diff output is always fetched with <code>--no-color</code> and <code>--no-ext-diff</code>,
+      so external diff tools like difftastic or delta never interfere. Because git is always installed and battle-tested,
       this handles every edge case for free.
     </p>
 
@@ -65,7 +65,7 @@
     <p>
       A review is a stateful activity, not a one-shot glance. <code>er</code> remembers which files you have marked
       reviewed, lets you filter to what remains, and can jump you to the next unreviewed file. That state persists
-      between sessions, keyed to the repository and branch, so a long review survives closing the app. See
+      between sessions, keyed to the repository, branch, and view, so a long review survives closing the app. See
       <a href="reviewing.html">Reviewing &amp; Navigation</a>.
     </p>
 
@@ -81,8 +81,8 @@
     <h2>The AI loop reads sidecar files</h2>
     <p>
       This is the part that makes <code>er</code> more than a diff viewer, so it is worth being precise:
-      <strong><code>er</code> does not run any AI model.</strong> Instead, AI tools you run (via the included Claude Code
-      skills, or the desktop app's built-in agent spawns) write structured <strong>sidecar files</strong> — risk levels,
+      <strong><code>er</code> does not run any AI model.</strong> Instead, AI tools you use (the included Claude Code
+      skills, or the agent spawns built into either app) write structured <strong>sidecar files</strong> — risk levels,
       findings, a checklist, a summary. <code>er</code> reads those files and renders them inline. The loop looks like this:
     </p>
     <pre><code>  you / AI Hub                             er
@@ -111,9 +111,11 @@
 
     <h2>No backend, no telemetry</h2>
     <p>
-      There is no server, no database, and no network calls of <code>er</code>'s own. It talks to your local
-      <code>git</code>, optionally to <code>gh</code> for pull request features, and reads files written by AI tools you
-      control. Your code never leaves your machine because of <code>er</code>.
+      There is no server, no database, and no telemetry — nothing phones home. The only outbound requests
+      <code>er</code> makes itself are the desktop app's version check against GitHub Releases and the proxy behind its
+      embedded browser, which fetches the pages you load in it. Otherwise it talks to your local <code>git</code>,
+      optionally to <code>gh</code> for pull request features, and reads files written by AI tools you control. Your
+      code never leaves your machine because of <code>er</code>.
     </p>
 
     <div class="callout note">

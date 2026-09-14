@@ -2805,18 +2805,18 @@ type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool, Option<String>)
 /// → cache miss → recompute, and a TTL backstops `is_merged` drift when the set
 /// is unchanged.
 ///
-/// A miss now costs four git processes for the whole list — `list_worktrees`,
-/// the remote, the branch merges, and `git branch --merged`. It used to cost two
-/// per worktree plus a `gh repo view` per worktree, so a nine-worktree repo paid
-/// eighteen git processes and nine network round trips at ~640ms each, serially
-/// with the App lock held. See `build_worktrees` for why one lookup of each
-/// covers the whole list.
+/// A miss costs four git processes for the whole list — `list_worktrees`, the
+/// remote, the branch merges, and `git branch --merged` — and no network. What
+/// the builder must not do is move any of those inside the per-worktree loop:
+/// every worktree of a repository shares its config and refs, so per-row
+/// lookups ask the same question N times, on the snapshot path, with the App
+/// lock held. See `build_worktrees`.
 ///
 /// More than one entry, because reviewing a few PRs at once means alternating
-/// between tabs whose `base_branch` differs — and `base_branch` is part of the
-/// key. A single slot evicted the other tab on every switch, so going back and
-/// forth rebuilt the metadata each way. Entries are about a kilobyte for a
-/// nine-worktree repo, so the cap costs nothing worth measuring.
+/// between tabs whose `base_branch` differs, and `base_branch` is part of the
+/// key: with a single slot, every switch drops the entry the other tab needs and
+/// rebuilds it on the way back. Entries are about a kilobyte for a nine-worktree
+/// repo, so the cap costs nothing worth measuring.
 static WORKTREES_META_CACHE: Mutex<Vec<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>> =
     Mutex::new(Vec::new());
 
@@ -2877,8 +2877,8 @@ fn worktrees_list_and_key(
             wt.path.hash(&mut h);
             wt.branch.hash(&mut h);
             // The tip, not only the branch name. `is_merged` compares tips, so
-            // a commit or a rebase moves the answer while path and branch stay
-            // put — previously only the TTL timer noticed that.
+            // without this a commit or a rebase moves the answer while path and
+            // branch stay put, and nothing in the key changes.
             //
             // Free: the oid arrives in the same `git worktree list --porcelain`
             // output this function already runs. The base branch's own tip is
@@ -2902,10 +2902,10 @@ fn worktrees_list_and_key(
 ///
 /// Every worktree `git worktree list` reports belongs to this repository and
 /// reads the same `.git/config` and the same refs, so the remote and the branch
-/// lookups are all per-repo values. Resolving them inside the per-worktree loop
-/// asked GitHub the same question once per row — nine network round trips on
-/// this machine to compute one answer — and ran two git processes per row on
-/// top. All three are hoisted here, so a cache hit costs no subprocess at all.
+/// lookups are all per-repo values: each is read once here and shared across the
+/// rows, rather than asked once per row. A per-worktree loop over these is N
+/// identical subprocesses for one answer, on the snapshot path with the App lock
+/// held.
 fn compute_worktrees_meta(
     wts: &[er_engine::git::Worktree],
     repo_root: &str,
@@ -4123,8 +4123,8 @@ pub fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
 
 /// Every `branch.<name>.merge` value in the repository, in one git call.
 ///
-/// This is the repo-wide form of the `git config --get branch.<name>.merge`
-/// lookup `detect_pr_meta` used to run per worktree.
+/// Branch config is repository-wide, so this answers for every worktree at once
+/// and belongs outside any per-worktree loop.
 fn pr_branch_merges(repo_root: &str) -> HashMap<String, String> {
     let Ok(out) = std::process::Command::new("git")
         .args(["config", "--local", "--get-regexp", r"^branch\..*\.merge$"])

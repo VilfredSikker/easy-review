@@ -21,7 +21,9 @@
     <ul>
       <li><strong>Herdr 0.7.0+</strong> — <a href="https://herdr.dev" target="_blank" rel="noopener">herdr.dev</a></li>
       <li><strong><code>er</code></strong> on <code>PATH</code> — see <a href="installation.html">Installation</a></li>
-      <li><strong>git</strong> — required by <code>er</code> (and optionally <strong>gh</strong> for PR sync)</li>
+      <li><strong>git</strong> — required by <code>er</code></li>
+      <li><strong>gh</strong> (GitHub CLI) — required by the Ctrl-click PR link, which runs
+      <code>er --remote</code>, and by PR comment sync. Run <code>gh auth login</code> first.</li>
     </ul>
 
     <h2>Install the plugin</h2>
@@ -70,8 +72,8 @@ herdr plugin pane open --plugin easy-review --entrypoint review</code></pre>
         <tr>
           <td><strong>Review current branch</strong></td>
           <td>
-            Action <code>easy-review.review-branch</code> — bind it to a key (see below) or invoke from the
-            command palette.
+            Action <code>easy-review.review-branch</code> — bind it to a key (see below), or run
+            <code>herdr plugin action invoke easy-review.review-branch</code>.
           </td>
         </tr>
         <tr>
@@ -103,9 +105,12 @@ description = "Review branch in Easy Review"</code></pre>
       <li><strong>Missing from herdr.dev/plugins.</strong> The GitHub repo needs the
       <code>herdr-plugin</code> topic, and <code>tools/herdr-easy-review/herdr-plugin.toml</code> must be on
       <code>main</code>. The marketplace index refreshes every 30 minutes.</li>
-      <li><strong>Review always opens the plugin's own repo.</strong> Relink this plugin after updating.
-      Pane commands start in the plugin directory; <code>open.sh</code> cds to the workspace checkout
-      from Herdr's context JSON before launching <code>er</code>.</li>
+      <li><strong>Review always opens the plugin's own repo.</strong> You are running a revision from
+      before <code>open.sh</code> learned to cd into the workspace checkout. Reinstall it
+      (<code>herdr plugin install VilfredSikker/easy-review/tools/herdr-easy-review --yes</code>) or pull
+      the linked clone. Pane commands start in the plugin directory; the current
+      <code>open.sh</code> cds to the workspace checkout from Herdr's context JSON before launching
+      <code>er</code>.</li>
       <li><strong>PR link does nothing.</strong> — Link handlers require a modified click (Ctrl+click). Plain
       clicks still open the browser.</li>
       <li><strong>Logs.</strong> — <code>herdr plugin log list --plugin easy-review</code></li>

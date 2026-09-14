@@ -153,12 +153,10 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         }
     };
 
-    // One `for-each-ref` per question was tried here and reverted: `%(HEAD)` is
-    // not populated by `for-each-ref` (it is by `git branch --format`), and on a
-    // repo with 119 local branches and 221 remote-tracking refs the enumeration
-    // costs ~20-36ms against ~20ms for a targeted `rev-parse`. Three targeted
-    // calls beat two enumeration calls in the common case, so the swap bought
-    // nothing to offset the behaviour change.
+    // Targeted `rev-parse` probes, not a `for-each-ref` enumeration: enumerating
+    // every local and remote-tracking ref costs more on a large repo than the
+    // few names this chain asks about, and `for-each-ref` does not populate
+    // `%(HEAD)`, so the current-branch exclusion has to come from somewhere else.
     let current = run(&["rev-parse", "--abbrev-ref", "HEAD"]).unwrap_or_default();
 
     // Try upstream tracking branch

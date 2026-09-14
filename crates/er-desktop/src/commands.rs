@@ -9172,9 +9172,8 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
         let t_refresh = std::time::Instant::now();
         if let Ok(mut app) = app_arc.lock() {
             if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
-                // A failed fetch leaves the tab as it was, which is what the
-                // pre-split `refetch_and_refresh_diff` did by erroring out
-                // before it reached its own refresh.
+                // A failed fetch leaves the tab as it was, rather than rebuilding
+                // the diff from refs that could not be refreshed.
                 if !fetch_failed {
                     match fetched {
                         Some(result) => tab.apply_pr_refresh(result),
@@ -9298,8 +9297,8 @@ pub fn kick_post_open_offload(app: &App, state: &AppState) {
         };
 
         // Phase 3 — brief lock: apply and rebuild the diff. Skipped when the fetch
-        // failed, which leaves the tab as it was — the pre-split
-        // `refetch_and_refresh_diff` errored out before reaching its refresh.
+        // failed, which leaves the tab as it was rather than rebuilding against
+        // refs that could not be refreshed.
         if !matches!(work, Work::Nothing | Work::Done) && !fetch_failed {
             if let Ok(mut app) = app_arc.lock() {
                 if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {

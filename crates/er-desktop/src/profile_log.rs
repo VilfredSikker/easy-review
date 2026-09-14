@@ -40,15 +40,12 @@ fn since_last_ms(kind: &str) -> u64 {
 
 /// Single-line log: `er-desktop kind=… ts_ms=… since_last_ms=… key=value …`
 ///
-/// Goes through the `log` crate rather than `eprintln!`, so it reaches the
-/// LogDir file as well as the console. The `er.profile` target is what
+/// Goes through the `log` crate rather than `eprintln!`. The distinction is the
+/// whole point: `eprintln!` bypasses the logger, so what it writes reaches the
+/// console and never the LogDir file, and a run you cannot read back is a run
+/// you cannot measure from. The `er.profile` target is what
 /// `dev_log::log_target_group` maps to the profile group, so the `ER_LOG` filter
-/// selects these lines exactly as it did when they were printed directly.
-///
-/// This is not cosmetic: `eprintln!` bypasses the logger, so profile output used
-/// to exist only in the launching terminal's scrollback and never in
-/// `Easy Review.log`. A run you could not scroll back was a run you could not
-/// measure.
+/// selects these lines.
 pub fn profile_log(kind: &str, fields: &[(&str, String)]) {
     if !crate::dev_log::enabled(crate::dev_log::GROUP_PROFILE) || !profile_enabled() {
         return;

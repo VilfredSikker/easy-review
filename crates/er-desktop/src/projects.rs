@@ -412,9 +412,9 @@ fn current_branch(root_path: &str) -> Option<String> {
 /// of a ~50ms process spawn, so callers on the snapshot path must not reach
 /// this in the common case.
 fn query_remote(root_path: &str) -> Option<String> {
-    // Bounded: this is reached from `build_worktrees`, which the poll runs with
-    // the App lock held, so an unresponsive GitHub here used to stall every
-    // command in the app rather than returning `None`.
+    // Bounded, because `build_worktrees` reaches this with the App lock held:
+    // an unresponsive GitHub must return `None` rather than stall every command
+    // in the app.
     let mut cmd = std::process::Command::new("gh");
     cmd.args([
         "repo",
@@ -445,10 +445,9 @@ fn query_remote(root_path: &str) -> Option<String> {
 ///
 /// Anything that is not a `github.com` remote, or that does not reduce to
 /// exactly two path segments, returns `None` — which sends the caller to the
-/// `gh` fallback rather than guessing at a slug. The host check is what keeps
-/// this a narrowing of the previous behaviour rather than a change to it: `gh`
-/// fails on a non-GitHub remote, so those callers see `None` today, and a
-/// local-path origin would otherwise reduce to something like `Users/me`.
+/// `gh` fallback rather than guessing at a slug. The host check carries real
+/// weight: `gh` fails on a non-GitHub remote, so callers expect `None` there,
+/// and a local-path origin would otherwise reduce to something like `Users/me`.
 pub fn slug_from_remote_url(url: &str) -> Option<String> {
     let url = url.trim();
     if url.is_empty() {
@@ -478,12 +477,11 @@ pub fn slug_from_remote_url(url: &str) -> Option<String> {
         }
     };
 
-    // github.com only. `gh repo view` exits non-zero on every other host, so
-    // the callers see `None` today for a GitLab remote, a local-path origin, or
-    // a GitHub Enterprise host. Handing them a slug instead of `None` is a
-    // behaviour change with a visible failure: `prUrl.ts` accepts any slug
-    // holding a slash, so a junk one renders a broken PR link rather than no
-    // link. Enterprise hosts fall back to `gh`, which knows how to reach them.
+    // github.com only. `gh repo view` exits non-zero on every other host, so a
+    // GitLab remote, a local-path origin, and a GitHub Enterprise host must all
+    // return `None` rather than a slug: `prUrl.ts` accepts any slug holding a
+    // slash, so a junk one renders a broken PR link instead of no link.
+    // Enterprise hosts fall back to `gh`, which knows how to reach them.
     if !host.eq_ignore_ascii_case("github.com") {
         return None;
     }
