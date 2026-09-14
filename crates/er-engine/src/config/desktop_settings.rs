@@ -1,7 +1,7 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
 use super::settings::{agent_effort_label, settings_fields_grouped};
-use super::{split_shell_args, ErConfig, AGENT_EFFORT_OPTIONS};
+use super::{split_shell_args, ErConfig, AGENT_EFFORT_OPTIONS, MAX_CONCURRENT_REVIEWS_RANGE};
 use serde::{Deserialize, Serialize};
 
 /// Wire value for a single config field patch from the desktop settings UI.
@@ -247,8 +247,28 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 ConfigFieldValue::String(v) => v.parse::<usize>().ok(),
                 ConfigFieldValue::Bool(_) => None,
             };
-            if let Some(n) = parsed.filter(|n| (1..=16).contains(n)) {
+            if let Some(n) = parsed.filter(|n| MAX_CONCURRENT_REVIEWS_RANGE.contains(n)) {
                 config.ai_hub.max_concurrent_reviews = n;
+            }
+        }
+        "ai_hub.max_concurrent_arena_reviews" => {
+            let parsed = match value {
+                ConfigFieldValue::Number(n) => Some(n as usize),
+                ConfigFieldValue::String(v) => v.parse::<usize>().ok(),
+                ConfigFieldValue::Bool(_) => None,
+            };
+            if let Some(n) = parsed.filter(|n| MAX_CONCURRENT_REVIEWS_RANGE.contains(n)) {
+                config.ai_hub.max_concurrent_arena_reviews = n;
+            }
+        }
+        "ai_hub.max_concurrent_agents" => {
+            let parsed = match value {
+                ConfigFieldValue::Number(n) => Some(n as usize),
+                ConfigFieldValue::String(v) => v.parse::<usize>().ok(),
+                ConfigFieldValue::Bool(_) => None,
+            };
+            if let Some(n) = parsed.filter(|n| MAX_CONCURRENT_REVIEWS_RANGE.contains(n)) {
+                config.ai_hub.max_concurrent_agents = n;
             }
         }
         "watched.diff_mode" => {
@@ -285,6 +305,50 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
 mod tests {
     use super::*;
     use crate::config::ErConfig;
+
+    #[test]
+    fn the_cap_picker_offers_exactly_what_the_setter_accepts() {
+        // These disagreed: the picker offered 1-6 while the write path
+        // accepted 1-16, so a value in 7-16 was kept but unselectable, and the
+        // picker could not reach its own maximum. Both now read one constant.
+        use crate::config::settings::{settings_fields_grouped, SettingsScope};
+
+        let grouped = settings_fields_grouped(&ErConfig::default());
+        let field = grouped
+            .general
+            .iter()
+            .chain(grouped.app.iter())
+            .chain(grouped.terminal.iter())
+            .find(|f| matches!(f, ConfigHubFieldDto::Cycle { key, .. } if key == "ai_hub.max_concurrent_reviews"))
+            .expect("the cap has a settings row");
+
+        let ConfigHubFieldDto::Cycle { options, .. } = field else {
+            unreachable!("matched on Cycle above");
+        };
+        let offered: Vec<usize> = options
+            .iter()
+            .map(|s| s.parse::<usize>().expect("numeric options"))
+            .collect();
+        assert_eq!(offered, MAX_CONCURRENT_REVIEWS_RANGE.collect::<Vec<_>>());
+
+        // And the setter agrees with the picker at both ends.
+        let mut config = ErConfig::default();
+        for n in [
+            *MAX_CONCURRENT_REVIEWS_RANGE.start(),
+            *MAX_CONCURRENT_REVIEWS_RANGE.end(),
+        ] {
+            apply_config_field(
+                &mut config,
+                "ai_hub.max_concurrent_reviews",
+                ConfigFieldValue::Number(n as u64),
+            );
+            assert_eq!(
+                config.ai_hub.max_concurrent_reviews, n,
+                "the setter must accept what the picker offers"
+            );
+        }
+        let _ = SettingsScope::General;
+    }
 
     #[test]
     fn settings_scopes_partition_fields() {

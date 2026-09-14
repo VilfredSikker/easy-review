@@ -346,6 +346,26 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
+        // Stop every running agent command (Ctrl+x).
+        //
+        // All of them rather than a chosen one: the Agent Log panel lists
+        // running commands but is not focusable, so there is no selection to
+        // act on. In practice a tab runs one command at a time; if that stops
+        // being true this wants a focusable list instead of a broader hammer.
+        KeyCode::Char('x') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            let runs = app.running_commands();
+            let count = runs.len();
+            for (_, run) in &runs {
+                run.kill();
+            }
+            app.notify(&match count {
+                0 => "No agent commands running".to_string(),
+                1 => "Stopping agent command...".to_string(),
+                n => format!("Stopping {n} agent commands..."),
+            });
+            return Ok(());
+        }
+
         // Push current branch to remote (Staged mode only)
         KeyCode::Char('p') if key.modifiers.contains(KeyModifiers::CONTROL) => {
             if app.tab().mode == DiffMode::Staged && !app.tab().is_remote() {

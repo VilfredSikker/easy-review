@@ -121,6 +121,11 @@ fn run_once(
     cancel: &AtomicBool,
     children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Value> {
+    // Marks: the caller has already taken a slot (or, for the arbiter, has
+    // none), so this timer measures the child's own life plus spawn cost.
+    let mut timer = crate::agent_timing::AgentRunTimer::start();
+    timer.mark_slot_acquired();
+
     let agent_args: Vec<String> = cmd
         .args
         .iter()
@@ -139,6 +144,7 @@ fn run_once(
     let mut child = child
         .spawn()
         .with_context(|| format!("spawn {}", cmd.command))?;
+    timer.mark_spawned();
 
     let child_id = child.id();
     let stdout = child.stdout.take();
@@ -166,6 +172,9 @@ fn run_once(
             .wait()
             .with_context(|| format!("wait {}", cmd.command))?
     };
+
+    timer.mark_finished();
+    timer.emit("arena_child", &cmd.command, status.success());
 
     if cancel.load(Ordering::SeqCst) {
         anyhow::bail!("cancelled");
@@ -597,5 +606,46 @@ mod tests {
         .unwrap();
         assert!(v1.get("findings").is_some());
         std::env::remove_var("ER_FAKE_ARENA_DIR");
+    }
+
+    #[test]
+    fn harness_measures_a_real_spawn() {
+        // Phase 0 harness. Drives a real child through the same spawn+wait path
+        // the arena uses, and checks the timer attributes the child's lifetime
+        // to `run_ms` rather than to queue or spawn. Goes through `run_once`
+        // rather than `run_provider_json` so it does not depend on the
+        // `ER_FAKE_ARENA_DIR` hook that another test sets process-wide.
+        crate::agent_timing::set_enabled(true);
+
+        let cmd = ProviderCommand {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "sleep 0.3; printf '{\"round\":1}'".to_string(),
+            ],
+            stream_json: false,
+            env: Vec::new(),
+        };
+        let cancel = AtomicBool::new(false);
+        let children = Arc::new(Mutex::new(Vec::new()));
+
+        let mut timer = crate::agent_timing::AgentRunTimer::start();
+        timer.mark_slot_acquired();
+        let v = run_once(&cmd, "ignored prompt", ".", &cancel, &children)
+            .expect("fake provider runs and emits json");
+        timer.mark_finished();
+
+        assert_eq!(v["round"], 1, "child stdout parsed as the round payload");
+        let p = timer.phases();
+        assert!(
+            p.run_ms >= 250,
+            "a 300ms child belongs in run_ms, got {}",
+            p.run_ms
+        );
+        assert!(
+            children.lock().unwrap().is_empty(),
+            "the child handle is removed from the shared vec, not leaked"
+        );
+        crate::agent_timing::emit_slot_summary("harness");
     }
 }

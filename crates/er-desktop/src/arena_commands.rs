@@ -194,47 +194,57 @@ pub fn arena_estimate_batch(
 }
 
 #[tauri::command]
-pub fn arena_start(req: ArenaStartRequest, state: State<AppState>) -> Result<String, String> {
-    crate::dev_log::arena_line(format!(
-        "arena_start: reviewers={} scope={} rounds={:?} confirm={}",
-        req.reviewers.len(),
-        req.scope,
-        req.rounds,
-        req.confirm.unwrap_or(false)
-    ));
-    let reviewers = wire_reviewers(&req.reviewers);
-    let scope = parse_scope(&req.scope);
-    let arbiter = req.arbiter.map(|a| ReviewerRef {
-        provider_id: a.provider_id,
-        model_id: a.model_id,
-        agent_kind: a.agent_kind,
-    });
-    let params = ArenaStartParams {
-        title: req.title,
-        reviewers,
-        scope,
-        files: req.files,
-        rounds: req.rounds,
-        arbiter,
-        confirm: req.confirm.unwrap_or(false),
-        agent_kind: req.agent_kind,
-        effort: req.effort,
-    };
-    let run_id = {
-        let mut app = state.app.lock().map_err(|e| {
-            let msg = e.to_string();
-            crate::dev_log::arena_line(format!("arena_start: lock app failed: {msg}"));
-            msg
-        })?;
-        app.arena_start(params).map_err(|e| {
-            let msg = e.to_string();
-            crate::dev_log::arena_line(format!("arena_start: engine failed: {msg}"));
-            msg
-        })?
-    };
-    crate::dev_log::arena_line(format!("arena_start: ok run_id={run_id}"));
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(run_id)
+pub async fn arena_start(
+    req: ArenaStartRequest,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let state = state.inner().clone();
+    // Off the main thread: starting a run does git and file IO under the App
+    // lock, and a sync command doing that blocks the one thread that also
+    // pumps the window.
+    crate::commands::run_blocking(move || {
+        crate::dev_log::arena_line(format!(
+            "arena_start: reviewers={} scope={} rounds={:?} confirm={}",
+            req.reviewers.len(),
+            req.scope,
+            req.rounds,
+            req.confirm.unwrap_or(false)
+        ));
+        let reviewers = wire_reviewers(&req.reviewers);
+        let scope = parse_scope(&req.scope);
+        let arbiter = req.arbiter.map(|a| ReviewerRef {
+            provider_id: a.provider_id,
+            model_id: a.model_id,
+            agent_kind: a.agent_kind,
+        });
+        let params = ArenaStartParams {
+            title: req.title,
+            reviewers,
+            scope,
+            files: req.files,
+            rounds: req.rounds,
+            arbiter,
+            confirm: req.confirm.unwrap_or(false),
+            agent_kind: req.agent_kind,
+            effort: req.effort,
+        };
+        let run_id = {
+            let mut app = state.app.lock().map_err(|e| {
+                let msg = e.to_string();
+                crate::dev_log::arena_line(format!("arena_start: lock app failed: {msg}"));
+                msg
+            })?;
+            app.arena_start(params).map_err(|e| {
+                let msg = e.to_string();
+                crate::dev_log::arena_line(format!("arena_start: engine failed: {msg}"));
+                msg
+            })?
+        };
+        crate::dev_log::arena_line(format!("arena_start: ok run_id={run_id}"));
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(run_id)
+    })
+    .await
 }
 
 /// Validate the current tab's expert findings: dedupe them and rule on the
@@ -261,29 +271,34 @@ pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Optio
 }
 
 #[tauri::command]
-pub fn arena_start_batch(
+pub async fn arena_start_batch(
     req: ArenaBatchStartRequest,
-    state: State<AppState>,
+    state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let batch = ArenaBatchStartParams {
-        scope: parse_scope(&req.scope),
-        files: req.files,
-        rounds: req.rounds,
-        arbiter: req.arbiter.map(|a| ReviewerRef {
-            provider_id: a.provider_id,
-            model_id: a.model_id,
-            agent_kind: a.agent_kind,
-        }),
-        confirm: req.confirm.unwrap_or(false),
-        groups: wire_groups(&req.groups),
-        effort: req.effort,
-    };
-    let run_ids = {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.arena_start_batch(batch).map_err(|e| e.to_string())?
-    };
-    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
-    Ok(run_ids)
+    let state = state.inner().clone();
+    // Off the main thread, for the same reason as `arena_start`.
+    crate::commands::run_blocking(move || {
+        let batch = ArenaBatchStartParams {
+            scope: parse_scope(&req.scope),
+            files: req.files,
+            rounds: req.rounds,
+            arbiter: req.arbiter.map(|a| ReviewerRef {
+                provider_id: a.provider_id,
+                model_id: a.model_id,
+                agent_kind: a.agent_kind,
+            }),
+            confirm: req.confirm.unwrap_or(false),
+            groups: wire_groups(&req.groups),
+            effort: req.effort,
+        };
+        let run_ids = {
+            let mut app = state.app.lock().map_err(|e| e.to_string())?;
+            app.arena_start_batch(batch).map_err(|e| e.to_string())?
+        };
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(run_ids)
+    })
+    .await
 }
 
 #[tauri::command]

@@ -1346,7 +1346,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engin
         };
 
         let time_style = Style::default().fg(styles::MUTED());
-        let name_style = match entry.command_name.as_str() {
+        let name_style = match entry.command_name.as_ref() {
             "review" => Style::default().fg(styles::ORANGE()),
             "questions" => Style::default().fg(styles::YELLOW()),
             _ => Style::default().fg(styles::BLUE()),

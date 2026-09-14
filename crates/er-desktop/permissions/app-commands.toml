@@ -64,6 +64,7 @@ commands.allow = [
   "run_ai_scoped_review",
   "run_ai_validate",
   "cancel_queued_review",
+  "cancel_running_review",
   "list_diff_paths",
   "set_ai_model",
   "list_ai_providers",

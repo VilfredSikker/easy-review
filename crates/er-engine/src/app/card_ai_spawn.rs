@@ -1,6 +1,6 @@
 //! Subprocess invocation for desktop card-level AI (Ask AI / Validate with AI).
 
-use crate::config::{agent_command_uses_stream_json, inject_provider_effort, ErConfig};
+use crate::config::{agent_command_uses_stream_json, ErConfig};
 use std::process::Command;
 
 /// Resolved agent command + args for a card AI subprocess.
@@ -12,6 +12,16 @@ pub struct CardAiInvocation {
     pub uses_stream_json: bool,
     /// Extra process environment (OpenCode read-only permissions).
     pub env: Vec<(String, String)>,
+    /// Wall-clock limit for this run, resolved from config when the invocation
+    /// is planned. Carried on the invocation because the spawn is the only
+    /// place that needs it, and it must not be re-resolved there against a
+    /// config the caller may since have changed.
+    pub timeout: std::time::Duration,
+    /// Process-wide concurrency cap this run waits on before spawning,
+    /// resolved from config alongside the deadline.
+    pub slot_cap: usize,
+    /// Shared ceiling across both workloads, resolved alongside `slot_cap`.
+    pub slot_ceiling: usize,
 }
 
 /// Resolve provider/command/args from config (mirrors background review selection).
@@ -22,110 +32,76 @@ pub fn plan_card_ai_invocation(
     runtime_effort: Option<&str>,
     work_dir: String,
 ) -> CardAiInvocation {
-    let (command, mut args, is_claude, resolved_provider_id, resolved_model_id, family) =
-        if let Some(pid) = config.ai_hub.resolve_provider_id(provider_id) {
-            if let Some(provider) = config.ai_hub.providers.get(&pid) {
-                let mut args = provider.args.clone();
-                let family = provider.cli_family();
-                let resolved_model_id = config.ai_hub.resolve_model_id(&pid, model_id);
-                if let Some(mid) = &resolved_model_id {
-                    if let Some(model) = provider.models.iter().find(|m| m.id == *mid) {
-                        crate::config::extend_provider_model_args(family, &mut args, &model.args);
-                    }
-                }
-                let is_claude = crate::config::agent_command_is_claude(&provider.command);
-                (
-                    provider.command.clone(),
-                    args,
-                    is_claude,
-                    Some(pid.to_string()),
-                    resolved_model_id,
-                    family,
-                )
-            } else {
-                fallback_agent(config)
-            }
-        } else {
-            fallback_agent(config)
-        };
-
-    // Hub and legacy `[agent]` paths both need `--auto` for headless OpenCode,
-    // paired with a read-only permission object so asks cannot mutate the tree.
-    let mut env = Vec::new();
-    if let Some(pair) = crate::config::apply_opencode_readonly_spawn(family, &mut args) {
-        env.push(pair);
-    }
-
-    let uses_stream_json =
-        agent_command_uses_stream_json(&command) && args.iter().any(|a| a == "stream-json");
-
-    if is_claude {
-        inject_read_only_tools(&mut args);
-    }
-    let effort = crate::config::resolve_effort_for_model(
-        &config.ai_hub,
-        &config.agent,
-        resolved_provider_id.as_deref(),
-        resolved_model_id.as_deref(),
-        runtime_effort,
-        None,
+    // One resolution path. `agent_runtime` was written to be exactly this and
+    // then nothing called it, which left 1339 lines dead and this another copy
+    // of the same rules.
+    //
+    // The delegation is pinned by two tests in `agent_runtime`:
+    // `what_the_runtime_resolves_versus_what_card_ai_resolves` compares argv
+    // across every catalog provider and model, and its `..._with_no_hub_provider`
+    // sibling covers the legacy `[agent]` fallback -- the branch a delegation
+    // could quietly change, and the one a happy-path check would miss.
+    let resolved = crate::agent_runtime::resolve_invocation(
+        config,
+        crate::agent_runtime::AgentInvocationRequest {
+            selection: crate::agent_runtime::AgentSelection::Runtime {
+                provider_id,
+                model_id,
+            },
+            task: &crate::agent_runtime::AgentTaskKind::CardReply,
+            effort: runtime_effort,
+            effort_override: None,
+            work_dir: work_dir.clone(),
+            access: crate::agent_runtime::AgentAccessProfile::ReadOnly,
+            live_logs: false,
+        },
     );
-    inject_provider_effort(
-        family,
-        &mut args,
-        resolved_model_id.as_deref(),
-        effort.as_deref(),
-    );
-    // Card AI returns text on stdout; the host persists replies. No managed
-    // storage --add-dir is required (and would be overly broad for Codex).
+
+    let (command, args, work_dir, family, output_protocol, env) = match resolved {
+        Ok(inv) => (
+            inv.command,
+            inv.args,
+            inv.work_dir,
+            inv.family,
+            inv.output_protocol,
+            inv.env,
+        ),
+        // Unreachable in practice — `resolve_invocation` falls back internally
+        // rather than failing — but this path's contract is a display string,
+        // so a resolution failure has to produce a shape rather than a panic.
+        Err(_) => (
+            config.agent.command.clone(),
+            config.agent.args.clone(),
+            work_dir,
+            crate::config::CliFamily::detect(&config.agent.command),
+            crate::agent_runtime::OutputProtocol::Plain,
+            Vec::new(),
+        ),
+    };
+
+    // Kept as the old derivation rather than read off `output_protocol`: the
+    // protocol does not carry the command-family guard, so a non-CLI command
+    // with a `stream-json` argument would flip this field under the mapping.
+    let uses_stream_json = agent_command_uses_stream_json(&command)
+        && output_protocol == crate::agent_runtime::OutputProtocol::ClaudeStreamJson;
 
     CardAiInvocation {
         command,
+        is_claude_compatible: family == crate::config::CliFamily::Claude,
+        uses_stream_json,
         args,
         work_dir,
-        is_claude_compatible: is_claude,
-        uses_stream_json,
         env,
+        timeout: config.ai_hub.effective_agent_timeout(),
+        slot_cap: config.ai_hub.effective_max_concurrent_reviews(),
+        slot_ceiling: config.ai_hub.effective_max_concurrent_agents(),
     }
 }
 
-fn fallback_agent(
-    config: &ErConfig,
-) -> (
-    String,
-    Vec<String>,
-    bool,
-    Option<String>,
-    Option<String>,
-    crate::config::CliFamily,
-) {
-    let cmd = config.agent.command.clone();
-    let is_claude = crate::config::agent_command_is_claude(&cmd);
-    let family = crate::config::CliFamily::detect(&cmd);
-    (
-        cmd,
-        config.agent.args.clone(),
-        is_claude,
-        None,
-        (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
-        family,
-    )
-}
-
-fn inject_read_only_tools(args: &mut Vec<String>) {
-    const TOOLS: &[&str] = &[
-        "Read",
-        "Bash(grep *)",
-        "Bash(rg *)",
-        "Bash(git grep*)",
-        "Bash(git show*)",
-        "Bash(git log*)",
-    ];
-    for rule in TOOLS.iter().rev() {
-        args.insert(0, rule.to_string());
-        args.insert(0, "--allowedTools".to_string());
-    }
-}
+// `fallback_agent` and `inject_read_only_tools` lived here and are gone:
+// `agent_runtime::resolve_invocation` owns both the `[agent]` fallback and the
+// read-only tool list, and the delegation above is pinned against this file's
+// former behaviour by the differential tests in that module.
 
 /// Build argv: Claude uses `--append-system-prompt`; other CLIs (e.g. Codex) fold
 /// system context into the `{prompt}` placeholder or trailing prompt arg.
@@ -191,13 +167,50 @@ pub fn run_card_ai_subprocess(
         }
     }
 
+    // Spawned through the run handle rather than `cmd.output()`, so card AI
+    // gets the same deadline as the other spawn paths. It was the one path
+    // that never created a child at all, which is why it could not be stopped
+    // and could not time out.
+    let run = crate::agent_run::AgentRunHandle::new();
+
+    // Waits for a slot, like every other spawn path. This is the path a user
+    // waits on directly, so it is the one where queueing is felt -- but a cap
+    // that exempts the interactive path is not a cap, and the caller runs
+    // under `run_blocking` so the UI stays responsive while it waits.
+    let Some(_slot) = crate::agent_slots::acquire(
+        crate::agent_slots::Workload::Background,
+        inv.slot_cap,
+        inv.slot_ceiling,
+        run.cancel_flag(),
+    ) else {
+        return "Pending — invoke via CLI (stopped while waiting for a slot)".to_string();
+    };
+
     let result = {
         let mut cmd = Command::new(&inv.command);
-        cmd.args(&args).current_dir(&inv.work_dir);
+        cmd.args(&args)
+            .current_dir(&inv.work_dir)
+            // `cmd.output()` set these itself; spawning by hand means asking.
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
         for (key, value) in &inv.env {
             cmd.env(key, value);
         }
-        cmd.output()
+        match run.spawn(&mut cmd) {
+            Ok(child) => {
+                let id = child.id();
+                run.register(child);
+                run.arm_timeout(inv.timeout);
+                match run.take_child(id) {
+                    Some(child) => run.wait_for_output(child).map_err(anyhow::Error::from),
+                    // Unreachable: `register` just put it there under this id.
+                    // Reported as a spawn failure rather than panicking, since
+                    // this path's contract is to hand back a string.
+                    None => Err(anyhow::anyhow!("card AI: lost its own child")),
+                }
+            }
+            Err(e) => Err(e),
+        }
     };
 
     match result {
@@ -216,6 +229,16 @@ pub fn run_card_ai_subprocess(
             }
         }
         Ok(out) => {
+            // Reported through this path's usual string rather than the engine
+            // error types: card AI hands back display text, and a caller that
+            // has to tell a timeout from a crash here would need the signature
+            // changed for it.
+            if run.is_timed_out() {
+                return format!(
+                    "Pending — invoke via CLI ({})",
+                    crate::agent_run::timed_out(inv.timeout)
+                );
+            }
             let err = String::from_utf8_lossy(&out.stderr);
             format!(
                 "Pending — invoke via CLI ({} exited {}: {})",
@@ -294,6 +317,10 @@ mod tests {
             is_claude_compatible: false,
             uses_stream_json: false,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(!args.iter().any(|a| a == "--append-system-prompt"));
@@ -311,6 +338,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let args = build_card_ai_argv(&inv, "system context", "how does this work?");
         assert!(args
@@ -334,6 +365,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: true,
             env: vec![],
+            // Irrelevant to argv construction; these tests never spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let reply = extract_reply_from_stdout(stdout, inv.uses_stream_json);
         assert_eq!(reply, "**Verdict**: Confirmed");
@@ -424,6 +459,23 @@ mod tests {
             .windows(2)
             .any(|pair| { pair[0] == "-c" && pair[1] == "model_reasoning_effort=high" }));
         assert!(!inv.args.iter().any(|a| a.contains("--add-dir")));
+    }
+
+    #[test]
+    fn the_planned_invocation_carries_the_configured_deadline() {
+        // The spawn reads the limit off the invocation, so a plan that dropped
+        // it would leave card AI as the one path with no deadline -- exactly
+        // the state this changed.
+        let mut config = ErConfig::default();
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
+        assert_eq!(
+            inv.timeout,
+            std::time::Duration::from_secs(crate::config::DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+
+        config.ai_hub.agent_timeout_secs = 120;
+        let inv = plan_card_ai_invocation(&config, None, None, None, "/repo".into());
+        assert_eq!(inv.timeout, std::time::Duration::from_secs(120));
     }
 
     #[test]

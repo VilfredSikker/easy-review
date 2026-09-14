@@ -9,6 +9,7 @@
 //! durable `log::error!` entries).
 
 use std::io;
+use std::io::Write;
 use std::path::Path;
 
 /// Atomically write `payload` as pretty JSON to `path` (tmp file + rename).
@@ -18,17 +19,27 @@ use std::path::Path;
 ///   returned, so callers can log with context. The previous contents at
 ///   `path` survive until the rename — a failed save never corrupts the cache.
 pub fn save_json_atomic(path: &Path, payload: &impl serde::Serialize) -> io::Result<()> {
-    let json = serde_json::to_string_pretty(payload).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("serialize payload: {e}"),
-        )
-    })?;
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension("json.tmp");
-    if let Err(e) = std::fs::write(&tmp, json) {
+
+    // Stream straight into the tmp file rather than building the whole document
+    // as a String first. These payloads are large — the open-diff cache holds
+    // every raw diff it has, megabytes' worth — and materializing one costs the
+    // allocation plus its doubling reallocations before a byte is written.
+    // Same ordering (serialize, then rename) and the same cleanup on failure.
+    let write = || -> io::Result<()> {
+        let mut writer = std::io::BufWriter::new(std::fs::File::create(&tmp)?);
+        serde_json::to_writer_pretty(&mut writer, payload).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("serialize payload: {e}"),
+            )
+        })?;
+        writer.flush()
+    };
+    if let Err(e) = write() {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
     }
@@ -99,6 +110,26 @@ mod tests {
         // The tmp file is cleaned up and the directory is untouched.
         assert!(!path.with_extension("json.tmp").exists());
         assert!(path.is_dir());
+    }
+
+    /// Serializes to an error, so the writer fails part-way through.
+    struct FailsToSerialize;
+
+    impl Serialize for FailsToSerialize {
+        fn serialize<S: serde::Serializer>(&self, _s: S) -> Result<S::Ok, S::Error> {
+            Err(serde::ser::Error::custom("nope"))
+        }
+    }
+
+    #[test]
+    fn serialize_failure_cleans_up_the_tmp_file() {
+        // The tmp file is created before serializing, so a serializer that fails
+        // mid-write must not leave it behind.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("cache.json");
+        assert!(save_json_atomic(&path, &FailsToSerialize).is_err());
+        assert!(!path.with_extension("json.tmp").exists());
+        assert!(!path.exists());
     }
 
     #[test]
