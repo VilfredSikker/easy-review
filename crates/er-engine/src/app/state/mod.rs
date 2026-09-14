@@ -1167,6 +1167,27 @@ pub struct MemoryBudget {
     pub compacted_files: usize,
 }
 
+/// Plain inputs a PR refresh needs.
+///
+/// Owned, so [`TabState::fetch_pr_refresh`] can run with no App lock held and
+/// no tab to borrow — which is the whole point of splitting the fetch out.
+#[derive(Debug, Clone)]
+pub struct PrRefreshInputs {
+    pub repo_root: String,
+    pub pr_number: u64,
+}
+
+/// What [`TabState::fetch_pr_refresh`] brought back, ready for
+/// [`TabState::apply_pr_refresh`].
+#[derive(Debug)]
+pub struct PrRefreshResult {
+    pub head_ref: String,
+    /// The resolved remote-tracking base (e.g. `origin/main`).
+    pub resolved_base: String,
+    pub last_diff_head_oid: Option<String>,
+    pub commits: Vec<crate::git::CommitInfo>,
+}
+
 impl TabState {
     /// Get the comment text from the textarea, joined and trimmed
     pub fn comment_text(&self) -> String {
@@ -2521,6 +2542,117 @@ impl TabState {
         self.refresh_diff_impl(true, true, true)
     }
 
+    /// The inputs a PR refresh needs, when this tab is a local PR tab.
+    ///
+    /// `None` means the caller wants an ordinary refresh: either the tab is not
+    /// a PR, or it is remote-only and has no local clone to fetch into.
+    pub fn pr_refresh_inputs(&self) -> Option<PrRefreshInputs> {
+        if self.is_remote() {
+            return None;
+        }
+        Some(PrRefreshInputs {
+            repo_root: self.repo_root.clone(),
+            pr_number: self.pr_number?,
+        })
+    }
+
+    /// Every network leg a PR refresh needs, touching no App state.
+    ///
+    /// This is the lock-free half of [`Self::refetch_and_refresh_diff`], split
+    /// out so callers that hold the desktop App lock can capture the inputs,
+    /// release it, and pay the three network round trips outside the critical
+    /// section. The head fetch and the `gh pr view` are independent, so they
+    /// overlap; the base fetch needs the base name the lookup returns, so it
+    /// follows them.
+    pub fn fetch_pr_refresh(inputs: &PrRefreshInputs) -> Result<PrRefreshResult> {
+        let pr_number = inputs.pr_number;
+        let repo_root = inputs.repo_root.as_str();
+
+        let (head_result, lookup_result) = std::thread::scope(|s| {
+            let head_handle = s.spawn(move || crate::github::fetch_pr_head(pr_number, repo_root));
+            let lookup = crate::github::gh_pr_base_branch_and_commits(repo_root, pr_number, 250);
+            let head_result = head_handle
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("pr head fetch thread panicked")));
+            (head_result, lookup)
+        });
+        let head_ref = head_result?;
+
+        // Base branch and commit list are two fields of one PR, so one
+        // `gh pr view` answers both. Two invocations cost two round trips
+        // (~0.6s each) for the same object.
+        let (base_branch, commits) = match lookup_result {
+            Ok(pair) => pair,
+            // A failed union cannot say which field was at fault, so fall back
+            // to the two-call form and keep its error split: a base lookup
+            // failure is fatal, a commit lookup failure is not (an empty list
+            // keeps the existing one — see `apply_pr_commit_refresh`).
+            Err(_) => (
+                crate::github::gh_pr_base_branch(pr_number, repo_root)?,
+                crate::github::gh_pr_commits(repo_root, pr_number, 250)
+                    .map_err(|e| {
+                        eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}")
+                    })
+                    .unwrap_or_default(),
+            ),
+        };
+
+        let resolved_base = crate::github::fetch_base_branch_ref(repo_root, &base_branch)?;
+        // The oid the diff is about to be computed against, so the desktop
+        // freshness check can compare it to the latest PR head_oid.
+        let last_diff_head_oid = crate::github::rev_parse_oid(repo_root, &head_ref);
+
+        Ok(PrRefreshResult {
+            head_ref,
+            resolved_base,
+            last_diff_head_oid,
+            commits,
+        })
+    }
+
+    /// Assign a fetched refresh to this tab.
+    ///
+    /// Deliberately does *not* run the diff: [`Self::refetch_and_refresh_diff`]
+    /// shares one refresh across all its paths, and the desktop's lock-free
+    /// callers run theirs right after re-taking the guard.
+    pub fn apply_pr_refresh(&mut self, result: PrRefreshResult) {
+        self.pr_head_ref = Some(result.head_ref);
+        self.base_branch = result.resolved_base;
+        self.last_diff_head_oid = result.last_diff_head_oid;
+        // Refresh the PR commit list so the COMMITS panel follows the synced
+        // head. Best-effort: a fetch error keeps the existing list; an empty
+        // result (the failure signal for a real PR, which always has ≥1 commit)
+        // is also kept — see `apply_pr_commit_refresh`.
+        apply_pr_commit_refresh(&mut self.pr_commits, result.commits);
+    }
+
+    /// Record the oid the diff is about to be built against, read from the local
+    /// PR ref.
+    ///
+    /// Every caller that rebuilds the diff from `refs/er/pr/N/head` *without*
+    /// fetching must call this first. `compute_oid_staleness` deliberately
+    /// refuses to compare against an unknown `used_oid` ("either side unknown →
+    /// don't guess"), so leaving this `None` shows a diff that is behind the PR
+    /// head with no stale pill at all — the silent-staleness case.
+    ///
+    /// A restored tab is the reason this exists: `last_diff_head_oid` is runtime
+    /// state, not persisted, so a tab rehydrated from disk starts with `None`
+    /// even though its refs are on disk and its diff is real.
+    pub fn seed_last_diff_head_oid_from_local_ref(&mut self) {
+        if self.is_remote() {
+            return;
+        }
+        let Some(pr_number) = self.pr_number else {
+            return;
+        };
+        let ref_name = format!("refs/er/pr/{pr_number}/head");
+        // Only ever fills a gap. Overwriting a known oid with `None` on an
+        // unresolvable ref would suppress a pill that was already correct.
+        if let Some(oid) = crate::github::rev_parse_oid(&self.repo_root, &ref_name) {
+            self.last_diff_head_oid = Some(oid);
+        }
+    }
+
     /// For local PR tabs: re-fetch the PR head ref and base branch from origin before
     /// refreshing the diff. For all other tab types, behaves like `refresh_diff`.
     pub fn refetch_and_refresh_diff(&mut self) -> Result<()> {
@@ -2529,36 +2661,14 @@ impl TabState {
         // preload and never hit the network).
         self.preloaded_branch_raw = None;
         let t_total = Instant::now();
-        let is_local_pr = self.pr_number.is_some() && !self.is_remote();
-
-        if let (true, Some(pr_number)) = (is_local_pr, self.pr_number) {
+        if let Some(inputs) = self.pr_refresh_inputs() {
+            // One phase log for the whole fetch. The head fetch and the gh
+            // lookup overlap inside `fetch_pr_refresh`, so logging them
+            // separately would report two intervals that share wall time.
             let t = Instant::now();
-            let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
-            log_branch_profile_phase(self, "fetch_pr_head", t);
-            let t = Instant::now();
-            let base_branch = crate::github::gh_pr_base_branch(pr_number, &self.repo_root)?;
-            log_branch_profile_phase(self, "lookup_pr_base_branch", t);
-            let t = Instant::now();
-            let resolved_base =
-                crate::github::fetch_base_branch_ref(&self.repo_root, &base_branch)?;
-            log_branch_profile_phase(self, "fetch_pr_base_ref", t);
-
-            self.pr_head_ref = Some(head_ref.clone());
-            self.base_branch = resolved_base;
-            // Record the oid the diff was computed against so the desktop
-            // freshness check can compare it to the latest PR head_oid.
-            self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
-
-            // Refresh the PR commit list so the COMMITS panel follows the synced
-            // head. Best-effort: a fetch error keeps the existing list; an empty
-            // result (the failure signal for a real PR, which always has ≥1
-            // commit) is also kept — see `apply_pr_commit_refresh`.
-            let t = Instant::now();
-            match crate::github::gh_pr_commits(&self.repo_root, pr_number, 250) {
-                Ok(commits) => apply_pr_commit_refresh(&mut self.pr_commits, commits),
-                Err(e) => eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}"),
-            }
-            log_branch_profile_phase(self, "refetch_pr_commits", t);
+            let result = Self::fetch_pr_refresh(&inputs);
+            log_branch_profile_phase(self, "fetch_pr_refresh", t);
+            self.apply_pr_refresh(result?);
         } else if self.shows_branch_base_diff() {
             // Branch ("Local Diff") view — main checkout or read-only branch view:
             // the diff base is origin/<base>. Re-fetch
@@ -12743,6 +12853,84 @@ mod tests {
 
         assert_eq!(existing.len(), 3);
         assert_eq!(existing[0].subject, "old 0");
+    }
+
+    // ── stale-pill seeding for a diff rebuilt without a fetch ──
+
+    /// A tab that rebuilds its diff from the local PR ref *without* fetching
+    /// must record the oid it built against. `compute_oid_staleness` refuses to
+    /// compare against an unknown ("either side unknown → don't guess"), so an
+    /// unset field means a diff that is behind the PR head shows no pill at all.
+    /// A restored tab is exactly this case: `last_diff_head_oid` is runtime
+    /// state and is not persisted, so it starts empty while the refs are on disk.
+    #[test]
+    fn seed_last_diff_head_oid_reads_the_local_pr_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-b", "main", "--quiet"]);
+        std::fs::write(root.join("f.txt"), "x\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-m", "init", "--no-gpg-sign"]);
+        git(&["update-ref", "refs/er/pr/7/head", "HEAD"]);
+
+        let head_oid = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = root.to_str().unwrap().to_string();
+        tab.pr_number = Some(7);
+        assert!(
+            tab.last_diff_head_oid.is_none(),
+            "starts unset, as a restored tab does"
+        );
+
+        tab.seed_last_diff_head_oid_from_local_ref();
+
+        assert_eq!(
+            tab.last_diff_head_oid.as_deref(),
+            Some(head_oid.as_str()),
+            "the oid the diff is built against must be recorded, or the stale \
+             pill never fires for a diff that is behind the PR head"
+        );
+    }
+
+    /// Seeding fills a gap; it must not clear an oid that is already known.
+    #[test]
+    fn seed_last_diff_head_oid_keeps_a_known_oid_when_the_ref_is_missing() {
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/nonexistent-repo-for-seed-test".to_string();
+        tab.pr_number = Some(7);
+        tab.last_diff_head_oid = Some("already-known-oid".to_string());
+
+        tab.seed_last_diff_head_oid_from_local_ref();
+
+        assert_eq!(
+            tab.last_diff_head_oid.as_deref(),
+            Some("already-known-oid"),
+            "an unresolvable ref must not clobber a known oid — that would \
+             suppress a pill that was already correct"
+        );
     }
 
     // ── visible_modes / PrDiff wiring ──
