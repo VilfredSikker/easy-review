@@ -1,47 +1,40 @@
-# er-engine/src — Source Overview
+# er-engine — core boundaries
 
-UI-agnostic core shared by the TUI (`crates/er-tui`) and the desktop app
-(`crates/er-desktop`). No rendering and no event loop live here — those belong
-to the consuming crates.
+UI-agnostic core shared by `er-tui`, `er-desktop`, and `er-mcp`. Nothing here
+renders and nothing here runs an event loop; the crate has no async items and no
+runtime handle. Each front end owns its own loop, and only the front ends that
+need tokio declare it. See `docs/adr/0002-synchronous-engine-and-tui.md`.
 
-## Module Map
+## Where the line is
 
-| Module | Purpose | Key file |
-|--------|---------|----------|
-| `app/` | All application state (`App`, `TabState`), navigation, comments, filters | `state/mod.rs` |
-| `git/` | Diff parsing + git commands | `diff.rs`, `status.rs` |
-| `ai/` | AI review data model, sidecar loader, prompts, comment storage | `review.rs`, `loader.rs` |
-| `arena/` | Multi-reviewer "arena" runs (orchestrator + registry) | `orchestrator.rs` |
-| `watch/` | Debounced file system watcher | `mod.rs` |
-| `github.rs` | GitHub CLI (`gh`) integration: PRs, comment sync, status, `gh stack view` wrapper | — |
-| `gh_stack.rs` | Stacked-PR model: `gh stack view --json` parse, top-of-stack-first rows, unavailable reasons | — |
-| `sync.rs` | Pure sync core (no `App` dependency): comment merge + anchor resolution, remote diff fetch | — |
-| `config.rs` | `ErConfig`, feature flags, settings items, TOML load/save | — |
-| `storage.rs` | Managed review storage paths (repo/branch/view-bucket slugs) | — |
-| `uninstall.rs` | Plan/execute uninstall of config, managed data, cache, binaries, apps | — |
-| `highlight.rs` | Syntect highlighter core (TUI wraps this; desktop uses Shiki) | — |
-| `agent_slots.rs` | Process-wide counting semaphore for agent subprocess spawns | — |
-| `agent_run.rs` | Cancellable agent subprocesses: cancel flag + process-group kill, shared by the review, card-AI and tab-local spawn paths | — |
-| `dev_log.rs` | Opt-in debug log groups (`ER_LOG`) | — |
+The engine holds state and the operations on it, not the surface that shows it.
+Anything a second front end could reuse belongs here; anything that exists only
+because one surface draws or keys it belongs there.
 
-## Consumers
+When a front end needs something the shared state model does not express, add an
+explicit field or translate in that front end (the desktop's translation lives in
+`crates/er-desktop/src/snapshot.rs`). Never widen or repurpose an existing field
+so it carries a second meaning: it compiles for both front ends, so nothing flags
+it, and it breaks at runtime in whichever one the change was not written for. The
+reasoning and consequences are in `docs/adr/0006-engine-state-is-the-ui-contract.md`.
 
-```
-er-tui   main.rs event loop → input handlers → mutate App → ui::draw
-er-desktop  Tauri commands  → mutate App      → build_snapshot → AppSnapshot
-```
+## Feature gating
 
-The TUI polls crossterm and the watch channel directly; the desktop wraps the
-same `App` in a mutex behind Tauri commands and a poll/revision protocol. See
-each crate's own docs (`crates/er-tui/src/ui/CLAUDE.md`,
-`crates/er-desktop/agent.md`) for the surface-specific layers.
+Always-on modules must not depend on a feature-gated one; a headless build breaks
+at compile time when one reaches into the other. Which module sits on which side
+is `#[cfg(feature = ...)]` in `lib.rs`, matched against `[features]` in
+`Cargo.toml`. Headless consumers build with `default-features = false`.
 
-## github.rs
+## Rules that outlive a refactor
 
-Parses GitHub PR URLs (`owner/repo/pull/N`) and shells out to `gh` — never the
-HTTP API directly. Covers: PR metadata (`gh pr view`), read-only PR diffs,
-checkout, base-branch resolution, open-PR detection for the current branch
-(base hint), two-way review comment sync (pull/push/reply/delete), and
-`gh_stack_view_json` (the `gh stack view --json` wrapper used by `gh_stack.rs`).
-`REMOTE_PR_MAX_CHANGED_FILES` / `REMOTE_PR_MAX_LINE_CHANGES` guard pathological
-remote PRs.
+- GitHub access shells out to the `gh` CLI. No HTTP client, no token, in config
+  or in code. `docs/adr/0026-gh-cli-not-http-api.md`.
+- Agent subprocess spawns are capped by a FIFO queue plus the process-wide
+  `agent_slots` semaphore. Only the paths that acquire a slot are capped; a new
+  spawn path is uncapped unless it acquires one. `docs/adr/0021-agent-concurrency.md`.
+- GitHub comment sync stays split from `App`: `sync.rs` is pure and always
+  compiled, and the `App` wrappers in `app/state/github_sync.rs` exist only to
+  hold the lock around it. Do not move `App` into `sync.rs`.
+
+Submodule detail lives next to the code: `app/CLAUDE.md`, `ai/CLAUDE.md`,
+`git/CLAUDE.md`, `watch/CLAUDE.md`.

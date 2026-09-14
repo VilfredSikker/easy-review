@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Configuration — easy-review docs</title>
-  <meta name="description" content="Configure easy-review with TOML: features, display, agent and AI Hub, watched files, summary, and commands. Per-repo and global config, plus the live settings overlay.">
+  <meta name="description" content="Configure easy-review with TOML: features, display, agent and AI Hub, watched files, summary, and commands. One global config file, plus the live settings hub.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
@@ -12,38 +12,47 @@
     <p class="eyebrow">Core Concepts</p>
     <h1>Configuration</h1>
     <p class="lead">
-      <code>er</code> is configured with TOML — there are no required CLI flags. Settings are deep-merged: a global file
-      provides shared defaults, and a per-repo file overrides individual fields. The desktop app exposes most of these
-      through a settings GUI.
+      <code>er</code> is configured with TOML — there are no required CLI flags. One file holds everything: any key it
+      omits falls back to the built-in default. Settings apply live and save as you change them, so there is no unsaved
+      state to lose. The desktop app exposes most of these through a settings GUI.
     </p>
 
     <h2>Where config lives</h2>
     <table>
-      <thead><tr><th>Location</th><th>Scope</th><th>Priority</th></tr></thead>
+      <thead><tr><th>Location</th><th>Scope</th></tr></thead>
       <tbody>
-        <tr><td><code>.er-config.toml</code> (repo root)</td><td>Per-repo</td><td>Highest</td></tr>
-        <tr><td><code>~/.config/er/config.toml</code></td><td>Global</td><td>Middle</td></tr>
-        <tr><td>built-in</td><td>Defaults</td><td>Lowest</td></tr>
+        <tr><td><code>config.toml</code> in <code>easy-review</code>'s app-data directory</td><td>Everything</td></tr>
+        <tr><td>built-in</td><td>Defaults, used for any key the file omits</td></tr>
       </tbody>
     </table>
     <p>
-      Merging is deep and per-field: a repo file only needs to specify what differs from your global config. Everything
-      else inherits from global, then from the built-in defaults. A complete annotated template ships as
-      <code>config.toml.example</code> in the repository.
+      There is <strong>one</strong> config file, shared by every repo — there is no per-repo override. On macOS it lives
+      at <code>~/Library/Application Support/easy-review/config.toml</code>; elsewhere it is the platform app-data
+      directory plus <code>easy-review</code>. <code>ER_CONFIG_PATH</code> overrides the file and
+      <code>ER_STORAGE_ROOT</code> moves the whole data directory, config included.
+    </p>
+    <p>
+      The desktop app's <code>projects.json</code> and <code>tabs.json</code> live in the <em>platform</em> config
+      directory — <code>~/Library/Application Support/er/</code> on macOS, <code>~/.config/er/</code> on Linux — which
+      is a different location from the config above. A <code>config.toml</code> left there by an older install is
+      copied into the managed location once, on first run, and then left alone: editing it afterwards does nothing.
+      That legacy file is the only thing you will find in <code>~/.config/er/</code> on macOS.
     </p>
 
     <h2>Live editing <span class="pill tui">terminal</span></h2>
     <p>
       Press <kbd>,</kbd> inside <code>er</code> to open the settings hub. Changes apply immediately so you can see
-      the effect, and <kbd>s</kbd> persists them to your global config.
+      the effect, and each one is written to the global config as you make it — there is nothing to save.
+      <kbd>s</kbd> or <kbd>Esc</kbd> closes the hub.
     </p>
 
     <h2>Settings GUI <span class="pill desktop">desktop</span></h2>
     <p>
       The desktop app has a dedicated settings page (command palette → <em>Open settings</em>) covering the same
-      options organized into scopes — general options shared with the terminal (theme, display, AI Hub providers
-      and models, concurrency), desktop-only options, and embedded-terminal options. Changes apply live and are
-      written back to the same TOML files, so the two apps always agree.
+      options in three scopes: <strong>General</strong> — the options shared with the terminal (theme, AI Hub
+      providers and models, concurrency, commands, watched paths); <strong>Terminal</strong> — the TUI's own view
+      modes, display and key hints; and <strong>Projects</strong> — per-project review settings. Changes apply live
+      and are written back to the same global config file, so the two apps always agree.
     </p>
 
     <h2><code>[features]</code> — which modes and features are on</h2>
@@ -83,8 +92,8 @@ verbose    = <span class="tok-key">false</span>  <span class="cmt"># show all ke
 
     <h2 id="ai-hub"><code>[agent]</code> and <code>[ai_hub]</code> — AI providers</h2>
     <p>
-      <code>[agent]</code> sets the single command used to run AI review actions. <code>{prompt}</code> is replaced with
-      the generated prompt.
+      <code>[agent]</code> is the single-command fallback — the executable and args used when no <code>[ai_hub]</code>
+      provider resolves. <code>{prompt}</code> is replaced with the generated prompt.
     </p>
     <pre><code>[agent]
 command = <span class="tok-str">"claude"</span>
@@ -123,7 +132,9 @@ label = <span class="tok-str">"Default"</span>
 args  = []
 effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medium"</span>, <span class="tok-str">"high"</span>, <span class="tok-str">"xhigh"</span>, <span class="tok-str">"max"</span>]</code></pre>
     <ul>
-      <li>If <code>[ai_hub]</code> is absent, <code>er</code> falls back to the single <code>[agent]</code> config.</li>
+      <li>If <code>[ai_hub]</code> is absent, <code>er</code> seeds it from the built-in catalog on load, so the
+      presets above exist out of the box. The single <code>[agent]</code> config is used only when no provider
+      resolves at all.</li>
       <li>Selection can be changed at runtime and saved globally from Desktop Settings or the TUI General settings.</li>
       <li>On load, <code>er</code> merges any missing built-in catalog models into your config <em>in memory</em> — it does
       not rewrite your file.</li>
@@ -134,9 +145,11 @@ effort_levels = [<span class="tok-str">"low"</span>, <span class="tok-str">"medi
 
     <h2><code>[summary]</code> — diff summaries</h2>
     <pre><code>[summary]
-<span class="cmt"># command = "claude"                        # defaults to agent.command</span>
-<span class="cmt"># args    = ["--print", "-p", "{diff}"]     # {diff} is replaced with the raw diff</span>
-push_to_pr = <span class="tok-key">false</span>                       <span class="cmt"># auto-push the summary to the GitHub PR body</span></code></pre>
+push_to_pr = <span class="tok-key">false</span>   <span class="cmt"># auto-push the generated summary to the GitHub PR body</span></code></pre>
+    <p>
+      The summary is generated by whichever agent runs your AI Hub actions (see <code>[agent]</code> and
+      <code>[ai_hub]</code> above); <code>push_to_pr</code> is the only key this section reads.
+    </p>
 
     <h2 id="watched"><code>[watched]</code> — monitor git-ignored files</h2>
     <p>
@@ -154,8 +167,9 @@ diff_mode = <span class="tok-str">"content"</span>                  <span class=
 
     <h2><code>[commands]</code> — hub shell actions</h2>
     <p>
-      Optional shell commands for hub actions, run via <code>sh -c</code>. Leave one unset to hide that action.
-      Placeholders: <code>{base}</code>, <code>{branch}</code>, <code>{repo}</code>, <code>{output}</code>.
+      Optional shell commands for hub actions, run via <code>sh -c</code>. Leave one unset and its hub row stays
+      listed but disabled. Placeholders: <code>{base}</code>, <code>{branch}</code>, <code>{repo}</code>,
+      <code>{output}</code>.
     </p>
     <pre><code>[commands]
 <span class="cmt"># summary   = "claude --print -p 'Summarize this diff: {base}...{branch}'"</span>
@@ -170,7 +184,7 @@ diff_mode = <span class="tok-str">"content"</span>                  <span class=
     </p>
 
     <h2>Worked example</h2>
-    <p>Global (<code>~/.config/er/config.toml</code>) holds preferences shared across repos:</p>
+    <p>The single config file, with every key you leave out falling back to its default:</p>
     <pre><code>[features]
 view_conflicts = <span class="tok-key">false</span>
 
@@ -179,17 +193,12 @@ tab_width  = <span class="tok-key">2</span>
 wrap_lines = <span class="tok-key">true</span>
 
 [watched]
-paths = [<span class="tok-str">".work/**/*"</span>, <span class="tok-str">".er/**/*"</span>]</code></pre>
-    <p>Per-repo (<code>.er-config.toml</code>) overrides only what differs:</p>
-    <pre><code>[display]
-tab_width = <span class="tok-key">4</span>
-
-[watched]
 paths     = [<span class="tok-str">".work/**/*"</span>, <span class="tok-str">".er/**/*"</span>, <span class="tok-str">"logs/**/*.log"</span>]
 diff_mode = <span class="tok-str">"snapshot"</span></code></pre>
     <p>
-      Result: <code>view_conflicts</code> and <code>wrap_lines</code> come from global; <code>tab_width = 4</code> and
-      the extra watched path come from the repo file.
+      Watched paths are the one setting that is repo-specific in <em>effect</em>: the globs are global, but each only
+      matches inside the repo you are reviewing. If you need different watched paths per project, that is the reason —
+      there is no per-repo file to put them in.
     </p>
   </main>
   <script src="assets/docs.js"></script>

@@ -7,8 +7,9 @@ license.workspace = true
 description = "UI-agnostic engine for easy-review (git diffs, watching, AI sidecars, GitHub)"
 
 [features]
-# Headless consumers (er-api) build with:
+# A headless consumer builds with:
 #   default-features = false, features = ["highlight"]
+# (`er-api`, named in older notes, is a deferred extraction — not a crate.)
 default = ["ui", "watch", "highlight"]
 ui = ["dep:tui-textarea-2"]
 watch = ["dep:notify", "dep:notify-debouncer-mini"]

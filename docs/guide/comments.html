@@ -25,7 +25,7 @@
         <tr><td>Color</td><td>Yellow</td><td>Yellow, with a 📝 icon</td><td>Cyan</td></tr>
         <tr><td>Intent</td><td>Something you want answered</td><td>An instruction to hand to an agent</td><td>Feedback for your team on the PR</td></tr>
         <tr><td>Stored in</td><td><code>questions.json</code></td><td><code>notes.json</code></td><td><code>github-comments.json</code></td></tr>
-        <tr><td>Replies?</td><td>No (use AI to answer)</td><td>No</td><td>Yes — single-level threads</td></tr>
+        <tr><td>Replies?</td><td>Yes — local replies, never pushed</td><td>Yes — local replies, never pushed</td><td>Yes — single-level threads</td></tr>
         <tr><td>Synced upstream?</td><td>Never — stays local</td><td>Never — stays local</td><td>Yes, two-way via <code>gh</code></td></tr>
       </tbody>
     </table>
@@ -53,7 +53,7 @@
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>q</kbd></td><td>Start a question on the current line</td></tr>
-        <tr><td><kbd>c</kbd></td><td>Start a GitHub comment on the current line</td></tr>
+        <tr><td><kbd>c</kbd></td><td>Start a GitHub comment on the current line (in Staged mode <kbd>c</kbd> starts a commit instead)</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>t</kbd></td><td>While composing: cycle the draft type — question → note → comment</td></tr>
         <tr><td><kbd>Q</kbd> / <kbd>C</kbd></td><td>Toggle the <em>visibility</em> of the questions/notes layer and the comments layer</td></tr>
       </tbody>
@@ -106,13 +106,14 @@
     <h2>Acting on existing comments</h2>
     <p>
       To act on existing annotations rather than the diff, <strong>focus</strong> one with <kbd>J</kbd> /
-      <kbd>K</kbd> — these jump backward / forward through every inline item (comments, questions, notes, findings),
-      across files. These actions then apply to the focused item:
+      <kbd>K</kbd> — these jump backward / forward through comments, questions and notes, across files. AI findings
+      are a separate stream and have their own keys: <kbd>Ctrl</kbd>+<kbd>J</kbd> / <kbd>Ctrl</kbd>+<kbd>K</kbd>.
+      These actions then apply to the focused item:
     </p>
     <table>
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Focus the previous / next inline item</td></tr>
+        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Focus the previous / next comment, question or note</td></tr>
         <tr><td><kbd>r</kbd></td><td>Reply to the focused comment or finding</td></tr>
         <tr><td><kbd>e</kbd></td><td>Edit the focused comment (your own, top-level)</td></tr>
         <tr><td><kbd>x</kbd></td><td>Delete the focused comment (with confirmation)</td></tr>
@@ -122,17 +123,17 @@
 
     <h2>Replies are single-level</h2>
     <p>
-      GitHub comments support a reply thread: a parent comment plus any number of replies. Replies cannot themselves
+      All three kinds support a reply thread: a parent comment plus any number of replies. Replies cannot themselves
       have replies — the model is intentionally flat (parent + children, no recursive nesting) to keep it simple and to
-      match how GitHub PR review threads behave. Questions and notes do not have replies; the way you “answer” a
-      question is to use the AI Hub <strong>Answer questions</strong> action (TUI) or the per-question AI actions in
-      the desktop Notes panel, and let the AI respond.
+      match how GitHub PR review threads behave. Replies to a question or a note stay local with their parent and are
+      never pushed; to have the AI answer a question instead of replying yourself, use the AI Hub
+      <strong>Answer questions</strong> action (TUI) or the per-question AI actions in the desktop Notes panel.
     </p>
 
     <h2>Comments follow the code (and warn when stale)</h2>
     <p>
-      Each note stores the <em>content</em> of the line it was attached to. When the diff changes, <code>er</code> tries
-      to re-anchor the note to that same line even if it moved. If the target line disappears entirely, the note is
+      Every comment stores the <em>content</em> of the line it was attached to. When the diff changes, <code>er</code>
+      tries to re-anchor it to that same line even if it moved. If the target line disappears entirely, the comment is
       marked <strong>stale</strong>: it renders dimmed with a warning indicator so you know it may be misplaced and
       should be revisited. This staleness is tracked per comment, independently of the file-level AI staleness described
       in <a href="ai-review.html">AI Review</a>.

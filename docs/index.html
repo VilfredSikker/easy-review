@@ -1201,7 +1201,7 @@
               <div class="dot dot-r"></div>
               <div class="dot dot-y"></div>
               <div class="dot dot-g"></div>
-              <span class="title">.er-config.toml</span>
+              <span class="title">config.toml</span>
             </div>
             <div class="flex" style="min-height: 200px;">
               <!-- config file -->
@@ -1265,15 +1265,15 @@
           <ul class="space-y-3 text-sm text-text-dim mb-7">
             <li class="flex gap-3">
               <span class="text-accent mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Live settings overlay</strong> — press <span class="keycap">S</span> to toggle feature flags, adjust display options, and set agent config. Changes apply immediately and persist to <span class="font-mono text-xs text-accent">.er-config.toml</span></span>
+              <span><strong class="text-text">Live settings overlay</strong> — press <span class="keycap">,</span> to toggle feature flags, adjust display options, and set agent config. Changes apply immediately and save as you make them.</span>
             </li>
             <li class="flex gap-3">
               <span class="text-accent mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">Per-repo config</strong> — <span class="font-mono text-xs text-text">.er-config.toml</span> in your repo root overrides global <span class="font-mono text-xs text-text">~/.config/er/config.toml</span>. Watched file globs for git-ignored paths like <span class="font-mono text-xs text-text">.work/</span></span>
+              <span><strong class="text-text">One config, every repo</strong> — a single <span class="font-mono text-xs text-text">config.toml</span> in the app-data directory, so preferences follow you between projects instead of being scattered per repo. Watched file globs pull in git-ignored paths like <span class="font-mono text-xs text-text">.work/</span></span>
             </li>
             <li class="flex gap-3">
               <span class="text-accent mt-0.5 shrink-0">✓</span>
-              <span><strong class="text-text">.er/ JSON bridge</strong> — all sidecar files live in <span class="font-mono text-xs text-text">.er/</span> (single <span class="font-mono text-xs text-text">.gitignore</span> entry). Any tool can write to them — Claude Code, CI scripts, custom scripts. <span class="font-mono text-accent text-sm">er</span> picks up changes via mtime polling</span>
+              <span><strong class="text-text">JSON sidecar bridge</strong> — review artifacts are plain JSON in the app-data directory, outside the repo under review, so nothing lands in your diff or your <span class="font-mono text-xs text-text">.gitignore</span>. Any tool can write them — Claude Code, CI scripts, custom scripts. <span class="font-mono text-accent text-sm">er</span> picks up changes via mtime polling</span>
             </li>
           </ul>
           <div class="flex flex-wrap gap-2 items-center">

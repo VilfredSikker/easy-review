@@ -1,141 +1,128 @@
-# er-desktop Agent Guide
+# er-desktop — traps and routing
 
-`crates/er-desktop` is the Tauri backend bridge. It adapts the engine's `App` into a desktop app by adding commands, snapshots, caches, background threads, browser proxying, persistent tabs/projects, PTY terminal support, export, and managed review storage.
+Tauri backend for the desktop app: commands, snapshots, caches, background threads,
+the embedded browser, persistent tabs/projects, PTY terminals, native notifications.
+It adapts the engine's `App` and owns nothing the engine could hold.
 
-## Main Files
+Transport decisions live in the ADRs. Read them instead of a summary here:
 
-- `src/commands.rs`: Tauri command surface. Most frontend actions enter here.
-- `src/snapshot.rs`: Rust wire contract for `desktop-ui/src/lib/types.ts`.
-- `src/main.rs`: Tauri setup, browser proxy/content script, background loops, command registration.
-- `src/tabs.rs`: persisted desktop tab descriptors and tab reconstruction (`tabs.json` under the platform config dir).
-- `src/projects.rs`: persisted project list (Vec order is the sidebar order), tracked branches, tracked/dismissed PRs. `reorder_projects` rewrites that Vec.
-- `src/pr_cache.rs`: GitHub PR list fetching/caching helpers.
-- `src/export.rs`: pure Markdown renderer for comments, questions, findings, and UI annotations.
-- `src/er_storage.rs`: re-exports `er_engine::storage` (managed review storage under app data).
-- `src/terminal.rs`: PTY session wrapper for the in-app terminal drawer.
+- `docs/adr/0011-push-revision-not-polling.md` — the backend pushes revision events;
+  the 30s timer is a fallback. A view that goes stale means an emit is missing, and
+  shortening timers will not fix it.
+- `docs/adr/0012-differential-snapshots.md` — `hunks_omitted`, `record_sent_file`, and
+  the `get_snapshot` map reset that a from-scratch rebuild needs.
+- `docs/adr/0016-split-content-and-chrome-revisions.md` — content, chrome, and reviewed
+  revisions are separate; which one a change bumps decides what the frontend rebuilds.
+- `docs/adr/0015-off-main-thread-tauri-commands.md` — commands that wait on the app lock
+  run off the main thread.
+- `docs/adr/0018-app-cmd-ingests-snapshots.md`, `docs/adr/0017-optimistic-frontend-writes.md`
+  — how the frontend sends mutations and applies what comes back.
 
-## Ownership Rules
+`src/snapshot.rs` is the wire contract for `desktop-ui/src/lib/types.ts`. Both sides
+compile without the other, so a changed field is invisible until runtime.
 
-- `AppState.app` is the engine state behind a mutex. Keep lock scopes small.
-- `pr_cache`, `gh_status_cache`, `loading`, `watch_status`, `terminals`, and `pending_ai_replies` are desktop-owned state. Mutations here must be reflected in snapshots and usually need `desktop_revision` bumps.
-- Syntax highlighting is client-side (Shiki Web Worker). Snapshots carry plain `text` only — never add span generation back into `build_snapshot`.
-- Network/subprocess operations should run outside the `App` mutex. Capture context first, then run `gh`, `git`, or agent commands in the background.
+## Traps
 
-## Snapshot Contract
+**PTY output never touches the snapshot and never bumps a revision.** Terminal output
+streams over `terminal-output` / `terminal-exit` events only. Nothing waits on a
+revision to notice a session, and terminal contents cannot be restored from a
+snapshot: whatever the frontend did not buffer from the stream is gone.
+`docs/adr/0019-terminal-output-out-of-band.md`.
 
-`build_snapshot` is the bridge from Rust to Svelte. When adding a field:
+**Profiling needs both gates.** `ER_DESKTOP_PROFILE_POLL=1` prints nothing unless the
+`profile` group also passes the `ER_LOG` filter — `profile_log::profile_log` checks
+both. In the webview the switch is `localStorage.setItem("erProfilePoll", "1")`, and
+its output goes to the devtools console, not the Tauri terminal.
 
-1. Add the Rust `Serialize` type or field in `snapshot.rs`.
-2. Populate it from engine or desktop-owned state.
-3. Add the matching TypeScript type in `desktop-ui/src/lib/types.ts`.
-4. Ensure missing/default values do not break older frontend assumptions.
-5. Confirm polling revision changes when the field can change asynchronously.
+**`localhost` and `127.0.0.1` are different cookie origins.** Keep `localhost` in
+browser URLs and in the proxy's default authority; swapping one for the other splits
+the cookie jar and breaks OAuth.
 
-## Tab persistence
+**Proxy redirects are pass-through by design.** A redirect `Location` is rewritten to
+`erp(s)://` and handed back to the WebView so the next hop runs in the browser's
+cookie jar. Never follow a redirect chain in ureq, never strip the handshake query
+before the app has handled it, and never add provider-specific URL checks — the policy
+is provider-agnostic. `crates/er-desktop/src/browser_proxy.rs`.
 
-Open tabs (repo, branch/PR identity, active index, optional browser fields) are written to `tabs.json` via `tabs::persist_app_tabs` whenever the tab strip changes: open/close/reorder, branch or PR open (`place_tab`), project switch, tab select, and force-refresh (updates the refreshed branch ref). The same save runs on main-window `CloseRequested` and app exit as a safety net.
+**Overlay z-order depends on which browser path is live.** The native child webview is
+composited above the Svelte shell, so no modal can paint over it —
+`browser_suspend_for_overlay` destroys the child webviews when an overlay takes focus,
+because on macOS `hide()` leaves them stealing clicks. The `erp://` iframe fallback is
+a DOM element, and the shell layers over it normally.
 
-On launch, `main.rs` restores from `tabs.json` when present (eager diff for the active tab only; other tabs are lazy stubs). Call `persist_app_tabs` after any new code path that mutates `app.tabs` or `app.active_tab`. Do not persist from `poll` / `get_snapshot`.
+**Re-activating an already-open remote PR skips tab persistence.**
+`activate_or_open_remote_pr` returns from its fast path after setting `active_tab`,
+without calling `persist_app_tabs`, so the new active index is lost on restart.
+`crates/er-desktop/src/commands.rs`.
 
-## Polling And Invalidation
+**A stub tab's first refresh must never run inline under the lock.** `select_tab` and
+`close_tab` return the stub immediately with `loading.tab_diff` set, hand the real
+refresh to `kick_deferred_tab_refresh` on a worker thread, and let the loaded diff
+arrive through the ordinary revision-event poll — as a later poll, never as the
+command's own result. Running it inline serializes every other command behind a
+multi-second `git diff` and parse, and the frontend shows "Loading diff…" in the
+meantime, so an empty pane right after a tab switch is this working, not a bug.
+`docs/adr/0032-deferred-stub-tab-load.md`.
 
-`poll` drains per-tab commands and app-level background tasks, computes a revision, and returns `snapshot: null` when unchanged. The revision currently combines engine state with `desktop_revision`.
+**Poll invalidation is derived, not declared.** `compute_content_revision` and
+`compute_chrome_revision` hash an explicit list of snapshot fields, and `poll_impl`
+decides whether to send anything by comparing the recomputed values against
+`last_sent_*`. A new snapshot field that is not added to that list yields
+`snapshot: null` forever — the fallback timer does not save you, because the poll's
+own comparison keeps answering nothing. `desktop_revision` is one of the chrome hash
+inputs, and that is the entire reason a bump-only change ever delivers; removing it
+reads as dropping a redundant, always-changing input and silently breaks every bump.
+`docs/adr/0034-derived-poll-invalidation.md`.
 
-### Dev log groups (`ER_LOG` / `--logs`)
+**`poll` is a tick, not a read.** `poll_impl` calls `check_commands()`,
+`poll_background_tasks()` — which dispatches queued review spawns as slots free — and
+`check_ai_files_changed()`, the mtime scan that notices sidecars an external agent
+wrote. None of those has another desktop caller, so queued tasks and externally
+written sidecars advance only while the frontend keeps polling. That is a second,
+independent reason not to touch the 30s interval.
 
-Filter stderr and webview console noise by **group** (default: all groups).
+**Two diff hashes with different contracts.** `compute_diff_hash` is SHA-256,
+persisted in sidecars; `compute_diff_hash_fast` is a `DefaultHasher` u64 rendered as
+16 hex characters, for in-process change detection only — never persist it or compare
+it across processes. `TabState.diff_hash` holds whichever the last refresh produced,
+which is why the tour-staleness check branches on `diff_hash.len() == 64`. Comparing
+`diff_hash` against a sidecar's stored hash is the obvious thing to do in a loader,
+and after a watch refresh it is a guaranteed mismatch that looks exactly like
+staleness. `branch_diff_hash` exists as the always-SHA-256 sibling for that reason.
 
-| Group | Rust | Frontend |
-|-------|------|----------|
-| `arena` | `[er-arena]` via `er_engine::dev_log` | `[er-arena]` in `desktop-ui/src/lib/arena/log.ts` |
-| `profile` | `er-desktop kind=…` when `ER_DESKTOP_PROFILE_POLL=1` | `[er-profile]` in `desktop-ui/src/lib/profileLog.ts` (devtools console only; same opt-in) |
-| `erp` | `log` targets under `browser_proxy` | — |
-| `app` | other `log::info!` / `log::warn!` | — |
+## Rules with consequences
 
-```bash
-# Arena only (recommended wrapper — sets ER_LOG for Vite + Rust):
-./scripts/tauri-dev.sh --logs arena
+- Keep `App` lock scopes small: capture context, then run `gh`, `git`, or an agent
+  subprocess outside the lock.
+- `pr_cache`, `gh_status_cache`, `loading`, `watch_status`, `terminals` and
+  `pending_ai_replies` are desktop-owned. A change to them usually needs a
+  `desktop_revision` bump, or the frontend never hears about it.
+- Backend state that changes without an emit is invisible until the fallback timer
+  fires, which is why ~30s staleness is the signature to look for.
+- Snapshots carry plain `text`. Never generate syntax spans in `build_snapshot`;
+  Shiki runs in the frontend worker.
+- Call `persist_app_tabs` after any new path that mutates `app.tabs` or
+  `app.active_tab`. Never from `poll` / `get_snapshot`.
+- Pick `snap_from_confirmed` or `snap_from_command` by asking whether the frontend
+  already holds this content — the choice sets the revision markers and so decides
+  whether the next poll resends. It is invisible in the response body.
+  `docs/adr/0033-snapshot-returning-helpers.md`.
+- `submit_github_review` is high risk: submit only valid, unsynced local comments, and
+  mark them synced only after GitHub confirms.
+- Reviewing a PR must not touch the user's worktree; use fetched refs and the PR tab
+  constructors. `docs/adr/0020-read-only-pr-review.md`.
 
-# Same via cargo alias from repo root:
-cargo er-dev -- --logs arena
+## Paths
 
-# Or env (works with plain cargo tauri dev):
-ER_LOG=arena cargo tauri dev
+Storage root is `$ER_STORAGE_ROOT` or `<platform data dir>/easy-review` — on macOS
+`~/Library/Application Support/easy-review`. Sidecars resolve through the engine
+(`TabState::apply_managed_root()`, `er_engine::storage`); a hand-built path is how the
+desktop and TUI drift apart. There is no storage module in this crate.
+`docs/adr/0003-managed-review-storage.md`, `docs/adr/0004-per-view-artifact-scoping.md`.
 
-# App binary also accepts (after --):
-cargo tauri dev -- --logs arena
-```
+`src/export.rs` is a re-export shim over `er_engine::export`; the Markdown renderer
+lives in the engine.
 
-Comma-separated: `ER_LOG=arena,profile`. `all` / `*` / empty → show everything.
-
-### Idle CPU profiling (`ER_DESKTOP_PROFILE_POLL=1`)
-
-**Off by default.** Opt-in on both Rust (stderr) and webview (devtools console). Requires `ER_DESKTOP_PROFILE_POLL=1` plus the `profile` log group when `ER_LOG` is set (or no `ER_LOG` filter).
-
-```bash
-# Full stack (Rust stderr + webview devtools console)
-ER_DESKTOP_PROFILE_POLL=1 ER_LOG=profile ./scripts/tauri-dev.sh 2>&1 | tee /tmp/er_profile.log
-
-# Rust only
-ER_DESKTOP_PROFILE_POLL=1 cargo tauri dev 2>&1 | tee /tmp/er_profile.log
-```
-
-Rust kinds: `meta_refresh`, `rev_bump`, `revision_emit`, `poll` / `poll_skip` / `poll_revision_change`, `build_snapshot`, `get_snapshot`, `bg_loop`, `gh_status_fetch`, `branch_open`, `pr_list_fetch`, `lazy_tab_refresh`, `remote_pr_diff_refresh`, `background_tab_warmup`.
-
-Frontend kinds (devtools only, not Tauri terminal): `revision_event`, `poll_invoke_*`, `snapshot_replace`, `highlight_*`, `span_keys_evicted`, `dev_height_fix`.
-
-Enable in a running webview without restart:
-
-```js
-localStorage.setItem("erProfilePoll", "1");
-location.reload();
-```
-
-Disable override: `localStorage.setItem("erProfilePoll", "0"); location.reload()`.
-
-Bump `desktop_revision` when changing:
-
-- PR list cache or PR refresh loading state.
-- GitHub status cache or in-flight status flags.
-- GitHub comment sync loading/result state.
-- Watcher status.
-- Background-thread results that do not mutate `App` directly.
-
-## Feature-Specific Notes
-
-- Background AI review tasks live in the engine `App`, not the active tab, so they survive tab switches. `commands::run_ai_review` should use `spawn_background_review` for review actions.
-- Read-only PR review should use fetched refs and `TabState::new_local_pr`/remote PR tabs. Avoid `gh pr checkout` as a default review path.
-- `submit_github_review` is high risk. Validate that only valid, unsynced local GitHub comments are submitted and only mark comments synced after GitHub success.
-- Browser annotations cross the browser proxy (`src/browser_proxy.rs`), injected content script, `ui-annotations.json`, and snapshot reloads. URL canonicalization and re-anchor freshness are part of the contract. See **Embedded dev browser** below.
-
-## Embedded dev browser (annotations-first)
-
-The Browser tab’s primary surface is a **native child webview** (`review-browser`) loading real `http://localhost` URLs so WKWebView handles OAuth/cookies like a normal browser. The main window is transparent over the browser pane; `AnnotationOverlay` stays in the Svelte shell on top.
-
-| Piece | Role |
-|-------|------|
-| `src/browser_webview.rs` | Create/position/hide child webview; `browser_host_message` / `browser_send_to_page` IPC |
-| `src/frame_script.rs` | Injected script: `reportToHost()` → Tauri invoke or `postMessage` fallback |
-| `desktop-ui/.../browserHost.ts` | `listen('browser://message')`, bounds sync, outbound eval |
-| `src/browser_proxy.rs` | **Fallback** `erp://` / `erps://` proxy when native webview unavailable or iframe mode |
-
-**Proxy navigation policy** (provider-agnostic) — `browser_proxy.rs`:
-
-| Request | Behaviour |
-|---------|-----------|
-| Assets, `POST`, etc. | Single upstream hop, forward WebView headers |
-| `GET`/`HEAD` document, same-origin 3xx | HTTP `Location` as `erp(s)://…` |
-| `GET`/`HEAD` document, cross-origin 3xx | HTML `location.replace` to `erp(s)://…` (iframes ignore custom-scheme `Location`) |
-| OAuth loops | Single server hop only; never follow redirect chains in ureq |
-
-Do not add provider-specific URL checks. Use `localhost` consistently (`127.0.0.1` is a different cookie origin).
-- Review artifacts use `TabState::apply_managed_root()` / `er_dir()` from the engine (`~/.local/share/easy-review/...`). TUI uses the same paths. Repo `.er/` is migrated once when managed storage is empty.
-- Terminal sessions are OS resources. Dropping the stored `PtySession` kills the child shell; be careful with session id reuse and tab close behavior.
-
-## Common Failure Modes
-
-- UI does not update after background work: missing `desktop_revision` bump or revision hash input.
-- App freezes: holding `App` mutex during network/subprocess work, expensive `build_snapshot`, large highlighted diff payloads, or oversized proxy responses.
-- PR review mutates user worktree: accidental `gh pr checkout` or direct branch checkout path.
-- Error visible only in UI: missing backend `log::error!` with durable context.
-- Frontend type drift: Rust snapshot changed but `desktop-ui/src/lib/types.ts` did not.
+Dev log groups are defined in `crates/er-desktop/src/dev_log.rs`; select them with
+`ER_LOG=<groups>` or `--logs <groups>`. `./scripts/tauri-dev.sh --logs arena` sets the
+filter for Vite and Rust together.

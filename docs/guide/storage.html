@@ -36,8 +36,9 @@
 
     <h2>Layout for local diff modes</h2>
     <p>
-      Branch (<kbd>1</kbd>), unstaged (<kbd>2</kbd>), staged (<kbd>3</kbd>), and history (<kbd>4</kbd>) each get their own
-      <em>view bucket</em> directory under the repo and branch:
+      Each local diff mode — branch, unstaged, staged and history — gets its own
+      <em>view bucket</em> directory under the repo and branch. (The number in front of a mode in the tab bar is its
+      position in the visible list, and that list grows when a tab knows its PR number, so a mode's number is not fixed.)
     </p>
     <pre><code>&lt;root&gt;/repos/&lt;repo-slug&gt;/branches/&lt;branch-slug&gt;/view-buckets/&lt;bucket&gt;/</code></pre>
     <p>where <code>&lt;bucket&gt;</code> is <code>branch</code>, <code>unstaged</code>, <code>staged</code>, or
@@ -64,7 +65,7 @@
         <tr><td><code>triage.json</code></td><td>AI Hub: Triage branch</td><td>Fast branch scan / routing</td></tr>
         <tr><td><code>professor.json</code></td><td>AI Hub: Professor</td><td>Teaching / learning insights</td></tr>
         <tr><td><code>experts/*.json</code></td><td>AI Hub: Specialized review</td><td>Domain-specific expert findings</td></tr>
-        <tr><td><code>tour.json</code></td><td>AI Hub: Generate tour (desktop)</td><td>Guided-tour pillars and file order</td></tr>
+        <tr><td><code>tour.json</code></td><td>AI Hub: Generate guided tour (TUI “Generate guided tour” / desktop “Generate tour”)</td><td>Guided-tour pillars and file order</td></tr>
         <tr><td><code>diagrams/*.json</code></td><td>AI Hub: Diagrams (desktop Context tab)</td><td>Mermaid diagrams of the diff (mental model, subsystems, flows, or custom)</td></tr>
         <tr><td><code>questions.json</code></td><td><code>er</code> (<kbd>q</kbd>)</td><td>Personal review questions</td></tr>
         <tr><td><code>notes.json</code></td><td><code>er</code> (draft type cycled with <kbd>Ctrl</kbd>+<kbd>t</kbd>)</td><td>Local actionable notes for agent hand-off</td></tr>
@@ -101,16 +102,19 @@
     <h2>Migration from older versions</h2>
     <p>
       Earlier versions scattered sidecar dotfiles in the repo root, then consolidated them into a repo <code>.er/</code>
-      directory. Legacy repo <code>.er/</code> and <code>~/.cache/er/</code> data is migrated once, automatically, the
-      first time you open a repo with a current build.
+      directory. Nothing copies either of those into managed storage: a legacy repo <code>.er/</code> or
+      <code>~/.cache/er/</code> directory is left where it is, and a current build starts from empty for that branch. To
+      keep reading an existing <code>.er/</code>, run with <code>ER_REPO_LOCAL=1</code>.
     </p>
 
     <h2>Tests &amp; overrides</h2>
     <p>Set <code>ER_STORAGE_ROOT=/tmp/...</code> to redirect managed storage — primarily used by the test suite.</p>
 
     <h2>Cleaning up</h2>
-    <p>From the terminal you can remove artifacts for the current file (<kbd>z</kbd>) or all of them (<kbd>Z</kbd>). The
-    repository also ships helper scripts:</p>
+    <p>From the terminal, <kbd>z</kbd> clears the questions and notes you wrote, and <kbd>Z</kbd> clears the AI review
+    sidecars (<code>review.json</code>, <code>order.json</code>, <code>checklist.json</code>,
+    <code>summary.md</code>). Both ask for confirmation first. The repository also ships helper scripts, which delete
+    from a <code>.er/</code> directory in the working tree — repo-local mode:</p>
     <pre><code>scripts/er-cleanup-reviews.sh     <span class="cmt"># remove review.json, checklist, summary, …</span>
 scripts/er-cleanup-questions.sh   <span class="cmt"># remove questions.json</span></code></pre>
     <p>
