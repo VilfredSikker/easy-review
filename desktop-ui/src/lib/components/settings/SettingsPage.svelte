@@ -8,9 +8,11 @@
     ConfigFieldValue,
     ConfigHubField,
     GetConfigHubResponse,
+    ImportanceFileSnapshot,
     ImportanceRuleSnapshot,
     SettingsTab,
   } from "$lib/types";
+  import { importanceFileWindow, matchedRuleLabel } from "$lib/importanceFiles";
   import Toggle from "./Toggle.svelte";
   import OptionGroup from "./OptionGroup.svelte";
   import SettingsTextField from "./SettingsTextField.svelte";
@@ -44,6 +46,7 @@
   let repoRoot = $state("");
   let importanceRules = $state<ImportanceRuleSnapshot[]>([]);
   let importanceDefault = $state("normal");
+  let importanceFiles = $state<ImportanceFileSnapshot[]>([]);
 
   // Hands off to the agent and returns as soon as the task is queued — it reads
   // the whole repo, so the table lands minutes later and the tabs pick it up
@@ -78,6 +81,9 @@
   const selectedModels = $derived(selectedProvider?.models ?? []);
   const selectedModel = $derived(selectedModels.find((model) => model.is_selected) ?? null);
   const effortOptions = $derived(["Auto", ...(selectedModel?.effort_levels ?? [])]);
+  // The declared table is what the card is for; the resolved files sit under it,
+  // stopping at a limit so a large diff cannot push the table off the page.
+  const importanceWindow = $derived(importanceFileWindow(importanceFiles));
 
   /** Search query for the model list (long model lists get a filter + scroll). */
   let modelQuery = $state("");
@@ -123,6 +129,7 @@
     repoRoot = res.settings.repoRoot;
     importanceRules = res.settings.importanceRules ?? [];
     importanceDefault = res.settings.importanceDefault ?? "normal";
+    importanceFiles = res.settings.importanceFiles ?? [];
     for (const w of res.warnings ?? []) {
       app.showToast("info", w);
     }
@@ -500,6 +507,34 @@
               <p class="mt-2 text-[10px] text-fg-3">
                 Anything else resolves to <span class="mono">{importanceDefault}</span>.
               </p>
+            {/if}
+            {#if importanceFiles.length > 0}
+              <div class="mt-3 pt-3 border-t border-hairline">
+                <p class="text-[10px] uppercase tracking-wider text-muted mb-1.5">
+                  Changed files
+                </p>
+                <ul class="space-y-0.5">
+                  {#each importanceWindow.shown as file (file.path)}
+                    <li class="flex items-baseline gap-2 text-[11px]">
+                      <span class="mono text-fg-2 truncate-start min-w-0 flex-1" title={file.path}>
+                        {file.path}
+                      </span>
+                      <span
+                        class="mono text-muted shrink-0"
+                        title={file.matchedRule
+                          ? `matched by ${file.matchedRule}`
+                          : `no rule matched — the default (${importanceDefault}) applies`}
+                      >{matchedRuleLabel(file)}</span>
+                      <span class="mono shrink-0">{file.tier}</span>
+                    </li>
+                  {/each}
+                </ul>
+                {#if importanceWindow.hidden > 0}
+                  <p class="mt-1.5 text-[10px] text-fg-3">
+                    {importanceWindow.hidden} more changed files not listed.
+                  </p>
+                {/if}
+              </div>
             {/if}
             <button
               type="button"

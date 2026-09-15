@@ -222,6 +222,15 @@ impl ImportanceTier {
             _ => None,
         }
     }
+
+    /// The spelling `parse` accepts, for surfaces that report a resolved tier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Foundational => "foundational",
+            Self::Isolated => "isolated",
+            Self::Normal => "normal",
+        }
+    }
 }
 
 /// Path-shaped rules match separator by separator, so `src/*` names the files
@@ -264,48 +273,62 @@ impl ImportanceRepoConfig {
     /// wins, so a narrow rule can carve an exception out of a broader one that
     /// would otherwise claim the same path.
     pub fn resolve(&self, path: &str) -> ImportanceTier {
-        self.tier_for(path).unwrap_or_else(|| self.default_tier())
+        self.matching_rule(path)
+            .map_or_else(|| self.default_tier(), |(_, tier)| tier)
     }
 
-    fn default_tier(&self) -> ImportanceTier {
+    /// The rule that claims `path`: the key as it was written, and its tier.
+    ///
+    /// `None` means no rule claims the path, and [`Self::resolve`] answers with
+    /// the default. The key travels with the tier because the tier alone does
+    /// not answer "why is this one foundational?", and a caller that walks the
+    /// levels again to recover the key is a second copy of the precedence
+    /// order, free to disagree with this one.
+    pub fn matching_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        self.exact_rule(path)
+            .or_else(|| self.glob_rule(path))
+            .or_else(|| self.file_type_rule(path))
+    }
+
+    /// The tier a path no rule claims resolves to.
+    pub fn default_tier(&self) -> ImportanceTier {
         self.default
             .as_deref()
             .and_then(ImportanceTier::parse)
             .unwrap_or_default()
     }
 
-    fn tier_for(&self, path: &str) -> Option<ImportanceTier> {
-        self.exact_tier(path)
-            .or_else(|| self.glob_tier(path))
-            .or_else(|| self.file_type_tier(path))
-    }
-
     /// A key with no metacharacters names one path.
-    fn exact_tier(&self, path: &str) -> Option<ImportanceTier> {
-        self.rules
-            .get(path)
-            .and_then(|tier| ImportanceTier::parse(tier))
+    fn exact_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        let (key, tier) = self.rules.get_key_value(path)?;
+        Some((key.as_str(), ImportanceTier::parse(tier)?))
     }
 
-    fn glob_tier(&self, path: &str) -> Option<ImportanceTier> {
-        self.pattern_tier(path, true)
+    fn glob_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        self.pattern_rule(path, true)
     }
 
-    fn file_type_tier(&self, path: &str) -> Option<ImportanceTier> {
+    fn file_type_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
         let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-        self.pattern_tier(basename, false)
+        self.pattern_rule(basename, false)
     }
 
     /// A key carrying a separator names a place in the tree and is matched
     /// against the whole path; one without names a kind of file and is matched
     /// against the basename.
-    fn pattern_tier(&self, target: &str, path_shaped: bool) -> Option<ImportanceTier> {
-        self.rules
+    ///
+    /// A winning key whose tier does not read resolves to nothing, the same as
+    /// no match at all: the fall-through goes to the next level, never to the
+    /// next-shortest matching key, so a typo cannot silently promote a broader
+    /// rule into the answer.
+    fn pattern_rule(&self, target: &str, path_shaped: bool) -> Option<(&str, ImportanceTier)> {
+        let (key, tier) = self
+            .rules
             .iter()
             .filter(|(key, _)| is_pattern(key) && key.contains('/') == path_shaped)
             .filter(|(key, _)| matches_pattern(key, target))
-            .max_by_key(|(key, _)| key.len())
-            .and_then(|(_, tier)| ImportanceTier::parse(tier))
+            .max_by_key(|(key, _)| key.len())?;
+        Some((key.as_str(), ImportanceTier::parse(tier)?))
     }
 }
 
@@ -2878,6 +2901,53 @@ mod tests {
         for (path, expected) in cases {
             assert_eq!(rules.resolve(path), expected, "{path}");
         }
+    }
+
+    #[test]
+    fn importance_resolution_names_the_rule_that_claimed_the_path() {
+        // The same table as the precedence test: each row is claimed by a
+        // different level, so the key that comes back says which one decided.
+        let rules = importance_rules(
+            &[
+                ("crates/er-engine/src/app/filter.rs", "normal"),
+                ("crates/er-engine/src/**", "foundational"),
+                ("*.rs", "isolated"),
+            ],
+            "normal",
+        );
+        let cases = [
+            (
+                "crates/er-engine/src/app/filter.rs",
+                Some(("crates/er-engine/src/app/filter.rs", ImportanceTier::Normal)),
+            ),
+            (
+                "crates/er-engine/src/git/mod.rs",
+                Some(("crates/er-engine/src/**", ImportanceTier::Foundational)),
+            ),
+            (
+                "crates/er-tui/src/main.rs",
+                Some(("*.rs", ImportanceTier::Isolated)),
+            ),
+            // Claimed by nothing: the default answers, and no key is named.
+            ("desktop-ui/src/lib/types.ts", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(rules.matching_rule(path), expected, "{path}");
+            // Which rule claimed a path and what the path resolves to are two
+            // readings of one lookup, so they cannot disagree.
+            assert_eq!(
+                rules.resolve(path),
+                expected.map_or_else(|| rules.default_tier(), |(_, tier)| tier),
+                "{path}"
+            );
+        }
+
+        // An empty table reaches the same answer as an unclaimed path, which is
+        // the case a repo with no generated rules is in.
+        let empty = importance_rules(&[], "isolated");
+        assert_eq!(empty.matching_rule("README.md"), None);
+        assert_eq!(empty.resolve("README.md"), ImportanceTier::Isolated);
+        assert_eq!(empty.default_tier(), ImportanceTier::Isolated);
     }
 
     #[test]

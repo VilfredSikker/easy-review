@@ -1,7 +1,10 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
 use super::settings::{agent_effort_label, settings_fields_grouped};
-use super::{split_shell_args, ErConfig, AGENT_EFFORT_OPTIONS, MAX_CONCURRENT_REVIEWS_RANGE};
+use super::{
+    split_shell_args, ErConfig, ImportanceRepoConfig, AGENT_EFFORT_OPTIONS,
+    MAX_CONCURRENT_REVIEWS_RANGE,
+};
 use serde::{Deserialize, Serialize};
 
 /// Wire value for a single config field patch from the desktop settings UI.
@@ -53,14 +56,26 @@ pub enum ConfigHubFieldDto {
 }
 
 /// One declared importance rule, as written, for the read-only list.
-///
-/// The key is shown rather than resolved: the question a reviewer has is "why
-/// is this file ranked foundational?", and the answer is which rule claimed it.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportanceRuleDto {
     pub matcher: String,
     pub tier: String,
+}
+
+/// One changed file's resolution: the tier it reads as, and the rule that said so.
+///
+/// The rules list shows what was declared; this shows what a given file
+/// resolved to. Precedence and the default sit between those two, so only the
+/// resolved form answers "why is this file foundational?".
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportanceFileDto {
+    pub path: String,
+    /// The effective tier, whether a rule or the default produced it.
+    pub tier: String,
+    /// The rule key that claimed the path; `None` when the default applies.
+    pub matched_rule: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,9 +90,44 @@ pub struct DesktopSettingsSnapshot {
     pub importance_rules: Vec<ImportanceRuleDto>,
     /// What a path no rule claims resolves to.
     pub importance_default: String,
+    /// The active tab's changed files, resolved. Empty when the repo has no
+    /// rules — there is nothing to explain about a path that reads as normal
+    /// because nothing was ever declared.
+    pub importance_files: Vec<ImportanceFileDto>,
 }
 
-pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopSettingsSnapshot {
+/// Resolve the active tab's changed files against `table`.
+///
+/// Split from the snapshot so the wire values are testable without shelling out
+/// to git for the repo slug.
+fn importance_file_rows(
+    table: Option<&ImportanceRepoConfig>,
+    changed_paths: &[String],
+) -> Vec<ImportanceFileDto> {
+    let Some(table) = table else {
+        return Vec::new();
+    };
+    changed_paths
+        .iter()
+        .map(|path| {
+            let (matched_rule, tier) = table.matching_rule(path).map_or_else(
+                || (None, table.default_tier()),
+                |(key, tier)| (Some(key.to_string()), tier),
+            );
+            ImportanceFileDto {
+                path: path.clone(),
+                tier: tier.as_str().to_string(),
+                matched_rule,
+            }
+        })
+        .collect()
+}
+
+pub fn desktop_settings_snapshot(
+    config: &ErConfig,
+    repo_root: &str,
+    changed_paths: &[String],
+) -> DesktopSettingsSnapshot {
     let grouped = settings_fields_grouped(config);
 
     // Keyed the way managed storage keys a repo, so the table the agent writes
@@ -96,9 +146,14 @@ pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopS
                 .collect()
         })
         .unwrap_or_default();
+    // The default as it resolves, not as it was written: a table whose default
+    // does not read falls back to normal, and the view has to say what the
+    // resolver will actually do rather than repeat a typo back.
     let importance_default = rules
-        .and_then(|table| table.default.clone())
-        .unwrap_or_else(|| "normal".to_string());
+        .map(|table| table.default_tier())
+        .unwrap_or_default()
+        .as_str()
+        .to_string();
 
     DesktopSettingsSnapshot {
         general: grouped.general,
@@ -108,6 +163,7 @@ pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopS
         repo_root: repo_root.to_string(),
         importance_rules,
         importance_default,
+        importance_files: importance_file_rows(rules, changed_paths),
     }
 }
 
@@ -482,5 +538,59 @@ mod tests {
     fn validate_agent_args_requires_prompt_placeholder() {
         assert!(validate_config_text_field("agent.args", "--print").is_some());
         assert!(validate_config_text_field("agent.args", "-p {prompt}").is_none());
+    }
+
+    fn importance_table(entries: &[(&str, &str)], default: &str) -> ImportanceRepoConfig {
+        ImportanceRepoConfig {
+            default: Some(default.to_string()),
+            rules: entries
+                .iter()
+                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn importance_file_rows_report_the_rule_that_claimed_each_path() {
+        let table = importance_table(
+            &[
+                ("crates/er-engine/src/app/filter.rs", "normal"),
+                ("crates/er-engine/src/**", "foundational"),
+                ("*.rs", "isolated"),
+            ],
+            "normal",
+        );
+        let changed = vec![
+            "crates/er-engine/src/app/filter.rs".to_string(),
+            "crates/er-engine/src/git/mod.rs".to_string(),
+            "desktop-ui/src/lib/types.ts".to_string(),
+        ];
+
+        let rows = importance_file_rows(Some(&table), &changed);
+
+        assert_eq!(rows.len(), changed.len());
+        // Each row is claimed by a different level, so the key says which one.
+        assert_eq!(
+            rows[0].matched_rule.as_deref(),
+            Some("crates/er-engine/src/app/filter.rs")
+        );
+        assert_eq!(rows[0].tier, "normal");
+        assert_eq!(
+            rows[1].matched_rule.as_deref(),
+            Some("crates/er-engine/src/**")
+        );
+        assert_eq!(rows[1].tier, "foundational");
+        // Nothing claimed this one, so no key is named and the default answers.
+        assert_eq!(rows[2].matched_rule, None);
+        assert_eq!(rows[2].tier, "normal");
+    }
+
+    #[test]
+    fn a_repo_without_rules_resolves_no_files() {
+        // The card reads "no rules declared for this repo" in this case, so an
+        // empty list is the honest payload — a row per file would say the
+        // resolution meant something when nothing was ever declared.
+        let rows = importance_file_rows(None, &["src/main.rs".to_string()]);
+        assert!(rows.is_empty());
     }
 }

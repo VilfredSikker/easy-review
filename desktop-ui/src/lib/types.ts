@@ -820,11 +820,19 @@ export type ConfigHubField =
 
 export type SettingsTab = "general" | "projects" | "terminal";
 
-/** One declared importance rule, as written — the answer to "why is this file
- *  ranked foundational?" is which rule claimed it. */
+/** One declared importance rule, as written. */
 export interface ImportanceRuleSnapshot {
   matcher: string;
   tier: string;
+}
+
+/** One changed file resolved against those rules: the tier it reads as, and the
+ *  rule that claimed it. `matchedRule` is null when no rule did, which leaves
+ *  the default to answer. */
+export interface ImportanceFileSnapshot {
+  path: string;
+  tier: string;
+  matchedRule: string | null;
 }
 
 export interface DesktopSettingsSnapshot {
@@ -836,6 +844,9 @@ export interface DesktopSettingsSnapshot {
   /** Read-only: the rules are written by the importance agent or by hand. */
   importanceRules: ImportanceRuleSnapshot[];
   importanceDefault: string;
+  /** The active tab's changed files, resolved. Empty when the repo declares no
+   *  rules, since then there is nothing to explain. */
+  importanceFiles: ImportanceFileSnapshot[];
 }
 
 export interface GetConfigHubResponse {
