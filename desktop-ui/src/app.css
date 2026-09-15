@@ -332,7 +332,7 @@ body {
 .diff-row.is-selected.is-anchor-range > div {
   background-color: var(--color-row-select-strong) !important;
 }
-/* Reference highlight (issue #69) — every occurrence of the clicked identifier.
+/* Reference highlight — every occurrence of the clicked identifier.
  * Derives from the periwinkle selection accent so it reads as "selection",
  * distinct from word-diff add/del backgrounds and comment-anchor blue. */
 .ref-highlight {
@@ -341,7 +341,7 @@ body {
   border-radius: 2px;
 }
 
-/* Reference-match overview ruler (issue #69) — thin overlay strip on the
+/* Reference-match overview ruler — thin overlay strip on the
  * right edge of the diff scroll viewport (VSCode/Zed-style scrollbar
  * markers). Same periwinkle accent as .ref-highlight. The container ignores
  * pointer events so it never blocks the native scrollbar; only the marks
@@ -423,7 +423,7 @@ body {
  * unselectable, and WebKit needs -webkit-user-drag to treat it as a source. */
 .dnd-source { -webkit-user-drag: element; }
 
-/* Jump-to pulse animation (mock lines 35–43, build-plan §lookup-utilities). */
+/* Jump-to pulse animation. */
 .flash { animation: flash-pulse 1200ms ease-out; }
 @keyframes flash-pulse {
   0%   { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-accent) 55%, transparent), 0 0 0 0 color-mix(in srgb, var(--color-accent) 35%, transparent); }

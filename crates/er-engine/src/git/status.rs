@@ -1548,8 +1548,9 @@ mod tests {
 
     #[test]
     fn parse_git_log_subject_with_special_chars() {
-        // With \x1e delimiters, subjects containing characters that would previously
-        // confuse a line-count parser (colons, parentheses, numbers) are handled safely.
+        // With \x1e delimiters, subjects containing characters that would
+        // confuse a line-count parser (colons, parentheses, numbers) are
+        // handled safely.
         // git's %s outputs only the first line of the subject, so embedded newlines
         // cannot occur in real output.
         let output = "abc123def5678901234567890abcdef12345678\x1eabc123\x1efix(auth): handle 401 errors\x1eAuthor Name\x1e2025-01-01T00:00:00Z\x1e1 hour ago\x1edef456\n 1 file changed, 5 insertions(+)\n";

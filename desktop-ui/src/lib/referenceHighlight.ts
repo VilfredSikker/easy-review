@@ -1,5 +1,5 @@
 /**
- * Lexical "highlight all references" for the diff view (issue #69).
+ * Lexical "highlight all references" for the diff view.
  *
  * Clicking an identifier token (function name, variable, constant) highlights
  * every other occurrence of that identifier across the rendered diff. This is

@@ -972,9 +972,9 @@ pub fn build_agent_expert_prompt(
 /// Prepare the harness diff artifacts (diff-tmp + diff-annotated + markers)
 /// for an agent action, aborting with a notification when there is no diff
 /// to prepare. Review/validate/expert/professor/triage must anchor against
-/// the SAME prepared bytes (review-fix-loop final pass): an agent-side git
-/// or `gh pr diff` would use different `--unified` flags and mis-anchor
-/// findings. Remote tabs (`er --remote`) already hold the PR diff in memory
+/// the SAME prepared bytes: an agent-side git or `gh pr diff` would use
+/// different `--unified` flags and mis-anchor findings. Remote tabs
+/// (`er --remote`) already hold the PR diff in memory
 /// (or can re-fetch it from this unsandboxed process); they use the same
 /// prepared-artifact path so the sandboxed agent does not call `gh`.
 pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
@@ -1041,10 +1041,10 @@ pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -
 }
 
 /// Build the validate agent prompt. Local mode only — remote validation needs a working
-/// tree to read, which is a separate plumbing job (defer). Uses the prepared-diff prompt
-/// (O1 contract): the caller pre-writes `diff-tmp`/`diff-annotated` via
-/// `ensure_diff_artifacts`, so the agent anchors against the harness-computed hash instead
-/// of re-running `git diff` + `sha256sum` + awk (review-fix-loop P4-2).
+/// tree to read, which is a separate plumbing job (defer). Uses the prepared-diff prompt:
+/// the caller pre-writes `diff-tmp`/`diff-annotated` via `ensure_diff_artifacts`, so the
+/// agent anchors against the harness-computed hash instead of re-running `git diff` +
+/// `sha256sum` + awk.
 pub fn build_agent_validate_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
@@ -2057,9 +2057,9 @@ mod tests {
 
     #[test]
     fn validate_action_ensures_artifacts_for_review_only_tabs() {
-        // F1 regression: with a review but zero GitHub comments, PromptValidate
-        // must still prepare the diff artifacts — the ensure call previously
-        // sat inside the comments gate and validate silently no-oped.
+        // With a review but zero GitHub comments, PromptValidate must still
+        // prepare the diff artifacts: gating the ensure call on comments makes
+        // validate silently no-op.
         let output_dir = "/tmp/er-tui-validate-f1";
         let _ = std::fs::remove_dir_all(output_dir);
         std::fs::create_dir_all(output_dir).unwrap(); // storage creates it in the real flow
@@ -2083,7 +2083,7 @@ mod tests {
 
         assert!(
             std::fs::metadata(format!("{output_dir}/.diff-tmp.sha256")).is_ok(),
-            "artifacts ensured even with zero comments (F1)"
+            "artifacts ensured even with zero comments"
         );
         assert!(
             std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
@@ -2126,9 +2126,9 @@ mod tests {
 
     #[test]
     fn remote_review_uses_prepared_diff_not_gh_pr_diff() {
-        // `er --remote` previously skipped prepared artifacts and told the
-        // sandboxed agent to `gh pr diff` from the artifact directory, which
-        // cannot reach GitHub. Desktop already uses the prepared-diff prompt.
+        // The sandboxed agent cannot reach GitHub, so a remote review must not
+        // be told to `gh pr diff` from the artifact directory — it uses the
+        // prepared-diff prompt, as desktop does.
         let output_dir = "/tmp/er-tui-remote-review";
         let _ = std::fs::remove_dir_all(output_dir);
         std::fs::create_dir_all(output_dir).unwrap();

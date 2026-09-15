@@ -1,7 +1,7 @@
 /** Pure annotation placement helpers for the diff view.
  *
  * Extracted from DiffView.svelte so the same placement logic can be reused
- * by the flat cross-file virtualizer (Step A0 of `.work/flat-virtualizer`).
+ * by the flat cross-file virtualizer.
  *
  * All exports are pure functions of their inputs. No Svelte state is captured.
  */

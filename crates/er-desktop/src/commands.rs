@@ -344,11 +344,10 @@ pub fn snap_from_confirmed(app: &App, state: &AppState) -> AppSnapshot {
     snap
 }
 
-/// First-paint snapshot for hot open paths (two-phase open, first-paint plan
-///
-/// step 2): full chrome (tabs/projects/mode/branch/base) + PR card, but no
-/// diff files, AI, or annotations, with `bg_loading.tab_diff` set so the
-/// frontend renders the "Loading diff…" pane. The background offload worker
+/// First-paint snapshot for hot open paths (two-phase open): full chrome
+/// (tabs/projects/mode/branch/base) + PR card, but no diff files, AI, or
+/// annotations, with `bg_loading.tab_diff` set so the frontend renders the
+/// "Loading diff…" pane. The background offload worker
 /// ([`kick_post_open_offload`]) then bumps the revision and the poll delivers
 /// the full snapshot within ~40–120 ms.
 pub fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
@@ -2210,11 +2209,10 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisionSummary>, String> {
-    // Branch-level managed storage no longer keeps multiple revisions per
-    // branch — re-running review overwrites the same files in place. The
-    // returned list is now at most one entry representing the current branch
-    // state, so the existing UI (ExportModal, AgentOutputView) keeps working
-    // without a revision picker.
+    // Branch-level managed storage keeps no revisions: re-running review
+    // overwrites the same files in place. The returned list is therefore at
+    // most one entry representing the current branch state, so the existing UI
+    // (ExportModal, AgentOutputView) works without a revision picker.
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     if tab.repo_root.is_empty() {
@@ -2801,7 +2799,7 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
 pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
-    // window stays responsive (it previously froze for the whole fetch).
+    // window stays responsive for the whole fetch.
     run_blocking(move || {
         let root = {
             let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -5522,9 +5520,9 @@ fn remote_pr_tab_from_entry(
     if let Some(data) = entry.pr_data {
         tab.pr_data = Some(data);
     }
-    // Staleness baseline = the oid the cached diff was fetched at
-    // (review-fix-loop R1); `build_remote_pr_tab` falls back to the PR-list
-    // cache when the entry has no oid (pre-upgrade / failed fetch).
+    // Staleness baseline = the oid the cached diff was fetched at;
+    // `build_remote_pr_tab` falls back to the PR-list cache when the entry has
+    // no oid (pre-upgrade / failed fetch).
     tab.last_diff_head_oid = entry.head_oid.clone();
     tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
         raw: entry.raw_diff,
@@ -5562,9 +5560,9 @@ fn build_remote_pr_tab(
     ) {
         let mut tab = remote_pr_tab_from_entry(&pr_ref, entry.clone())?;
         // Seed the staleness probe's baseline with the oid the cached diff was
-        // fetched at (review-fix-loop R1): equal oid ⇒ pill stays off;
-        // advanced ⇒ it lights. Fall back to the PR-list cache only when the
-        // entry has no oid (pre-upgrade entries / failed oid fetch).
+        // fetched at: equal oid ⇒ pill stays off; advanced ⇒ it lights. Fall
+        // back to the PR-list cache only when the entry has no oid (pre-upgrade
+        // entries / failed oid fetch).
         tab.last_diff_head_oid = match entry.head_oid {
             Some(oid) => Some(oid),
             None => {
@@ -5616,7 +5614,7 @@ fn build_remote_pr_tab(
     });
     tab.reload_remote_comments();
     // Seed the staleness baseline with the oid the freshly fetched diff was
-    // computed at (review-fix-loop R1).
+    // computed at.
     tab.last_diff_head_oid = inputs.head_oid.clone();
     crate::remote_pr_open_cache::insert_remote_pr_open_entry(
         &state.remote_pr_open_cache,
@@ -5638,9 +5636,9 @@ fn build_remote_pr_tab(
 }
 
 /// Open (or activate, if already open) a remote-only PR. The heavy path
-/// (`gh` calls + diff parse) runs WITHOUT the App lock — previously
-/// `new_remote` ran three network calls while holding the app mutex, blocking
-/// every other command. On a cache hit there is no network at all.
+/// (`gh` calls + diff parse) runs WITHOUT the App lock: holding the app mutex
+/// across the network calls blocks every other command. On a cache hit there
+/// is no network at all.
 fn activate_or_open_remote_pr(
     owner: &str,
     repo: &str,
@@ -6061,10 +6059,10 @@ fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), St
 /// Background branch-refresh workers currently running, keyed
 /// `(repo_root, branch)`.
 ///
-/// The frontend dedups repeats of the *same* branch, but a run of clicks across
-/// different branches stacked one worker per click, each paying its own network
-/// fetch — and every worker whose tab is no longer active still pays, then
-/// discards the result.
+/// The frontend dedups repeats of the *same* branch, but nothing there stops a
+/// run of clicks across different branches stacking one worker per click, each
+/// paying its own network fetch — and every worker whose tab is no longer
+/// active still pays, then discards the result.
 static BRANCH_REFRESH_IN_FLIGHT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
 fn branch_refresh_finished(key: &(String, String)) {
@@ -6273,7 +6271,7 @@ type CachedPrOpenEntry = (
 );
 
 /// Look up a cached open-diff for the hint path, treating it as a hit when the
-/// **base branch** matches — head/`updated_at` drift is allowed (J1: render the
+/// **base branch** matches — head/`updated_at` drift is allowed: render the
 /// diff we already hold instantly; the 30s `pr_head_probe` lights the stale pill,
 /// Sync refreshes). A base **retarget** is the one hard miss: the staleness pill
 /// (`compute_oid_staleness`) watches only `head_oid`, so a silently re-based diff
@@ -6638,9 +6636,9 @@ fn load_pr_open_inputs(
     if let Some(hint) = hint {
         let freshness = freshness_from_hint(hint);
 
-        // Cache hit when the base branch matches (J1: head/`updated_at` drift is
-        // allowed — render the diff we already hold instantly, the 30s stale pill
-        // catches a moved head). Reuse the **entry's own** freshness, not the
+        // Cache hit when the base branch matches — head/`updated_at` drift is
+        // allowed: render the diff we already hold instantly, and the 30s stale
+        // pill catches a moved head. Reuse the **entry's own** freshness, not the
         // hint's: it pins the oid the cached diff was built against, so seeding the
         // staleness probe with it lights the pill when the live head has advanced.
         // Backfill commits only if this older cache entry does not have them yet.
@@ -7067,8 +7065,8 @@ fn open_pr_review_impl(
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
-    // apply_managed_root + AI reload for the PR bucket (first-paint plan
-    // step 1: three full reloads per open → one).
+    // apply_managed_root + AI reload for the PR bucket, so syncing here would
+    // make three full reloads per open instead of one.
     place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
@@ -7092,10 +7090,10 @@ fn open_pr_review_impl(
     // 0-file PR or an unknown head oid, where seeding would mislead the probe.
     let has_loaded_files = !app.tab().files.is_empty();
     let two_phase = if !head_oid_for_preload.trim().is_empty() && has_loaded_files {
-        // Two-phase open (first-paint plan step 2): enter PR Diff without the
-        // AI sidecar reload — `kick_post_open_offload` performs the single
-        // authoritative reload right after the command returns, and the
-        // chrome-only snapshot below paints immediately with "Loading diff…".
+        // Two-phase open: enter PR Diff without the AI sidecar reload —
+        // `kick_post_open_offload` performs the single authoritative reload
+        // right after the command returns, and the chrome-only snapshot below
+        // paints immediately with "Loading diff…".
         app.tab_mut()
             .enter_pr_diff_preloaded(head_oid_for_preload, true)
             .map_err(|e| e.to_string())?;
@@ -7452,10 +7450,10 @@ pub fn prefetch_pr_open(
     let branch_label = format!("pr-{}", pr_number);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        // Warm the PR comment sync cache (first-paint plan step 3): detached so
-        // the in-flight claim is released as soon as the diff is cached; the
-        // post-open `pull_github_comments` (~2.5–3 s of gh calls) is served
-        // from memory when the user clicks within the 60 s TTL.
+        // Warm the PR comment sync cache: detached so the in-flight claim is
+        // released as soon as the diff is cached; the post-open
+        // `pull_github_comments` (~2.5–3 s of gh calls) is served from memory
+        // when the user clicks within the 60 s TTL.
         {
             let warm_root = repo_root.clone();
             std::thread::spawn(move || {
@@ -7565,8 +7563,8 @@ pub fn prefetch_remote_pr_open(
     let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        // Warm the PR comment sync cache (first-paint plan step 3) — detached,
-        // like the local prefetch; the remote variant needs no local clone.
+        // Warm the PR comment sync cache — detached, like the local prefetch;
+        // the remote variant needs no local clone.
         {
             let warm_owner = owner.clone();
             let warm_repo = repo.clone();
@@ -8268,7 +8266,7 @@ pub async fn sync_pr(
                                 // Realign the stale-pill baseline after a legit
                                 // sync: refetch_and_refresh_diff's remote branch
                                 // never updates last_diff_head_oid, so without
-                                // this the pill stays lit forever (P4-1).
+                                // this the pill stays lit forever.
                                 if let Some(pr_number) = tab.pr_number {
                                     if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
                                         tab.last_diff_head_oid = Some(oid);
@@ -9105,13 +9103,12 @@ pub async fn select_tab(
 }
 
 /// If the active tab was restored as a lazy stub, kick its first
-///
 /// `refresh_diff()` to a background thread and return immediately. The
 /// caller's snapshot shows the stub with `loading.tab_diff = true`; the
 /// loaded diff arrives via the revision-event poll when the worker finishes.
-/// (This used to run inline while holding the App lock — a tab switch onto a
-/// large stub tab serialized every other command behind a multi-second git
-/// diff + parse.)
+///
+/// Running this inline would hold the App lock across the git diff + parse,
+/// serializing every other command behind it — seconds, for a large stub tab.
 pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let idx = app.active_tab;
     let tab = app.tab_mut();
@@ -9205,7 +9202,7 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     });
 }
 
-/// Background offload for the two-phase PR open (first-paint plan step 2).
+/// Background offload for the two-phase PR open.
 ///
 /// Phase 1 (`open_pr_review_impl`) returns a chrome-only snapshot with
 /// `bg_loading.tab_diff` set; this worker then performs the deferred work the
@@ -9624,8 +9621,8 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
                         // Deliberately NOT updating `last_diff_head_oid`: the
                         // two-phase open serves the open-time diff, and this
                         // background fetch would otherwise suppress the stale
-                        // pill while the displayed diff is at an older head
-                        // (review-fix-loop A2). Manual Sync realigns it.
+                        // pill while the displayed diff is at an older head.
+                        // Manual Sync realigns it.
                         tab.pr_refs_fetched = true;
                         desktop_rev.fetch_add(1, Ordering::Relaxed);
                     }
@@ -10715,7 +10712,7 @@ mod tests {
 
     #[test]
     fn pr_open_entry_renders_stale_head_but_rejects_rebase() {
-        // J1: when the head moved on origin (stale-by-head), the hint open is still a
+        // When the head moved on origin (stale-by-head), the hint open is still a
         // cache hit — we render the diff we already hold and let the 30s pill flag it.
         // The lookup must return the ENTRY's own freshness (the oid the cached diff
         // was built against), not the newer requested oid; seeding the staleness probe
@@ -11311,8 +11308,8 @@ mod tests {
     fn place_tab_skip_storage_sync_still_places_and_focuses() {
         use er_engine::app::TabState;
 
-        // The PR-open hot path skips the storage sync (first-paint plan
-        // step 1): `enter_pr_diff_*` performs the authoritative reload right
+        // The PR-open hot path skips the storage sync:
+        // `enter_pr_diff_*` performs the authoritative reload right
         // after, so placement must still work and focus the tab.
         let mut app = make_app_with_n_tabs(1);
         app.active_tab = 0;
@@ -11410,7 +11407,7 @@ mod tests {
         assert_eq!(
             tab.last_diff_head_oid.as_deref(),
             Some("oid-1"),
-            "staleness baseline = the oid the cached diff was fetched at (R1)"
+            "staleness baseline = the oid the cached diff was fetched at"
         );
         assert_eq!(tab.files.len(), 1);
         assert_eq!(tab.files[0].path, "f.rs");
@@ -11749,15 +11746,15 @@ mod tests {
         assert!(!version_is_newer("not-a-version", "0.4.7"));
     }
 
-    /// ⌘K / AI Hub actions (run review, change model, triage, …) used to be
-    /// sync Tauri commands: they locked `App`, rebuilt a full snapshot (and for
-    /// reviews also shelled out to git / wrote diff artifacts) on the **main
-    /// thread**, freezing the window for a noticeable stretch — the same class
-    /// of bug as the file-filter freeze (`set_filter` → `run_blocking`).
+    /// Every palette-hot leaf command must be `pub async fn` whose body
+    /// contains `run_blocking`. Running one synchronously locks `App` and
+    /// rebuilds a full snapshot (for reviews, also shelling out to git and
+    /// writing diff artifacts) on the **main thread**, freezing the window for
+    /// a noticeable stretch — the same class of bug as the file-filter freeze
+    /// (`set_filter` → `run_blocking`).
     ///
-    /// Guard: every palette-hot leaf command must be `pub async fn` whose body
-    /// contains `run_blocking`. Thin `.await` wrappers (triage / files /
-    /// professor → scoped_review) must stay async and lock-free.
+    /// Thin `.await` wrappers (triage / files / professor → scoped_review) must
+    /// stay async and lock-free.
     #[test]
     fn cmdk_ai_actions_must_run_off_main_thread() {
         let src = include_str!("commands.rs");
@@ -11774,10 +11771,10 @@ mod tests {
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
-            // Local-first thread writes used to be sync Tauri commands: they
-            // locked App, reloaded every AI sidecar, and rebuilt the snapshot
-            // on the main thread — freeze + spinner per inline comment even
-            // though the comment is unpushed.
+            // These must be async: a sync command would lock App, reload every
+            // AI sidecar, and rebuild the snapshot on the main thread — a
+            // freeze and a spinner per inline comment, though the comment is
+            // unpushed.
             "add_comment",
             "add_question",
             "add_note",
@@ -11792,8 +11789,8 @@ mod tests {
             "unbulk_review_pillar",
             "add_ui_annotation",
             "delete_ui_annotation",
-            // Panel chrome used to rebuild a full snapshot on the main thread,
-            // freezing the window before `[` / `\` / `]` took effect.
+            // These must be async: rebuilding the panel chrome synchronously
+            // freezes the window before `[` / `\` / `]` takes effect.
             "toggle_panel",
             // Finding-thread actions: optimistic on the frontend, view-gated here.
             "remove_finding_thread",

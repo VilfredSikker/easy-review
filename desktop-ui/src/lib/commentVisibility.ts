@@ -42,11 +42,11 @@ type DiffFiles = { hunks: { threads: ThreadSnapshot[] }[] }[] | null | undefined
 /**
  * GitHub comment threads for the Comments panel / Branch badge.
  *
- * Inline diff rows render `file.hunks[].threads`. The panel used to read only
- * `ai.threads`. Those copies can disagree (differential snapshots splice old
- * hunks while replacing AI), which shows comments in the diff and hides them
- * in the panel. Prefer the hunk copy when both exist so the panel matches
- * what the user is scrolling.
+ * Inline diff rows render `file.hunks[].threads`, and the panel must read the
+ * same copy. The two can disagree (differential snapshots splice old hunks
+ * while replacing AI), which shows comments in the diff and hides them in the
+ * panel. Prefer the hunk copy when both exist so the panel matches what the
+ * user is scrolling.
  */
 export function commentThreadsFromDiff(
   aiThreads: ThreadSnapshot[] | undefined | null,

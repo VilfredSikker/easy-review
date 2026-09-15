@@ -1410,8 +1410,7 @@ impl TabState {
         // Light sync only: the open path immediately follows with
         // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
         // `apply_managed_root` re-routes to the PR bucket and performs the
-        // authoritative AI reload — a full reload here would be the 3rd of 3
-        // (first-paint plan step 1).
+        // authoritative AI reload — a full reload here would be the 3rd of 3.
         tab.sync_managed_storage_light();
         Ok(tab)
     }
@@ -2314,9 +2313,9 @@ impl TabState {
     /// views must sync again once the viewed branch is known.
     /// Storage routing + reviewed-state sync WITHOUT the AI reload. Used by
     /// hot open paths where the authoritative `reload_ai_state` runs moments
-    /// later with the final view bucket (first-paint plan step 1: the
-    /// constructor + `place_tab` + `enter_pr_diff_*` used to reload the AI
-    /// sidecars three times per open).
+    /// later with the final view bucket — the constructor, `place_tab` and
+    /// `enter_pr_diff_*` each reload, so a full reload here would be the
+    /// third per open.
     pub fn sync_managed_storage_light(&mut self) {
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
@@ -2505,7 +2504,7 @@ impl TabState {
     /// Enter PR Diff from an already-loaded diff without any gh/git round-trip.
     ///
     /// `defer_ai_reload`: when true, skips the AI sidecar reload — used by the
-    /// desktop two-phase open (first-paint plan step 2), where the background
+    /// desktop two-phase open, where the background
     /// offload worker performs the single authoritative `reload_ai_state()`
     /// right after the command returns. Storage routing (`apply_managed_root`)
     /// and the reviewed-file set still apply synchronously so the first
@@ -3125,15 +3124,15 @@ impl TabState {
                 self.last_quick_branch_hash = None;
             } else {
                 let fast = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
-                // A quick refresh used to leave `branch_diff_hash` where it
-                // was, so a HEAD move the app did not perform itself -- a
-                // commit from a terminal -- left `is_stale` false and findings
-                // rendering as current against a diff they no longer matched.
-                //
                 // The fast hash decides whether to pay for the SHA-256. On this
                 // view the common watch event is an uncommitted edit, which
                 // does not move the branch diff at all, so the expensive branch
                 // is the rare one.
+                //
+                // `branch_diff_hash` must follow a HEAD move the app did not
+                // perform itself -- a commit from a terminal -- or `is_stale`
+                // stays false and findings render as current against a diff
+                // they no longer match.
                 let moved = self.last_quick_branch_hash.as_deref() != Some(fast.as_str());
                 self.last_quick_branch_hash = Some(fast.clone());
                 self.diff_hash = fast;
@@ -4708,7 +4707,7 @@ impl TabState {
         match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
             Ok(files) => {
                 // One batched `git check-ignore` instead of one subprocess per file —
-                // a dozen watched files used to cost ~200ms of spawns on every open.
+                // a dozen watched files would cost ~200ms of spawns on every open.
                 let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
                 let ignored = git::gitignored_paths(&self.repo_root, &paths);
                 self.watched_not_ignored = files
@@ -6071,8 +6070,8 @@ impl App {
     }
 
     /// Push the global watched-file config onto the focused tab. Config is
-    /// global-only, so this no longer reloads theme/display/features from disk —
-    /// the old wholesale reload here is what silently reverted in-flight settings.
+    /// global-only, so this must not reload theme/display/features from disk:
+    /// a wholesale reload here silently reverts in-flight settings.
     pub fn sync_config_from_active_tab(&mut self) {
         let watched = self.config.watched.clone();
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
@@ -9064,11 +9063,10 @@ mod tests {
 
     #[test]
     fn a_quick_refresh_re_derives_staleness_when_the_branch_moves() {
-        // Phase 2 item 3. A quick refresh of a local-branch view used to leave
-        // `branch_diff_hash` where it was, so a HEAD move the app did not
-        // perform itself -- a commit from a terminal -- left `is_stale` false
-        // and findings rendering as current against a diff they no longer
-        // matched.
+        // A quick refresh of a local-branch view must re-derive
+        // `branch_diff_hash`: a HEAD move the app did not perform itself -- a
+        // commit from a terminal -- must not leave `is_stale` false with
+        // findings rendering as current against a diff they no longer match.
         let dir = init_repo_with_a_feature_branch();
         let root = dir.path().to_string_lossy().to_string();
         let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
@@ -11949,11 +11947,10 @@ mod tests {
 
     #[test]
     fn deferred_enter_pr_diff_preloaded_defers_ai_reload() {
-        // Two-phase open contract (first-paint plan step 2): with
-        // `defer_ai_reload = true` the PR-bucket routing + reviewed set apply
-        // synchronously, but the AI sidecars are NOT read — the offload worker
-        // performs the single authoritative `reload_ai_state()` after the
-        // command returns.
+        // Two-phase open contract: with `defer_ai_reload = true` the PR-bucket
+        // routing + reviewed set apply synchronously, but the AI sidecars are
+        // NOT read — the offload worker performs the single authoritative
+        // `reload_ai_state()` after the command returns.
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -12524,7 +12521,7 @@ mod tests {
 
     #[test]
     fn parse_stream_json_long_bash_command_not_truncated() {
-        // 60-char cap used to cut this mid-flag, hiding what the agent actually ran.
+        // A 60-char cap would cut this mid-flag, hiding what the agent ran.
         let cmd = r#"find / -maxdepth 6 -iname "discovery-api" -type d 2>/dev/null | head -20"#;
         assert!(cmd.chars().count() > 60);
         let line = format!(

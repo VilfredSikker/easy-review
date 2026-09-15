@@ -1,12 +1,12 @@
 /**
- * Reference-highlight state for the diff view (issues #69, #73).
+ * Reference-highlight state for the diff view.
  *
  * Holds the active highlight query. Every rendered diff line checks its text
  * against it and marks matches — the diff view is viewport-virtualized, so
  * only visible rows pay the cost. Two modes share the machinery:
  *
  * - `"identifier"` — the user clicked an identifier token in the diff.
- *   Whole-word, case-sensitive matching (unchanged from issue #69).
+ *   Whole-word, case-sensitive matching.
  * - `"query"` — the user typed into the Cmd+F search bar. Substring matching
  *   with smart-case (any uppercase letter in the query → case-sensitive).
  *

@@ -510,10 +510,9 @@ mod tests {
         assert_eq!(f.findings[0].lens, "security");
     }
 
-    /// Regression: the merge used to assign `finding.category = def.id` outright,
-    /// so an expert classifying its finding as a correctness issue had that
-    /// classification replaced by its own lens name. The producer now goes to
-    /// `lens` and `category` is left alone.
+    /// The merge must not overwrite an expert's own `category`: an expert that
+    /// classifies its finding as a correctness issue keeps that classification,
+    /// and the producer name goes to `lens` instead.
     #[test]
     fn merge_keeps_the_experts_defect_category() {
         let hash = "abc123";

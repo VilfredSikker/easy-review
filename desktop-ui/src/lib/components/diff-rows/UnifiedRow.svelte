@@ -61,7 +61,7 @@
   );
 
   /**
-   * Reference highlight (issue #69): click an identifier to highlight all
+   * Reference highlight: click an identifier to highlight all
    * occurrences across the rendered diff; click it again (or a non-identifier
    * spot, or press Escape) to clear. Skipped when the user is selecting text.
    * Cmd+click (Ctrl+click on non-mac) also opens the usages popover at the

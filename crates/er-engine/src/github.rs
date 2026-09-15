@@ -812,7 +812,7 @@ type RepoInfoMap = HashMap<String, RepoInfoEntry>;
 /// Process-wide cache of [`get_repo_info`] results (origin owner/repo per repo
 /// root). `git remote get-url` runs on every agent spawn of a remote PR via
 /// [`local_checkout_for_repo`]; the origin remote is effectively static per
-/// repo, so a short TTL removes the subprocess from the hot path (O3).
+/// repo, so a short TTL removes the subprocess from the hot path.
 /// Failures are not cached; expired and excess entries are pruned on insert.
 struct RepoInfoCache {
     inner: Mutex<RepoInfoMap>,
@@ -1844,13 +1844,13 @@ where
     })
 }
 
-/// Cached PR comment sync bundle (hover-prefetch warming, first-paint plan
+/// Cached PR comment sync bundle (hover-prefetch warming).
 ///
-/// step 3). Keyed by (owner, repo, pr); 60s TTL; failures never cached. The
-/// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s
-/// sequentially — they run in parallel here, and the sidebar hover prefetch
-/// warms this cache so the post-open `pull_github_comments` is served from
-/// memory instead of the network.
+/// Keyed by (owner, repo, pr); 60s TTL; failures never cached. The two gh calls
+/// (REST comments + GraphQL review threads) cost ~2.5–3 s sequentially — they
+/// run in parallel here, and the sidebar hover prefetch warms this cache so the
+/// post-open `pull_github_comments` is served from memory instead of the
+/// network.
 pub struct PrCommentBundle {
     pub comments: Vec<GitHubComment>,
     pub threads: HashMap<u64, ReviewThreadState>,
@@ -1961,9 +1961,8 @@ pub fn gh_pr_comment_bundle_cached(
 }
 
 /// Drop all cached PR comment bundles. Called on push: a comment pushed while
-///
 /// the 60 s TTL is warm would otherwise be absent from the stale bundle and
-/// dropped from `github-comments.json` on the next pull (review-fix-loop A1).
+/// dropped from `github-comments.json` on the next pull.
 pub fn invalidate_pr_comments_cache() {
     if let Some(cache) = PR_COMMENTS_CACHE.get() {
         if let Ok(mut g) = cache.inner.lock() {
@@ -1973,7 +1972,7 @@ pub fn invalidate_pr_comments_cache() {
 }
 
 /// Head oid of a remote PR (no local clone needed) — the staleness baseline
-/// for remote tabs (review-fix-loop R1).
+/// for remote tabs.
 pub fn gh_pr_head_oid_remote(owner: &str, repo: &str, pr: u64) -> Result<String> {
     let remote = format!("{owner}/{repo}");
     let output = Command::new("gh")
@@ -2563,13 +2562,11 @@ pub fn gh_pr_commits_remote(
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
-///
-/// ONE `gh pr view --json` subprocess. Collapses what used to be three
-/// separate `gh pr view` calls (`gh_pr_overview_remote_full` +
-/// `gh_pr_comments_overview` + `gh_pr_reviews`) into one GraphQL-backed call —
-/// verified empirically that requesting `comments`/`reviews` alongside other
-/// fields returns byte-identical data to requesting them alone (see
-/// internal-docs/gh-rate-limit-slimming.md, finding 5).
+/// ONE `gh pr view --json` subprocess. Collapses three separate `gh pr view`
+/// calls (`gh_pr_overview_remote_full` + `gh_pr_comments_overview` +
+/// `gh_pr_reviews`) into one GraphQL-backed call — verified empirically that
+/// requesting `comments`/`reviews` alongside other fields returns byte-identical
+/// data to requesting them alone.
 ///
 /// `gh pr checks` (CI status) is intentionally NOT folded in here — it's a
 /// different `gh` subcommand and must stay a separate call (`gh_pr_checks_remote`).
@@ -3887,7 +3884,7 @@ mod tests {
         assert_eq!(s.thread_count, 2);
     }
 
-    // ── get_repo_info cache (O3) ──
+    // ── get_repo_info cache ──
 
     #[test]
     fn repo_info_cache_serves_within_ttl_and_expires() {
@@ -3930,7 +3927,7 @@ mod tests {
         assert_eq!((owner2.as_str(), repo2.as_str()), ("Acme", "discovery"));
     }
 
-    // ── PR comment bundle cache (plan step 3) ──
+    // ── PR comment bundle cache ──
 
     #[test]
     fn pr_comments_cache_serves_within_ttl_and_expires() {

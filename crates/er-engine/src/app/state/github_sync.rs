@@ -103,7 +103,7 @@ impl App {
             }
         };
 
-        // The hover prefetch warms this bundle (first-paint plan step 3): the
+        // The hover prefetch warms this bundle: the
         // two gh calls cost ~2.5–3 s on a cold cache, ~0 ms on a warm one.
         let bundle = if is_remote {
             github::gh_pr_comment_bundle_cached(&owner, &repo_name, pr_number, None)
@@ -264,8 +264,8 @@ impl App {
 
     /// Push all unpushed local comments to GitHub
     pub fn push_all_comments_to_github(&mut self) -> Result<()> {
-        // Any push invalidates the comment-bundle cache (the next pull must
-        // see the pushed comments — review-fix-loop A1).
+        // Any push invalidates the comment-bundle cache: the next pull must
+        // see the pushed comments.
         crate::github::invalidate_pr_comments_cache();
         let tab = self.tab();
         let repo_root = tab.repo_root.clone();

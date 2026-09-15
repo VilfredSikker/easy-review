@@ -788,8 +788,8 @@ fn run_round1_parallel(
             };
             // Wait for an arena slot so several runs (or runs with many
             // reviewers) can't spawn unbounded agent processes at once. The
-            // arena's own cap, charged against the shared ceiling: a
-            // background review and an arena round no longer take each
+            // arena's own cap, charged against the shared ceiling, so a
+            // background review and an arena round do not take each
             // other's slot.
             let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
             let ceiling = config.ai_hub.effective_max_concurrent_agents();
@@ -828,9 +828,9 @@ fn run_round1_parallel(
                     Ok(out) => {
                         let _ = save_round_output(&paths, 1, &reviewer.id, &v);
                         // Announced here rather than after the join, so the UI
-                        // tracks the slowest reviewer instead of the batch:
-                        // every reviewer's "done" used to land in one burst
-                        // once the last one finished.
+                        // tracks the slowest reviewer instead of the batch —
+                        // emitting after the join would land every reviewer's
+                        // "done" in one burst once the last one finished.
                         let _ = append_progress_event(
                             &paths,
                             &ProgressEvent::ReviewerDone {
@@ -917,7 +917,7 @@ fn run_round2_parallel(
     let repo_root = repo_root.to_string();
     let patch_path = patch_path.to_string();
     // One copy of the round findings payload, shared across all reviewer
-    // threads (previously cloned per reviewer — O4).
+    // threads.
     let findings_json = Arc::new(findings_json.to_string());
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
@@ -1345,8 +1345,9 @@ fn run_arbiter(
     );
     // The arbiter is an agent process like any reviewer, so it waits for a
     // global slot too. Without this an arena could fork one more provider CLI
-    // than the cap allows, and N seeded runs would start N arbiters at once —
-    // the seeded path has no reviewer loop to hold a slot on its behalf.
+    // than the cap allows — worst at the moment the cap is saturated — and N
+    // seeded runs would start N arbiters at once, since the seeded path has no
+    // reviewer loop to hold a slot on its behalf.
     //
     // Reviewers have released theirs by now (their round joined), so this
     // normally does not wait. It can, if another arena run holds the slots.

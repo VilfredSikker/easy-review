@@ -356,7 +356,7 @@ mod tests {
 
     /// An identical claim from three lenses is one row, and the row names all
     /// three. This is the case the dedupe exists for: five experts noticing the
-    /// same missing check used to produce five rows.
+    /// same missing check would otherwise produce five rows.
     #[test]
     fn the_same_claim_from_three_experts_collapses_to_one_row() {
         let dir = tempdir().unwrap();
