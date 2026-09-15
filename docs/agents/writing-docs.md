@@ -49,6 +49,40 @@ Do not put any of these in an agent-facing doc:
 If a fact only exists so someone can look it up, it belongs in the code, or in a
 reference doc that is generated from the code — never in prose an agent reads.
 
+## Inline comments
+
+The code carries what and how, but the inline comment is the one place in the
+code where a why belongs — and it fails the same way a doc does, for the same
+reason: it is read by someone who was not there when it was written.
+
+**Comment the why, and only when a reader would otherwise get it wrong.** Code
+that already says what it does needs no comment. A reason that is not visible in
+the code is the one thing only a comment can carry.
+
+Write nothing a reader cannot resolve. Each of these is meaningful only at the
+moment of writing, and reads as noise from then on:
+
+- **A change reference.** `used to`, `previously`, `was removed for`, `no longer
+  X`, `this used to live here`. The diff said it once; the code does not need it
+  again.
+- **A tracker number.** `(issue #69)`, `PR #73`, `#227`. The reader has the code,
+  not the tracker.
+- **A review-finding code.** `(review-fix-loop F1)`, `(O4)`, `(J1)`. The review it
+  names is not in the repo.
+- **A plan step.** `(first-paint plan step 2)`, `Step A0 of .work/…`. The plan is
+  finished or abandoned; either way it is not the code's job to point at it.
+- **A merge or release event.** `Restored by the release/v0.4.19 merge`.
+
+When a past-looking shape is doing real work — the code is oddly shaped
+*because* something went wrong once — say the failure, not the history. "The
+ensure call must not sit inside the comments gate, or validate silently
+no-ops" is durable. "The ensure call previously sat inside the comments gate"
+is not.
+
+When the reasoning is longer than a comment should be, put it in an ADR and cite
+the number. `just docs-check` verifies every ADR reference resolves, so that
+citation cannot rot the way the ones above do.
+
 ## Adding an ADR
 
 Add one when **all three** hold:
