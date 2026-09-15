@@ -9,6 +9,7 @@
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { aiFindingFilter } from "$lib/stores/aiFindingFilter.svelte";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
+  import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import DiffComposer from "./DiffComposer.svelte";
   import ComposerScrollBack from "./ComposerScrollBack.svelte";
   import FileHeaderRow from "./diff-rows/FileHeaderRow.svelte";
@@ -62,7 +63,7 @@
     stickyFileHeaderOverlayHidden,
     type EffectiveGeometry,
   } from "$lib/virtualWindow";
-  import { buildAnnotationIndex } from "$lib/diffAnnotations";
+  import { buildAnnotationIndex, findingsForDiff } from "$lib/diffAnnotations";
   import { makeScrollThrottle } from "$lib/scrollThrottle";
   import { highlightCache, type HunkHighlight } from "$lib/highlightCache";
   import { fileNeedsSyntaxSpans, highlightFile } from "$lib/highlightFile";
@@ -208,9 +209,23 @@
     snapshot ? `${snapshot.active_tab}:${snapshot.mode}:${snapshot.base}:${snapshot.branch}` : mode,
   );
 
+  /// The findings the diff draws, with the resolved ones merged back in only
+  /// when the toggle asks for them. See `findingsForDiff`.
+  const aiForDiff = $derived.by(() => {
+    const ai = snapshot?.ai;
+    if (!ai) return { threads: [], findings: [] };
+    return {
+      threads: ai.threads,
+      findings: findingsForDiff(ai, {
+        showResolved: findingsVisibility.showResolved,
+        minTrust: findingsVisibility.minTrust(ai.min_trust_default),
+      }),
+    };
+  });
+
   const annotationIndex = $derived.by(() =>
     buildAnnotationIndex(
-      snapshot?.ai ?? { threads: [], findings: [] },
+      aiForDiff,
       files,
       mode,
       app.commentVisibility,
@@ -2152,6 +2167,18 @@
                   {/if}
                 </span>
                 Questions
+              </button>
+              <button
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => findingsVisibility.toggleResolved()}
+                title="Session-only, like the other layer toggles"
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if findingsVisibility.showResolved}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Resolved findings
               </button>
             </div>
           {/if}

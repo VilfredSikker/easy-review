@@ -35,6 +35,8 @@ export const OPTIMISTIC_COMMANDS = [
   "unbulk_review_pillar",
   "add_ui_annotation",
   "delete_ui_annotation",
+  // Review checklist: one sidecar write per bucket, so a view-scoped op.
+  "toggle_checklist_item",
   // Finding-thread actions: view-scoped, same contract as dismiss_finding.
   "remove_finding_thread",
   "promote_finding_to_comment",
@@ -137,6 +139,16 @@ export type OptimisticOp =
       id: string;
       viewIdentity: string;
       annotation: UiAnnotation;
+    }
+  | {
+      type: "checklist-toggle";
+      id: string;
+      viewIdentity: string;
+      /** Position in `ai.checklist.items` — the address the backend toggles. */
+      index: number;
+      /** The id that position held when painted; a regenerated checklist moves it. */
+      itemId: string;
+      target: boolean;
     }
   | {
       type: "remove-finding-thread";
@@ -630,6 +642,21 @@ export function buildOptimisticOp(
     return { type: "delete-annotation", id, viewIdentity, annotation: { ...annotation } };
   }
 
+  if (command === "toggle_checklist_item") {
+    const index = asNumber(args.index);
+    if (index === null || !Number.isInteger(index) || index < 0) return null;
+    const item = snap.ai.checklist?.items[index];
+    if (!item) return null;
+    return {
+      type: "checklist-toggle",
+      id,
+      viewIdentity,
+      index,
+      itemId: item.id,
+      target: !item.checked,
+    };
+  }
+
   if (command === "remove_finding_thread") {
     const findingId = asString(pick(args, "findingId", "finding_id"));
     const finding = findingId ? findFinding(snap, findingId) : undefined;
@@ -923,6 +950,14 @@ export function applyOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void {
         (a) => a.id !== op.annotation.id,
       );
       return;
+    case "checklist-toggle": {
+      // Checked by id as well as index: a checklist regenerated between the
+      // paint and the snapshot puts a different item at the same position, and
+      // flipping that one would be a lie about a row nobody clicked.
+      const item = snap.ai.checklist?.items[op.index];
+      if (item?.id === op.itemId) item.checked = op.target;
+      return;
+    }
     case "remove-finding-thread": {
       for (const thread of op.threads) removeOptimisticThread(snap, thread);
       const finding = findFinding(snap, op.findingId);
@@ -1095,6 +1130,12 @@ export function rollbackOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void 
       if (!list.some((a) => a.id === op.annotation.id)) {
         snap.ui_annotations = [...list, op.annotation];
       }
+      return;
+    }
+    case "checklist-toggle": {
+      // A toggle has one previous state, so rolling back is the same flip.
+      const item = snap.ai.checklist?.items[op.index];
+      if (item?.id === op.itemId) item.checked = !op.target;
       return;
     }
     case "remove-finding-thread": {

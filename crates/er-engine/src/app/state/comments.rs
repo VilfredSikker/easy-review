@@ -1677,39 +1677,62 @@ impl App {
         }
     }
 
-    /// Toggle the checklist item at cursor and persist to .er/checklist.json
+    /// Toggle the checklist item under the review cursor.
+    ///
+    /// The focus guard and the cursor are TUI navigation state, so they stay
+    /// here; the write itself is addressed by index, which is what the desktop
+    /// can send.
     pub fn review_toggle_checklist(&mut self) -> Result<()> {
-        let tab = self.tab_mut();
-        if tab.review_focus != ReviewFocus::Checklist {
+        if self.tab().review_focus != ReviewFocus::Checklist {
             return Ok(());
         }
+        let cursor = self.tab().review_cursor;
 
-        let cursor = tab.review_cursor;
-        tab.ai.toggle_checklist_item(cursor);
+        match self.toggle_checklist_item_at(cursor)? {
+            Some(true) => self.notify("✓ Item checked"),
+            Some(false) => self.notify("○ Item unchecked"),
+            None => {}
+        }
+        Ok(())
+    }
 
-        // Persist atomically via temp file + rename
-        if let Some(ref checklist) = tab.ai.checklist {
+    /// Toggle the checklist item at `index`, persist it, and report its new
+    /// state. `None` means the index names no item, so nothing was written or
+    /// toggled — the checklist may not exist yet, or the generator may have
+    /// rewritten it since the caller last read it.
+    ///
+    /// Addressed by index rather than by cursor or focus: the checklist is one
+    /// JSON document per view bucket, and a write path only one front end used
+    /// would let the two disagree on disk.
+    pub fn toggle_checklist_item_at(&mut self, index: usize) -> Result<Option<bool>> {
+        let tab = self.tab_mut();
+        if tab
+            .ai
+            .checklist
+            .as_ref()
+            .is_none_or(|c| c.items.get(index).is_none())
+        {
+            return Ok(None);
+        }
+        tab.ai.toggle_checklist_item(index);
+
+        // Persist atomically via temp file + rename, so a reader never sees a
+        // half-written document.
+        if let Some(checklist) = tab.ai.checklist.as_ref() {
             let checklist_path = format!("{}/checklist.json", tab.er_dir());
             let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
             std::fs::write(&tmp_path, json)?;
             std::fs::rename(&tmp_path, &checklist_path)?;
+            tab.mark_sidecar_written(&checklist_path);
         }
 
-        let checked = tab
+        Ok(tab
             .ai
             .checklist
             .as_ref()
-            .and_then(|c| c.items.get(cursor))
-            .map(|i| i.checked)
-            .unwrap_or(false);
-
-        if checked {
-            self.notify("✓ Item checked");
-        } else {
-            self.notify("○ Item unchecked");
-        }
-        Ok(())
+            .and_then(|c| c.items.get(index))
+            .map(|i| i.checked))
     }
 
     // ── Clipboard ──
@@ -1897,9 +1920,9 @@ impl App {
         }
 
         // AI finding if present
-        let findings = tab
-            .ai
-            .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len());
+        let findings =
+            tab.ai
+                .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len(), &tab.layers);
         if let Some(finding) = findings.first() {
             text.push_str(&format!(
                 "\nFinding: [{:?}] {}\n",
@@ -2748,6 +2771,56 @@ impl App {
         )
     }
 
+    /// Spawn the agent that proposes this repo's importance rules
+    /// (`kind` = `importance`).
+    ///
+    /// The prompt carries the repo, not a diff, and the agent has no write path:
+    /// it prints a rule table, and the worker validates and merges that into the
+    /// global config (`ImportanceProposal::merge_into_global_config`). A table
+    /// nobody can read back before it lands is worse than no table.
+    pub fn spawn_background_importance(&mut self) -> Result<()> {
+        let scope = "branch".to_string();
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = self.tab();
+            (
+                tab.repo_root.clone(),
+                tab.local_branch_view
+                    .clone()
+                    .unwrap_or_else(|| tab.current_branch.clone()),
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+        if repo_root.is_empty() {
+            anyhow::bail!("Open a repository first — there is nothing to rank");
+        }
+
+        let repo = crate::storage::slug_repo(&repo_root);
+        let prompt = crate::ai::prompts::build_importance_prompt(&repo, &repo_root);
+        let target = super::background::BackgroundTaskTarget {
+            repo_root,
+            er_dir,
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+
+        self.spawn_background_agent_task(
+            crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+            "importance",
+            target,
+            prompt,
+            false,
+            None,
+        )
+    }
+
     /// Generate a guided tour for the **active tab** and spawn it as an
     /// app-level background task (`kind` = `tour`).
     ///
@@ -2957,6 +3030,11 @@ impl App {
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
+        // Captured before the task moves into its handle: the worker recognises
+        // its own kind to know whose reply it is parsing, and which repo that
+        // reply's table belongs to.
+        let task_kind = task.kind.clone();
+        let repo_for_worker = crate::storage::slug_repo(&target.repo_root);
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();
@@ -3348,6 +3426,25 @@ impl App {
                     }
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
+                // Host-owned importance write: the agent printed a rule table
+                // and had no Write/Edit. Validate it and merge it into the
+                // global config, replacing only this repo's table.
+                if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+                    let reply = stdout_lines.join("\n");
+                    let proposal = crate::config::ImportanceProposal::from_reply(&reply)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "{command_name_fail}: the agent printed no importance table"
+                            )
+                        })?;
+                    crate::config::ImportanceProposal::merge_into_global_config(
+                        &repo_for_worker,
+                        proposal,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail}: failed to merge the importance table")
+                    })?;
+                }
                 // Host-owned diagram write: agent had no Write/Edit; persist
                 // only the validated diagrams/<id>.json from stdout.
                 if let Some(hw) = &host_write_diagram {
@@ -3493,6 +3590,7 @@ impl App {
             handle.task.status = status.clone();
             handle.task.finished_at_ms = Some(now);
             handle.task.error = error.clone();
+            let wrote_importance = handle.task.kind == crate::ai::prompts::IMPORTANCE_TASK_KIND;
 
             // Force reload only on matching tabs. No `last_ai_check = None`
             // reset here (O5): the agent's freshly written sidecars have
@@ -3515,6 +3613,23 @@ impl App {
                 if handle.recent_log.len() > 500 {
                     handle.recent_log.pop_front();
                 }
+            }
+
+            // The importance worker writes the config *file*; the app's copy is
+            // now behind it, so re-read it and re-hand the rules to the tabs
+            // that filter with them.
+            if wrote_importance && matches!(status, CommandStatus::Done) {
+                // Only the table this task wrote. A wholesale reload is what
+                // silently reverted in-flight settings before — see the note on
+                // `sync_config_from_active_tab`, and `docs/adr/0005`.
+                self.config.importance = crate::config::load_global_config().importance;
+                self.sync_importance_to_tabs();
+                // The agent's own one-line distribution — the share each tier
+                // covers — is what tells a reader whether the table is
+                // over-broad, and it is in this task's log. Point at it rather
+                // than repeating it here, where it would be a number without
+                // the reasoning beside it.
+                self.notify_long("Importance: rules written — see the task log for its report");
             }
 
             self.notify_long(&status_msg);
@@ -4234,5 +4349,115 @@ mod background_queue_tests {
         assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+}
+
+/// The checklist toggle is the one write both front ends share: the TUI drives
+/// it from a cursor, the desktop from an index in the snapshot. These pin the
+/// split — the shared half persists and reports state with no navigation
+/// precondition, the TUI half keeps the focus guard.
+#[cfg(test)]
+mod checklist_toggle_tests {
+    use crate::ai::{ChecklistItem, ErChecklist, ReviewFocus};
+    use crate::app::App;
+    use crate::paths::ErRoot;
+
+    /// An app whose view bucket is a throwaway directory: the toggle writes,
+    /// so the test needs a real er_dir it owns.
+    fn app_with_checklist(tmp: &tempfile::TempDir) -> App {
+        let mut app = App::new_for_test(vec![]);
+        let tab = app.tab_mut();
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            er_dir.join("checklist.json"),
+            r#"{"version":1,"diff_hash":"h","items":[
+                {"id":"c-1","text":"Schema migration adds a NOT NULL column","category":"schema","checked":false,"related_findings":["f-1"],"related_files":["db/m.sql"]},
+                {"id":"c-2","text":"Retry path fails the test suite it should not","category":"tests","checked":true,"related_findings":[],"related_files":[]}
+            ]}"#,
+        )
+        .unwrap();
+        tab.reload_ai_state();
+        app
+    }
+
+    fn item(app: &App, index: usize) -> ChecklistItem {
+        app.tab().ai.checklist.as_ref().unwrap().items[index].clone()
+    }
+
+    fn on_disk(tmp: &tempfile::TempDir) -> ErChecklist {
+        let raw = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn toggling_by_index_persists_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(true));
+        assert!(item(&app, 0).checked, "in-memory state follows the toggle");
+        assert!(
+            item(&app, 1).checked,
+            "the neighbouring item keeps the state the fixture gave it"
+        );
+        assert!(
+            on_disk(&tmp).items[0].checked,
+            "the toggle was persisted, so the other front end reads it on its next poll"
+        );
+
+        // Toggling the same index back must land on false on both sides — the
+        // state the desktop reads in its next snapshot comes from this file.
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(false));
+        assert!(!on_disk(&tmp).items[0].checked);
+        assert!(!item(&app, 0).checked);
+    }
+
+    #[test]
+    fn an_index_past_the_end_toggles_nothing_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+        let before = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
+
+        assert_eq!(app.toggle_checklist_item_at(9).unwrap(), None);
+        assert!(!item(&app, 0).checked && item(&app, 1).checked);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn toggling_with_no_checklist_reports_none_and_creates_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        std::fs::create_dir_all(tmp.path().join(".er")).unwrap();
+
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), None);
+        assert!(!tmp.path().join(".er/checklist.json").exists());
+    }
+
+    /// Regression guard on the split: the shared function has no navigation
+    /// precondition, so the guard has to survive in the wrapper.
+    #[test]
+    fn the_tui_wrapper_still_requires_checklist_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+        app.tab_mut().review_cursor = 0;
+
+        app.tab_mut().review_focus = ReviewFocus::Files;
+        app.review_toggle_checklist().unwrap();
+        assert!(
+            !item(&app, 0).checked,
+            "a toggle while the file column has focus must not reach the checklist"
+        );
+        assert!(!on_disk(&tmp).items[0].checked);
+
+        app.tab_mut().review_focus = ReviewFocus::Checklist;
+        app.review_toggle_checklist().unwrap();
+        assert!(item(&app, 0).checked, "focused, it toggles the cursor item");
+        assert!(on_disk(&tmp).items[0].checked);
     }
 }

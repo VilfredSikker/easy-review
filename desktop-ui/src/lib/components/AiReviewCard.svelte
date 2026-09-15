@@ -1,5 +1,7 @@
 <script lang="ts">
-  import type { AiSnapshot } from "$lib/types";
+  import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
+  import { findingPassesTrust } from "$lib/diffAnnotations";
+  import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
@@ -112,6 +114,58 @@
   const filtered = $derived(
     agentScopedFindings.filter((f) => filter === "all" || f.severity === filter)
   );
+
+  /// The gate in force: the reader's override, else the engine's default for
+  /// this review — tighter once an arbiter has graded it.
+  const minTrust = $derived(findingsVisibility.minTrust(ai.min_trust_default));
+
+  /// What the list draws, and how much the gate is holding back. A filter that
+  /// hides rows without saying so is how people stop trusting it.
+  const visible = $derived(filtered.filter((f) => findingPassesTrust(f, minTrust)));
+  const hiddenCount = $derived(filtered.length - visible.length);
+
+  /// Severity first, then how much the grade can be trusted — the order the TUI
+  /// panel draws. Without it the rows come out in whatever order the review's
+  /// file map iterated in.
+  const SEVERITY_ORDER: Record<FlatFinding["severity"], number> = { high: 0, med: 1, low: 2 };
+  const TRUST_ORDER: Record<Confidence, number> = {
+    confirmed: 0,
+    tentative: 1,
+    informational: 2,
+    dropped: 3,
+  };
+  const ordered = $derived(
+    [...visible].sort(
+      (a, b) =>
+        SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
+        TRUST_ORDER[a.confidence] - TRUST_ORDER[b.confidence] ||
+        a.file.localeCompare(b.file),
+    ),
+  );
+
+  const CONFIDENCE_GLYPH: Record<Confidence, string> = {
+    confirmed: "✓",
+    tentative: "?",
+    informational: "i",
+    dropped: "✗",
+  };
+
+  /// The arbiter's removals, listed on demand behind the count.
+  const droppedFindings = $derived(ai.dropped_findings ?? []);
+  let showDropped = $state(false);
+
+  /// A row the arbiter regraded carries its ruling in the response trail, which
+  /// is the only place the previous grade survives. The backend tags the entry,
+  /// so this reads a field rather than the sentence inside it.
+  function arbiterRuling(finding: FlatFinding): string | null {
+    return (finding.responses ?? []).find((r) => r.origin === "arbiter")?.body_markdown ?? null;
+  }
+
+  const GATE_OPTIONS: { level: Confidence; label: string; hint: string }[] = [
+    { level: "informational", label: "all", hint: "Show every grade, including informational" },
+    { level: "tentative", label: "tentative+", hint: "Hide informational findings" },
+    { level: "confirmed", label: "confirmed", hint: "Show only confirmed findings" },
+  ];
 
   function revealErFolder() {
     invoke("reveal_er_folder").catch(() => {});
@@ -340,6 +394,28 @@
         <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
+      <!-- Confidence gate. The default follows the review — it tightens only
+           once an arbiter has graded the diff — so the row says which is in
+           force rather than just being a filter you did not set. -->
+      <div class="flex items-center gap-1.5 mb-2 text-[10px] mono flex-wrap">
+        <span class="text-fg-3" title="How much a finding's grade can be trusted">confidence</span>
+        {#each GATE_OPTIONS as option (option.level)}
+          <button
+            title={option.hint}
+            onclick={() =>
+              findingsVisibility.setMinTrust(
+                option.level === ai.min_trust_default ? null : option.level,
+              )}
+            class="px-2 py-0.5 rounded {minTrust === option.level
+              ? 'bg-hairline text-fg'
+              : 'text-fg-3 hover:bg-hover'}"
+          >{option.label}</button>
+        {/each}
+        {#if hiddenCount > 0}
+          <span class="text-fg-3" title="Below the confidence gate">{hiddenCount} hidden</span>
+        {/if}
+      </div>
+
       {#if ai.arbiter_unmatched > 0}
         <!-- The arbiter's grades exist but no longer describe this review, so
              nothing was applied. Saying so beats a card that looks unchanged. -->
@@ -351,20 +427,44 @@
 
       {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0 || ai.arbiter_regraded > 0}
         <!-- A list that is quietly shorter is how people stop trusting it, so
-             the arbiter's rulings are counted rather than silently omitted. -->
-        <p class="mb-1.5 text-[10px] text-fg-3">
+             the arbiter's rulings are counted rather than silently omitted —
+             and the claims it removed stay readable behind the count. -->
+        <button
+          type="button"
+          class="mb-1.5 text-[10px] text-fg-3 text-left {droppedFindings.length > 0
+            ? 'hover:text-fg cursor-pointer'
+            : 'cursor-default'}"
+          disabled={droppedFindings.length === 0}
+          onclick={() => (showDropped = !showDropped)}
+        >
           {[
             ai.arbiter_dropped > 0 ? `${ai.arbiter_dropped} dropped` : "",
             ai.arbiter_merged > 0 ? `${ai.arbiter_merged} merged` : "",
             ai.arbiter_regraded > 0 ? `${ai.arbiter_regraded} regraded` : "",
           ]
             .filter(Boolean)
-            .join(", ")} by arbiter
-        </p>
+            .join(", ")} by arbiter{#if droppedFindings.length > 0}<span class="ml-1 underline decoration-dotted">{showDropped ? "hide" : "show"}</span>{/if}
+        </button>
+        {#if showDropped}
+          <ul class="mb-2 space-y-0.5">
+            {#each droppedFindings as dropped (dropped.id)}
+              <li>
+                <button
+                  type="button"
+                  onclick={() => jumpTo(dropped)}
+                  class="w-full text-left text-[10px] text-fg-3 opacity-70 hover:opacity-100"
+                >
+                  <span class="mono">{basename(dropped.file)}{dropped.line !== null ? `:${dropped.line}` : ""}</span>
+                  — {dropped.title}
+                </button>
+              </li>
+            {/each}
+          </ul>
+        {/if}
       {/if}
 
       <div class="findings-list space-y-1.5">
-      {#each filtered as finding (finding.id)}
+      {#each ordered as finding (finding.id)}
         {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
         <div class="relative group">
@@ -377,6 +477,16 @@
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
                   <span class="text-[11px] font-mono text-muted">{basename(finding.file)}{finding.line !== null ? `:${finding.line}` : ""}</span>
+                  <span
+                    class="px-1 py-0.5 rounded border border-hairline text-[9px] text-muted shrink-0"
+                    title="Confidence: {finding.confidence}"
+                  >{CONFIDENCE_GLYPH[finding.confidence]}</span>
+                  {#if arbiterRuling(finding)}
+                    <span
+                      class="px-1 py-0.5 rounded border border-hairline text-[9px] text-ai"
+                      title={arbiterRuling(finding)}
+                    >regraded</span>
+                  {/if}
                   {#if showAgentPills}
                     <span
                       class="px-1 py-0 rounded-full text-[9px] font-medium border shrink-0"

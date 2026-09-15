@@ -273,15 +273,23 @@ fn general_review_outputs_section(
   "items": [
     {{
       "id": "c-1",
-      "text": "Verify error handling covers all edge cases",
-      "category": "correctness",
+      "text": "The migration backfills before it adds the NOT NULL column",
+      "category": "schema",
       "checked": false,
       "related_findings": ["f-1"],
-      "related_files": ["src/file.rs"]
+      "related_files": ["migrations/0007_add_source.sql"]
     }}
   ]
 }}
 ```
+
+- `category` — the outcome the item asks a human to confirm. Use one of these five:
+  - `schema` — the migration or schema change is right. The schema is the one representation that is hard to walk back after it ships.
+  - `tests` — the tests exercise the new behaviour, not merely that it exists.
+  - `api` — the public surface is unchanged, or the break is the intended one.
+  - `auth` — an auth or authz path is touched, and it still holds.
+  - `plan` — the change is what was actually asked for.
+- Write 3-6 items. Each is a decision someone has to make; an item that only restates a line of the diff is not one.
 
 ### `{safe_output_dir}/summary.md`
 A 3-5 paragraph markdown summary of the overall changes.
@@ -921,6 +929,88 @@ fn professor_output_section(output_dir: &str) -> String {
 }
 
 /// Professor learning agent for local-managed app/TUI runs.
+/// Markers around the rules table in the agent's reply. The harness parses what
+/// is between them and writes the config itself: an agent that can write files
+/// can write anywhere, and this prompt carries a whole codebase.
+pub const IMPORTANCE_JSON_BEGIN: &str = "===IMPORTANCE_JSON_BEGIN===";
+pub const IMPORTANCE_JSON_END: &str = "===IMPORTANCE_JSON_END===";
+
+/// Background task kind for the importance-rules agent. The worker recognises
+/// its own reply by this kind and merges the table itself.
+pub const IMPORTANCE_TASK_KIND: &str = "importance";
+
+/// Prompt for the agent that proposes a repo's importance rules.
+///
+/// The agent reads the codebase and prints a rule table; the host validates it
+/// and merges it into `[importance.<repo>]`. Asking for a *rule table* rather
+/// than a ranking is what keeps the result inspectable: a number nobody can
+/// argue with is worse than no number at all
+/// (`docs/adr/0036-importance-as-declared-config.md`).
+pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "You are declaring which files in a repository are **foundational** — much of the tree \
+         depends on them — and which are **isolated**. A reviewer uses this to decide what \
+         deserves human attention, so the output is a small, readable rule table rather than a \
+         ranking of every file.\n\n## Steps\n1. Work in `",
+    );
+    prompt.push_str(&sanitize_for_shell(repo_root));
+    prompt.push_str(
+        "`. Survey the tree a level or two deep before writing anything.\n2. Import-counting is \
+         your legwork, not your answer. A single pass of `grep -rowFf` over the tree with the \
+         basenames of the files you are unsure about is cheap and tells you where the traffic is. \
+         Do not turn the count into the output: basename matches also hit comments and strings, \
+         and module roots (`mod.rs`, `index.ts`, `lib.rs`) are exactly the files the proxy gets \
+         wrong — they match everything.\n3. Emit the JSON block below in your **final reply \
+         text**. Do **not** use Write, Edit, or a shell redirect: the harness validates the table \
+         and writes the config itself.\n\n",
+    );
+    prompt.push_str(IMPORTANCE_JSON_BEGIN);
+    prompt.push_str(
+        r#"
+{
+  "repo": ""#,
+    );
+    prompt.push_str(repo);
+    prompt.push_str(
+        r#"",
+  "default": "normal",
+  "rules": {
+    "src/auth/**": "foundational",
+    "*.md": "isolated"
+  },
+  "report": "<two or three lines: what share of the tree each tier covers, measured rather than guessed>"
+}
+"#,
+    );
+    prompt.push_str(IMPORTANCE_JSON_END);
+    prompt.push_str(
+        r#"
+
+## Tiers
+- `foundational` — much of the tree reaches it: public API surface, auth, schemas, design systems.
+- `isolated` — little or nothing reaches it: docs, fixtures, one-off scripts.
+- `normal` — everything else. This is the `default`, and it is the right answer for most files.
+
+## Rule keys, in the precedence the harness applies (most specific first)
+1. `exact/path/to/file.rs` — one path.
+2. `crates/er-engine/src/**` — a glob. `*` stays inside a directory, `**` crosses.
+3. `*.md` — a bare extension, matched against the filename.
+
+## What makes a table good
+- **Few and precise.** Six rules that each name a boundary beat thirty that tile the tree. A glob one directory too wide marks a whole crate foundational, parses perfectly, and quietly ruins the ranking.
+- **Say why in the `report`.** It is read by a person deciding whether to trust the table, and an over-broad ruleset is visible in one line of distribution.
+- Only propose paths that exist. A rule for a path you did not see is a guess wearing a fact's clothes.
+- `"#,
+    );
+    prompt.push_str(repo);
+    prompt.push_str(
+        "` is the only repo key you may produce — do not invent keys for other repositories.\n",
+    );
+
+    prompt
+}
+
 pub fn build_professor_review_prompt_local_managed(
     base_branch: &str,
     scope: &str,
@@ -2280,6 +2370,22 @@ mod tests {
         assert!(prompt.contains("checklist.json"));
         assert!(prompt.contains("summary.md"));
         assert!(!prompt.contains("experts/"));
+    }
+
+    /// `ChecklistItem.category` is a free-form string, so the prompt is the only
+    /// thing keeping the checklist outcome-shaped. Left unpinned it drifts back
+    /// to restating the diff, which is the review humans already skip.
+    #[test]
+    fn checklist_prompt_pins_the_outcome_categories() {
+        let prompt =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+        for category in ["schema", "tests", "api", "auth", "plan"] {
+            assert!(
+                prompt.contains(&format!("`{category}` —")),
+                "checklist prompt lost the {category} category"
+            );
+        }
+        assert!(prompt.contains("Write 3-6 items"));
     }
 
     #[test]

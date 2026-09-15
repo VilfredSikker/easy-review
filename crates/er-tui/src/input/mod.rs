@@ -249,6 +249,26 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 "Resolved: visible"
             });
         }
+        HubAction::CycleMinTrust => {
+            let next = app.tab_mut().cycle_min_trust();
+            app.notify(&format!(
+                "Confidence: {}",
+                er_engine::app::TabState::min_trust_label(next)
+            ));
+        }
+        HubAction::ToggleDroppedFindings => {
+            app.tab_mut().toggle_show_dropped();
+            let on = app.tab().layers.show_dropped;
+            app.notify(if on {
+                "Arbiter's drops: listed"
+            } else {
+                "Arbiter's drops: counted only"
+            });
+        }
+        HubAction::RunImportanceAgent => match app.spawn_background_importance() {
+            Ok(()) => app.notify("Importance agent started"),
+            Err(e) => app.notify(&format!("Importance: {e}")),
+        },
         HubAction::CleanupQuestions => {
             let count = app.tab().ai.local_draft_count();
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });

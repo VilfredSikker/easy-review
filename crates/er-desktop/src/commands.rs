@@ -3753,6 +3753,25 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
     .await
 }
 
+/// Run the agent that proposes this repo's importance rules.
+///
+/// This only enqueues. The worker validates the rule table the agent prints and
+/// merges it into the global config, replacing one repo's table and leaving
+/// every other section alone; the task poll then lifts the new rules onto the
+/// open tabs, so the file filter and the settings view both see them without a
+/// restart (`docs/adr/0037-config-reaches-a-tab-by-sync.md`).
+#[tauri::command]
+pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.spawn_background_importance()
+            .map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
 /// Generate a mermaid diagram of the active view's diff (`kind` =
 ///
 /// `mental-model` | `subsystems` | `flows` | `custom`). The agent writes one
@@ -8567,6 +8586,34 @@ pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<Ap
     Ok(snap_from(&app, &state))
 }
 
+// ── Review checklist ────────────────────────────────────────────────────────
+
+/// Toggle the checklist item at `index` and persist it to the view bucket.
+///
+/// The index addresses the flat `checklist.json` item list — the same address
+/// the TUI cursor resolves to — and `view` gates the write so a click that
+/// lands after the reviewer switched views does not write to the new bucket.
+#[tauri::command]
+pub async fn toggle_checklist_item(
+    index: usize,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        // An index the checklist no longer has writes nothing; the returned
+        // snapshot is what the frontend reconciles its optimistic paint against.
+        app.toggle_checklist_item_at(index)
+            .map_err(|e| format!("Failed to toggle checklist item: {e}"))?;
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
+}
+
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
 
 #[tauri::command]
@@ -10295,6 +10342,18 @@ fn compute_content_revision(app: &App) -> u64 {
         .map(|g| g.comments.len())
         .unwrap_or(0)
         .hash(&mut h);
+    // The checklist moves no other hash input: a toggle rewrites one file, and
+    // a checklist that appears or is regenerated changes the item count. Drop
+    // this and the card shows the state from the last poll forever.
+    if let Some(checklist) = &tab.ai.checklist {
+        checklist.items.len().hash(&mut h);
+        checklist
+            .items
+            .iter()
+            .filter(|i| i.checked)
+            .count()
+            .hash(&mut h);
+    }
     if let Some(qs) = &tab.ai.questions {
         if let Some(last) = qs.questions.last() {
             last.id.hash(&mut h);
@@ -10328,6 +10387,24 @@ fn compute_content_revision(app: &App) -> u64 {
     if let Some(review) = &tab.ai.review {
         review.diff_hash.hash(&mut h);
         review.files.len().hash(&mut h);
+        // Per-finding state that moves no file count. Resolving a finding or the
+        // arbiter dropping one leaves `files.len()` alone, so without these the
+        // row would never reach the UI.
+        let mut total = 0usize;
+        let mut resolved = 0usize;
+        let mut dropped = 0usize;
+        for fr in review.files.values() {
+            total += fr.findings.len();
+            resolved += fr.findings.iter().filter(|f| f.resolved).count();
+            dropped += fr
+                .findings
+                .iter()
+                .filter(|f| matches!(f.confidence, er_engine::ai::Confidence::Dropped))
+                .count();
+        }
+        total.hash(&mut h);
+        resolved.hash(&mut h);
+        dropped.hash(&mut h);
     }
     // Agent command status changes (e.g. running → done) must trigger a snapshot.
     for (name, status) in &tab.command_status {
@@ -11801,6 +11878,8 @@ mod tests {
             "update_finding_response",
             "delete_finding_response",
             "reply_to_finding",
+            // Checklist toggles write a sidecar, so they lock and hit disk too.
+            "toggle_checklist_item",
             // AI card actions build prompt context under the app lock; the gh
             // push/post commands are network round trips; export renders under
             // the lock. All of them froze the window as sync commands.
@@ -11890,6 +11969,7 @@ mod tests {
                     | "update_finding_response"
                     | "delete_finding_response"
                     | "reply_to_finding"
+                    | "toggle_checklist_item"
             ) && !body.contains("abort_wrong_view")
             {
                 failures.push(format!(

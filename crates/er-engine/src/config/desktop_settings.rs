@@ -52,6 +52,17 @@ pub enum ConfigHubFieldDto {
     },
 }
 
+/// One declared importance rule, as written, for the read-only list.
+///
+/// The key is shown rather than resolved: the question a reviewer has is "why
+/// is this file ranked foundational?", and the answer is which rule claimed it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportanceRuleDto {
+    pub matcher: String,
+    pub tier: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DesktopSettingsSnapshot {
@@ -60,16 +71,43 @@ pub struct DesktopSettingsSnapshot {
     pub terminal: Vec<ConfigHubFieldDto>,
     pub agent_effort: String,
     pub repo_root: String,
+    /// The active repo's declared importance rules, for the read-only view.
+    pub importance_rules: Vec<ImportanceRuleDto>,
+    /// What a path no rule claims resolves to.
+    pub importance_default: String,
 }
 
 pub fn desktop_settings_snapshot(config: &ErConfig, repo_root: &str) -> DesktopSettingsSnapshot {
     let grouped = settings_fields_grouped(config);
+
+    // Keyed the way managed storage keys a repo, so the table the agent writes
+    // and the bucket a review lands in agree on the repo's name.
+    let repo_slug = crate::storage::slug_repo(repo_root);
+    let rules = config.importance.repo(&repo_slug);
+    let importance_rules = rules
+        .map(|table| {
+            table
+                .rules
+                .iter()
+                .map(|(matcher, tier)| ImportanceRuleDto {
+                    matcher: matcher.clone(),
+                    tier: tier.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let importance_default = rules
+        .and_then(|table| table.default.clone())
+        .unwrap_or_else(|| "normal".to_string());
+
     DesktopSettingsSnapshot {
         general: grouped.general,
         app: grouped.app,
         terminal: grouped.terminal,
         agent_effort: agent_effort_label(&config.agent.effort),
         repo_root: repo_root.to_string(),
+        importance_rules,
+        importance_default,
     }
 }
 

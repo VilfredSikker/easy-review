@@ -8,6 +8,7 @@
     ConfigFieldValue,
     ConfigHubField,
     GetConfigHubResponse,
+    ImportanceRuleSnapshot,
     SettingsTab,
   } from "$lib/types";
   import Toggle from "./Toggle.svelte";
@@ -41,6 +42,16 @@
   let familyOptions = $state<string[]>([]);
   let selectedEffort = $state("Auto");
   let repoRoot = $state("");
+  let importanceRules = $state<ImportanceRuleSnapshot[]>([]);
+  let importanceDefault = $state("normal");
+
+  // Hands off to the agent and returns as soon as the task is queued — it reads
+  // the whole repo, so the table lands minutes later and the tabs pick it up
+  // through the task poll. `app.cmd` ingests the returned snapshot; a raw
+  // `invoke` would discard it and swallow any failure with it.
+  async function proposeImportanceRules() {
+    await app.cmd("run_importance_agent");
+  }
   let addPattern = $state("");
   let textWarnings = $state<Record<string, string | null>>({});
   let editProviders = $state(false);
@@ -110,6 +121,8 @@
     selectedEffort = res.activeEffort ?? "Auto";
     if (!effortOptions.includes(selectedEffort)) selectedEffort = "Auto";
     repoRoot = res.settings.repoRoot;
+    importanceRules = res.settings.importanceRules ?? [];
+    importanceDefault = res.settings.importanceDefault ?? "normal";
     for (const w of res.warnings ?? []) {
       app.showToast("info", w);
     }
@@ -456,6 +469,49 @@
         {/if}
 
         {#if activeTab === "general"}
+          <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
+            <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
+            File importance
+          </h2>
+          <!-- Read-only: the table is written by the importance agent or by hand.
+               Two writers on one table is the shadowing problem that killed
+               per-repo config, so the UI shows it and does not edit it. -->
+          <div class="bg-card border border-hairline rounded-xl px-4 py-3">
+            <p class="text-xs text-muted mb-3">
+              Rules ranking files by how much of the tree depends on them, most specific first:
+              an exact path, then a glob, then a file type. Filter a diff with
+              <code class="mono">importance:foundational</code> to act on them.
+            </p>
+            {#if importanceRules.length === 0}
+              <p class="text-xs text-fg-3">
+                No rules declared for this repo. Hand-edit <code class="mono">[importance.&lt;repo&gt;]</code>
+                in the global config, or run the importance agent to propose a table. Until then every
+                file resolves to <span class="mono">{importanceDefault}</span>.
+              </p>
+            {:else}
+              <ul class="space-y-1">
+                {#each importanceRules as rule (rule.matcher)}
+                  <li class="flex items-baseline gap-2 text-[11px]">
+                    <span class="mono text-fg-2 truncate-start min-w-0 flex-1">{rule.matcher}</span>
+                    <span class="mono text-muted shrink-0">{rule.tier}</span>
+                  </li>
+                {/each}
+              </ul>
+              <p class="mt-2 text-[10px] text-fg-3">
+                Anything else resolves to <span class="mono">{importanceDefault}</span>.
+              </p>
+            {/if}
+            <button
+              type="button"
+              class="mt-3 px-2 py-1 rounded text-[11px] text-ai hover:bg-hover border border-hairline"
+              onclick={() => void proposeImportanceRules()}
+            >Propose rules</button>
+            <p class="mt-1.5 text-[10px] text-fg-3">
+              The agent reads the repo and prints a table; the app validates it and replaces this
+              repo's rules. It takes a few minutes and replaces the table whole.
+            </p>
+          </div>
+
           <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
             <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
             AI Hub

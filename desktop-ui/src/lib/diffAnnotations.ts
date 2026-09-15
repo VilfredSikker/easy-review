@@ -13,6 +13,7 @@ import {
 } from "$lib/aiReviewAgents";
 import type {
   AiSnapshot,
+  Confidence,
   FileSnapshot,
   FlatFinding,
   LineSnapshot,
@@ -83,6 +84,48 @@ export function lineInThreadAnchorRange(
 
 /** Minimal AiSnapshot subset used by the helpers. */
 type AiInput = Pick<AiSnapshot, "threads" | "findings">;
+
+/** An `AiInput` plus the resolved rows the snapshot carries in their own array. */
+export type AiWithResolved = AiInput & { resolved_findings?: FlatFinding[] };
+
+/** Which findings the viewer has asked to see. */
+export type FindingView = {
+  showResolved: boolean;
+  minTrust: Confidence;
+};
+
+/** Mirrors the engine's `Confidence::trust_rank`: lower is more trustworthy. */
+const TRUST_RANK: Record<Confidence, number> = {
+  confirmed: 0,
+  tentative: 1,
+  informational: 2,
+  dropped: 3,
+};
+
+/**
+ * Mirrors the engine's `Finding::passes`.
+ *
+ * Activity is not this function's business: the backend never sends a dropped
+ * finding, and resolved ones arrive in their own array.
+ */
+export function findingPassesTrust(f: FlatFinding, minTrust: Confidence): boolean {
+  return TRUST_RANK[f.confidence] <= TRUST_RANK[minTrust];
+}
+
+/**
+ * The findings the diff should draw.
+ *
+ * Resolved findings travel in a separate array so nothing reading `findings`
+ * changes meaning; this is the one place they merge back in, and only when the
+ * viewer has asked. The gate then applies to both.
+ */
+export function findingsForDiff(ai: AiWithResolved, view: FindingView): FlatFinding[] {
+  const visible = view.showResolved
+    ? [...ai.findings, ...(ai.resolved_findings ?? [])]
+    : ai.findings;
+  return visible.filter((f) => findingPassesTrust(f, view.minTrust));
+}
+
 export type FindingSeverityFilter = "all" | FlatFinding["severity"];
 
 function lineNum(line: LineSnapshot): number | null {

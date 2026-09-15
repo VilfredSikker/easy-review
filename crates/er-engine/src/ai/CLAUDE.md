@@ -18,8 +18,12 @@ notes AI actions are the exception — each rewrites its store in the bucket,
 leaving a `.prev.json` beside it.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
-`checklist.json`, `summary.md`, `triage.json`, `professor.json`,
-`experts/*.json`, `tour.json`.
+`summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.
+
+**`checklist.json` is split by field.** Its *items* are AI-owned like the rest;
+its `checked` flags are the reviewer's own progress, written by the toggle in
+either front end (`App::toggle_checklist_item_at`). Nothing else in the file is
+theirs to write, and the agent that generates it never sets `checked`.
 
 **Agent-emitted, host-written:** `diagrams/*.json`. The diagram agent runs
 read-only and prints its JSON on stdout; the host parses and writes the file.

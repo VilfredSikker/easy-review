@@ -67,6 +67,9 @@ fn apply_config_side_effects(app: &mut er_engine::app::App, watched_changed: boo
         app.tab_mut().watched_config = app.config.watched.clone();
         app.tab_mut().refresh_watched_files();
     }
+    // The filter resolves importance off the tab, so a config change has to
+    // reach the tabs that are already open.
+    app.sync_importance_to_tabs();
     clamp_tab_mode_to_features(app);
 }
 

@@ -1,4 +1,5 @@
 use crate::ai::{ErReview, RiskLevel};
+use crate::config::{ImportanceRepoConfig, ImportanceTier};
 use crate::git::{DiffFile, FileStatus};
 use glob::{MatchOptions, Pattern};
 
@@ -45,6 +46,12 @@ pub enum FilterRule {
         include: bool,
         levels: Vec<RiskLevel>,
     },
+    /// Declared tiers from the global config, so unlike `Risk` this ranks a
+    /// diff no review has run against.
+    Importance {
+        include: bool,
+        tiers: Vec<ImportanceTier>,
+    },
 }
 
 pub struct FilterPreset {
@@ -73,6 +80,14 @@ pub const FILTER_PRESETS: &[FilterPreset] = &[
         name: "review",
         expr: "-risk:info",
     },
+    FilterPreset {
+        name: "schema",
+        expr: "*.sql,*.prisma,*.graphql,migration",
+    },
+    FilterPreset {
+        name: "api",
+        expr: "*.proto,openapi,api/,routes/,handlers/,controllers/",
+    },
 ];
 
 impl FilterRule {
@@ -83,6 +98,7 @@ impl FilterRule {
             Self::Status { include, .. } => *include,
             Self::Size { include, .. } => *include,
             Self::Risk { include, .. } => *include,
+            Self::Importance { include, .. } => *include,
         }
     }
 }
@@ -120,6 +136,12 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
 
         // Try risk: risk:high,medium,low,info
         if let Some(rule) = try_parse_risk(include, body) {
+            rules.push(rule);
+            continue;
+        }
+
+        // Try importance: importance:foundational
+        if let Some(rule) = try_parse_importance(include, body) {
             rules.push(rule);
             continue;
         }
@@ -168,6 +190,15 @@ fn try_parse_risk(include: bool, body: &str) -> Option<FilterRule> {
     Some(FilterRule::Risk { include, levels })
 }
 
+fn try_parse_importance(include: bool, body: &str) -> Option<FilterRule> {
+    let rest = body.strip_prefix("importance:")?;
+    let tiers: Vec<ImportanceTier> = rest.split(',').filter_map(ImportanceTier::parse).collect();
+    if tiers.is_empty() {
+        return None;
+    }
+    Some(FilterRule::Importance { include, tiers })
+}
+
 fn try_parse_size(include: bool, body: &str) -> Option<FilterRule> {
     if let Some(num_str) = body.strip_prefix('>') {
         if let Ok(n) = num_str.trim().parse::<usize>() {
@@ -211,10 +242,26 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
 
 /// Apply filter rules to a file. Returns true if the file should be visible.
 ///
-/// Note: Risk rules are evaluated without review data (always include). Use
-/// `apply_filter_with_review` when review data is available.
+/// Note: risk and importance rules are evaluated without review data (always
+/// include). Use `apply_filter_with_context` when any rule data is available.
 #[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
+    apply_filter_with_context(rules, file, None, None)
+}
+
+/// Apply filter rules to a file with the rule data that does not come from the
+/// diff itself.
+///
+/// `importance` is the active repo's declared rule table. Absent, or absent for
+/// this repo, leaves every path at [`ImportanceTier::Normal`] — the answer the
+/// config's own default gives — so `importance:normal` selects the whole diff
+/// and any other tier selects none of it.
+pub fn apply_filter_with_context(
+    rules: &[FilterRule],
+    file: &DiffFile,
+    review: Option<&ErReview>,
+    importance: Option<&ImportanceRepoConfig>,
+) -> bool {
     if rules.is_empty() {
         return true;
     }
@@ -225,7 +272,7 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
     let included = if has_includes {
         rules
             .iter()
-            .any(|r| r.is_include() && matches_rule(r, file))
+            .any(|r| r.is_include() && matches_rule_with_context(r, file, review, importance))
     } else {
         // No include rules → start with all files
         true
@@ -238,43 +285,17 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
     // Phase 2: Check exclude rules (any match removes the file)
     let excluded = rules
         .iter()
-        .any(|r| !r.is_include() && matches_rule(r, file));
+        .any(|r| !r.is_include() && matches_rule_with_context(r, file, review, importance));
 
     !excluded
 }
 
-/// Apply filter rules to a file with optional review data for risk filtering.
-pub fn apply_filter_with_review(
-    rules: &[FilterRule],
+fn matches_rule_with_context(
+    rule: &FilterRule,
     file: &DiffFile,
     review: Option<&ErReview>,
+    importance: Option<&ImportanceRepoConfig>,
 ) -> bool {
-    if rules.is_empty() {
-        return true;
-    }
-
-    let has_includes = rules.iter().any(|r| r.is_include());
-
-    let included = if has_includes {
-        rules
-            .iter()
-            .any(|r| r.is_include() && matches_rule_with_review(r, file, review))
-    } else {
-        true
-    };
-
-    if !included {
-        return false;
-    }
-
-    let excluded = rules
-        .iter()
-        .any(|r| !r.is_include() && matches_rule_with_review(r, file, review));
-
-    !excluded
-}
-
-fn matches_rule_with_review(rule: &FilterRule, file: &DiffFile, review: Option<&ErReview>) -> bool {
     match rule {
         FilterRule::Risk { levels, .. } => {
             if let Some(review) = review {
@@ -283,6 +304,10 @@ fn matches_rule_with_review(rule: &FilterRule, file: &DiffFile, review: Option<&
                 }
             }
             false
+        }
+        FilterRule::Importance { tiers, .. } => {
+            let tier = importance.map_or(ImportanceTier::Normal, |rules| rules.resolve(&file.path));
+            tiers.contains(&tier)
         }
         _ => matches_rule(rule, file),
     }
@@ -307,6 +332,9 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
             let _ = levels;
             true
         }
+        // Nothing to resolve a tier against here, which is the case a repo with
+        // no declared rules is in anyway: every path reads as `Normal`.
+        FilterRule::Importance { tiers, .. } => tiers.contains(&ImportanceTier::Normal),
     }
 }
 
@@ -848,5 +876,195 @@ mod tests {
                 "should not produce a Risk rule for unknown level"
             );
         }
+    }
+
+    // ── Importance filter tests ──
+
+    fn importance_rules(entries: &[(&str, &str)]) -> ImportanceRepoConfig {
+        ImportanceRepoConfig {
+            default: Some("normal".to_string()),
+            rules: entries
+                .iter()
+                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
+                .collect(),
+        }
+    }
+
+    fn review_with_risk(path: &str, risk: RiskLevel) -> ErReview {
+        use std::collections::HashMap;
+
+        let mut review = ErReview {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            created_at: String::new(),
+            base_branch: "main".to_string(),
+            head_branch: "feature".to_string(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        };
+        review.files.insert(
+            path.to_string(),
+            crate::ai::ErFileReview {
+                risk,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings: Vec::new(),
+            },
+        );
+        review
+    }
+
+    #[test]
+    fn parse_importance_filter() {
+        let rules = parse_filter_expr("+importance:foundational");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Importance { include, tiers } => {
+                assert!(*include);
+                assert_eq!(tiers, &[ImportanceTier::Foundational]);
+            }
+            _ => panic!("expected Importance rule"),
+        }
+    }
+
+    #[test]
+    fn parse_importance_filter_exclude() {
+        let rules = parse_filter_expr("-importance:isolated");
+        assert_eq!(rules.len(), 1);
+        match &rules[0] {
+            FilterRule::Importance { include, tiers } => {
+                assert!(!*include);
+                assert_eq!(tiers, &[ImportanceTier::Isolated]);
+            }
+            _ => panic!("expected Importance rule"),
+        }
+    }
+
+    #[test]
+    fn parse_importance_unknown_tier_produces_no_rule() {
+        // Parallel to the risk case: "importance:critical" is not a tier, so the
+        // segment falls through to the plain-text path instead of filtering.
+        let rules = parse_filter_expr("+importance:critical");
+        for rule in &rules {
+            assert!(
+                !matches!(rule, FilterRule::Importance { .. }),
+                "should not produce an Importance rule for an unknown tier"
+            );
+        }
+    }
+
+    #[test]
+    fn importance_filters_without_review_data() {
+        // The case `risk:*` cannot serve: nothing has been reviewed, so every
+        // call passes no review, and the declared tier still decides.
+        let rules = parse_filter_expr("+importance:foundational");
+        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")]);
+        let core = make_file(
+            "crates/er-engine/src/app/filter.rs",
+            FileStatus::Modified,
+            5,
+            3,
+        );
+        let other = make_file("crates/er-tui/src/main.rs", FileStatus::Modified, 5, 3);
+        assert!(apply_filter_with_context(
+            &rules,
+            &core,
+            None,
+            Some(&importance)
+        ));
+        assert!(!apply_filter_with_context(
+            &rules,
+            &other,
+            None,
+            Some(&importance)
+        ));
+    }
+
+    #[test]
+    fn importance_exclude_hides_only_the_tier_it_names() {
+        let rules = parse_filter_expr("-importance:isolated");
+        let importance = importance_rules(&[("*.md", "isolated")]);
+        let doc = make_file("docs/readme.md", FileStatus::Modified, 2, 0);
+        let code = make_file("src/main.rs", FileStatus::Modified, 5, 3);
+        assert!(!apply_filter_with_context(
+            &rules,
+            &doc,
+            None,
+            Some(&importance)
+        ));
+        assert!(apply_filter_with_context(
+            &rules,
+            &code,
+            None,
+            Some(&importance)
+        ));
+    }
+
+    #[test]
+    fn importance_is_not_gated_on_review_data() {
+        // A review exists here, which is what a risk rule needs and an
+        // importance rule must not: the tier answers the same either way.
+        let rules = parse_filter_expr("+importance:foundational");
+        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")]);
+        let core = make_file(
+            "crates/er-engine/src/app/filter.rs",
+            FileStatus::Modified,
+            5,
+            3,
+        );
+        let review = review_with_risk(&core.path, RiskLevel::Low);
+        assert!(apply_filter_with_context(
+            &rules,
+            &core,
+            Some(&review),
+            Some(&importance)
+        ));
+    }
+
+    #[test]
+    fn importance_without_declared_rules_resolves_every_path_to_normal() {
+        // With no generated rules, every path resolves through the config's own
+        // default, so only a rule naming `normal` matches anything.
+        let foundational = parse_filter_expr("+importance:foundational");
+        let normal = parse_filter_expr("+importance:normal");
+        let file = make_file("src/main.rs", FileStatus::Modified, 5, 3);
+        assert!(!apply_filter_with_context(&foundational, &file, None, None));
+        assert!(apply_filter_with_context(&normal, &file, None, None));
+    }
+
+    #[test]
+    fn schema_and_api_presets_select_their_files() {
+        let schema = FILTER_PRESETS.iter().find(|p| p.name == "schema").unwrap();
+        let schema_rules = parse_filter_expr(schema.expr);
+        let migration = make_file("db/migrations/0001_init.sql", FileStatus::Modified, 5, 3);
+        let graphic = make_file("schema/schema.graphql", FileStatus::Modified, 5, 3);
+        let component = make_file(
+            "desktop-ui/src/lib/components/FileTree.svelte",
+            FileStatus::Modified,
+            5,
+            3,
+        );
+        assert!(apply_filter(&schema_rules, &migration));
+        assert!(apply_filter(&schema_rules, &graphic));
+        assert!(!apply_filter(&schema_rules, &component));
+
+        let api = FILTER_PRESETS.iter().find(|p| p.name == "api").unwrap();
+        let api_rules = parse_filter_expr(api.expr);
+        let route = make_file(
+            "desktop-ui/src/lib/api/reviews.ts",
+            FileStatus::Modified,
+            5,
+            3,
+        );
+        let proto = make_file("proto/review.proto", FileStatus::Modified, 5, 3);
+        let docs = make_file(
+            "docs/adr/0036-importance-as-declared-config.md",
+            FileStatus::Modified,
+            1,
+            0,
+        );
+        assert!(apply_filter(&api_rules, &route));
+        assert!(apply_filter(&api_rules, &proto));
+        assert!(!apply_filter(&api_rules, &docs));
     }
 }

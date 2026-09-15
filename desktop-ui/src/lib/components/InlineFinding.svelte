@@ -38,6 +38,21 @@
   const isProfessor = $derived(agentLabel === "Professor");
   const headerKind = $derived(isProfessor ? "Insight" : "Finding");
 
+  /// Same glyphs the TUI draws, so a grade reads the same in both front ends.
+  const confidenceGlyph = $derived(
+    finding.confidence === "confirmed" ? "✓"
+    : finding.confidence === "informational" ? "i"
+    : finding.confidence === "dropped" ? "✗"
+    : "?",
+  );
+
+  /// The engine's `producers · category` tag, hidden when it only repeats the
+  /// agent pill beside it.
+  const lensCategory = $derived(finding.lens_category.trim());
+  const showLensCategory = $derived(
+    lensCategory.length > 0 && lensCategory.toLowerCase() !== agentLabel.toLowerCase(),
+  );
+
   const agentPillStyle = $derived(
     agentLabel === "Professor"
       ? "background: color-mix(in srgb, var(--color-emphasis) 15%, transparent); color: var(--color-emphasis); border-color: color-mix(in srgb, var(--color-emphasis) 25%, transparent)"
@@ -207,6 +222,7 @@
 <div
   id="finding-{finding.id}"
   class="my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
+  class:opacity-60={finding.resolved}
   style="border-color: color-mix(in srgb, {severityColor} 30%, transparent); background: color-mix(in srgb, {severityColor} 4%, transparent);"
 >
   <!-- Header -->
@@ -221,6 +237,18 @@
     {#if !isProfessor}
       <span class="px-1.5 py-0.5 rounded-full text-[9px] uppercase tracking-wider font-medium shrink-0" style="background: color-mix(in srgb, {severityColor} 15%, transparent); color: {severityColor}">
         {finding.severity}
+      </span>
+      <span
+        class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border border-hairline text-muted shrink-0"
+        title="Confidence: {finding.confidence}"
+      >{confidenceGlyph}</span>
+    {/if}
+    {#if showLensCategory}
+      <span class="text-muted shrink-0">{lensCategory}</span>
+    {/if}
+    {#if finding.resolved}
+      <span class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border border-hairline text-muted shrink-0">
+        resolved
       </span>
     {/if}
     {#if finding.line !== null}

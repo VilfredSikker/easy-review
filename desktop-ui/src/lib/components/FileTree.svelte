@@ -8,6 +8,8 @@
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import type { FileSnapshot } from "$lib/types";
+  import { findingPassesTrust } from "$lib/diffAnnotations";
+  import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
 
   interface Props {
     /** When true, render narrow icon-only rail (mock lines 414–421). */
@@ -38,6 +40,23 @@
 
   /** Accurate tooltip for the annotation badge — breaks out comments / questions
    *  / findings so a question never reads as a "comment". */
+  /// Findings the confidence gate is holding back, per file.
+  ///
+  /// The backend's `finding_count` is every active finding; the gate is the
+  /// reader's, so only the client can say how many it is hiding. A count that
+  /// silently shrinks is how a filter stops being trusted.
+  const hiddenFindings = $derived.by(() => {
+    const ai = app.snapshot?.ai;
+    const counts = new Map<string, number>();
+    if (!ai) return counts;
+    const gate = findingsVisibility.minTrust(ai.min_trust_default);
+    for (const finding of ai.findings) {
+      if (findingPassesTrust(finding, gate)) continue;
+      counts.set(finding.file, (counts.get(finding.file) ?? 0) + 1);
+    }
+    return counts;
+  });
+
   function annotationTitle(file: FileSnapshot): string {
     const parts: string[] = [];
     if (file.comment_count > 0)
@@ -46,6 +65,8 @@
       parts.push(`${file.question_count} question${file.question_count !== 1 ? "s" : ""}`);
     if (file.finding_count > 0)
       parts.push(`${file.finding_count} finding${file.finding_count !== 1 ? "s" : ""}`);
+    const hidden = hiddenFindings.get(file.path) ?? 0;
+    if (hidden > 0) parts.push(`${hidden} hidden by the confidence gate`);
     return parts.join(" · ");
   }
 
@@ -515,6 +536,21 @@
                 style="background: color-mix(in srgb, {chip.color} 13%, transparent); color: {chip.color}"
                 aria-hidden="true"
               >{chip.label}</span>
+
+              <!-- File-level risk from the review, on every row that has a
+                   verdict — the spec's "a dot per row". A file the review never
+                   reached carries none, which is the distinction the dot makes. -->
+              {#if file.risk}
+                <span
+                  class="w-1.5 h-1.5 rounded-full shrink-0 {file.risk === "high"
+                    ? "bg-risk-high"
+                    : file.risk === "med"
+                      ? "bg-risk-med"
+                      : "bg-risk-low"}"
+                  title="Risk: {file.risk}"
+                  aria-hidden="true"
+                ></span>
+              {/if}
 
               <span class="truncate flex-1 min-w-0 text-[12px] {filenameClass(file, selected)}">{node.name}</span>
 
