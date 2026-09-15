@@ -55,31 +55,31 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result
         .stderr(Stdio::piped());
 
     let mut child = cmd.spawn()?;
-    let start = Instant::now();
 
-    loop {
+    // Drain both pipes on their own threads, starting now.
+    //
+    // Draining after the child exits does not work: a command whose output
+    // exceeds the pipe buffer blocks in `write` with no reader to take it, so
+    // it never exits and `try_wait` never reports one. That turns a healthy
+    // command into a timeout — and the larger the output, the surer the
+    // failure, so `gh pr diff` on a big PR always lost this race.
+    let stdout_pipe = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let stdout_reader = std::thread::spawn(move || drain(stdout_pipe));
+    let stderr_reader = std::thread::spawn(move || drain(stderr_pipe));
+
+    let start = Instant::now();
+    let status = loop {
         match child.try_wait()? {
-            Some(status) => {
-                // The child has already exited, so nothing can be blocked
-                // writing into these pipes; draining them now cannot deadlock.
-                let mut stdout = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout);
-                }
-                let mut stderr = Vec::new();
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr);
-                }
-                return Ok(Output {
-                    status,
-                    stdout,
-                    stderr,
-                });
-            }
+            Some(status) => break status,
             None => {
                 if start.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
+                    // Deliberately not joined: a grandchild that outlived the
+                    // kill can still hold the write end open, and blocking here
+                    // would give back the unbounded wait this function exists
+                    // to remove. The readers end with the pipe, on their own.
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
                         format!("command timed out after {}s", timeout.as_secs()),
@@ -88,7 +88,21 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result
                 std::thread::sleep(Duration::from_millis(20));
             }
         }
+    };
+
+    Ok(Output {
+        status,
+        stdout: stdout_reader.join().unwrap_or_default(),
+        stderr: stderr_reader.join().unwrap_or_default(),
+    })
+}
+
+fn drain<R: Read>(pipe: Option<R>) -> Vec<u8> {
+    let mut buf = Vec::new();
+    if let Some(mut pipe) = pipe {
+        let _ = pipe.read_to_end(&mut buf);
     }
+    buf
 }
 
 /// `.output()`, but bounded.
@@ -158,6 +172,19 @@ mod tests {
             .expect_err("must not outlive the budget");
         assert_eq!(err.kind(), std::io::ErrorKind::TimedOut);
         assert!(start.elapsed() < Duration::from_secs(5));
+    }
+
+    #[test]
+    fn returns_output_larger_than_the_pipe_buffer() {
+        // A child that writes past the OS pipe buffer (~64 KB on macOS) blocks
+        // in `write` until someone drains the read end. Nothing here reads
+        // until `try_wait` reports an exit, so the child never exits and a
+        // perfectly healthy command is reported as a timeout.
+        let mut cmd = Command::new("sh");
+        cmd.args(["-c", "head -c 200000 /dev/zero"]);
+        let out = run_with_timeout(&mut cmd, GH_TIMEOUT)
+            .expect("a 200 KB result is not a stalled command");
+        assert_eq!(out.stdout.len(), 200_000);
     }
 
     #[test]

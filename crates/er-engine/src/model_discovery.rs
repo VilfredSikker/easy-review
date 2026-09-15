@@ -4,11 +4,10 @@
 
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long a model-cache entry stays "fresh" before background refresh.
 pub const MODEL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
@@ -73,46 +72,19 @@ pub fn run_models_command(cmd: &[String]) -> Result<String> {
     }
     let program = &cmd[0];
     let args = &cmd[1..];
-    let mut child = Command::new(program)
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| format!("failed to spawn models_command: {program}"))?;
+    let output = crate::proc::run_with_timeout(Command::new(program).args(args), COMMAND_TIMEOUT)
+        .with_context(|| format!("failed to run models_command: {program}"))?;
 
-    let start = Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                let mut stdout = String::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_string(&mut stdout);
-                }
-                let mut stderr = String::new();
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_string(&mut stderr);
-                }
-                if !status.success() {
-                    let snippet: String = stderr.chars().take(200).collect();
-                    bail!("models_command exited with {}: {}", status, snippet.trim());
-                }
-                return Ok(stdout);
-            }
-            Ok(None) => {
-                if start.elapsed() >= COMMAND_TIMEOUT {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    bail!(
-                        "models_command timed out after {}s",
-                        COMMAND_TIMEOUT.as_secs()
-                    );
-                }
-                thread::sleep(Duration::from_millis(50));
-            }
-            Err(e) => bail!("failed waiting on models_command: {e}"),
-        }
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let snippet: String = stderr.chars().take(200).collect();
+        bail!(
+            "models_command exited with {}: {}",
+            output.status,
+            snippet.trim()
+        );
     }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
 fn cache_dir() -> PathBuf {
@@ -275,6 +247,21 @@ mod tests {
         assert!(load_valid_cache("cursor", &other).is_none());
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn returns_output_larger_than_the_pipe_buffer() {
+        // A model list that big is unusual, but a CLI that prints a long
+        // banner on stderr is not, and either one overruns the pipe buffer.
+        // This path drains both pipes only after the child exits, so it used
+        // to report a 10s timeout for a command that had already succeeded.
+        let cmd = vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "head -c 200000 /dev/zero".to_string(),
+        ];
+        let stdout = run_models_command(&cmd).expect("a 200 KB listing is not a hung command");
+        assert_eq!(stdout.len(), 200_000);
     }
 
     #[test]
