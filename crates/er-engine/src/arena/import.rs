@@ -1,7 +1,9 @@
 //! Import shipped arena findings into `.er/review.json` for the Review tab.
 
 use super::model::{ArenaFinding, ArenaRun, Verdict};
-use crate::ai::{Confidence, ErFileReview, ErReview, Finding, RiskLevel};
+use crate::ai::{
+    lens_for_producer_id, Confidence, ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS,
+};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,11 +41,16 @@ fn latest_severity(f: &ArenaFinding) -> RiskLevel {
 }
 
 fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
-    let category = run
+    // Which producer raised it. The arena reports no defect kind, so `category`
+    // stays empty rather than absorbing the producer name the way it used to.
+    // `agent_kind` is a task kind (`expert:security`, `professor`, …), not a
+    // lens, so it is normalized rather than copied into the flat vocabulary.
+    let lens = run
         .config
         .agent_kind
-        .clone()
-        .unwrap_or_else(|| "arena".to_string());
+        .as_deref()
+        .map_or(GENERAL_LENS, lens_for_producer_id)
+        .to_string();
     let confidence = if f.confidence >= 0.75 {
         Confidence::Confirmed
     } else if f.confidence >= 0.5 {
@@ -54,12 +61,15 @@ fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
     Finding {
         id: format!("arena-{}-{}", run.id, f.id),
         severity: latest_severity(f),
-        category,
+        lens,
+        category: String::new(),
         title: f.title.clone(),
         description: f.body.clone(),
         hunk_index: None,
         line_start: f.line,
         line_end: f.line,
+        line_content: String::new(),
+        stale: false,
         suggestion: f.rationale.clone(),
         related_files: vec![],
         outside_diff: false,
@@ -150,4 +160,66 @@ pub fn import_arena_findings_to_review(
         write_json_atomic(&path, &review)?;
     }
     Ok(imported)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `config.agent_kind` is a *task kind* (`expert:security`, `professor`),
+    /// not a lens. Copying it through verbatim put a value outside the flat
+    /// vocabulary into `Finding.lens`, where `expert_label_for_id` could not
+    /// resolve it and the reviewer pill fell back to "General".
+    #[test]
+    fn arena_finding_lens_is_normalized_from_the_task_kind() {
+        let run = |agent_kind: Option<&str>| -> ArenaRun {
+            serde_json::from_value(serde_json::json!({
+                "id": "arena-1",
+                "branch_ref": "feature",
+                "base_branch": "main",
+                "scope": "branch",
+                "diff_hash": "abc",
+                "created_at": "2026-06-17T00:00:00Z",
+                "status": "complete",
+                "reviewers": [],
+                "findings": [],
+                "cost_estimate": { "tokens_in": 0, "tokens_out": 0, "usd": 0.0 },
+                "config": {
+                    "reviewers": [],
+                    "rounds": 3,
+                    "arbiter": { "provider_id": "anthropic", "model_id": "opus" },
+                    "auto_accept_threshold": 0.75,
+                    "scope": "branch",
+                    "agent_kind": agent_kind,
+                },
+            }))
+            .expect("a minimal run deserializes")
+        };
+        let finding: ArenaFinding = serde_json::from_value(serde_json::json!({
+            "id": "f1",
+            "file": "src/a.rs",
+            "line": 1,
+            "title": "t",
+            "body": "b",
+            "severity_by_round": { "1": "high" },
+            "raised_by": [],
+            "verdict": "kept",
+            "confidence": 0.9,
+            "rationale": "ok",
+            "rounds": [],
+            "merge_candidates": [],
+        }))
+        .expect("a minimal finding deserializes");
+
+        let lens = |kind: Option<&str>| arena_finding_to_review(&finding, &run(kind)).lens;
+
+        assert_eq!(lens(Some("expert:security")), "security");
+        assert_eq!(lens(Some("professor")), "professor");
+        assert_eq!(lens(Some("general")), GENERAL_LENS);
+        assert_eq!(
+            lens(None),
+            GENERAL_LENS,
+            "an unset kind is the general pass"
+        );
+    }
 }

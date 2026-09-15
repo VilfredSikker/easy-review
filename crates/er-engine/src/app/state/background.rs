@@ -77,7 +77,7 @@ pub fn kind_label(kind: &str) -> String {
             // expert:<id>, professor, and triage all resolve through the
             // shared finding-agent label map.
             let id = other.strip_prefix("expert:").unwrap_or(other);
-            crate::ai::agent_label_for_category(id).to_string()
+            crate::ai::agent_label_for_id(id).to_string()
         }
     }
 }

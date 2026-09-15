@@ -396,15 +396,11 @@ fn render_item(out: &mut String, item: &ItemBlock<'_>) {
                 _ => "—".into(),
             };
             let severity = format!("{:?}", f.severity).to_lowercase();
-            let category = if f.category.is_empty() {
-                ""
-            } else {
-                f.category.as_str()
-            };
-            let badges = if category.is_empty() {
+            let tag = f.lens_category_tag();
+            let badges = if tag.is_empty() {
                 severity
             } else {
-                format!("{severity} · {category}")
+                format!("{severity} · {tag}")
             };
             let resolved = if f.resolved { " [resolved]" } else { "" };
             let outside = if f.outside_diff {
@@ -849,12 +845,15 @@ mod tests {
                 findings: vec![Finding {
                     id: "f-1".into(),
                     severity: RiskLevel::Medium,
+                    lens: "general".into(),
                     category: "style".into(),
                     title: "Use Map".into(),
                     description: "Detail".into(),
                     hunk_index: Some(0),
                     line_start: Some(5),
                     line_end: None,
+                    line_content: String::new(),
+                    stale: false,
                     suggestion: String::new(),
                     related_files: Vec::new(),
                     outside_diff: false,
@@ -1015,12 +1014,15 @@ mod tests {
                     Finding {
                         id: "f-keep".into(),
                         severity: RiskLevel::Medium,
+                        lens: "general".into(),
                         category: "perf".into(),
                         title: "Keep finding".into(),
                         description: "Detail".into(),
                         hunk_index: Some(0),
                         line_start: Some(5),
                         line_end: None,
+                        line_content: String::new(),
+                        stale: false,
                         suggestion: String::new(),
                         related_files: Vec::new(),
                         outside_diff: false,
@@ -1036,12 +1038,15 @@ mod tests {
                     Finding {
                         id: "f-drop".into(),
                         severity: RiskLevel::Low,
+                        lens: "general".into(),
                         category: "style".into(),
                         title: "Drop finding".into(),
                         description: "Detail".into(),
                         hunk_index: Some(0),
                         line_start: Some(6),
                         line_end: None,
+                        line_content: String::new(),
+                        stale: false,
                         suggestion: String::new(),
                         related_files: Vec::new(),
                         outside_diff: false,

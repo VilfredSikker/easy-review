@@ -3238,6 +3238,7 @@ impl TabState {
                     self.reload_ai_state();
                 }
                 self.relocate_all_comments();
+                self.refresh_finding_staleness();
                 if self.ai.is_stale {
                     self.compute_stale_files(&raw);
                 }
@@ -3424,6 +3425,12 @@ impl TabState {
         let t = Instant::now();
         self.relocate_all_comments();
         log_branch_profile_phase(self, "relocate_all_comments", t);
+
+        // Per-finding staleness — findings follow neither the comments' relocation
+        // nor the file-level `stale_files` set.
+        let t = Instant::now();
+        self.refresh_finding_staleness();
+        log_branch_profile_phase(self, "refresh_finding_staleness", t);
 
         // Compute per-file staleness when the review is stale and has file_hashes.
         // Reuse the branch_raw we already fetched — no additional git call.
@@ -3959,6 +3966,70 @@ impl TabState {
         // would still look correct with a stale index).
         if questions_changed || notes_changed || comments_changed {
             self.ai.rebuild_comment_index();
+        }
+    }
+
+    /// Recompute per-finding staleness against the current diff.
+    ///
+    /// Findings are never re-anchored, so this only sets the flag on each one:
+    /// a finding whose target line is gone is suspect, while a sibling in the
+    /// same file whose line merely moved is not. `stale_files` (file-level) is
+    /// computed separately and still drives the file-tree indicator.
+    ///
+    /// Three outcomes per reviewed file, matching `relocate_all_comments`:
+    /// present and parsed → compare each finding against it; an unparsed lazy
+    /// stub → skip, because an empty `hunks` means "not loaded yet", not "the
+    /// code is gone"; absent from the diff entirely → stale, the same verdict
+    /// the comment path reaches for a missing file.
+    pub fn refresh_finding_staleness(&mut self) {
+        let is_lazy = self.lazy_mode;
+        let rename_map: std::collections::HashMap<String, String> = self
+            .files
+            .iter()
+            .filter_map(|f| match &f.status {
+                git::FileStatus::Renamed(old_path) => Some((old_path.clone(), f.path.clone())),
+                _ => None,
+            })
+            .collect();
+
+        let files = &self.files;
+        let Some(ref mut review) = self.ai.review else {
+            return;
+        };
+        // Indexed once: this runs on every refresh and a linear scan per review
+        // file is quadratic on a large diff.
+        let index_by_path: std::collections::HashMap<&str, usize> = files
+            .iter()
+            .enumerate()
+            .map(|(idx, f)| (f.path.as_str(), idx))
+            .collect();
+        for (path, file_review) in review.files.iter_mut() {
+            let idx = index_by_path
+                .get(path.as_str())
+                .or_else(|| {
+                    rename_map
+                        .get(path)
+                        .and_then(|p| index_by_path.get(p.as_str()))
+                })
+                .copied();
+            let diff_file = match idx {
+                Some(idx) => {
+                    let file = &files[idx];
+                    // Not loaded yet is not the same as gone — the trap
+                    // `relocate_all_comments` documents. Leave the flags alone.
+                    if is_lazy && file.hunks.is_empty() && !file.compacted {
+                        continue;
+                    }
+                    Some(file)
+                }
+                // The file left the diff entirely, so an anchored finding points
+                // at nothing. The comment path reaches the same verdict
+                // (`Missing → Lost → stale`).
+                None => None,
+            };
+            for finding in &mut file_review.findings {
+                finding.refresh_stale(diff_file);
+            }
         }
     }
 
@@ -9140,6 +9211,123 @@ mod tests {
         assert!(c.stale);
         assert_eq!(c.anchor_status, "lost");
         assert_eq!(c.relocated_at_hash, "current-hash");
+    }
+
+    // ── refresh_finding_staleness ──
+
+    /// A finding as a sidecar writes it, carrying its anchored line's text.
+    fn finding_at(id: &str, line: usize, content: &str) -> ai::Finding {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "severity": "low",
+            "title": "t",
+            "line_start": line,
+            "line_content": content,
+        }))
+        .expect("a minimal finding deserializes")
+    }
+
+    fn review_with(path: &str, findings: Vec<ai::Finding>) -> ai::ErReview {
+        ai::ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::from([(
+                path.to_string(),
+                ai::ErFileReview {
+                    risk: ai::RiskLevel::Low,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings,
+                },
+            )]),
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    fn ctx_line(content: &str, new_num: usize) -> DiffLine {
+        DiffLine {
+            line_type: LineType::Context,
+            content: content.to_string(),
+            old_num: Some(new_num),
+            new_num: Some(new_num),
+        }
+    }
+
+    fn review_findings(tab: &TabState, path: &str) -> Vec<bool> {
+        tab.ai.review.as_ref().unwrap().files[path]
+            .findings
+            .iter()
+            .map(|f| f.stale)
+            .collect()
+    }
+
+    #[test]
+    fn finding_staleness_is_per_finding_not_per_file() {
+        // `stale_files` marks the whole file; a finding whose neighbour was
+        // edited must not inherit that.
+        let file = make_file(
+            "a.rs",
+            vec![make_hunk(vec![
+                ctx_line("fn foo() {", 1),
+                ctx_line("    let kept = 1;", 2),
+            ])],
+            0,
+            0,
+        );
+        let mut tab = make_test_tab(vec![file]);
+        tab.ai.review = Some(review_with(
+            "a.rs",
+            vec![
+                finding_at("a", 2, "    let kept = 1;"),
+                finding_at("b", 1, "    let gone = 2;"),
+            ],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(
+            review_findings(&tab, "a.rs"),
+            vec![false, true],
+            "only the finding whose line vanished is stale"
+        );
+    }
+
+    #[test]
+    fn finding_staleness_marks_a_file_absent_from_the_diff() {
+        // The comment path reaches Lost here; findings must agree.
+        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+        tab.ai.review = Some(review_with(
+            "gone.rs",
+            vec![finding_at("a", 2, "    let kept = 1;")],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(review_findings(&tab, "gone.rs"), vec![true]);
+    }
+
+    #[test]
+    fn finding_staleness_skips_unparsed_lazy_stubs() {
+        // Mirrors `relocate_skips_unparsed_lazy_stubs_instead_of_marking_lost`:
+        // empty hunks means "not loaded yet", not "the code is gone".
+        let stub = make_file("big.rs", vec![], 10, 10);
+        let mut tab = make_test_tab(vec![stub]);
+        tab.lazy_mode = true;
+        tab.ai.review = Some(review_with(
+            "big.rs",
+            vec![finding_at("a", 2, "    let kept = 1;")],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(
+            review_findings(&tab, "big.rs"),
+            vec![false],
+            "an unparsed stub must not mark findings stale"
+        );
     }
 
     // ── truncate ──

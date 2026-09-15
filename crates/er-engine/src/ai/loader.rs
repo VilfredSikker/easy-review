@@ -3,7 +3,8 @@ use super::diagrams::{
     ErDiagram, DIAGRAM_KIND_FLOWS, DIAGRAM_KIND_MENTAL_MODEL, DIAGRAM_KIND_SUBSYSTEMS,
 };
 use super::experts::{
-    expert_by_id, load_expert_reviews, merge_experts_into_review, synthesize_review_from_experts,
+    backfill_finding_lenses, expert_by_id, load_expert_reviews, merge_experts_into_review,
+    synthesize_review_from_experts,
 };
 use super::professor::{load_professor_review, merge_professor_into_review};
 use super::review::*;
@@ -218,7 +219,10 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     let review_path = er_path.join("review.json");
     if let Ok(content) = read_sidecar(&review_path) {
         // A sidecar that fails to deserialize is treated the same as an absent file.
-        if let Ok(review) = serde_json::from_str::<ErReview>(&content) {
+        if let Ok(mut review) = serde_json::from_str::<ErReview>(&content) {
+            // Attribute findings from sidecars written before `Finding.lens`,
+            // before the expert/professor merges below add their own.
+            backfill_finding_lenses(&mut review);
             state.is_stale = review.diff_hash != current_diff_hash;
             state.review = Some(review);
         }
@@ -775,7 +779,7 @@ mod tests {
                             "title": "t",
                             "description": "d",
                             "severity": "medium",
-                            "category": id,
+                            "category": "correctness",
                             "hunk_index": 0
                         }]
                     }
@@ -850,6 +854,39 @@ mod tests {
         let state = load_ai_state(er_dir, "abc", Some("dependabot/npm_and_yarn/foo"));
         assert!(state.review.is_none());
         assert!(state.summary.is_none());
+    }
+
+    /// The spec's "loads with `lens == \"security\"`" bullet, through the read
+    /// path rather than a direct call: a sidecar written before `lens` existed
+    /// is attributed from the finding id prefix on load.
+    #[test]
+    fn load_ai_state_backfills_lens_from_the_id_prefix() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let review = serde_json::json!({
+            "version": 1,
+            "diff_hash": "abc",
+            "files": {
+                "a.rs": {
+                    "risk": "low",
+                    "findings": [
+                        { "id": "sec-1", "title": "t", "severity": "high" },
+                        { "id": "f-2", "title": "t", "severity": "low" }
+                    ]
+                }
+            }
+        });
+        std::fs::write(
+            dir.path().join("review.json"),
+            serde_json::to_string(&review).unwrap(),
+        )
+        .unwrap();
+
+        let state = load_ai_state(er_dir, "abc", None);
+
+        let findings = &state.review.expect("review loads").files["a.rs"].findings;
+        assert_eq!(findings[0].lens, "security", "expert prefix attributes");
+        assert_eq!(findings[1].lens, "general", "no prefix is the general pass");
     }
 
     #[test]

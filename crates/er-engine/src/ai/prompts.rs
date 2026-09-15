@@ -120,7 +120,7 @@ fn review_rules_preamble_with_hash(
         format!("2. Annotate: `{annotate}`")
     };
     let categories = if caps.is_expert {
-        "Set `category` to the expert id for every finding — only report issues in that lens."
+        "Only report issues in your lens. `category` is the **kind of defect** the finding describes, not your lens name — the lens is recorded separately."
     } else {
         "Categories: `security`, `logic`, `performance`, `correctness`, `error-handling`, `testing`, `api` — **no `style`**."
     };
@@ -178,7 +178,7 @@ const fn general_review_instructions_read_analyze() -> &'static str {
    - `risk`: "high" | "medium" | "low" | "info"
    - `risk_reason`: why this risk level
    - `summary`: one-line description of changes
-   - `findings`: array of issues (within caps)
+   - `findings`: array of issues (within caps). On each finding set `line_content` to the exact text of the line it anchors to, copied from the diff; omit it for hunk-level findings (`line_start` unset)
 5. **Verify findings agentically** when significance depends on code outside the diff — read/grep sibling files, callers, tests; append `evidence` entries; mark `tentative` if budget runs out.
 6. Set `confidence` on every finding: `confirmed`, `informational`, or `tentative` (with `verification_plan`)."#
 }
@@ -192,6 +192,7 @@ const fn general_review_json_example() -> &'static str {
           "description": "What the issue is and why it matters",
           "hunk_index": 0,
           "line_start": 42,
+          "line_content": "the exact text of line 42, copied from the diff",
           "suggestion": "What to do about it",
           "related_files": [],
           "outside_diff": false,
@@ -378,7 +379,7 @@ fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
 ```
 
 - Finding `id` prefix: `{prefix}-` (e.g. `{prefix}-1`)
-- Finding `category`: `{expert_id}`
+- Finding `category`: the **kind of defect** — `correctness`, `error-handling`, `security`, `performance`, `testing`, `api-contract`, or another one-word kind that fits. This is not your lens name; the lens is recorded separately.
 - `summary`: lens-specific only — {summary_focus}
 - `mkdir -p {safe_output_dir}/experts` before writing"#,
         prefix = def.id_prefix,
@@ -838,7 +839,7 @@ fn professor_rules_preamble(
 ### Professor mode (not a review)
 - **Do not** flag bugs, security issues, or style nits — `/er-review` covers those.
 - Teach: purpose, architecture, data flow, invariants, non-obvious design.
-- Every finding: `severity: "info"`, `confidence: "informational"`, `category: "professor"`.
+- Every finding: `severity: "info"`, `confidence: "informational"`. Leave `category` out — teaching insights describe concepts, not defects.
 - Titles are concept labels; descriptions explain *how* and *why*."#,
     );
     preamble
@@ -891,11 +892,11 @@ fn professor_output_section(output_dir: &str) -> String {
         {{
           "id": "prof-1",
           "severity": "info",
-          "category": "professor",
           "title": "Short concept label",
           "description": "Teaching explanation (markdown ok)",
           "hunk_index": 0,
           "line_start": 42,
+          "line_content": "the exact text of line 42, copied from the diff",
           "suggestion": "",
           "related_files": [],
           "outside_diff": false,
@@ -1013,14 +1014,14 @@ Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs
 
 **Deliver:**
 1. `first_impression` — 2–4 short paragraphs: what changed, blast radius, gut feel.
-2. `diff_stats` — file count, `approx_risk` (`low`|`medium`|`high`), `domains` touched (e.g. auth, api, tests).
+2. `diff_stats` — file count, `approx_risk`, `domains` touched (e.g. auth, api, tests). `approx_risk` must be exactly one of `high`, `medium`, `low`, `info` — no other words.
 3. `verdict` — route the human to the next review:
    - `skip` — cosmetic/docs/lockfiles only; no logic to review.
    - `general` — mixed concerns; run full `/er-review`.
    - `expert` — dominant lens; set `experts` to one or more ids: security, performance, reliability, testing, api, patterns, simplifying, mentorship.
    - `arena` — large/high-stakes diff or needs multi-model second opinion.
    - `professor` — novel subsystem the reader should learn first.
-4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`).
+4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`). `risk` uses the same four values as `approx_risk`, and is what that file's change deserves on its own — not the branch-level `approx_risk` repeated.
 
 **Speed budget:** ≤8 tool calls, <60 seconds. Read diff once in context; write only `triage.json`.
 
@@ -1044,7 +1045,7 @@ fn triage_output_section(output_dir: &str) -> String {
   "first_impression": "2–4 short markdown paragraphs",
   "diff_stats": {{
     "files_changed": 0,
-    "approx_risk": "low|medium|high",
+    "approx_risk": "high|medium|low|info",
     "domains": ["auth", "api"]
   }},
   "verdict": {{
@@ -2319,7 +2320,9 @@ mod tests {
             build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false, HASH);
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
-        assert!(prompt.contains("category: \"professor\""));
+        // The producer name used to be smuggled through `category`; the loader
+        // sets `lens` now, so the prompt must not claim a defect kind at all.
+        assert!(!prompt.contains("\"category\""));
         assert!(prompt.contains("\"summary\""));
         assert!(prompt.contains("teaching tone"));
         assert!(!prompt.contains("review.json"));
