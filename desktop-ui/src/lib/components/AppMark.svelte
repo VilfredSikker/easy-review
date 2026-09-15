@@ -1,7 +1,7 @@
 <script lang="ts">
   /**
    * The Easy Review "Review List" app mark — severity badges leading tinted
-   * finding rows. Replaces the old `er` text tile everywhere in the app.
+   * finding rows.
    *
    * The tile is a fixed dark mark and intentionally does NOT recolour with the
    * theme (an app icon is a constant); it sits cleanly on dark and light

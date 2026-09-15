@@ -126,8 +126,8 @@ mod tests {
         }
     }
 
-    /// The professor prompt no longer asks for `category`, so a sidecar written
-    /// to the current prompt omits it. That must still load.
+    /// The professor prompt does not ask for `category`, so a sidecar omits it.
+    /// That must still load.
     #[test]
     fn sidecar_without_a_category_deserializes() {
         let json = r#"{
@@ -174,8 +174,8 @@ mod tests {
         merge_professor_into_review(&mut review, &prof, hash);
         assert_eq!(review.files["src/lib.rs"].findings[0].id, "prof-1");
         assert_eq!(review.files["src/lib.rs"].findings[0].lens, "professor");
-        // Teaching insights carry no defect kind — the producer name used to
-        // land here, which made `category` mean two different things.
+        // Teaching insights carry no defect kind, and `category` must never
+        // double as the producer name.
         assert_eq!(review.files["src/lib.rs"].findings[0].category, "");
 
         let stale = ProfessorReview {

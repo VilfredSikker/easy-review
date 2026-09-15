@@ -42,9 +42,9 @@ fn latest_severity(f: &ArenaFinding) -> RiskLevel {
 
 fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
     // Which producer raised it. The arena reports no defect kind, so `category`
-    // stays empty rather than absorbing the producer name the way it used to.
-    // `agent_kind` is a task kind (`expert:security`, `professor`, …), not a
-    // lens, so it is normalized rather than copied into the flat vocabulary.
+    // stays empty. `agent_kind` is a task kind (`expert:security`, `professor`,
+    // …), not a lens, so it is normalized rather than copied into the flat
+    // vocabulary.
     let lens = run
         .config
         .agent_kind

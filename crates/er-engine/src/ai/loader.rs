@@ -581,8 +581,8 @@ mod tests {
     fn load_ai_state_keeps_review_with_negative_line_anchor() {
         // Real-world failure: the annotated diff tags deleted lines as
         // `[h<N> L-<old>]` and a model copied the negative number into
-        // `line_start`. The whole review used to fail deserialization and the
-        // Review section showed "No findings written" despite a completed run.
+        // `line_start`. That must not fail deserialization of the whole review,
+        // which showed "No findings written" despite a completed run.
         let dir = tempfile::tempdir().unwrap();
         let er_dir = dir.path().to_str().unwrap();
         let review = serde_json::json!({

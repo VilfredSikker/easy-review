@@ -24,7 +24,7 @@ export interface UnifiedPair {
   partner: LineSnapshot | null;
 }
 
-// ---------------- Legacy per-file model (kept for back-compat; removed in Step H) ----------------
+// ---------------- Legacy per-file model ----------------
 
 export type FlatRow =
   | { type: "hunk-header"; hunkIdx: number; height: number }
@@ -136,7 +136,7 @@ export function getFileRenderModel(file: FileSnapshot): FileRenderModel {
   return model;
 }
 
-// ---------------- Step A: Flat cross-file row block ----------------
+// ---------------- Flat cross-file row block ----------------
 
 /** Data for a Guide pillar group (drives the left rail lane in Split View). */
 export interface PillarHeaderInfo {
@@ -832,7 +832,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   return block;
 }
 
-// ---------------- Step B: Cross-file model ----------------
+// ---------------- Cross-file model ----------------
 
 export interface CrossFileModel {
   identity: string;

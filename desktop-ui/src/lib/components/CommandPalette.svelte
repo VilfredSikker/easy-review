@@ -53,7 +53,7 @@
    *  from, so ← returns to the same active item. */
   let submenuStack = $state<{ item: CommandItem; selectedIdx: number; query: string }[]>([]);
 
-  // ── AI submenu state (mirrors the old ⌘A AI action palette) ──────────────
+  // ── AI submenu state ─────────────────────────────────────────────────────
   let aiProviders = $state<AiProviderInfo[]>([]);
   let reviewerSelection = $state<Set<string>>(new Set());
   let reviewerHighlight = $state(0);
@@ -100,7 +100,7 @@
     if (browser.layout === "fullscreen") void browser.setLayout("hidden");
   }
 
-  // ── AI actions (previously the ⌘A AI action palette, now inline) ─────────
+  // ── AI actions ───────────────────────────────────────────────────────────
   function buildAiItems(): CommandItem[] {
     const mode = snapshot?.mode;
     const reviewScope = reviewScopeFromMode(mode);

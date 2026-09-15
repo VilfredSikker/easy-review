@@ -412,10 +412,10 @@ describe("getFileBlock — thread/finding injection", () => {
   });
 
   it("does not also fallback-render a thread already inline on an earlier hunk", () => {
-    // Backend used to attach the same lined comment to two hunks: the one
-    // containing the new-side line, and a later hunk whose old-side range
-    // happened to include that number. Result: inline on the real line and
-    // again as a fallback at end of file.
+    // A lined comment must attach to one hunk — the one containing the
+    // new-side line, not also a later hunk whose old-side range happens to
+    // include that number. Attaching to both renders it inline on the real
+    // line and again as a fallback at end of file.
     const t = thread("t1", "pipeline.py", 222);
     const h0 = hunk({
       header: "@@ -140,20 +218,20 @@",
@@ -718,7 +718,7 @@ describe("getFileBlock — caching", () => {
   });
 });
 
-// ---------------- Step B: cross-file model tests ----------------
+// ---------------- cross-file model tests ----------------
 
 import { buildAnnotationIndex as _build } from "./diffAnnotations";
 import type { AiSnapshot, FileSnapshot as _FS } from "./types";

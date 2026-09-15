@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Cmd+click usages popover (issue #69) — a fixed-position panel anchored
+   * Cmd+click usages popover — a fixed-position panel anchored
    * near the clicked token, listing every word-boundary usage of the
    * highlighted identifier across the whole diff (collapsed files included),
    * grouped by file.

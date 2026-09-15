@@ -682,10 +682,9 @@ fn needs_remote_query(file: &ProjectsFile, root_path: &str) -> bool {
 ///
 /// A project is a repository, so its row is keyed by the repository root — and
 /// callers hand over arbitrary paths. The folder picker registers whatever was
-/// picked, so choosing a subdirectory used to create a phantom project: `git
-/// remote` resolves from anywhere inside a repo, so a row named after a crate
-/// directory got the real repo's remote and started collecting its PRs and
-/// inbox items under an id no other code could resolve.
+/// picked, and `git remote` resolves from anywhere inside a repo, so a row
+/// named after a crate directory would take the real repo's remote and collect
+/// its PRs and inbox items under an id no other code could resolve.
 fn project_root_for(path: &str) -> Option<String> {
     let root = er_engine::git::get_repo_root_at(path).ok()?;
     Some(root).filter(|r| !r.is_empty())

@@ -86,7 +86,7 @@ describe("visibleCommentThreads", () => {
 
   it("prefers diff hunk threads over ai.threads so the panel matches inline", () => {
     // Symptom: comments visible while scrolling the diff, empty Comments panel.
-    // Inline rows read hunk.threads; the panel used to read only ai.threads.
+    // Inline rows read hunk.threads; the panel must read the same copy.
     const aiStale = [
       thread({ id: "gh-1", kind: "comment", stale: true, resolved: false }),
       thread({ id: "gh-2", kind: "comment", stale: true, resolved: false }),
