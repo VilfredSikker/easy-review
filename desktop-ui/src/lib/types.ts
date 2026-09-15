@@ -176,6 +176,8 @@ export interface FlatFinding {
   expert_label: string | null;
   /** Agent that produced this finding (General, Security, Professor, …). */
   agent_label: string;
+  /** Every lens that raised it; more than one means several experts found it. */
+  raised_by: string[];
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */
@@ -252,6 +254,15 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Findings the arbiter ruled out, or folded into another. Reported so the
+   *  card can say how many it is not showing. */
+  arbiter_dropped: number;
+  arbiter_merged: number;
+  /** Verdicts that matched no finding — the grades exist but no longer describe
+   *  this review, so re-running validation is what fixes it. */
+  arbiter_unmatched: number;
+  /** Findings whose confidence the arbiter regraded. */
+  arbiter_regraded: number;
   /** Per-file risk assessments from review.json (not counted as findings). */
   file_risks: FileRiskSnapshot[];
   /** Whether `{er_dir}/review.json` exists (batch validate target). */

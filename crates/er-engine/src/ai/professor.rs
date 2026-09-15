@@ -77,6 +77,9 @@ pub fn merge_professor_into_review(
         for mut finding in pfr.findings.clone() {
             finding.id = prefix_finding_id(&finding.id);
             finding.lens = PROFESSOR_ID.to_string();
+            if finding.raised_by.is_empty() {
+                finding.raised_by = vec![PROFESSOR_ID.to_string()];
+            }
             entry.findings.push(finding);
         }
     }
@@ -101,6 +104,7 @@ mod tests {
             severity: RiskLevel::Info,
             lens: String::new(),
             category: String::new(),
+            raised_by: Vec::new(),
             title: "State machine".to_string(),
             description: "Explains transition".to_string(),
             hunk_index: Some(0),

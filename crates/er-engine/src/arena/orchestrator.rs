@@ -399,6 +399,196 @@ pub fn start_arena_run(
     Ok(run_id)
 }
 
+/// Where a seeded run reads from and what it covers.
+pub struct SeededStartParams {
+    /// The active view bucket's sidecar directory — expert files in, run out.
+    pub er_dir: String,
+    pub branch_ref: String,
+    pub base_branch: String,
+    pub scope: ArenaScope,
+    pub diff_hash: String,
+    /// The loaded review's hash, so an expert set from the same generation as a
+    /// stale review still counts. Empty when no review is loaded.
+    pub review_hash: String,
+    /// The branch diff, saved so the arbiter can read the hunks its findings
+    /// point at. Empty means it grades on the findings alone.
+    pub raw_diff: String,
+    /// Overrides the hub default arbiter when the caller picked one.
+    pub arbiter: Option<ReviewerRef>,
+}
+
+/// Rule on the deduped expert findings, without running a debate.
+///
+/// The cheap path: triage picks the lenses, the experts run, and this grades
+/// what they produced. Spawned like `start_arena_run` so the run shows up in the
+/// arena list, honours cancellation, and reports through the same progress
+/// events — but the only model call is the arbiter's, however many experts ran.
+///
+/// Returns `None` when there are no expert findings to validate, so a caller
+/// offers the action only when it would do something.
+pub fn start_seeded_run(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    repo_root: String,
+    params: SeededStartParams,
+) -> Result<Option<String>> {
+    let findings = super::seeded::dedupe_expert_findings(
+        &params.er_dir,
+        &params.diff_hash,
+        &params.review_hash,
+    );
+    if findings.is_empty() {
+        return Ok(None);
+    }
+
+    let arbiter = match params.arbiter.clone() {
+        Some(arbiter) => arbiter,
+        None => default_arbiter_from_hub(&config.ai_hub)
+            .context("no arbiter model available in ai_hub")?,
+    };
+
+    let run_id = new_run_id();
+    let paths = ArenaPaths::for_run(Path::new(&params.er_dir), &run_id);
+    let run = super::seeded::build_seeded_run(
+        &config,
+        super::seeded::SeededRunParams {
+            id: run_id.clone(),
+            diff_hash: params.diff_hash.clone(),
+            base_branch: params.base_branch.clone(),
+            branch_ref: params.branch_ref.clone(),
+            scope: params.scope,
+            arbiter,
+        },
+        findings,
+    )?;
+    if !params.raw_diff.trim().is_empty() {
+        save_diff_patch(&paths, &params.raw_diff)?;
+    }
+    save_run(&paths, &run)?;
+
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_handle = Arc::clone(&cancel);
+    let children = Arc::new(Mutex::new(Vec::new()));
+    let children_handle = Arc::clone(&children);
+    let status = Arc::new(Mutex::new(RunStatus::Running { round: 1 }));
+    let status_handle = Arc::clone(&status);
+    let registry_thread = Arc::clone(&registry);
+    let run_id_thread = run_id.clone();
+    let paths_clone = paths.clone();
+    let er_dir = params.er_dir.clone();
+    let diff_hash = params.diff_hash.clone();
+
+    let join = thread::spawn(move || {
+        let ctx = ArbiterCtx {
+            registry: &registry_thread,
+            config: &config,
+            repo_root: &repo_root,
+            paths: &paths_clone,
+            cancel: &cancel,
+            children: &children,
+            status: &status,
+        };
+        let mut run = match load_run(&paths_clone) {
+            Ok(run) => run,
+            Err(e) => {
+                crate::dev_log::arena_line(format!("seeded {run_id_thread}: load failed: {e:#}"));
+                registry_thread.release_run(&run_id_thread);
+                return;
+            }
+        };
+        let effort = run.config.effort.clone();
+        let outcome = run_arbiter(&ctx, &mut run, effort.as_deref());
+        match outcome {
+            Ok(ArbiterOutcome::Cancelled) => {}
+            Ok(ArbiterOutcome::Judged) => {
+                run.status = RunStatus::Complete;
+                run.completed_at = Some(crate::app::chrono_now());
+                *status.lock().unwrap() = RunStatus::Complete;
+                let _ = save_run(&paths_clone, &run);
+                // The review's copy of the verdicts. The run record above is the
+                // arena's; this is the overlay the review loads, so `review.json`
+                // keeps its three writers (ADR 0001).
+                let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
+                if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
+                    crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
+                }
+                emit(
+                    &registry_thread,
+                    &paths_clone,
+                    &ProgressEvent::RunComplete {
+                        run_id: run_id_thread.clone(),
+                    },
+                );
+            }
+            Err(e) => {
+                crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
+                *status.lock().unwrap() = RunStatus::Failed;
+                run.status = RunStatus::Failed;
+                run.completed_at = Some(crate::app::chrono_now());
+                let _ = save_run(&paths_clone, &run);
+            }
+        }
+        registry_thread.release_run(&run_id_thread);
+        registry_thread.notify_progress();
+    });
+
+    registry.insert(
+        run_id.clone(),
+        ArenaRunHandle {
+            cancel: cancel_handle,
+            children: children_handle,
+            status: status_handle,
+            join: Some(join),
+        },
+    );
+    Ok(Some(run_id))
+}
+
+/// The review-facing view of a finished run's verdicts.
+///
+/// Only findings the arbiter actually ruled on become verdicts: a `Pending`
+/// finding was never judged, and writing it as one would claim a grade that
+/// does not exist.
+fn arbiter_review_from_run(
+    run: &ArenaRun,
+    run_id: &str,
+    diff_hash: &str,
+) -> crate::ai::ArbiterReview {
+    let verdicts = run
+        .findings
+        .iter()
+        .filter_map(|f| {
+            let verdict = match &f.verdict {
+                Verdict::Kept => crate::ai::ArbiterRuling::Kept,
+                Verdict::Escalated => crate::ai::ArbiterRuling::Escalated,
+                Verdict::Merged { .. } => crate::ai::ArbiterRuling::Merged,
+                Verdict::Dropped => crate::ai::ArbiterRuling::Dropped,
+                Verdict::Pending => return None,
+            };
+            Some(crate::ai::ArbiterVerdict {
+                id: f.id.clone(),
+                file: f.file.clone(),
+                verdict,
+                confidence: Some(crate::ai::Confidence::from_score(f.confidence)),
+                merged_into: match &f.verdict {
+                    Verdict::Merged { into } => Some(into.clone()),
+                    _ => None,
+                },
+                rationale: f.rationale.clone(),
+                raised_by: f.raised_by.clone(),
+            })
+        })
+        .collect();
+
+    crate::ai::ArbiterReview {
+        version: 1,
+        diff_hash: diff_hash.to_string(),
+        created_at: crate::app::chrono_now(),
+        run_id: run_id.to_string(),
+        verdicts,
+    }
+}
+
 /// Start one arena/single run per agent group (parallel supervisors).
 pub fn start_arena_batch(
     registry: Arc<ArenaRegistry>,
@@ -1040,7 +1230,77 @@ fn run_supervisor(
     }
 
     // Arbiter phase (after all reviewer cross-check rounds)
-    cancelled!();
+    let ctx = ArbiterCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel: &cancel,
+        children: &children,
+        status: &status,
+    };
+    if matches!(
+        run_arbiter(&ctx, &mut run, run_effort.as_deref())?,
+        ArbiterOutcome::Cancelled
+    ) {
+        return Ok(());
+    }
+
+    run.status = RunStatus::Complete;
+    run.completed_at = Some(crate::app::chrono_now());
+    *status.lock().unwrap() = RunStatus::Complete;
+    save_run(paths, &run)?;
+    emit(registry, paths, &ProgressEvent::RunComplete { run_id });
+    Ok(())
+}
+
+/// The supervisor's ambient scope, bundled so the arbiter call can be shared by
+/// the normal path and the seeded one without a ten-argument signature.
+struct ArbiterCtx<'a> {
+    registry: &'a ArenaRegistry,
+    config: &'a ErConfig,
+    repo_root: &'a str,
+    paths: &'a ArenaPaths,
+    cancel: &'a AtomicBool,
+    children: &'a Arc<Mutex<Vec<Child>>>,
+    status: &'a Mutex<RunStatus>,
+}
+
+/// Whether the arbiter pass ruled, or the run was cancelled under it.
+///
+/// Cancellation is an outcome rather than an error: the call site marks the run
+/// cancelled and returns `Ok(())`, and both paths need that.
+enum ArbiterOutcome {
+    Judged,
+    Cancelled,
+}
+
+/// One arbiter call over `run.findings`, applying its verdicts in place.
+///
+/// Shared by the normal path (after every cross-check round) and the seeded path
+/// (straight from the expert dedupe). The caller owns what follows — marking the
+/// run complete, or returning early on cancellation.
+fn run_arbiter(
+    ctx: &ArbiterCtx<'_>,
+    run: &mut ArenaRun,
+    run_effort: Option<&str>,
+) -> Result<ArbiterOutcome> {
+    let ArbiterCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel,
+        children,
+        status,
+    } = *ctx;
+    let round = run.config.rounds;
+    let run_id = run.id.clone();
+
+    if cancel.load(Ordering::SeqCst) || registry.is_cancelled(&run_id) {
+        return cancel_run(ctx, run);
+    }
+
     let arbiter_ref = &run.config.arbiter;
     let arbiter_label = arbiter_display_label(&config.ai_hub, arbiter_ref);
     emit(
@@ -1048,21 +1308,31 @@ fn run_supervisor(
         paths,
         &ProgressEvent::ArbiterStarted { arbiter_label },
     );
-    *status.lock().unwrap() = RunStatus::Running {
-        round: total_rounds,
-    };
-    run.status = RunStatus::Running {
-        round: total_rounds,
-    };
-    save_run(paths, &run)?;
+    *status.lock().unwrap() = RunStatus::Running { round };
+    run.status = RunStatus::Running { round };
+    save_run(paths, run)?;
 
     let summary = json!({ "findings": run.findings });
-    let prompt = build_arena_round3_prompt(&summary.to_string());
+    // The hunks the findings point at, so a drop is a judgement about code
+    // rather than about a claim. Missing patch file degrades to no excerpt
+    // rather than failing the run — the arbiter grades on the findings alone,
+    // as it did before this existed.
+    let anchored = std::fs::read_to_string(paths.diff_patch())
+        .map(|raw| {
+            let targets: Vec<(String, Option<usize>)> = run
+                .findings
+                .iter()
+                .map(|f| (f.file.clone(), f.line))
+                .collect();
+            crate::ai::prepared_diff::hunks_for_findings(&raw, &targets)
+        })
+        .unwrap_or_default();
+    let prompt = build_arena_round3_prompt(&summary.to_string(), &anchored);
     let cmd = resolve_provider_command(
         &config.ai_hub,
         &arbiter_ref.provider_id,
         &arbiter_ref.model_id,
-        run_effort.as_deref(),
+        run_effort,
         Some(paths.root.to_string_lossy().as_ref()),
     )?;
     emit(
@@ -1070,30 +1340,27 @@ fn run_supervisor(
         paths,
         &ProgressEvent::ReviewerThinking {
             reviewer_id: ARBITER_REVIEWER_ID.to_string(),
-            round: total_rounds,
+            round,
         },
     );
-    // The arbiter takes a slot like every other agent. It used to be exempt,
-    // which meant an arena could fork one more provider CLI than the cap
-    // allows -- precisely when the cap was saturated, which is the moment the
-    // exemption mattered.
+    // The arbiter is an agent process like any reviewer, so it waits for a
+    // global slot too. Without this an arena could fork one more provider CLI
+    // than the cap allows, and N seeded runs would start N arbiters at once —
+    // the seeded path has no reviewer loop to hold a slot on its behalf.
     //
     // Reviewers have released theirs by now (their round joined), so this
     // normally does not wait. It can, if another arena run holds the slots.
-    let Some(_arbiter_slot) = crate::agent_slots::acquire(
-        Workload::Arena,
-        config.ai_hub.effective_max_concurrent_arena_reviews(),
-        config.ai_hub.effective_max_concurrent_agents(),
-        &cancel,
-    ) else {
-        bail_cancelled!();
+    let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+    let ceiling = config.ai_hub.effective_max_concurrent_agents();
+    let Some(_arbiter_slot) =
+        crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, cancel)
+    else {
+        return cancel_run(ctx, run);
     };
     let arbiter_started = std::time::Instant::now();
-    let v = match run_provider_json(&cmd, &prompt, repo_root, &cancel, &children) {
+    let v = match run_provider_json(&cmd, &prompt, repo_root, cancel, children) {
         Ok(v) => v,
-        Err(e) if is_cancelled_error(&e) => {
-            bail_cancelled!();
-        }
+        Err(e) if is_cancelled_error(&e) => return cancel_run(ctx, run),
         Err(e) => return Err(e),
     };
     // The arbiter cannot be overlapped: its wall time adds straight onto the
@@ -1132,13 +1399,24 @@ fn run_supervisor(
             },
         );
     }
+    Ok(ArbiterOutcome::Judged)
+}
 
-    run.status = RunStatus::Complete;
+/// Mark the run cancelled and announce it, preserving what `bail_cancelled!`
+/// did at the call site before this was extracted.
+fn cancel_run(ctx: &ArbiterCtx<'_>, run: &mut ArenaRun) -> Result<ArbiterOutcome> {
+    run.status = RunStatus::Cancelled;
     run.completed_at = Some(crate::app::chrono_now());
-    *status.lock().unwrap() = RunStatus::Complete;
-    save_run(paths, &run)?;
-    emit(registry, paths, &ProgressEvent::RunComplete { run_id });
-    Ok(())
+    save_run(ctx.paths, run)?;
+    *ctx.status.lock().unwrap() = RunStatus::Cancelled;
+    emit(
+        ctx.registry,
+        ctx.paths,
+        &ProgressEvent::RunComplete {
+            run_id: run.id.clone(),
+        },
+    );
+    Ok(ArbiterOutcome::Cancelled)
 }
 
 fn mark_reviewer_failed(run: &mut ArenaRun, id: &str, reason: &str) {
@@ -1180,7 +1458,11 @@ fn active_reviewers<'a>(run: &'a ArenaRun, all: &'a [Reviewer]) -> Vec<&'a Revie
         .collect()
 }
 
-fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Reviewer>> {
+/// Build the `Reviewer` records for a set of refs, each marked `Ok`.
+///
+/// Shared with the seeded path, which has no round 1 to run: without these the
+/// survivor count and the process matrix would both read empty.
+pub(super) fn resolve_reviewers(config: &ErConfig, refs: &[ReviewerRef]) -> Result<Vec<Reviewer>> {
     let mut out = Vec::new();
     for (i, rf) in refs.iter().enumerate() {
         let provider = config

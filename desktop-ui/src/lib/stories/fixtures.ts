@@ -245,6 +245,10 @@ export const aiWithFindings: AiSnapshot = {
   summary_markdown:
     "4 findings across 3 files. Two high-risk issues in variant-warning-copy.ts around fallback handling.",
   agent_summaries: {},
+  arbiter_dropped: 0,
+  arbiter_merged: 0,
+  arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   high: 2,
   med: 1,
   low: 1,
@@ -268,6 +272,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
     {
       id: "finding-2",
@@ -281,6 +286,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
     {
       id: "finding-medium-1",
@@ -293,7 +299,9 @@ export const aiWithFindings: AiSnapshot = {
       promoted_to: null,
       thread_id: null,
       expert_label: null,
-      agent_label: "General",
+      agent_label: "Security",
+      // Two lenses independently raised this, so the row says so.
+      raised_by: ["reliability", "security"],
     },
     {
       id: "finding-4",
@@ -307,6 +315,7 @@ export const aiWithFindings: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "General",
+      raised_by: [],
     },
   ],
   file_risks: [],
@@ -341,6 +350,10 @@ export const aiEmpty: AiSnapshot = {
   stale_reason: null,
   summary_markdown: null,
   agent_summaries: {},
+  arbiter_dropped: 0,
+  arbiter_merged: 0,
+  arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   high: 0,
   med: 0,
   low: 0,
@@ -418,6 +431,7 @@ function professorFinding(id: string, file: string, line: number, title: string)
     thread_id: null,
     expert_label: null,
     agent_label: "Professor",
+    raised_by: [],
   };
 }
 
@@ -426,6 +440,10 @@ export const aiProfessorOnly: AiSnapshot = {
   fresh: false,
   stale_reason: "Review was generated for an older diff. Re-run or validate the review.",
   summary_markdown: null,
+  arbiter_dropped: 0,
+  arbiter_merged: 0,
+  arbiter_unmatched: 0,
+  arbiter_regraded: 0,
   agent_summaries: {
     Professor:
       "This branch adds replicate deviation APIs backed by a three-part hash and shared SQL CTEs.\n\nTests isolate pure helpers from DB/HTTP; the metric validation path still lacks 422 coverage.",
@@ -485,6 +503,7 @@ export const aiMultiAgent: AiSnapshot = {
       thread_id: null,
       expert_label: null,
       agent_label: "Security",
+      raised_by: [],
     },
   ],
   high: 3,

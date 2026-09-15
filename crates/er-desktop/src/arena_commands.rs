@@ -247,6 +247,29 @@ pub async fn arena_start(
     .await
 }
 
+/// Validate the current tab's expert findings: dedupe them and rule on the
+/// result with one arbiter call.
+///
+/// Returns the run id, or `None` when there are no expert findings to validate
+/// — the UI offers the action only when it would do something. Wrapped in
+/// `run_blocking` because it takes the `App` lock and shells out to git on the
+/// main thread otherwise.
+#[tauri::command]
+pub async fn arena_validate_findings(state: State<'_, AppState>) -> Result<Option<String>, String> {
+    let app = state.app.clone();
+    let revision = state.desktop_revision.clone();
+    crate::commands::run_blocking(move || {
+        let run_id = {
+            let mut app = app.lock().map_err(|e| e.to_string())?;
+            app.arena_start_seeded().map_err(|e| e.to_string())?
+        };
+        crate::dev_log::arena_line(format!("arena_validate_findings: {run_id:?}"));
+        revision.fetch_add(1, Ordering::Relaxed);
+        Ok(run_id)
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn arena_start_batch(
     req: ArenaBatchStartRequest,

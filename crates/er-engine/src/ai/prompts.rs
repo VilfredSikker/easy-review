@@ -1751,13 +1751,31 @@ Respond ONLY with JSON:
     )
 }
 
-pub fn build_arena_round3_prompt(findings_summary_json: &str) -> String {
+/// The arbiter's prompt.
+///
+/// `anchored_diff` is the excerpt covering the hunks the findings point at
+/// (`ai::prepared_diff::hunks_for_findings`). It is what lets the arbiter drop a
+/// finding for being wrong rather than only for being unproven — judging that
+/// needs the code, not just the claim. Empty when the diff could not be read,
+/// in which case the section is omitted and the arbiter grades on the findings
+/// alone, as it did before.
+pub fn build_arena_round3_prompt(findings_summary_json: &str, anchored_diff: &str) -> String {
+    let code_section = if anchored_diff.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe hunks the findings anchor to:\n\n```diff\n{anchored_diff}\n```\n\n\
+             Judge each claim against this code. Drop a finding only when the code \
+             contradicts it; when the excerpt does not settle the question, grade the \
+             confidence down rather than dropping.\n"
+        )
+    };
     format!(
         r#"You are the arena arbiter. Consolidate final verdicts.
 
 Input (findings + round-2 votes):
 {findings_summary_json}
-
+{code_section}
 For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 0..1, rationale (1-3 sentences citing reviewers), merged_into when verdict is merged.
 
 Respond ONLY with JSON:

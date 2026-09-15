@@ -1087,6 +1087,11 @@ pub struct FlatFinding {
     pub expert_label: Option<String>,
     /// Agent that produced this finding (pill label): General, Security, Professor, …
     pub agent_label: String,
+    /// Every lens that raised this claim, not just the one it is filed under.
+    /// More than one means several experts independently found it, which is what
+    /// merging them into a single row was for.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -1126,6 +1131,20 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Findings the arbiter ruled out, so the card can say how many it is not
+    /// showing instead of the list just being shorter.
+    #[serde(default)]
+    pub arbiter_dropped: usize,
+    /// Findings the arbiter folded into another.
+    #[serde(default)]
+    pub arbiter_merged: usize,
+    /// Verdicts that matched no finding — the grades exist but no longer
+    /// describe this review.
+    #[serde(default)]
+    pub arbiter_unmatched: usize,
+    /// Findings whose confidence the arbiter regraded.
+    #[serde(default)]
+    pub arbiter_regraded: usize,
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
@@ -2673,6 +2692,10 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        arbiter_dropped: 0,
+        arbiter_merged: 0,
+        arbiter_unmatched: 0,
+        arbiter_regraded: 0,
         file_risks: Vec::new(),
         has_review_json: false,
         eligible_comment_count: 0,
@@ -4008,6 +4031,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         expert_label: er_engine::ai::expert_label_for_id(&f.lens)
                             .map(|s| s.to_string()),
                         agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
+                        raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
                         title: f.title.clone(),
                         message_markdown: f.description.clone(),
                         promoted_to: promotions
@@ -4093,6 +4117,10 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        arbiter_dropped: ai.arbiter_effect.dropped,
+        arbiter_merged: ai.arbiter_effect.merged,
+        arbiter_unmatched: ai.arbiter_effect.unmatched,
+        arbiter_regraded: ai.arbiter_effect.regraded,
         file_risks,
         has_review_json,
         eligible_comment_count,

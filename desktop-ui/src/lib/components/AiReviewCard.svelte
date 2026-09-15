@@ -340,6 +340,29 @@
         <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
+      {#if ai.arbiter_unmatched > 0}
+        <!-- The arbiter's grades exist but no longer describe this review, so
+             nothing was applied. Saying so beats a card that looks unchanged. -->
+        <p class="mb-1.5 text-[10px] text-risk-med">
+          {ai.arbiter_unmatched} arbiter verdict{ai.arbiter_unmatched === 1 ? "" : "s"} no longer
+          apply — re-run validation
+        </p>
+      {/if}
+
+      {#if ai.arbiter_dropped > 0 || ai.arbiter_merged > 0 || ai.arbiter_regraded > 0}
+        <!-- A list that is quietly shorter is how people stop trusting it, so
+             the arbiter's rulings are counted rather than silently omitted. -->
+        <p class="mb-1.5 text-[10px] text-fg-3">
+          {[
+            ai.arbiter_dropped > 0 ? `${ai.arbiter_dropped} dropped` : "",
+            ai.arbiter_merged > 0 ? `${ai.arbiter_merged} merged` : "",
+            ai.arbiter_regraded > 0 ? `${ai.arbiter_regraded} regraded` : "",
+          ]
+            .filter(Boolean)
+            .join(", ")} by arbiter
+        </p>
+      {/if}
+
       <div class="findings-list space-y-1.5">
       {#each filtered as finding (finding.id)}
         {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
@@ -359,6 +382,14 @@
                       class="px-1 py-0 rounded-full text-[9px] font-medium border shrink-0"
                       style={agentPillStyle(label)}
                     >{label}</span>
+                  {/if}
+                  {#if finding.raised_by.length > 1}
+                    <!-- Several experts independently found this, which is why
+                         they are one row — say so rather than showing only the
+                         lens it happens to be filed under. -->
+                    <span class="text-[9px] text-fg-3 shrink-0"
+                      >raised by {finding.raised_by.join(", ")}</span
+                    >
                   {/if}
                 </div>
                 <div class="text-[13px] text-fg-2 leading-snug">{finding.title}</div>
@@ -393,6 +424,23 @@
   {/if}
 
   <div class="mt-2 flex flex-col gap-1">
+    <!-- The cheap path: triage picks the lenses, the experts run, and this makes
+         one arbiter pass over what they produced — merging duplicates and
+         regrading confidence. -->
+    <button
+      type="button"
+      onclick={() => arena.validateFindings()}
+      disabled={!(ai.has_review_json || Object.keys(ai.agent_summaries).length > 0)}
+      class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
+      title={Object.keys(ai.agent_summaries).length > 0
+        ? "Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
+        : "Run the expert reviewers first — this validates what they produced"}
+    >
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
+        <path d="M20 6L9 17l-5-5"/>
+      </svg>
+      <span class="whitespace-nowrap">Validate findings</span>
+    </button>
     <button
       type="button"
       onclick={copyFindingsJson}

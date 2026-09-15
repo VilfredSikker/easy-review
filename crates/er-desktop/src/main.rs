@@ -1969,6 +1969,7 @@ fn main() {
             commands::list_ai_providers,
             arena_commands::arena_estimate,
             arena_commands::arena_start,
+            arena_commands::arena_validate_findings,
             arena_commands::arena_start_batch,
             arena_commands::arena_estimate_batch,
             arena_commands::arena_accept_findings,

@@ -332,6 +332,9 @@ pub fn backfill_finding_lenses(review: &mut ErReview) {
                 None => GENERAL_LENS,
             }
             .to_string();
+            if finding.raised_by.is_empty() {
+                finding.raised_by = vec![finding.lens.clone()];
+            }
         }
     }
 }
@@ -377,6 +380,11 @@ pub fn merge_experts_into_review(
             for mut finding in efr.findings.clone() {
                 finding.id = prefix_finding_id(def.id_prefix, &finding.id);
                 finding.lens = def.id.to_string();
+                // A sidecar's own findings come from this one expert, so it is
+                // the whole raiser set until something merges several.
+                if finding.raised_by.is_empty() {
+                    finding.raised_by = vec![def.id.to_string()];
+                }
                 entry.findings.push(finding);
             }
         }
@@ -430,6 +438,7 @@ mod tests {
             severity: RiskLevel::Medium,
             lens: String::new(),
             category: "correctness".to_string(),
+            raised_by: Vec::new(),
             title: "Test".to_string(),
             description: String::new(),
             hunk_index: Some(0),

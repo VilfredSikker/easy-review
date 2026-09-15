@@ -36,13 +36,20 @@ Nothing but the arbiter writes that file, and the arbiter writes nothing else.
 
 Findings are content-addressed for the purpose of matching. `arena/identity.rs`
 already provides `finding_id` as `sha1(file + nearest_function + canonical_text)`,
-stable across runs and tested for it; `Finding` carries no `nearest_function`, so the
-variant used here is `sha1(file + canonical(title))` over the existing
-`canonical_finding_text` normaliser.
+stable across runs and tested for it; a `Finding` carries no `nearest_function`, so
+the variant used here is `finding_key` — `sha1(file + line + canonical(title))` over
+the existing `canonical_finding_text` normaliser.
 
-A finding whose claim is unchanged keeps its id and therefore its verdict. A finding
-whose claim changed gets a new id, and its old verdict is orphaned rather than
-misapplied.
+The anchor line is in the key because two *different* issues can share a title in one
+file, and the key has to be unique per row: with title alone they collide and one is
+silently merged into the other. The cost is the mirror image — an edit above a finding
+moves its line, changes its key, and orphans its verdict. That is the safer direction:
+the finding reads as ungraded until the next arbiter pass, rather than carrying a grade
+the arbiter gave to a different claim.
+
+A finding whose claim and anchor are unchanged keeps its key and therefore its verdict.
+A finding whose claim changed, or whose anchor moved, gets a new key, and its old
+verdict is orphaned rather than misapplied.
 
 ## Consequences
 
@@ -55,9 +62,10 @@ finding knows whether its lines moved.
 **Costs.** Two sidecars must be read and merged where one file would have sufficed,
 and every consumer of findings must go through the overlay rather than reading
 `review.json` directly — a consumer that forgets will silently show ungraded
-findings. Content-addressing also means an expert rewording an identical issue
-produces a new id and loses its verdict; `canonical_finding_text` normalises
-whitespace and case, but not paraphrase.
+findings. Content-addressing also means an expert rewording an identical issue, or
+anchoring it a line away, produces a new key and loses its verdict;
+`canonical_finding_text` normalises whitespace and case, but not paraphrase, and the
+line component makes the key sensitive to any edit above the finding.
 
 **Rejected: rewriting `experts/<id>.json` in place with verdicts.** It destroys the
 original expert claim, which is exactly what you need to keep for the case where the

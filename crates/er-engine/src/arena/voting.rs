@@ -110,16 +110,44 @@ pub fn apply_round3_verdicts(
     output: &super::schema::Round3Output,
     auto_accept: f32,
 ) {
+    // Raisers a merged-away finding contributes to its survivor. Collected
+    // first: the survivor is found by id, and every finding already raised
+    // before the merge keeps its own attribution.
+    let mut inherited: Vec<(String, Vec<String>)> = Vec::new();
+
     for v in &output.verdicts {
         let Some(f) = findings.iter_mut().find(|x| x.id == v.finding_id) else {
             continue;
         };
-        f.verdict = parse_verdict(&v.verdict, v.merged_into.as_deref());
+        let verdict = parse_verdict(&v.verdict, v.merged_into.as_deref());
+        // A merge folds one claim into another, so the survivor answers for
+        // every producer that raised either — CONTEXT.md's "a finding merged
+        // from several producers carries all of them". Without this the
+        // survivor under-reports, and the merged finding is the one that
+        // disappears.
+        if let Verdict::Merged { into } = &verdict {
+            if !f.raised_by.is_empty() {
+                inherited.push((into.clone(), f.raised_by.clone()));
+            }
+        }
+        f.verdict = verdict;
         f.confidence = v.confidence;
         f.rationale = v.rationale.clone();
         if f.confidence >= auto_accept && matches!(f.verdict, Verdict::Pending) {
             f.verdict = Verdict::Kept;
         }
+    }
+
+    for (into, raisers) in inherited {
+        let Some(survivor) = findings.iter_mut().find(|x| x.id == into) else {
+            continue;
+        };
+        for raiser in raisers {
+            if !survivor.raised_by.contains(&raiser) {
+                survivor.raised_by.push(raiser);
+            }
+        }
+        survivor.raised_by.sort();
     }
 }
 
@@ -176,6 +204,64 @@ fn parse_verdict(s: &str, merged_into: Option<&str>) -> Verdict {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A merge folds one claim into another, and CONTEXT.md says the result
+    /// carries every producer. The merged finding is the one that disappears, so
+    /// without this the survivor under-reports exactly the case merging is for.
+    #[test]
+    fn a_merged_verdict_moves_its_raisers_onto_the_survivor() {
+        use super::super::model::ArenaFinding;
+        use super::super::schema::{Round3Output, Round3Verdict};
+
+        let finding = |id: &str, raisers: Vec<&str>| ArenaFinding {
+            id: id.into(),
+            file: "f.rs".into(),
+            line: None,
+            title: "t".into(),
+            body: "b".into(),
+            severity_by_round: BTreeMap::from([(1, RiskLevel::High)]),
+            raised_by: raisers.into_iter().map(String::from).collect(),
+            verdict: Verdict::Pending,
+            confidence: 0.0,
+            rationale: String::new(),
+            rounds: vec![],
+            merge_candidates: vec![],
+            merged_children: vec![],
+            evidence: vec![],
+            override_: None,
+            accepted_at: None,
+        };
+        let mut findings = vec![
+            finding("keep", vec!["security"]),
+            finding("gone", vec!["reliability", "testing"]),
+        ];
+        let out = Round3Output {
+            verdicts: vec![
+                Round3Verdict {
+                    finding_id: "keep".into(),
+                    verdict: "kept".into(),
+                    confidence: 0.9,
+                    rationale: "real".into(),
+                    merged_into: None,
+                },
+                Round3Verdict {
+                    finding_id: "gone".into(),
+                    verdict: "merged".into(),
+                    confidence: 0.9,
+                    rationale: "same issue".into(),
+                    merged_into: Some("keep".into()),
+                },
+            ],
+        };
+
+        apply_round3_verdicts(&mut findings, &out, 0.75);
+
+        assert_eq!(
+            findings[0].raised_by,
+            vec!["reliability", "security", "testing"],
+            "the survivor answers for every producer of either claim"
+        );
+    }
 
     #[test]
     fn tie_breaks_toward_higher_severity() {
