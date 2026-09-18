@@ -6,6 +6,16 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+/// Whether a completed agent run writes its full transcript to
+/// `debug-agent.log`.
+///
+/// Off by default. The write formatted the whole of stdout and stderr into a
+/// third copy of strings the reader threads already held, on every run, to
+/// produce a file nothing reads unless someone is debugging a spawn.
+fn debug_agent_log_enabled() -> bool {
+    std::env::var("ER_DEBUG").is_ok()
+}
+
 fn mint_comment_id(prefix: &str) -> String {
     let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!(
@@ -1459,10 +1469,10 @@ impl App {
 
     /// Keep the in-memory questions in step with a sidecar we just rewrote.
     ///
-    /// Thread mutations used to call `reload_ai_state()`, which re-reads every
-    /// sidecar (review.json, experts, tour, …) to learn about a change this
-    /// process just made. Adopting the written list instead is what already
-    /// keeps `submit_github_comment` fast; delete/edit/resolve follow suit.
+    /// Adopting the written list avoids `reload_ai_state()`, which re-reads
+    /// every sidecar (review.json, experts, tour, …) to learn about a change
+    /// this process just made. That is what keeps `submit_github_comment` fast;
+    /// delete/edit/resolve follow the same path.
     fn adopt_questions(&mut self, qs: ai::ErQuestions, path: &str) {
         let tab = self.tab_mut();
         tab.ai.questions = Some(qs);
@@ -1667,39 +1677,62 @@ impl App {
         }
     }
 
-    /// Toggle the checklist item at cursor and persist to .er/checklist.json
+    /// Toggle the checklist item under the review cursor.
+    ///
+    /// The focus guard and the cursor are TUI navigation state, so they stay
+    /// here; the write itself is addressed by index, which is what the desktop
+    /// can send.
     pub fn review_toggle_checklist(&mut self) -> Result<()> {
-        let tab = self.tab_mut();
-        if tab.review_focus != ReviewFocus::Checklist {
+        if self.tab().review_focus != ReviewFocus::Checklist {
             return Ok(());
         }
+        let cursor = self.tab().review_cursor;
 
-        let cursor = tab.review_cursor;
-        tab.ai.toggle_checklist_item(cursor);
+        match self.toggle_checklist_item_at(cursor)? {
+            Some(true) => self.notify("✓ Item checked"),
+            Some(false) => self.notify("○ Item unchecked"),
+            None => {}
+        }
+        Ok(())
+    }
 
-        // Persist atomically via temp file + rename
-        if let Some(ref checklist) = tab.ai.checklist {
+    /// Toggle the checklist item at `index`, persist it, and report its new
+    /// state. `None` means the index names no item, so nothing was written or
+    /// toggled — the checklist may not exist yet, or the generator may have
+    /// rewritten it since the caller last read it.
+    ///
+    /// Addressed by index rather than by cursor or focus: the checklist is one
+    /// JSON document per view bucket, and a write path only one front end used
+    /// would let the two disagree on disk.
+    pub fn toggle_checklist_item_at(&mut self, index: usize) -> Result<Option<bool>> {
+        let tab = self.tab_mut();
+        if tab
+            .ai
+            .checklist
+            .as_ref()
+            .is_none_or(|c| c.items.get(index).is_none())
+        {
+            return Ok(None);
+        }
+        tab.ai.toggle_checklist_item(index);
+
+        // Persist atomically via temp file + rename, so a reader never sees a
+        // half-written document.
+        if let Some(checklist) = tab.ai.checklist.as_ref() {
             let checklist_path = format!("{}/checklist.json", tab.er_dir());
             let tmp_path = format!("{}.tmp", checklist_path);
             let json = serde_json::to_string_pretty(checklist)?;
             std::fs::write(&tmp_path, json)?;
             std::fs::rename(&tmp_path, &checklist_path)?;
+            tab.mark_sidecar_written(&checklist_path);
         }
 
-        let checked = tab
+        Ok(tab
             .ai
             .checklist
             .as_ref()
-            .and_then(|c| c.items.get(cursor))
-            .map(|i| i.checked)
-            .unwrap_or(false);
-
-        if checked {
-            self.notify("✓ Item checked");
-        } else {
-            self.notify("○ Item unchecked");
-        }
-        Ok(())
+            .and_then(|c| c.items.get(index))
+            .map(|i| i.checked))
     }
 
     // ── Clipboard ──
@@ -1887,9 +1920,9 @@ impl App {
         }
 
         // AI finding if present
-        let findings = tab
-            .ai
-            .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len());
+        let findings =
+            tab.ai
+                .findings_for_hunk(&file.path, tab.current_hunk, file.hunks.len(), &tab.layers);
         if let Some(finding) = findings.first() {
             text.push_str(&format!(
                 "\nFinding: [{:?}] {}\n",
@@ -1949,16 +1982,34 @@ impl App {
     // ── Notifications ──
 
     pub fn notify(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 20; // ~2s
+        self.set_notification(msg, false);
     }
 
-    /// Like notify but persists for ~5 seconds — for important results.
+    /// Like [`Self::notify`], flagged so a UI can leave it up longer.
     pub fn notify_long(&mut self, msg: &str) {
-        self.watch_message = Some(msg.to_string());
-        self.watch_message_ticks = 0;
-        self.watch_message_max_ticks = 50; // ~5s
+        self.set_notification(msg, true);
+    }
+
+    /// Store `msg` as the current notification, stamping it with a fresh seq.
+    ///
+    /// `seq` comes from a process-wide counter rather than from what's already
+    /// stored, so a repeat of the same text still counts as a new message and
+    /// clearing the field does not rewind the numbering.
+    fn set_notification(&mut self, msg: &str, long: bool) {
+        self.notification = Some(Notification {
+            message: msg.to_string(),
+            seq: NOTIFICATION_SEQ.fetch_add(1, Ordering::Relaxed) + 1,
+            long,
+        });
+    }
+
+    /// Drop the current message.
+    ///
+    /// The TUI calls this when its dwell timer expires. The desktop never does:
+    /// its snapshots only arrive when the revision counter moves, so it dedupes
+    /// on [`Notification::seq`] and lets the message sit in the snapshot.
+    pub fn clear_notification(&mut self) {
+        self.notification = None;
     }
 
     // ── Background Commands ──
@@ -2062,30 +2113,56 @@ impl App {
         std::fs::create_dir_all(&er_dir)?;
 
         let push_to_pr = name == "summary" && self.config.summary.push_to_pr;
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                let mut child = std::process::Command::new("sh")
+                // Sixth spawn path: a configured shell command. The summary
+                // agent runs through here. It waits for a slot like every
+                // other path -- a cap that covers some spawn sites is not a
+                // cap, and this one launches provider CLIs just like the rest.
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
+                    return Err(crate::agent_run::cancelled());
+                };
+                timer.mark_slot_acquired();
+                let mut cmd_builder = std::process::Command::new("sh");
+                cmd_builder
                     .args(["-c", &cmd])
                     .current_dir(&repo_root)
                     .stdout(std::process::Stdio::piped())
-                    .stderr(std::process::Stdio::piped())
-                    .spawn()
+                    .stderr(std::process::Stdio::piped());
+                let mut child = run
+                    .spawn(&mut cmd_builder)
                     .with_context(|| format!("Failed to run {}", name_owned))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx.clone();
                 let cmd_name_out = name_owned.clone();
@@ -2124,11 +2201,24 @@ impl App {
                     stderr_lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for {}", name_owned))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for {}", name_owned))?;
                 let _ = stdout_handle.join();
                 let accumulated_stderr = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
+
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
 
                 if !status.success() {
                     let stderr_text = accumulated_stderr.join("\n");
@@ -2147,13 +2237,16 @@ impl App {
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit("shell_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
     }
@@ -2161,11 +2254,24 @@ impl App {
     /// Drain all pending agent log entries from the channel into `agent_log`.
     /// Called each tick. Auto-scrolls the AgentLog panel when new entries arrive.
     pub fn drain_agent_log(&mut self) {
+        /// Most entries one tab may take in a single tick.
+        ///
+        /// A chatty agent can out-produce the loop, and draining without a
+        /// bound means one tick does unbounded work — the frame stretches, the
+        /// backlog grows, and the next tick is worse. Whatever is left stays in
+        /// the channel for the next tick.
+        const MAX_PER_TICK: usize = 500;
+
         for (i, tab) in self.tabs.iter_mut().enumerate() {
             let mut received = false;
-            while let Ok(entry) = tab.log_rx.try_recv() {
+            let mut taken = 0usize;
+            while taken < MAX_PER_TICK {
+                let Ok(entry) = tab.log_rx.try_recv() else {
+                    break;
+                };
                 tab.agent_log.push_back(entry);
                 received = true;
+                taken += 1;
                 if tab.agent_log.len() > 5000 {
                     tab.agent_log.pop_front();
                 }
@@ -2208,7 +2314,7 @@ impl App {
                             tab.command_status.insert(name.clone(), CommandStatus::Done);
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} completed", name),
                             });
@@ -2226,7 +2332,7 @@ impl App {
                                 .insert(name.clone(), CommandStatus::Failed(msg.clone()));
                             let _ = tab.log_tx.send(AgentLogEntry {
                                 timestamp: std::time::Instant::now(),
-                                command_name: name.clone(),
+                                command_name: std::sync::Arc::from(name.as_str()),
                                 source: AgentLogSource::Status,
                                 text: format!("{} failed: {}", name, msg),
                             });
@@ -2370,21 +2476,41 @@ impl App {
         // Ensure .er/ directory exists
         std::fs::create_dir_all(&er_dir_path)?;
 
-        let name_owned = name.to_string();
+        let name_owned: std::sync::Arc<str> = std::sync::Arc::from(name);
         let prompt_owned = prompt.to_string();
 
         // Send status log entry before spawning
         let _ = self.tab().log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source: AgentLogSource::Status,
             text: format!("{} started", name),
         });
 
         let log_tx = self.tab().log_tx.clone();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_tab = std::sync::Arc::clone(&run);
+        let run_name = name.to_string();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
+                // Waits for a slot like the background path. Admitting this
+                // immediately would make `queue_ms` read ~0 even with the cap
+                // saturated -- a measurement of the absent gate rather than of
+                // a queue.
+                let Some(_slot) = crate::agent_slots::acquire(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                    run.cancel_flag(),
+                ) else {
+                    return Err(crate::agent_run::cancelled());
+                };
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir_path).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -2467,12 +2593,16 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run {} ({})", name_owned, agent_cmd))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 // Accumulate stdout for debug log while also streaming to agent log.
                 // When output is stream-json (default for claude), parse events into
@@ -2527,53 +2657,63 @@ impl App {
                     lines
                 });
 
-                let status = child.wait().with_context(|| {
+                let child = run.take_child(child_id).with_context(|| {
+                    format!("Lost the handle for {} ({})", name_owned, agent_cmd)
+                })?;
+                let status = run.wait_for(child).with_context(|| {
                     format!("Failed to wait for {} ({})", name_owned, agent_cmd)
                 })?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
-                // Write debug log with accumulated stdout + stderr
-                let debug_content = format!(
-                    "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    name_owned,
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                // Timeout before cancel: a run killed by its deadline has both
+                // flags set, and "you stopped this" would be the wrong story.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
+
+                // Full transcript with accumulated stdout + stderr, opt-in.
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== {} agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        name_owned,
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
-                    anyhow::bail!(
-                        "{} failed (see {}/debug-agent.log)",
-                        name_owned,
-                        er_dir_path
-                    );
+                    // Only point at the transcript when there is one to read.
+                    let detail = if debug_agent_log_enabled() {
+                        format!(" (full transcript in {er_dir_path}/debug-agent.log)")
+                    } else {
+                        " (set ER_DEBUG=1 for the full transcript)".to_string()
+                    };
+                    anyhow::bail!("{} failed{detail}", name_owned);
                 }
 
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = tx.send(result);
+            timer.emit("tab_command", &name_owned, ok);
         });
 
         self.tab_mut().command_rx.insert(name.to_string(), rx);
         self.tab_mut()
             .command_status
             .insert(name.to_string(), CommandStatus::Running);
+        self.tab_mut().command_runs.insert(run_name, run_for_tab);
         self.notify(&format!("{} started...", name));
         Ok(())
-    }
-
-    pub fn tick(&mut self) {
-        if self.watch_message.is_some() {
-            self.watch_message_ticks += 1;
-            if self.watch_message_ticks > self.watch_message_max_ticks {
-                self.watch_message = None;
-                self.watch_message_ticks = 0;
-            }
-        }
     }
 
     /// Spawn an app-level background general review (`kind` = `review`).
@@ -2627,6 +2767,56 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
+        )
+    }
+
+    /// Spawn the agent that proposes this repo's importance rules
+    /// (`kind` = `importance`).
+    ///
+    /// The prompt carries the repo, not a diff, and the agent has no write path:
+    /// it prints a rule table, and the worker validates and merges that into the
+    /// global config (`ImportanceProposal::merge_into_global_config`). A table
+    /// nobody can read back before it lands is worse than no table.
+    pub fn spawn_background_importance(&mut self) -> Result<()> {
+        let scope = "branch".to_string();
+        let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
+            let tab = self.tab();
+            (
+                tab.repo_root.clone(),
+                tab.local_branch_view
+                    .clone()
+                    .unwrap_or_else(|| tab.current_branch.clone()),
+                tab.base_branch.clone(),
+                tab.er_dir(),
+                tab.pr_number,
+                tab.remote_repo.clone(),
+                tab.remote_repo.is_some(),
+            )
+        };
+        if repo_root.is_empty() {
+            anyhow::bail!("Open a repository first — there is nothing to rank");
+        }
+
+        let repo = crate::storage::slug_repo(&repo_root);
+        let prompt = crate::ai::prompts::build_importance_prompt(&repo, &repo_root);
+        let target = super::background::BackgroundTaskTarget {
+            repo_root,
+            er_dir,
+            branch_label,
+            base_branch,
+            scope,
+            pr_number,
+            remote_repo,
+            managed_local: !is_remote,
+        };
+
+        self.spawn_background_agent_task(
+            crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+            "importance",
+            target,
+            prompt,
+            false,
             None,
         )
     }
@@ -2840,6 +3030,11 @@ impl App {
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
+        // Captured before the task moves into its handle: the worker recognises
+        // its own kind to know whose reply it is parsing, and which repo that
+        // reply's table belongs to.
+        let task_kind = task.kind.clone();
+        let repo_for_worker = crate::storage::slug_repo(&target.repo_root);
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();
@@ -2984,22 +3179,36 @@ impl App {
 
         let _ = log_tx.send(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: command_name.to_string(),
+            command_name: std::sync::Arc::from(command_name),
             source: AgentLogSource::Status,
             text: format!("{command_name} started ({})", target.display_label()),
         });
 
         let log_tx_thread = log_tx;
-        let command_name_stdout = command_name.to_string();
-        let command_name_stderr = command_name.to_string();
-        let command_name_fail = command_name.to_string();
+        let command_name_stdout: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_stderr: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_fail: std::sync::Arc<str> = std::sync::Arc::from(command_name);
+        let command_name_emit: std::sync::Arc<str> = std::sync::Arc::from(command_name);
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
+        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        // The worker owns one clone; the App keeps the other so a stop control
+        // can reach the process. Built here, outside the thread, so the handle
+        // exists before anything can try to stop it.
+        let run = crate::agent_run::AgentRunHandle::new();
+        let run_for_task = std::sync::Arc::clone(&run);
         std::thread::spawn(move || {
+            let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // Hard process-wide cap shared with arena reviewers. The
                 // App-level queue already bounds how many of these workers
                 // exist, so this only waits while arena rounds hold slots.
-                let _slot = crate::agent_slots::acquire_blocking(slot_cap);
+                let _slot = crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    slot_cap,
+                    ceiling,
+                );
+                timer.mark_slot_acquired();
                 let debug_path = std::path::Path::new(&er_dir).join("debug-agent.log");
 
                 let mut agent_args: Vec<String> = config_args
@@ -3097,12 +3306,18 @@ impl App {
                 if let Some((key, value)) = &opencode_env {
                     cmd.env(key, value);
                 }
-                let mut child = cmd
-                    .spawn()
+                let mut child = run
+                    .spawn(&mut cmd)
                     .with_context(|| format!("Failed to run review ({})", agent_cmd))?;
+                let child_id = child.id();
+                timer.mark_spawned();
 
                 let stdout = child.stdout.take();
                 let stderr = child.stderr.take();
+                // Hand ownership over only once the pipes are off it, so a
+                // timeout firing here still reaches the process.
+                run.register(child);
+                run.arm_timeout(agent_timeout);
 
                 let log_tx_out = log_tx_thread.clone();
                 let stdout_handle = std::thread::spawn(move || -> Vec<String> {
@@ -3149,21 +3364,38 @@ impl App {
                     lines
                 });
 
-                let status = child
-                    .wait()
+                let child = run
+                    .take_child(child_id)
+                    .with_context(|| format!("Lost the handle for review ({agent_cmd})"))?;
+                let status = run
+                    .wait_for(child)
                     .with_context(|| format!("Failed to wait for review ({})", agent_cmd))?;
                 let stdout_lines = stdout_handle.join().unwrap_or_default();
                 let stderr_lines = stderr_handle.join().unwrap_or_default();
+                timer.mark_finished();
 
-                let debug_content = format!(
-                    "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
-                    agent_cmd,
-                    agent_args.join(" "),
-                    status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
-                    stdout_lines.join("\n"),
-                    stderr_lines.join("\n"),
-                );
-                let _ = std::fs::write(&debug_path, &debug_content);
+                // The verdict, read once the child is reaped and the pipes are
+                // drained. Timeout first: a run killed by its deadline also
+                // has `cancel` set, and "you stopped this" would be the wrong
+                // story to tell about it.
+                if run.is_timed_out() {
+                    return Err(crate::agent_run::timed_out(agent_timeout));
+                }
+                if run.is_cancelled() {
+                    return Err(crate::agent_run::cancelled());
+                }
+
+                if debug_agent_log_enabled() {
+                    let debug_content = format!(
+                        "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
+                        agent_cmd,
+                        agent_args.join(" "),
+                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        stdout_lines.join("\n"),
+                        stderr_lines.join("\n"),
+                    );
+                    let _ = std::fs::write(&debug_path, &debug_content);
+                }
 
                 if !status.success() {
                     let stderr_snip = {
@@ -3205,6 +3437,25 @@ impl App {
                     }
                     anyhow::bail!("{command_name_fail} failed: {stderr_snip}");
                 }
+                // Host-owned importance write: the agent printed a rule table
+                // and had no Write/Edit. Validate it and merge it into the
+                // global config, replacing only this repo's table.
+                if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+                    let reply = stdout_lines.join("\n");
+                    let proposal = crate::config::ImportanceProposal::from_reply(&reply)
+                        .ok_or_else(|| {
+                            anyhow::anyhow!(
+                                "{command_name_fail}: the agent printed no importance table"
+                            )
+                        })?;
+                    crate::config::ImportanceProposal::merge_into_global_config(
+                        &repo_for_worker,
+                        proposal,
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail}: failed to merge the importance table")
+                    })?;
+                }
                 // Host-owned diagram write: agent had no Write/Edit; persist
                 // only the validated diagrams/<id>.json from stdout.
                 if let Some(hw) = &host_write_diagram {
@@ -3232,13 +3483,16 @@ impl App {
                 }
                 Ok(())
             })();
+            let ok = result.is_ok();
             let _ = result_tx.send(result);
+            timer.emit("background", &command_name_emit, ok);
         });
 
         self.background_tasks.insert(
             task_id.clone(),
             BackgroundTaskHandle {
                 task,
+                run: run_for_task,
                 result_rx,
                 log_rx,
                 recent_log: std::collections::VecDeque::new(),
@@ -3347,9 +3601,10 @@ impl App {
             handle.task.status = status.clone();
             handle.task.finished_at_ms = Some(now);
             handle.task.error = error.clone();
+            let wrote_importance = handle.task.kind == crate::ai::prompts::IMPORTANCE_TASK_KIND;
 
             // Force reload only on matching tabs. No `last_ai_check = None`
-            // reset here (O5): the agent's freshly written sidecars have
+            // reset here: the agent's freshly written sidecars have
             // newer mtimes than the previous check, so `check_ai_files_changed`
             // fires the reload naturally — while a tab whose poll already
             // loaded the final files skips the redundant full re-read.
@@ -3362,13 +3617,30 @@ impl App {
             if let Some(handle) = self.background_tasks.get_mut(&id) {
                 handle.recent_log.push_back(AgentLogEntry {
                     timestamp: std::time::Instant::now(),
-                    command_name: "review".to_string(),
+                    command_name: std::sync::Arc::from("review"),
                     source: AgentLogSource::Status,
                     text: status_msg.clone(),
                 });
                 if handle.recent_log.len() > 500 {
                     handle.recent_log.pop_front();
                 }
+            }
+
+            // The importance worker writes the config *file*; the app's copy is
+            // now behind it, so re-read it and re-hand the rules to the tabs
+            // that filter with them.
+            if wrote_importance && matches!(status, CommandStatus::Done) {
+                // Only the table this task wrote. A wholesale reload is what
+                // silently reverted in-flight settings before — see the note on
+                // `sync_config_from_active_tab`, and `docs/adr/0005`.
+                self.config.importance = crate::config::load_global_config().importance;
+                self.sync_importance_to_tabs();
+                // The agent's own one-line distribution — the share each tier
+                // covers — is what tells a reader whether the table is
+                // over-broad, and it is in this task's log. Point at it rather
+                // than repeating it here, where it would be a number without
+                // the reasoning beside it.
+                self.notify_long("Importance: rules written — see the task log for its report");
             }
 
             self.notify_long(&status_msg);
@@ -3404,9 +3676,7 @@ impl App {
     /// tasks so the UI shows them like any other review failure.
     fn dispatch_pending_background_tasks(&mut self) {
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
-        while !self.pending_background_tasks.is_empty()
-            && self.running_background_task_count() < cap
-        {
+        while !self.pending_background_tasks.is_empty() && self.can_dispatch_task(cap) {
             let Some(pending) = self.pending_background_tasks.pop_front() else {
                 break;
             };
@@ -3427,6 +3697,23 @@ impl App {
         }
     }
 
+    /// Whether a queued review can start now.
+    ///
+    /// Two questions, and they are not the same one. The App's own count is
+    /// its queueing policy, and it is what the desktop's queued pills show —
+    /// deterministic, because the count moves the moment a task dispatches.
+    /// The slot pool is the real limit, and it is shared with arena reviewers,
+    /// card AI and tab commands.
+    ///
+    /// Checking only the first put work in flight that could not start: with
+    /// an arena holding every slot, a dispatched review showed as `Running`
+    /// while parked inside `acquire`, indistinguishable from running. Checking
+    /// only the second would race — the slot is taken on another thread, so a
+    /// second task could dispatch in the window before the first acquires.
+    fn can_dispatch_task(&self, cap: usize) -> bool {
+        self.running_background_task_count() < cap && crate::agent_slots::active_count() < cap
+    }
+
     /// Remove a queued (not yet started) review task. Returns true when a
     /// matching task was found and removed.
     pub fn cancel_queued_background_task(&mut self, id: &str) -> bool {
@@ -3437,6 +3724,54 @@ impl App {
             self.notify("review removed from queue");
         }
         removed
+    }
+
+    /// The running process for a background task, if it has one.
+    ///
+    /// Returns the handle rather than stopping the run, because stopping it
+    /// forks a process and `AGENTS.md` forbids that under the app mutex. A
+    /// caller holding the lock clones this, releases, and *then* calls
+    /// [`crate::agent_run::AgentRunHandle::kill`]. A caller holding no lock
+    /// may kill straight away.
+    ///
+    /// Signalling is all a stop does. The worker owns the verdict and reaches
+    /// it after its `wait` returns — which the kill causes — so a stop must
+    /// not also write a result, or a stopped run and a finished one would
+    /// race to describe the same task.
+    pub fn running_background_review(
+        &self,
+        id: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.background_tasks
+            .get(id)
+            .map(|h| std::sync::Arc::clone(&h.run))
+    }
+
+    /// The running process for a tab-level command (the tab-command and
+    /// configured-shell paths), if it has one.
+    ///
+    /// Returns the handle for the same reason as
+    /// [`Self::running_background_review`]: kill forks, so the caller releases
+    /// the lock first.
+    pub fn running_command(
+        &self,
+        name: &str,
+    ) -> Option<std::sync::Arc<crate::agent_run::AgentRunHandle>> {
+        self.tab().command_runs.get(name).map(std::sync::Arc::clone)
+    }
+
+    /// Every running tab-level command, by name.
+    ///
+    /// Collected into owned handles so the caller can release the borrow —
+    /// and, in the desktop, the lock — before signalling any of them.
+    pub fn running_commands(
+        &self,
+    ) -> Vec<(String, std::sync::Arc<crate::agent_run::AgentRunHandle>)> {
+        self.tab()
+            .command_runs
+            .iter()
+            .map(|(name, run)| (name.clone(), std::sync::Arc::clone(run)))
+            .collect()
     }
 
     /// Snapshot of in-flight + recently finished background tasks. Includes
@@ -3579,16 +3914,66 @@ mod background_queue_tests {
     /// spawned "reviews" run long enough to observe queue state. Returns
     /// None when git isn't available (test then silently skips, matching
     /// the pattern in background.rs).
+    /// Serializes the tests below, which share the process-wide slot pool.
+    ///
+    /// `agent_slots` is one pool for the whole process, and dispatch now asks
+    /// it whether a slot is free rather than counting only this App's own
+    /// tasks. So a slot held by one test changes another's dispatch decision,
+    /// and these run in parallel by default. Holding this for the duration
+    /// keeps each test's view of the pool its own.
+    static POOL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Held for the duration of one pool-sensitive test.
+    ///
+    /// Serializing is not enough on its own: a spawned agent outlives the test
+    /// body that started it, so it keeps its slot after the lock is released
+    /// and the next test inherits a pool it does not own. The `Drop` waits for
+    /// the pool to drain, which is what makes the next test's view its own.
+    struct PoolGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    impl Drop for PoolGuard {
+        fn drop(&mut self) {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+            while crate::agent_slots::active_count() > 0 && std::time::Instant::now() < deadline {
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+        }
+    }
+
+    fn serial() -> PoolGuard {
+        PoolGuard(POOL_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
     fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
         let tmp =
             std::env::temp_dir().join(format!("er-bg-queue-test-{}-{}", std::process::id(), cap));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).ok()?;
-        std::process::Command::new("git")
-            .arg("init")
-            .current_dir(&tmp)
-            .output()
-            .ok()?;
+        // `git init` alone leaves HEAD unborn, so `rev-parse --abbrev-ref HEAD`
+        // yields nothing and `App::new_with_args` fails with "Failed to
+        // determine current branch". That made this helper return None for
+        // every caller, and every caller skips silently on None — so five
+        // tests in this module had never run at all.
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
+        std::fs::write(tmp.join("seed.txt"), "seed\n").ok()?;
+        for args in [vec!["add", "seed.txt"], vec!["commit", "-qm", "seed"]] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&tmp)
+                .output()
+                .ok()?;
+        }
         let mut app = App::new_with_args(&[tmp.to_string_lossy().to_string()]).ok()?;
         app.config.ai_hub.max_concurrent_reviews = cap;
         app.config.agent.command = "sleep".to_string();
@@ -3598,6 +3983,7 @@ mod background_queue_tests {
 
     #[test]
     fn excess_reviews_queue_and_dedup() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3650,7 +4036,43 @@ mod background_queue_tests {
     }
 
     #[test]
+    fn a_saturated_slot_pool_stops_the_app_dispatching() {
+        // The App's own running count is zero here, so the old condition would
+        // have dispatched — and the task would have shown as "Running" while
+        // parked inside `acquire`, which is the state this exists to prevent.
+        //
+        // Hold every slot to stand in for an arena run doing the same. The
+        // pool is process-wide, so this must take all `cap` rather than assume
+        // it starts empty: once held, nobody else can be in it.
+        let _serial = serial();
+        let Some((app, tmp)) = test_app(1) else {
+            return;
+        };
+        let cap = app.config.ai_hub.effective_max_concurrent_reviews();
+        let ceiling = app.config.ai_hub.effective_max_concurrent_agents();
+
+        assert_eq!(app.running_background_task_count(), 0, "nothing dispatched");
+        let held: Vec<_> = (0..cap)
+            .map(|_| {
+                crate::agent_slots::acquire_blocking(
+                    crate::agent_slots::Workload::Background,
+                    cap,
+                    ceiling,
+                )
+            })
+            .collect();
+        assert!(
+            !app.can_dispatch_task(cap),
+            "a full pool must stop dispatch even with nothing running here"
+        );
+
+        drop(held);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
     fn queued_task_snapshots_current_selection_without_override() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3683,12 +4105,19 @@ mod background_queue_tests {
             Some("gpt-5.6-luna"),
             "queued task keeps the selection from enqueue time"
         );
+        // Effort is normalised against the model when the selection syncs, so
+        // a literal here would be asserting that normalisation rather than
+        // what this test is about. The claim is that the queued task holds
+        // what was resolved at enqueue, not what the palette says later.
+        let enqueued_effort = queued.ai_selection.as_ref().and_then(|s| s.effort.clone());
+        app.current_ai_effort = Some("low".into());
         assert_eq!(
-            queued
+            app.pending_background_tasks[0]
                 .ai_selection
                 .as_ref()
-                .and_then(|s| s.effort.as_deref()),
-            Some("high")
+                .and_then(|s| s.effort.clone()),
+            enqueued_effort,
+            "a later effort change must not retarget a queued task"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3696,11 +4125,40 @@ mod background_queue_tests {
 
     #[test]
     fn dispatch_launches_queued_when_slot_frees() {
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(2) else {
             return;
         };
-        // Fast-exiting agent: completion frees a slot on the next poll.
-        app.config.agent.args = vec!["0".to_string()];
+        // A fast-exiting agent, installed in the hub rather than via
+        // `config.agent`: the background path resolves its command from the
+        // hub providers, and `App::new_with_args` loads the *user's* global
+        // config, so leaving this to `config.agent` ran a real provider and
+        // took 24 s. Completion frees a slot on the next poll.
+        let fake = tmp.join("fake-agent");
+        std::fs::write(&fake, "#!/bin/sh\nexit 0\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&fake).unwrap().permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&fake, perms).unwrap();
+        }
+        app.config.ai_hub.providers.clear();
+        app.config.ai_hub.default_provider = Some("fake".to_string());
+        app.config.ai_hub.providers.insert(
+            "fake".to_string(),
+            AiProviderConfig {
+                command: fake.to_string_lossy().to_string(),
+                args: vec!["{prompt}".to_string()],
+                models: vec![AiModelConfig {
+                    id: "m".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        app.config.ai_hub.default_model = Some("m".to_string());
+        app.current_ai_provider = Some("fake".to_string());
+        app.current_ai_model = Some("m".to_string());
 
         for branch in ["a", "b", "c"] {
             app.spawn_background_triage_review(target(&tmp, branch), "p".into(), true)
@@ -3719,7 +4177,9 @@ mod background_queue_tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "queued task was never dispatched"
+                "queued task was never dispatched: running={} slots_in_use={}",
+                app.running_background_task_count(),
+                crate::agent_slots::active_count()
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
@@ -3731,7 +4191,12 @@ mod background_queue_tests {
     #[cfg(unix)]
     fn background_codex_review_ignores_user_config() {
         use std::os::unix::fs::PermissionsExt;
+        // The transcript this test inspects is opt-in, so turn it on. Left set
+        // for the rest of the binary rather than removed: clear it mid-run and
+        // a concurrently finishing spawn could skip its own write.
+        std::env::set_var("ER_DEBUG", "1");
 
+        let _serial = serial();
         let Some((mut app, tmp)) = test_app(1) else {
             return;
         };
@@ -3781,9 +4246,16 @@ mod background_queue_tests {
         }
 
         let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
+        // Assert the flag rather than its position: other flags (e.g. `--add-dir`)
+        // may be injected ahead of it, and the claim -- Codex is told not to
+        // read the user's config -- holds regardless of order.
+        let command_line = debug_log
+            .lines()
+            .find(|l| l.starts_with("command: "))
+            .unwrap_or("");
         assert!(
-            debug_log.contains("codex exec --ignore-user-config"),
-            "debug log should show isolated Codex invocation:\n{debug_log}"
+            command_line.contains("exec") && command_line.contains("--ignore-user-config"),
+            "debug log should show an isolated Codex invocation:\n{debug_log}"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
@@ -3887,5 +4359,115 @@ mod background_queue_tests {
         assert!(!on_disk.contains("\"q-1\"") && on_disk.contains("\"q-2\""));
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+}
+
+/// The checklist toggle is the one write both front ends share: the TUI drives
+/// it from a cursor, the desktop from an index in the snapshot. These pin the
+/// split — the shared half persists and reports state with no navigation
+/// precondition, the TUI half keeps the focus guard.
+#[cfg(test)]
+mod checklist_toggle_tests {
+    use crate::ai::{ChecklistItem, ErChecklist, ReviewFocus};
+    use crate::app::App;
+    use crate::paths::ErRoot;
+
+    /// An app whose view bucket is a throwaway directory: the toggle writes,
+    /// so the test needs a real er_dir it owns.
+    fn app_with_checklist(tmp: &tempfile::TempDir) -> App {
+        let mut app = App::new_for_test(vec![]);
+        let tab = app.tab_mut();
+        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            er_dir.join("checklist.json"),
+            r#"{"version":1,"diff_hash":"h","items":[
+                {"id":"c-1","text":"Schema migration adds a NOT NULL column","category":"schema","checked":false,"related_findings":["f-1"],"related_files":["db/m.sql"]},
+                {"id":"c-2","text":"Retry path fails the test suite it should not","category":"tests","checked":true,"related_findings":[],"related_files":[]}
+            ]}"#,
+        )
+        .unwrap();
+        tab.reload_ai_state();
+        app
+    }
+
+    fn item(app: &App, index: usize) -> ChecklistItem {
+        app.tab().ai.checklist.as_ref().unwrap().items[index].clone()
+    }
+
+    fn on_disk(tmp: &tempfile::TempDir) -> ErChecklist {
+        let raw = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
+        serde_json::from_str(&raw).unwrap()
+    }
+
+    #[test]
+    fn toggling_by_index_persists_and_round_trips() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(true));
+        assert!(item(&app, 0).checked, "in-memory state follows the toggle");
+        assert!(
+            item(&app, 1).checked,
+            "the neighbouring item keeps the state the fixture gave it"
+        );
+        assert!(
+            on_disk(&tmp).items[0].checked,
+            "the toggle was persisted, so the other front end reads it on its next poll"
+        );
+
+        // Toggling the same index back must land on false on both sides — the
+        // state the desktop reads in its next snapshot comes from this file.
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), Some(false));
+        assert!(!on_disk(&tmp).items[0].checked);
+        assert!(!item(&app, 0).checked);
+    }
+
+    #[test]
+    fn an_index_past_the_end_toggles_nothing_and_writes_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+        let before = std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap();
+
+        assert_eq!(app.toggle_checklist_item_at(9).unwrap(), None);
+        assert!(!item(&app, 0).checked && item(&app, 1).checked);
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join(".er/checklist.json")).unwrap(),
+            before
+        );
+    }
+
+    #[test]
+    fn toggling_with_no_checklist_reports_none_and_creates_no_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        std::fs::create_dir_all(tmp.path().join(".er")).unwrap();
+
+        assert_eq!(app.toggle_checklist_item_at(0).unwrap(), None);
+        assert!(!tmp.path().join(".er/checklist.json").exists());
+    }
+
+    /// Regression guard on the split: the shared function has no navigation
+    /// precondition, so the guard has to survive in the wrapper.
+    #[test]
+    fn the_tui_wrapper_still_requires_checklist_focus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_with_checklist(&tmp);
+        app.tab_mut().review_cursor = 0;
+
+        app.tab_mut().review_focus = ReviewFocus::Files;
+        app.review_toggle_checklist().unwrap();
+        assert!(
+            !item(&app, 0).checked,
+            "a toggle while the file column has focus must not reach the checklist"
+        );
+        assert!(!on_disk(&tmp).items[0].checked);
+
+        app.tab_mut().review_focus = ReviewFocus::Checklist;
+        app.review_toggle_checklist().unwrap();
+        assert!(item(&app, 0).checked, "focused, it toggles the cursor item");
+        assert!(on_disk(&tmp).items[0].checked);
     }
 }

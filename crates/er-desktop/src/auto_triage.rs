@@ -2,7 +2,7 @@
 //!
 //! Auto-dispatch on PR cache refresh is disabled — triage is started from the
 //! sidebar (`run_pr_triage` / `run_branch_triage`). The `auto_triage` project flag
-//! is kept for settings compatibility but no longer queues work on refresh.
+//! is kept for settings compatibility and queues nothing on refresh.
 
 use std::collections::HashSet;
 use std::sync::atomic::AtomicU64;

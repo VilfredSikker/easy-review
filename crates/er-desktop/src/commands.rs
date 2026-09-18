@@ -344,11 +344,10 @@ pub fn snap_from_confirmed(app: &App, state: &AppState) -> AppSnapshot {
     snap
 }
 
-/// First-paint snapshot for hot open paths (two-phase open, first-paint plan
-///
-/// step 2): full chrome (tabs/projects/mode/branch/base) + PR card, but no
-/// diff files, AI, or annotations, with `bg_loading.tab_diff` set so the
-/// frontend renders the "Loading diff…" pane. The background offload worker
+/// First-paint snapshot for hot open paths (two-phase open): full chrome
+/// (tabs/projects/mode/branch/base) + PR card, but no diff files, AI, or
+/// annotations, with `bg_loading.tab_diff` set so the frontend renders the
+/// "Loading diff…" pane. The background offload worker
 /// ([`kick_post_open_offload`]) then bumps the revision and the poll delivers
 /// the full snapshot within ~40–120 ms.
 pub fn lite_snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
@@ -1094,11 +1093,7 @@ pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot
     {
         let tab = app.tab_mut();
         if tab.active_diff_files().iter().any(|f| f.path == path) {
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = tab.per_file_hash(&path);
             tab.reviewed.insert(path, hash);
             tab.reviewed_revision += 1;
             let _ = tab.save_reviewed_files();
@@ -1178,11 +1173,7 @@ pub async fn bulk_review_pillar(
             let paths = pillar_file_paths(tab, &pillar_id);
             let mut changed = false;
             for path in paths {
-                let hash = tab
-                    .current_per_file_hashes
-                    .get(&path)
-                    .cloned()
-                    .unwrap_or_default();
+                let hash = tab.per_file_hash(&path);
                 tab.reviewed.insert(path, hash);
                 changed = true;
             }
@@ -1327,33 +1318,7 @@ pub fn open_source(state: State<AppState>) -> Result<OpenSourceResult, String> {
 }
 
 fn local_source_root(tab: &er_engine::app::TabState) -> Option<&str> {
-    if !allows_local_open(
-        tab.is_remote(),
-        tab.local_branch_view.is_some(),
-        tab.local_branch_checkout_root.is_some(),
-    ) {
-        return None;
-    }
-    // Local PR tabs (pr_head_ref set) are read-only review contexts unless the
-    // branch is explicitly checked out in a working tree/worktree.
-    if tab.local_branch_view.is_some() {
-        return tab.local_branch_checkout_root.as_deref();
-    }
-    Some(tab.repo_root.as_str())
-}
-
-const fn allows_local_open(
-    is_remote: bool,
-    has_local_branch_view: bool,
-    has_checkout_root: bool,
-) -> bool {
-    if is_remote {
-        return false;
-    }
-    if has_local_branch_view {
-        return has_checkout_root;
-    }
-    true
+    tab.local_checkout_root()
 }
 
 fn open_editor_at(repo_root: &str, file_path: &Path, line_num: usize) -> anyhow::Result<()> {
@@ -2171,6 +2136,28 @@ pub fn cancel_queued_review(id: String, state: State<AppState>) -> Result<AppSna
     Ok(snap_from(&app, &state))
 }
 
+/// Stop a running review.
+///
+/// The handle is cloned and the lock released *before* signalling: `kill`
+/// forks a process, and holding the app mutex across a fork would block every
+/// other command — including the poll that would show the stop took effect.
+#[tauri::command]
+pub fn cancel_running_review(id: String, state: State<AppState>) -> Result<AppSnapshot, String> {
+    let run = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        app.running_background_review(&id)
+    };
+    let Some(run) = run else {
+        return Err("No running review with that id".to_string());
+    };
+    run.kill();
+
+    // Re-read for the snapshot only after the signal is away.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
+
 #[tauri::command]
 pub fn patch_project_review_settings(
     project_id: String,
@@ -2222,11 +2209,10 @@ pub fn reveal_path(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub fn list_review_revisions(state: State<AppState>) -> Result<Vec<ReviewRevisionSummary>, String> {
-    // Branch-level managed storage no longer keeps multiple revisions per
-    // branch — re-running review overwrites the same files in place. The
-    // returned list is now at most one entry representing the current branch
-    // state, so the existing UI (ExportModal, AgentOutputView) keeps working
-    // without a revision picker.
+    // Branch-level managed storage keeps no revisions: re-running review
+    // overwrites the same files in place. The returned list is therefore at
+    // most one entry representing the current branch state, so the existing UI
+    // (ExportModal, AgentOutputView) works without a revision picker.
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let tab = app.tab();
     if tab.repo_root.is_empty() {
@@ -2736,6 +2722,65 @@ pub async fn refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, Str
     .await
 }
 
+/// Fetch the `gh stack` (github/gh-stack) stack for the active tab's branch and
+/// return the refreshed snapshot.
+///
+/// `gh stack view` talks to GitHub, so the subprocess runs with the `App` lock
+/// released (the heavy-command rule) and the result is written back through
+/// `App::apply_stack_result`, which caches it on the tab for `build_snapshot`.
+/// Called lazily when the BranchCard stack control is first opened.
+#[tauri::command]
+pub async fn refresh_stack(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || refresh_stack_impl(&state)).await
+}
+
+fn refresh_stack_impl(state: &AppState) -> Result<AppSnapshot, String> {
+    // Under the lock: drop any cached stack so the claim below re-runs the
+    // lookup, request it, and take the claim (the repo root to query). A tab
+    // whose viewed branch isn't checked out requests nothing — `gh stack view`
+    // there would describe an unrelated branch.
+    let request = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().stack = er_engine::app::StackState::default();
+        app.request_stack_load();
+        app.take_stack_load_request()
+    };
+
+    // Lock released: `gh stack view` hits the network.
+    let result = request.map(|(tab_index, repo_root, lookup_seq)| {
+        let info = er_engine::gh_stack::load(&repo_root);
+        (tab_index, repo_root, lookup_seq, info)
+    });
+
+    let snapshot = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some((tab_index, repo_root, lookup_seq, info)) = result {
+            // The expected steady states (not in a stack, extension missing) are
+            // not errors. Anything else is a real failure — the control surfaces
+            // the reason so the user can retry, and this leaves a durable record
+            // for diagnosing a broken `gh` setup.
+            if let er_engine::gh_stack::StackInfo::Failed(reason) = &info {
+                let branch = app
+                    .tabs
+                    .get(tab_index)
+                    .map(|t| t.current_branch.as_str())
+                    .unwrap_or("");
+                log::error!(
+                    "er-desktop: `gh stack view` failed repo={repo_root} branch={branch}: {reason}"
+                );
+            }
+            app.apply_stack_result(tab_index, lookup_seq, info);
+        }
+        snap_from_command(&app, state)
+    };
+
+    // The cached stack lives in engine state that the content hash doesn't
+    // cover, so invalidate polling explicitly.
+    state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+    Ok(snapshot)
+}
+
 /// Latest known PR `head_oid` for `pr_number` from the PR-list cache. This is
 /// the exact source the stale-pill compares against (see `build_snapshot`), so
 /// callers can align a tab's `last_diff_head_oid` with it to clear the pill.
@@ -2754,7 +2799,7 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
 pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
-    // window stays responsive (it previously froze for the whole fetch).
+    // window stays responsive for the whole fetch.
     run_blocking(move || {
         let root = {
             let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -3015,11 +3060,11 @@ pub async fn submit_github_review(
     summary: String,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
     // The body refreshes the diff (`refetch_and_refresh_diff`), which shells out
     // to git while holding the app lock. On the main thread that freezes the
     // window for the length of the diff — the failure ADR 0015 exists to
     // prevent, on the Submit review button.
-    let state = state.inner().clone();
     run_blocking(move || {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
@@ -3702,6 +3747,25 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Run the agent that proposes this repo's importance rules.
+///
+/// This only enqueues. The worker validates the rule table the agent prints and
+/// merges it into the global config, replacing one repo's table and leaving
+/// every other section alone; the task poll then lifts the new rules onto the
+/// open tabs, so the file filter and the settings view both see them without a
+/// restart (`docs/adr/0037-config-reaches-a-tab-by-sync.md`).
+#[tauri::command]
+pub async fn run_importance_agent(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.spawn_background_importance()
+            .map_err(|e| e.to_string())?;
         Ok(snap_from(&app, &state))
     })
     .await
@@ -5476,9 +5540,9 @@ fn remote_pr_tab_from_entry(
     if let Some(data) = entry.pr_data {
         tab.pr_data = Some(data);
     }
-    // Staleness baseline = the oid the cached diff was fetched at
-    // (review-fix-loop R1); `build_remote_pr_tab` falls back to the PR-list
-    // cache when the entry has no oid (pre-upgrade / failed fetch).
+    // Staleness baseline = the oid the cached diff was fetched at;
+    // `build_remote_pr_tab` falls back to the PR-list cache when the entry has
+    // no oid (pre-upgrade / failed fetch).
     tab.last_diff_head_oid = entry.head_oid.clone();
     tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
         raw: entry.raw_diff,
@@ -5516,9 +5580,9 @@ fn build_remote_pr_tab(
     ) {
         let mut tab = remote_pr_tab_from_entry(&pr_ref, entry.clone())?;
         // Seed the staleness probe's baseline with the oid the cached diff was
-        // fetched at (review-fix-loop R1): equal oid ⇒ pill stays off;
-        // advanced ⇒ it lights. Fall back to the PR-list cache only when the
-        // entry has no oid (pre-upgrade entries / failed oid fetch).
+        // fetched at: equal oid ⇒ pill stays off; advanced ⇒ it lights. Fall
+        // back to the PR-list cache only when the entry has no oid (pre-upgrade
+        // entries / failed oid fetch).
         tab.last_diff_head_oid = match entry.head_oid {
             Some(oid) => Some(oid),
             None => {
@@ -5570,7 +5634,7 @@ fn build_remote_pr_tab(
     });
     tab.reload_remote_comments();
     // Seed the staleness baseline with the oid the freshly fetched diff was
-    // computed at (review-fix-loop R1).
+    // computed at.
     tab.last_diff_head_oid = inputs.head_oid.clone();
     crate::remote_pr_open_cache::insert_remote_pr_open_entry(
         &state.remote_pr_open_cache,
@@ -5592,9 +5656,9 @@ fn build_remote_pr_tab(
 }
 
 /// Open (or activate, if already open) a remote-only PR. The heavy path
-/// (`gh` calls + diff parse) runs WITHOUT the App lock — previously
-/// `new_remote` ran three network calls while holding the app mutex, blocking
-/// every other command. On a cache hit there is no network at all.
+/// (`gh` calls + diff parse) runs WITHOUT the App lock: holding the app mutex
+/// across the network calls blocks every other command. On a cache hit there
+/// is no network at all.
 fn activate_or_open_remote_pr(
     owner: &str,
     repo: &str,
@@ -5968,7 +6032,11 @@ fn build_local_branch_tab(
     // PR links, the GitHub status card, and the PR-list cache all key on the
     // right repo.
     new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
-    new_tab.sync_managed_storage();
+    // Light: re-roots managed storage and reloads the reviewed markers without
+    // the AI reload. The refresh below reaches its own AI gate once
+    // `branch_diff_hash` is set, so the full sync would read every sidecar
+    // twice on the open path.
+    new_tab.sync_managed_storage_light();
     let t_local_refresh = std::time::Instant::now();
     match new_tab.refresh_diff_without_remote_fetch_quick() {
         Ok(()) => {
@@ -6008,6 +6076,21 @@ fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), St
     }
 }
 
+/// Background branch-refresh workers currently running, keyed
+/// `(repo_root, branch)`.
+///
+/// The frontend dedups repeats of the *same* branch, but nothing there stops a
+/// run of clicks across different branches stacking one worker per click, each
+/// paying its own network fetch — and every worker whose tab is no longer
+/// active still pays, then discards the result.
+static BRANCH_REFRESH_IN_FLIGHT: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+
+fn branch_refresh_finished(key: &(String, String)) {
+    if let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() {
+        g.retain(|k| k != key);
+    }
+}
+
 fn kick_background_branch_refresh(
     app_state: Arc<Mutex<App>>,
     desktop_revision: Arc<AtomicU64>,
@@ -6015,11 +6098,43 @@ fn kick_background_branch_refresh(
     branch_name: String,
     base_branch: String,
 ) {
+    let flight_key = (repo_root.clone(), branch_name.clone());
+    {
+        let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() else {
+            return;
+        };
+        if g.contains(&flight_key) {
+            return; // this branch is already being refreshed
+        }
+        g.push(flight_key.clone());
+    }
     std::thread::spawn(move || {
         // Fetch the base branch from origin so the local diff is up-to-date.
         let base_strip = base_branch.strip_prefix("origin/").unwrap_or(&base_branch);
+        // Where the local remote-tracking ref pointed before the fetch. If the
+        // fetch does not move it, the diff cannot have changed and the
+        // lock-held full refresh below is pure cost. That is the steady state:
+        // most opens find origin's base tip exactly where it already was.
+        let remote_ref = format!("origin/{base_strip}");
+        let oid_before = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+        let t_worker = std::time::Instant::now();
         match er_engine::github::fetch_base_branch_ref(&repo_root, base_strip) {
             Ok(base_ref) => {
+                let oid_after = er_engine::github::rev_parse_oid(&repo_root, &remote_ref);
+                // A first materialisation (`before` was None) counts as moved.
+                let moved = oid_before.is_none() || oid_before != oid_after;
+                // This worker was the one leg of a branch open with no phase
+                // log, so its duration was invisible in profile output.
+                log::info!(
+                    "branch_open branch={} phase=background_branch_refresh ms={} moved={}",
+                    branch_name,
+                    t_worker.elapsed().as_millis(),
+                    moved
+                );
+                if !moved {
+                    branch_refresh_finished(&flight_key);
+                    return;
+                }
                 let mut refreshed_active_tab = false;
                 if let Ok(mut app) = app_state.lock() {
                     let active_tab = app.active_tab;
@@ -6051,6 +6166,7 @@ fn kick_background_branch_refresh(
                 );
             }
         }
+        branch_refresh_finished(&flight_key);
     });
 }
 
@@ -6175,7 +6291,7 @@ type CachedPrOpenEntry = (
 );
 
 /// Look up a cached open-diff for the hint path, treating it as a hit when the
-/// **base branch** matches — head/`updated_at` drift is allowed (J1: render the
+/// **base branch** matches — head/`updated_at` drift is allowed: render the
 /// diff we already hold instantly; the 30s `pr_head_probe` lights the stale pill,
 /// Sync refreshes). A base **retarget** is the one hard miss: the staleness pill
 /// (`compute_oid_staleness`) watches only `head_oid`, so a silently re-based diff
@@ -6540,9 +6656,9 @@ fn load_pr_open_inputs(
     if let Some(hint) = hint {
         let freshness = freshness_from_hint(hint);
 
-        // Cache hit when the base branch matches (J1: head/`updated_at` drift is
-        // allowed — render the diff we already hold instantly, the 30s stale pill
-        // catches a moved head). Reuse the **entry's own** freshness, not the
+        // Cache hit when the base branch matches — head/`updated_at` drift is
+        // allowed: render the diff we already hold instantly, and the 30s stale
+        // pill catches a moved head. Reuse the **entry's own** freshness, not the
         // hint's: it pins the oid the cached diff was built against, so seeding the
         // staleness probe with it lights the pill when the live head has advanced.
         // Backfill commits only if this older cache entry does not have them yet.
@@ -6969,8 +7085,8 @@ fn open_pr_review_impl(
     log_branch_open_phase(&project_id, &branch_label, "app_lock", t_app_lock);
     let t_place_tab = std::time::Instant::now();
     // Skip the storage sync: `enter_pr_diff_*` below performs the authoritative
-    // apply_managed_root + AI reload for the PR bucket (first-paint plan
-    // step 1: three full reloads per open → one).
+    // apply_managed_root + AI reload for the PR bucket, so syncing here would
+    // make three full reloads per open instead of one.
     place_tab(&mut app, new_tab, replace.unwrap_or(false), true);
     log_branch_open_phase(&project_id, &branch_label, "tab_place", t_place_tab);
     // Attach the checkout root (if any) to the now-active tab before entering
@@ -6994,10 +7110,10 @@ fn open_pr_review_impl(
     // 0-file PR or an unknown head oid, where seeding would mislead the probe.
     let has_loaded_files = !app.tab().files.is_empty();
     let two_phase = if !head_oid_for_preload.trim().is_empty() && has_loaded_files {
-        // Two-phase open (first-paint plan step 2): enter PR Diff without the
-        // AI sidecar reload — `kick_post_open_offload` performs the single
-        // authoritative reload right after the command returns, and the
-        // chrome-only snapshot below paints immediately with "Loading diff…".
+        // Two-phase open: enter PR Diff without the AI sidecar reload —
+        // `kick_post_open_offload` performs the single authoritative reload
+        // right after the command returns, and the chrome-only snapshot below
+        // paints immediately with "Loading diff…".
         app.tab_mut()
             .enter_pr_diff_preloaded(head_oid_for_preload, true)
             .map_err(|e| e.to_string())?;
@@ -7146,7 +7262,15 @@ fn open_pr_review_miss_async(
     // would duplicate the network call.
     kick_pr_ref_fetch(&app, state);
     let t_ser = std::time::Instant::now();
-    let ser_bytes = serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0);
+    // Measuring the snapshot means serializing the whole thing — every file and
+    // hunk — and Tauri already serializes the same value again for IPC. That is
+    // a second full pass over the payload on the open path, and this one runs
+    // while the App lock is still held. Only the profiled build pays for it.
+    let ser_bytes = if crate::profile_log::profile_enabled() {
+        serde_json::to_vec(&snapshot).map(|v| v.len()).unwrap_or(0)
+    } else {
+        0
+    };
     log::info!(
         "open_pr_review pr={} phase=summary cache_hit=false files={} app_lock_ms={} tab_build_ms={} tab_place_ms={} pr_diff_enter_ms=0 record_recent_ms={} snap_build_ms={} ser_bytes={} ser_ms={} total_ms={}",
         pr_number,
@@ -7346,10 +7470,10 @@ pub fn prefetch_pr_open(
     let branch_label = format!("pr-{}", pr_number);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        // Warm the PR comment sync cache (first-paint plan step 3): detached so
-        // the in-flight claim is released as soon as the diff is cached; the
-        // post-open `pull_github_comments` (~2.5–3 s of gh calls) is served
-        // from memory when the user clicks within the 60 s TTL.
+        // Warm the PR comment sync cache: detached so the in-flight claim is
+        // released as soon as the diff is cached; the post-open
+        // `pull_github_comments` (~2.5–3 s of gh calls) is served from memory
+        // when the user clicks within the 60 s TTL.
         {
             let warm_root = repo_root.clone();
             std::thread::spawn(move || {
@@ -7459,8 +7583,8 @@ pub fn prefetch_remote_pr_open(
     let in_flight = Arc::clone(&state.remote_pr_open_in_flight);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        // Warm the PR comment sync cache (first-paint plan step 3) — detached,
-        // like the local prefetch; the remote variant needs no local clone.
+        // Warm the PR comment sync cache — detached, like the local prefetch;
+        // the remote variant needs no local clone.
         {
             let warm_owner = owner.clone();
             let warm_repo = repo.clone();
@@ -8069,7 +8193,9 @@ pub fn open_project_branch(
     // project's remote — resolve it from this repo's git remote (see
     // `build_local_branch_tab`).
     new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
-    new_tab.sync_managed_storage();
+    // Light, as in `build_local_branch_tab`: the refresh below reloads the AI
+    // sidecars through its own gate, so a full sync duplicates that read.
+    new_tab.sync_managed_storage_light();
     refresh_branch_open_diff(&mut new_tab)?;
 
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -8160,7 +8286,7 @@ pub async fn sync_pr(
                                 // Realign the stale-pill baseline after a legit
                                 // sync: refetch_and_refresh_diff's remote branch
                                 // never updates last_diff_head_oid, so without
-                                // this the pill stays lit forever (P4-1).
+                                // this the pill stays lit forever.
                                 if let Some(pr_number) = tab.pr_number {
                                     if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
                                         tab.last_diff_head_oid = Some(oid);
@@ -8457,6 +8583,34 @@ pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<Ap
         .desktop_revision
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     Ok(snap_from(&app, &state))
+}
+
+// ── Review checklist ────────────────────────────────────────────────────────
+
+/// Toggle the checklist item at `index` and persist it to the view bucket.
+///
+/// The index addresses the flat `checklist.json` item list — the same address
+/// the TUI cursor resolves to — and `view` gates the write so a click that
+/// lands after the reviewer switched views does not write to the new bucket.
+#[tauri::command]
+pub async fn toggle_checklist_item(
+    index: usize,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        // An index the checklist no longer has writes nothing; the returned
+        // snapshot is what the frontend reconciles its optimistic paint against.
+        app.toggle_checklist_item_at(index)
+            .map_err(|e| format!("Failed to toggle checklist item: {e}"))?;
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
 }
 
 // ── Findings: dismiss / promote / reply (v1 stubs) ──────────────────────────
@@ -8997,13 +9151,12 @@ pub async fn select_tab(
 }
 
 /// If the active tab was restored as a lazy stub, kick its first
-///
 /// `refresh_diff()` to a background thread and return immediately. The
 /// caller's snapshot shows the stub with `loading.tab_diff = true`; the
 /// loaded diff arrives via the revision-event poll when the worker finishes.
-/// (This used to run inline while holding the App lock — a tab switch onto a
-/// large stub tab serialized every other command behind a multi-second git
-/// diff + parse.)
+///
+/// Running this inline would hold the App lock across the git diff + parse,
+/// serializing every other command behind it — seconds, for a large stub tab.
 pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let idx = app.active_tab;
     let tab = app.tab_mut();
@@ -9019,34 +9172,85 @@ pub fn kick_deferred_tab_refresh(app: &mut App, state: &AppState) {
     let loading = Arc::clone(&state.loading);
     let desktop_revision = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
-        let t = std::time::Instant::now();
-        if let Ok(mut app) = app_arc.lock() {
-            // Re-resolve the tab by index + repo_root in case tabs changed
-            // while this worker waited for the lock.
-            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
-                let is_local_pr = tab.pr_number.is_some() && !tab.is_remote();
-                let result = if is_local_pr {
-                    tab.refetch_and_refresh_diff()
-                } else {
-                    tab.refresh_diff()
-                };
-                if let Err(e) = result {
-                    log::error!("er-desktop: deferred tab refresh failed: {e}");
+        // Phase 1 — brief lock: capture the fetch inputs and release, so the
+        // network work below runs outside the critical section. Re-resolve the
+        // tab by index + repo_root in case tabs changed while this worker was
+        // starting.
+        let inputs = app_arc.lock().ok().and_then(|app| {
+            app.tabs
+                .get(idx)
+                .filter(|tab| tab.repo_root == expect_root)
+                .and_then(|tab| tab.pr_refresh_inputs())
+        });
+
+        // Phase 2 — no lock: the head fetch, the gh lookup, and the base fetch.
+        // Timed on its own so `lazy_tab_refresh` can say whether a slow load was
+        // the network or the local rebuild.
+        let mut fetched = None;
+        let mut fetch_failed = false;
+        let t_fetch = std::time::Instant::now();
+        if let Some(inputs) = inputs {
+            // A restored stub normally already has its refs on disk, and the
+            // fetches would re-download them. Probed here, where no lock is
+            // held, so the check costs a `git rev-parse` and nothing else.
+            let already_present = er_engine::github::ref_exists_locally(
+                &inputs.repo_root,
+                &format!("refs/er/pr/{}/head", inputs.pr_number),
+            );
+            if !already_present {
+                match er_engine::app::TabState::fetch_pr_refresh(&inputs) {
+                    Ok(result) => fetched = Some(result),
+                    Err(e) => {
+                        log::error!("er-desktop: deferred tab pr fetch failed: {e}");
+                        fetch_failed = true;
+                    }
                 }
             }
         }
+
+        let fetch_ms = t_fetch.elapsed().as_millis();
+
+        // Phase 3 — brief lock: apply, then rebuild the diff.
+        let t_refresh = std::time::Instant::now();
+        if let Ok(mut app) = app_arc.lock() {
+            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| t.repo_root == expect_root) {
+                // A failed fetch leaves the tab as it was, rather than rebuilding
+                // the diff from refs that could not be refreshed.
+                if !fetch_failed {
+                    match fetched {
+                        Some(result) => tab.apply_pr_refresh(result),
+                        // Skipped the fetch because the refs are already on disk,
+                        // so nothing has recorded the oid this diff is about to be
+                        // built against. Without it the staleness probe has an
+                        // unknown to compare and stays silent, showing a diff that
+                        // is behind the PR head with no pill.
+                        None => tab.seed_last_diff_head_oid_from_local_ref(),
+                    }
+                    if let Err(e) = tab.refresh_diff() {
+                        log::error!("er-desktop: deferred tab refresh failed: {e}");
+                    }
+                }
+            }
+        }
+        let refresh_ms = t_refresh.elapsed().as_millis();
         if let Ok(mut l) = loading.lock() {
             l.tab_diff = false;
         }
         desktop_revision.fetch_add(1, Ordering::Relaxed);
         crate::profile_log::profile_log(
             "lazy_tab_refresh",
-            &[("ms", t.elapsed().as_millis().to_string())],
+            &[
+                // `fetch_ms` is the network legs, `refresh_ms` the local rebuild.
+                // Without the split a slow load gives no clue which it was.
+                ("fetch_ms", fetch_ms.to_string()),
+                ("refresh_ms", refresh_ms.to_string()),
+                ("ms", (fetch_ms + refresh_ms).to_string()),
+            ],
         );
     });
 }
 
-/// Background offload for the two-phase PR open (first-paint plan step 2).
+/// Background offload for the two-phase PR open.
 ///
 /// Phase 1 (`open_pr_review_impl`) returns a chrome-only snapshot with
 /// `bg_loading.tab_diff` set; this worker then performs the deferred work the
@@ -9070,42 +9274,101 @@ pub fn kick_post_open_offload(app: &App, state: &AppState) {
     let desktop_revision = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
-        if let Ok(mut app) = app_arc.lock() {
+
+        /// What this worker owes, decided under the first brief lock.
+        enum Work {
+            /// The tab is gone, or is no longer the one we were asked to load.
+            Nothing,
+            /// Cache-hit path: the AI reload ran in phase 1 and nothing is left.
+            Done,
+            /// Fallback path with nothing to fetch: refresh the diff as it stands.
+            RefreshOnly,
+            /// Fallback path on a local PR tab: fetch these first.
+            Fetch(er_engine::app::PrRefreshInputs),
+        }
+
+        // Phase 1 — brief lock: decide what to do, and capture the fetch inputs
+        // if there are any. The network legs run below with the guard released,
+        // because holding it across them blocks every command the user can see.
+        let work = if let Ok(mut app) = app_arc.lock() {
             // Re-resolve the tab by index + identity in case tabs changed while
             // the worker waited for the lock.
-            if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+            match app.tabs.get_mut(idx).filter(|t| {
                 t.repo_root == expect_root
                     && t.pr_number == expect_pr
                     && t.local_branch_view == expect_local_view
             }) {
-                let result = if tab.needs_initial_refresh {
+                Some(tab) if tab.needs_initial_refresh => {
                     // Fallback path (no head oid / 0-file PR): the diff was not
                     // loaded synchronously — fetch it here, same as the
                     // deferred-tab-refresh worker.
                     tab.needs_initial_refresh = false;
-                    if tab.pr_number.is_some() && !tab.is_remote() {
-                        tab.refetch_and_refresh_diff()
-                    } else {
-                        tab.refresh_diff()
+                    match tab.pr_refresh_inputs() {
+                        Some(inputs) => Work::Fetch(inputs),
+                        None => Work::RefreshOnly,
                     }
-                } else {
+                }
+                Some(tab) => {
                     // Common cache-hit path: the diff is already loaded; only
                     // the AI sidecar reload was deferred.
                     tab.reload_ai_state();
-                    Ok(())
-                };
-                if let Err(e) = result {
+                    Work::Done
+                }
+                None => Work::Nothing,
+            }
+        } else {
+            Work::Nothing
+        };
+
+        // Phase 2 — no lock: the PR's network legs, when the fallback path needs them.
+        let mut fetch_failed = false;
+        let fetched = match &work {
+            Work::Fetch(inputs) => match er_engine::app::TabState::fetch_pr_refresh(inputs) {
+                Ok(result) => Some(result),
+                Err(e) => {
                     log::error!(
-                        "er-desktop: post-open offload failed for pr={:?} root={}: {e}",
+                        "er-desktop: post-open offload fetch failed for pr={:?} root={}: {e}",
                         expect_pr,
                         expect_root
                     );
+                    fetch_failed = true;
+                    None
                 }
-                // No persist here: `place_tab` already wrote tabs.json on the
-                // open critical path and the reload changes no persisted field
-                // (TabDescriptor has no mode/AI state).
+            },
+            _ => None,
+        };
+
+        // Phase 3 — brief lock: apply and rebuild the diff. Skipped when the fetch
+        // failed, which leaves the tab as it was rather than rebuilding against
+        // refs that could not be refreshed.
+        if !matches!(work, Work::Nothing | Work::Done) && !fetch_failed {
+            if let Ok(mut app) = app_arc.lock() {
+                if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
+                    t.repo_root == expect_root
+                        && t.pr_number == expect_pr
+                        && t.local_branch_view == expect_local_view
+                }) {
+                    match fetched {
+                        Some(result) => tab.apply_pr_refresh(result),
+                        // Rebuild from the local PR ref without fetching, so
+                        // record the oid it is built against — otherwise the
+                        // staleness probe has an unknown on one side and shows
+                        // no pill for a diff that is behind the PR head.
+                        None => tab.seed_last_diff_head_oid_from_local_ref(),
+                    }
+                    if let Err(e) = tab.refresh_diff() {
+                        log::error!(
+                            "er-desktop: post-open offload failed for pr={:?} root={}: {e}",
+                            expect_pr,
+                            expect_root
+                        );
+                    }
+                }
             }
         }
+        // No persist here: `place_tab` already wrote tabs.json on the open
+        // critical path and the reload changes no persisted field
+        // (TabDescriptor has no mode/AI state).
         if let Ok(mut l) = loading.lock() {
             l.tab_diff = false;
         }
@@ -9344,9 +9607,6 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let repo_root = tab.repo_root.clone();
     let base_branch = tab.base_branch.clone();
     let head_ref = format!("refs/er/pr/{}/head", pr_number);
-    if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
-        return; // refs already materialized (e.g. by an earlier sync)
-    }
     let key = (repo_root.clone(), pr_number);
     {
         let Ok(mut g) = state.pr_ref_fetch_in_flight.lock() else {
@@ -9361,6 +9621,16 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     let desktop_rev = Arc::clone(&state.desktop_revision);
     std::thread::spawn(move || {
         let t = std::time::Instant::now();
+        // Probed here rather than on the caller's thread. The in-flight set
+        // above dedupes by (repo_root, pr_number), so this `git rev-parse`
+        // costs one subprocess per unique PR instead of one per open, and the
+        // open path stops paying for it at all.
+        if er_engine::github::ref_exists_locally(&repo_root, &head_ref) {
+            if let Ok(mut g) = in_flight.lock() {
+                g.remove(&key);
+            }
+            return; // refs already materialized (e.g. by an earlier sync)
+        }
         // Independent fetches — run them in parallel like the open path does.
         let (head_res, base_res) = std::thread::scope(|s| {
             let head_root = repo_root.clone();
@@ -9399,8 +9669,8 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
                         // Deliberately NOT updating `last_diff_head_oid`: the
                         // two-phase open serves the open-time diff, and this
                         // background fetch would otherwise suppress the stale
-                        // pill while the displayed diff is at an older head
-                        // (review-fix-loop A2). Manual Sync realigns it.
+                        // pill while the displayed diff is at an older head.
+                        // Manual Sync realigns it.
                         tab.pr_refs_fetched = true;
                         desktop_rev.fetch_add(1, Ordering::Relaxed);
                     }
@@ -9826,35 +10096,53 @@ pub async fn poll(state: State<'_, AppState>) -> Result<PollResponse, String> {
 
 fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let t0 = std::time::Instant::now();
-    let lock_t0 = std::time::Instant::now();
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let lock_wait_ms = lock_t0.elapsed().as_millis();
-    // Drain pending agent log entries and check for completed commands.
-    app.drain_agent_log();
-    // Consume completed command receivers — updates command_status to done/failed
-    // and emits completion log entries. Agent-written sidecars have newer mtimes
-    // than the last check, so the .er reload below picks them up via the mtime
-    // comparison (no forced last_ai_check reset — O5).
-    app.check_commands();
-    // Same lifecycle for app-level background tasks (cross-tab reviews).
-    // Only log poll diagnostics when there's actually a task in flight to avoid
-    // flooding stderr every 2 seconds during normal use.
-    let pre = app.background_task_snapshots().len();
-    let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
-    if debug_bg {
-        eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
-    }
-    app.poll_background_tasks();
-    let post = app.background_task_snapshots().len();
-    if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
-        eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
-    }
-    process_ai_task_inbox(&app, state);
-    // Drain again so completion/failure log entries are visible in this poll.
-    app.drain_agent_log();
-    // Check if .er/ AI files changed — cheap mtime check, reloads AI state if yes
-    app.tab_mut().check_ai_files_changed();
 
+    // Pass one: the calls that mutate. A short lock, released before the
+    // snapshot re-takes it — so a `select_file` or `set_mode` arriving
+    // mid-poll waits for this pass rather than for the whole snapshot build.
+    let lock_t0 = std::time::Instant::now();
+    let warm_target;
+    {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        // Drain pending agent log entries and check for completed commands.
+        app.drain_agent_log();
+        // Consume completed command receivers — updates command_status to
+        // done/failed and emits completion log entries. Agent-written sidecars
+        // have newer mtimes than the last check, so the .er reload below picks
+        // them up via the mtime comparison (no forced last_ai_check reset — O5).
+        app.check_commands();
+        // Same lifecycle for app-level background tasks (cross-tab reviews).
+        // Only log poll diagnostics when there's actually a task in flight to
+        // avoid flooding stderr every 2 seconds during normal use.
+        let pre = app.background_task_snapshots().len();
+        let debug_bg = er_engine::app::debug_bg_enabled() && pre > 0;
+        if debug_bg {
+            eprintln!("[bg] poll: pre poll_background_tasks snapshots={pre}");
+        }
+        app.poll_background_tasks();
+        let post = app.background_task_snapshots().len();
+        if debug_bg || (er_engine::app::debug_bg_enabled() && post > 0) {
+            eprintln!("[bg] poll: post poll_background_tasks snapshots={post}");
+        }
+        process_ai_task_inbox(&app, state);
+        // Drain again so completion/failure log entries are visible in this poll.
+        app.drain_agent_log();
+        // Check if .er/ AI files changed — cheap mtime check, reloads if yes.
+        app.tab_mut().check_ai_files_changed();
+        // Identity for the off-lock warm kicked below, captured while the guard
+        // is held so the worker needs no lock of its own.
+        warm_target = (app.tab().repo_root.clone(), app.tab().base_branch.clone());
+    }
+    // Warm the worktree-metadata cache off the critical section. Pass two builds
+    // the snapshot with the lock held, and a cold entry there pays the entire
+    // fan-out inside it; warming here means the next build reads a warm entry.
+    // No-op unless the cached entry is actually getting old (see the fn).
+    crate::snapshot::kick_worktrees_warm(&warm_target.0, &warm_target.1);
+    let lock_wait_ms = lock_t0.elapsed().as_millis();
+
+    // Pass two: re-take for the revisions and the snapshot, so the two agree
+    // with each other. Nothing between here and the snapshot releases it.
+    let app = state.app.lock().map_err(|e| e.to_string())?;
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
     let content_revision = compute_content_revision(&app);
     let chrome_revision = compute_chrome_revision(state);
@@ -10052,6 +10340,18 @@ fn compute_content_revision(app: &App) -> u64 {
         .map(|g| g.comments.len())
         .unwrap_or(0)
         .hash(&mut h);
+    // The checklist moves no other hash input: a toggle rewrites one file, and
+    // a checklist that appears or is regenerated changes the item count. Drop
+    // this and the card shows the state from the last poll forever.
+    if let Some(checklist) = &tab.ai.checklist {
+        checklist.items.len().hash(&mut h);
+        checklist
+            .items
+            .iter()
+            .filter(|i| i.checked)
+            .count()
+            .hash(&mut h);
+    }
     if let Some(qs) = &tab.ai.questions {
         if let Some(last) = qs.questions.last() {
             last.id.hash(&mut h);
@@ -10085,6 +10385,24 @@ fn compute_content_revision(app: &App) -> u64 {
     if let Some(review) = &tab.ai.review {
         review.diff_hash.hash(&mut h);
         review.files.len().hash(&mut h);
+        // Per-finding state that moves no file count. Resolving a finding or the
+        // arbiter dropping one leaves `files.len()` alone, so without these the
+        // row would never reach the UI.
+        let mut total = 0usize;
+        let mut resolved = 0usize;
+        let mut dropped = 0usize;
+        for fr in review.files.values() {
+            total += fr.findings.len();
+            resolved += fr.findings.iter().filter(|f| f.resolved).count();
+            dropped += fr
+                .findings
+                .iter()
+                .filter(|f| matches!(f.confidence, er_engine::ai::Confidence::Dropped))
+                .count();
+        }
+        total.hash(&mut h);
+        resolved.hash(&mut h);
+        dropped.hash(&mut h);
     }
     // Agent command status changes (e.g. running → done) must trigger a snapshot.
     for (name, status) in &tab.command_status {
@@ -10338,7 +10656,7 @@ pub fn get_background_task_log(
     let log: Vec<AgentLogSnapshot> = entries
         .iter()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 er_engine::app::AgentLogSource::Stdout => "stdout".to_string(),
                 er_engine::app::AgentLogSource::Stderr => "stderr".to_string(),
@@ -10472,7 +10790,7 @@ mod tests {
 
     #[test]
     fn pr_open_entry_renders_stale_head_but_rejects_rebase() {
-        // J1: when the head moved on origin (stale-by-head), the hint open is still a
+        // When the head moved on origin (stale-by-head), the hint open is still a
         // cache hit — we render the diff we already hold and let the 30s pill flag it.
         // The lookup must return the ENTRY's own freshness (the oid the cached diff
         // was built against), not the newer requested oid; seeding the staleness probe
@@ -10708,14 +11026,20 @@ mod tests {
 
     #[test]
     fn open_source_policy_allows_only_checked_out_local_contexts() {
-        // Working tree tab
-        assert!(allows_local_open(false, false, false));
-        // Remote PR tab
-        assert!(!allows_local_open(true, false, false));
-        // Local branch/PR view without checkout root
-        assert!(!allows_local_open(false, true, false));
-        // Local branch view with checkout root (tracked branch checked out)
-        assert!(allows_local_open(false, true, true));
+        // The policy itself lives on `TabState::local_checkout_root` (see the
+        // engine's tests); this pins the two roots it resolves to.
+        let mut working = er_engine::app::TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(local_source_root(&working), Some("/repo"));
+
+        let mut pr = er_engine::app::TabState::new_for_test(vec![]);
+        pr.repo_root = "/repo".into();
+        pr.remote_repo = Some("o/r".into());
+        pr.local_branch_view = Some("feat/pr-head".into());
+        pr.current_branch = "feat/pr-head".into();
+        assert_eq!(local_source_root(&pr), None);
+        pr.local_branch_checkout_root = Some("/wt".into());
+        assert_eq!(local_source_root(&pr), Some("/wt"));
     }
 
     #[test]
@@ -10727,6 +11051,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("ok", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10743,6 +11071,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("fail", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -10762,6 +11094,10 @@ mod tests {
             is_claude_compatible: true,
             uses_stream_json: false,
             env: vec![],
+            // These go through ER_FAKE_CLAUDE and never reach the spawn.
+            timeout: std::time::Duration::from_secs(900),
+            slot_cap: 3,
+            slot_ceiling: 6,
         };
         let body = with_fake_claude("custom-response-text", || {
             run_card_ai_subprocess(&inv, "ctx", "prompt", Some("sonnet"))
@@ -11050,8 +11386,8 @@ mod tests {
     fn place_tab_skip_storage_sync_still_places_and_focuses() {
         use er_engine::app::TabState;
 
-        // The PR-open hot path skips the storage sync (first-paint plan
-        // step 1): `enter_pr_diff_*` performs the authoritative reload right
+        // The PR-open hot path skips the storage sync:
+        // `enter_pr_diff_*` performs the authoritative reload right
         // after, so placement must still work and focus the tab.
         let mut app = make_app_with_n_tabs(1);
         app.active_tab = 0;
@@ -11149,7 +11485,7 @@ mod tests {
         assert_eq!(
             tab.last_diff_head_oid.as_deref(),
             Some("oid-1"),
-            "staleness baseline = the oid the cached diff was fetched at (R1)"
+            "staleness baseline = the oid the cached diff was fetched at"
         );
         assert_eq!(tab.files.len(), 1);
         assert_eq!(tab.files[0].path, "f.rs");
@@ -11488,15 +11824,15 @@ mod tests {
         assert!(!version_is_newer("not-a-version", "0.4.7"));
     }
 
-    /// ⌘K / AI Hub actions (run review, change model, triage, …) used to be
-    /// sync Tauri commands: they locked `App`, rebuilt a full snapshot (and for
-    /// reviews also shelled out to git / wrote diff artifacts) on the **main
-    /// thread**, freezing the window for a noticeable stretch — the same class
-    /// of bug as the file-filter freeze (`set_filter` → `run_blocking`).
+    /// Every palette-hot leaf command must be `pub async fn` whose body
+    /// contains `run_blocking`. Running one synchronously locks `App` and
+    /// rebuilds a full snapshot (for reviews, also shelling out to git and
+    /// writing diff artifacts) on the **main thread**, freezing the window for
+    /// a noticeable stretch — the same class of bug as the file-filter freeze
+    /// (`set_filter` → `run_blocking`).
     ///
-    /// Guard: every palette-hot leaf command must be `pub async fn` whose body
-    /// contains `run_blocking`. Thin `.await` wrappers (triage / files /
-    /// professor → scoped_review) must stay async and lock-free.
+    /// Thin `.await` wrappers (triage / files / professor → scoped_review) must
+    /// stay async and lock-free.
     #[test]
     fn cmdk_ai_actions_must_run_off_main_thread() {
         let src = include_str!("commands.rs");
@@ -11513,10 +11849,10 @@ mod tests {
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
-            // Local-first thread writes used to be sync Tauri commands: they
-            // locked App, reloaded every AI sidecar, and rebuilt the snapshot
-            // on the main thread — freeze + spinner per inline comment even
-            // though the comment is unpushed.
+            // These must be async: a sync command would lock App, reload every
+            // AI sidecar, and rebuild the snapshot on the main thread — a
+            // freeze and a spinner per inline comment, though the comment is
+            // unpushed.
             "add_comment",
             "add_question",
             "add_note",
@@ -11531,8 +11867,8 @@ mod tests {
             "unbulk_review_pillar",
             "add_ui_annotation",
             "delete_ui_annotation",
-            // Panel chrome used to rebuild a full snapshot on the main thread,
-            // freezing the window before `[` / `\` / `]` took effect.
+            // These must be async: rebuilding the panel chrome synchronously
+            // freezes the window before `[` / `\` / `]` takes effect.
             "toggle_panel",
             // Finding-thread actions: optimistic on the frontend, view-gated here.
             "remove_finding_thread",
@@ -11540,6 +11876,8 @@ mod tests {
             "update_finding_response",
             "delete_finding_response",
             "reply_to_finding",
+            // Checklist toggles write a sidecar, so they lock and hit disk too.
+            "toggle_checklist_item",
             // AI card actions build prompt context under the app lock; the gh
             // push/post commands are network round trips; export renders under
             // the lock. All of them froze the window as sync commands.
@@ -11629,6 +11967,7 @@ mod tests {
                     | "update_finding_response"
                     | "delete_finding_response"
                     | "reply_to_finding"
+                    | "toggle_checklist_item"
             ) && !body.contains("abort_wrong_view")
             {
                 failures.push(format!(

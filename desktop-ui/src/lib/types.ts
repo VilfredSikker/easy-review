@@ -32,7 +32,9 @@ export interface FindingResponseSnapshot {
   kind: "you" | "human" | "ai";
   timestamp: string;
   body_markdown: string;
-  origin: "finding_response";
+  /** "arbiter" marks a ruling the arbiter wrote, so a reader never has to
+   *  recognise it by its sentence. */
+  origin: "finding_response" | "arbiter";
   editable: boolean;
   deletable: boolean;
 }
@@ -111,6 +113,19 @@ export interface TourFileRef {
   related?: RelatedFileRef[];
 }
 
+/**
+ * A message the engine wants surfaced.
+ *
+ * Dedupe on `seq`, which advances on every notify — including a repeat of the
+ * same text. The backend leaves this set forever, so comparing `message` would
+ * swallow the second occurrence of any identical toast.
+ */
+export interface NotificationSnapshot {
+  message: string;
+  seq: number;
+  long: boolean;
+}
+
 export interface PillarSnapshot {
   id: string;
   title: string;
@@ -153,16 +168,28 @@ export interface ReviewerInfo {
   description: string;
 }
 
+/** How much a finding's grade can be trusted. Lower is more trustworthy. */
+export type Confidence = "confirmed" | "tentative" | "informational" | "dropped";
+
 export interface FlatFinding {
   id: string;
   file: string;
   line: number | null;
   hunk_index: number | null;
   severity: "high" | "med" | "low";
+  /** The producer's own grade, which an arbiter pass may have replaced. */
+  confidence: Confidence;
+  /** `producers · category`, built by the engine — the same tag the TUI draws. */
+  lens_category: string;
+  /** The user has fixed this one. Rows carrying it arrive in
+   *  `resolved_findings` and render dimmed. */
+  resolved: boolean;
   /** Specialized expert label when finding.category is an expert id. */
   expert_label: string | null;
   /** Agent that produced this finding (General, Security, Professor, …). */
   agent_label: string;
+  /** Every lens that raised it; more than one means several experts found it. */
+  raised_by: string[];
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */
@@ -198,6 +225,26 @@ export interface TriageSnapshot {
   files_changed: number;
   approx_risk: string;
   domains: string[];
+}
+
+export interface ChecklistItemSnapshot {
+  id: string;
+  text: string;
+  /** Outcome category (`schema` / `tests` / `api` / `auth` / `plan`) — free-form,
+   *  and empty for checklists generated before those categories existed. */
+  category: string;
+  checked: boolean;
+  /** Finding ids this item is about, for linking into the review. */
+  related_findings: string[];
+  /** File paths this item is about, for jumping into the diff. */
+  related_files: string[];
+}
+
+export interface ChecklistSnapshot {
+  /** File order is the toggle address: this array index goes back over IPC. */
+  items: ChecklistItemSnapshot[];
+  /** False when the checklist was generated against a different diff. */
+  fresh: boolean;
 }
 
 export interface DiagramPresetSnapshot {
@@ -239,13 +286,32 @@ export interface AiSnapshot {
   unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
+  /** Findings the arbiter ruled out, or folded into another. Reported so the
+   *  card can say how many it is not showing. */
+  arbiter_dropped: number;
+  arbiter_merged: number;
+  /** Verdicts that matched no finding — the grades exist but no longer describe
+   *  this review, so re-running validation is what fixes it. */
+  arbiter_unmatched: number;
+  /** Findings whose confidence the arbiter regraded. */
+  arbiter_regraded: number;
   /** Per-file risk assessments from review.json (not counted as findings). */
   file_risks: FileRiskSnapshot[];
+  /** Findings the user has resolved. Out of `findings` so nothing reading that
+   *  list changes meaning; the diff view shows these behind a toggle. */
+  resolved_findings: FlatFinding[];
+  /** Findings an arbiter ruled out. Counted, and listed when expanded. */
+  dropped_findings: FlatFinding[];
+  /** The gate this review defaults to, resolved by the engine. */
+  min_trust_default: Confidence;
   /** Whether `{er_dir}/review.json` exists (batch validate target). */
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
   eligible_comment_count: number;
   triage: TriageSnapshot | null;
+  /** The review checklist (`checklist.json`) — the outcomes a human verifies.
+   *  Null when the view bucket has none. */
+  checklist: ChecklistSnapshot | null;
   /** Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab. */
   diagrams: DiagramSnapshot[];
   /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
@@ -393,6 +459,47 @@ export interface GhReviewSummary {
   submitted_at: string;
 }
 
+/**
+ * `gh stack` (github/gh-stack) state for the active tab's branch, driving the
+ * BranchCard stack control.
+ *
+ * Present on every tab whose viewed branch is a local checkout — including
+ * before the first lookup, when `layers` is empty and `unavailable` is `null`
+ * (the control offers the lazy `refresh_stack` then). `null`/absent on tabs with
+ * no such checkout (remote-PR tabs, local PR views whose head isn't checked
+ * out), which is what hides the control.
+ */
+export interface StackSnapshot {
+  /** Trunk the stack is rooted on (`main`), shown after the layers. */
+  trunk: string;
+  /** One entry per stack layer, ordered top-of-stack first (may lack a PR). */
+  layers: StackLayerSnapshot[];
+  /** 1-based position counted from the top of the stack (`1 / 3` is the top). */
+  position: number | null;
+  /** Layer count — the denominator of the `n / size` badge. */
+  size: number;
+  /** Why there's no stack: branch outside any stack, extension not installed. */
+  unavailable: string | null;
+  /** `unavailable` is a failed lookup the control can retry (no `gh`, auth, network). */
+  retryable: boolean;
+  /** A lookup is in flight. */
+  loading: boolean;
+}
+
+export interface StackLayerSnapshot {
+  branch: string;
+  /** `null` for a layer whose PR doesn't exist yet. */
+  pr_number: number | null;
+  pr_url: string | null;
+  /** State without the `current` marker: `open`, `merged`, `needs rebase`. */
+  state: string;
+  /** True for the branch this tab is viewing — the highlighted row. */
+  is_current: boolean;
+  /** True when the layer has a PR that can be opened for review. */
+  enabled: boolean;
+  needs_rebase: boolean;
+}
+
 export interface GithubStatusSnapshot {
   owner: string;
   repo: string;
@@ -457,7 +564,7 @@ export interface AppSnapshot {
   local_branch: string | null;
   /** True when the viewed local branch is checked out (enables Unstaged/Staged/Commits scopes). */
   local_branch_checked_out?: boolean;
-  notification: string | null;
+  notification: NotificationSnapshot | null;
   tabs: TabSummary[];
   active_tab: number;
   /** Browser-view annotations for the active tab. */
@@ -466,6 +573,11 @@ export interface AppSnapshot {
   browser?: BrowserSnapshot;
   /** Live GitHub status for the active tab (only when it's a remote PR with cached data). */
   github?: GithubStatusSnapshot | null;
+  /**
+   * `gh stack` stack for the active tab's branch. `null`/absent on tabs whose
+   * viewed branch isn't a local checkout (see {@link StackSnapshot}).
+   */
+  stack?: StackSnapshot | null;
   /** Which background fetches are currently in-flight. */
   bg_loading: LoadingFlags;
   /** Running/done/failed background AI commands for the active tab. */
@@ -708,12 +820,33 @@ export type ConfigHubField =
 
 export type SettingsTab = "general" | "projects" | "terminal";
 
+/** One declared importance rule, as written. */
+export interface ImportanceRuleSnapshot {
+  matcher: string;
+  tier: string;
+}
+
+/** One changed file resolved against those rules: the tier it reads as, and the
+ *  rule that claimed it. `matchedRule` is null when no rule did, which leaves
+ *  the default to answer. */
+export interface ImportanceFileSnapshot {
+  path: string;
+  tier: string;
+  matchedRule: string | null;
+}
+
 export interface DesktopSettingsSnapshot {
   general: ConfigHubField[];
   app: ConfigHubField[];
   terminal: ConfigHubField[];
   agentEffort: string;
   repoRoot: string;
+  /** Read-only: the rules are written by the importance agent or by hand. */
+  importanceRules: ImportanceRuleSnapshot[];
+  importanceDefault: string;
+  /** The active tab's changed files, resolved. Empty when the repo declares no
+   *  rules, since then there is nothing to explain. */
+  importanceFiles: ImportanceFileSnapshot[];
 }
 
 export interface GetConfigHubResponse {

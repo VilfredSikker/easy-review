@@ -19,6 +19,7 @@ import type {
   ProjectSnapshot,
   TabSummary,
   ThreadSnapshot,
+  ChecklistItemSnapshot,
 } from "./types";
 
 function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
@@ -41,10 +42,30 @@ function emptyAi(overrides: Partial<AiSnapshot> = {}): AiSnapshot {
     has_review_json: false,
     eligible_comment_count: 0,
     triage: null,
+    checklist: null,
     diagrams: [],
     diagram_presets: [],
     ...overrides,
   };
+}
+
+function checklistItem(
+  overrides: Partial<ChecklistItemSnapshot> = {},
+): ChecklistItemSnapshot {
+  return {
+    id: "c-1",
+    text: "The migration backfills before it adds the column",
+    category: "schema",
+    checked: false,
+    related_findings: [],
+    related_files: [],
+    ...overrides,
+  };
+}
+
+/** A snapshot carrying a checklist, which is what the toggle addresses. */
+function withChecklist(items: ChecklistItemSnapshot[], fresh = true): AppSnapshot {
+  return snap({ ai: emptyAi({ checklist: { items, fresh } }) });
 }
 
 function hunk(overrides: Partial<HunkSnapshot> = {}): HunkSnapshot {
@@ -527,6 +548,109 @@ describe("dismiss / promote / bulk / annotation", () => {
     rollbackOptimisticOp(view, op!);
     expect(view.files[0].hunks[0].threads.map((t) => t.id)).toEqual(["hunk-only"]);
     expect(view.files[0].comment_count).toBe(1);
+  });
+});
+
+describe("checklist toggle", () => {
+  const twoItems = () => [
+    checklistItem({ id: "c-1" }),
+    checklistItem({ id: "c-2", checked: true }),
+  ];
+
+  it("paints the flip at the clicked index and rolls it back", () => {
+    const view = withChecklist(twoItems());
+    const op = buildOptimisticOp("toggle_checklist_item", { index: 1 }, view, { id: "opt-c" });
+    expect(op).toMatchObject({
+      type: "checklist-toggle",
+      index: 1,
+      itemId: "c-2",
+      target: false,
+    });
+
+    applyOptimisticOp(view, op!);
+    expect(view.ai.checklist!.items[1].checked).toBe(false);
+    expect(view.ai.checklist!.items[0].checked).toBe(false);
+
+    rollbackOptimisticOp(view, op!);
+    expect(view.ai.checklist!.items[1].checked).toBe(true);
+  });
+
+  it("stays painted through a snapshot built before the write landed", () => {
+    // The poll that crosses the click carries the old value; the pending op
+    // re-paints onto it so the row does not flicker back.
+    const op = buildOptimisticOp(
+      "toggle_checklist_item",
+      { index: 0 },
+      withChecklist(twoItems()),
+      { id: "opt-c" },
+    );
+    const polled = withChecklist(twoItems());
+    reapplyOptimisticOps(polled, [op!]);
+    expect(polled.ai.checklist!.items[0].checked).toBe(true);
+  });
+
+  it("keeps the second toggle painted when the first one confirms", () => {
+    // Two clicks in flight: the returned snapshot carries the first flip and
+    // not the second, which is still pending and must survive the ingest.
+    const view = withChecklist(twoItems());
+    const first = buildOptimisticOp("toggle_checklist_item", { index: 0 }, view, { id: "opt-a" })!;
+    const second = buildOptimisticOp("toggle_checklist_item", { index: 1 }, view, { id: "opt-b" })!;
+    expect(first.target).toBe(true);
+
+    const returned = withChecklist([
+      checklistItem({ id: "c-1", checked: true }),
+      checklistItem({ id: "c-2", checked: true }),
+    ]);
+    reapplyOptimisticOps(returned, [second]);
+    expect(returned.ai.checklist!.items[0].checked).toBe(true);
+    expect(returned.ai.checklist!.items[1].checked).toBe(false);
+  });
+
+  it("leaves a regenerated checklist alone", () => {
+    // The id is what makes the paint safe: after a regeneration the index
+    // points at a different outcome, and flipping it would lie about the row.
+    const op = buildOptimisticOp(
+      "toggle_checklist_item",
+      { index: 0 },
+      withChecklist(twoItems()),
+      { id: "opt-c" },
+    );
+    const regenerated = withChecklist([checklistItem({ id: "c-9", text: "New outcome" })]);
+    applyOptimisticOp(regenerated, op!);
+    expect(regenerated.ai.checklist!.items[0].checked).toBe(false);
+  });
+
+  it("builds nothing to paint when the index names no item", () => {
+    expect(buildOptimisticOp("toggle_checklist_item", { index: 0 }, snap())).toBeNull();
+    expect(
+      buildOptimisticOp("toggle_checklist_item", { index: 7 }, withChecklist(twoItems())),
+    ).toBeNull();
+    expect(
+      buildOptimisticOp("toggle_checklist_item", { index: 1.5 }, withChecklist(twoItems())),
+    ).toBeNull();
+  });
+
+  it("is view-scoped, so the write carries the view it was painted on", () => {
+    const op = buildOptimisticOp(
+      "toggle_checklist_item",
+      { index: 0 },
+      withChecklist(twoItems()),
+      { id: "opt-c" },
+    )!;
+    const args = optimisticInvokeArgs("toggle_checklist_item", { index: 0 }, op, {
+      active_tab: 0,
+      repo_root: "/repo",
+      pr_number: null,
+      branch: "feat",
+      mode: "branch",
+    });
+    expect(args.view).toEqual({
+      active_tab: 0,
+      repo_root: "/repo",
+      pr_number: null,
+      branch: "feat",
+      mode: "branch",
+    });
   });
 });
 

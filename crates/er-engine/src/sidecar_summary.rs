@@ -68,7 +68,7 @@ fn summarize_triage(t: &TriageReview) -> TriageSummary {
         primary: crate::ai::verdict_primary_str(&t.verdict.primary).to_string(),
         confidence: t.verdict.confidence.clone(),
         rationale: t.verdict.rationale.clone(),
-        approx_risk: t.diff_stats.approx_risk.clone(),
+        approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
         domains: t.diff_stats.domains.clone(),
         priority_files: t.priority_files.iter().map(|f| f.path.clone()).collect(),
         diff_hash: t.diff_hash.clone(),
@@ -333,7 +333,7 @@ mod tests {
             first_impression: "Looks small".into(),
             diff_stats: TriageDiffStats {
                 files_changed: 2,
-                approx_risk: "low".into(),
+                approx_risk: RiskLevel::Low,
                 domains: vec!["ui".into()],
             },
             verdict: TriageVerdict {
@@ -345,7 +345,7 @@ mod tests {
             priority_files: vec![TriagePriorityFile {
                 path: "src/a.rs".into(),
                 reason: "core".into(),
-                risk: "low".into(),
+                risk: RiskLevel::Low,
             }],
         };
         std::fs::write(
@@ -442,7 +442,7 @@ mod tests {
             first_impression: "ok".into(),
             diff_stats: TriageDiffStats {
                 files_changed: 1,
-                approx_risk: "low".into(),
+                approx_risk: RiskLevel::Low,
                 domains: vec![],
             },
             verdict: TriageVerdict {

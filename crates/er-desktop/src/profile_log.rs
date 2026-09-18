@@ -1,5 +1,9 @@
 //! Opt-in idle/CPU profiling: `ER_DESKTOP_PROFILE_POLL=1`.
-//! Logs to stderr with wall `ts_ms` and per-`kind` `since_last_ms` for cadence analysis.
+//!
+//! Emits one line per sample with wall `ts_ms` and per-`kind` `since_last_ms`
+//! for cadence analysis, through the `log` crate so the lines land in both the
+//! console and `~/Library/Logs/<bundle-id>/<app>.log`. A profile you cannot read
+//! back is not a measurement.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
@@ -34,7 +38,14 @@ fn since_last_ms(kind: &str) -> u64 {
     since
 }
 
-/// Single-line stderr log: `er-desktop kind=… ts_ms=… since_last_ms=… key=value …`
+/// Single-line log: `er-desktop kind=… ts_ms=… since_last_ms=… key=value …`
+///
+/// Goes through the `log` crate rather than `eprintln!`. The distinction is the
+/// whole point: `eprintln!` bypasses the logger, so what it writes reaches the
+/// console and never the LogDir file, and a run you cannot read back is a run
+/// you cannot measure from. The `er.profile` target is what
+/// `dev_log::log_target_group` maps to the profile group, so the `ER_LOG` filter
+/// selects these lines.
 pub fn profile_log(kind: &str, fields: &[(&str, String)]) {
     if !crate::dev_log::enabled(crate::dev_log::GROUP_PROFILE) || !profile_enabled() {
         return;
@@ -49,7 +60,7 @@ pub fn profile_log(kind: &str, fields: &[(&str, String)]) {
     for (k, v) in fields {
         parts.push(format!("{k}={v}"));
     }
-    eprintln!("er-desktop {}", parts.join(" "));
+    log::info!(target: "er.profile", "er-desktop {}", parts.join(" "));
 }
 
 /// Bump desktop revision and log `rev_bump` (throttled to one line per source per 200ms).

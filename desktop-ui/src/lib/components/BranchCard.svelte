@@ -5,6 +5,17 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import { resolveActivePrNumber } from "$lib/prUrl";
+  import {
+    selectablePrNumber,
+    shouldShowStackControl,
+    stackBadge,
+    stackRowTitle,
+    stackRows,
+    stackSummary,
+    stackTitle,
+    stackUnknown,
+    type StackRow,
+  } from "$lib/stackControl";
 
   interface Props {
     branch: string;
@@ -175,6 +186,75 @@
 
   const totalChanges = $derived(additions + deletions);
 
+  // ── Stack (gh stack) ──────────────────────────────────────────────────────
+  // The dropdown sits next to the branch name: a `n / size` badge for the
+  // current layer, and one row per layer to switch the view to. Rows come from
+  // `stackControl`, so ordering/labels are unit-tested away from the DOM.
+  let stackOpen = $state(false);
+  let stackFetching = $state(false);
+
+  const stack = $derived(app.snapshot?.stack ?? null);
+  const stackControlVisible = $derived(
+    shouldShowStackControl(stack, is_pr) || stackFetching || stackOpen,
+  );
+  const stackLabel = $derived(stackSummary(stack) ?? "Stack");
+  const stackBadgeText = $derived(stackBadge(stack));
+  const stackRowsList = $derived(stackRows(stack));
+  const stackTitleText = $derived(stackTitle(stack));
+
+  /**
+   * Run the `gh stack view` lookup. Idempotent while one is in flight, and
+   * closes the dropdown when the branch definitively isn't in a stack — the
+   * control hides itself then, so an open menu would linger empty. A *failed*
+   * lookup keeps the menu open, showing the reason and the refresh button.
+   */
+  async function loadStack() {
+    if (stackFetching) return;
+    stackFetching = true;
+    try {
+      await app.cmd("refresh_stack");
+    } finally {
+      stackFetching = false;
+      const result = app.snapshot?.stack;
+      if (result?.unavailable && !result.retryable) stackOpen = false;
+    }
+  }
+
+  /** Open the dropdown, running the (lazy) `gh stack view` lookup on first use. */
+  function toggleStackMenu() {
+    if (stackOpen) {
+      stackOpen = false;
+      return;
+    }
+    stackOpen = true;
+    if (stackUnknown(stack)) void loadStack();
+  }
+
+  /** Re-run the lookup (the cached stack can be stale after a push/rebase). */
+  function refreshStack() {
+    void loadStack();
+  }
+
+  /**
+   * Switch the view to another layer by opening its PR for review, replacing
+   * the current view (⌘/Ctrl-click opens it in a new tab instead).
+   */
+  async function switchToLayer(row: StackRow, e: MouseEvent) {
+    const prNumber = selectablePrNumber(row);
+    if (prNumber === null || !activeProject) return;
+    stackOpen = false;
+    await app.cmd("open_pr_branch", {
+      projectId: activeProject.id,
+      prNumber,
+      headRef: row.branch,
+      replace: shouldReplaceView(e),
+    });
+  }
+
+  function shouldReplaceView(e: MouseEvent): boolean {
+    return !(e.metaKey || e.ctrlKey || e.button === 1);
+  }
+
   const githubStateLabel = $derived(github ? stateLabel(github.state, github.is_draft) : null);
   const githubReviewLabel = $derived(github ? reviewLabel(github.review_decision) : null);
   const githubMergeLabel = $derived(github ? mergeableLabel(github.mergeable) : null);
@@ -192,6 +272,89 @@
       </svg>
       <span class="text-[12px] font-medium text-fg truncate flex-1 min-w-0 font-mono">{branch}</span>
       <div class="flex items-center gap-1.5 shrink-0">
+        {#if stackControlVisible}
+          <div class="relative">
+            <button
+              type="button"
+              onclick={toggleStackMenu}
+              disabled={stackFetching}
+              aria-expanded={stackOpen}
+              aria-haspopup="menu"
+              aria-label="Stacked PRs"
+              title={stackTitleText}
+              class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md border border-hairline bg-bg text-[10px] font-mono ${stackBadgeText ? "text-fg-2" : "text-muted"} hover:border-border hover:text-fg-1 transition-colors disabled:opacity-50"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
+                <line x1="6" y1="6" x2="6" y2="18"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="6" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
+              </svg>
+              <span>{stackLabel}</span>
+              <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 transition-transform" class:rotate-180={stackOpen} aria-hidden="true">
+                <path d="M6 9l6 6 6-6"/>
+              </svg>
+            </button>
+
+            {#if stackOpen}
+              <!-- svelte-ignore a11y_click_events_have_key_events -->
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <div class="fixed inset-0 z-40" onclick={() => (stackOpen = false)}></div>
+              <div
+                class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-64 py-1"
+                role="menu"
+              >
+                <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3 flex items-center gap-2">
+                  <span>Stack</span>
+                  {#if stackBadgeText}
+                    <span class="font-mono normal-case text-fg-2">{stackBadgeText}</span>
+                  {/if}
+                  <button
+                    type="button"
+                    onclick={refreshStack}
+                    disabled={stackFetching}
+                    aria-label="Refresh stack"
+                    title="Re-run gh stack view"
+                    class="ml-auto p-0.5 rounded text-muted hover:text-fg-2 disabled:opacity-50"
+                  >
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:animate-spin={stackFetching} aria-hidden="true">
+                      <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/>
+                    </svg>
+                  </button>
+                </div>
+
+                {#each stackRowsList as row (row.branch)}
+                  <button
+                    type="button"
+                    role="menuitem"
+                    disabled={!row.selectable}
+                    onclick={(e) => switchToLayer(row, e)}
+                    title={stackRowTitle(row)}
+                    class="w-full text-left px-3 py-1.5 text-[12px] flex items-center gap-2 ${row.selectable ? "text-ink-100 hover:bg-ink-700" : "text-fg-3 cursor-default"}"
+                  >
+                    <span class="w-3 shrink-0 inline-flex items-center justify-center">
+                      {#if row.is_current}
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-accent" aria-hidden="true"><path d="M5 13l4 4L19 7"/></svg>
+                      {/if}
+                    </span>
+                    <span class="font-mono truncate flex-1 min-w-0 ${row.is_current ? "text-accent" : ""}">{row.branch}</span>
+                    {#if row.needs_rebase}
+                      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-warning shrink-0" aria-label="Needs rebase"><circle cx="12" cy="12" r="10"/><path d="M12 8v5M12 16h.01"/></svg>
+                    {/if}
+                    <span class="font-mono text-[11px] text-periwinkle shrink-0">{row.pr_ref}</span>
+                    <span class="text-[10px] text-muted shrink-0">{row.state}</span>
+                  </button>
+                {/each}
+
+                {#if stackRowsList.length === 0}
+                  <div class="px-3 py-2 text-[11px] text-muted">
+                    {stack?.unavailable ??
+                      (stackFetching
+                        ? "Reading gh stack view…"
+                        : "Couldn't read the stack — refresh to retry")}
+                  </div>
+                {/if}
+              </div>
+            {/if}
+          </div>
+        {/if}
         {#if total_count > 0}
           <span class="text-[10px] text-muted whitespace-nowrap">{reviewed_count}/{total_count} reviewed</span>
         {/if}

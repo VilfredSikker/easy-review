@@ -24,12 +24,12 @@
         <tr><td><kbd>k</kbd> / <kbd>j</kbd></td><td>Next / previous file</td></tr>
         <tr><td><kbd>n</kbd> / <kbd>N</kbd></td><td>Next / previous hunk</td></tr>
         <tr><td><kbd>↓</kbd> / <kbd>↑</kbd></td><td>Next / previous line (within hunks)</td></tr>
-        <tr><td><kbd>Shift</kbd>+<kbd>↓</kbd> / <kbd>Shift</kbd>+<kbd>↑</kbd></td><td>Extend the line selection (for multi-line comments)</td></tr>
+        <tr><td><kbd>Shift</kbd>+<kbd>↓</kbd> / <kbd>Shift</kbd>+<kbd>↑</kbd></td><td>Extend the line selection (the AI Hub's <em>Copy context to clipboard</em> copies the selected lines)</td></tr>
         <tr><td><kbd>h</kbd> / <kbd>l</kbd> or <kbd>←</kbd> / <kbd>→</kbd></td><td>Scroll left / right (long lines)</td></tr>
         <tr><td><kbd>d</kbd> / <kbd>u</kbd> (also <kbd>Ctrl</kbd>+<kbd>d</kbd> / <kbd>Ctrl</kbd>+<kbd>u</kbd>)</td><td>Scroll down / up 10 lines</td></tr>
         <tr><td><kbd>PageDown</kbd> / <kbd>PageUp</kbd></td><td>Scroll down / up 20 lines</td></tr>
         <tr><td><kbd>Home</kbd></td><td>Reset horizontal scroll</td></tr>
-        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Previous / next inline item (comments, questions, findings) across files</td></tr>
+        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Previous / next inline item (questions, notes, GitHub comments — not findings) across files</td></tr>
         <tr><td><kbd>Ctrl</kbd>+<kbd>j</kbd> / <kbd>Ctrl</kbd>+<kbd>k</kbd></td><td>Previous / next AI finding across files</td></tr>
       </tbody>
     </table>
@@ -70,7 +70,7 @@
 
     <h2>Comments, questions &amp; notes</h2>
     <p>
-      Lowercase keys start a draft anchored to the current line (or selection). While composing, <kbd>Ctrl</kbd>+<kbd>t</kbd>
+      Lowercase keys start a draft anchored to the current line (or to the hunk, when no line is selected). While composing, <kbd>Ctrl</kbd>+<kbd>t</kbd>
       cycles the draft type — question → note → GitHub comment — and <kbd>Tab</kbd> pauses the draft (press
       <kbd>Tab</kbd> again in normal mode to resume it). Uppercase keys toggle layer <em>visibility</em>, not
       creation. See <a href="comments.html">Comments &amp; Questions</a>.
@@ -85,7 +85,8 @@
         <tr><td><kbd>C</kbd></td><td>Toggle visibility of the GitHub-comments layer</td></tr>
         <tr><td><kbd>A</kbd></td><td>Toggle visibility of the AI-findings layer</td></tr>
         <tr><td><kbd>X</kbd></td><td>Hide / show resolved items</td></tr>
-        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Focus the previous / next inline item</td></tr>
+        <tr><td><kbd>T</kbd></td><td>Cycle the confidence gate — every finding, then informational hidden, then confirmed only. Setting it by hand pins it; the default follows what the arbiter graded</td></tr>
+        <tr><td><kbd>J</kbd> / <kbd>K</kbd></td><td>Focus the previous / next inline item — questions, notes and GitHub comments, but never AI findings</td></tr>
         <tr><td><kbd>r</kbd></td><td>Reply to the focused comment, question, or finding</td></tr>
         <tr><td><kbd>e</kbd></td><td>Edit the focused comment (your own, top-level) — otherwise opens the file in <code>$EDITOR</code></td></tr>
         <tr><td><kbd>x</kbd></td><td>Delete the focused comment (with confirmation)</td></tr>
@@ -104,9 +105,9 @@
         <tr><td><kbd>g</kbd></td><td>Git hub — push to remote, stage files, refresh, pull / push GitHub comments, comment on or approve the PR</td></tr>
         <tr><td><kbd>v</kbd></td><td>Verify hub — run tests, linter, type check, and other configured <code>[commands]</code></td></tr>
         <tr><td><kbd>y</kbd></td><td>Copy hub — copy the file, path, hunk, or line to the clipboard</td></tr>
-        <tr><td><kbd>o</kbd></td><td>Open hub — switch repository, worktree, or recent project</td></tr>
+        <tr><td><kbd>o</kbd></td><td>Open hub — open another repo, switch worktree, review a remote PR, change the compare base</td></tr>
         <tr><td><kbd>,</kbd></td><td>Settings hub — live-edit configuration (see <a href="configuration.html">Configuration</a>)</td></tr>
-        <tr><td><kbd>?</kbd></td><td>Help hub — searchable list of every key and action</td></tr>
+        <tr><td><kbd>?</kbd></td><td>Help hub — the key reference, grouped by task</td></tr>
       </tbody>
     </table>
 
@@ -134,7 +135,7 @@
     <table>
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
-        <tr><td><kbd>p</kbd> / <kbd>P</kbd></td><td>Cycle the context panel forward / backward (file detail, AI summary, PR overview, off)</td></tr>
+        <tr><td><kbd>p</kbd> / <kbd>P</kbd></td><td>Cycle the context panel forward / backward (file detail, AI summary, PR overview, agent log, off)</td></tr>
         <tr><td><kbd>Tab</kbd></td><td>Toggle focus into the panel (or switch sides in split diff); with a paused draft, resumes it</td></tr>
         <tr><td><kbd>Esc</kbd></td><td>Leave panel focus</td></tr>
         <tr><td><kbd>&lt;</kbd> / <kbd>&gt;</kbd></td><td>Shrink / grow the file tree</td></tr>
@@ -162,7 +163,7 @@
       <tbody>
         <tr><td><kbd>]</kbd> / <kbd>[</kbd></td><td>Next / previous tab</td></tr>
         <tr><td><kbd>x</kbd></td><td>Close the current tab (when no comment is focused)</td></tr>
-        <tr><td><kbd>o</kbd></td><td>Open hub — repositories, worktrees, recent projects</td></tr>
+        <tr><td><kbd>o</kbd></td><td>Open hub — another repo, worktrees, remote PRs, compare base</td></tr>
       </tbody>
     </table>
 

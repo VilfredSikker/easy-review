@@ -26,6 +26,20 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 use watch::{FileWatcher, WatchEvent};
 
+/// Event-loop poll timeout — how long a frame waits for input before the loop
+/// runs its timers. Tick-based timers in the loop are stated as multiples of
+/// this, so changing it changes their real period.
+const POLL_INTERVAL: Duration = Duration::from_millis(50);
+
+/// How long the TUI leaves a notification up, by `Notification::long`.
+///
+/// The engine stamps each message and leaves it set; this is the TUI's own
+/// dwell time on it, measured on the wall clock rather than in ticks — a busy
+/// iteration (a refresh in flight) stretches a tick count past its nominal
+/// period, so the old 40-tick timer ran long exactly when the loop was busiest.
+const NOTIFICATION_DWELL: Duration = Duration::from_secs(2);
+const NOTIFICATION_DWELL_LONG: Duration = Duration::from_secs(5);
+
 /// Terminal UI for reviewing git diffs
 #[derive(Parser)]
 #[command(name = "er", version, about)]
@@ -397,6 +411,9 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         String,
         Result<Vec<er_engine::model_discovery::DiscoveredModel>, String>,
     )>();
+    // Stacked-PR lookups (`gh stack view`) run on worker threads; each result
+    // carries the tab index and lookup id it belongs to.
+    let (stack_tx, stack_rx) = mpsc::channel::<(usize, u64, er_engine::gh_stack::StackInfo)>();
     let mut hint_rx = hint_rx;
     let mut pr_data_rx = pr_data_rx;
 
@@ -408,6 +425,10 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     // Session auto-save: debounced at ~2 seconds
     let mut session_dirty = false;
     let mut session_save_deadline = Instant::now();
+
+    // Notification dwell — the seq last seen, and when to clear it
+    let mut notification_seq = 0u64;
+    let mut notification_clear_at: Option<Instant> = None;
 
     // Start watching by default (disabled in remote mode — no local files to watch)
     let root_str = app.tab().repo_root.clone();
@@ -425,6 +446,13 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         }
     };
 
+    // Ticks between AI-sidecar polls (1 s) and watched-file rescans (5 s).
+    // Expressed as multiples of the poll timeout below, which is the rate the
+    // loop actually runs at: written as bare tick counts they silently ran at
+    // half the intended period, doubling the `git check-ignore` spawn rate.
+    const AI_POLL_TICKS: u16 = 20;
+    const WATCHED_RESCAN_TICKS: u16 = 100;
+
     loop {
         // Update terminal width for resize calculations
         if let Ok(size) = terminal.size() {
@@ -435,7 +463,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         terminal.draw(|f| ui::draw(f, app, hl))?;
 
         // Poll for events with a timeout (lets us process watch events too)
-        if event::poll(Duration::from_millis(50))? {
+        if event::poll(POLL_INTERVAL)? {
             if let Event::Key(key) = event::read()? {
                 // Route keys: overlay takes priority, then search, then normal
                 if app.overlay.is_some() {
@@ -491,9 +519,11 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             }
         }
 
-        // Check for .er-* file changes (throttled: every 10 ticks ≈ 1s)
+        // Check for .er-* file changes (throttled to 1 s)
         app.ai_poll_counter = app.ai_poll_counter.wrapping_add(1);
-        if app.ai_poll_counter.is_multiple_of(10) && app.tab_mut().check_ai_files_changed() {
+        if app.ai_poll_counter.is_multiple_of(AI_POLL_TICKS)
+            && app.tab_mut().check_ai_files_changed()
+        {
             app.notify("✓ AI data refreshed");
         }
 
@@ -506,8 +536,8 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
         // Drain agent log entries from background threads
         app.drain_agent_log();
 
-        // Rescan watched files (every 50 ticks ≈ 5s)
-        if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(50) {
+        // Rescan watched files (5 s)
+        if !app.tab().is_remote() && app.ai_poll_counter.is_multiple_of(WATCHED_RESCAN_TICKS) {
             app.tab_mut().refresh_watched_files();
         }
 
@@ -525,6 +555,22 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                 app.tab_mut().pr_data = Some(data);
                 pr_data_rx = None;
             }
+        }
+
+        // Run a requested stacked-PR lookup off the UI thread. `gh stack view`
+        // talks to GitHub, so it must never run inline: the Open hub shows a
+        // loading row and the rows fill in when the result lands below.
+        if let Some((tab_index, repo_root, lookup_seq)) = app.take_stack_load_request() {
+            let tx = stack_tx.clone();
+            std::thread::spawn(move || {
+                let info = er_engine::gh_stack::load(&repo_root);
+                let _ = tx.send((tab_index, lookup_seq, info));
+            });
+        }
+
+        // Apply finished stacked-PR lookups (fills in the Open hub in place)
+        while let Ok((tab_index, lookup_seq, info)) = stack_rx.try_recv() {
+            app.apply_stack_result(tab_index, lookup_seq, info);
         }
 
         // Spawn model discovery when requested (picker refresh / Refresh models)
@@ -577,8 +623,25 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             app.tab().save_session();
         }
 
-        // Tick — used for auto-clearing notifications
-        app.tick();
+        // Notification dwell: a fresh seq restarts the timer, and clearing at
+        // the deadline is ours to do — the engine leaves the message set.
+        if let Some(n) = app.notification.as_ref() {
+            if n.seq != notification_seq {
+                notification_seq = n.seq;
+                let dwell = if n.long {
+                    NOTIFICATION_DWELL_LONG
+                } else {
+                    NOTIFICATION_DWELL
+                };
+                notification_clear_at = Some(Instant::now() + dwell);
+            }
+        }
+        if let Some(at) = notification_clear_at {
+            if Instant::now() >= at {
+                app.clear_notification();
+                notification_clear_at = None;
+            }
+        }
 
         if app.should_quit {
             // Save session on quit

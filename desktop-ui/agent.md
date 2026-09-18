@@ -1,51 +1,41 @@
 # Desktop UI Agent Guide
 
-`desktop-ui` is a Svelte frontend for the Tauri Desktop app. It should be treated as a consumer of the Rust snapshot contract plus a small owner of ephemeral browser/UI state.
+`desktop-ui` consumes the Rust snapshot contract and owns only ephemeral browser/UI state. Rules and traps below; the tree answers everything else.
 
-## Main Entry Points
+## The snapshot is pushed
 
-- `src/App.svelte`: app shell, title bar, panels, tab strip, terminal/browser drawers, global overlays.
-- `src/lib/types.ts`: TypeScript mirror of `crates/er-desktop/src/snapshot.rs`.
-- `src/lib/stores/app.svelte.ts`: snapshot store, polling, Tauri command wrapper, toasts, logs, diff mode, comment visibility.
-- `src/lib/stores/keyboard.ts`: global keyboard routing.
-- `src/lib/stores/browser.svelte.ts` and `browserUrl.ts`: browser drawer state and proxy URL canonicalization.
-- `src/lib/components`: feature components.
-- `src/lib/components/ui`: small shared UI primitives.
-- `src/lib/stories`: Storybook scenarios and visual fixtures.
+The backend emits `er://revision`; the frontend polls in response and coalesces concurrent polls. A 30s timer covers only events fired before the listener attached. Shortening that interval will not make the UI fresher — a stale view means the backend failed to emit a revision. See `docs/adr/0011-push-revision-not-polling.md`.
 
-## Frontend State Rules
+Mutations go through `app.cmd`, which invokes, ingests the returned snapshot, and routes failures to the error banner, the toast and the log. Raw `invoke` is for returns that must not replace the live snapshot: a non-snapshot return (export string, provider list, terminal write), or a snapshot the caller ingests itself. See `docs/adr/0018-app-cmd-ingests-snapshots.md`.
 
-- `app.snapshot` is backend truth. Do not duplicate persisted review state in frontend stores.
-- LocalStorage is acceptable for frontend preferences such as diff view mode, comment visibility, drawer height, and scroll positions.
-- Always call backend mutations through `app.cmd` unless a command needs a custom return type, such as export preview.
-- If an action can fail, use `app.cmd` so errors reach toasts and logs consistently.
-- Do not infer backend state from toasts. Render from snapshot fields.
+## Differential snapshots
 
-## Polling Model
+The backend omits hunks the frontend already holds (`hunks_omitted` + matching `delta_key`). See `docs/adr/0012-differential-snapshots.md`.
 
-`app.startPolling` calls `poll` every 2s and updates the snapshot only when the revision changes. If the UI looks stale after a backend mutation, inspect backend invalidation before adding frontend timers.
+- `resolveOmittedHunks` runs on every snapshot that replaces `app.snapshot` wholesale, before it is stored. A stored snapshot never carries `hunks_omitted`.
+- No matching previous content (first load, races, dropped snapshots) → the file becomes a lazy stub and the viewport loader re-fetches it. That is the recovery path; do not add a second one.
+- Anything handing file content to the frontend calls `record_sent_file`; a from-scratch rebuild resets the map. Mis-recording costs a stub re-fetch or a redundant resend, and correctness is unaffected. Keep it that way.
 
-## UI Performance Risks
+## Content and chrome revisions
 
-- `DiffView.svelte` can render many files and many rows. Use windowed rendering, stable keys, measured placeholder heights, and avoid per-scroll backend calls.
-- Avoid repeatedly serializing or deep comparing full snapshots in the frontend.
-- Keep expensive DOM work behind observers, requestAnimationFrame, or coarse timers.
-- Browser annotations post messages frequently. Do not persist every hover; persist only committed annotations or re-anchor results.
+`content_revision` and `chrome_revision` are independent; `reviewed_revision` is deliberately outside both. See `docs/adr/0016-split-content-and-chrome-revisions.md`.
 
-## Visual/Interaction Conventions
+- Apply when either of the first two changes. A `chrome_only` response merges over the hunks and spans already held rather than replacing them — one combined counter would make every checkmark on a reviewed file pay to rebuild the diff.
+- A chrome-only response may merge only onto the same view identity. Built for a different view (Branch vs PR Diff) it carries empty `files`, so defer it and wait for the full snapshot; merging leaves the previous view's diff on screen under the new tab.
 
-- Preserve the established dark, dense review UI unless a task explicitly asks for a redesign.
-- All colors must flow through the design tokens in `src/app.css` (`@theme` block), which `src/lib/themes.ts` overrides per theme. Use the token-backed Tailwind utilities (`text-fg-3`, `bg-card`, `text-error`, `bg-success/10`, …) or `var(--color-*)` in inline styles — never raw hex/rgb values and never stock Tailwind palette classes (`text-amber-400`, `bg-black`, `text-white`), which resolve to Tailwind defaults and ignore the theme. For alpha tints use `color-mix(in srgb, var(--color-x) N%, transparent)`. SVG `stroke`/`fill` attributes can't hold `var()` — use `stroke="currentColor"` plus a text-* class, or a `style` attribute. Exceptions: the arena overlay's fixed `--arena-*` palette (self-contained by design, including agent identity colors in `arena/agents.ts`), `diffContrast.ts` (computes WCAG-contrast-corrected Shiki token colors at render time), and Storybook harnesses.
-- Prefer small shared primitives from `components/ui` over ad hoc styling for repeated card/button/pill patterns.
-- Keyboard shortcuts should be registered centrally in `keyboard.ts`, while component-local text inputs must stop propagation where needed.
-- Any command palette action should map to an existing Tauri command or a clearly documented frontend-only preference.
+## Tab cache
 
-## Contract Checklist
+`tabCache` keeps a full snapshot per tab for instant revisit. It is the sanctioned exception to snapshot truth — the only one; do not grow another.
 
-Before shipping a UI feature:
+- Keyed by tab identity (`idx`, repo root, kind, branch, PR number) plus `change_token`. A moved token evicts the entry; `idx` alone is not identity, since closing a tab compacts it. First-select stubs have empty files and are never cached.
+- Chrome is taken live on paint (tabs, projects, panels, theme, inbox), hunks from the cache. The inbox is global state that may be minutes old; repainting its items flashes cleared notifications back onto the screen.
+- Race guards, both deliberate: a command snapshot whose tab key differs from the painted one is dropped, and a poll captured before `ingestCommandSnapshot` bumped the generation is discarded. A cache-hit paint of tab B can race a poll still built from tab A — the poll loses, and `select_tab`'s ingest applies B.
 
-1. Confirm the needed field exists in `types.ts` and `snapshot.rs`.
-2. Confirm the component renders from snapshot data, not stale local copies.
-3. Confirm command names and argument casing match Rust Tauri commands.
-4. Confirm loading/error states use `bg_loading`, `app.switching`, `app.refreshing`, toasts, or explicit component state.
-5. Add or update Storybook stories when the feature changes a major layout state.
+## Rules with consequences
+
+- LocalStorage holds frontend preferences only: diff view mode, compact/wrap lines, comment visibility, drawer and rail sizes, section order. Scroll position is in-memory, keyed by diff mode, and dies with the window — it is persisted nowhere.
+- `DiffView` renders many files and rows: windowed rendering, stable keys, measured placeholder heights, no per-scroll backend calls.
+- Browser annotations post messages often. Persist committed annotations and re-anchor results; never persist every hover.
+- Register keyboard shortcuts centrally in `keyboard.ts`. Component-local text inputs stop propagation themselves.
+- Colors flow through the `@theme` tokens in `app.css`, overridden per theme by `themes.ts`. Fixed hex survives in exactly two places, both surfaces that are not ours to theme: `AppMark.svelte` (the brand mark) and the browser iframe ground (`bg-white` in `BrowserView.svelte`). The arena palette is not an exception — `--arena-*` aliases the theme tokens.
+- Preserve the dense review UI unless the task asks for a redesign.

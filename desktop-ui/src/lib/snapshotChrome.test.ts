@@ -288,12 +288,12 @@ describe("mergeChromeSnapshot", () => {
       active_tab: 0,
       tabs: [tab({ idx: 0, label: "pr-1434", pr_number: 1434, is_active: true })],
       ai: emptyAi(),
-      notification: "sidebar updated",
+      notification: { message: "sidebar updated", seq: 1, long: false },
     });
     const merged = mergeChromeSnapshot(prev, next, "prev");
     expect(merged.ai.high).toBe(3);
     expect(merged.ai.summary_markdown).toBe("keep me");
-    expect(merged.notification).toBe("sidebar updated");
+    expect(merged.notification?.message).toBe("sidebar updated");
   });
 
   it("takes next.ai and next.pr when identity crosses PRs", () => {
@@ -308,13 +308,13 @@ describe("mergeChromeSnapshot", () => {
       tabs: [tab({ idx: 0, label: "pr-1434", pr_number: 1434, is_active: true })],
       pr: { ...pr1434 },
       ai: emptyAi({ high: 0, fresh: true }),
-      notification: "opened 1434",
+      notification: { message: "opened 1434", seq: 2, long: false },
     });
     const merged = mergeChromeSnapshot(prev, next, "next");
     expect(merged.ai.high).toBe(0);
     expect(merged.ai.summary_markdown).toBeNull();
     expect(merged.pr?.number).toBe(1434);
-    expect(merged.notification).toBe("opened 1434");
+    expect(merged.notification?.message).toBe("opened 1434");
   });
 
   it("takes next annotations and browser when identity crosses PRs", () => {
@@ -403,12 +403,12 @@ describe("mergeChromeSnapshot", () => {
       tabs,
       branch: "feat/from-fork",
       base: "main",
-      notification: "gh status landed",
+      notification: { message: "gh status landed", seq: 3, long: false },
     });
     const merged = mergeChromeSnapshot(prev, next, "prev");
     expect(merged.branch).toBe("feat/from-fork");
     expect(merged.base).toBe("main");
-    expect(merged.notification).toBe("gh status landed");
+    expect(merged.notification?.message).toBe("gh status landed");
   });
 
   it("keeps a populated prev branch when next chrome is empty", () => {

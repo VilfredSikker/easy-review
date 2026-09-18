@@ -6,7 +6,7 @@ pub(super) mod navigation;
 pub(super) mod preload;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use crate::config::{self, ErConfig, WatchedConfig};
+use crate::config::{self, ErConfig, ImportanceRepoConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
 };
@@ -23,6 +23,16 @@ use std::time::Instant;
 use tui_textarea::TextArea;
 
 static COMMENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Source of [`Notification::seq`]. Process-wide so a number is never handed out
+/// twice, even across an `App` rebuild — a UI that remembers the last seq it
+/// showed must never see that seq again, or it will swallow the message.
+static NOTIFICATION_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// Process-wide id for `gh stack view` lookups, so a finished lookup can be
+/// matched to the tab+request that started it (see
+/// [`App::take_stack_load_request`] / [`App::apply_stack_result`]).
+static STACK_LOOKUP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
@@ -487,6 +497,12 @@ pub enum HubAction {
     ToggleComments,
     ToggleQuestions,
     ToggleHideResolved,
+    /// Cycle the confidence gate: all grades → informational hidden → confirmed only.
+    CycleMinTrust,
+    /// Run the agent that proposes this repo's importance rules.
+    RunImportanceAgent,
+    /// List the findings the arbiter ruled out, under their count.
+    ToggleDroppedFindings,
     CleanupQuestions,
     CleanupReviews,
     /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
@@ -548,6 +564,22 @@ pub enum HubAction {
     OpenPrInBrowser,
     /// Change the compare/base branch this tab diffs against
     SetBaseBranch,
+    /// Open a stacked PR (from `gh stack`) in a review tab. Carries the PR URL
+    /// so the existing remote-PR path can be reused unchanged.
+    OpenStackPr {
+        pr_number: u64,
+        pr_url: String,
+        branch: String,
+    },
+    /// Open a stacked PR in the browser. Secondary action of `OpenStackPr`
+    /// (the hub's `b` key).
+    OpenStackPrInBrowser {
+        pr_number: u64,
+        pr_url: String,
+        branch: String,
+    },
+    /// Re-run the `gh stack view` lookup for the active tab
+    RefreshStack,
     // Copy hub actions
     CopyFullFile,
     CopyFilePath,
@@ -566,6 +598,33 @@ pub enum HubAction {
 }
 
 // ── Per-Tab State ──
+
+/// `gh stack` state for a tab's branch.
+///
+/// The lookup shells out to `gh stack view --json` (which talks to GitHub), so
+/// it is never run inline: opening the Open hub *requests* the lookup
+/// (`loading`), the TUI/desktop spawns it on a worker thread (`request_seq`),
+/// and the result is applied on a later tick via [`App::apply_stack_result`].
+/// `info` caches the outcome — a stack or an "unavailable" reason — so reopening
+/// the hub is instant.
+#[derive(Debug, Clone, Default)]
+pub struct StackState {
+    /// Cached lookup result; `None` until the first lookup lands.
+    pub info: Option<crate::gh_stack::StackInfo>,
+    /// A lookup has been requested (the hub shows a loading row until it lands).
+    pub loading: bool,
+    /// Id of the in-flight lookup (0 = none). A result only applies while the
+    /// tab still carries the id it was requested under, so a lookup that
+    /// finished after the tab moved, was closed, or re-requested is dropped.
+    pub request_seq: u64,
+}
+
+impl StackState {
+    /// Rows for the hub's stack section, or `None` when nothing is known yet.
+    pub fn rows(&self) -> Option<Vec<crate::gh_stack::StackRow>> {
+        self.info.as_ref().map(|info| info.rows())
+    }
+}
 
 /// State for a single repo tab
 pub struct TabState {
@@ -651,9 +710,14 @@ pub struct TabState {
     /// (backwards compat) — those entries are never auto-unmarked.
     pub reviewed: HashMap<String, String>,
 
-    /// Per-file diff hashes for the current refresh (volatile, not persisted).
-    /// Used to detect when a reviewed file's diff has changed since it was marked.
-    pub current_per_file_hashes: HashMap<String, String>,
+    /// Diff hashes for the files in `reviewed`, for the current refresh
+    /// (volatile, not persisted).
+    ///
+    /// Holds *only* reviewed paths — the name is the contract. A lookup miss
+    /// means "not a reviewed file", not "no such file in the diff", so read it
+    /// through [`Self::per_file_hash`] unless you are the auto-unmark pass
+    /// (which fills it and depends on that reading).
+    pub reviewed_file_hashes: HashMap<String, String>,
 
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
@@ -680,6 +744,21 @@ pub struct TabState {
 
     /// Timestamp of last .er-* file check (to avoid re-reading every tick)
     pub last_ai_check: Option<std::time::SystemTime>,
+
+    /// `branch_diff_hash` as of the last AI-state load.
+    ///
+    /// Staleness is derived from each sidecar's recorded `diff_hash` against
+    /// the current branch hash, so the diff moving is itself a reason to
+    /// reload — an mtime-only check would leave old findings rendering as
+    /// current against a diff they no longer match.
+    pub last_ai_diff_hash: Option<String>,
+
+    /// Fast (non-cryptographic) hash of the branch diff at the last quick
+    /// refresh of a local-branch view, or `None` after a full one.
+    ///
+    /// Exists to answer "did the branch diff move?" cheaply, so the SHA-256
+    /// that staleness is measured against is only recomputed when it did.
+    pub last_quick_branch_hash: Option<String>,
 
     // ── Filter state ──
     /// Active filter expression (user-visible string)
@@ -753,6 +832,12 @@ pub struct TabState {
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
 
+    /// This repo's declared importance rules, copied off the app's config.
+    ///
+    /// The filter resolves a tier from here rather than reaching for `ErConfig`,
+    /// which lives on `App` — same shape as `watched_config`.
+    pub importance: ImportanceRepoConfig,
+
     /// Git-ignored files opted into visibility
     pub watched_files: Vec<WatchedFile>,
 
@@ -767,6 +852,10 @@ pub struct TabState {
 
     /// Fetched PR overview data (loaded on startup if PR detected)
     pub pr_data: Option<PrOverviewData>,
+
+    /// `gh stack` stacked-PR state for this tab's branch. Fetched lazily when
+    /// the Open hub is opened, so the hub paints before `gh` returns.
+    pub stack: StackState,
 
     /// PR commit list from GitHub, newest first. PR review tabs use this for
     /// the commit scroller so it matches GitHub's PR Commits tab.
@@ -880,6 +969,14 @@ pub struct TabState {
 
     /// Status of each named command (keyed by command name like "summary", "test", etc.)
     pub command_status: std::collections::HashMap<String, CommandStatus>,
+
+    /// The running process for each named command, so a stop can reach it.
+    ///
+    /// Keyed like `command_status`, and inserted and removed alongside it —
+    /// an entry here with no `Running` status, or the reverse, means one of
+    /// the two maps was updated without the other.
+    pub command_runs:
+        std::collections::HashMap<String, std::sync::Arc<crate::agent_run::AgentRunHandle>>,
 
     /// Sender for streaming agent log entries from background threads
     pub log_tx: std::sync::mpsc::Sender<AgentLogEntry>,
@@ -1080,6 +1177,27 @@ pub struct MemoryBudget {
     pub parsed_files: usize,
     pub total_lines: usize,
     pub compacted_files: usize,
+}
+
+/// Plain inputs a PR refresh needs.
+///
+/// Owned, so [`TabState::fetch_pr_refresh`] can run with no App lock held and
+/// no tab to borrow — which is the whole point of splitting the fetch out.
+#[derive(Debug, Clone)]
+pub struct PrRefreshInputs {
+    pub repo_root: String,
+    pub pr_number: u64,
+}
+
+/// What [`TabState::fetch_pr_refresh`] brought back, ready for
+/// [`TabState::apply_pr_refresh`].
+#[derive(Debug)]
+pub struct PrRefreshResult {
+    pub head_ref: String,
+    /// The resolved remote-tracking base (e.g. `origin/main`).
+    pub resolved_base: String,
+    pub last_diff_head_oid: Option<String>,
+    pub commits: Vec<crate::git::CommitInfo>,
 }
 
 impl TabState {
@@ -1304,8 +1422,7 @@ impl TabState {
         // Light sync only: the open path immediately follows with
         // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
         // `apply_managed_root` re-routes to the PR bucket and performs the
-        // authoritative AI reload — a full reload here would be the 3rd of 3
-        // (first-paint plan step 1).
+        // authoritative AI reload — a full reload here would be the 3rd of 3.
         tab.sync_managed_storage_light();
         Ok(tab)
     }
@@ -1395,6 +1512,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1411,7 +1529,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1420,6 +1538,8 @@ impl TabState {
             diff_hash: diff_hash.clone(),
             branch_diff_hash: diff_hash,
             last_ai_check: None,
+            last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1433,6 +1553,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -1467,6 +1588,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1520,6 +1642,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1536,7 +1659,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1545,6 +1668,8 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1558,6 +1683,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
@@ -1590,6 +1716,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1639,6 +1766,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1655,7 +1783,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1664,6 +1792,8 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1677,6 +1807,7 @@ impl TabState {
             comment_side: None,
             comment_id_override: None,
             pr_data: None,
+            stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
@@ -1709,6 +1840,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1758,6 +1890,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1774,7 +1907,7 @@ impl TabState {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -1783,6 +1916,8 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -1828,6 +1963,7 @@ impl TabState {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -1841,6 +1977,7 @@ impl TabState {
             storage_notice: None,
             last_diff_head_oid: None,
             pr_refs_fetched: false,
+            stack: StackState::default(),
         }
     }
 
@@ -1918,6 +2055,26 @@ impl TabState {
     /// Like remote, only the Branch mode is offered and write commands are hidden.
     pub const fn is_local_branch_view(&self) -> bool {
         self.local_branch_view.is_some()
+    }
+
+    /// The working tree whose checked-out branch is the branch this tab views,
+    /// or `None` when there isn't one.
+    ///
+    /// A plain working/branch tab *is* the main checkout, so that's `repo_root`.
+    /// A read-only local-branch/PR view only has one when the branch is checked
+    /// out somewhere (`local_branch_checkout_root`, set by the desktop branch
+    /// watcher) — otherwise `current_branch` is the PR head, not the checkout,
+    /// so anything that must run "in the viewed branch" (open-in-editor,
+    /// `gh stack view`) has to be skipped rather than run in `repo_root` against
+    /// some unrelated branch.
+    pub fn local_checkout_root(&self) -> Option<&str> {
+        if self.is_remote() {
+            return None;
+        }
+        if self.local_branch_view.is_some() {
+            return self.local_branch_checkout_root.as_deref();
+        }
+        Some(self.repo_root.as_str())
     }
 
     /// Whether the active diff is a local branch-vs-base diff (the "Local Diff"):
@@ -2172,9 +2329,9 @@ impl TabState {
     /// views must sync again once the viewed branch is known.
     /// Storage routing + reviewed-state sync WITHOUT the AI reload. Used by
     /// hot open paths where the authoritative `reload_ai_state` runs moments
-    /// later with the final view bucket (first-paint plan step 1: the
-    /// constructor + `place_tab` + `enter_pr_diff_*` used to reload the AI
-    /// sidecars three times per open).
+    /// later with the final view bucket — the constructor, `place_tab` and
+    /// `enter_pr_diff_*` each reload, so a full reload here would be the
+    /// third per open.
     pub fn sync_managed_storage_light(&mut self) {
         self.apply_managed_root();
         self.reviewed = Self::load_reviewed_files_from_path(&self.er_root.reviewed_path());
@@ -2206,6 +2363,9 @@ impl TabState {
         }
         self.save_reviewed_files()?;
         self.current_branch = git_branch.to_string();
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        self.stack = StackState::default();
         self.sync_managed_storage();
         Ok(())
     }
@@ -2360,7 +2520,7 @@ impl TabState {
     /// Enter PR Diff from an already-loaded diff without any gh/git round-trip.
     ///
     /// `defer_ai_reload`: when true, skips the AI sidecar reload — used by the
-    /// desktop two-phase open (first-paint plan step 2), where the background
+    /// desktop two-phase open, where the background
     /// offload worker performs the single authoritative `reload_ai_state()`
     /// right after the command returns. Storage routing (`apply_managed_root`)
     /// and the reviewed-file set still apply synchronously so the first
@@ -2397,6 +2557,117 @@ impl TabState {
         self.refresh_diff_impl(true, true, true)
     }
 
+    /// The inputs a PR refresh needs, when this tab is a local PR tab.
+    ///
+    /// `None` means the caller wants an ordinary refresh: either the tab is not
+    /// a PR, or it is remote-only and has no local clone to fetch into.
+    pub fn pr_refresh_inputs(&self) -> Option<PrRefreshInputs> {
+        if self.is_remote() {
+            return None;
+        }
+        Some(PrRefreshInputs {
+            repo_root: self.repo_root.clone(),
+            pr_number: self.pr_number?,
+        })
+    }
+
+    /// Every network leg a PR refresh needs, touching no App state.
+    ///
+    /// This is the lock-free half of [`Self::refetch_and_refresh_diff`], split
+    /// out so callers that hold the desktop App lock can capture the inputs,
+    /// release it, and pay the three network round trips outside the critical
+    /// section. The head fetch and the `gh pr view` are independent, so they
+    /// overlap; the base fetch needs the base name the lookup returns, so it
+    /// follows them.
+    pub fn fetch_pr_refresh(inputs: &PrRefreshInputs) -> Result<PrRefreshResult> {
+        let pr_number = inputs.pr_number;
+        let repo_root = inputs.repo_root.as_str();
+
+        let (head_result, lookup_result) = std::thread::scope(|s| {
+            let head_handle = s.spawn(move || crate::github::fetch_pr_head(pr_number, repo_root));
+            let lookup = crate::github::gh_pr_base_branch_and_commits(repo_root, pr_number, 250);
+            let head_result = head_handle
+                .join()
+                .unwrap_or_else(|_| Err(anyhow::anyhow!("pr head fetch thread panicked")));
+            (head_result, lookup)
+        });
+        let head_ref = head_result?;
+
+        // Base branch and commit list are two fields of one PR, so one
+        // `gh pr view` answers both. Two invocations cost two round trips
+        // (~0.6s each) for the same object.
+        let (base_branch, commits) = match lookup_result {
+            Ok(pair) => pair,
+            // A failed union cannot say which field was at fault, so fall back
+            // to the two-call form and keep its error split: a base lookup
+            // failure is fatal, a commit lookup failure is not (an empty list
+            // keeps the existing one — see `apply_pr_commit_refresh`).
+            Err(_) => (
+                crate::github::gh_pr_base_branch(pr_number, repo_root)?,
+                crate::github::gh_pr_commits(repo_root, pr_number, 250)
+                    .map_err(|e| {
+                        eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}")
+                    })
+                    .unwrap_or_default(),
+            ),
+        };
+
+        let resolved_base = crate::github::fetch_base_branch_ref(repo_root, &base_branch)?;
+        // The oid the diff is about to be computed against, so the desktop
+        // freshness check can compare it to the latest PR head_oid.
+        let last_diff_head_oid = crate::github::rev_parse_oid(repo_root, &head_ref);
+
+        Ok(PrRefreshResult {
+            head_ref,
+            resolved_base,
+            last_diff_head_oid,
+            commits,
+        })
+    }
+
+    /// Assign a fetched refresh to this tab.
+    ///
+    /// Deliberately does *not* run the diff: [`Self::refetch_and_refresh_diff`]
+    /// shares one refresh across all its paths, and the desktop's lock-free
+    /// callers run theirs right after re-taking the guard.
+    pub fn apply_pr_refresh(&mut self, result: PrRefreshResult) {
+        self.pr_head_ref = Some(result.head_ref);
+        self.base_branch = result.resolved_base;
+        self.last_diff_head_oid = result.last_diff_head_oid;
+        // Refresh the PR commit list so the COMMITS panel follows the synced
+        // head. Best-effort: a fetch error keeps the existing list; an empty
+        // result (the failure signal for a real PR, which always has ≥1 commit)
+        // is also kept — see `apply_pr_commit_refresh`.
+        apply_pr_commit_refresh(&mut self.pr_commits, result.commits);
+    }
+
+    /// Record the oid the diff is about to be built against, read from the local
+    /// PR ref.
+    ///
+    /// Every caller that rebuilds the diff from `refs/er/pr/N/head` *without*
+    /// fetching must call this first. `compute_oid_staleness` deliberately
+    /// refuses to compare against an unknown `used_oid` ("either side unknown →
+    /// don't guess"), so leaving this `None` shows a diff that is behind the PR
+    /// head with no stale pill at all — the silent-staleness case.
+    ///
+    /// A restored tab is the reason this exists: `last_diff_head_oid` is runtime
+    /// state, not persisted, so a tab rehydrated from disk starts with `None`
+    /// even though its refs are on disk and its diff is real.
+    pub fn seed_last_diff_head_oid_from_local_ref(&mut self) {
+        if self.is_remote() {
+            return;
+        }
+        let Some(pr_number) = self.pr_number else {
+            return;
+        };
+        let ref_name = format!("refs/er/pr/{pr_number}/head");
+        // Only ever fills a gap. Overwriting a known oid with `None` on an
+        // unresolvable ref would suppress a pill that was already correct.
+        if let Some(oid) = crate::github::rev_parse_oid(&self.repo_root, &ref_name) {
+            self.last_diff_head_oid = Some(oid);
+        }
+    }
+
     /// For local PR tabs: re-fetch the PR head ref and base branch from origin before
     /// refreshing the diff. For all other tab types, behaves like `refresh_diff`.
     pub fn refetch_and_refresh_diff(&mut self) -> Result<()> {
@@ -2405,36 +2676,14 @@ impl TabState {
         // preload and never hit the network).
         self.preloaded_branch_raw = None;
         let t_total = Instant::now();
-        let is_local_pr = self.pr_number.is_some() && !self.is_remote();
-
-        if let (true, Some(pr_number)) = (is_local_pr, self.pr_number) {
+        if let Some(inputs) = self.pr_refresh_inputs() {
+            // One phase log for the whole fetch. The head fetch and the gh
+            // lookup overlap inside `fetch_pr_refresh`, so logging them
+            // separately would report two intervals that share wall time.
             let t = Instant::now();
-            let head_ref = crate::github::fetch_pr_head(pr_number, &self.repo_root)?;
-            log_branch_profile_phase(self, "fetch_pr_head", t);
-            let t = Instant::now();
-            let base_branch = crate::github::gh_pr_base_branch(pr_number, &self.repo_root)?;
-            log_branch_profile_phase(self, "lookup_pr_base_branch", t);
-            let t = Instant::now();
-            let resolved_base =
-                crate::github::fetch_base_branch_ref(&self.repo_root, &base_branch)?;
-            log_branch_profile_phase(self, "fetch_pr_base_ref", t);
-
-            self.pr_head_ref = Some(head_ref.clone());
-            self.base_branch = resolved_base;
-            // Record the oid the diff was computed against so the desktop
-            // freshness check can compare it to the latest PR head_oid.
-            self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
-
-            // Refresh the PR commit list so the COMMITS panel follows the synced
-            // head. Best-effort: a fetch error keeps the existing list; an empty
-            // result (the failure signal for a real PR, which always has ≥1
-            // commit) is also kept — see `apply_pr_commit_refresh`.
-            let t = Instant::now();
-            match crate::github::gh_pr_commits(&self.repo_root, pr_number, 250) {
-                Ok(commits) => apply_pr_commit_refresh(&mut self.pr_commits, commits),
-                Err(e) => eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}"),
-            }
-            log_branch_profile_phase(self, "refetch_pr_commits", t);
+            let result = Self::fetch_pr_refresh(&inputs);
+            log_branch_profile_phase(self, "fetch_pr_refresh", t);
+            self.apply_pr_refresh(result?);
         } else if self.shows_branch_base_diff() {
             // Branch ("Local Diff") view — main checkout or read-only branch view:
             // the diff base is origin/<base>. Re-fetch
@@ -2526,8 +2775,8 @@ impl TabState {
     /// reviewed files whose diff changed. Used by the file-watcher paths so a
     /// live edit/stage/commit to an already-reviewed file clears the review
     /// marker without waiting for a full refresh. Keeps the fast whole-diff
-    /// hash for quick refreshes; per-file SHA-256 is recomputed so a later
-    /// mark/toggle reads a current hash for any file.
+    /// hash for quick refreshes, and hashes only the reviewed files; a later
+    /// mark resolves its own file's hash on demand via `per_file_hash`.
     pub fn refresh_diff_quick_with_unmark(&mut self) -> Result<()> {
         self.refresh_diff_impl(false, true, true)
     }
@@ -2576,7 +2825,7 @@ impl TabState {
 
         self.base_branch = resolved;
         // The diff scope changes — per-file review hashes are stale.
-        self.current_per_file_hashes.clear();
+        self.reviewed_file_hashes.clear();
         self.pending_unmark_count = 0;
         // Local PR tabs cache fetched refs; force a re-fetch against the new base.
         self.pr_refs_fetched = false;
@@ -2888,8 +3137,24 @@ impl TabState {
             if recompute_branch_hash {
                 self.diff_hash = crate::ai::compute_diff_hash(&raw);
                 self.branch_diff_hash = self.diff_hash.clone();
+                self.last_quick_branch_hash = None;
             } else {
-                self.diff_hash = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                let fast = format!("{:016x}", crate::ai::compute_diff_hash_fast(&raw));
+                // The fast hash decides whether to pay for the SHA-256. On this
+                // view the common watch event is an uncommitted edit, which
+                // does not move the branch diff at all, so the expensive branch
+                // is the rare one.
+                //
+                // `branch_diff_hash` must follow a HEAD move the app did not
+                // perform itself -- a commit from a terminal -- or `is_stale`
+                // stays false and findings render as current against a diff
+                // they no longer match.
+                let moved = self.last_quick_branch_hash.as_deref() != Some(fast.as_str());
+                self.last_quick_branch_hash = Some(fast.clone());
+                self.diff_hash = fast;
+                if moved {
+                    self.branch_diff_hash = crate::ai::compute_diff_hash(&raw);
+                }
             }
             log_branch_profile_phase(self, "local_branch_diff_hash", t_diff_hash);
 
@@ -2908,9 +3173,13 @@ impl TabState {
             self.rebuild_hunk_offsets();
             self.mtime_cache.clear();
             self.update_mem_budget();
-            // Reload AI sidecar for this branch's comment directory
+            // Reload AI sidecar for this branch's comment directory. Gated so a
+            // watch event that changed neither the sidecars nor `branch_diff_hash`
+            // does not re-read and re-parse every one of them.
             let t_ai_reload = Instant::now();
-            self.reload_ai_state();
+            if !self.ai_state_is_current() {
+                self.reload_ai_state();
+            }
             log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
             // Full refreshes and quick-with-unmark refreshes recompute per-file
             // hashes; plain quick refreshes skip the SHA-256 pass.
@@ -2984,6 +3253,7 @@ impl TabState {
                     self.reload_ai_state();
                 }
                 self.relocate_all_comments();
+                self.refresh_finding_staleness();
                 if self.ai.is_stale {
                     self.compute_stale_files(&raw);
                 }
@@ -3056,7 +3326,12 @@ impl TabState {
             // Eager mode: full parse (fast enough for smaller diffs)
             self.files = git::parse_diff(&raw);
             self.file_headers.clear();
-            self.raw_diff = None;
+            // Retained even though eager parsing has no re-parse use for it:
+            // `per_file_hash` resolves a file's hash from here whenever the
+            // cached map misses, which is every newly-marked file. Dropping it
+            // silently disabled auto-unmark for files marked after a refresh.
+            // Bounded by the lazy threshold that selected this branch.
+            self.raw_diff = Some(raw.clone());
             self.lazy_mode = false;
 
             // Apply auto-compaction to low-value files
@@ -3089,12 +3364,14 @@ impl TabState {
         // Clear per-file context overrides — diff content has changed
         self.context_overrides.clear();
 
+        // Refresh mtime cache once per diff load (avoids per-frame fs::metadata calls).
+        // Must run before the sort: the sort reads this cache rather than statting
+        // once per comparison.
+        self.refresh_mtime_cache();
+
         if self.sort_by_mtime {
             self.sort_files_by_mtime();
         }
-
-        // Refresh mtime cache once per diff load (avoids per-frame fs::metadata calls)
-        self.refresh_mtime_cache();
 
         // Update memory budget
         self.update_mem_budget();
@@ -3141,9 +3418,10 @@ impl TabState {
         };
 
         // Refresh per-file hashes and auto-unmark reviewed files whose diff
-        // changed since they were marked. The full per-file map is always
-        // stored (mark/toggle reads it). Plain quick refreshes skip this pass
-        // unless the caller opts in (the file-watcher paths).
+        // changed since they were marked. Only reviewed files are hashed here;
+        // a mark resolves its own file's hash on demand via `per_file_hash`.
+        // Plain quick refreshes skip this pass unless the caller opts in (the
+        // file-watcher paths).
         if recompute_branch_hash || compute_per_file_hashes {
             let t = Instant::now();
             self.refresh_per_file_hashes_and_unmark(&raw, auto_unmark);
@@ -3162,6 +3440,12 @@ impl TabState {
         let t = Instant::now();
         self.relocate_all_comments();
         log_branch_profile_phase(self, "relocate_all_comments", t);
+
+        // Per-finding staleness — findings follow neither the comments' relocation
+        // nor the file-level `stale_files` set.
+        let t = Instant::now();
+        self.refresh_finding_staleness();
+        log_branch_profile_phase(self, "refresh_finding_staleness", t);
 
         // Compute per-file staleness when the review is stale and has file_hashes.
         // Reuse the branch_raw we already fetched — no additional git call.
@@ -3335,6 +3619,11 @@ impl TabState {
             None => ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref()),
         };
         self.finish_ai_reload(&er_dir, prev_stale_files, prev_tour_stale);
+        // The gate follows the review rather than a remembered choice, so it is
+        // recomputed on every load — unless the reviewer set it by hand.
+        if !self.layers.min_trust_pinned {
+            self.layers.min_trust = ai::min_trust_for(&self.ai.arbiter_effect);
+        }
     }
 
     /// The in-memory post-load steps of [`reload_ai_state`] (PR-scoped GitHub
@@ -3423,6 +3712,7 @@ impl TabState {
         let max_cursor = if item_count == 0 { 0 } else { item_count - 1 };
         self.review_cursor = self.review_cursor.min(max_cursor);
         self.last_ai_check = ai::latest_er_mtime(er_dir);
+        self.last_ai_diff_hash = Some(self.branch_diff_hash.clone());
     }
 
     /// Reload github comments from cache in remote mode.
@@ -3699,6 +3989,70 @@ impl TabState {
         }
     }
 
+    /// Recompute per-finding staleness against the current diff.
+    ///
+    /// Findings are never re-anchored, so this only sets the flag on each one:
+    /// a finding whose target line is gone is suspect, while a sibling in the
+    /// same file whose line merely moved is not. `stale_files` (file-level) is
+    /// computed separately and still drives the file-tree indicator.
+    ///
+    /// Three outcomes per reviewed file, matching `relocate_all_comments`:
+    /// present and parsed → compare each finding against it; an unparsed lazy
+    /// stub → skip, because an empty `hunks` means "not loaded yet", not "the
+    /// code is gone"; absent from the diff entirely → stale, the same verdict
+    /// the comment path reaches for a missing file.
+    pub fn refresh_finding_staleness(&mut self) {
+        let is_lazy = self.lazy_mode;
+        let rename_map: std::collections::HashMap<String, String> = self
+            .files
+            .iter()
+            .filter_map(|f| match &f.status {
+                git::FileStatus::Renamed(old_path) => Some((old_path.clone(), f.path.clone())),
+                _ => None,
+            })
+            .collect();
+
+        let files = &self.files;
+        let Some(ref mut review) = self.ai.review else {
+            return;
+        };
+        // Indexed once: this runs on every refresh and a linear scan per review
+        // file is quadratic on a large diff.
+        let index_by_path: std::collections::HashMap<&str, usize> = files
+            .iter()
+            .enumerate()
+            .map(|(idx, f)| (f.path.as_str(), idx))
+            .collect();
+        for (path, file_review) in review.files.iter_mut() {
+            let idx = index_by_path
+                .get(path.as_str())
+                .or_else(|| {
+                    rename_map
+                        .get(path)
+                        .and_then(|p| index_by_path.get(p.as_str()))
+                })
+                .copied();
+            let diff_file = match idx {
+                Some(idx) => {
+                    let file = &files[idx];
+                    // Not loaded yet is not the same as gone — the trap
+                    // `relocate_all_comments` documents. Leave the flags alone.
+                    if is_lazy && file.hunks.is_empty() && !file.compacted {
+                        continue;
+                    }
+                    Some(file)
+                }
+                // The file left the diff entirely, so an anchored finding points
+                // at nothing. The comment path reaches the same verdict
+                // (`Missing → Lost → stale`).
+                None => None,
+            };
+            for finding in &mut file_review.findings {
+                finding.refresh_stale(diff_file);
+            }
+        }
+    }
+
     /// Compute which files have changed since the review, populating stale_files
     fn compute_stale_files(&mut self, branch_raw_diff: &str) {
         if let Some(ref review) = self.ai.review {
@@ -3721,19 +4075,36 @@ impl TabState {
     }
 
     /// Check if .er-* files have been updated since last load (called on tick)
-    pub fn check_ai_files_changed(&mut self) -> bool {
-        let latest_mtime = ai::latest_er_mtime(&self.er_dir());
+    /// Whether the loaded AI state is still valid for this tab.
+    ///
+    /// False when the sidecar files changed on disk, or when the branch diff
+    /// moved since the last load. The second condition is the one that is easy
+    /// to drop: `is_stale` comes from comparing each sidecar's recorded
+    /// `diff_hash` against the current branch hash, so a diff-only change still
+    /// needs a reload or findings keep rendering as current against a diff they
+    /// no longer match.
+    pub fn ai_state_is_current(&self) -> bool {
+        if self.sidecars_moved_since_last_check() {
+            return false;
+        }
+        self.last_ai_diff_hash.as_deref() == Some(self.branch_diff_hash.as_str())
+    }
 
-        let should_reload = match latest_mtime {
-            Some(t) => match self.last_ai_check {
-                Some(last_check) => t > last_check,
-                None => true,
-            },
-            // Files deleted — clear stale in-memory state if we had any
+    /// Whether the sidecar directory has moved since the last load.
+    ///
+    /// Three cases, and the third is the one that is easy to get backwards:
+    /// sidecars newer than the last check, no check yet but sidecars present
+    /// (never loaded), or sidecars gone when we had loaded some (deleted).
+    /// Shared so the two callers cannot drift on it.
+    fn sidecars_moved_since_last_check(&self) -> bool {
+        match ai::latest_er_mtime(&self.er_dir()) {
+            Some(t) => self.last_ai_check.is_none_or(|last| t > last),
             None => self.last_ai_check.is_some(),
-        };
+        }
+    }
 
-        if should_reload {
+    pub fn check_ai_files_changed(&mut self) -> bool {
+        if self.sidecars_moved_since_last_check() {
             self.reload_ai_state();
             return true;
         }
@@ -3785,6 +4156,29 @@ impl TabState {
 
     pub const fn toggle_layer_ai(&mut self) {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
+    }
+
+    pub const fn toggle_show_dropped(&mut self) {
+        self.layers.show_dropped = !self.layers.show_dropped;
+    }
+
+    /// Tighten or loosen the confidence gate. Setting it by hand pins it, so a
+    /// later reload does not silently move it back to the review's default.
+    pub fn set_min_trust(&mut self, level: ai::Confidence) {
+        self.layers.min_trust = level;
+        self.layers.min_trust_pinned = true;
+    }
+
+    /// Advance the gate to its next level, pinned by hand. One definition, so
+    /// the key binding and the hub cannot cycle differently.
+    pub fn cycle_min_trust(&mut self) -> ai::Confidence {
+        let next = match self.layers.min_trust {
+            ai::Confidence::Informational => ai::Confidence::Tentative,
+            ai::Confidence::Tentative => ai::Confidence::Confirmed,
+            _ => ai::Confidence::Informational,
+        };
+        self.set_min_trust(next);
+        next
     }
 
     /// Forward cycle order for the side panel. `FileDetail` and `AgentLog` are
@@ -3966,7 +4360,12 @@ impl TabState {
         if !self.filter_rules.is_empty() {
             let review = self.ai.review.as_ref();
             visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_review(&self.filter_rules, f, review)
+                super::filter::apply_filter_with_context(
+                    &self.filter_rules,
+                    f,
+                    review,
+                    Some(&self.importance),
+                )
             });
         }
 
@@ -4357,7 +4756,7 @@ impl TabState {
         match git::discover_watched_files(&self.repo_root, &self.watched_config.paths) {
             Ok(files) => {
                 // One batched `git check-ignore` instead of one subprocess per file —
-                // a dozen watched files used to cost ~200ms of spawns on every open.
+                // a dozen watched files would cost ~200ms of spawns on every open.
                 let paths: Vec<String> = files.iter().map(|f| f.path.clone()).collect();
                 let ignored = git::gitignored_paths(&self.repo_root, &paths);
                 self.watched_not_ignored = files
@@ -4393,24 +4792,40 @@ impl TabState {
         Ok(())
     }
 
-    /// Sort files by filesystem mtime (newest first)
+    /// Sort files by filesystem mtime (newest first).
+    ///
+    /// Reads [`Self::mtime_cache`], which the caller populates via
+    /// [`Self::refresh_mtime_cache`] first. Statting inside the comparator cost
+    /// about `2n log n` syscalls per refresh — 500 files is roughly 9000
+    /// `fs::metadata` calls — plus a `format!` per comparison.
     fn sort_files_by_mtime(&mut self) {
-        use std::fs;
         use std::time::SystemTime;
+
+        // Callers refresh first. This covers one that does not: with an empty
+        // cache every mtime reads as UNIX_EPOCH and the sort would silently
+        // become a no-op rather than an obviously wrong order.
+        if self.mtime_cache.len() < self.files.len() {
+            self.refresh_mtime_cache();
+        }
 
         // In lazy mode this breaks the index correspondence between self.files and
         // self.file_headers that ensure_file_parsed() relies on.
-        let repo_root = self.repo_root.clone();
-        self.files.sort_by(|a, b| {
-            let mtime_a = fs::metadata(format!("{}/{}", repo_root, a.path))
-                .and_then(|m| m.modified())
+        let mut files = std::mem::take(&mut self.files);
+        files.sort_by(|a, b| {
+            let mtime_a = self
+                .mtime_cache
+                .get(&a.path)
+                .copied()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
-            let mtime_b = fs::metadata(format!("{}/{}", repo_root, b.path))
-                .and_then(|m| m.modified())
+            let mtime_b = self
+                .mtime_cache
+                .get(&b.path)
+                .copied()
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             // Newest first (reverse chronological)
             mtime_b.cmp(&mtime_a)
         });
+        self.files = files;
     }
 
     /// Populate `mtime_cache` with one `fs::metadata` call per diff file.
@@ -4501,7 +4916,12 @@ impl TabState {
         let (mut total, mut reviewed) = (0, 0);
         let review = self.ai.review.as_ref();
         for f in &self.files {
-            if super::filter::apply_filter_with_review(&self.filter_rules, f, review) {
+            if super::filter::apply_filter_with_context(
+                &self.filter_rules,
+                f,
+                review,
+                Some(&self.importance),
+            ) {
                 total += 1;
                 if self.reviewed.contains_key(&f.path) {
                     reviewed += 1;
@@ -4589,24 +5009,59 @@ impl TabState {
     /// Recompute per-file diff hashes from `raw` and auto-unmark reviewed files
     /// whose stored hash no longer matches.
     ///
-    /// Always stores the FULL per-file hash map (not just reviewed paths):
-    /// `toggle_reviewed` reads this map when the user marks a file, so every
-    /// file in the diff must have a current hash or a newly-marked file would
-    /// store the empty sentinel and permanently dodge auto-unmark.
+    /// Caches hashes for `reviewed` paths only — those are the ones the
+    /// auto-unmark pass below consults without a user action. Every other path
+    /// is resolved on demand by `per_file_hash`, so a newly-marked file gets a
+    /// current hash without the refresh paying a SHA-256 per file in the diff.
     ///
     /// `auto_unmark` gates the removal itself — mode-switch refreshes pass false
     /// because diff content legitimately differs per mode. The result is stored
     /// in `pending_unmark_count` for the caller to surface.
     fn refresh_per_file_hashes_and_unmark(&mut self, raw: &str, auto_unmark: bool) {
-        self.current_per_file_hashes = ai::compute_per_file_hashes(raw);
+        let wanted: HashSet<String> = self.reviewed.keys().cloned().collect();
+        self.reviewed_file_hashes = ai::compute_per_file_hashes_for(raw, &wanted);
         if auto_unmark {
             self.pending_unmark_count = self.auto_unmark_changed_reviewed();
         }
     }
 
+    /// Per-file diff hash for `path`.
+    ///
+    /// Prefers the cached map, which the watch path fills for `reviewed` files
+    /// only, and otherwise derives the hash from the retained raw diff. Marking
+    /// a file is a user action, so one targeted hash here is far cheaper than
+    /// hashing every file on every watch event.
+    ///
+    /// Falls back to an empty string when the diff has no such file — the same
+    /// sentinel the callers used before, which `auto_unmark_changed_reviewed`
+    /// treats as "unknown" and leaves alone. Once the raw diff is retained on
+    /// both parse branches that is the only way to reach it: every caller marks
+    /// a path taken from the current diff, which the retained raw diff contains.
+    ///
+    /// The sentinel stays a `String` rather than becoming an `Option` because it
+    /// is the persisted `reviewed` file format; narrowing it would churn that
+    /// format to express a case the guards above already make unreachable.
+    pub fn per_file_hash(&self, path: &str) -> String {
+        if let Some(hash) = self.reviewed_file_hashes.get(path) {
+            return hash.clone();
+        }
+        self.raw_diff
+            .as_deref()
+            .and_then(|raw| ai::compute_per_file_hash(raw, path))
+            .unwrap_or_default()
+    }
+
     /// Remove reviewed entries whose stored diff hash no longer matches the current diff.
     /// Also drops paths absent from the active diff (including legacy empty-hash lines).
     /// Returns the number of entries removed. Saves the file if any were removed.
+    ///
+    /// Precondition: must run immediately after
+    /// [`Self::refresh_per_file_hashes_and_unmark`], which has just populated
+    /// `reviewed_file_hashes` for exactly the reviewed paths. This reads that
+    /// map directly and treats a miss as "the file is no longer in the diff" —
+    /// which is only true while the map was built for those keys in this pass.
+    /// Called against a partial or stale map, the same miss means "not cached",
+    /// and every uncached reviewed file would be wrongly cleared.
     fn auto_unmark_changed_reviewed(&mut self) -> usize {
         let orphan_count = self.prune_reviewed_not_in_diff();
 
@@ -4617,7 +5072,7 @@ impl TabState {
                 if stored_hash.is_empty() {
                     return None;
                 }
-                let current_hash = self.current_per_file_hashes.get(path);
+                let current_hash = self.reviewed_file_hashes.get(path);
                 match current_hash {
                     Some(h) if h == stored_hash => None,
                     _ => Some(path.clone()),
@@ -4770,7 +5225,11 @@ pub enum AgentLogSource {
 #[derive(Debug, Clone)]
 pub struct AgentLogEntry {
     pub timestamp: std::time::Instant,
-    pub command_name: String,
+    /// Shared, not owned: every line of a run carries the same name, and an
+    /// agent writing a JSON event per line allocates thousands of copies of a
+    /// string that never changes. `Arc<str>` rather than `Arc<String>` so the
+    /// allocation is one block.
+    pub command_name: std::sync::Arc<str>,
     pub source: AgentLogSource,
     pub text: String,
 }
@@ -4792,6 +5251,22 @@ impl Default for PanelsVisible {
     }
 }
 
+/// A message for a UI to surface once.
+///
+/// The engine owns *what was said* and *how many times*; each UI owns how long
+/// it stays on screen. `seq` advances on every `notify`, including a repeat of
+/// identical text, so a UI can tell a fresh message from a snapshot it has
+/// already shown. That matters on the desktop, where the field is never cleared
+/// and a snapshot arrives only when the revision counter moves.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notification {
+    pub message: String,
+    /// Advances on every `notify`/`notify_long`; never reused.
+    pub seq: u64,
+    /// Messages worth a longer dwell than the UI's default.
+    pub long: bool,
+}
+
 pub struct App {
     /// Open tabs (one per repo)
     pub tabs: Vec<TabState>,
@@ -4811,16 +5286,19 @@ pub struct App {
     /// Whether watch mode is active
     pub watching: bool,
 
-    /// Last watch notification message
-    pub watch_message: Option<String>,
+    /// The message a UI should surface, with the stamp saying whether it's new.
+    ///
+    /// Deliberately outlives the on-screen dwell: the desktop shows one toast
+    /// per [`Notification::seq`] and never clears the field, so a message that
+    /// lands between two polls is still shown once. The TUI clears it itself
+    /// via [`App::clear_notification`] when its own timer expires.
+    pub notification: Option<Notification>,
 
-    /// Ticks since last watch notification (for auto-clearing)
-    pub watch_message_ticks: u16,
-
-    /// How many ticks the current notification should persist (default 20 ≈ 2s)
-    pub watch_message_max_ticks: u16,
-
-    /// Counter for throttling AI file polling (check every 10 ticks ≈ 1s)
+    /// Loop-iteration counter the TUI uses to throttle periodic work.
+    ///
+    /// The engine only holds it. The TUI increments it once per iteration and
+    /// owns the periods (its `AI_POLL_TICKS` / `WATCHED_RESCAN_TICKS`), since
+    /// only it knows how long an iteration takes.
     pub ai_poll_counter: u16,
 
     /// Input buffer for remote URL input mode
@@ -5016,9 +5494,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5062,9 +5538,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5102,9 +5576,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: er_config,
@@ -5137,9 +5609,7 @@ impl App {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -5538,7 +6008,7 @@ impl App {
         }
         tab.reload_remote_comments();
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         self.active_tab = self.tabs.len() - 1;
         self.notify(&format!("Opened remote: {}", name));
         Ok(())
@@ -5584,6 +6054,42 @@ impl App {
 
     // ── Tab Management ──
 
+    /// Open a tab, handing it the config it reads.
+    ///
+    /// Anything a tab resolves out of `ErConfig` is copied on the way in, so a
+    /// tab opened after a config change filters the same way as one that was
+    /// already open.
+    fn push_tab(&mut self, mut tab: TabState) {
+        tab.importance = Self::importance_for(&self.config.importance, &tab.repo_root);
+        self.tabs.push(tab);
+    }
+
+    /// The rules `repo_root` declares, or an empty table.
+    ///
+    /// Takes the table rather than `&self` so a caller holding `self.tabs`
+    /// mutably can still resolve a tab's rules.
+    fn importance_for(
+        importance: &config::ImportanceConfig,
+        repo_root: &str,
+    ) -> ImportanceRepoConfig {
+        importance
+            .repo(&crate::storage::slug_repo(repo_root))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Copy each repo's declared importance rules onto its open tabs.
+    ///
+    /// The filter resolves a tier off the tab and the config lives on the app,
+    /// so this is where the two meet. Call it after the config changes, the way
+    /// `watched_config` is pushed.
+    pub fn sync_importance_to_tabs(&mut self) {
+        let importance = self.config.importance.clone();
+        for tab in self.tabs.iter_mut() {
+            tab.importance = Self::importance_for(&importance, &tab.repo_root);
+        }
+    }
+
     /// Open a repo in a new tab (or switch to existing tab if already open)
     pub fn open_in_new_tab(&mut self, repo_root: String) -> Result<()> {
         // Check if this repo is already open in a tab
@@ -5599,7 +6105,7 @@ impl App {
 
         let tab = TabState::new(repo_root)?;
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         self.active_tab = self.tabs.len() - 1;
         self.overlay = None;
         self.notify(&format!("Opened: {}", name));
@@ -5645,7 +6151,7 @@ impl App {
             self.notify(&msg);
         }
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         let idx = self.tabs.len() - 1;
         self.active_tab = idx;
         self.sync_config_from_active_tab();
@@ -5654,8 +6160,8 @@ impl App {
     }
 
     /// Push the global watched-file config onto the focused tab. Config is
-    /// global-only, so this no longer reloads theme/display/features from disk —
-    /// the old wholesale reload here is what silently reverted in-flight settings.
+    /// global-only, so this must not reload theme/display/features from disk:
+    /// a wholesale reload here silently reverts in-flight settings.
     pub fn sync_config_from_active_tab(&mut self) {
         let watched = self.config.watched.clone();
         if let Some(tab) = self.tabs.get_mut(self.active_tab) {
@@ -6059,6 +6565,30 @@ impl App {
                 hint: "X".into(),
                 description: "Toggle hiding resolved comments".into(),
                 action: HubAction::ToggleHideResolved,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Confidence gate".into(),
+                hint: "T".into(),
+                description: "Cycle which grades show: all, tentative+, confirmed only".into(),
+                action: HubAction::CycleMinTrust,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Show arbiter's drops".into(),
+                hint: "".into(),
+                description: "List the findings the arbiter ruled out".into(),
+                action: HubAction::ToggleDroppedFindings,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Propose importance rules".into(),
+                hint: "".into(),
+                description: "Agent reads the repo and writes its [importance] table".into(),
+                action: HubAction::RunImportanceAgent,
                 is_header: false,
                 enabled: true,
             },
@@ -6914,6 +7444,11 @@ impl App {
 
     /// Open the Open modal hub (browse folders, switch worktree, remote PR, open in browser)
     pub fn open_open_hub(&mut self) {
+        // Ask for a `gh stack view` lookup on first open. The hub paints
+        // immediately with a loading row; the TUI runs the lookup off the UI
+        // thread (see `take_stack_load_request`) and fills the rows in later.
+        self.request_stack_load();
+
         let repo_root = self.tab().repo_root.clone();
         let has_worktrees = git::list_worktrees(&repo_root)
             .map(|wts| wts.len() > 1)
@@ -6974,6 +7509,12 @@ impl App {
             },
         ];
 
+        // ── Stacked PRs (gh stack) ──
+        // Sits above the current-PR section: on a stacked branch the stack, not
+        // a single PR, is what `o` is for.
+        items.push(Self::hub_header("── Stack ──"));
+        items.extend(self.stack_hub_items());
+
         if has_pr {
             items.push(HubItem {
                 label: "── Current PR ──".into(),
@@ -7003,6 +7544,246 @@ impl App {
             items,
             selected: first_selectable,
         });
+    }
+
+    /// A non-selectable section header for a modal hub.
+    fn hub_header(label: &str) -> HubItem {
+        HubItem {
+            label: label.into(),
+            hint: String::new(),
+            description: String::new(),
+            action: HubAction::Noop,
+            is_header: true,
+            enabled: false,
+        }
+    }
+
+    /// A selectable hub row: `label` is the primary text (branch name), `hint`
+    /// renders right after it in dim brackets (`#42`), `description` trails in
+    /// muted text (state).
+    fn hub_row(
+        label: &str,
+        hint: &str,
+        description: &str,
+        action: HubAction,
+        enabled: bool,
+    ) -> HubItem {
+        HubItem {
+            label: label.into(),
+            hint: hint.into(),
+            description: description.into(),
+            action,
+            is_header: false,
+            enabled,
+        }
+    }
+
+    /// Rows for the Open hub's `── Stack ──` section, in stack order (top of
+    /// the stack first, trunk last).
+    ///
+    /// Deliberately a thin map over [`crate::gh_stack::StackInfo::rows`]: the
+    /// ordering, PR labels and state text are owned and tested by `gh_stack`,
+    /// this only attaches the hub action each row should dispatch.
+    pub fn stack_hub_items(&self) -> Vec<HubItem> {
+        let tab = self.tab();
+
+        // `gh stack view` reads the checked-out branch's stack, so it's only
+        // meaningful when the branch this tab views is the checkout: a remote-PR
+        // tab has no local branch, and a local PR/branch view whose head isn't
+        // checked out would describe some unrelated branch.
+        if tab.is_remote() {
+            return vec![Self::hub_row(
+                "Stacked PRs",
+                "",
+                "Not available for remote PRs",
+                HubAction::Noop,
+                false,
+            )];
+        }
+        if tab.local_checkout_root().is_none() {
+            return vec![Self::hub_row(
+                "Stacked PRs",
+                "",
+                "Not available — this branch isn't checked out",
+                HubAction::Noop,
+                false,
+            )];
+        }
+
+        let Some(rows) = tab.stack.rows() else {
+            return vec![Self::hub_row(
+                "Loading stacked PRs…",
+                "",
+                "Reading gh stack view",
+                HubAction::Noop,
+                false,
+            )];
+        };
+
+        let mut items: Vec<HubItem> = rows
+            .into_iter()
+            .map(|row| {
+                let action = match (row.pr_number, row.pr_url) {
+                    (Some(pr_number), Some(pr_url)) => HubAction::OpenStackPr {
+                        pr_number,
+                        pr_url,
+                        branch: row.label.clone(),
+                    },
+                    // No PR yet (a fresh layer) or no URL to open — the row
+                    // still shows the branch, it just can't be selected.
+                    _ => HubAction::Noop,
+                };
+                Self::hub_row(&row.label, &row.hint, &row.description, action, row.enabled)
+            })
+            .collect();
+
+        // Only offer a refresh once there is something to refresh; the loading
+        // row already covers the first fetch.
+        items.push(Self::hub_row(
+            "Refresh stack",
+            "",
+            "Re-run gh stack view",
+            HubAction::RefreshStack,
+            true,
+        ));
+        items
+    }
+
+    /// Mark the active tab's stack as needing a lookup.
+    ///
+    /// Cheap and idempotent: it never shells out (the TUI does that off the UI
+    /// thread after [`App::take_stack_load_request`]), and a warm cache or an
+    /// in-flight request is left alone. Tabs whose viewed branch isn't checked
+    /// out (remote PRs, local PR views without a checkout) have no stack to read
+    /// — `gh stack view` would describe some other branch — so they're skipped.
+    pub fn request_stack_load(&mut self) {
+        let tab = self.tab_mut();
+        if tab.local_checkout_root().is_none() {
+            return;
+        }
+        if tab.stack.info.is_none() && !tab.stack.loading && tab.stack.request_seq == 0 {
+            tab.stack.loading = true;
+        }
+    }
+
+    /// Claim the next pending stack lookup, returning the tab index, the
+    /// checkout to run `gh stack view --json` in, and the lookup id.
+    ///
+    /// `None` in the common case (nothing pending, or already in flight). The TUI
+    /// spawns a worker thread for the returned request and hands the result back
+    /// to [`App::apply_stack_result`] with the id.
+    pub fn take_stack_load_request(&mut self) -> Option<(usize, String, u64)> {
+        let idx = self.tabs.iter().position(|tab| {
+            tab.stack.loading && tab.stack.request_seq == 0 && tab.local_checkout_root().is_some()
+        })?;
+        let seq = STACK_LOOKUP_SEQ.fetch_add(1, Ordering::Relaxed);
+        let tab = &mut self.tabs[idx];
+        let root = tab.local_checkout_root()?.to_string();
+        tab.stack.request_seq = seq;
+        Some((idx, root, seq))
+    }
+
+    /// Apply a finished stack lookup, identified by its `lookup_seq`.
+    ///
+    /// Tabs can close, reorder, or start a newer lookup while `gh stack view`
+    /// runs, so the result is matched to whichever tab still carries this lookup
+    /// id — a superseded or orphaned result is dropped rather than cached against
+    /// the wrong branch. Caches the value (including "no stack here" reasons) so
+    /// reopening the hub is instant, and refills the Open hub in place —
+    /// preserving the cursor — when that hub is up and still showing this tab.
+    pub fn apply_stack_result(
+        &mut self,
+        tab_index: usize,
+        lookup_seq: u64,
+        info: crate::gh_stack::StackInfo,
+    ) {
+        let idx = if self
+            .tabs
+            .get(tab_index)
+            .is_some_and(|tab| tab.stack.request_seq == lookup_seq)
+        {
+            tab_index
+        } else {
+            match self
+                .tabs
+                .iter()
+                .position(|tab| tab.stack.request_seq == lookup_seq)
+            {
+                Some(idx) => idx,
+                // The requesting tab was closed, or a newer lookup superseded
+                // this one.
+                None => return,
+            }
+        };
+        let tab = &mut self.tabs[idx];
+        tab.stack.info = Some(info);
+        tab.stack.loading = false;
+        tab.stack.request_seq = 0;
+
+        let active = self.active_tab.min(self.tabs.len().saturating_sub(1));
+        let hub_is_open = matches!(
+            &self.overlay,
+            Some(OverlayData::ModalHub {
+                kind: HubKind::Open,
+                ..
+            })
+        );
+        if !hub_is_open || idx != active {
+            return;
+        }
+
+        let previous = match &self.overlay {
+            Some(OverlayData::ModalHub { selected, .. }) => *selected,
+            _ => 0,
+        };
+        self.open_open_hub();
+        if let Some(OverlayData::ModalHub {
+            selected, items, ..
+        }) = &mut self.overlay
+        {
+            // Keep the cursor where the user left it; the row count only
+            // changes on the first load (loading row -> stack rows).
+            if previous < items.len() {
+                *selected = previous;
+            }
+        }
+    }
+
+    /// Drop the cached stack and reopen the Open hub, which requests a fresh
+    /// lookup (the hub's "Refresh stack" row).
+    pub fn refresh_stack(&mut self) {
+        self.tab_mut().stack = StackState::default();
+        self.open_open_hub();
+    }
+
+    /// Secondary (browser) action for the selected modal-hub row.
+    ///
+    /// Stacked-PR rows carry one: `b` opens on GitHub the same PR that Enter
+    /// opens for review. Everything else returns `None`, so the generic modal
+    /// path is untouched.
+    pub fn overlay_secondary_hub_action(&self) -> Option<HubAction> {
+        let OverlayData::ModalHub {
+            items, selected, ..
+        } = self.overlay.as_ref()?
+        else {
+            return None;
+        };
+        let item = items.get(*selected)?;
+        if !item.enabled {
+            return None;
+        }
+        match &item.action {
+            HubAction::OpenStackPr {
+                pr_number,
+                pr_url,
+                branch,
+            } => Some(HubAction::OpenStackPrInBrowser {
+                pr_number: *pr_number,
+                pr_url: pr_url.clone(),
+                branch: branch.clone(),
+            }),
+            _ => None,
+        }
     }
 
     pub fn open_config_hub(&mut self) {
@@ -7067,6 +7848,8 @@ impl App {
         // Watched paths are mirrored onto the active tab so `W` sees updates
         // without requiring an explicit Save.
         self.tab_mut().watched_config = self.config.watched.clone();
+        // Same for the importance rules the file filter resolves against.
+        self.sync_importance_to_tabs();
     }
 
     /// Toggle/cycle/activate the currently selected config hub item
@@ -7732,11 +8515,7 @@ impl App {
             // Store the current per-file hash so we can detect when the diff changes.
             // Falls back to empty string if the file isn't in the current diff (shouldn't
             // happen normally, but guards against a race between parse and toggle).
-            let hash = tab
-                .current_per_file_hashes
-                .get(&path)
-                .cloned()
-                .unwrap_or_default();
+            let hash = tab.per_file_hash(&path);
             tab.reviewed.insert(path.clone(), hash);
         }
         tab.reviewed_revision += 1;
@@ -8084,6 +8863,7 @@ mod tests {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -8100,7 +8880,7 @@ mod tests {
             filter_input: String::new(),
             filter_history: Vec::new(),
             reviewed: HashMap::new(),
-            current_per_file_hashes: HashMap::new(),
+            reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
@@ -8109,6 +8889,8 @@ mod tests {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_ai_diff_hash: None,
+            last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
             comment_file: String::new(),
             comment_hunk: 0,
@@ -8154,6 +8936,7 @@ mod tests {
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
+            command_runs: std::collections::HashMap::new(),
             log_tx: agent_log_tx,
             log_rx: agent_log_rx,
             agent_log: std::collections::VecDeque::new(),
@@ -8167,6 +8950,7 @@ mod tests {
             storage_notice: None,
             last_diff_head_oid: None,
             pr_refs_fetched: false,
+            stack: StackState::default(),
         }
     }
 
@@ -8180,6 +8964,267 @@ mod tests {
             compacted: false,
             raw_hunk_count: 0,
         }
+    }
+
+    #[test]
+    fn mtime_sort_reads_the_cache_newest_first() {
+        use std::time::{Duration, SystemTime};
+
+        let dir = tempfile::tempdir().unwrap();
+        let base = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        for (name, offset) in [("old.rs", 0u64), ("mid.rs", 10), ("new.rs", 20)] {
+            let path = dir.path().join(name);
+            std::fs::write(&path, name).unwrap();
+            std::fs::File::options()
+                .write(true)
+                .open(&path)
+                .unwrap()
+                .set_modified(base + Duration::from_secs(offset))
+                .unwrap();
+        }
+
+        fn order(tab: &TabState) -> Vec<String> {
+            tab.files.iter().map(|f| f.path.clone()).collect()
+        }
+        let expected = vec!["new.rs", "mid.rs", "old.rs"];
+
+        // Deliberately not mtime order, so an untouched list cannot pass.
+        let mut tab = make_test_tab(vec![
+            make_file("old.rs", vec![], 1, 1),
+            make_file("new.rs", vec![], 1, 1),
+            make_file("mid.rs", vec![], 1, 1),
+        ]);
+        tab.repo_root = dir.path().to_string_lossy().to_string();
+
+        // A caller that never refreshed still sorts, rather than silently
+        // leaving the list alone because every cached mtime is absent.
+        tab.mtime_cache.clear();
+        tab.sort_files_by_mtime();
+        assert_eq!(order(&tab), expected, "unrefreshed caller");
+
+        // Production order: refresh once, then sort from the cache.
+        tab.mtime_cache.clear();
+        tab.refresh_mtime_cache();
+        tab.sort_files_by_mtime();
+        assert_eq!(order(&tab), expected, "refresh then sort");
+    }
+
+    #[test]
+    fn a_moved_branch_diff_invalidates_the_loaded_ai_state() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        // Point at an empty dir so only the diff-hash stamp can decide.
+        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.last_ai_check = None;
+        tab.branch_diff_hash = "hash-a".to_string();
+        tab.last_ai_diff_hash = Some("hash-a".to_string());
+
+        assert!(tab.ai_state_is_current(), "nothing moved since the load");
+
+        tab.branch_diff_hash = "hash-b".to_string();
+        assert!(
+            !tab.ai_state_is_current(),
+            "a moved branch diff must force a reload even though no sidecar changed"
+        );
+    }
+
+    #[test]
+    fn a_tab_that_never_loaded_ai_state_is_not_current() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.last_ai_check = None;
+        tab.last_ai_diff_hash = None;
+        tab.branch_diff_hash = "hash-a".to_string();
+
+        assert!(
+            !tab.ai_state_is_current(),
+            "a tab with no load behind it must reload rather than trust an empty stamp"
+        );
+    }
+
+    #[test]
+    fn marking_a_file_after_a_watch_refresh_still_records_its_hash() {
+        let raw = concat!(
+            "diff --git a/a.rs b/a.rs\n",
+            "+a-change\n",
+            "diff --git a/b.rs b/b.rs\n",
+            "+b-change\n",
+        );
+        let mut tab = make_test_tab(vec![]);
+        tab.raw_diff = Some(raw.to_string());
+        // b.rs is already reviewed, a.rs is not.
+        tab.reviewed
+            .insert("b.rs".to_string(), "old-hash".to_string());
+
+        // Watch-path refresh: only reviewed files get cached, because only they
+        // are consulted without a user action.
+        tab.refresh_per_file_hashes_and_unmark(raw, false);
+        assert!(
+            tab.reviewed_file_hashes.contains_key("b.rs"),
+            "reviewed files are cached for auto-unmark"
+        );
+        assert!(
+            !tab.reviewed_file_hashes.contains_key("a.rs"),
+            "unreviewed files are not hashed on the watch path"
+        );
+
+        // Marking a.rs must still record a real hash. An empty one would be
+        // skipped by auto_unmark_changed_reviewed, silently disabling
+        // auto-unmark for this file forever.
+        let stored = tab.per_file_hash("a.rs");
+        assert!(
+            !stored.is_empty(),
+            "a newly marked file must get a real hash, not the empty fallback"
+        );
+        assert_eq!(
+            stored,
+            crate::ai::compute_per_file_hash(raw, "a.rs").unwrap()
+        );
+
+        // A cached path still resolves from the cache.
+        assert_eq!(tab.per_file_hash("b.rs"), tab.reviewed_file_hashes["b.rs"]);
+    }
+
+    /// A temp git repo on `main` with one tracked file modified in the working
+    /// tree, so `refresh_diff` has a small unstaged diff to parse — small
+    /// enough to take the eager (non-lazy) branch.
+    fn init_repo_with_unstaged_change() -> tempfile::TempDir {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        for args in [
+            vec!["init", "-b", "main"],
+            vec!["config", "user.email", "t@example.com"],
+            vec!["config", "user.name", "t"],
+            vec!["config", "commit.gpgsign", "false"],
+        ] {
+            Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        }
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        Command::new("git")
+            .args(["add", "a.txt"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        Command::new("git")
+            .args(["commit", "-qm", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::fs::write(root.join("a.txt"), "changed\n").unwrap();
+        dir
+    }
+
+    #[test]
+    fn an_eager_refresh_retains_what_a_later_mark_needs_to_resolve_a_hash() {
+        // The other tests in this file seed `raw_diff` by hand, which would
+        // green-light a state production never reaches. This one goes through
+        // a real refresh on the eager branch — the common case, since only
+        // diffs over 200 KB go lazy.
+        let dir = init_repo_with_unstaged_change();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root).expect("tab for the temp repo");
+        tab.mode = DiffMode::Unstaged;
+
+        tab.refresh_diff().expect("refresh runs");
+
+        assert!(
+            !tab.lazy_mode,
+            "a one-line diff must take the eager branch this test is about"
+        );
+        let raw = tab
+            .raw_diff
+            .clone()
+            .expect("eager refresh must retain the raw diff");
+        let hash = tab.per_file_hash("a.txt");
+        assert!(
+            !hash.is_empty(),
+            "an eager refresh must let a later mark resolve a real hash"
+        );
+        assert_eq!(
+            hash,
+            crate::ai::compute_per_file_hash(&raw, "a.txt").unwrap()
+        );
+    }
+
+    /// A repo with `main` and a `feature` branch one commit ahead.
+    fn init_repo_with_a_feature_branch() -> tempfile::TempDir {
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-b", "main"]);
+        git(&["config", "user.email", "t@example.com"]);
+        git(&["config", "user.name", "t"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("a.txt"), "base\n").unwrap();
+        git(&["add", "a.txt"]);
+        git(&["commit", "-qm", "init"]);
+        git(&["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("a.txt"), "base\nfeature\n").unwrap();
+        git(&["commit", "-qam", "feature work"]);
+        git(&["checkout", "-q", "main"]);
+        dir
+    }
+
+    #[test]
+    fn a_quick_refresh_re_derives_staleness_when_the_branch_moves() {
+        // A quick refresh of a local-branch view must re-derive
+        // `branch_diff_hash`: a HEAD move the app did not perform itself -- a
+        // commit from a terminal -- must not leave `is_stale` false with
+        // findings rendering as current against a diff they no longer match.
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.local_branch_view = Some("feature".to_string());
+        tab.local_branch_checkout_root = None;
+        tab.base_branch = "main".to_string();
+
+        tab.refresh_diff().expect("full refresh");
+        let before = tab.branch_diff_hash.clone();
+        assert!(!before.is_empty(), "a full refresh sets a real hash");
+
+        // A commit the app knows nothing about: nothing calls refresh_diff.
+        // It has to change the *diff*, so an empty commit will not do -- the
+        // branch diff would be identical and the hash rightly unchanged.
+        std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
+        for args in [
+            vec!["checkout", "-q", "feature"],
+            vec!["add", "b.txt"],
+            vec!["commit", "-qm", "from a terminal"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+        }
+
+        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+        let after = tab.branch_diff_hash.clone();
+        assert_ne!(
+            before, after,
+            "the quick refresh must re-derive the branch hash the diff moved"
+        );
+
+        // And a second quick refresh with nothing moved leaves it alone, so
+        // the fast-hash guard does not churn the value it was meant to hold.
+        tab.refresh_diff_quick_with_unmark().expect("quick refresh");
+        assert_eq!(
+            after, tab.branch_diff_hash,
+            "an unchanged branch must not re-derive a different hash"
+        );
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {
@@ -8283,6 +9328,123 @@ mod tests {
         assert_eq!(c.relocated_at_hash, "current-hash");
     }
 
+    // ── refresh_finding_staleness ──
+
+    /// A finding as a sidecar writes it, carrying its anchored line's text.
+    fn finding_at(id: &str, line: usize, content: &str) -> ai::Finding {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "severity": "low",
+            "title": "t",
+            "line_start": line,
+            "line_content": content,
+        }))
+        .expect("a minimal finding deserializes")
+    }
+
+    fn review_with(path: &str, findings: Vec<ai::Finding>) -> ai::ErReview {
+        ai::ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::from([(
+                path.to_string(),
+                ai::ErFileReview {
+                    risk: ai::RiskLevel::Low,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings,
+                },
+            )]),
+            file_hashes: HashMap::new(),
+        }
+    }
+
+    fn ctx_line(content: &str, new_num: usize) -> DiffLine {
+        DiffLine {
+            line_type: LineType::Context,
+            content: content.to_string(),
+            old_num: Some(new_num),
+            new_num: Some(new_num),
+        }
+    }
+
+    fn review_findings(tab: &TabState, path: &str) -> Vec<bool> {
+        tab.ai.review.as_ref().unwrap().files[path]
+            .findings
+            .iter()
+            .map(|f| f.stale)
+            .collect()
+    }
+
+    #[test]
+    fn finding_staleness_is_per_finding_not_per_file() {
+        // `stale_files` marks the whole file; a finding whose neighbour was
+        // edited must not inherit that.
+        let file = make_file(
+            "a.rs",
+            vec![make_hunk(vec![
+                ctx_line("fn foo() {", 1),
+                ctx_line("    let kept = 1;", 2),
+            ])],
+            0,
+            0,
+        );
+        let mut tab = make_test_tab(vec![file]);
+        tab.ai.review = Some(review_with(
+            "a.rs",
+            vec![
+                finding_at("a", 2, "    let kept = 1;"),
+                finding_at("b", 1, "    let gone = 2;"),
+            ],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(
+            review_findings(&tab, "a.rs"),
+            vec![false, true],
+            "only the finding whose line vanished is stale"
+        );
+    }
+
+    #[test]
+    fn finding_staleness_marks_a_file_absent_from_the_diff() {
+        // The comment path reaches Lost here; findings must agree.
+        let mut tab = make_test_tab(vec![make_file("other.rs", vec![], 1, 1)]);
+        tab.ai.review = Some(review_with(
+            "gone.rs",
+            vec![finding_at("a", 2, "    let kept = 1;")],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(review_findings(&tab, "gone.rs"), vec![true]);
+    }
+
+    #[test]
+    fn finding_staleness_skips_unparsed_lazy_stubs() {
+        // Mirrors `relocate_skips_unparsed_lazy_stubs_instead_of_marking_lost`:
+        // empty hunks means "not loaded yet", not "the code is gone".
+        let stub = make_file("big.rs", vec![], 10, 10);
+        let mut tab = make_test_tab(vec![stub]);
+        tab.lazy_mode = true;
+        tab.ai.review = Some(review_with(
+            "big.rs",
+            vec![finding_at("a", 2, "    let kept = 1;")],
+        ));
+
+        tab.refresh_finding_staleness();
+
+        assert_eq!(
+            review_findings(&tab, "big.rs"),
+            vec![false],
+            "an unparsed stub must not mark findings stale"
+        );
+    }
+
     // ── truncate ──
 
     #[test]
@@ -8325,6 +9487,43 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].0, 0);
         assert_eq!(visible[1].0, 1);
+    }
+
+    /// The rules live on the app's config and the filter reads them off the tab,
+    /// so what matters is that the copy on the tab is what decides.
+    #[test]
+    fn visible_files_filters_by_the_importance_rules_on_the_tab() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("docs/guide.md", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.importance = ImportanceRepoConfig {
+            default: None,
+            rules: std::collections::BTreeMap::from([(
+                "src/**".to_string(),
+                "foundational".to_string(),
+            )]),
+        };
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+
+        let visible: Vec<&str> = tab
+            .visible_files()
+            .iter()
+            .map(|(_, f)| f.path.as_str())
+            .collect();
+        assert_eq!(visible, vec!["src/lib.rs"]);
+    }
+
+    /// Nothing declared means every path is `normal`, so a tier filter selects
+    /// nothing rather than everything.
+    #[test]
+    fn visible_files_without_importance_rules_selects_no_tier() {
+        let files = vec![make_file("src/lib.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+
+        assert!(tab.visible_files().is_empty());
     }
 
     #[test]
@@ -8510,8 +9709,8 @@ mod tests {
     #[test]
     fn auto_unmark_keeps_reviewed_file_with_unchanged_diff() {
         let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
-        tab.current_per_file_hashes = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
-        let stored = tab.current_per_file_hashes["a.json"].clone();
+        tab.reviewed_file_hashes = crate::ai::compute_per_file_hashes(&reviewed_diff_raw());
+        let stored = tab.reviewed_file_hashes["a.json"].clone();
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         assert_eq!(tab.auto_unmark_changed_reviewed(), 0);
         assert_eq!(tab.reviewed.len(), 1);
@@ -8525,8 +9724,7 @@ mod tests {
         let stored = original["a.json"].clone();
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         let revision_before = tab.reviewed_revision;
-        tab.current_per_file_hashes =
-            crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
+        tab.reviewed_file_hashes = crate::ai::compute_per_file_hashes(&changed_reviewed_diff_raw());
         assert_eq!(tab.auto_unmark_changed_reviewed(), 1);
         assert!(tab.reviewed.is_empty());
         assert_eq!(tab.reviewed_revision, revision_before + 1);
@@ -8560,7 +9758,7 @@ mod tests {
     }
 
     #[test]
-    fn quick_unmark_refresh_keeps_full_map_and_unmarks_changed_reviewed_file() {
+    fn quick_unmark_refresh_unmarks_changed_reviewed_file() {
         let mut tab = make_test_tab(vec![
             make_file("a.json", vec![], 1, 0),
             make_file("b.json", vec![], 1, 0),
@@ -8570,29 +9768,42 @@ mod tests {
         tab.reviewed.insert("a.json".to_string(), stored.clone());
         tab.pending_unmark_count = 0;
         // The raw changed, so the marked file's section hash differs and it
-        // auto-unmarks; the full map still contains every file's current hash.
-        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        // auto-unmarks.
+        let raw = changed_reviewed_diff_raw();
+        // A refresh always retains the raw diff; `per_file_hash` falls back to it.
+        tab.raw_diff = Some(raw.clone());
+        tab.refresh_per_file_hashes_and_unmark(&raw, true);
         assert!(tab.reviewed.is_empty());
         assert_eq!(tab.pending_unmark_count, 1);
-        assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "full per-file map must be kept so newly-marked files store a real hash"
+        // The map now caches only reviewed files, so this guarantee is stated
+        // through the accessor every mark path uses: a newly-marked file must
+        // still resolve a real hash.
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "a newly-marked file must store a real hash"
         );
     }
 
     #[test]
-    fn quick_unmark_refresh_keeps_full_hash_map_when_nothing_reviewed() {
+    fn nothing_reviewed_still_resolves_a_real_hash_for_a_later_mark() {
         let mut tab = make_test_tab(vec![make_file("a.json", vec![], 1, 0)]);
         tab.pending_unmark_count = 7;
-        // Nothing marked reviewed: hashes still refresh (a later mark of this
-        // file reads a real hash); the unmark pass finds nothing stale, so the
+        let raw = changed_reviewed_diff_raw();
+        tab.raw_diff = Some(raw.clone());
+        // Nothing marked reviewed: the unmark pass finds nothing stale, so the
         // counter is reset to 0 (its contract: 0 = nothing to surface).
-        tab.refresh_per_file_hashes_and_unmark(&changed_reviewed_diff_raw(), true);
+        tab.refresh_per_file_hashes_and_unmark(&raw, true);
         assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "the map must be populated even with zero reviewed files"
+            tab.reviewed_file_hashes.is_empty(),
+            "no file is reviewed, so the watch path caches nothing"
         );
         assert_eq!(tab.pending_unmark_count, 0);
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "a later mark must resolve a real hash even with nothing reviewed"
+        );
     }
 
     #[test]
@@ -8601,13 +9812,16 @@ mod tests {
         tab.reviewed
             .insert("a.json".to_string(), "stored".to_string());
         tab.pending_unmark_count = 7;
-        // auto_unmark=false (mode switch): hashes refresh, nothing unmarks.
-        tab.refresh_per_file_hashes_and_unmark(&reviewed_diff_raw(), false);
+        let raw = reviewed_diff_raw();
+        tab.raw_diff = Some(raw.clone());
+        // auto_unmark=false (mode switch): nothing unmarks.
+        tab.refresh_per_file_hashes_and_unmark(&raw, false);
         assert_eq!(tab.pending_unmark_count, 7);
         assert!(tab.reviewed.contains_key("a.json"));
-        assert!(
-            tab.current_per_file_hashes.contains_key("a.json"),
-            "mode-switch refresh must still populate hashes for newly-marked files"
+        assert_eq!(
+            tab.per_file_hash("a.json"),
+            crate::ai::compute_per_file_hash(&raw, "a.json").unwrap(),
+            "mode-switch refresh must still resolve hashes for newly-marked files"
         );
     }
 
@@ -9677,9 +10891,7 @@ mod tests {
             should_quit: false,
             overlay: None,
             watching: false,
-            watch_message: None,
-            watch_message_ticks: 0,
-            watch_message_max_ticks: 20,
+            notification: None,
             ai_poll_counter: 0,
             remote_url_input: String::new(),
             config: ErConfig::default(),
@@ -10889,11 +12101,10 @@ mod tests {
 
     #[test]
     fn deferred_enter_pr_diff_preloaded_defers_ai_reload() {
-        // Two-phase open contract (first-paint plan step 2): with
-        // `defer_ai_reload = true` the PR-bucket routing + reviewed set apply
-        // synchronously, but the AI sidecars are NOT read — the offload worker
-        // performs the single authoritative `reload_ai_state()` after the
-        // command returns.
+        // Two-phase open contract: with `defer_ai_reload = true` the PR-bucket
+        // routing + reviewed set apply synchronously, but the AI sidecars are
+        // NOT read — the offload worker performs the single authoritative
+        // `reload_ai_state()` after the command returns.
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -11464,7 +12675,7 @@ mod tests {
 
     #[test]
     fn parse_stream_json_long_bash_command_not_truncated() {
-        // 60-char cap used to cut this mid-flag, hiding what the agent actually ran.
+        // A 60-char cap would cut this mid-flag, hiding what the agent ran.
         let cmd = r#"find / -maxdepth 6 -iname "discovery-api" -type d 2>/dev/null | head -20"#;
         assert!(cmd.chars().count() > 60);
         let line = format!(
@@ -11981,6 +13192,84 @@ mod tests {
 
         assert_eq!(existing.len(), 3);
         assert_eq!(existing[0].subject, "old 0");
+    }
+
+    // ── stale-pill seeding for a diff rebuilt without a fetch ──
+
+    /// A tab that rebuilds its diff from the local PR ref *without* fetching
+    /// must record the oid it built against. `compute_oid_staleness` refuses to
+    /// compare against an unknown ("either side unknown → don't guess"), so an
+    /// unset field means a diff that is behind the PR head shows no pill at all.
+    /// A restored tab is exactly this case: `last_diff_head_oid` is runtime
+    /// state and is not persisted, so it starts empty while the refs are on disk.
+    #[test]
+    fn seed_last_diff_head_oid_reads_the_local_pr_ref() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+        };
+        git(&["init", "-b", "main", "--quiet"]);
+        std::fs::write(root.join("f.txt"), "x\n").unwrap();
+        git(&["add", "f.txt"]);
+        git(&["commit", "-m", "init", "--no-gpg-sign"]);
+        git(&["update-ref", "refs/er/pr/7/head", "HEAD"]);
+
+        let head_oid = String::from_utf8(
+            std::process::Command::new("git")
+                .args(["rev-parse", "HEAD"])
+                .current_dir(root)
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_string();
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = root.to_str().unwrap().to_string();
+        tab.pr_number = Some(7);
+        assert!(
+            tab.last_diff_head_oid.is_none(),
+            "starts unset, as a restored tab does"
+        );
+
+        tab.seed_last_diff_head_oid_from_local_ref();
+
+        assert_eq!(
+            tab.last_diff_head_oid.as_deref(),
+            Some(head_oid.as_str()),
+            "the oid the diff is built against must be recorded, or the stale \
+             pill never fires for a diff that is behind the PR head"
+        );
+    }
+
+    /// Seeding fills a gap; it must not clear an oid that is already known.
+    #[test]
+    fn seed_last_diff_head_oid_keeps_a_known_oid_when_the_ref_is_missing() {
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/nonexistent-repo-for-seed-test".to_string();
+        tab.pr_number = Some(7);
+        tab.last_diff_head_oid = Some("already-known-oid".to_string());
+
+        tab.seed_last_diff_head_oid_from_local_ref();
+
+        assert_eq!(
+            tab.last_diff_head_oid.as_deref(),
+            Some("already-known-oid"),
+            "an unresolvable ref must not clobber a known oid — that would \
+             suppress a pill that was already correct"
+        );
     }
 
     // ── visible_modes / PrDiff wiring ──
@@ -13250,5 +14539,203 @@ mod tests {
         assert!(!er.join("summary.md").exists());
         assert!(!er.join("professor.json").exists());
         assert!(!experts.join("security.json").exists());
+    }
+
+    // ── Notifications ──
+    //
+    // `seq` is process-wide, so these assert ordering rather than exact values:
+    // tests run in parallel and share the counter.
+
+    #[test]
+    fn a_repeated_notification_still_gets_a_fresh_seq() {
+        // The desktop dedupes on `seq` and never sees the field cleared, so a
+        // repeated message that reused a number would be swallowed silently.
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("review started...");
+        let first = app.notification.clone().expect("first notification");
+        app.notify("review started...");
+        let second = app.notification.clone().expect("second notification");
+
+        assert_eq!(first.message, second.message);
+        assert!(
+            second.seq > first.seq,
+            "a repeat must advance the seq, got {} then {}",
+            first.seq,
+            second.seq
+        );
+    }
+
+    #[test]
+    fn clearing_a_notification_does_not_rewind_the_seq() {
+        // The TUI clears on its dwell timer. A UI still holding the cleared
+        // seq must not treat the next message as one it has already shown.
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("models updated");
+        let before = app.notification.as_ref().expect("notification").seq;
+
+        app.clear_notification();
+        assert!(app.notification.is_none());
+
+        app.notify("models updated");
+        let after = app.notification.as_ref().expect("notification").seq;
+
+        assert!(
+            after > before,
+            "clearing must not reuse a seq, got {before} then {after}"
+        );
+    }
+
+    #[test]
+    fn notify_long_is_flagged_for_a_longer_dwell() {
+        let mut app = App::new_for_test(vec![]);
+
+        app.notify("short");
+        assert!(!app.notification.as_ref().expect("notification").long);
+        app.notify_long("long");
+        assert!(app.notification.as_ref().expect("notification").long);
+    }
+
+    #[test]
+    fn stack_lookup_applies_only_to_its_own_request() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.active_tab = 0;
+        app.tabs[0].stack.loading = true;
+
+        let (idx, root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 0);
+        assert_eq!(root, "tab0");
+        assert_ne!(app.tabs[0].stack.request_seq, 0);
+
+        // A superseded/orphaned id must not be cached.
+        app.apply_stack_result(idx, seq + 1, StackInfo::Unavailable("stale".into()));
+        assert!(app.tabs[0].stack.info.is_none());
+        assert_ne!(
+            app.tabs[0].stack.request_seq, 0,
+            "the real lookup is still pending"
+        );
+
+        // The matching id lands and clears the pending flags.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("not in a stack".into()));
+        assert_eq!(
+            app.tabs[0].stack.info,
+            Some(StackInfo::Unavailable("not in a stack".into()))
+        );
+        assert!(!app.tabs[0].stack.loading);
+        assert_eq!(app.tabs[0].stack.request_seq, 0);
+    }
+
+    #[test]
+    fn stack_lookup_follows_its_tab_across_a_reorder() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].stack.loading = true;
+        let (idx, _root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 1);
+
+        // The requesting tab moves to the front while the lookup is in flight.
+        assert!(app.reorder_tabs(1, 0));
+
+        // The result still lands on the tab that asked for it, not on whatever
+        // tab now sits at the original index.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("not in a stack".into()));
+        assert_eq!(
+            app.tabs[0].stack.info,
+            Some(StackInfo::Unavailable("not in a stack".into()))
+        );
+        assert!(app.tabs[1].stack.info.is_none());
+        assert_eq!(app.tabs[0].stack.request_seq, 0);
+    }
+
+    #[test]
+    fn stack_lookup_for_a_closed_tab_is_dropped() {
+        use crate::gh_stack::StackInfo;
+
+        let mut app = make_app_with_n_tabs(2);
+        app.tabs[1].stack.loading = true;
+        let (idx, _root, seq) = app.take_stack_load_request().expect("claim pending lookup");
+        assert_eq!(idx, 1);
+
+        app.close_tab_at(idx);
+        assert_eq!(app.tabs.len(), 1);
+        // Doesn't panic and caches nothing: the requester is gone.
+        app.apply_stack_result(idx, seq, StackInfo::Unavailable("gone".into()));
+        assert!(app.tabs.iter().all(|t| t.stack.info.is_none()));
+    }
+
+    #[test]
+    fn local_checkout_root_only_resolves_the_viewed_branch() {
+        // A plain working/branch tab runs in its own repo root.
+        let mut working = TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(working.local_checkout_root(), Some("/repo"));
+
+        // A remote-PR tab has no local checkout at all.
+        let mut remote = TabState::new_for_test(vec![]);
+        remote.remote_repo = Some("o/r".into());
+        assert_eq!(remote.local_checkout_root(), None);
+
+        // A local PR/branch view's `current_branch` is the PR head, *not* the
+        // checkout — so without a checkout root there is nothing safe to run in.
+        let mut pr = TabState::new_for_test(vec![]);
+        pr.repo_root = "/repo".into();
+        pr.remote_repo = Some("o/r".into());
+        pr.local_branch_view = Some("feat/pr-head".into());
+        pr.current_branch = "feat/pr-head".into();
+        assert_eq!(pr.local_checkout_root(), None);
+
+        // Unless the head is checked out in a worktree.
+        pr.local_branch_checkout_root = Some("/wt".into());
+        assert_eq!(pr.local_checkout_root(), Some("/wt"));
+    }
+
+    #[test]
+    fn stack_lookup_is_skipped_when_the_viewed_branch_is_not_checked_out() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("o/r".into());
+        tab.local_branch_view = Some("feat/pr-head".into());
+        tab.current_branch = "feat/pr-head".into();
+
+        app.request_stack_load();
+        assert!(!app.tabs[0].stack.loading);
+        assert!(app.take_stack_load_request().is_none());
+
+        // Once the branch is checked out, the lookup is eligible and runs in
+        // that checkout (a linked worktree), not the tab's repo root.
+        app.tab_mut().local_branch_checkout_root = Some("/wt".into());
+        app.request_stack_load();
+        assert!(app.tabs[0].stack.loading);
+        let (idx, root, _seq) = app.take_stack_load_request().expect("claim");
+        assert_eq!(idx, 0);
+        assert_eq!(root, "/wt");
+    }
+
+    #[test]
+    fn branch_change_drops_the_cached_stack() {
+        use crate::gh_stack::StackInfo;
+
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/home/user/my-project".to_string();
+        tab.current_branch = "feat/a".to_string();
+        tab.sync_managed_storage();
+        tab.stack.info = Some(StackInfo::Unavailable("not in a stack".into()));
+
+        // `gh stack view` reads the checked-out branch, so a cached lookup
+        // describes the branch we just left.
+        tab.apply_checkout_branch_storage_change("feat/b").unwrap();
+
+        assert_eq!(tab.current_branch, "feat/b");
+        assert!(tab.stack.info.is_none());
     }
 }

@@ -4,8 +4,9 @@
 //! The TUI and desktop call these through thin `App` wrappers in
 //! `app/state/github_sync.rs` (three-phase pattern: snapshot under the App
 //! lock → fetch/process here without the lock → apply under the lock).
-//! Headless consumers (the er-api server) call these directly with their own
-//! session state.
+//! A headless consumer calls these directly with its own session state. The
+//! `er-api` server named in older notes is a deferred extraction, not a crate
+//! that exists — nothing implements it yet.
 //!
 //! This module is always compiled — it must not depend on any feature-gated
 //! module (`app`, `arena`, `watch`, `highlight`).

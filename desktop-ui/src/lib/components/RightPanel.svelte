@@ -11,6 +11,7 @@
   import BranchCard from "./BranchCard.svelte";
   import AiReviewCard from "./AiReviewCard.svelte";
   import FileRisksCard from "./FileRisksCard.svelte";
+  import ChecklistCard from "./ChecklistCard.svelte";
   import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
   import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
@@ -149,6 +150,7 @@
     includeNotes: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
+    includeChecklist: boolean;
     onlyUnresolved: boolean;
     includeCommentIds?: string[];
     includeQuestionIds?: string[];
@@ -162,6 +164,7 @@
     includeNotes: false,
     includeFindings: false,
     includeAnnotations: false,
+    includeChecklist: false,
     onlyUnresolved: false,
   };
 
@@ -173,7 +176,9 @@
       case "branch":
         return { ...NO_SECTIONS, includeComments: true };
       case "review":
-        return { ...NO_SECTIONS, includeFindings: true };
+        // The checklist lives on this tab, and a checked-outcome list is what
+        // you paste into a pull request description.
+        return { ...NO_SECTIONS, includeFindings: true, includeChecklist: true };
       case "context":
         // Handled client-side in copyTabToClipboard (mermaid fences, not the
         // export_review sections).
@@ -343,6 +348,11 @@
           {/if}
           {#if (ai.file_risks ?? []).length > 0}
             <FileRisksCard risks={ai.file_risks} />
+          {/if}
+          <!-- The TUI shows the checklist whenever the AI panel is up, with a
+               fallback when the bucket has none — same gate here. -->
+          {#if ai.checklist || ai.has_review_json}
+            <ChecklistCard checklist={ai.checklist} />
           {/if}
           <AiReviewCard {ai} />
         {/if}

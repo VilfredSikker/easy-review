@@ -24,7 +24,7 @@ export interface UnifiedPair {
   partner: LineSnapshot | null;
 }
 
-// ---------------- Legacy per-file model (kept for back-compat; removed in Step H) ----------------
+// ---------------- Legacy per-file model ----------------
 
 export type FlatRow =
   | { type: "hunk-header"; hunkIdx: number; height: number }
@@ -136,7 +136,7 @@ export function getFileRenderModel(file: FileSnapshot): FileRenderModel {
   return model;
 }
 
-// ---------------- Step A: Flat cross-file row block ----------------
+// ---------------- Flat cross-file row block ----------------
 
 /** Data for a Guide pillar group (drives the left rail lane in Split View). */
 export interface PillarHeaderInfo {
@@ -254,6 +254,40 @@ export type CrossFileFlatRow =
       height: number;
       identity: string;
     };
+
+/** Side a line belongs to: removed lines read against the old file, everything
+ *  else (added, context, fold) against the new one. */
+export function unifiedLineSide(line: LineSnapshot): "old" | "new" {
+  return line.kind === "del" ? "old" : "new";
+}
+
+/**
+ * Line number the flat row at this position presents on `side`, or null when
+ * the row carries no line on that side — headers, annotation cards, the other
+ * half of a modify pair, or an unknown (`null`) side.
+ *
+ * Drag-select and the comment composer's anchor scan both go through here, so
+ * they cannot disagree about which row owns a selected line.
+ */
+export function rowLineOnSide(
+  row: CrossFileFlatRow,
+  file: FileSnapshot,
+  splitRowsByHunk: SplitRow[][] | undefined,
+  side: "old" | "new" | null,
+): number | null {
+  if (row.type === "content-unified") {
+    const line = file.hunks[row.hunkIdx]?.lines[row.lineIdx];
+    if (!line || unifiedLineSide(line) !== side) return null;
+    return lineNumOf(line);
+  }
+  if (row.type === "content-split") {
+    if (side === null) return null;
+    const splitRow = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
+    const active = side === "old" ? splitRow?.left : splitRow?.right;
+    return active ? lineNumOf(active) : null;
+  }
+  return null;
+}
 
 /** Widest rendered line (in ch, marker prefix included) per diff side — sizes
  *  the in-panel horizontal scroll range when word wrap is off. */
@@ -798,7 +832,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   return block;
 }
 
-// ---------------- Step B: Cross-file model ----------------
+// ---------------- Cross-file model ----------------
 
 export interface CrossFileModel {
   identity: string;

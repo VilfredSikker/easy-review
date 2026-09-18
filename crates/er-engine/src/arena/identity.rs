@@ -1,10 +1,10 @@
-use sha1::{Digest, Sha1};
+//! Identity of an arena debate finding.
+//!
+//! The canonicaliser and the `Finding`-keyed variant live in `ai::identity` —
+//! always-on, because a headless consumer still reads `arbiter.json`.
 
-/// Normalize finding text for stable cross-run IDs.
-pub fn canonical_finding_text(text: &str) -> String {
-    let collapsed: String = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    collapsed.to_lowercase()
-}
+use crate::ai::canonical_finding_text;
+use sha1::{Digest, Sha1};
 
 /// Stable finding id: `sha1(file + nearest_function + canonical_text)` (hex).
 pub fn finding_id(file: &str, nearest_function: &str, text: &str) -> String {

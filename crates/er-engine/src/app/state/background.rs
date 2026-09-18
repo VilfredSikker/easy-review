@@ -77,7 +77,7 @@ pub fn kind_label(kind: &str) -> String {
             // expert:<id>, professor, and triage all resolve through the
             // shared finding-agent label map.
             let id = other.strip_prefix("expert:").unwrap_or(other);
-            crate::ai::agent_label_for_category(id).to_string()
+            crate::ai::agent_label_for_id(id).to_string()
         }
     }
 }
@@ -154,6 +154,12 @@ pub struct HostWriteDiagram {
 /// this; one entry per task id.
 pub struct BackgroundTaskHandle {
     pub task: BackgroundTask,
+    /// The running agent process, for a stop control and the deadline.
+    ///
+    /// Held here rather than inside the worker so the App can reach it — the
+    /// worker keeps its own clone, and `AgentRunHandle` is built for exactly
+    /// that split. Nothing calls `kill` on it yet; the timeout watchdog does.
+    pub run: std::sync::Arc<crate::agent_run::AgentRunHandle>,
     /// One-shot result channel; produces `Ok(())` on success or an `Err`
     /// describing the failure when the subprocess finishes.
     pub result_rx: std::sync::mpsc::Receiver<anyhow::Result<()>>,
@@ -241,7 +247,7 @@ impl TabState {
     pub(crate) fn push_synthetic_log(&mut self, name: &str, text: String, source: AgentLogSource) {
         self.agent_log.push_back(AgentLogEntry {
             timestamp: std::time::Instant::now(),
-            command_name: name.to_string(),
+            command_name: std::sync::Arc::from(name),
             source,
             text,
         });

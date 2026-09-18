@@ -38,7 +38,7 @@
       <div><p>The Hub drives <em>your</em> AI CLI — it does not bundle a model. It defaults to
       <strong>Claude Code</strong> (the <code>claude</code> command on your <code>PATH</code>); point it at Codex,
       Cursor, or another tool through the <code>[agent]</code> / <code>[ai_hub]</code> config. See
-      <a href="configuration.html#ai-hub">Configuration → AI Hub</a> for providers and per-reviewer model selection, and
+      <a href="configuration.html#ai-hub">Configuration → AI Hub</a> for providers and model selection, and
       <a href="desktop-features.html">Desktop Features</a> for the desktop Hub, review queue, and Arena.</p></div>
     </div>
     <p>
@@ -65,8 +65,8 @@
     <table>
       <thead><tr><th>File</th><th>Becomes</th></tr></thead>
       <tbody>
-        <tr><td><code>review.json</code></td><td>Per-file <strong>risk levels</strong> (high / medium / low) in the file list, plus <strong>inline findings</strong> in the diff.</td></tr>
-        <tr><td><code>order.json</code></td><td>A suggested <strong>review order</strong>.</td></tr>
+        <tr><td><code>review.json</code></td><td>Per-file <strong>risk levels</strong> (high / medium / low / info) in the file list, plus <strong>inline findings</strong> in the diff.</td></tr>
+        <tr><td><code>order.json</code></td><td><em>Not shown in the UI.</em> The file names an intended reading order; a hash mismatch only marks the review stale.</td></tr>
         <tr><td><code>checklist.json</code></td><td>A <strong>verification checklist</strong> of things to confirm.</td></tr>
         <tr><td><code>summary.md</code></td><td>A markdown <strong>summary</strong> of the change.</td></tr>
       </tbody>
@@ -139,6 +139,7 @@
         <tr><td><strong>P0 — high</strong></td><td>Must fix.</td></tr>
         <tr><td><strong>P1 — medium</strong></td><td>Should fix.</td></tr>
         <tr><td><strong>P2 — low</strong></td><td>Nice to fix.</td></tr>
+        <tr><td><strong>info</strong></td><td>Observation only.</td></tr>
       </tbody>
     </table>
     <p>By design the agents <strong>never</strong> flag naming, formatting, style, or pure file moves — that noise is
@@ -167,7 +168,7 @@
 
     <h2>The professor</h2>
     <p>
-      The Professor is not a code review — it is a learning agent. Open the AI Hub (<kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong>, or <kbd>p</kbd>)
+      The Professor is not a code review — it is a learning agent. Open the AI Hub (<kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong>, or <kbd>a</kbd>)
       and choose <strong>Professor</strong> (TUI: <code>Professor</code>; Desktop: <code>Professor</code>, which opens an
       optional focus-prompt modal). It writes teaching insights to <code>professor.json</code>, merged inline and labeled
       with a <strong>Professor</strong> pill. Use it to understand <em>why</em> a change is shaped the way it is, rather
@@ -187,7 +188,7 @@
       In the terminal, inline AI findings are a toggleable <strong>layer</strong>: <kbd>A</kbd> shows or hides them
       (comments and questions have their own layers on <kbd>C</kbd> and <kbd>Q</kbd>, and <kbd>X</kbd> hides resolved
       items). The right-hand context panel cycles with <kbd>p</kbd> / <kbd>P</kbd> through file details, the AI
-      summary with the risk breakdown, and the PR overview. Together they let you move from a plain diff to a fully
+      summary with the risk breakdown, the PR overview, and the agent log. Together they let you move from a plain diff to a fully
       annotated one without leaving the keyboard. In the desktop app the equivalent switches live in the diff
       toolbar and right panel.
     </p>
@@ -203,9 +204,9 @@
     <h2>Choosing a model: the AI Hub</h2>
     <p>
       <code>er</code> can drive different providers and models. The <code>[agent]</code> config sets a single default
-      command; the optional <code>[ai_hub]</code> config defines presets (Claude, Codex, Cursor and their models) you can
-      switch between at runtime without editing config mid-session. You can even pin specific reviewer kinds to specific
-      models — for example, run cheap, fast triage on a smaller model. The full schema is in
+      command; the optional <code>[ai_hub]</code> config defines presets (Claude, Codex, Cursor, OpenCode and their models) you can
+      switch between at runtime without editing config mid-session. The same provider, model, and reasoning effort
+      apply to every Hub action. The full schema is in
       <a href="configuration.html#ai-hub">Configuration → AI Hub</a>.
     </p>
 

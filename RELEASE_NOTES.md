@@ -1,3 +1,45 @@
+# Easy Review v0.5.0
+
+## In plain terms
+
+- **What changed.** Expert findings get a second opinion. Triage picks the lenses and the experts run as before, then one arbiter pass reads the hunks those findings point at, merges the ones describing the same issue, regrades confidence, and drops the claims it judges wrong — for one agent call per pass, however many experts contributed. A finding now records which lens raised it separately from what kind of defect it is, so a row reads `reliability, security · correctness` instead of filing the defect kind under the producer's name. Stacked PRs are readable from the `gh stack` extension in both front ends. The comment composer sits under the lines you selected rather than floating over them. Behind the app, the internal documentation was rebuilt around why, after an audit found 39% of its checkable claims wrong.
+- **TL;DR.** Arbiter-validated findings, stacked PRs, a composer that stays out of the way, internal docs that no longer restate the code.
+
+## Highlights
+
+- **An arbiter pass over the experts.** Five experts noticing the same missing check used to give you five rows, each carrying a confidence number it assigned to itself. Findings that share a content-addressed id now merge outright, and near-duplicates — same file, lines within 5, title Jaccard at or above 0.78 — collapse to one survivor. The survivor takes the worst severity in its group and records every raiser, so collapsing cannot quietly downgrade a claim, and the others stay as `merged_children` rather than being discarded.
+- **The arbiter reads the code it is judging.** A prompt carrying only the findings asks it to rule on claims about code it cannot see, and dropping one on that basis is exactly that judgement. The hunks the findings anchor to now ride along. Cost stays proportional to the number of findings rather than the size of the diff: N findings anchor to at most N hunks whether the change is 50 lines or 5,000.
+- **Verdicts apply on load.** They live in `arbiter.json` and are overlaid at load time, which keeps `review.json` at its three writers (ADR 0001) and makes a re-run idempotent. A verdict whose `diff_hash` is not the review's is ignored, because grading a diff that has since moved is the same theatre as gating on an unverified self-report. Drops, merges and regrades are counted under the findings header in the TUI and above the list in the desktop — a list that is quietly shorter is how people stop trusting it.
+- **Lens and category are separate fields.** `Finding.category` had been holding a defect kind, a lens id, or a producer name depending on which loader wrote it, and the expert merge overwrote it with the expert id — so an expert that classified a finding as a correctness issue had that classification replaced by its own name. `lens` says who produced it; `category` says what kind of defect it is.
+- **Stacked PRs.** Stack membership, order and per-layer state come from the `gh stack` extension rather than a PR chain re-derived from branch metadata. The TUI lists the layers in the Open hub; the desktop puts a stack control on the branch card and fetches the layers only when the dropdown opens. Because `gh stack view` reads the checked-out branch, the cache is dropped when the branch changes.
+- **The composer moved below the lines.** It floated at a computed offset over the diff, covering the lines it was commenting on and everything after them, and on diffs with inline threads the offset drifted far enough to put the card above the selection. It now renders in flow under the row carrying the last selected line, with its measured height reserved in the row geometry so scroll math, jump-to-row and the container height stay in step.
+- **Internal docs rebuilt around why.** An audit checked 1,009 claims and found 385 wrong or partly wrong. The failures clustered in enumerations, file tables, module inventories and type lists; the rationale sections held up. The prose that restated the code is gone — `CONTEXT.md` now defines 22 project terms, `docs/adr/` holds 30 decisions, and `CLAUDE.md` went from 194 lines to 100. `scripts/docs-check.sh`, wired into `just lint` and `just ci`, verifies that every file and symbol those docs cite still resolves.
+
+## What's Changed
+
+### Features
+- **Validate findings.** One arbiter pass over the expert sidecars, merging duplicates and regrading confidence without running a debate. It returns nothing when the experts produced nothing, so the entry point can say so rather than start a run that would rule on an empty set. The arbiter waits for a global agent slot like any reviewer, so N seeded runs cannot start N arbiters at once.
+- **A merged finding carries every lens that raised it.** `Finding.raised_by` is that set; `lens` still names the one the finding is filed under, and readers that need the producers ask `raisers()`, which falls back to `[lens]` for a finding written before the field existed. The desktop row says "raised by …" when more than one lens contributed.
+- **Findings go stale individually**, from the text of the line they anchor to, rather than by whole file — editing one line no longer marks every finding in a 600-line file suspect. The file-level set stays; the two answer different questions and appear in different places.
+- **Stacked PRs**, read from the `gh stack` extension — TUI Open hub rows and a desktop stack control on the branch card.
+- **A cancellable agent-run primitive.** The child, its process group so grandchildren die too, and a cancel flag the worker polls so it never writes a result for a run the user stopped. Nothing calls it yet; the migrations, arena consolidation and the stop control come next.
+
+### Performance
+- Instrument the agent runner for wall-clock measurement, under `ER_AGENT_TIMING=1`. The marks themselves are unconditional, so an instrumented and an uninstrumented build cannot report different numbers, and slot waits are recorded inside `SlotPool::acquire`, which covers all six spawn paths by construction rather than at each spawn site.
+- Skip annotating and hashing the diff when the artifacts are already current — the markers now record the raw hash they were derived from, so one hash proves both current. Removes a full string build and two SHA-256 passes from every AI command whose diff has not changed.
+- Sort files by mtime from the refresh cache instead of statting twice per comparison, which was roughly 9,000 syscalls for a 500-file diff.
+- Skip the AI sidecar reload when nothing relevant moved.
+
+### Fixes
+- **Subprocess output past the pipe buffer no longer deadlocks.** The bounded runner drained stdout and stderr only after the child exited, so a child writing more than the pipe buffer (~64 KB) blocked in `write`, never exited, and had a working command killed at the 10s budget. `gh pr diff` lost this race on every large PR and surfaced it as `Failed to run gh`. Both pipes are now drained on their own threads from the moment the child starts, and `model_discovery::run_models_command`, which carried the same loop, uses the shared runner.
+- **Import the Developer ID certificate before signing the DMG.** The signed-DMG job had failed on every release since it was added: it passed `APPLE_SIGNING_IDENTITY` to a script that looks the identity up with `security find-identity`, and a fresh runner's keychain is empty. The build and CLI-install steps are now gated on the certificate secret, so a missing one publishes the TUI and MCP binaries instead of spending ten minutes compiling and then dying at the last step.
+- **The comment composer renders below the selected lines.** Focus is requested once per selection through a store flag the card consumes, so a remount when the anchor row scrolls out of the render window no longer pulls the diff back to the comment.
+- **Triage's two free-form risk strings become `RiskLevel`**, so an unexpected adjective degrades one value rather than discarding the whole verdict.
+- Carried through the docs rebuild: four stale user-facing pages (a per-repo config file and a deep-merge that do not exist, a lazy-parse trigger given as ~5,000 lines when it is a byte threshold, a landing page naming the wrong settings key) and seven false statements inside ADRs, each verified against the tree before being corrected.
+
+### Chores
+- Remove `agent_runtime.rs` (1339 lines), which nothing in the workspace called, and the storage migration helpers that were reachable only from each other — the documented one-time migration from repo `.er/` never ran. Four tests went with their only caller; none was weakened or skipped.
+
 # Easy Review v0.4.18
 
 ## In plain terms

@@ -187,11 +187,12 @@ fn line_findings_for_mode<'a>(
     path: &str,
     hunk_idx: usize,
     new_line_num: usize,
+    layers: &er_engine::ai::InlineLayers,
 ) -> Vec<&'a Finding> {
     match mode {
-        DiffMode::Branch => ai.findings_for_line(path, hunk_idx, new_line_num),
+        DiffMode::Branch => ai.findings_for_line(path, hunk_idx, new_line_num, layers),
         DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
-            ai.findings_for_line_by_range(path, new_line_num)
+            ai.findings_for_line_by_range(path, new_line_num, layers)
         }
         DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour => vec![],
     }
@@ -200,6 +201,9 @@ fn line_findings_for_mode<'a>(
 /// Hunk-level findings (no line anchor) to render after a hunk, for a given diff
 /// mode. Same `Branch`-exact vs everything-else-by-range dispatch as
 /// [`line_findings_for_mode`].
+// The parameters are the caller's own hunk coordinates, forwarded untouched;
+// bundling them would add a type the render loop has to build per row.
+#[allow(clippy::too_many_arguments)]
 fn hunk_findings_for_mode<'a>(
     ai: &'a er_engine::ai::AiState,
     mode: DiffMode,
@@ -208,12 +212,19 @@ fn hunk_findings_for_mode<'a>(
     new_count: usize,
     hunk_idx: usize,
     total_hunks: usize,
+    layers: &er_engine::ai::InlineLayers,
 ) -> Vec<&'a Finding> {
     match mode {
-        DiffMode::Branch => ai.findings_for_hunk(path, hunk_idx, total_hunks),
-        DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => {
-            ai.findings_for_hunk_by_line_range(path, new_start, new_count, hunk_idx, total_hunks)
-        }
+        DiffMode::Branch => ai.findings_for_hunk(path, hunk_idx, total_hunks, layers),
+        DiffMode::Unstaged | DiffMode::Staged | DiffMode::PrDiff => ai
+            .findings_for_hunk_by_line_range(
+                path,
+                new_start,
+                new_count,
+                hunk_idx,
+                total_hunks,
+                layers,
+            ),
         DiffMode::History | DiffMode::Conflicts | DiffMode::Hidden | DiffMode::Tour => vec![],
     }
 }
@@ -679,6 +690,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                         &file.path,
                         hunk_idx,
                         new_line_num,
+                        &tab.layers,
                     );
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -727,6 +739,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter) {
                 hunk.new_count,
                 hunk_idx,
                 total_hunks,
+                &tab.layers,
             );
             for finding in &findings {
                 let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
@@ -1524,6 +1537,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                         &file.path,
                         hunk_idx,
                         new_line_num,
+                        &tab.layers,
                     );
                     let file_stale = tab.ai.is_file_stale(&file.path);
                     for finding in &line_findings {
@@ -1581,6 +1595,7 @@ fn render_split_side(f: &mut Frame, area: Rect, app: &App, hl: &mut Highlighter,
                 hunk.new_count,
                 hunk_idx,
                 total_hunks,
+                &tab.layers,
             );
             for finding in &findings {
                 if side == SplitSide::New {
@@ -2912,17 +2927,23 @@ fn render_finding_banner(
 
     let stale_tag = if file_stale { " [stale]" } else { "" };
 
-    let mut title_spans = vec![
-        Span::styled(format!("  {} ", finding.severity.symbol()), severity_style),
-        Span::styled(
-            format!("[{}]", finding.category),
+    let mut title_spans = vec![Span::styled(
+        format!("  {} ", finding.severity.symbol()),
+        severity_style,
+    )];
+    // A finding can carry neither a lens worth naming nor a defect kind, and an
+    // empty `[]` reads as a rendering fault.
+    let tag = finding.lens_category_tag();
+    if !tag.is_empty() {
+        title_spans.push(Span::styled(
+            format!("[{tag}]"),
             ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
-        ),
-        Span::styled(
-            format!(" {}{}", finding.title, stale_tag),
-            ratatui::style::Style::default().fg(styles::ORANGE()).bg(bg),
-        ),
-    ];
+        ));
+    }
+    title_spans.push(Span::styled(
+        format!(" {}{}", finding.title, stale_tag),
+        ratatui::style::Style::default().fg(styles::ORANGE()).bg(bg),
+    ));
     if focused {
         title_spans.push(Span::styled(
             "  ◆ focused",
@@ -3268,6 +3289,11 @@ mod finding_dispatch_tests {
 
     // One file review with a line-anchored finding (line 30, hunk 1) and a
     // hunk-level finding (no line anchor, hunk 2).
+    /// The open gate: these tests are about mode dispatch, not grading.
+    fn layers() -> er_engine::ai::InlineLayers {
+        er_engine::ai::InlineLayers::default()
+    }
+
     fn ai_with_findings() -> AiState {
         let json = r#"{
             "version": 1,
@@ -3300,7 +3326,7 @@ mod finding_dispatch_tests {
     fn prdiff_surfaces_line_finding_ignoring_hunk_index() {
         let ai = ai_with_findings();
         // Query the WRONG hunk (0) for the finding anchored to hunk 1.
-        let found = line_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 0, 30);
+        let found = line_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 0, 30, &layers());
         assert_eq!(ids(&found), vec!["f-line".to_string()]);
     }
 
@@ -3310,9 +3336,11 @@ mod finding_dispatch_tests {
     #[test]
     fn branch_requires_matching_hunk_for_line_finding() {
         let ai = ai_with_findings();
-        let wrong_hunk = line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 0, 30);
+        let wrong_hunk =
+            line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 0, 30, &layers());
         assert!(wrong_hunk.is_empty(), "branch must not match across hunks");
-        let right_hunk = line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 1, 30);
+        let right_hunk =
+            line_findings_for_mode(&ai, DiffMode::Branch, "src/a.rs", 1, 30, &layers());
         assert_eq!(ids(&right_hunk), vec!["f-line".to_string()]);
     }
 
@@ -3320,7 +3348,8 @@ mod finding_dispatch_tests {
     #[test]
     fn prdiff_surfaces_hunk_level_finding() {
         let ai = ai_with_findings();
-        let found = hunk_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 100, 5, 2, 3);
+        let found =
+            hunk_findings_for_mode(&ai, DiffMode::PrDiff, "src/a.rs", 100, 5, 2, 3, &layers());
         assert_eq!(ids(&found), vec!["f-hunk".to_string()]);
     }
 
@@ -3335,8 +3364,10 @@ mod finding_dispatch_tests {
             DiffMode::Hidden,
             DiffMode::Tour,
         ] {
-            assert!(line_findings_for_mode(&ai, mode, "src/a.rs", 1, 30).is_empty());
-            assert!(hunk_findings_for_mode(&ai, mode, "src/a.rs", 100, 5, 2, 3).is_empty());
+            assert!(line_findings_for_mode(&ai, mode, "src/a.rs", 1, 30, &layers()).is_empty());
+            assert!(
+                hunk_findings_for_mode(&ai, mode, "src/a.rs", 100, 5, 2, 3, &layers()).is_empty()
+            );
         }
     }
 }

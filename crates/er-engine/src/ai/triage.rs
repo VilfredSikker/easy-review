@@ -1,5 +1,6 @@
 //! Triage reviewer — fast branch scan in `.er/triage.json` (routing verdict, not findings).
 
+use super::review::RiskLevel;
 use std::path::Path;
 
 pub const TRIAGE_ID: &str = "triage";
@@ -41,8 +42,8 @@ pub struct TriageReview {
 pub struct TriageDiffStats {
     #[serde(default)]
     pub files_changed: u32,
-    #[serde(default)]
-    pub approx_risk: String,
+    #[serde(default, deserialize_with = "super::review::lenient_risk_level")]
+    pub approx_risk: RiskLevel,
     #[serde(default)]
     pub domains: Vec<String>,
 }
@@ -64,8 +65,8 @@ pub struct TriagePriorityFile {
     pub path: String,
     #[serde(default)]
     pub reason: String,
-    #[serde(default)]
-    pub risk: String,
+    #[serde(default, deserialize_with = "super::review::lenient_risk_level")]
+    pub risk: RiskLevel,
 }
 
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
@@ -132,8 +133,40 @@ mod tests {
         let triage: TriageReview = serde_json::from_str(json).unwrap();
         assert_eq!(triage.verdict.primary, TriageVerdictPrimary::Expert);
         assert_eq!(triage.verdict.experts, vec!["security"]);
+        assert_eq!(triage.diff_stats.approx_risk, RiskLevel::Medium);
         assert_eq!(triage.priority_files.len(), 1);
+        assert_eq!(triage.priority_files[0].risk, RiskLevel::High);
         assert!(triage_is_fresh(&triage, "abc123"));
         assert!(!triage_is_fresh(&triage, "other"));
+    }
+
+    /// Both risk fields are typed now, so a model writing a word outside the
+    /// four levels degrades that one value instead of discarding the verdict.
+    #[test]
+    fn unrecognised_risk_degrades_to_info() {
+        let json = r#"{
+            "version": 1,
+            "diff_hash": "abc123",
+            "diff_stats": { "files_changed": 3, "approx_risk": "banana" },
+            "priority_files": [{ "path": "src/a.rs", "risk": "moderate" }]
+        }"#;
+        let triage: TriageReview = serde_json::from_str(json).unwrap();
+        assert_eq!(triage.diff_stats.approx_risk, RiskLevel::Info);
+        assert_eq!(triage.priority_files[0].risk, RiskLevel::Info);
+    }
+
+    /// Absent risk fields keep working — sidecars written before the fields were
+    /// typed, and prompts that omit them, must not fail the whole file.
+    #[test]
+    fn missing_risk_fields_still_load() {
+        let json = r#"{
+            "version": 1,
+            "diff_hash": "abc123",
+            "diff_stats": { "files_changed": 3 },
+            "priority_files": [{ "path": "src/a.rs" }]
+        }"#;
+        let triage: TriageReview = serde_json::from_str(json).unwrap();
+        assert_eq!(triage.diff_stats.approx_risk, RiskLevel::Info);
+        assert_eq!(triage.priority_files[0].risk, RiskLevel::Info);
     }
 }

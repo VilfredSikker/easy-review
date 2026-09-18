@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Overview ruler for reference-highlight matches (issue #69) — a thin
+   * Overview ruler for reference-highlight matches — a thin
    * absolutely-positioned strip on the right edge of the diff scroll
    * viewport, like the scrollbar markers in VSCode/Zed. One mark per matched
    * row (overlapping marks are pre-merged by `buildRulerMarks`); clicking a

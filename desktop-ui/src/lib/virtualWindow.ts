@@ -9,7 +9,6 @@ const DEFAULT_OVERSCAN = 5;
 
 /**
  * Fixed-height mode: all rows share the same height.
- * Call this from FileTree (Phase 1b).
  */
 export function windowFromScroll(
   totalItems: number,

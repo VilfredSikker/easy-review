@@ -1,6 +1,7 @@
 //! Specialized expert reviewers — registry, sidecar types, merge into general review.
 
-use super::review::{ErFileReview, ErReview, Finding, RiskLevel};
+use super::professor::{PROFESSOR_ID, PROFESSOR_ID_PREFIX};
+use super::review::{ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -135,19 +136,21 @@ pub fn expert_summary_focus(expert_id: &str) -> &'static str {
     }
 }
 
-pub fn expert_label_for_category(category: &str) -> Option<&'static str> {
-    expert_by_id(category).map(|e| e.label)
+pub fn expert_label_for_id(id: &str) -> Option<&'static str> {
+    expert_by_id(id).map(|e| e.label)
 }
 
-/// Display label for the agent that produced a finding (pill in UI).
-pub fn agent_label_for_category(category: &str) -> &'static str {
-    if category == super::triage::TRIAGE_ID {
+/// Display label for a producer: an expert id, `professor`, or `triage`. Fed a
+/// finding's `lens` and a background task's kind — the two places a producer id
+/// is recorded. Never a finding's `category`, which names a kind of defect.
+pub fn agent_label_for_id(id: &str) -> &'static str {
+    if id == super::triage::TRIAGE_ID {
         return super::triage::TRIAGE_LABEL;
     }
-    if category == super::professor::PROFESSOR_ID {
+    if id == super::professor::PROFESSOR_ID {
         return super::professor::PROFESSOR_LABEL;
     }
-    if let Some(def) = expert_by_id(category) {
+    if let Some(def) = expert_by_id(id) {
         return def.label;
     }
     "General"
@@ -200,6 +203,20 @@ pub fn parse_reviewer_kind(kind: &str) -> Option<ReviewerKind> {
             expert_by_id(id).map(|_| ReviewerKind::Expert(id.to_string()))
         }
         _ => None,
+    }
+}
+
+/// The `Finding.lens` a producer id maps to.
+///
+/// Producer ids are *task kinds* (`general`, `professor`, `expert:<id>`,
+/// `triage`); `lens` is the flat finding vocabulary in CONTEXT.md. Anything
+/// that is not a named reviewer — an unset kind, or `triage`, which routes
+/// rather than producing findings — attributes to the general pass.
+pub fn lens_for_producer_id(kind: &str) -> &'static str {
+    match parse_reviewer_kind(kind) {
+        Some(ReviewerKind::Expert(id)) => expert_by_id(&id).map_or(GENERAL_LENS, |e| e.id),
+        Some(ReviewerKind::Professor) => super::professor::PROFESSOR_ID,
+        _ => GENERAL_LENS,
     }
 }
 
@@ -291,6 +308,37 @@ fn prefix_finding_id(prefix: &str, id: &str) -> String {
     }
 }
 
+/// Expert id owning a finding-id prefix (`sec` → `security`).
+pub fn expert_id_for_id_prefix(prefix: &str) -> Option<&'static str> {
+    EXPERTS.iter().find(|e| e.id_prefix == prefix).map(|e| e.id)
+}
+
+/// Fill `lens` for findings whose sidecar predates the field.
+///
+/// Expert and professor findings are recognised by the id prefix their merge
+/// path assigns; anything else in `review.json` is general-review output. Call
+/// this once, right after `review.json` is parsed and before the sidecar merges
+/// — they set `lens` themselves and skip anything already attributed.
+pub fn backfill_finding_lenses(review: &mut ErReview) {
+    for file in review.files.values_mut() {
+        for finding in &mut file.findings {
+            if !finding.lens.is_empty() {
+                continue;
+            }
+            finding.lens = match finding.id.split_once('-') {
+                Some((prefix, _)) => expert_id_for_id_prefix(prefix)
+                    .or_else(|| (prefix == PROFESSOR_ID_PREFIX).then_some(PROFESSOR_ID))
+                    .unwrap_or(GENERAL_LENS),
+                None => GENERAL_LENS,
+            }
+            .to_string();
+            if finding.raised_by.is_empty() {
+                finding.raised_by = vec![finding.lens.clone()];
+            }
+        }
+    }
+}
+
 /// Whether an expert sidecar belongs on the review card: generated against the
 /// diff the tab shows now, or against the same diff as the general review it is
 /// merged into. A selected-files run hashes only the filtered diff, so its
@@ -331,7 +379,12 @@ pub fn merge_experts_into_review(
                 });
             for mut finding in efr.findings.clone() {
                 finding.id = prefix_finding_id(def.id_prefix, &finding.id);
-                finding.category = def.id.to_string();
+                finding.lens = def.id.to_string();
+                // A sidecar's own findings come from this one expert, so it is
+                // the whole raiser set until something merges several.
+                if finding.raised_by.is_empty() {
+                    finding.raised_by = vec![def.id.to_string()];
+                }
                 entry.findings.push(finding);
             }
         }
@@ -377,16 +430,22 @@ mod tests {
     use super::*;
     use crate::ai::review::{Confidence, RiskLevel};
 
+    /// A finding as an expert sidecar writes it: a defect kind, no lens (the
+    /// merge assigns that), no line text.
     fn sample_finding(id: &str) -> Finding {
         Finding {
             id: id.to_string(),
             severity: RiskLevel::Medium,
-            category: "security".to_string(),
+            lens: String::new(),
+            category: "correctness".to_string(),
+            raised_by: Vec::new(),
             title: "Test".to_string(),
             description: String::new(),
             hunk_index: Some(0),
             line_start: Some(1),
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: vec![],
             outside_diff: false,
@@ -448,7 +507,82 @@ mod tests {
         let f = &review.files["src/a.rs"];
         assert_eq!(f.findings.len(), 1);
         assert_eq!(f.findings[0].id, "sec-1");
-        assert_eq!(f.findings[0].category, "security");
+        assert_eq!(f.findings[0].lens, "security");
+    }
+
+    /// The merge must not overwrite an expert's own `category`: an expert that
+    /// classifies its finding as a correctness issue keeps that classification,
+    /// and the producer name goes to `lens` instead.
+    #[test]
+    fn merge_keeps_the_experts_defect_category() {
+        let hash = "abc123";
+        let mut review = ErReview {
+            version: 1,
+            diff_hash: hash.to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        };
+        let experts = vec![ExpertReview {
+            version: 1,
+            expert_id: "security".to_string(),
+            diff_hash: hash.to_string(),
+            diff_scope: "branch".to_string(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: HashMap::from([(
+                "src/a.rs".to_string(),
+                ExpertFileReview {
+                    findings: vec![sample_finding("1")],
+                },
+            )]),
+        }];
+
+        merge_experts_into_review(&mut review, &experts, hash);
+
+        let f = &review.files["src/a.rs"].findings[0];
+        assert_eq!(f.category, "correctness", "defect kind was overwritten");
+        assert_eq!(f.lens, "security");
+    }
+
+    #[test]
+    fn backfill_attributes_findings_written_before_lens_existed() {
+        let mut review = ErReview {
+            version: 1,
+            diff_hash: "h".to_string(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::from([(
+                "src/a.rs".to_string(),
+                ErFileReview {
+                    risk: RiskLevel::Low,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![
+                        sample_finding("sec-1"),
+                        sample_finding("pat-2"),
+                        sample_finding("prof-3"),
+                        sample_finding("f-4"),
+                    ],
+                },
+            )]),
+            file_hashes: HashMap::new(),
+        };
+        // A finding already attributed by a merge path keeps that attribution
+        // even when its id prefix says otherwise.
+        review.files.get_mut("src/a.rs").unwrap().findings[0].lens = "api".to_string();
+
+        backfill_finding_lenses(&mut review);
+
+        let lenses: Vec<&str> = review.files["src/a.rs"]
+            .findings
+            .iter()
+            .map(|f| f.lens.as_str())
+            .collect();
+        assert_eq!(lenses, vec!["api", "patterns", "professor", "general"]);
     }
 
     #[test]
@@ -458,11 +592,26 @@ mod tests {
         }
     }
 
+    /// Producer ids are task kinds; `lens` is the flat finding vocabulary. An
+    /// unset kind or `triage` — which routes rather than producing findings —
+    /// attributes to the general pass.
+    #[test]
+    fn lens_for_producer_id_normalizes_task_kinds() {
+        assert_eq!(lens_for_producer_id("expert:security"), "security");
+        assert_eq!(lens_for_producer_id("expert:simplifying"), "simplifying");
+        assert_eq!(lens_for_producer_id("professor"), "professor");
+        assert_eq!(lens_for_producer_id("general"), GENERAL_LENS);
+        assert_eq!(lens_for_producer_id("triage"), GENERAL_LENS);
+        assert_eq!(lens_for_producer_id(""), GENERAL_LENS);
+        // An expert task kind with an id no longer in the registry.
+        assert_eq!(lens_for_producer_id("expert:retired"), GENERAL_LENS);
+    }
+
     #[test]
     fn agent_label_maps_general_expert_professor() {
-        assert_eq!(agent_label_for_category("security"), "Security");
-        assert_eq!(agent_label_for_category("professor"), "Professor");
-        assert_eq!(agent_label_for_category("logic"), "General");
+        assert_eq!(agent_label_for_id("security"), "Security");
+        assert_eq!(agent_label_for_id("professor"), "Professor");
+        assert_eq!(agent_label_for_id("logic"), "General");
     }
 
     #[test]
@@ -562,12 +711,12 @@ mod tests {
         };
         let experts = vec![expert("reliability", "scoped"), expert("security", "older")];
         merge_experts_into_review(&mut review, &experts, "full");
-        let categories: Vec<&str> = review.files["m.sql"]
+        let lenses: Vec<&str> = review.files["m.sql"]
             .findings
             .iter()
-            .map(|f| f.category.as_str())
+            .map(|f| f.lens.as_str())
             .collect();
-        assert_eq!(categories, vec!["reliability"]);
+        assert_eq!(lenses, vec!["reliability"]);
         assert!(
             !expert_hash_accepted(&experts[0], "", "full"),
             "without a review hash only the tab's own hash is accepted"

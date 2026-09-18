@@ -1,5 +1,6 @@
 #![allow(clippy::too_many_arguments)]
 
+use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -117,16 +118,58 @@ pub fn gh_pr_commits(
     number: u64,
     limit: usize,
 ) -> Result<Vec<crate::git::CommitInfo>> {
-    let output = Command::new("gh")
-        .args(["pr", "view", &number.to_string(), "--json", "commits"])
-        .current_dir(repo_root)
-        .output()
+    let mut cmd = Command::new("gh");
+    cmd.args(["pr", "view", &number.to_string(), "--json", "commits"])
+        .current_dir(repo_root);
+    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr view for commits")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         anyhow::bail!("Failed to get PR #{number} commits: {}", stderr.trim());
     }
     parse_pr_commits_view_json(&output.stdout, limit)
+}
+
+/// A PR's base branch and commit list, from one `gh pr view`.
+///
+/// [`gh_pr_base_branch`] and [`gh_pr_commits`] are two `gh pr view --json`
+/// invocations against the same PR, so asking for both costs two network round
+/// trips (~0.6s each) to read two fields of one object. Callers that need both
+/// — the desktop Sync path — should use this instead.
+pub fn gh_pr_base_branch_and_commits(
+    repo_root: &str,
+    number: u64,
+    limit: usize,
+) -> Result<(String, Vec<crate::git::CommitInfo>)> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "pr",
+        "view",
+        &number.to_string(),
+        "--json",
+        "baseRefName,commits",
+    ])
+    .current_dir(repo_root);
+    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GH_TIMEOUT)
+        .context("Failed to run gh pr view for base branch and commits")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to get PR #{}: {}", number, stderr.trim());
+    }
+
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).context("Failed to parse gh pr view JSON")?;
+    let base = value
+        .get("baseRefName")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+    if base.is_empty() {
+        anyhow::bail!("PR #{} has no base branch", number);
+    }
+    let commits = parse_pr_commits_view_value(&value, limit);
+    Ok((base, commits))
 }
 
 /// Deduplicate reviewers by login from the reviews array.
@@ -241,7 +284,7 @@ fn gh_spawn_context(err: std::io::Error) -> anyhow::Error {
 pub fn ensure_gh_installed() -> Result<()> {
     let output = Command::new("gh")
         .args(["--version"])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("GitHub CLI (gh) is not installed. Install it: https://cli.github.com")?;
 
     if !output.status.success() {
@@ -251,7 +294,7 @@ pub fn ensure_gh_installed() -> Result<()> {
     // Check auth
     let auth = Command::new("gh")
         .args(["auth", "status"])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to check gh auth status")?;
 
     if !auth.status.success() {
@@ -294,7 +337,7 @@ pub struct GhNotificationRepo {
 pub fn gh_list_participating_notifications() -> Result<Vec<GhNotification>> {
     let output = Command::new("gh")
         .args(["api", "notifications?participating=true&per_page=50"])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to fetch GitHub notifications")?;
 
     if !output.status.success() {
@@ -321,18 +364,18 @@ pub fn pr_number_from_notification_url(url: &str) -> Option<u64> {
 
 /// Get the base branch for a PR using `gh pr view`
 pub fn gh_pr_base_branch(pr_number: u64, repo_root: &str) -> Result<String> {
-    let output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr_number.to_string(),
-            "--json",
-            "baseRefName",
-            "--jq",
-            ".baseRefName",
-        ])
-        .current_dir(repo_root)
-        .output()
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "pr",
+        "view",
+        &pr_number.to_string(),
+        "--json",
+        "baseRefName",
+        "--jq",
+        ".baseRefName",
+    ])
+    .current_dir(repo_root);
+    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GH_TIMEOUT)
         .context("Failed to get PR base branch")?;
 
     if !output.status.success() {
@@ -361,7 +404,7 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
             r#"[.baseRefName, .headRefName] | @tsv"#,
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR branch names")?;
 
     if !output.status.success() {
@@ -390,14 +433,14 @@ pub fn gh_pr_branch_names(pr_number: u64, repo_root: &str) -> Result<(String, St
 /// (`refs/heads/`), remote-tracking refs, HEAD, or the working tree.
 pub fn fetch_pr_head(number: u64, root: &str) -> Result<String> {
     let ref_name = format!("refs/er/pr/{}/head", number);
-    let output = std::process::Command::new("git")
-        .args([
-            "fetch",
-            "origin",
-            &format!("+pull/{}/head:{}", number, ref_name),
-        ])
-        .current_dir(root)
-        .output()
+    let mut cmd = std::process::Command::new("git");
+    cmd.args([
+        "fetch",
+        "origin",
+        &format!("+pull/{}/head:{}", number, ref_name),
+    ])
+    .current_dir(root);
+    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GIT_FETCH_TIMEOUT)
         .context("failed to run git fetch for PR head")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -450,10 +493,11 @@ pub fn fetch_base_branch_ref(repo_root: &str, base_branch: &str) -> Result<Strin
         base_branch, base_branch
     );
 
-    let fetch = std::process::Command::new("git")
+    let mut fetch_cmd = std::process::Command::new("git");
+    fetch_cmd
         .args(["fetch", "origin", &refspec])
-        .current_dir(repo_root)
-        .output()
+        .current_dir(repo_root);
+    let fetch = crate::proc::run_with_timeout(&mut fetch_cmd, crate::proc::GIT_FETCH_TIMEOUT)
         .context("Failed to fetch base branch from origin")?;
 
     if !fetch.status.success() {
@@ -495,7 +539,7 @@ pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
             ".headRefName",
         ])
         .current_dir(root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("failed to run gh pr view")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -570,14 +614,14 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
         Command::new("git")
             .args(["fetch", "origin", &base_branch])
             .current_dir(repo_root)
-            .output()
+            .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
             .context("Failed to fetch base branch from origin")?
     } else {
         let qualified = format!("refs/heads/{base_branch}");
         Command::new("git")
             .args(["fetch", "origin", &qualified])
             .current_dir(repo_root)
-            .output()
+            .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
             .context("Failed to fetch base branch from origin")?
     };
 
@@ -620,7 +664,7 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
             r#"[.number, .baseRefName] | @tsv"#,
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .ok()?;
 
     if !output.status.success() {
@@ -656,7 +700,7 @@ pub fn gh_open_pr_number_for_head(owner: &str, repo: &str, head: &str) -> Result
             "--json",
             "number,isDraft",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .map_err(gh_spawn_context)?;
 
     if !output.status.success() {
@@ -685,7 +729,7 @@ pub fn gh_pr_title(owner: &str, repo: &str, number: u64) -> Option<String> {
             "--json",
             "title",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .ok()?;
     if !output.status.success() {
         return None;
@@ -708,7 +752,7 @@ pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
     let output = Command::new("gh")
         .args(["pr", "view", "--json", "number,headRepository"])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR info")?;
 
     if !output.status.success() {
@@ -768,7 +812,7 @@ type RepoInfoMap = HashMap<String, RepoInfoEntry>;
 /// Process-wide cache of [`get_repo_info`] results (origin owner/repo per repo
 /// root). `git remote get-url` runs on every agent spawn of a remote PR via
 /// [`local_checkout_for_repo`]; the origin remote is effectively static per
-/// repo, so a short TTL removes the subprocess from the hot path (O3).
+/// repo, so a short TTL removes the subprocess from the hot path.
 /// Failures are not cached; expired and excess entries are pruned on insert.
 struct RepoInfoCache {
     inner: Mutex<RepoInfoMap>,
@@ -891,7 +935,7 @@ pub fn gh_pr_comments(
             "--paginate",
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to fetch PR comments")?;
 
     if !output.status.success() {
@@ -985,7 +1029,7 @@ pub fn gh_pr_push_comment(
             ".headRefOid",
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR head SHA")?;
 
     if !sha_output.status.success() {
@@ -1018,7 +1062,7 @@ pub fn gh_pr_push_comment(
     }
     let output = cmd
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to push comment to GitHub")?;
 
     if !output.status.success() {
@@ -1054,7 +1098,7 @@ pub fn gh_pr_reply_comment(
             &format!("in_reply_to={}", in_reply_to),
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to push reply to GitHub")?;
 
     if !output.status.success() {
@@ -1087,7 +1131,7 @@ pub fn gh_pr_update_review_comment(
             &format!("body={}", body),
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to update comment on GitHub")?;
 
     if !output.status.success() {
@@ -1113,7 +1157,7 @@ pub fn gh_pr_delete_comment(
             &format!("repos/{}/{}/pulls/comments/{}", owner, repo, comment_id),
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to delete comment from GitHub")?;
 
     if !output.status.success() {
@@ -1132,7 +1176,7 @@ pub fn gh_pr_edit_body(repo_root: &str, body: &str) -> Result<()> {
     let output = Command::new("gh")
         .args(["pr", "edit", "--body", body])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to update PR body")?;
 
     if !output.status.success() {
@@ -1157,7 +1201,7 @@ pub fn gh_pr_approve(
     }
     cmd.current_dir(repo_root);
     let output = cmd
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr review --approve")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1202,7 +1246,7 @@ fn gh_pr_overview_impl(
     let view_output = Command::new("gh")
         .args(&args)
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .ok()?;
 
     if !view_output.status.success() {
@@ -1255,7 +1299,7 @@ fn gh_pr_checks_data(repo_root: &str) -> Result<Vec<CiCheck>> {
     let output = Command::new("gh")
         .args(["pr", "checks", "--json", "name,state,bucket"])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr checks")?;
 
     if !output.status.success() {
@@ -1312,7 +1356,7 @@ pub fn gh_pr_size_check_remote(owner: &str, repo: &str, number: u64) -> Result<(
             "--jq",
             r#"{additions: .additions, deletions: .deletions, files: .changedFiles}"#,
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to check PR size")?;
 
     if !output.status.success() {
@@ -1352,7 +1396,7 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
     let repo_slug = format!("{}/{}", owner, repo);
     let output = Command::new("gh")
         .args(["pr", "diff", &number.to_string(), "--repo", &repo_slug])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .map_err(gh_spawn_context)?;
 
     if !output.status.success() {
@@ -1377,7 +1421,7 @@ pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
     let output = Command::new("gh")
         .args(["pr", "diff", &pr_number.to_string()])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .map_err(gh_spawn_context)?;
 
     if !output.status.success() {
@@ -1404,7 +1448,7 @@ pub fn gh_pr_commit_shas_remote(owner: &str, repo: &str, number: u64) -> Result<
             "--jq",
             r#"[.baseRefOid, .headRefOid] | @tsv"#,
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR commit SHAs")?;
 
     if !output.status.success() {
@@ -1456,7 +1500,7 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
             &repo_url,
             &tmp_path,
         ])
-        .output()
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
         .context("Failed to shallow clone for large PR diff")?;
 
     if !clone.status.success() {
@@ -1475,7 +1519,7 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
             &base_sha,
             &head_sha,
         ])
-        .output()
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
         .context("Failed to fetch PR commits")?;
 
     if !fetch.status.success() {
@@ -1526,7 +1570,7 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
             "--jq",
             r#"[.baseRefName, .headRefName] | @tsv"#,
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR metadata")?;
 
     if !output.status.success() {
@@ -1543,6 +1587,40 @@ pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(St
     Ok((base.to_string(), head.to_string()))
 }
 
+/// Run `gh stack view --json` (github/gh-stack extension) for the repo at
+/// `repo_root` and return its stdout.
+///
+/// A non-zero exit is an expected steady state — the branch may not be in a
+/// stack, or the extension may not be installed — so `gh`'s stderr diagnostic is
+/// returned as the error message and surfaced to the user as the reason.
+pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args(["stack", "view", "--json"])
+        .current_dir(repo_root)
+        // `gh stack view` opens an interactive TUI under a TTY; the JSON flag
+        // avoids it, and these env vars keep any prompt from blocking the
+        // worker thread that runs this.
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to run `gh stack view`")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let reason = stderr.trim();
+        return Err(anyhow::anyhow!(
+            "{}",
+            if reason.is_empty() {
+                "gh stack view failed"
+            } else {
+                reason
+            }
+        ));
+    }
+
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Fetch PR overview data for a remote repo (no local clone needed).
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
     let repo_slug = format!("{}/{}", owner, repo);
@@ -1556,7 +1634,7 @@ pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrO
             "--json",
             "number,title,body,state,author,url,baseRefName,headRefName,reviews",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .ok()?;
 
     if !view_output.status.success() {
@@ -1606,7 +1684,7 @@ pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<Git
             &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
             "--paginate",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to fetch PR comments")?;
 
     if !output.status.success() {
@@ -1728,7 +1806,7 @@ pub fn gh_pr_review_threads(
     let output = Command::new("gh")
         .args(["api", "graphql", "-f", &format!("query={}", query)])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to fetch review threads")?;
 
     if !output.status.success() {
@@ -1766,13 +1844,13 @@ where
     })
 }
 
-/// Cached PR comment sync bundle (hover-prefetch warming, first-paint plan
+/// Cached PR comment sync bundle (hover-prefetch warming).
 ///
-/// step 3). Keyed by (owner, repo, pr); 60s TTL; failures never cached. The
-/// two gh calls (REST comments + GraphQL review threads) cost ~2.5–3 s
-/// sequentially — they run in parallel here, and the sidebar hover prefetch
-/// warms this cache so the post-open `pull_github_comments` is served from
-/// memory instead of the network.
+/// Keyed by (owner, repo, pr); 60s TTL; failures never cached. The two gh calls
+/// (REST comments + GraphQL review threads) cost ~2.5–3 s sequentially — they
+/// run in parallel here, and the sidebar hover prefetch warms this cache so the
+/// post-open `pull_github_comments` is served from memory instead of the
+/// network.
 pub struct PrCommentBundle {
     pub comments: Vec<GitHubComment>,
     pub threads: HashMap<u64, ReviewThreadState>,
@@ -1883,9 +1961,8 @@ pub fn gh_pr_comment_bundle_cached(
 }
 
 /// Drop all cached PR comment bundles. Called on push: a comment pushed while
-///
 /// the 60 s TTL is warm would otherwise be absent from the stale bundle and
-/// dropped from `github-comments.json` on the next pull (review-fix-loop A1).
+/// dropped from `github-comments.json` on the next pull.
 pub fn invalidate_pr_comments_cache() {
     if let Some(cache) = PR_COMMENTS_CACHE.get() {
         if let Ok(mut g) = cache.inner.lock() {
@@ -1895,7 +1972,7 @@ pub fn invalidate_pr_comments_cache() {
 }
 
 /// Head oid of a remote PR (no local clone needed) — the staleness baseline
-/// for remote tabs (review-fix-loop R1).
+/// for remote tabs.
 pub fn gh_pr_head_oid_remote(owner: &str, repo: &str, pr: u64) -> Result<String> {
     let remote = format!("{owner}/{repo}");
     let output = Command::new("gh")
@@ -1910,7 +1987,7 @@ pub fn gh_pr_head_oid_remote(owner: &str, repo: &str, pr: u64) -> Result<String>
             "--jq",
             ".headRefOid",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get remote PR head SHA")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -1936,7 +2013,7 @@ pub fn gh_pr_review_threads_remote(
 
     let output = Command::new("gh")
         .args(["api", "graphql", "-f", &format!("query={}", query)])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to fetch review threads")?;
 
     if !output.status.success() {
@@ -1998,7 +2075,7 @@ pub fn gh_pr_push_comment_remote(
             "--jq",
             ".headRefOid",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR head SHA")?;
 
     if !sha_output.status.success() {
@@ -2029,7 +2106,9 @@ pub fn gh_pr_push_comment_remote(
             cmd.arg("-f").arg(arg);
         }
     }
-    let output = cmd.output().context("Failed to push comment to GitHub")?;
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to push comment to GitHub")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2079,7 +2158,7 @@ pub fn gh_pr_submit_review(
             ".headRefOid",
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR head SHA")?;
 
     if !sha_output.status.success() {
@@ -2175,7 +2254,9 @@ fn post_pr_review(
     if let Some(root) = repo_root {
         cmd.current_dir(root);
     }
-    let output = cmd.output().context("Failed to submit PR review")?;
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to submit PR review")?;
 
     drop(tmp);
 
@@ -2215,7 +2296,7 @@ pub fn gh_pr_submit_review_remote(
             "--jq",
             ".headRefOid",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to get PR head SHA")?;
 
     if !sha_output.status.success() {
@@ -2252,7 +2333,7 @@ pub fn gh_pr_general_comment(
             &format!("body={}", body),
         ])
         .current_dir(repo_root)
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to post general PR comment")?;
 
     if !output.status.success() {
@@ -2278,7 +2359,7 @@ pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str
             "-f",
             &format!("body={}", body),
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to post general PR comment")?;
 
     if !output.status.success() {
@@ -2467,7 +2548,7 @@ pub fn gh_pr_commits_remote(
             "--json",
             "commits",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
     {
         Ok(o) => o,
         Err(_) => return Vec::new(),
@@ -2481,13 +2562,11 @@ pub fn gh_pr_commits_remote(
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
-///
-/// ONE `gh pr view --json` subprocess. Collapses what used to be three
-/// separate `gh pr view` calls (`gh_pr_overview_remote_full` +
-/// `gh_pr_comments_overview` + `gh_pr_reviews`) into one GraphQL-backed call —
-/// verified empirically that requesting `comments`/`reviews` alongside other
-/// fields returns byte-identical data to requesting them alone (see
-/// internal-docs/gh-rate-limit-slimming.md, finding 5).
+/// ONE `gh pr view --json` subprocess. Collapses three separate `gh pr view`
+/// calls (`gh_pr_overview_remote_full` + `gh_pr_comments_overview` +
+/// `gh_pr_reviews`) into one GraphQL-backed call — verified empirically that
+/// requesting `comments`/`reviews` alongside other fields returns byte-identical
+/// data to requesting them alone.
 ///
 /// `gh pr checks` (CI status) is intentionally NOT folded in here — it's a
 /// different `gh` subcommand and must stay a separate call (`gh_pr_checks_remote`).
@@ -2511,7 +2590,7 @@ pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrSta
             "--json",
             "number,title,body,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url,comments,reviews",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr view (status bundle)")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2545,7 +2624,7 @@ pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<C
             "--json",
             "name,state,bucket,link",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr checks")?;
     if !output.status.success() {
         // No checks configured is not an error — return empty.
@@ -2657,7 +2736,7 @@ pub fn gh_pr_reply_comment_remote(
             "-F",
             &format!("in_reply_to={}", in_reply_to),
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to push reply to GitHub")?;
 
     if !output.status.success() {
@@ -2681,7 +2760,7 @@ pub fn gh_pr_reply_comment_remote(
 pub fn gh_current_login() -> Option<String> {
     let output = Command::new("gh")
         .args(["api", "user", "--jq", ".login"])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .ok()?;
     if !output.status.success() {
         return None;
@@ -2718,7 +2797,7 @@ pub fn gh_pr_list_queue(
             "--json",
             "number,title,headRefName,baseRefName,state,isDraft,author,reviewRequests,reviewDecision,mergeable,mergeStateStatus,additions,deletions,changedFiles,updatedAt,labels,url,latestReviews",
         ])
-        .output()
+        .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr list")?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -2940,7 +3019,7 @@ pub fn gh_pr_thread_addressing_remote(
         );
         let output = Command::new("gh")
             .args(["api", "graphql", "-f", &format!("query={}", query)])
-            .output()
+            .output_timed(crate::proc::GH_TIMEOUT)
             .context("Failed to fetch review threads")?;
         if !output.status.success() {
             if page == 0 {
@@ -3805,7 +3884,7 @@ mod tests {
         assert_eq!(s.thread_count, 2);
     }
 
-    // ── get_repo_info cache (O3) ──
+    // ── get_repo_info cache ──
 
     #[test]
     fn repo_info_cache_serves_within_ttl_and_expires() {
@@ -3848,7 +3927,7 @@ mod tests {
         assert_eq!((owner2.as_str(), repo2.as_str()), ("Acme", "discovery"));
     }
 
-    // ── PR comment bundle cache (plan step 3) ──
+    // ── PR comment bundle cache ──
 
     #[test]
     fn pr_comments_cache_serves_within_ttl_and_expires() {

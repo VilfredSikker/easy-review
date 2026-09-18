@@ -7,7 +7,7 @@ Thin REST API over `er-engine` — use **skills** for workflows.
 
 | Tool | Purpose |
 |------|---------|
-| `projects_list` | Easy Review projects (`~/.config/er/projects.json`) |
+| `projects_list` | Easy Review projects (`projects.json` in the platform config dir — `~/Library/Application Support/er/` on macOS, `~/.config/er/` on Linux) |
 | `pr_resolve` | `ref` → owner, repo, number, `pr_url`, `bucket_path` |
 | `prs_query` | List/rank/filter open PRs (`sort`, `filter`, `cross_repo`) |
 | `pr_stats` | Production vs test/docs diff stats; batch + hotspots |

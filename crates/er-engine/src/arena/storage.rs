@@ -237,7 +237,7 @@ pub fn list_run_ids(er_dir: &Path) -> Result<Vec<String>> {
     Ok(ids)
 }
 
-/// Latest mtime under `.er/arena/` for poll fallback (§B2).
+/// Latest mtime under `.er/arena/` for poll fallback.
 #[allow(dead_code)]
 pub fn latest_arena_mtime(er_dir: &Path) -> Option<std::time::SystemTime> {
     let arena_root = er_dir.join("arena");

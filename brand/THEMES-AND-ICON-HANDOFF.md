@@ -2,9 +2,9 @@
 
 Two brand-system updates ship together: a **rebuilt theme system** (token-driven, contrast-checked) and a **new app icon** (Review List) that replaces the old `er` text mark everywhere.
 
-- **Theme gallery / source of truth:** `Theme System.html` + `theme-tokens.js`
-- **Icon source + exports:** `brand/app-icon/` (SVG + PNG, Dark & Light)
-- **In-product reference:** `Easy Review Mobile.html` (mark + dark themes wired into Tweaks)
+- **Theme gallery / source of truth:** `Theme System.html` + `theme-tokens.js`, which live in the **design repo, not this tree**. The ports of those tokens are `crates/er-tui/src/ui/themes.rs` and `desktop-ui/src/lib/themes.ts`; those two are what ship. If the design source and a port disagree, the design source is authoritative and the port is the bug (ADR 0030).
+- **Icon source + exports:** `brand/app-icon/` (SVG + PNG, Dark & Light) — this part is in-tree.
+- **In-product reference:** `Easy Review Mobile.html` — design repo, not this tree.
 
 ---
 
@@ -93,13 +93,26 @@ The icon tile is a **fixed dark mark** and intentionally does **not** recolour w
 ---
 
 ## File map
+
+In this tree — the only files a change here should touch:
+
+| File | Contents |
+|---|---|
+| `brand/app-icon/review-list-dark.svg` | Vector icon source, dark |
+| `brand/app-icon/review-list-light.svg` | Vector icon source, light |
+| `crates/er-tui/src/ui/themes.rs` | TUI port of the theme tokens |
+| `desktop-ui/src/lib/themes.ts` | Desktop port of the theme tokens |
+
+Design repo, not this tree — reference only, do not link to them from code:
+
 | File | Contents |
 |---|---|
 | `Theme System.html` | Interactive 8-theme gallery + token reference |
-| `theme-tokens.js` | **Theme source of truth** + `applyTheme()` |
+| `theme-tokens.js` | Theme source of truth + `applyTheme()` |
 | `theme-preview.jsx` | Themed preview cluster · `RLMark` |
-| `brand/app-icon/*.svg` | Vector icon source (Dark, Light) |
-| `brand/app-icon/png/*` | PNG export set (Dark, Light × 8 sizes) |
 | `Easy Review Mobile.html` | Mobile reference — `AppMark` + dark themes in Tweaks |
 | `er-ui.jsx` | `AppMark` component (exported) |
 | `App Icon — Review List.html` | Final icon spec sheet |
+
+The PNG export set described when this handoff was written is not checked in;
+regenerate it from the SVGs if it is needed.

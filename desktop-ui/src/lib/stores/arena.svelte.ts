@@ -223,6 +223,27 @@ class ArenaStore {
     }
   }
 
+  /**
+   * Validate the current tab's expert findings: dedupe them, then rule on the
+   * result with one arbiter call. Returns the run id, or null when the experts
+   * produced nothing to validate — in which case the toast says so rather than
+   * a run being started against an empty set.
+   */
+  async validateFindings(): Promise<string | null> {
+    try {
+      const runId = await invoke<string | null>("arena_validate_findings");
+      if (runId) {
+        app.showToast("success", "Validating findings — one arbiter pass");
+      } else {
+        app.showToast("info", "No expert findings to validate yet");
+      }
+      return runId;
+    } catch (e) {
+      app.showToast("error", e instanceof Error ? e.message : String(e));
+      throw e;
+    }
+  }
+
   async acceptFindings(runId: string, findingIds?: string[]) {
     try {
       const n = await invoke<number>("arena_accept_findings", {

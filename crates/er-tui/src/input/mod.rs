@@ -11,6 +11,20 @@ pub mod normal;
 
 pub use normal::handle_normal_input;
 
+/// How a gate level reads in a notification.
+///
+/// Phrasing for this surface, so it lives here rather than on the engine state:
+/// the desktop names the same three levels its own way, and both are sentences
+/// about a number neither front end owns.
+fn min_trust_label(level: er_engine::ai::Confidence) -> &'static str {
+    use er_engine::ai::Confidence;
+    match level {
+        Confidence::Informational => "all findings",
+        Confidence::Tentative => "informational hidden",
+        Confidence::Confirmed | Confidence::Dropped => "confirmed only",
+    }
+}
+
 /// Byte index of the char boundary immediately before `pos` (0 if at start).
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
     s[..pos].char_indices().last().map(|(i, _)| i).unwrap_or(0)
@@ -120,6 +134,14 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     match key.code {
         KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
         KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+        KeyCode::Char('b') => {
+            // Secondary action for the selected row. Only stacked-PR rows define
+            // one (open on GitHub); everywhere else this is a no-op.
+            if let Some(action) = app.overlay_secondary_hub_action() {
+                app.overlay = None;
+                dispatch_hub_action(app, action)?;
+            }
+        }
         KeyCode::Enter => {
             app.overlay_select()?;
             // Dispatch pending hub action if overlay_select set one
@@ -133,6 +155,40 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+/// Open a PR on GitHub via `gh pr view --web`.
+///
+/// `gh` outlives the caller, so the child is spawned detached and reaped on its
+/// own thread; the TUI never waits on a browser launch. `remote_repo` is the
+/// `owner/repo` slug passed as `-R` when the PR is not in the current repo.
+/// Returns whether the process was spawned.
+fn spawn_gh_pr_view_web(repo_root: &str, pr_number: u64, remote_repo: Option<&str>) -> bool {
+    let mut args = vec![
+        "pr".to_string(),
+        "view".to_string(),
+        pr_number.to_string(),
+        "--web".to_string(),
+    ];
+    if let Some(slug) = remote_repo {
+        args.push("-R".to_string());
+        args.push(slug.to_string());
+    }
+    match std::process::Command::new("gh")
+        .args(&args)
+        .current_dir(repo_root)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        Ok(mut child) => {
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+            true
+        }
+        Err(_) => false,
+    }
 }
 
 pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
@@ -207,6 +263,23 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 "Resolved: visible"
             });
         }
+        HubAction::CycleMinTrust => {
+            let next = app.tab_mut().cycle_min_trust();
+            app.notify(&format!("Confidence: {}", min_trust_label(next)));
+        }
+        HubAction::ToggleDroppedFindings => {
+            app.tab_mut().toggle_show_dropped();
+            let on = app.tab().layers.show_dropped;
+            app.notify(if on {
+                "Arbiter's drops: listed"
+            } else {
+                "Arbiter's drops: counted only"
+            });
+        }
+        HubAction::RunImportanceAgent => match app.spawn_background_importance() {
+            Ok(()) => app.notify("Importance agent started"),
+            Err(e) => app.notify(&format!("Importance: {e}")),
+        },
         HubAction::CleanupQuestions => {
             let count = app.tab().ai.local_draft_count();
             app.input_mode = InputMode::Confirm(ConfirmAction::CleanupQuestions { count });
@@ -431,32 +504,41 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             }
         }
         HubAction::OpenPrInBrowser => {
-            let repo_root = app.tab().repo_root.clone();
             if let Some(pr_number) = app.tab().pr_number {
-                let mut args = vec![
-                    "pr".to_string(),
-                    "view".to_string(),
-                    pr_number.to_string(),
-                    "--web".to_string(),
-                ];
-                if let Some(ref slug) = app.tab().remote_repo {
-                    args.push("-R".to_string());
-                    args.push(slug.clone());
-                }
-                if let Ok(mut child) = std::process::Command::new("gh")
-                    .args(&args)
-                    .current_dir(&repo_root)
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn()
-                {
-                    std::thread::spawn(move || {
-                        let _ = child.wait();
-                    });
-                }
+                let repo_root = app.tab().repo_root.clone();
+                let remote_repo = app.tab().remote_repo.clone();
+                spawn_gh_pr_view_web(&repo_root, pr_number, remote_repo.as_deref());
                 app.notify("Opening PR in browser...");
             }
         }
+        HubAction::OpenStackPr {
+            pr_number,
+            pr_url,
+            branch,
+        } => {
+            // Reuse the remote-PR review path: it focuses an already-open tab for
+            // this PR or opens a new one backed by `gh pr view`. A stacked layer
+            // is reviewed as its own PR, so the diff is that layer's, not the
+            // whole stack's.
+            if let Err(e) = app.open_remote_url(&pr_url) {
+                app.notify(&format!("Failed to open {branch} (#{pr_number}): {e}"));
+            }
+        }
+        HubAction::OpenStackPrInBrowser {
+            pr_number,
+            pr_url,
+            branch,
+        } => {
+            let repo_root = app.tab().repo_root.clone();
+            // A layer can live in another repo than the tab (when the tab is a
+            // remote PR), so prefer the URL's slug over the tab's remote.
+            let slug =
+                github::parse_github_pr_url(&pr_url).map(|r| format!("{}/{}", r.owner, r.repo));
+            if spawn_gh_pr_view_web(&repo_root, pr_number, slug.as_deref()) {
+                app.notify(&format!("Opening {branch} (#{pr_number}) in browser..."));
+            }
+        }
+        HubAction::RefreshStack => app.refresh_stack(),
         HubAction::CopyFullFile => {
             app.copy_full_file()?;
         }
@@ -921,9 +1003,9 @@ pub fn build_agent_expert_prompt(
 /// Prepare the harness diff artifacts (diff-tmp + diff-annotated + markers)
 /// for an agent action, aborting with a notification when there is no diff
 /// to prepare. Review/validate/expert/professor/triage must anchor against
-/// the SAME prepared bytes (review-fix-loop final pass): an agent-side git
-/// or `gh pr diff` would use different `--unified` flags and mis-anchor
-/// findings. Remote tabs (`er --remote`) already hold the PR diff in memory
+/// the SAME prepared bytes: an agent-side git or `gh pr diff` would use
+/// different `--unified` flags and mis-anchor findings. Remote tabs
+/// (`er --remote`) already hold the PR diff in memory
 /// (or can re-fetch it from this unsandboxed process); they use the same
 /// prepared-artifact path so the sandboxed agent does not call `gh`.
 pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
@@ -990,10 +1072,10 @@ pub fn build_agent_review_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -
 }
 
 /// Build the validate agent prompt. Local mode only — remote validation needs a working
-/// tree to read, which is a separate plumbing job (defer). Uses the prepared-diff prompt
-/// (O1 contract): the caller pre-writes `diff-tmp`/`diff-annotated` via
-/// `ensure_diff_artifacts`, so the agent anchors against the harness-computed hash instead
-/// of re-running `git diff` + `sha256sum` + awk (review-fix-loop P4-2).
+/// tree to read, which is a separate plumbing job (defer). Uses the prepared-diff prompt:
+/// the caller pre-writes `diff-tmp`/`diff-annotated` via `ensure_diff_artifacts`, so the
+/// agent anchors against the harness-computed hash instead of re-running `git diff` +
+/// `sha256sum` + awk.
 pub fn build_agent_validate_prompt(app: &mut App, er_dir: &str, diff_hash: &str) -> Option<String> {
     let tab = app.tab();
     if tab.is_remote() {
@@ -2006,9 +2088,9 @@ mod tests {
 
     #[test]
     fn validate_action_ensures_artifacts_for_review_only_tabs() {
-        // F1 regression: with a review but zero GitHub comments, PromptValidate
-        // must still prepare the diff artifacts — the ensure call previously
-        // sat inside the comments gate and validate silently no-oped.
+        // With a review but zero GitHub comments, PromptValidate must still
+        // prepare the diff artifacts: gating the ensure call on comments makes
+        // validate silently no-op.
         let output_dir = "/tmp/er-tui-validate-f1";
         let _ = std::fs::remove_dir_all(output_dir);
         std::fs::create_dir_all(output_dir).unwrap(); // storage creates it in the real flow
@@ -2032,7 +2114,7 @@ mod tests {
 
         assert!(
             std::fs::metadata(format!("{output_dir}/.diff-tmp.sha256")).is_ok(),
-            "artifacts ensured even with zero comments (F1)"
+            "artifacts ensured even with zero comments"
         );
         assert!(
             std::fs::metadata(format!("{output_dir}/diff-annotated")).is_ok(),
@@ -2075,9 +2157,9 @@ mod tests {
 
     #[test]
     fn remote_review_uses_prepared_diff_not_gh_pr_diff() {
-        // `er --remote` previously skipped prepared artifacts and told the
-        // sandboxed agent to `gh pr diff` from the artifact directory, which
-        // cannot reach GitHub. Desktop already uses the prepared-diff prompt.
+        // The sandboxed agent cannot reach GitHub, so a remote review must not
+        // be told to `gh pr diff` from the artifact directory — it uses the
+        // prepared-diff prompt, as desktop does.
         let output_dir = "/tmp/er-tui-remote-review";
         let _ = std::fs::remove_dir_all(output_dir);
         std::fs::create_dir_all(output_dir).unwrap();

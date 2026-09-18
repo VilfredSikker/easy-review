@@ -3,6 +3,7 @@ pub mod inbox;
 pub mod settings;
 
 use anyhow::Result;
+use glob::{MatchOptions, Pattern};
 
 pub use desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
@@ -36,6 +37,8 @@ pub struct ErConfig {
     pub ai_hub: AiHubConfig,
     #[serde(default)]
     pub packages: PackagesConfig,
+    #[serde(default)]
+    pub importance: ImportanceConfig,
     #[serde(default)]
     pub inbox: InboxConfig,
 }
@@ -92,6 +95,246 @@ impl PackageConfig {
 pub struct PackagesConfig {
     #[serde(flatten)]
     pub items: BTreeMap<String, PackageConfig>,
+}
+
+/// [importance] section — declared per-repo rules ranking files by how much of
+/// the tree depends on them.
+///
+/// Keyed by repo rather than carried in a repo file: per-repo config was removed
+/// for cause. `docs/adr/0036-importance-as-declared-config.md`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ImportanceConfig {
+    #[serde(flatten)]
+    pub items: BTreeMap<String, ImportanceRepoConfig>,
+}
+
+/// One repo's rule table: keys are paths, globs or file types, values are tiers.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ImportanceRepoConfig {
+    /// Tier for a path no rule claims; `normal` when unset.
+    pub default: Option<String>,
+    #[serde(flatten)]
+    pub rules: BTreeMap<String, String>,
+}
+
+/// A rule table an agent proposed, before the host merges it into the config.
+///
+/// The agent prints this; the host validates and writes it. Rules whose tier
+/// does not read, or whose pattern does not compile, are dropped and counted
+/// rather than failing the whole table — one bad line should not cost the
+/// reviewer the rest of it, and dropping it silently would be worse than either.
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default)]
+pub struct ImportanceProposal {
+    /// The repo the table is for. Only the one the agent was asked about is
+    /// accepted; anything else is refused rather than written.
+    pub repo: String,
+    pub default: Option<String>,
+    pub rules: BTreeMap<String, String>,
+    /// What the agent measured about its own table, shown to the reviewer.
+    pub report: String,
+}
+
+impl ImportanceProposal {
+    /// Pull the proposal out of an agent's reply, if it printed one.
+    pub fn from_reply(reply: &str) -> Option<Self> {
+        let begin = reply.find(crate::ai::prompts::IMPORTANCE_JSON_BEGIN)?;
+        let rest = &reply[begin + crate::ai::prompts::IMPORTANCE_JSON_BEGIN.len()..];
+        let end = rest.find(crate::ai::prompts::IMPORTANCE_JSON_END)?;
+        serde_json::from_str(rest[..end].trim()).ok()
+    }
+
+    /// Merge a proposal into the on-disk global config and save it.
+    ///
+    /// The background worker that ran the agent holds no `App`, so this is the
+    /// file path: read the config, replace one repo's table, write it back with
+    /// every other section as it was found.
+    pub fn merge_into_global_config(repo: &str, proposal: Self) -> anyhow::Result<(usize, usize)> {
+        if proposal.repo != repo {
+            anyhow::bail!(
+                "importance proposal names `{}`, not `{repo}`",
+                proposal.repo
+            );
+        }
+        let mut config = load_global_config();
+        let (table, dropped) = proposal.into_repo_config();
+        let kept = table.rules.len();
+        config.importance.items.insert(repo.to_string(), table);
+        save_config(&config)?;
+        Ok((kept, dropped))
+    }
+
+    /// The repo config this proposes, plus how many rules were unusable.
+    ///
+    /// The default tier is treated the same way: an unreadable default falls
+    /// back to `normal` rather than taking the table down with it.
+    pub fn into_repo_config(self) -> (ImportanceRepoConfig, usize) {
+        let mut dropped = 0;
+        let rules = self
+            .rules
+            .into_iter()
+            .filter(|(key, tier)| {
+                let readable = ImportanceTier::parse(tier).is_some();
+                // A pattern the matcher cannot compile is stored, listed in
+                // the settings table, and matched against nothing — a rule
+                // that reads as active and can never fire. Exact keys are
+                // looked up rather than compiled, so only patterns are built.
+                let usable = !is_pattern(key) || Pattern::new(key).is_ok();
+                if !readable || !usable {
+                    dropped += 1;
+                }
+                readable && usable
+            })
+            .collect();
+
+        let default = self.default.filter(|d| {
+            let readable = ImportanceTier::parse(d).is_some();
+            if !readable {
+                dropped += 1;
+            }
+            readable
+        });
+
+        (ImportanceRepoConfig { default, rules }, dropped)
+    }
+}
+
+/// How much of the repo depends on a file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ImportanceTier {
+    /// Much of the tree reaches it.
+    Foundational,
+    /// Little or nothing reaches it.
+    Isolated,
+    /// Neither end, and the answer for a path no rule claims.
+    #[default]
+    Normal,
+}
+
+impl ImportanceTier {
+    /// Read a tier out of a config value.
+    ///
+    /// An unrecognized spelling resolves to nothing rather than failing the
+    /// load: one typo in this table must not cost the user every other section
+    /// of their config.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "foundational" => Some(Self::Foundational),
+            "isolated" => Some(Self::Isolated),
+            "normal" => Some(Self::Normal),
+            _ => None,
+        }
+    }
+
+    /// The spelling `parse` accepts, for surfaces that report a resolved tier.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Foundational => "foundational",
+            Self::Isolated => "isolated",
+            Self::Normal => "normal",
+        }
+    }
+}
+
+/// Path-shaped rules match separator by separator, so `src/*` names the files
+/// directly under `src`. A bare extension pattern never reaches here — the
+/// file-type level matches those against the basename.
+const IMPORTANCE_MATCH_OPTIONS: MatchOptions = MatchOptions {
+    case_sensitive: true,
+    require_literal_separator: true,
+    require_literal_leading_dot: false,
+};
+
+/// Whether a rule key is a pattern rather than the name of one path.
+fn is_pattern(key: &str) -> bool {
+    key.contains(['*', '?', '['])
+}
+
+fn matches_pattern(pattern: &str, target: &str) -> bool {
+    Pattern::new(pattern)
+        .is_ok_and(|pattern| pattern.matches_with(target, IMPORTANCE_MATCH_OPTIONS))
+}
+
+impl ImportanceConfig {
+    /// The rule table generated for `repo`, if there is one.
+    pub fn repo(&self, repo: &str) -> Option<&ImportanceRepoConfig> {
+        self.items.get(repo)
+    }
+
+    /// Tier of `path` (repo-relative) under `repo`'s rules.
+    pub fn resolve(&self, repo: &str, path: &str) -> ImportanceTier {
+        self.repo(repo)
+            .map_or(ImportanceTier::Normal, |rules| rules.resolve(path))
+    }
+}
+
+impl ImportanceRepoConfig {
+    /// Resolve a repo-relative path to its tier.
+    ///
+    /// Precedence runs most-specific-first: exact path, then glob, then file
+    /// type, then `default`. Within the pattern levels the longest matching key
+    /// wins, so a narrow rule can carve an exception out of a broader one that
+    /// would otherwise claim the same path.
+    pub fn resolve(&self, path: &str) -> ImportanceTier {
+        self.matching_rule(path)
+            .map_or_else(|| self.default_tier(), |(_, tier)| tier)
+    }
+
+    /// The rule that claims `path`: the key as it was written, and its tier.
+    ///
+    /// `None` means no rule claims the path, and [`Self::resolve`] answers with
+    /// the default. The key travels with the tier because the tier alone does
+    /// not answer "why is this one foundational?", and a caller that walks the
+    /// levels again to recover the key is a second copy of the precedence
+    /// order, free to disagree with this one.
+    pub fn matching_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        self.exact_rule(path)
+            .or_else(|| self.glob_rule(path))
+            .or_else(|| self.file_type_rule(path))
+    }
+
+    /// The tier a path no rule claims resolves to.
+    pub fn default_tier(&self) -> ImportanceTier {
+        self.default
+            .as_deref()
+            .and_then(ImportanceTier::parse)
+            .unwrap_or_default()
+    }
+
+    /// A key with no metacharacters names one path.
+    fn exact_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        let (key, tier) = self.rules.get_key_value(path)?;
+        Some((key.as_str(), ImportanceTier::parse(tier)?))
+    }
+
+    fn glob_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        self.pattern_rule(path, true)
+    }
+
+    fn file_type_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
+        let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
+        self.pattern_rule(basename, false)
+    }
+
+    /// A key carrying a separator names a place in the tree and is matched
+    /// against the whole path; one without names a kind of file and is matched
+    /// against the basename.
+    ///
+    /// A winning key whose tier does not read resolves to nothing, the same as
+    /// no match at all: the fall-through goes to the next level, never to the
+    /// next-shortest matching key, so a typo cannot silently promote a broader
+    /// rule into the answer.
+    fn pattern_rule(&self, target: &str, path_shaped: bool) -> Option<(&str, ImportanceTier)> {
+        let (key, tier) = self
+            .rules
+            .iter()
+            .filter(|(key, _)| is_pattern(key) && key.contains('/') == path_shaped)
+            .filter(|(key, _)| matches_pattern(key, target))
+            .max_by_key(|(key, _)| key.len())?;
+        Some((key.as_str(), ImportanceTier::parse(tier)?))
+    }
 }
 
 /// [watched] section configuration
@@ -176,10 +419,64 @@ pub struct AiHubConfig {
     /// 0 means "use the default".
     #[serde(default)]
     pub max_concurrent_reviews: usize,
+    /// Wall-clock limit for a single agent process, in seconds. A run past it
+    /// is killed and reported as timed out rather than held open forever.
+    /// 0 means "use the default".
+    #[serde(default)]
+    pub agent_timeout_secs: u64,
+    /// Agent processes arena reviewer rounds may run at once. Separate from
+    /// `max_concurrent_reviews` so an arena run and a background review cannot
+    /// starve each other out of a shared pool. 0 means "use the default".
+    #[serde(default)]
+    pub max_concurrent_arena_reviews: usize,
+    /// Hard ceiling on agent processes across *both* workloads.
+    ///
+    /// The per-workload caps say how big each may get; this says how big they
+    /// may get together, so raising one cannot quietly double the load. 0
+    /// means "use the default".
+    #[serde(default)]
+    pub max_concurrent_agents: usize,
 }
 
 /// Default cap on concurrently running agent processes.
 pub const DEFAULT_MAX_CONCURRENT_REVIEWS: usize = 3;
+
+/// Accepted range for `ai_hub.max_concurrent_reviews`.
+///
+/// One definition, because the picker and the setter behind it disagreed:
+/// the settings UI offered 1-6 while the write path accepted 1-16, so a
+/// value set elsewhere was silently kept but not selectable, and a value
+/// chosen from the picker could never reach the top of its own range.
+pub const MAX_CONCURRENT_REVIEWS_RANGE: std::ops::RangeInclusive<usize> = 1..=16;
+
+/// Default cap on concurrent arena reviewer rounds.
+///
+/// Matches the background default: an arena round is a different shape of
+/// work, not a smaller one, and the shared ceiling is what keeps the pair
+/// bounded rather than a lower per-workload number.
+pub const DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS: usize = 3;
+
+/// Default hard ceiling across both workloads.
+///
+/// The sum of the two defaults, so each workload can reach its own cap when
+/// the other is idle, and neither can exceed it when both are busy.
+pub const DEFAULT_MAX_CONCURRENT_AGENTS: usize =
+    DEFAULT_MAX_CONCURRENT_REVIEWS + DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS;
+
+/// Default wall-clock limit for one agent process.
+///
+/// Deliberately generous, because the asymmetry is not close: cutting off a
+/// review that was still working destroys work the user waited for and cannot
+/// recover, while letting a hung one sit a little longer costs a slot.
+///
+/// The number is a judgement, not a measurement. Phase 0 timed ~60 s of
+/// provider latency, but for `claude -p "Reply with exactly the word ok and
+/// nothing else."` — a trivial prompt — so that is a floor on the round trip,
+/// not what a review costs. A real review reads files and thinks, and nobody
+/// has timed one. Fifteen minutes is chosen to sit well clear of that
+/// unknown rather than because it is known to be safe. Lower it if you know
+/// your providers and diffs finish faster than this.
+pub const DEFAULT_AGENT_TIMEOUT_SECS: u64 = 900;
 
 /// A validated provider/model/effort choice used by ordinary AI actions.
 ///
@@ -200,6 +497,43 @@ impl AiHubConfig {
         } else {
             self.max_concurrent_reviews
         }
+    }
+
+    /// Effective arena reviewer cap — configured value, or the default.
+    pub const fn effective_max_concurrent_arena_reviews(&self) -> usize {
+        if self.max_concurrent_arena_reviews == 0 {
+            DEFAULT_MAX_CONCURRENT_ARENA_REVIEWS
+        } else {
+            self.max_concurrent_arena_reviews
+        }
+    }
+
+    /// Effective ceiling across both workloads.
+    ///
+    /// Floored at each workload's own cap: a ceiling below a cap would make
+    /// that cap unreachable, which reads as a bug rather than as a limit.
+    pub fn effective_max_concurrent_agents(&self) -> usize {
+        let configured = if self.max_concurrent_agents == 0 {
+            DEFAULT_MAX_CONCURRENT_AGENTS
+        } else {
+            self.max_concurrent_agents
+        };
+        configured
+            .max(self.effective_max_concurrent_reviews())
+            .max(self.effective_max_concurrent_arena_reviews())
+    }
+
+    /// Effective per-agent deadline — configured value, or the default when
+    /// unset. Zero resolves to the default rather than to "no limit": a run
+    /// with no deadline is the failure this setting exists to prevent, so the
+    /// off switch is a very large number, not a zero someone set by accident.
+    pub const fn effective_agent_timeout(&self) -> std::time::Duration {
+        let secs = if self.agent_timeout_secs == 0 {
+            DEFAULT_AGENT_TIMEOUT_SECS
+        } else {
+            self.agent_timeout_secs
+        };
+        std::time::Duration::from_secs(secs)
     }
 }
 
@@ -1988,9 +2322,153 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
     ]
 }
 
+/// Fixtures the importance tests share across modules.
+///
+/// Three copies of the same table builder had grown in `config`, `app::filter`
+/// and `desktop_settings`; one definition means a change to the shape of a
+/// rule table cannot leave one of the three testing an older one.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::ImportanceRepoConfig;
+    use std::collections::BTreeMap;
+
+    /// A rule table holding `entries`, falling back to `default`.
+    pub(crate) fn importance_rules(
+        entries: &[(&str, &str)],
+        default: &str,
+    ) -> ImportanceRepoConfig {
+        ImportanceRepoConfig {
+            default: Some(default.to_string()),
+            rules: entries
+                .iter()
+                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ── importance proposals ──
+
+    fn marked(json: &str) -> String {
+        format!(
+            "Here is the table.\n{}\n{json}\n{}\n",
+            crate::ai::prompts::IMPORTANCE_JSON_BEGIN,
+            crate::ai::prompts::IMPORTANCE_JSON_END
+        )
+    }
+
+    #[test]
+    fn an_importance_proposal_is_read_out_of_the_reply() {
+        let reply = marked(
+            r#"{"repo":"er","default":"normal","rules":{"src/auth/**":"foundational"},"report":"6 rules"}"#,
+        );
+        let proposal = ImportanceProposal::from_reply(&reply).expect("proposal");
+
+        assert_eq!(proposal.repo, "er");
+        assert_eq!(proposal.report, "6 rules");
+        assert_eq!(
+            proposal.rules.get("src/auth/**").map(String::as_str),
+            Some("foundational")
+        );
+    }
+
+    #[test]
+    fn a_reply_without_a_marked_table_proposes_nothing() {
+        assert!(ImportanceProposal::from_reply("I could not read the tree.").is_none());
+    }
+
+    /// A pattern the matcher cannot compile is the same kind of bad line as an
+    /// unreadable tier: stored, it would be listed as an active rule and match
+    /// nothing, so it is dropped at write time instead.
+    #[test]
+    fn a_pattern_that_cannot_compile_is_dropped_and_counted() {
+        let proposal = ImportanceProposal {
+            repo: "er".into(),
+            default: Some("normal".into()),
+            rules: BTreeMap::from([
+                ("src/**".to_string(), "foundational".to_string()),
+                // An unclosed class: never compiles, so it could only ever be
+                // a rule that reads as active and matches nothing.
+                ("crates/[".to_string(), "foundational".to_string()),
+            ]),
+            report: String::new(),
+        };
+
+        let (table, dropped) = proposal.into_repo_config();
+
+        assert_eq!(
+            table.rules.keys().collect::<Vec<_>>(),
+            vec!["src/**"],
+            "the pattern that cannot compile is not written"
+        );
+        assert_eq!(dropped, 1);
+        assert_eq!(table.resolve("src/a.rs"), ImportanceTier::Foundational);
+        assert_eq!(table.resolve("crates/a.rs"), ImportanceTier::Normal);
+    }
+
+    /// One unreadable tier must not take the rest of the table with it, and it
+    /// must not vanish without a word either.
+    #[test]
+    fn an_unreadable_tier_is_dropped_and_counted() {
+        let proposal = ImportanceProposal {
+            repo: "er".into(),
+            default: Some("banana".into()),
+            rules: BTreeMap::from([
+                ("src/**".to_string(), "foundational".to_string()),
+                ("docs/**".to_string(), "ISOLATED".to_string()),
+                ("weird/**".to_string(), "nonsense".to_string()),
+            ]),
+            report: String::new(),
+        };
+
+        let (table, dropped) = proposal.into_repo_config();
+
+        assert_eq!(table.rules.len(), 2, "readable rules survive");
+        assert_eq!(
+            table.rules.get("docs/**").map(String::as_str),
+            Some("ISOLATED")
+        );
+        assert_eq!(
+            table.default, None,
+            "an unreadable default falls back to normal"
+        );
+        assert_eq!(
+            dropped, 2,
+            "the bad tier and the bad default are both reported"
+        );
+        assert_eq!(table.resolve("weird/thing.rs"), ImportanceTier::Normal);
+    }
+
+    // ── agent timeout ──
+
+    #[test]
+    fn an_unset_agent_timeout_takes_the_default_rather_than_no_limit() {
+        // Zero is the serde default for a field nobody set. Reading it as "no
+        // limit" would disable the protection for exactly the users who never
+        // touched the setting, which is most of them.
+        let hub = AiHubConfig::default();
+        assert_eq!(hub.agent_timeout_secs, 0);
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(DEFAULT_AGENT_TIMEOUT_SECS)
+        );
+    }
+
+    #[test]
+    fn a_configured_agent_timeout_wins() {
+        let hub = AiHubConfig {
+            agent_timeout_secs: 120,
+            ..Default::default()
+        };
+        assert_eq!(
+            hub.effective_agent_timeout(),
+            std::time::Duration::from_secs(120)
+        );
+    }
 
     // ── ai_hub supplementation ──
 
@@ -2482,6 +2960,168 @@ mod tests {
             .iter()
             .any(|i| matches!(i, ConfigItem::ListAdd { .. }));
         assert!(has_add, "Should include a ListAdd item for watched paths");
+    }
+
+    // ── importance ──
+
+    use super::test_support::importance_rules;
+
+    #[test]
+    fn importance_resolution_takes_the_most_specific_matching_rule() {
+        // The rules are chosen so every level answers differently, and each row
+        // below is claimed by exactly one level.
+        let rules = importance_rules(
+            &[
+                ("crates/er-engine/src/app/filter.rs", "normal"),
+                ("crates/er-engine/src/**", "foundational"),
+                ("*.rs", "isolated"),
+            ],
+            "normal",
+        );
+        let cases = [
+            // The path all three patterns match: the exact rule decides.
+            ("crates/er-engine/src/app/filter.rs", ImportanceTier::Normal),
+            // Glob over file type.
+            (
+                "crates/er-engine/src/git/mod.rs",
+                ImportanceTier::Foundational,
+            ),
+            // File type on its own. Matched against the basename, so a glob
+            // meant for paths cannot claim it.
+            ("crates/er-tui/src/main.rs", ImportanceTier::Isolated),
+            // Nothing matches: the default.
+            ("desktop-ui/src/lib/types.ts", ImportanceTier::Normal),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(rules.resolve(path), expected, "{path}");
+        }
+    }
+
+    #[test]
+    fn importance_resolution_names_the_rule_that_claimed_the_path() {
+        // The same table as the precedence test: each row is claimed by a
+        // different level, so the key that comes back says which one decided.
+        let rules = importance_rules(
+            &[
+                ("crates/er-engine/src/app/filter.rs", "normal"),
+                ("crates/er-engine/src/**", "foundational"),
+                ("*.rs", "isolated"),
+            ],
+            "normal",
+        );
+        let cases = [
+            (
+                "crates/er-engine/src/app/filter.rs",
+                Some(("crates/er-engine/src/app/filter.rs", ImportanceTier::Normal)),
+            ),
+            (
+                "crates/er-engine/src/git/mod.rs",
+                Some(("crates/er-engine/src/**", ImportanceTier::Foundational)),
+            ),
+            (
+                "crates/er-tui/src/main.rs",
+                Some(("*.rs", ImportanceTier::Isolated)),
+            ),
+            // Claimed by nothing: the default answers, and no key is named.
+            ("desktop-ui/src/lib/types.ts", None),
+        ];
+        for (path, expected) in cases {
+            assert_eq!(rules.matching_rule(path), expected, "{path}");
+            // Which rule claimed a path and what the path resolves to are two
+            // readings of one lookup, so they cannot disagree.
+            assert_eq!(
+                rules.resolve(path),
+                expected.map_or_else(|| rules.default_tier(), |(_, tier)| tier),
+                "{path}"
+            );
+        }
+
+        // An empty table reaches the same answer as an unclaimed path, which is
+        // the case a repo with no generated rules is in.
+        let empty = importance_rules(&[], "isolated");
+        assert_eq!(empty.matching_rule("README.md"), None);
+        assert_eq!(empty.resolve("README.md"), ImportanceTier::Isolated);
+        assert_eq!(empty.default_tier(), ImportanceTier::Isolated);
+    }
+
+    #[test]
+    fn importance_prefers_the_longest_of_two_matching_globs() {
+        // A broad rule and a narrow one both matching means the narrow one was
+        // written to say something specific about that subtree.
+        let rules = importance_rules(
+            &[
+                ("crates/**", "normal"),
+                ("crates/er-engine/**", "foundational"),
+            ],
+            "isolated",
+        );
+        assert_eq!(
+            rules.resolve("crates/er-engine/src/app/filter.rs"),
+            ImportanceTier::Foundational
+        );
+        assert_eq!(
+            rules.resolve("crates/er-tui/src/main.rs"),
+            ImportanceTier::Normal
+        );
+    }
+
+    #[test]
+    fn importance_table_keeps_default_beside_its_rules() {
+        let config: ErConfig = toml::from_str(
+            r#"
+            [importance.easy-review]
+            "crates/er-engine/src/**" = "foundational"
+            "*.md" = "isolated"
+            default = "normal"
+            "#,
+        )
+        .unwrap();
+
+        let rules = config.importance.repo("easy-review").unwrap();
+        assert_eq!(rules.rules.len(), 2, "`default` is not a rule");
+        assert_eq!(
+            rules.rules.get("*.md").map(String::as_str),
+            Some("isolated")
+        );
+        assert_eq!(rules.default.as_deref(), Some("normal"));
+
+        let resolve = |path: &str| config.importance.resolve("easy-review", path);
+        assert_eq!(
+            resolve("crates/er-engine/src/app/filter.rs"),
+            ImportanceTier::Foundational
+        );
+        assert_eq!(resolve("README.md"), ImportanceTier::Isolated);
+        // A repo the agent has not generated rules for.
+        assert_eq!(
+            config.importance.resolve("other-repo", "README.md"),
+            ImportanceTier::Normal
+        );
+    }
+
+    #[test]
+    fn importance_skips_a_tier_it_cannot_read() {
+        // A tier nobody recognizes is dropped rather than failing the whole
+        // config load — the rest of the user's settings are in this file.
+        let config: ErConfig = toml::from_str(
+            r#"
+            [importance.easy-review]
+            "crates/er-engine/**" = "foundational"
+            "*.md" = "critical"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(config.importance.items.len(), 1);
+        assert_eq!(
+            config.importance.resolve("easy-review", "docs/readme.md"),
+            ImportanceTier::Normal
+        );
+        assert_eq!(
+            config
+                .importance
+                .resolve("easy-review", "crates/er-engine/src/lib.rs"),
+            ImportanceTier::Foundational
+        );
     }
 
     // ── AgentConfig::display_name ──
@@ -3447,6 +4087,70 @@ mod tests {
 
         std::env::remove_var("ER_STORAGE_ROOT");
         std::env::remove_var("ER_CONFIG_PATH");
+    }
+
+    /// The config also holds the reviewer's provider and display settings, so a
+    /// generated table must replace one repo's rules and nothing else.
+    #[test]
+    fn merging_a_proposal_replaces_only_that_repos_table() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        std::env::set_var("ER_CONFIG_PATH", tmp.path().join("config.toml"));
+
+        let mut config = ErConfig::default();
+        config.features.view_branch = false;
+        config.importance.items.insert(
+            "another-repo".into(),
+            ImportanceRepoConfig {
+                default: None,
+                rules: BTreeMap::from([("keep/**".to_string(), "isolated".to_string())]),
+            },
+        );
+        save_config(&config).unwrap();
+
+        let proposal = ImportanceProposal {
+            repo: "er".into(),
+            default: None,
+            rules: BTreeMap::from([("src/**".to_string(), "foundational".to_string())]),
+            report: "1 rule".into(),
+        };
+        let (kept, dropped) = ImportanceProposal::merge_into_global_config("er", proposal).unwrap();
+
+        let loaded = load_global_config();
+        assert_eq!((kept, dropped), (1, 0));
+        assert!(!loaded.features.view_branch, "other sections survive");
+        assert!(
+            loaded.importance.items.contains_key("another-repo"),
+            "another repo's table is left alone"
+        );
+        assert_eq!(
+            loaded.importance.resolve("er", "src/lib.rs"),
+            ImportanceTier::Foundational
+        );
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("ER_CONFIG_PATH");
+    }
+
+    /// A table for a repo the agent was not asked about is refused, and nothing
+    /// is written.
+    #[test]
+    fn a_proposal_naming_another_repo_is_refused() {
+        let proposal = ImportanceProposal {
+            repo: "someone-elses".into(),
+            default: None,
+            rules: BTreeMap::new(),
+            report: String::new(),
+        };
+
+        let err = ImportanceProposal::merge_into_global_config("er", proposal).unwrap_err();
+        assert!(
+            err.to_string().contains("someone-elses"),
+            "the refusal names the key it found: {err}"
+        );
     }
 
     #[test]

@@ -30,7 +30,7 @@ er --target release/v2                    <span class="cmt"># diff against a spe
       <thead><tr><th>Flag / argument</th><th>Effect</th></tr></thead>
       <tbody>
         <tr><td><code>--pr &lt;n&gt;</code></td><td>Open pull request <em>n</em> in the current repo</td></tr>
-        <tr><td>a PR URL</td><td>Open that pull request (any repo)</td></tr>
+        <tr><td>a PR URL</td><td>Open that pull request — you must be inside a clone of that repo (use <code>--remote</code> otherwise)</td></tr>
         <tr><td>one or more paths</td><td>Open each repository / worktree as a tab</td></tr>
         <tr><td><code>--filter &lt;expr&gt;</code></td><td>Apply a <a href="reviewing.html#filtering">filter</a> at startup</td></tr>
         <tr><td><code>--remote</code></td><td>Review a PR from any directory, without a local clone (requires <code>gh</code>)</td></tr>
@@ -52,7 +52,7 @@ er --target release/v2                    <span class="cmt"># diff against a spe
         <div class="chrome">
           <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
           <span class="ttl">er — easy-review · feat/auth-refactor</span>
-          <span class="right c-green">● WATCH</span>
+          <span class="right c-green">● WATCHING</span>
         </div>
         <div class="erbar">
           <div class="modes">
@@ -61,7 +61,8 @@ er --target release/v2                    <span class="cmt"># diff against a spe
             <span class="mode on">1 Branch</span>
             <span class="mode">2 Unstaged</span>
             <span class="mode">3 Staged</span>
-            <span class="mode">4 History</span>
+            <span class="mode">4 PR Diff</span>
+            <span class="mode">5 History</span>
             <span class="c-muted">·</span>
             <span class="c-blue">PR #42</span>
             <span class="c-green">✓3</span><span class="c-red">✗1</span>
@@ -151,10 +152,10 @@ er --target release/v2                    <span class="cmt"># diff against a spe
     <table>
       <thead><tr><th>Region</th><th>Shows</th></tr></thead>
       <tbody>
-        <tr><td><strong>Top bar</strong></td><td>The diff modes (with the active one highlighted), any detected PR with its CI summary, comment and finding counts, and the watch indicator.</td></tr>
+        <tr><td><strong>Top bar</strong></td><td>The diff modes (with the active one highlighted), the detected PR, the reviewed count, AI status badges, and the watch indicator.</td></tr>
         <tr><td><strong>Left — file list</strong></td><td>Every changed file with a status dot, AI risk indicator, and comment/finding badges. In history mode this becomes the commit list.</td></tr>
         <tr><td><strong>Center — diff</strong></td><td>The unified diff with syntax highlighting, inline comments and findings, and a sticky file-path header.</td></tr>
-        <tr><td><strong>Right — context panel</strong></td><td>File details, the AI summary, or the PR overview depending on context.</td></tr>
+        <tr><td><strong>Right — context panel</strong></td><td>File details, the AI summary, the PR overview (CI checks and reviewers), or the agent log depending on context.</td></tr>
         <tr><td><strong>Bottom bar</strong></td><td>Key hints (configurable) and comment input when you are typing a note.</td></tr>
       </tbody>
     </table>
@@ -172,8 +173,8 @@ er --target release/v2                    <span class="cmt"># diff against a spe
       Inline annotations are organized as toggleable <strong>layers</strong>: <kbd>A</kbd> shows or hides AI findings,
       <kbd>C</kbd> GitHub comments, <kbd>Q</kbd> questions and notes, and <kbd>X</kbd> hides resolved items. The
       right-hand <strong>context panel</strong> cycles with <kbd>p</kbd> (backward with <kbd>P</kbd>) through file
-      details, the AI summary with the risk breakdown, and the PR overview. Together they are the terminal's way of
-      dialing review context up and down — from a plain diff to a fully annotated one. See
+      details, the AI summary with the risk breakdown, the PR overview, and the agent log. Together they are the
+      terminal's way of dialing review context up and down — from a plain diff to a fully annotated one. See
       <a href="ai-review.html">AI Review</a>.
     </p>
 
@@ -182,7 +183,23 @@ er --target release/v2                    <span class="cmt"># diff against a spe
       Less frequent actions live in modal <strong>hubs</strong>: <kbd>a</kbd> opens the AI Hub (reviews, triage,
       experts, professor), <kbd>g</kbd> the Git hub (push, stage, comment sync), <kbd>v</kbd> the Verify hub
       (tests, linters, and other configured commands), <kbd>y</kbd> the copy hub, <kbd>o</kbd> the open hub
-      (repositories and worktrees), <kbd>,</kbd> the settings hub, and <kbd>?</kbd> the searchable help hub.
+      (repositories and worktrees), <kbd>,</kbd> the settings hub, and <kbd>?</kbd> the help hub, which lists the
+      keys grouped by area.
+    </p>
+
+    <h2>Stacked PRs</h2>
+    <p>
+      On a branch that belongs to a <a href="https://github.com/github/gh-stack">stack</a>, the open hub
+      (<kbd>o</kbd>) grows a <code>── Stack ──</code> section: one row per layer, ordered top-of-stack first,
+      each showing its branch name and PR number, with the layer's state (<code>open</code>, <code>merged</code>,
+      <code>queued</code>, <code>needs rebase</code>) and the trunk closing the list. <kbd>Enter</kbd> opens
+      that PR for review, <kbd>b</kbd> opens it on GitHub.
+    </p>
+    <p>
+      The list comes from the <code>gh stack</code> extension
+      (<code>gh extension install github/gh-stack</code>); <code>gh stack view</code> runs on a background
+      thread, so the hub opens instantly with a loading row. When the extension isn't installed, or the
+      current branch isn't part of a stack, the section explains why instead of going blank.
     </p>
 
     <h2>Syntax highlighting</h2>

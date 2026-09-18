@@ -92,14 +92,25 @@ pub fn run_provider_json(
     Err(last_err.unwrap_or_else(|| anyhow::anyhow!("provider failed")))
 }
 
+/// How many fake provider responses this process has served.
+///
+/// The seeded path's whole economic argument is that it costs *one* arbiter call
+/// however many experts contributed, and that is only assertable by counting.
+static FAKE_ARENA_CALLS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// Test hook: read `round1.json`, `round2.json`, or `round3.json` from a directory (in order).
 pub fn fake_arena_json_from_dir(dir: &str) -> Result<Value> {
-    static ROUND: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(1);
-    let n = ROUND.fetch_add(1, Ordering::SeqCst).min(3);
-    let path = std::path::Path::new(dir).join(format!("round{n}.json"));
+    let n = FAKE_ARENA_CALLS.fetch_add(1, Ordering::SeqCst) + 1;
+    let path = std::path::Path::new(dir).join(format!("round{}.json", n.min(3)));
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("read fake arena fixture {}", path.display()))?;
     serde_json::from_str(&text).context("parse fake arena json")
+}
+
+/// Provider responses served so far. A test records this before and after a run
+/// and asserts the delta — see `seeded_arbiter.rs`.
+pub fn fake_arena_call_count() -> u8 {
+    FAKE_ARENA_CALLS.load(Ordering::SeqCst)
 }
 
 #[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
@@ -110,6 +121,11 @@ fn run_once(
     cancel: &AtomicBool,
     children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Value> {
+    // Marks: the caller has already taken a slot (or, for the arbiter, has
+    // none), so this timer measures the child's own life plus spawn cost.
+    let mut timer = crate::agent_timing::AgentRunTimer::start();
+    timer.mark_slot_acquired();
+
     let agent_args: Vec<String> = cmd
         .args
         .iter()
@@ -128,6 +144,7 @@ fn run_once(
     let mut child = child
         .spawn()
         .with_context(|| format!("spawn {}", cmd.command))?;
+    timer.mark_spawned();
 
     let child_id = child.id();
     let stdout = child.stdout.take();
@@ -155,6 +172,9 @@ fn run_once(
             .wait()
             .with_context(|| format!("wait {}", cmd.command))?
     };
+
+    timer.mark_finished();
+    timer.emit("arena_child", &cmd.command, status.success());
 
     if cancel.load(Ordering::SeqCst) {
         anyhow::bail!("cancelled");
@@ -306,6 +326,16 @@ fn truncate(s: &str, max: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Shared mutex for tests that read or write `ER_FAKE_ARENA_DIR`.
+    ///
+    /// It is process-global, so a test that inherits another test's fixture
+    /// silently gets someone else's JSON — and a test asserting a *real* spawn
+    /// fails outright, because the fake branch returns before the command runs.
+    /// Hold it for the duration of any test that touches the variable, with
+    /// `.lock().unwrap_or_else(|e| e.into_inner())` so one panic does not poison
+    /// the rest.
+    static ARENA_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
     fn extract_json_from_stream_json_result_event() {
@@ -472,8 +502,90 @@ mod tests {
         assert!(cmd.args.iter().any(|a| a == "--auto"));
     }
 
+    /// The real spawn path, with no `ER_FAKE_ARENA_DIR` to short-circuit it.
+    ///
+    /// The fake-provider harness returns before the command is ever built, so
+    /// everything below `run_provider_json`'s first branch — spawning, reading
+    /// both pipes, the exit-status check, and pulling a JSON object out of the
+    /// output — is unexercised by every other test. Those are exactly the parts
+    /// that break against a real CLI, so they are worth a stub that behaves like
+    /// one rather than a model call.
+    #[test]
+    fn provider_output_is_parsed_from_a_real_process() {
+        let _guard = ARENA_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dir = tempfile::tempdir().unwrap();
+        let script = dir.path().join("arbiter.sh");
+        std::fs::write(
+            &script,
+            "#!/bin/sh\n\
+             # Chatty preamble on stderr, a fenced JSON block on stdout: what a\n\
+             # real agent prints when it narrates before answering.\n\
+             echo 'thinking about it' >&2\n\
+             printf '%s\\n' 'Here is my verdict:' '```json' \\\n\
+               '{\"verdicts\":[{\"finding_id\":\"abc\",\"verdict\":\"kept\",\"confidence\":0.8}]}' \\\n\
+               '```'\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let v = run_provider_json(
+            &ProviderCommand {
+                command: script.display().to_string(),
+                // The prompt placeholder is substituted before spawning, so a
+                // command that ignores it still proves the substitution runs.
+                args: vec!["--prompt".into(), "{prompt}".into()],
+                stream_json: false,
+                env: vec![("ER_TEST_MARKER".into(), "1".into())],
+            },
+            "review this diff",
+            dir.path().to_str().unwrap(),
+            &AtomicBool::new(false),
+            &Arc::new(Mutex::new(Vec::new())),
+        )
+        .expect("a real process's output parses");
+
+        assert_eq!(
+            v["verdicts"][0]["verdict"], "kept",
+            "the JSON came out of the fenced block"
+        );
+    }
+
+    /// A nonzero exit is an error with the stderr attached, not a silent empty
+    /// result — a failed arbiter must not read as "no verdicts".
+    #[test]
+    fn a_failing_provider_reports_its_stderr() {
+        let _guard = ARENA_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let err = run_provider_json(
+            &ProviderCommand {
+                command: "sh".into(),
+                args: vec!["-c".into(), "echo 'quota exceeded' >&2; exit 3".into()],
+                stream_json: false,
+                env: vec![],
+            },
+            "",
+            ".",
+            &AtomicBool::new(false),
+            &Arc::new(Mutex::new(Vec::new())),
+        )
+        .expect_err("a nonzero exit is an error");
+
+        let text = format!("{err:#}");
+        assert!(text.contains("quota exceeded"), "stderr is carried: {text}");
+    }
+
     #[test]
     fn fake_arena_dir_round_robin() {
+        let _guard = ARENA_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/arena/fake"
@@ -494,5 +606,46 @@ mod tests {
         .unwrap();
         assert!(v1.get("findings").is_some());
         std::env::remove_var("ER_FAKE_ARENA_DIR");
+    }
+
+    #[test]
+    fn harness_measures_a_real_spawn() {
+        // Phase 0 harness. Drives a real child through the same spawn+wait path
+        // the arena uses, and checks the timer attributes the child's lifetime
+        // to `run_ms` rather than to queue or spawn. Goes through `run_once`
+        // rather than `run_provider_json` so it does not depend on the
+        // `ER_FAKE_ARENA_DIR` hook that another test sets process-wide.
+        crate::agent_timing::set_enabled(true);
+
+        let cmd = ProviderCommand {
+            command: "sh".to_string(),
+            args: vec![
+                "-c".to_string(),
+                "sleep 0.3; printf '{\"round\":1}'".to_string(),
+            ],
+            stream_json: false,
+            env: Vec::new(),
+        };
+        let cancel = AtomicBool::new(false);
+        let children = Arc::new(Mutex::new(Vec::new()));
+
+        let mut timer = crate::agent_timing::AgentRunTimer::start();
+        timer.mark_slot_acquired();
+        let v = run_once(&cmd, "ignored prompt", ".", &cancel, &children)
+            .expect("fake provider runs and emits json");
+        timer.mark_finished();
+
+        assert_eq!(v["round"], 1, "child stdout parsed as the round payload");
+        let p = timer.phases();
+        assert!(
+            p.run_ms >= 250,
+            "a 300ms child belongs in run_ms, got {}",
+            p.run_ms
+        );
+        assert!(
+            children.lock().unwrap().is_empty(),
+            "the child handle is removed from the shared vec, not leaked"
+        );
+        crate::agent_timing::emit_slot_summary("harness");
     }
 }

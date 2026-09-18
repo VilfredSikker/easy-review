@@ -263,40 +263,105 @@ fn render_file_detail<'a>(
                         RiskLevel::Low => 2,
                         RiskLevel::Info => 3,
                     };
-                    let conf_ord = |c: &Confidence| match c {
-                        Confidence::Confirmed => 0,
-                        Confidence::Tentative => 1,
-                        Confidence::Informational => 2,
-                        Confidence::Dropped => 3,
-                    };
-                    // Resolved findings sink to the bottom; active ones sort by confidence/severity.
+                    // Resolved findings sink to the bottom; active ones sort by
+                    // how much the grade can be trusted, then severity. The
+                    // direction lives on the type (`trust_rank`), not here.
                     a.resolved
                         .cmp(&b.resolved)
-                        .then_with(|| conf_ord(&a.confidence).cmp(&conf_ord(&b.confidence)))
+                        .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
                         .then_with(|| a.hunk_index.cmp(&b.hunk_index))
                         .then_with(|| a.line_start.cmp(&b.line_start))
                         .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
                 });
 
+                // The count describes what the list is about to draw, and names
+                // what it is not drawing. A number that counts hidden rows is
+                // how a filter stops being trusted.
+                let visible: Vec<&er_engine::ai::Finding> = sorted_findings
+                    .iter()
+                    .copied()
+                    .filter(|f| f.passes(&tab.layers))
+                    .collect();
                 let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
-                let active_count = sorted_findings.len() - resolved_count;
-                let header = if resolved_count > 0 {
-                    format!(
-                        " Findings ({} active · {} resolved)",
-                        active_count, resolved_count
-                    )
-                } else {
-                    format!(" Findings ({})", sorted_findings.len())
-                };
+                let dropped_count = sorted_findings
+                    .iter()
+                    .filter(|f| matches!(f.confidence, Confidence::Dropped))
+                    .count();
+                let below_gate = sorted_findings
+                    .len()
+                    .saturating_sub(visible.len() + resolved_count + dropped_count);
+                let mut header = format!(" Findings ({})", visible.len());
+                if below_gate > 0 {
+                    header.push_str(&format!(" · {} below gate", below_gate));
+                }
+                if resolved_count > 0 {
+                    header.push_str(&format!(" · {} resolved", resolved_count));
+                }
                 lines.push(Line::from(vec![Span::styled(
                     header,
                     Style::default()
                         .fg(styles::PURPLE())
                         .add_modifier(Modifier::BOLD),
                 )]));
+                // A filter that hides things without saying so is how people
+                // stop trusting it, so the arbiter's rulings are counted here
+                // rather than the list just being shorter.
+                let effect = tab.ai.arbiter_effect;
+                let mut parts = Vec::new();
+                if effect.dropped > 0 {
+                    parts.push(format!("{} dropped", effect.dropped));
+                }
+                if effect.merged > 0 {
+                    parts.push(format!("{} merged", effect.merged));
+                }
+                if effect.regraded > 0 {
+                    parts.push(format!("{} regraded", effect.regraded));
+                }
+                if !parts.is_empty() {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(" {} by arbiter", parts.join(", ")),
+                        Style::default().fg(styles::DIM()),
+                    )]));
+                    // The claims the arbiter removed, on request. The count is
+                    // the signal; the rows are what you read when it surprises
+                    // you, and without them a drop is indistinguishable from a
+                    // finding that was never raised.
+                    if tab.layers.show_dropped {
+                        for finding in fr
+                            .findings
+                            .iter()
+                            .filter(|f| matches!(f.confidence, Confidence::Dropped))
+                        {
+                            let anchor = finding
+                                .line_start
+                                .map_or_else(|| "file".to_string(), |l| format!("line {l}"));
+                            lines.push(Line::from(vec![Span::styled(
+                                format!("   ⊘ {} · {}", anchor, finding.title),
+                                Style::default().fg(styles::DIM()),
+                            )]));
+                        }
+                    }
+                }
+                // Verdicts that matched nothing mean the arbiter's grades exist
+                // but no longer describe this review — worth saying, because the
+                // pass did nothing and that reads as a clean result otherwise.
+                if effect.unmatched > 0 {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!(
+                            " {} arbiter {} no longer apply — re-run validation",
+                            effect.unmatched,
+                            if effect.unmatched == 1 {
+                                "verdict"
+                            } else {
+                                "verdicts"
+                            }
+                        ),
+                        Style::default().fg(styles::YELLOW()),
+                    )]));
+                }
                 lines.push(Line::from(""));
 
-                for finding in sorted_findings {
+                for finding in visible {
                     let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
                     let bg = if is_focused {
                         styles::FINDING_FOCUS_BG()
@@ -348,7 +413,12 @@ fn render_file_detail<'a>(
                     };
                     // Word-wrap the title line: first line gets icon + confidence prefix,
                     // continuation lines get indent to align under text
-                    let title_text = format!("[{}] {}", finding.category, finding.title);
+                    let tag = finding.lens_category_tag();
+                    let title_text = if tag.is_empty() {
+                        finding.title.clone()
+                    } else {
+                        format!("[{tag}] {}", finding.title)
+                    };
                     let title_lines = word_wrap(&title_text, max_w);
                     for (i, wrapped) in title_lines.iter().enumerate() {
                         if i == 0 {
@@ -1304,7 +1374,7 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engin
         };
 
         let time_style = Style::default().fg(styles::MUTED());
-        let name_style = match entry.command_name.as_str() {
+        let name_style = match entry.command_name.as_ref() {
             "review" => Style::default().fg(styles::ORANGE()),
             "questions" => Style::default().fg(styles::YELLOW()),
             _ => Style::default().fg(styles::BLUE()),

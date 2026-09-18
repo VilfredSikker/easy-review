@@ -77,9 +77,9 @@ pub fn review_rules_preamble(
     review_rules_preamble_with_hash(output_dir, prepared_diff, caps, git_diff_capture, None)
 }
 
-/// Like [`review_rules_preamble`], but with the harness-computed diff hash
-/// (O1): the agent skips `sha256sum` and the `awk` annotation — the parent
-/// wrote `diff-annotated` already and hands the hash over in the prompt.
+/// Like [`review_rules_preamble`], but with the harness-computed diff hash:
+/// the agent skips `sha256sum` and the `awk` annotation — the parent wrote
+/// `diff-annotated` already and hands the hash over in the prompt.
 fn review_rules_preamble_with_hash(
     output_dir: &str,
     prepared_diff: bool,
@@ -120,7 +120,7 @@ fn review_rules_preamble_with_hash(
         format!("2. Annotate: `{annotate}`")
     };
     let categories = if caps.is_expert {
-        "Set `category` to the expert id for every finding — only report issues in that lens."
+        "Only report issues in your lens. `category` is the **kind of defect** the finding describes, not your lens name — the lens is recorded separately."
     } else {
         "Categories: `security`, `logic`, `performance`, `correctness`, `error-handling`, `testing`, `api` — **no `style`**."
     };
@@ -178,7 +178,7 @@ const fn general_review_instructions_read_analyze() -> &'static str {
    - `risk`: "high" | "medium" | "low" | "info"
    - `risk_reason`: why this risk level
    - `summary`: one-line description of changes
-   - `findings`: array of issues (within caps)
+   - `findings`: array of issues (within caps). On each finding set `line_content` to the exact text of the line it anchors to, copied from the diff; omit it for hunk-level findings (`line_start` unset)
 5. **Verify findings agentically** when significance depends on code outside the diff — read/grep sibling files, callers, tests; append `evidence` entries; mark `tentative` if budget runs out.
 6. Set `confidence` on every finding: `confirmed`, `informational`, or `tentative` (with `verification_plan`)."#
 }
@@ -192,6 +192,7 @@ const fn general_review_json_example() -> &'static str {
           "description": "What the issue is and why it matters",
           "hunk_index": 0,
           "line_start": 42,
+          "line_content": "the exact text of line 42, copied from the diff",
           "suggestion": "What to do about it",
           "related_files": [],
           "outside_diff": false,
@@ -272,15 +273,23 @@ fn general_review_outputs_section(
   "items": [
     {{
       "id": "c-1",
-      "text": "Verify error handling covers all edge cases",
-      "category": "correctness",
+      "text": "The migration backfills before it adds the NOT NULL column",
+      "category": "schema",
       "checked": false,
       "related_findings": ["f-1"],
-      "related_files": ["src/file.rs"]
+      "related_files": ["migrations/0007_add_source.sql"]
     }}
   ]
 }}
 ```
+
+- `category` — the outcome the item asks a human to confirm. Use one of these five:
+  - `schema` — the migration or schema change is right. The schema is the one representation that is hard to walk back after it ships.
+  - `tests` — the tests exercise the new behaviour, not merely that it exists.
+  - `api` — the public surface is unchanged, or the break is the intended one.
+  - `auth` — an auth or authz path is touched, and it still holds.
+  - `plan` — the change is what was actually asked for.
+- Write 3-6 items. Each is a decision someone has to make; an item that only restates a line of the diff is not one.
 
 ### `{safe_output_dir}/summary.md`
 A 3-5 paragraph markdown summary of the overall changes.
@@ -378,7 +387,7 @@ fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
 ```
 
 - Finding `id` prefix: `{prefix}-` (e.g. `{prefix}-1`)
-- Finding `category`: `{expert_id}`
+- Finding `category`: the **kind of defect** — `correctness`, `error-handling`, `security`, `performance`, `testing`, `api-contract`, or another one-word kind that fits. This is not your lens name; the lens is recorded separately.
 - `summary`: lens-specific only — {summary_focus}
 - `mkdir -p {safe_output_dir}/experts` before writing"#,
         prefix = def.id_prefix,
@@ -838,7 +847,7 @@ fn professor_rules_preamble(
 ### Professor mode (not a review)
 - **Do not** flag bugs, security issues, or style nits — `/er-review` covers those.
 - Teach: purpose, architecture, data flow, invariants, non-obvious design.
-- Every finding: `severity: "info"`, `confidence: "informational"`, `category: "professor"`.
+- Every finding: `severity: "info"`, `confidence: "informational"`. Leave `category` out — teaching insights describe concepts, not defects.
 - Titles are concept labels; descriptions explain *how* and *why*."#,
     );
     preamble
@@ -891,11 +900,11 @@ fn professor_output_section(output_dir: &str) -> String {
         {{
           "id": "prof-1",
           "severity": "info",
-          "category": "professor",
           "title": "Short concept label",
           "description": "Teaching explanation (markdown ok)",
           "hunk_index": 0,
           "line_start": 42,
+          "line_content": "the exact text of line 42, copied from the diff",
           "suggestion": "",
           "related_files": [],
           "outside_diff": false,
@@ -920,6 +929,88 @@ fn professor_output_section(output_dir: &str) -> String {
 }
 
 /// Professor learning agent for local-managed app/TUI runs.
+/// Markers around the rules table in the agent's reply. The harness parses what
+/// is between them and writes the config itself: an agent that can write files
+/// can write anywhere, and this prompt carries a whole codebase.
+pub const IMPORTANCE_JSON_BEGIN: &str = "===IMPORTANCE_JSON_BEGIN===";
+pub const IMPORTANCE_JSON_END: &str = "===IMPORTANCE_JSON_END===";
+
+/// Background task kind for the importance-rules agent. The worker recognises
+/// its own reply by this kind and merges the table itself.
+pub const IMPORTANCE_TASK_KIND: &str = "importance";
+
+/// Prompt for the agent that proposes a repo's importance rules.
+///
+/// The agent reads the codebase and prints a rule table; the host validates it
+/// and merges it into `[importance.<repo>]`. Asking for a *rule table* rather
+/// than a ranking is what keeps the result inspectable: a number nobody can
+/// argue with is worse than no number at all
+/// (`docs/adr/0036-importance-as-declared-config.md`).
+pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
+    let mut prompt = String::new();
+    prompt.push_str(
+        "You are declaring which files in a repository are **foundational** — much of the tree \
+         depends on them — and which are **isolated**. A reviewer uses this to decide what \
+         deserves human attention, so the output is a small, readable rule table rather than a \
+         ranking of every file.\n\n## Steps\n1. Work in `",
+    );
+    prompt.push_str(&sanitize_for_shell(repo_root));
+    prompt.push_str(
+        "`. Survey the tree a level or two deep before writing anything.\n2. Import-counting is \
+         your legwork, not your answer. A single pass of `grep -rowFf` over the tree with the \
+         basenames of the files you are unsure about is cheap and tells you where the traffic is. \
+         Do not turn the count into the output: basename matches also hit comments and strings, \
+         and module roots (`mod.rs`, `index.ts`, `lib.rs`) are exactly the files the proxy gets \
+         wrong — they match everything.\n3. Emit the JSON block below in your **final reply \
+         text**. Do **not** use Write, Edit, or a shell redirect: the harness validates the table \
+         and writes the config itself.\n\n",
+    );
+    prompt.push_str(IMPORTANCE_JSON_BEGIN);
+    prompt.push_str(
+        r#"
+{
+  "repo": ""#,
+    );
+    prompt.push_str(repo);
+    prompt.push_str(
+        r#"",
+  "default": "normal",
+  "rules": {
+    "src/auth/**": "foundational",
+    "*.md": "isolated"
+  },
+  "report": "<two or three lines: what share of the tree each tier covers, measured rather than guessed>"
+}
+"#,
+    );
+    prompt.push_str(IMPORTANCE_JSON_END);
+    prompt.push_str(
+        r#"
+
+## Tiers
+- `foundational` — much of the tree reaches it: public API surface, auth, schemas, design systems.
+- `isolated` — little or nothing reaches it: docs, fixtures, one-off scripts.
+- `normal` — everything else. This is the `default`, and it is the right answer for most files.
+
+## Rule keys, in the precedence the harness applies (most specific first)
+1. `exact/path/to/file.rs` — one path.
+2. `crates/er-engine/src/**` — a glob. `*` stays inside a directory, `**` crosses.
+3. `*.md` — a bare extension, matched against the filename.
+
+## What makes a table good
+- **Few and precise.** Six rules that each name a boundary beat thirty that tile the tree. A glob one directory too wide marks a whole crate foundational, parses perfectly, and quietly ruins the ranking.
+- **Say why in the `report`.** It is read by a person deciding whether to trust the table, and an over-broad ruleset is visible in one line of distribution.
+- Only propose paths that exist. A rule for a path you did not see is a guess wearing a fact's clothes.
+- `"#,
+    );
+    prompt.push_str(repo);
+    prompt.push_str(
+        "` is the only repo key you may produce — do not invent keys for other repositories.\n",
+    );
+
+    prompt
+}
+
 pub fn build_professor_review_prompt_local_managed(
     base_branch: &str,
     scope: &str,
@@ -1013,14 +1104,14 @@ Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs
 
 **Deliver:**
 1. `first_impression` — 2–4 short paragraphs: what changed, blast radius, gut feel.
-2. `diff_stats` — file count, `approx_risk` (`low`|`medium`|`high`), `domains` touched (e.g. auth, api, tests).
+2. `diff_stats` — file count, `approx_risk`, `domains` touched (e.g. auth, api, tests). `approx_risk` must be exactly one of `high`, `medium`, `low`, `info` — no other words.
 3. `verdict` — route the human to the next review:
    - `skip` — cosmetic/docs/lockfiles only; no logic to review.
    - `general` — mixed concerns; run full `/er-review`.
    - `expert` — dominant lens; set `experts` to one or more ids: security, performance, reliability, testing, api, patterns, simplifying, mentorship.
    - `arena` — large/high-stakes diff or needs multi-model second opinion.
    - `professor` — novel subsystem the reader should learn first.
-4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`).
+4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`). `risk` uses the same four values as `approx_risk`, and is what that file's change deserves on its own — not the branch-level `approx_risk` repeated.
 
 **Speed budget:** ≤8 tool calls, <60 seconds. Read diff once in context; write only `triage.json`.
 
@@ -1044,7 +1135,7 @@ fn triage_output_section(output_dir: &str) -> String {
   "first_impression": "2–4 short markdown paragraphs",
   "diff_stats": {{
     "files_changed": 0,
-    "approx_risk": "low|medium|high",
+    "approx_risk": "high|medium|low|info",
     "domains": ["auth", "api"]
   }},
   "verdict": {{
@@ -1750,13 +1841,31 @@ Respond ONLY with JSON:
     )
 }
 
-pub fn build_arena_round3_prompt(findings_summary_json: &str) -> String {
+/// The arbiter's prompt.
+///
+/// `anchored_diff` is the excerpt covering the hunks the findings point at
+/// (`ai::prepared_diff::hunks_for_findings`). It is what lets the arbiter drop a
+/// finding for being wrong rather than only for being unproven — judging that
+/// needs the code, not just the claim. Empty when the diff could not be read,
+/// in which case the section is omitted and the arbiter grades on the findings
+/// alone, as it did before.
+pub fn build_arena_round3_prompt(findings_summary_json: &str, anchored_diff: &str) -> String {
+    let code_section = if anchored_diff.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "\nThe hunks the findings anchor to:\n\n```diff\n{anchored_diff}\n```\n\n\
+             Judge each claim against this code. Drop a finding only when the code \
+             contradicts it; when the excerpt does not settle the question, grade the \
+             confidence down rather than dropping.\n"
+        )
+    };
     format!(
         r#"You are the arena arbiter. Consolidate final verdicts.
 
 Input (findings + round-2 votes):
 {findings_summary_json}
-
+{code_section}
 For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 0..1, rationale (1-3 sentences citing reviewers), merged_into when verdict is merged.
 
 Respond ONLY with JSON:
@@ -2263,6 +2372,22 @@ mod tests {
         assert!(!prompt.contains("experts/"));
     }
 
+    /// `ChecklistItem.category` is a free-form string, so the prompt is the only
+    /// thing keeping the checklist outcome-shaped. Left unpinned it drifts back
+    /// to restating the diff, which is the review humans already skip.
+    #[test]
+    fn checklist_prompt_pins_the_outcome_categories() {
+        let prompt =
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat/x", HASH);
+        for category in ["schema", "tests", "api", "auth", "plan"] {
+            assert!(
+                prompt.contains(&format!("`{category}` —")),
+                "checklist prompt lost the {category} category"
+            );
+        }
+        assert!(prompt.contains("Write 3-6 items"));
+    }
+
     #[test]
     fn expert_prepared_prompt_targets_expert_json_only() {
         let prompt =
@@ -2319,7 +2444,9 @@ mod tests {
             build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false, HASH);
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
-        assert!(prompt.contains("category: \"professor\""));
+        // The loader sets `lens`; a professor prompt claims no defect kind, so
+        // it must not emit `category`.
+        assert!(!prompt.contains("\"category\""));
         assert!(prompt.contains("\"summary\""));
         assert!(prompt.contains("teaching tone"));
         assert!(!prompt.contains("review.json"));

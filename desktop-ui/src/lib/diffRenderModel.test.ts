@@ -13,9 +13,11 @@ import {
   getFileBlock,
   applyCollapsedFiles,
   getCrossFileModel,
+  rowLineOnSide,
   type CrossFileFlatRow,
   type RenderModelInputs,
 } from "./diffRenderModel";
+import { splitRows } from "./splitRows";
 import {
   buildAnnotationIndex,
   type CommentVisibility,
@@ -410,10 +412,10 @@ describe("getFileBlock — thread/finding injection", () => {
   });
 
   it("does not also fallback-render a thread already inline on an earlier hunk", () => {
-    // Backend used to attach the same lined comment to two hunks: the one
-    // containing the new-side line, and a later hunk whose old-side range
-    // happened to include that number. Result: inline on the real line and
-    // again as a fallback at end of file.
+    // A lined comment must attach to one hunk — the one containing the
+    // new-side line, not also a later hunk whose old-side range happens to
+    // include that number. Attaching to both renders it inline on the real
+    // line and again as a fallback at end of file.
     const t = thread("t1", "pipeline.py", 222);
     const h0 = hunk({
       header: "@@ -140,20 +218,20 @@",
@@ -716,7 +718,7 @@ describe("getFileBlock — caching", () => {
   });
 });
 
-// ---------------- Step B: cross-file model tests ----------------
+// ---------------- cross-file model tests ----------------
 
 import { buildAnnotationIndex as _build } from "./diffAnnotations";
 import type { AiSnapshot, FileSnapshot as _FS } from "./types";
@@ -1109,6 +1111,78 @@ describe("estimateThreadHeight", () => {
     const wide = estimateThreadHeight(t, 80);
     const narrow = estimateThreadHeight(t, 40);
     expect(narrow).toBeGreaterThan(wide);
+  });
+});
+
+describe("rowLineOnSide", () => {
+  // Unified hunk: context 10, a modify pair (del 11 / add 11), add 12.
+  const f = file({
+    path: "a.ts",
+    hunks: [
+      hunk({
+        lines: [
+          line({ kind: "context", old_num: 10, new_num: 10 }),
+          line({ kind: "del", old_num: 11, new_num: null }),
+          line({ kind: "add", old_num: null, new_num: 11 }),
+          line({ kind: "add", old_num: null, new_num: 12 }),
+          line({ kind: "context", old_num: 20, new_num: 30 }),
+        ],
+      }),
+    ],
+  });
+  const unified = (lineIdx: number): CrossFileFlatRow => ({
+    type: "content-unified",
+    filePath: "a.ts",
+    hunkIdx: 0,
+    lineIdx,
+    side: "unified",
+    height: LINE_HEIGHT,
+    identity: `cu:a.ts:0:${lineIdx}`,
+  });
+  const split = (splitRowIdx: number): CrossFileFlatRow => ({
+    type: "content-split",
+    filePath: "a.ts",
+    hunkIdx: 0,
+    splitRowIdx,
+    side: "split",
+    height: LINE_HEIGHT,
+    identity: `cs:a.ts:0:${splitRowIdx}`,
+  });
+  const splitByHunk = [splitRows(f.hunks[0].lines)];
+
+  it("reads a context line on the new side, by its new number", () => {
+    expect(rowLineOnSide(unified(0), f, undefined, "new")).toBe(10);
+    // Context lines are selected on the new side in unified view (that is the
+    // side their `+` button passes), so the old side finds nothing.
+    expect(rowLineOnSide(unified(0), f, undefined, "old")).toBeNull();
+    // When the two numbers differ, the new one wins — matching the `+` button.
+    expect(rowLineOnSide(unified(4), f, undefined, "new")).toBe(30);
+  });
+
+  it("keeps the two halves of a modify pair on their own sides", () => {
+    expect(rowLineOnSide(unified(1), f, undefined, "old")).toBe(11);
+    expect(rowLineOnSide(unified(1), f, undefined, "new")).toBeNull();
+    expect(rowLineOnSide(unified(2), f, undefined, "new")).toBe(11);
+    expect(rowLineOnSide(unified(2), f, undefined, "old")).toBeNull();
+  });
+
+  it("reads split rows from the requested pane", () => {
+    expect(rowLineOnSide(split(0), f, splitByHunk, "old")).toBe(10);
+    expect(rowLineOnSide(split(1), f, splitByHunk, "new")).toBe(11);
+    expect(rowLineOnSide(split(1), f, splitByHunk, "old")).toBe(11);
+  });
+
+  it("returns null for rows that carry no line, and for an unknown side", () => {
+    const header: CrossFileFlatRow = {
+      type: "hunk-header",
+      filePath: "a.ts",
+      hunkIdx: 0,
+      height: HUNK_HEADER_HEIGHT,
+      identity: "hh:a.ts:0",
+    };
+    expect(rowLineOnSide(header, f, splitByHunk, "new")).toBeNull();
+    expect(rowLineOnSide(unified(3), f, undefined, null)).toBeNull();
+    expect(rowLineOnSide(split(1), f, splitByHunk, null)).toBeNull();
   });
 });
 

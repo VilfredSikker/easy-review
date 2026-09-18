@@ -52,3 +52,26 @@ fn log_target_group(target: &str) -> &'static str {
     }
     GROUP_APP
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn profile_target_maps_to_the_profile_group() {
+        // `profile_log` emits with this target so the records reach the LogDir
+        // file, and the logger's filter is what decides whether they survive.
+        // If this mapping drifts, every profile line is silently dropped and the
+        // log file stays empty — the failure is invisible by construction.
+        assert_eq!(log_target_group("er.profile"), GROUP_PROFILE);
+        // The stderr-era spelling, kept working by the `contains` arm.
+        assert_eq!(log_target_group("er_desktop::profile_log"), GROUP_PROFILE);
+    }
+
+    #[test]
+    fn other_targets_still_fall_through_to_their_groups() {
+        assert_eq!(log_target_group("er.arena"), GROUP_ARENA);
+        assert_eq!(log_target_group("er.erp"), GROUP_ERP);
+        assert_eq!(log_target_group("er_desktop::commands"), GROUP_APP);
+    }
+}

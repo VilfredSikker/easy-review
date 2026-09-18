@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use crate::git::DiffHunk;
+use super::relocate::{relocate_comment, CommentAnchor, RelocationResult};
+use crate::git::{DiffFile, DiffHunk};
 
 // ── Inline layer visibility ──
 
@@ -13,6 +14,30 @@ pub struct InlineLayers {
     pub show_github_comments: bool,
     pub show_ai_findings: bool,
     pub hide_resolved: bool,
+    /// Least trustworthy grade a finding may carry and still render. Resolved
+    /// from whether an arbiter has graded the current diff, so the gate follows
+    /// the state of the review rather than a remembered preference.
+    pub min_trust: Confidence,
+    /// The gate was set by hand, so a review reload must not overwrite it.
+    pub min_trust_pinned: bool,
+    /// List the findings the arbiter ruled out, under the count of them. Off by
+    /// default: the count is the signal, and the rows are what you ask for when
+    /// the count surprises you.
+    pub show_dropped: bool,
+}
+
+/// What the confidence gate defaults to for a review in this state.
+///
+/// Graded by an arbiter, `confidence` is a second opinion from something that
+/// read the code, so hiding `Informational` is meaningful. Ungraded, it is the
+/// producer grading its own finding, and hiding on that is the failure this
+/// whole plan exists to stop.
+pub fn min_trust_for(effect: &super::arbiter::ArbiterEffect) -> Confidence {
+    if effect.graded() {
+        Confidence::Tentative
+    } else {
+        Confidence::Informational
+    }
 }
 
 impl Default for InlineLayers {
@@ -22,6 +47,9 @@ impl Default for InlineLayers {
             show_github_comments: true,
             show_ai_findings: true,
             hide_resolved: false,
+            min_trust: Confidence::Informational,
+            min_trust_pinned: false,
+            show_dropped: false,
         }
     }
 }
@@ -100,16 +128,62 @@ where
         .collect())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// Deserialize a verdicts array, skipping entries that fail to parse instead of
+/// rejecting the whole `arbiter.json`. Same trade as `lenient_findings`: losing
+/// one verdict beats losing every grade in the file.
+pub fn lenient_verdicts<'de, D>(
+    deserializer: D,
+) -> Result<Vec<super::arbiter::ArbiterVerdict>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Vec::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(raw
+        .into_iter()
+        .filter_map(|v| serde_json::from_value(v).ok())
+        .collect())
+}
+
+/// Deserialize a risk level, degrading an unrecognised value to `Info` rather
+/// than rejecting the sidecar that holds it. Models write free-form words here
+/// (`"moderate"`, `"unknown"`), and losing a whole triage verdict over one
+/// adjective is a worse trade than an imprecise tier.
+pub fn lenient_risk_level<'de, D>(deserializer: D) -> Result<RiskLevel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<RiskLevel>(v).ok())
+        .unwrap_or(RiskLevel::Info))
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RiskLevel {
     High,
     Medium,
     Low,
+    /// Default: no signal. Also where an unrecognised value lands — see
+    /// `lenient_risk_level`.
+    #[default]
     Info,
 }
 
 impl RiskLevel {
+    /// Lowercase level name, matching serde's serialization: `"high"`,
+    /// `"medium"`, `"low"`, `"info"`. The desktop's file-risk dot uses its own
+    /// shorter vocabulary (`severity_str`, where `Medium` is `"med"`), so the
+    /// two are deliberately not interchangeable.
+    pub const fn as_str(&self) -> &'static str {
+        match self {
+            Self::High => "high",
+            Self::Medium => "medium",
+            Self::Low => "low",
+            Self::Info => "info",
+        }
+    }
+
     pub const fn symbol(&self) -> &'static str {
         match self {
             Self::High => "●",
@@ -136,6 +210,47 @@ pub enum Confidence {
     Dropped,
 }
 
+impl Confidence {
+    /// This level as the 0..1 the arena carries.
+    ///
+    /// The pair with `from_score` has to stay a round trip: a grade written by
+    /// one mapping and read back by a diverging copy would silently change a
+    /// finding's confidence on the way through the arena.
+    pub const fn score(self) -> f32 {
+        match self {
+            Self::Confirmed => 0.9,
+            Self::Tentative => 0.6,
+            Self::Informational => 0.3,
+            Self::Dropped => 0.0,
+        }
+    }
+
+    /// The level a 0..1 score represents. Thresholds are `score`'s, inverted.
+    pub const fn from_score(score: f32) -> Self {
+        if score >= 0.75 {
+            Self::Confirmed
+        } else if score >= 0.5 {
+            Self::Tentative
+        } else {
+            Self::Informational
+        }
+    }
+
+    /// Trust ordering, **lower meaning more trustworthy**.
+    ///
+    /// Named `trust_rank` rather than `rank` so a call site cannot misread the
+    /// direction: every gate and sort in the codebase compares these with `<=`
+    /// or ascending order.
+    pub const fn trust_rank(self) -> u8 {
+        match self {
+            Self::Confirmed => 0,
+            Self::Tentative => 1,
+            Self::Informational => 2,
+            Self::Dropped => 3,
+        }
+    }
+}
+
 /// One read or grep result the AI used to justify (or revise) a finding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EvidenceItem {
@@ -148,12 +263,30 @@ pub struct EvidenceItem {
     pub note: String,
 }
 
+/// Lens id for findings produced by the general review pass — the fallback when
+/// nothing else claims a finding. See CONTEXT.md, "Lens".
+pub const GENERAL_LENS: &str = "general";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub id: String,
     pub severity: RiskLevel,
+    /// Who produced this finding — an expert id, or `general` / `professor` /
+    /// `arbiter`. Set at load time by whichever merge path owns the sidecar, so
+    /// a producer never writes it. See CONTEXT.md, "Lens". Empty on sidecars
+    /// written before the field existed; backfilled from the finding id prefix.
+    #[serde(default)]
+    pub lens: String,
+    /// What kind of defect this finding describes (`correctness`, …). Orthogonal
+    /// to `lens` — the security lens can raise a correctness finding.
     #[serde(default)]
     pub category: String,
+    /// Every lens that raised this claim. `lens` names the one it is filed
+    /// under; this is the full set, so a claim several experts independently
+    /// found reads as such. Empty on sidecars written before it existed, and
+    /// treated as `[lens]` when read.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -164,6 +297,15 @@ pub struct Finding {
     pub line_start: Option<usize>,
     #[serde(default, deserialize_with = "lenient_line_anchor")]
     pub line_end: Option<usize>,
+    /// Text of the line this finding anchors to, as it was when the finding was
+    /// written. Mirrors the comment types. Empty for file- and hunk-level
+    /// findings, which cannot go stale individually.
+    #[serde(default)]
+    pub line_content: String,
+    /// Runtime-only: the anchored line is no longer in the diff. Recomputed on
+    /// each refresh from `line_content`; never persisted.
+    #[serde(skip)]
+    pub stale: bool,
     #[serde(default)]
     pub suggestion: String,
     #[serde(default)]
@@ -213,6 +355,104 @@ impl Finding {
     /// false positive (`Confidence::Dropped`).
     pub const fn is_active(&self) -> bool {
         !self.resolved && !matches!(self.confidence, Confidence::Dropped)
+    }
+
+    /// Whether this finding clears the layers' confidence gate.
+    ///
+    /// `is_active()` runs first, so `Dropped` never reaches the comparison and a
+    /// `min_trust` of `Dropped` cannot resurrect a removed finding.
+    pub fn passes(&self, layers: &InlineLayers) -> bool {
+        self.is_active() && self.confidence.trust_rank() <= layers.min_trust.trust_rank()
+    }
+
+    /// Recompute `stale` against the current diff.
+    ///
+    /// A finding whose target line can no longer be found is suspect; one whose
+    /// line merely moved is not — the same distinction the comment path draws
+    /// with `relocate_comment`. Findings are never re-anchored, so the position
+    /// the reviewer wrote stays put and only the flag moves.
+    ///
+    /// `diff_file` is `None` when the file itself has left the diff, which is
+    /// the comment path's `Missing → Lost` case: an anchored finding there is
+    /// stale. A caller that merely hasn't parsed the file yet must not pass
+    /// `None` — see `TabState::refresh_finding_staleness`.
+    ///
+    /// File- and hunk-level findings carry no `line_content` and stay fresh:
+    /// `AiState::stale_files` already covers the file as a whole.
+    pub fn refresh_stale(&mut self, diff_file: Option<&DiffFile>) {
+        if self.line_content.is_empty() || self.line_start.is_none() {
+            self.stale = false;
+            return;
+        }
+        let Some(diff_file) = diff_file else {
+            self.stale = true;
+            return;
+        };
+        let anchor = CommentAnchor {
+            hunk_index: self.hunk_index,
+            line_start: self.line_start,
+            line_content: self.line_content.clone(),
+            context_before: Vec::new(),
+            context_after: Vec::new(),
+            old_line_start: None,
+            hunk_header: String::new(),
+        };
+        self.stale = matches!(relocate_comment(&anchor, diff_file), RelocationResult::Lost);
+    }
+
+    /// The full set of raisers, falling back to `lens` for a finding written
+    /// before `raised_by` existed. Never empty when the finding is attributed.
+    pub fn raisers(&self) -> Vec<&str> {
+        if self.raised_by.is_empty() {
+            if self.lens.is_empty() {
+                Vec::new()
+            } else {
+                vec![self.lens.as_str()]
+            }
+        } else {
+            self.raised_by.iter().map(String::as_str).collect()
+        }
+    }
+
+    /// The producers worth naming on a row: every raiser except the `general`
+    /// fallback, which is noise on the general review's own findings.
+    pub fn named_raisers(&self) -> Vec<&str> {
+        self.raisers()
+            .into_iter()
+            .filter(|raiser| *raiser != GENERAL_LENS)
+            .collect()
+    }
+
+    /// Compact `producers · category` tag for a finding row.
+    ///
+    /// Both are displayed (see CONTEXT.md), and either is skipped when empty. A
+    /// `general` raiser is left out — it is the fallback producer, and naming it
+    /// on every row of the general review is noise. So a general finding shows
+    /// its defect kind, an expert finding shows `security · correctness`, and a
+    /// claim two experts both found shows `reliability, security · correctness`.
+    ///
+    /// A repeated value collapses to one: sidecars written before the two fields
+    /// were separated stored the producer in `category`, so an old
+    /// `professor.json` would otherwise read `professor · professor`. The stored
+    /// `category` is left as it was — nothing can tell such a value apart from a
+    /// finding genuinely categorised `professor`, and dropping a real defect kind
+    /// costs more than showing one twice.
+    pub fn lens_category_tag(&self) -> String {
+        // Every raiser, not just the one it is filed under: a claim three experts
+        // independently found reads as such on the row, which is the whole point
+        // of merging them.
+        let producers = self.named_raisers().join(", ");
+        let collapsed = if self.lens == self.category {
+            ""
+        } else {
+            self.category.as_str()
+        };
+        match (producers.is_empty(), collapsed.is_empty()) {
+            (false, false) => format!("{producers} · {collapsed}"),
+            (false, true) => producers,
+            (true, false) => collapsed.to_string(),
+            (true, true) => String::new(),
+        }
     }
 }
 
@@ -503,6 +743,10 @@ pub struct AiState {
     pub tour_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
+    /// What the arbiter's verdicts hid or regraded on the loaded review. The
+    /// hidden findings are still in `review` — carrying `Confidence::Dropped` —
+    /// so a UI can list them rather than only counting them.
+    pub arbiter_effect: super::arbiter::ArbiterEffect,
     /// Lazily-built comment index for O(1) lookups.
     /// `None` means unbuilt; rebuilt on first query after invalidation.
     comment_index: RefCell<Option<CommentIndexData>>,
@@ -526,6 +770,7 @@ impl Default for AiState {
             is_stale: false,
             tour_stale: false,
             stale_files: HashSet::new(),
+            arbiter_effect: super::arbiter::ArbiterEffect::default(),
             comment_index: RefCell::new(None),
         }
     }
@@ -696,10 +941,11 @@ impl AiState {
         self.review.as_ref()?.files.get(path)
     }
 
-    /// Active (non-resolved, non-dropped) findings for a file path.
-    pub fn file_active_findings(&self, path: &str) -> Vec<&Finding> {
+    /// Findings for a file path that clear the layers' gate: not resolved, not
+    /// dropped, and at least as trustworthy as `min_trust`.
+    pub fn file_active_findings(&self, path: &str, layers: &InlineLayers) -> Vec<&Finding> {
         self.file_review(path)
-            .map(|fr| fr.findings.iter().filter(|f| f.is_active()).collect())
+            .map(|fr| fr.findings.iter().filter(|f| f.passes(layers)).collect())
             .unwrap_or_default()
     }
 
@@ -722,12 +968,16 @@ impl AiState {
         path: &str,
         hunk_index: usize,
         _total_hunks: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
+                    if !f.passes(layers) {
+                        return false;
+                    }
                     if f.line_start.is_some() {
                         return false;
                     }
@@ -748,13 +998,15 @@ impl AiState {
         path: &str,
         hunk_index: usize,
         line_num: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
-                    f.line_start == Some(line_num)
+                    f.passes(layers)
+                        && f.line_start == Some(line_num)
                         && (f.hunk_index == Some(hunk_index) || f.hunk_index.is_none())
                 })
                 .collect(),
@@ -764,12 +1016,17 @@ impl AiState {
 
     /// Get findings anchored to a specific line (by line number, no hunk index).
     /// Used for non-branch diff modes where `hunk_index` doesn't match.
-    pub fn findings_for_line_by_range(&self, path: &str, line_num: usize) -> Vec<&Finding> {
+    pub fn findings_for_line_by_range(
+        &self,
+        path: &str,
+        line_num: usize,
+        layers: &InlineLayers,
+    ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
-                .filter(|f| f.line_start == Some(line_num))
+                .filter(|f| f.passes(layers) && f.line_start == Some(line_num))
                 .collect(),
             None => Vec::new(),
         }
@@ -785,12 +1042,16 @@ impl AiState {
         _new_count: usize,
         hunk_index: usize,
         _total_hunks: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
+                    if !f.passes(layers) {
+                        return false;
+                    }
                     // Skip line-anchored findings — they render inline
                     if f.line_start.is_some() {
                         return false;
@@ -1525,9 +1786,23 @@ impl AiState {
 mod tests {
     use super::super::comments::{FeedbackComment, GitHubReviewComment, ReviewQuestion};
     use super::*;
+    use crate::git::LineType;
     use std::collections::HashMap;
 
     // ── Helpers ──
+
+    /// `score` and `from_score` have to be inverses: a grade written by one and
+    /// read back by the other must not change a finding's confidence.
+    #[test]
+    fn confidence_score_round_trips() {
+        for level in [
+            Confidence::Confirmed,
+            Confidence::Tentative,
+            Confidence::Informational,
+        ] {
+            assert_eq!(Confidence::from_score(level.score()), level);
+        }
+    }
 
     fn make_review_with_files(files: Vec<(&str, RiskLevel, Vec<Finding>)>) -> ErReview {
         let mut file_map = HashMap::new();
@@ -1553,16 +1828,363 @@ mod tests {
         }
     }
 
+    fn diff_line(line_type: LineType, content: &str, new_num: usize) -> crate::git::DiffLine {
+        crate::git::DiffLine {
+            line_type,
+            content: content.to_string(),
+            old_num: Some(new_num),
+            new_num: Some(new_num),
+        }
+    }
+
+    fn make_diff_file(path: &str, lines: Vec<crate::git::DiffLine>) -> DiffFile {
+        DiffFile {
+            path: path.to_string(),
+            status: crate::git::FileStatus::Modified,
+            hunks: vec![crate::git::DiffHunk {
+                header: "@@ -1,3 +1,3 @@".to_string(),
+                old_start: 1,
+                old_count: lines.len(),
+                new_start: 1,
+                new_count: lines.len(),
+                lines,
+            }],
+            adds: 0,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 1,
+        }
+    }
+
+    /// Staleness is per-finding: a finding whose anchored line is gone goes
+    /// stale, while a sibling in the same file whose line merely moved stays
+    /// fresh. `stale_files` cannot draw that line — it marks the whole file.
+    #[test]
+    fn refresh_stale_is_per_finding() {
+        let file = make_diff_file(
+            "a.rs",
+            vec![
+                diff_line(LineType::Add, "// header", 1),
+                diff_line(LineType::Context, "fn foo() {", 2),
+                diff_line(LineType::Context, "    let kept = 1;", 3),
+            ],
+        );
+
+        let mut intact = make_finding_with_lines("a", Some(0), Some(3), None, RiskLevel::Low);
+        intact.line_content = "    let kept = 1;".to_string();
+
+        let mut deleted = make_finding_with_lines("b", Some(0), Some(2), None, RiskLevel::Low);
+        deleted.line_content = "    let gone = 2;".to_string();
+
+        // Content intact but shifted down a line by the insert above it.
+        let mut shifted = make_finding_with_lines("c", Some(0), Some(1), None, RiskLevel::Low);
+        shifted.line_content = "fn foo() {".to_string();
+
+        // Hunk-level: no anchored line, so it cannot go stale on its own.
+        let mut hunk_level = make_finding("d", Some(0), RiskLevel::Low);
+
+        for f in [&mut intact, &mut deleted, &mut shifted, &mut hunk_level] {
+            f.refresh_stale(Some(&file));
+        }
+
+        assert!(!intact.stale, "line still at its anchor");
+        assert!(deleted.stale, "anchored line is gone from the diff");
+        assert!(!shifted.stale, "line moved but is still present");
+        assert!(
+            !hunk_level.stale,
+            "hunk-level findings have no line to lose"
+        );
+    }
+
+    /// A file that has left the diff takes the verdict the comment path reaches
+    /// for a missing file: an anchored finding there is stale.
+    #[test]
+    fn refresh_stale_marks_a_missing_file_stale() {
+        let mut anchored = make_finding_with_lines("a", Some(0), Some(3), None, RiskLevel::Low);
+        anchored.line_content = "    let kept = 1;".to_string();
+
+        // No anchored line, so a missing file says nothing about it.
+        let mut hunk_level = make_finding("b", Some(0), RiskLevel::Low);
+
+        anchored.refresh_stale(None);
+        hunk_level.refresh_stale(None);
+
+        assert!(anchored.stale, "its file is gone from the diff");
+        assert!(!hunk_level.stale, "no anchored line to lose");
+    }
+
+    /// The row tag shows the producer only when it is not the `general`
+    /// fallback, so today's output is preserved for general review findings
+    /// while expert and professor findings keep their identity.
+    #[test]
+    fn lens_category_tag_skips_general_and_empty() {
+        let tagged = |lens: &str, category: &str| {
+            let mut f = make_finding("f", Some(0), RiskLevel::Low);
+            f.lens = lens.to_string();
+            f.category = category.to_string();
+            f.lens_category_tag()
+        };
+
+        assert_eq!(tagged(GENERAL_LENS, "correctness"), "correctness");
+        assert_eq!(tagged("security", "correctness"), "security · correctness");
+        assert_eq!(tagged("professor", ""), "professor");
+        // A sidecar old enough to carry no lens still renders its defect kind.
+        assert_eq!(tagged("", "correctness"), "correctness");
+        assert_eq!(tagged("", ""), "");
+    }
+
+    /// A claim several experts independently found names all of them on the
+    /// row — that is what merging them was for.
+    #[test]
+    fn lens_category_tag_names_every_raiser() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.category = "correctness".to_string();
+        f.lens = "security".to_string();
+        f.raised_by = vec!["reliability".to_string(), "security".to_string()];
+
+        assert_eq!(f.lens_category_tag(), "reliability, security · correctness");
+    }
+
+    /// The general pass is the fallback producer, so it is not named even when
+    /// it appears in the raiser set alongside a real lens.
+    #[test]
+    fn lens_category_tag_drops_the_general_raiser() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.category = "correctness".to_string();
+        f.raised_by = vec!["general".to_string(), "security".to_string()];
+
+        assert_eq!(f.lens_category_tag(), "security · correctness");
+        assert!(f.named_raisers().contains(&"security"));
+    }
+
+    /// Before the two fields were separated, a producer name lived in
+    /// `category`. Backfill fills `lens` from it, and the tag must not then say
+    /// the same word twice.
+    #[test]
+    fn lens_category_tag_collapses_a_duplicated_value() {
+        let mut f = make_finding("f", Some(0), RiskLevel::Low);
+        f.lens = "professor".to_string();
+        f.category = "professor".to_string();
+        assert_eq!(f.lens_category_tag(), "professor");
+    }
+
+    /// The open gate. These tests are about matching and activity, not grading.
+    fn layers() -> InlineLayers {
+        InlineLayers::default()
+    }
+
+    /// One file, "a.rs", holding `findings`.
+    fn ai_with_findings(findings: Vec<Finding>) -> AiState {
+        let mut files = HashMap::new();
+        files.insert(
+            "a.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings,
+            },
+        );
+        AiState {
+            review: Some(ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files,
+                file_hashes: HashMap::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ids(found: Vec<&Finding>) -> Vec<&str> {
+        found.iter().map(|f| f.id.as_str()).collect()
+    }
+
+    #[test]
+    fn trust_rank_orders_most_trustworthy_first() {
+        assert!(Confidence::Confirmed.trust_rank() < Confidence::Tentative.trust_rank());
+        assert!(Confidence::Tentative.trust_rank() < Confidence::Informational.trust_rank());
+        assert!(Confidence::Informational.trust_rank() < Confidence::Dropped.trust_rank());
+    }
+
+    /// The gate tightens only once an arbiter has graded the diff. Gating on a
+    /// producer's own self-assessment is the failure the plan exists to stop.
+    #[test]
+    fn gate_default_follows_whether_an_arbiter_graded_the_diff() {
+        use crate::ai::ArbiterEffect;
+
+        assert_eq!(
+            min_trust_for(&ArbiterEffect::default()),
+            Confidence::Informational,
+            "nothing graded: everything shows"
+        );
+        for graded in [
+            ArbiterEffect {
+                regraded: 2,
+                ..Default::default()
+            },
+            ArbiterEffect {
+                dropped: 1,
+                ..Default::default()
+            },
+            ArbiterEffect {
+                merged: 1,
+                ..Default::default()
+            },
+            // A pass that affirmed everything still graded the diff, so the
+            // gate tightens on it too.
+            ArbiterEffect {
+                kept: 1,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(min_trust_for(&graded), Confidence::Tentative);
+        }
+
+        // Verdicts that matched no finding are not grades, so they must not
+        // tighten anything.
+        assert_eq!(
+            min_trust_for(&ArbiterEffect {
+                unmatched: 3,
+                ..Default::default()
+            }),
+            Confidence::Informational
+        );
+    }
+
+    #[test]
+    fn passes_gate_truth_table() {
+        let passes = |level: Confidence, min_trust: Confidence| {
+            let mut f = make_finding("f", Some(0), RiskLevel::Low);
+            f.confidence = level;
+            f.passes(&InlineLayers {
+                min_trust,
+                ..Default::default()
+            })
+        };
+
+        // The open default: every active grade shows.
+        assert!(passes(Confidence::Confirmed, Confidence::Informational));
+        assert!(passes(Confidence::Tentative, Confidence::Informational));
+        assert!(passes(Confidence::Informational, Confidence::Informational));
+
+        // What an arbiter-graded diff defaults to: Informational is hidden.
+        assert!(passes(Confidence::Confirmed, Confidence::Tentative));
+        assert!(passes(Confidence::Tentative, Confidence::Tentative));
+        assert!(!passes(Confidence::Informational, Confidence::Tentative));
+
+        assert!(passes(Confidence::Confirmed, Confidence::Confirmed));
+        assert!(!passes(Confidence::Tentative, Confidence::Confirmed));
+    }
+
+    #[test]
+    fn passes_never_admits_a_dropped_or_resolved_finding() {
+        // Even a gate that would admit everything must not resurrect these.
+        let open = InlineLayers {
+            min_trust: Confidence::Dropped,
+            ..Default::default()
+        };
+
+        let mut dropped = make_finding("d", Some(0), RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+        assert!(!dropped.passes(&open));
+
+        let mut resolved = make_finding("r", Some(0), RiskLevel::Low);
+        resolved.confidence = Confidence::Confirmed;
+        resolved.resolved = true;
+        assert!(!resolved.passes(&open));
+    }
+
+    /// The four inline queries returned everything and left the UI to dim it, so
+    /// inline findings disagreed with the panel. They filter now.
+    #[test]
+    fn inline_queries_drop_inactive_findings() {
+        let mut active = make_finding_with_lines("act", Some(0), Some(1), None, RiskLevel::Low);
+        active.confidence = Confidence::Confirmed;
+        let mut resolved = make_finding_with_lines("res", Some(0), Some(1), None, RiskLevel::Low);
+        resolved.resolved = true;
+        let mut dropped = make_finding_with_lines("drp", Some(0), Some(1), None, RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+
+        let ai = ai_with_findings(vec![active, resolved, dropped]);
+        let open = InlineLayers::default();
+
+        assert_eq!(ids(ai.findings_for_line("a.rs", 0, 1, &open)), vec!["act"]);
+        assert_eq!(
+            ids(ai.findings_for_line_by_range("a.rs", 1, &open)),
+            vec!["act"]
+        );
+        assert_eq!(ids(ai.file_active_findings("a.rs", &open)), vec!["act"]);
+    }
+
+    #[test]
+    fn inline_hunk_queries_drop_inactive_findings() {
+        let mut active = make_finding("h-act", Some(0), RiskLevel::Low);
+        active.confidence = Confidence::Confirmed;
+        let mut dropped = make_finding("h-drp", Some(0), RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+
+        let ai = ai_with_findings(vec![active, dropped]);
+        let open = InlineLayers::default();
+
+        assert_eq!(
+            ids(ai.findings_for_hunk("a.rs", 0, 1, &open)),
+            vec!["h-act"]
+        );
+        assert_eq!(
+            ids(ai.findings_for_hunk_by_line_range("a.rs", 0, 5, 0, 1, &open)),
+            vec!["h-act"]
+        );
+    }
+
+    /// The gate reaches the inline path, not just the panel count.
+    #[test]
+    fn inline_queries_honour_min_trust() {
+        let mut confirmed = make_finding_with_lines("conf", Some(0), Some(1), None, RiskLevel::Low);
+        confirmed.confidence = Confidence::Confirmed;
+        let tentative = make_finding_with_lines("tent", Some(0), Some(1), None, RiskLevel::Low);
+
+        let ai = ai_with_findings(vec![confirmed, tentative]);
+        let graded = InlineLayers {
+            min_trust: Confidence::Tentative,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ids(ai.findings_for_line("a.rs", 0, 1, &graded)),
+            vec!["conf", "tent"]
+        );
+        assert_eq!(
+            ids(ai.findings_for_line(
+                "a.rs",
+                0,
+                1,
+                &InlineLayers {
+                    min_trust: Confidence::Confirmed,
+                    ..Default::default()
+                }
+            )),
+            vec!["conf"]
+        );
+    }
+
     fn make_finding(id: &str, hunk_index: Option<usize>, severity: RiskLevel) -> Finding {
         Finding {
             id: id.to_string(),
             severity,
+            lens: String::new(),
             category: String::new(),
+            raised_by: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
             line_start: None,
             line_end: None,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,
@@ -1587,12 +2209,16 @@ mod tests {
         Finding {
             id: id.to_string(),
             severity,
+            lens: String::new(),
             category: String::new(),
+            raised_by: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
             line_start,
             line_end,
+            line_content: String::new(),
+            stale: false,
             suggestion: String::new(),
             related_files: Vec::new(),
             outside_diff: false,
@@ -1795,12 +2421,14 @@ mod tests {
         )]));
 
         let ids: Vec<&str> = state
-            .file_active_findings("a.rs")
+            .file_active_findings("a.rs", &layers())
             .iter()
             .map(|f| f.id.as_str())
             .collect();
         assert_eq!(ids, vec!["a"]);
-        assert!(state.file_active_findings("missing.rs").is_empty());
+        assert!(state
+            .file_active_findings("missing.rs", &layers())
+            .is_empty());
     }
 
     // ── AiState::findings_for_hunk ──
@@ -1808,7 +2436,7 @@ mod tests {
     #[test]
     fn findings_for_hunk_no_review_returns_empty() {
         let state = AiState::default();
-        assert!(state.findings_for_hunk("a.rs", 0, 1).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 0, 1, &layers()).is_empty());
     }
 
     #[test]
@@ -1823,7 +2451,7 @@ mod tests {
                 make_finding("3", Some(0), RiskLevel::Low),
             ],
         )]));
-        let results = state.findings_for_hunk("a.rs", 0, 2);
+        let results = state.findings_for_hunk("a.rs", 0, 2, &layers());
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|f| f.id == "1"));
         assert!(results.iter().any(|f| f.id == "3"));
@@ -1837,7 +2465,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("a.rs", 99, 100);
+        let results = state.findings_for_hunk("a.rs", 99, 100, &layers());
         assert!(results.is_empty());
     }
 
@@ -1849,7 +2477,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("unknown.rs", 0, 1);
+        let results = state.findings_for_hunk("unknown.rs", 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -1861,9 +2489,9 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // File-level findings (hunk_index: None, line_start: None) no longer render inline
-        assert!(state.findings_for_hunk("a.rs", 0, 3).is_empty());
-        assert!(state.findings_for_hunk("a.rs", 2, 3).is_empty());
+        // File-level findings (hunk_index: None, line_start: None) must not render inline
+        assert!(state.findings_for_hunk("a.rs", 0, 3, &layers()).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 2, 3, &layers()).is_empty());
     }
 
     // ── AiState::findings_for_file_level ──
@@ -1925,7 +2553,7 @@ mod tests {
             ],
         )]));
         // Hunk-level finding with hunk_index=0 matches
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 2);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 2, &layers());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "1");
     }
@@ -1945,7 +2573,7 @@ mod tests {
             )],
         )]));
         // Line-anchored findings are rendered inline, not at hunk level
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -1957,14 +2585,14 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
     #[test]
     fn hunk_by_line_range_no_review_returns_empty() {
         let state = AiState::default();
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -1976,12 +2604,12 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // File-level findings (hunk_index: None, line_start: None) no longer render inline
+        // File-level findings (hunk_index: None, line_start: None) must not render inline
         assert!(state
-            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2)
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2, &layers())
             .is_empty());
         assert!(state
-            .findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2)
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2, &layers())
             .is_empty());
     }
 
@@ -1999,7 +2627,7 @@ mod tests {
                 make_finding("3", Some(0), RiskLevel::Low),
             ],
         )]));
-        let results = state.findings_for_line("a.rs", 0, 10);
+        let results = state.findings_for_line("a.rs", 0, 10, &layers());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "1");
     }
@@ -2018,7 +2646,7 @@ mod tests {
                 RiskLevel::High,
             )],
         )]));
-        let results = state.findings_for_line("a.rs", 0, 99);
+        let results = state.findings_for_line("a.rs", 0, 99, &layers());
         assert!(results.is_empty());
     }
 
@@ -2034,7 +2662,7 @@ mod tests {
             ],
         )]));
         // Both findings match line 10 regardless of hunk_index
-        let results = state.findings_for_line_by_range("a.rs", 10);
+        let results = state.findings_for_line_by_range("a.rs", 10, &layers());
         assert_eq!(results.len(), 2);
     }
 

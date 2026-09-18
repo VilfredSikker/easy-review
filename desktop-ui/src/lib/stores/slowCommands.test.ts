@@ -24,6 +24,7 @@ const LOCAL_FIRST_COMMANDS = [
   "unbulk_review_pillar",
   "add_ui_annotation",
   "delete_ui_annotation",
+  "toggle_checklist_item",
   "remove_finding_thread",
   "promote_finding_to_comment",
   "delete_finding_response",

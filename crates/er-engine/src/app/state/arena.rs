@@ -1,9 +1,10 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
     import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
-    save_run, scope_git_mode, start_arena_batch, start_arena_run, ArenaBatchStartParams,
-    ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry, ArenaRunSnapshot, ArenaScope,
-    ArenaStartParams, HumanOverride, ReviewerRef, Verdict,
+    save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
+    ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
+    ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef,
+    SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -12,6 +13,20 @@ use std::sync::Arc;
 
 use super::App;
 use super::TabState;
+
+/// The `diff_hash` a review's sidecars carry, which is what a verdict's hash has
+/// to match for the overlay to apply.
+///
+/// Read off disk rather than recomputed, because the callers do not all hash the
+/// same bytes: the desktop pipeline filters review-ignore globs out of the diff
+/// before preparing it, the TUI does not. Recomputing here would produce a hash
+/// the review and its expert sidecars disagree with, and since the overlay
+/// compares against theirs, every verdict would silently fail to apply — with a
+/// UI line telling the user to re-run validation, which could never help.
+fn review_diff_hash(er_dir: &str, raw_diff: &str) -> String {
+    crate::ai::prepared_diff::diff_tmp_hash(er_dir)
+        .unwrap_or_else(|| crate::ai::compute_diff_hash(raw_diff))
+}
 
 /// Load a run's summary, memoized by `run.json` mtime+size.
 ///
@@ -147,6 +162,65 @@ impl App {
         Ok(run_id)
     }
 
+    /// Validate the current tab's expert findings with a seeded arbiter pass.
+    ///
+    /// The cheap path end to end: the experts already ran, so this dedupes what
+    /// they produced and makes one arbiter call. Returns the run id, or `None`
+    /// when there is nothing to validate — a caller can then say so rather than
+    /// starting a run that would rule on nothing.
+    pub fn arena_start_seeded(&mut self) -> Result<Option<String>> {
+        let tab = self.tab();
+        let raw_diff = tab.raw_diff_for_arena(ArenaScope::Branch, None)?;
+        let repo_root = tab.repo_root.clone();
+        let er_dir = tab.er_dir();
+        let er_key = er_dir.clone();
+        let branch_ref = tab
+            .local_branch_view
+            .clone()
+            .unwrap_or_else(|| tab.current_branch.clone());
+        let base_branch = tab.base_branch.clone();
+        let diff_hash = review_diff_hash(&er_dir, &raw_diff);
+        // An expert set generated alongside a review that has since gone stale
+        // is still this generation's work — same accommodation as the merge.
+        let review_hash = tab
+            .ai
+            .review
+            .as_ref()
+            .map(|r| r.diff_hash.clone())
+            .unwrap_or_default();
+        let config = self.config.clone();
+        let registry = Arc::clone(&self.arena_registry);
+
+        let run_id = start_seeded_run(
+            registry,
+            config,
+            repo_root,
+            SeededStartParams {
+                er_dir,
+                branch_ref,
+                base_branch,
+                scope: ArenaScope::Branch,
+                diff_hash,
+                review_hash,
+                raw_diff,
+                arbiter: None,
+            },
+        )?;
+
+        let Some(run_id) = run_id else {
+            return Ok(None);
+        };
+        self.active_arena_runs
+            .entry(er_key.clone())
+            .or_default()
+            .push(run_id.clone());
+        crate::dev_log::arena_line(format!(
+            "App::arena_start_seeded ok run_id={run_id} er_dir={er_key}"
+        ));
+        self.notify(&format!("Validating findings ({run_id})"));
+        Ok(Some(run_id))
+    }
+
     pub fn arena_start_batch(&mut self, mut batch: ArenaBatchStartParams) -> Result<Vec<String>> {
         batch.effort = crate::config::resolve_effort(
             &self.config.ai_hub,
@@ -240,6 +314,17 @@ impl App {
         let er_path = er_dir.to_string_lossy().into_owned();
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
+        // A seeded run's verdicts reach the review through `arbiter.json`, which
+        // merges at load. Importing them as well would do the write ADR 0001
+        // routed around — `review.json` gains a fourth writer, and
+        // `import_arena_findings_to_review` re-stamps its `diff_hash` with this
+        // run's, marking a review that may be newer as matching a different diff.
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            anyhow::bail!(
+                "a seeded run's verdicts are applied from arbiter.json on load; \
+                 there is nothing to import into review.json"
+            );
+        }
         let ids = finding_ids.as_deref();
         let n = import_arena_findings_to_review(&er_path, &mut run, ids)?;
         save_run(&paths, &run)?;
@@ -386,6 +471,34 @@ mod tests {
     use crate::arena::ArenaScope;
     use crate::git;
     use std::process::Command;
+
+    /// The recorded hash wins over a recomputed one. This is the review-ignore
+    /// case: the desktop filters globs out before preparing the diff, so the
+    /// bytes this function is handed hash differently from the bytes the review
+    /// and its sidecars were built from. Recomputing made every verdict fail to
+    /// apply, silently.
+    #[test]
+    fn review_diff_hash_prefers_what_the_agent_recorded() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let prepared = "sha-the-agent-recorded";
+        std::fs::write(dir.path().join(".diff-tmp.sha256"), prepared).unwrap();
+
+        assert_eq!(
+            review_diff_hash(er, "a diff that would hash differently"),
+            prepared,
+            "the on-disk marker decides, not the bytes passed in"
+        );
+    }
+
+    #[test]
+    fn review_diff_hash_falls_back_to_hashing_the_raw_diff() {
+        let dir = tempfile::tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let raw = "diff --git a/x b/x\n";
+
+        assert_eq!(review_diff_hash(er, raw), crate::ai::compute_diff_hash(raw));
+    }
 
     fn init_repo_with_branches() -> tempfile::TempDir {
         let dir = tempfile::tempdir().unwrap();

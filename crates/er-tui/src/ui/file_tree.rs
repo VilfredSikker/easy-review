@@ -176,7 +176,7 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
 
             let file_stale = in_overlay && tab.ai.is_file_stale(&file.path);
             let active_findings = if in_overlay {
-                tab.ai.file_active_findings(&file.path)
+                tab.ai.file_active_findings(&file.path, &tab.layers)
             } else {
                 Vec::new()
             };

@@ -33,9 +33,9 @@ pub struct RemotePrOpenEntry {
     pub raw_diff: String,
     pub pr_data: Option<PrOverviewData>,
     pub pr_commits: Vec<CommitInfo>,
-    /// Head oid the cached diff was fetched at — the staleness baseline
-    /// (review-fix-loop R1: without it, an advanced head would never light
-    /// the stale pill because the baseline is seeded from the *current* head).
+    /// Head oid the cached diff was fetched at — the staleness baseline.
+    /// Without it an advanced head would never light the stale pill, because
+    /// the baseline is seeded from the *current* head.
     pub head_oid: Option<String>,
     /// Monotonic LRU recency tick (see [`RemotePrOpenCache`]).
     pub last_touched: u64,

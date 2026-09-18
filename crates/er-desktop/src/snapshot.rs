@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use er_engine::ai::{CommentRef, RiskLevel};
-use er_engine::app::{AgentLogSource, App, CommandStatus, DiffMode, InputMode, TabState};
+use er_engine::app::{
+    AgentLogSource, App, CommandStatus, DiffMode, InputMode, StackState, TabState,
+};
 use er_engine::arena::{ArenaRunSnapshot, ArenaRunSummary};
 use er_engine::git::{DiffFile, FileStatus, LineType};
 use serde::{Deserialize, Serialize};
@@ -214,7 +216,7 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     // snapshot field, not by the hunks). Share the source view's token so
     // Guide↔Diff toggles reuse the differential map instead of clearing it
     // and resending every hunk (a full ~200–400 ms snapshot + large IPC
-    // payload on big PRs — see review-fix-loop follow-up).
+    // payload on big PRs).
     let mode = match mode {
         "tour" => {
             if tab.tour_context_is_pr() {
@@ -412,7 +414,9 @@ pub struct AppSnapshot {
     pub watch_status: WatchStatusSnapshot,
     pub worktrees: Vec<WorktreeSnapshot>,
     pub projects: Vec<ProjectSnapshot>,
-    pub notification: Option<String>,
+    /// Last message the engine was asked to surface, with the seq stamp the
+    /// frontend dedupes on. Never cleared here — see `App::notification`.
+    pub notification: Option<er_engine::app::Notification>,
     /// When Some, the active tab is a read-only diff of this local branch.
     pub local_branch: Option<String>,
     /// True when the viewed local branch is checked out (project root or worktree).
@@ -429,6 +433,11 @@ pub struct AppSnapshot {
     pub browser: BrowserSnapshot,
     /// Live GitHub status for the active tab when it's a remote PR with cached data.
     pub github: Option<GithubStatusSnapshot>,
+    /// `gh stack` state for the active tab's branch, driving the BranchCard
+    /// stack control. Present for every local tab — empty until the lazy
+    /// `refresh_stack` lookup lands — and `None` only for remote-PR tabs.
+    #[serde(default)]
+    pub stack: Option<StackSnapshot>,
     /// PR number detected for the active branch from the PR-list cache (sidebar
     /// match). Reliable regardless of whether gh-status has been fetched — drives
     /// the Local|PR Diff toggle.
@@ -1067,6 +1076,16 @@ pub struct FindingResponseSnapshot {
     pub deletable: bool,
 }
 
+/// The wire form of a finding's grade.
+fn confidence_str(c: &er_engine::ai::Confidence) -> &'static str {
+    match c {
+        er_engine::ai::Confidence::Confirmed => "confirmed",
+        er_engine::ai::Confidence::Tentative => "tentative",
+        er_engine::ai::Confidence::Informational => "informational",
+        er_engine::ai::Confidence::Dropped => "dropped",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FlatFinding {
     pub id: String,
@@ -1074,10 +1093,27 @@ pub struct FlatFinding {
     pub line: Option<usize>,
     pub hunk_index: Option<usize>,
     pub severity: String, // "high" | "med" | "low"
-    /// Set when finding comes from a specialized expert (`category` = expert id).
+    /// The producer's own grade, which an arbiter pass may have replaced.
+    #[serde(default)]
+    pub confidence: String,
+    /// `producers · category`, built by the engine so both front ends render one
+    /// definition of the tag rather than reimplementing it.
+    #[serde(default)]
+    pub lens_category: String,
+    /// The user has fixed this one. Rows carrying it live in
+    /// `resolved_findings`, and render dimmed when the diff view is asked to
+    /// show them.
+    #[serde(default)]
+    pub resolved: bool,
+    /// Set when the finding's `lens` names a specialized expert.
     pub expert_label: Option<String>,
     /// Agent that produced this finding (pill label): General, Security, Professor, …
     pub agent_label: String,
+    /// Every lens that raised this claim, not just the one it is filed under.
+    /// More than one means several experts independently found it, which is what
+    /// merging them into a single row was for.
+    #[serde(default)]
+    pub raised_by: Vec<String>,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -1117,14 +1153,47 @@ pub struct AiSnapshot {
     pub unpushed: usize,
     pub threads: Vec<ThreadSnapshot>,
     pub findings: Vec<FlatFinding>,
+    /// Findings the arbiter ruled out, so the card can say how many it is not
+    /// showing instead of the list just being shorter.
+    #[serde(default)]
+    pub arbiter_dropped: usize,
+    /// Findings the arbiter folded into another.
+    #[serde(default)]
+    pub arbiter_merged: usize,
+    /// Verdicts that matched no finding — the grades exist but no longer
+    /// describe this review.
+    #[serde(default)]
+    pub arbiter_unmatched: usize,
+    /// Findings whose confidence the arbiter regraded.
+    #[serde(default)]
+    pub arbiter_regraded: usize,
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
+    /// Findings the user has resolved. Held apart from `findings` so nothing
+    /// reading that list changes meaning; the diff view surfaces these behind a
+    /// toggle instead.
+    #[serde(default)]
+    pub resolved_findings: Vec<FlatFinding>,
+    /// Findings an arbiter ruled out. The card counts these and can expand to
+    /// show them — a claim that vanished without a way to read it is how people
+    /// stop trusting a filter.
+    #[serde(default)]
+    pub dropped_findings: Vec<FlatFinding>,
+    /// The confidence gate this review defaults to: `tentative` once an arbiter
+    /// has graded it, `informational` while the grades are self-reported. Sent
+    /// rather than derived in the UI so the rule has one definition.
+    #[serde(default)]
+    pub min_trust_default: String,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
     pub triage: Option<TriageSnapshot>,
+    /// The review checklist (`checklist.json`) — the outcomes a human is meant
+    /// to verify. `None` when the bucket has no checklist yet.
+    #[serde(default)]
+    pub checklist: Option<ChecklistSnapshot>,
     /// Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab.
     pub diagrams: Vec<DiagramSnapshot>,
     /// Built-in diagram generate presets (mental-model / subsystems / flows).
@@ -1163,6 +1232,33 @@ pub struct TriagePriorityFileSnapshot {
     pub path: String,
     pub reason: String,
     pub risk: String,
+}
+
+/// The review checklist (`checklist.json`) for the active view bucket.
+///
+/// The items are sent in file order: that index is the toggle address the
+/// frontend sends back, and the one the engine's index-addressed toggle
+/// resolves against. Nothing here is a gate — an unchecked item blocks nothing.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChecklistSnapshot {
+    pub items: Vec<ChecklistItemSnapshot>,
+    /// False when the checklist was generated against a different diff than the
+    /// one on screen, so the card can say so instead of quietly showing it.
+    pub fresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChecklistItemSnapshot {
+    pub id: String,
+    pub text: String,
+    /// Outcome category (`schema` / `tests` / `api` / `auth` / `plan`), free-form
+    /// and often empty for checklists written before the categories existed.
+    pub category: String,
+    pub checked: bool,
+    /// Finding ids this item is about, for linking into the review.
+    pub related_findings: Vec<String>,
+    /// File paths this item is about, for jumping into the diff.
+    pub related_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1229,6 +1325,139 @@ pub struct GithubStatusSnapshot {
     pub is_authored_by_me: bool,
 }
 
+/// `gh stack` (github/gh-stack) state for the active tab's branch — what the
+/// BranchCard's stack control renders.
+///
+/// Present for every tab whose viewed branch is a local checkout: `layers` is
+/// empty and `unavailable` is `None` until the control's lazy `refresh_stack`
+/// lookup lands, which is how the frontend distinguishes "not looked up yet"
+/// from a known-empty stack. `None` (the whole option) is for tabs with no such
+/// checkout — a remote-PR tab, or a local PR/branch view whose head isn't
+/// checked out — where `gh stack view` would describe some other branch.
+#[derive(Debug, Clone, Serialize)]
+pub struct StackSnapshot {
+    /// Trunk the stack is rooted on (e.g. `main`), rendered after the layers.
+    pub trunk: String,
+    /// One entry per stack layer, ordered top-of-stack first. A layer may not
+    /// have a PR yet; the trunk is not a layer, so `layers.len() == size`.
+    pub layers: Vec<StackLayerSnapshot>,
+    /// 1-based position of the viewed branch counted from the top of the stack
+    /// (`1 / 3` is the top layer). `None` when the current branch isn't a layer.
+    pub position: Option<usize>,
+    /// Layer count — the denominator of the `n / size` badge.
+    pub size: usize,
+    /// Why there is no stack when `gh stack` reports one (branch outside any
+    /// stack, extension not installed). `layers` is empty in that case.
+    pub unavailable: Option<String>,
+    /// True when `unavailable` is a *failed* lookup (no `gh`, auth, network)
+    /// rather than a definitive "no stack here", so the control stays available
+    /// to retry instead of hiding itself.
+    #[serde(default)]
+    pub retryable: bool,
+    /// True while a lookup is in flight, so the control can show a pending state.
+    #[serde(default)]
+    pub loading: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct StackLayerSnapshot {
+    /// Branch name of the layer.
+    pub branch: String,
+    /// `None` for a layer whose PR doesn't exist yet.
+    pub pr_number: Option<u64>,
+    pub pr_url: Option<String>,
+    /// State without the `current` marker: `open`, `merged`, `needs rebase`.
+    pub state: String,
+    /// True for the branch this tab is viewing — the highlighted row.
+    pub is_current: bool,
+    /// True when the layer has a PR that can be opened for review.
+    pub enabled: bool,
+    pub needs_rebase: bool,
+}
+
+/// Map the active tab's `gh stack` state onto the wire type.
+///
+/// `None` means there is no stack to show *and no lookup to offer*: the tab's
+/// viewed branch isn't the checkout `gh stack view` would read (remote PR, or a
+/// local PR/branch view whose head isn't checked out), so the frontend hides the
+/// control entirely. Every eligible tab gets `Some`, including one whose first
+/// lookup hasn't landed yet (empty `layers`, no `unavailable`): the control needs
+/// to be reachable to trigger that lazy `refresh_stack` lookup in the first
+/// place.
+fn snapshot_stack(tab: &TabState) -> Option<StackSnapshot> {
+    snapshot_stack_state(tab.local_checkout_root().is_some(), &tab.stack)
+}
+
+/// [`snapshot_stack`] over the two inputs that decide the shape, so the
+/// ineligible / not-yet-looked-up / known cases are unit-testable without a repo.
+fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnapshot> {
+    if !eligible {
+        return None;
+    }
+
+    let loading = state.loading;
+    let Some(info) = state.info.as_ref() else {
+        return Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: None,
+            retryable: false,
+            loading,
+        });
+    };
+
+    match info {
+        // A definitive "no stack here" hides the control; a *failed* lookup
+        // keeps it so the user can retry (the command also logs it).
+        er_engine::gh_stack::StackInfo::Unavailable(reason) => Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: Some(reason.clone()),
+            retryable: false,
+            loading,
+        }),
+        er_engine::gh_stack::StackInfo::Failed(reason) => Some(StackSnapshot {
+            trunk: String::new(),
+            layers: Vec::new(),
+            position: None,
+            size: 0,
+            unavailable: Some(reason.clone()),
+            retryable: true,
+            loading,
+        }),
+        er_engine::gh_stack::StackInfo::Stack(stack) => Some(StackSnapshot {
+            trunk: stack.trunk.clone(),
+            layers: stack
+                .entries
+                .iter()
+                .map(|entry| StackLayerSnapshot {
+                    branch: entry.branch.clone(),
+                    pr_number: entry.pr_number,
+                    pr_url: entry.pr_url.clone(),
+                    state: entry.status_label(),
+                    is_current: entry.is_current,
+                    enabled: entry.is_openable(),
+                    needs_rebase: entry.needs_rebase,
+                })
+                .collect(),
+            // 1-based counted from the top of the stack: the badge reads `2 / 4`.
+            position: stack
+                .entries
+                .iter()
+                .position(|entry| entry.is_current)
+                .map(|index| index + 1),
+            size: stack.entries.len(),
+            unavailable: None,
+            retryable: false,
+            loading,
+        }),
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PrSnapshot {
     pub number: u64,
@@ -1248,8 +1477,10 @@ pub struct WorktreeSnapshot {
     pub is_pr: bool,
     pub pr_number: Option<u64>,
     pub is_merged: bool,
-    /// The repo (owner/repo slug) this worktree belongs to, from its own git
-    /// remote — may differ from the active project's remote.
+    /// The repo (owner/repo slug) this worktree belongs to. Worktrees of one
+    /// repository share a `.git/config`, so every row of a given list carries
+    /// the same value; it may still differ from the active *project's* remote,
+    /// which can point at a different repository entirely.
     #[serde(default)]
     pub remote: Option<String>,
 }
@@ -2233,7 +2464,7 @@ fn build_snapshot_inner(
     // Resolve the active tab's GitHub status from the cache. The key prefers the
     // tab's own PR number for PR tabs (remote or local) and only falls back to a
     // head_ref match for plain branch/working tabs — see `resolve_github_status_key`.
-    // Matching purely by head_ref previously let a branch with two open PRs show
+    // Matching purely by head_ref would let a branch with two open PRs show
     // an arbitrary one, so a freshly opened PR's Branch card could display a
     // different PR entirely.
     let github = pr_cache
@@ -2363,6 +2594,8 @@ fn build_snapshot_inner(
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
 
+    let stack = snapshot_stack(tab);
+
     let out = AppSnapshot {
         mode: mode.to_string(),
         branch,
@@ -2399,7 +2632,7 @@ fn build_snapshot_inner(
             build_worktrees(&tab.repo_root, &tab.base_branch, &tab.repo_root)
         },
         projects: build_projects(tab, pr_cache, pr_cache_fetched_at, meta_cache, gh_user),
-        notification: app.watch_message.clone(),
+        notification: app.notification.clone(),
         local_branch: tab.local_branch_view.clone(),
         local_branch_checked_out: tab.local_branch_checkout_root.is_some(),
         unstaged_stat,
@@ -2409,6 +2642,7 @@ fn build_snapshot_inner(
         ui_annotations,
         browser: browser_snapshot_from_tab(tab),
         github,
+        stack,
         detected_pr_number,
         diff_stale,
         bg_loading: loading
@@ -2431,7 +2665,7 @@ fn build_snapshot_inner(
                     .recent_log
                     .iter()
                     .map(|e| AgentLogSnapshot {
-                        command_name: e.command_name.clone(),
+                        command_name: e.command_name.to_string(),
                         source: match &e.source {
                             AgentLogSource::Stdout => "stdout".to_string(),
                             AgentLogSource::Stderr => "stderr".to_string(),
@@ -2526,10 +2760,18 @@ fn empty_ai_snapshot() -> AiSnapshot {
         unpushed: 0,
         threads: Vec::new(),
         findings: Vec::new(),
+        arbiter_dropped: 0,
+        arbiter_merged: 0,
+        arbiter_unmatched: 0,
+        arbiter_regraded: 0,
         file_risks: Vec::new(),
+        resolved_findings: Vec::new(),
+        dropped_findings: Vec::new(),
+        min_trust_default: String::new(),
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
+        checklist: None,
         diagrams: Vec::new(),
         diagram_presets: diagram_preset_snapshots(),
     }
@@ -2627,7 +2869,7 @@ fn build_agent_log(tab: &TabState) -> Vec<AgentLogSnapshot> {
         .take(200)
         .rev()
         .map(|e| AgentLogSnapshot {
-            command_name: e.command_name.clone(),
+            command_name: e.command_name.to_string(),
             source: match &e.source {
                 AgentLogSource::Stdout => "stdout".to_string(),
                 AgentLogSource::Stderr => "stderr".to_string(),
@@ -2648,45 +2890,77 @@ struct WorktreesMetaKey {
 /// Per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed by worktree path.
 type WorktreeMetaMap = HashMap<String, (bool, Option<u64>, bool, Option<String>)>;
 
-/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged)` keyed by path.
+/// Cached per-worktree PR metadata `(is_pr, pr_number, is_merged, remote)` keyed
+/// by path.
 ///
-/// `build_worktrees` runs on every snapshot build (every ~2s poll). The cheap
-/// `list_worktrees` call stays live so add/remove/branch-switch is reflected
-/// within one poll, but `detect_pr_meta` spawns `git config` + `git merge-base`
-/// per worktree — ~2N subprocesses that dominate snapshot construction. The set
-/// rarely changes, so cache that meta keyed on a fingerprint of the worktree set:
-/// add/remove/switch changes the fingerprint → cache miss → recompute, and a TTL
-/// backstops `is_merged` drift when the set is unchanged.
-static WORKTREES_META_CACHE: Mutex<
-    Option<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>,
-> = Mutex::new(None);
-const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+/// `build_worktrees` runs on every snapshot build that carries content. The
+/// cheap `list_worktrees` call stays live so add/remove/branch-switch is
+/// reflected within one poll, while the per-worktree metadata is cached keyed on
+/// a fingerprint of the worktree set: add/remove/switch changes the fingerprint
+/// → cache miss → recompute, and a TTL backstops `is_merged` drift when the set
+/// is unchanged.
+///
+/// A miss costs four git processes for the whole list — `list_worktrees`, the
+/// remote, the branch merges, and `git branch --merged` — and no network. What
+/// the builder must not do is move any of those inside the per-worktree loop:
+/// every worktree of a repository shares its config and refs, so per-row
+/// lookups ask the same question N times, on the snapshot path, with the App
+/// lock held. See `build_worktrees`.
+///
+/// More than one entry, because reviewing a few PRs at once means alternating
+/// between tabs whose `base_branch` differs, and `base_branch` is part of the
+/// key: with a single slot, every switch drops the entry the other tab needs and
+/// rebuilds it on the way back. Entries are about a kilobyte for a nine-worktree
+/// repo, so the cap costs nothing worth measuring.
+static WORKTREES_META_CACHE: Mutex<Vec<(WorktreesMetaKey, std::time::Instant, WorktreeMetaMap)>> =
+    Mutex::new(Vec::new());
+
+/// Entries kept before the least recently used is dropped.
+const WORKTREES_META_CACHE_CAP: usize = 8;
+
+/// How long an entry may go unrefreshed before the next use rebuilds it.
+///
+/// Generous on purpose, because the fingerprint carries each worktree's tip: a
+/// commit, a rebase, or a branch switch invalidates the exact key immediately,
+/// with no help from this timer. All the TTL still covers is drift the
+/// fingerprint cannot see — the base branch advancing from somewhere other than
+/// this machine — and a few minutes of staleness in a merged-branch colouring
+/// costs far less than a rebuild on every tab switch.
+const WORKTREES_META_TTL: std::time::Duration = std::time::Duration::from_secs(300);
 
 fn worktrees_meta_cached(
     key: WorktreesMetaKey,
     compute: impl FnOnce() -> WorktreeMetaMap,
 ) -> WorktreeMetaMap {
-    if let Ok(guard) = WORKTREES_META_CACHE.lock() {
-        if let Some((cached_key, computed_at, value)) = guard.as_ref() {
-            if *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL {
-                return value.clone();
-            }
+    if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
+        if let Some(idx) = guard.iter().position(|(cached_key, computed_at, _)| {
+            *cached_key == key && computed_at.elapsed() < WORKTREES_META_TTL
+        }) {
+            // Move to the back so the cap drops the least recently used entry,
+            // not merely the oldest.
+            let entry = guard.remove(idx);
+            let value = entry.2.clone();
+            guard.push(entry);
+            return value;
         }
     }
     let value = compute();
     if let Ok(mut guard) = WORKTREES_META_CACHE.lock() {
-        *guard = Some((key, std::time::Instant::now(), value.clone()));
+        guard.retain(|(cached_key, _, _)| *cached_key != key);
+        guard.push((key, std::time::Instant::now(), value.clone()));
+        while guard.len() > WORKTREES_META_CACHE_CAP {
+            guard.remove(0);
+        }
     }
     value
 }
 
-fn build_worktrees(
+/// The worktree list, plus the cache key its contents fingerprint to.
+fn worktrees_list_and_key(
     repo_root: &str,
     base_branch: &str,
-    current_root: &str,
-) -> Vec<WorktreeSnapshot> {
+) -> (Vec<er_engine::git::Worktree>, WorktreesMetaKey) {
     let wts = er_engine::git::list_worktrees(repo_root).unwrap_or_default();
-    let skip_merged = wts.len() > 10;
 
     let fingerprint = {
         use std::hash::{Hash, Hasher};
@@ -2694,6 +2968,17 @@ fn build_worktrees(
         for wt in &wts {
             wt.path.hash(&mut h);
             wt.branch.hash(&mut h);
+            // The tip, not only the branch name. `is_merged` compares tips, so
+            // without this a commit or a rebase moves the answer while path and
+            // branch stay put, and nothing in the key changes.
+            //
+            // Free: the oid arrives in the same `git worktree list --porcelain`
+            // output this function already runs. The base branch's own tip is
+            // deliberately NOT probed here — that would need a `rev-parse` on
+            // every build (this block runs before the cache check, so per build
+            // and not per miss) to save a miss that costs less than the probe.
+            // Base drift stays on the TTL floor.
+            wt.head.hash(&mut h);
         }
         h.finish()
     };
@@ -2702,17 +2987,98 @@ fn build_worktrees(
         base_branch: base_branch.to_string(),
         fingerprint,
     };
+    (wts, key)
+}
 
-    let meta = worktrees_meta_cached(key, || {
-        wts.iter()
-            .map(|wt| {
-                let (is_pr, pr_number, is_merged) =
-                    detect_pr_meta(&wt.path, &wt.branch, base_branch, skip_merged);
-                let remote = crate::projects::resolve_repo_remote(&wt.path);
-                (wt.path.clone(), (is_pr, pr_number, is_merged, remote))
-            })
-            .collect()
+/// Per-worktree metadata for a worktree list, from repository-wide lookups.
+///
+/// Every worktree `git worktree list` reports belongs to this repository and
+/// reads the same `.git/config` and the same refs, so the remote and the branch
+/// lookups are all per-repo values: each is read once here and shared across the
+/// rows, rather than asked once per row. A per-worktree loop over these is N
+/// identical subprocesses for one answer, on the snapshot path with the App lock
+/// held.
+fn compute_worktrees_meta(
+    wts: &[er_engine::git::Worktree],
+    repo_root: &str,
+    base_branch: &str,
+) -> WorktreeMetaMap {
+    let repo_remote = crate::projects::resolve_repo_remote(repo_root);
+    let merges = pr_branch_merges(repo_root);
+    let merged = merged_branches(repo_root, base_branch, wts.len());
+    wts.iter()
+        .map(|wt| {
+            let (is_pr, pr_number, is_merged) =
+                detect_pr_meta(&merges, &merged, &wt.branch, base_branch);
+            (
+                wt.path.clone(),
+                (is_pr, pr_number, is_merged, repo_remote.clone()),
+            )
+        })
+        .collect()
+}
+
+/// A warm worker for this (repo, base) pair is already running.
+static WORKTREES_WARM_IN_FLIGHT: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Populate the worktree-metadata cache from a caller that is *not* holding the
+/// App lock.
+///
+/// `build_worktrees` runs inside the poll's critical section, so a cold entry
+/// there pays the whole computation with the lock held. Poll pass one releases
+/// the lock before pass two, which is where this is kicked from.
+///
+/// Gated on this pair's entry age, because the poll ticks every ~2s: warming on
+/// every tick would run a `git worktree list` thirty times more often than the
+/// TTL requires, which costs more than the miss it avoids. The gate matches the
+/// key's first two fields, so it never computes the fingerprint (which needs
+/// `list_worktrees`) just to ask whether a warm is due.
+pub fn kick_worktrees_warm(repo_root: &str, base_branch: &str) {
+    if repo_root.is_empty() {
+        return;
+    }
+    // Comfortably inside the TTL, so the active pair's entry never expires —
+    // the timer is then only reachable by a pair nobody is looking at.
+    const WARM_AFTER: std::time::Duration = std::time::Duration::from_secs(60);
+    let age = WORKTREES_META_CACHE.lock().ok().and_then(|g| {
+        g.iter()
+            .find(|(k, _, _)| k.repo_root == repo_root && k.base_branch == base_branch)
+            .map(|(_, at, _)| at.elapsed())
     });
+    if age.is_some_and(|a| a < WARM_AFTER) {
+        return;
+    }
+
+    let pair = (repo_root.to_string(), base_branch.to_string());
+    {
+        let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() else {
+            return;
+        };
+        if g.as_ref() == Some(&pair) {
+            return; // a warm for this pair is already running
+        }
+        *g = Some(pair.clone());
+    }
+
+    std::thread::spawn(move || {
+        let (wts, key) = worktrees_list_and_key(&pair.0, &pair.1);
+        let _ = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, &pair.0, &pair.1));
+        if let Ok(mut g) = WORKTREES_WARM_IN_FLIGHT.lock() {
+            if g.as_ref() == Some(&pair) {
+                *g = None;
+            }
+        }
+    });
+}
+
+fn build_worktrees(
+    repo_root: &str,
+    base_branch: &str,
+    current_root: &str,
+) -> Vec<WorktreeSnapshot> {
+    let (wts, key) = worktrees_list_and_key(repo_root, base_branch);
+
+    let meta = worktrees_meta_cached(key, || compute_worktrees_meta(&wts, repo_root, base_branch));
 
     wts.into_iter()
         .map(|wt| {
@@ -2731,6 +3097,64 @@ fn build_worktrees(
             }
         })
         .collect()
+}
+
+/// Local branches merged into `base_branch`, from one `git branch --merged`.
+///
+/// Replaces a `merge-base --is-ancestor` per branch, which spawned a git
+/// process for every local branch on every meta refresh — 100+ on a repo with
+/// 100 branches — all asking the same question of the same base. Empty when the
+/// answer cannot be established, which callers read as "nothing is merged",
+/// matching the per-branch form's `.unwrap_or(false)`.
+fn merged_into_base(repo_root: &str, base_branch: &str) -> std::collections::HashSet<String> {
+    if base_branch.is_empty() {
+        return std::collections::HashSet::new();
+    }
+    std::process::Command::new("git")
+        .args([
+            "branch",
+            "--merged",
+            base_branch,
+            // `--format` drops the `* `/`+ ` prefixes `git branch` adds for the
+            // current and worktree branches, so the output is bare names.
+            "--format=%(refname:short)",
+        ])
+        .current_dir(repo_root)
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .lines()
+                .map(|line| line.trim().to_string())
+                .filter(|line| !line.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// How many worktrees a repo may have before the merged-branch check is skipped.
+///
+/// `git branch --merged` lists every local branch, so on a repo with many
+/// worktrees the check costs more than the colouring it drives is worth. Above
+/// this, callers see "nothing merged" and render every branch uncoloured.
+const MAX_WORKTREES_FOR_MERGED_CHECK: usize = 10;
+
+/// Branches merged into `base_branch`, for the callers that colour a branch
+/// list.
+///
+/// Empty when the check is skipped (too many worktrees) or the answer cannot be
+/// established (no base branch, git failed) — callers treat all three alike, so
+/// they only need `contains`.
+fn merged_branches(
+    repo_root: &str,
+    base_branch: &str,
+    worktree_count: usize,
+) -> std::collections::HashSet<String> {
+    if worktree_count > MAX_WORKTREES_FOR_MERGED_CHECK {
+        return std::collections::HashSet::new();
+    }
+    merged_into_base(repo_root, base_branch)
 }
 
 fn build_tracked_branches(
@@ -2757,7 +3181,7 @@ fn build_tracked_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     // Build the full list first, then filter to the curated set (tracked ∪ {current}).
     let all: Vec<BranchInfo> = text
@@ -2775,16 +3199,7 @@ fn build_tracked_branches(
                 Some(upstream_raw)
             };
             let is_current = name == current_branch;
-            let is_merged = if skip_merged || name == base_branch {
-                false
-            } else {
-                std::process::Command::new("git")
-                    .args(["merge-base", "--is-ancestor", &name, base_branch])
-                    .current_dir(repo_root)
-                    .output()
-                    .map(|o| o.status.success())
-                    .unwrap_or(false)
-            };
+            let is_merged = name != base_branch && merged.contains(&name);
             let worktree_path = worktrees
                 .iter()
                 .find(|w| w.branch == name)
@@ -2857,7 +3272,7 @@ fn build_auto_branches(
     }
     let text = String::from_utf8_lossy(&out.stdout);
 
-    let skip_merged = worktrees.len() > 10 || base_branch.is_empty();
+    let merged = merged_branches(repo_root, base_branch, worktrees.len());
 
     let tracked_set: std::collections::HashSet<&str> = tracked.iter().map(|s| s.as_str()).collect();
     let dismissed_set: std::collections::HashSet<&str> =
@@ -2890,16 +3305,7 @@ fn build_auto_branches(
         } else {
             Some(upstream_raw)
         };
-        let is_merged = if skip_merged || name == base_branch {
-            false
-        } else {
-            std::process::Command::new("git")
-                .args(["merge-base", "--is-ancestor", &name, base_branch])
-                .current_dir(repo_root)
-                .output()
-                .map(|o| o.status.success())
-                .unwrap_or(false)
-        };
+        let is_merged = name != base_branch && merged.contains(&name);
         let worktree_path = worktrees
             .iter()
             .find(|w| w.branch == name)
@@ -3626,93 +4032,111 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     // Flat findings list for AiReviewCard. Merge promoted_to from the sibling
     // `.er/finding-promotions.json` so the UI can show "Promoted to #N".
     let promotions = crate::commands::load_finding_promotions(&tab.er_dir());
-    let findings: Vec<FlatFinding> = if let Some(review) = &ai.review {
-        review
-            .files
-            .iter()
-            .flat_map(|(path, fr)| {
-                let promotions = &promotions;
-                let gh = ai.github_comments.as_ref();
-                fr.findings.iter().filter(|f| f.is_active()).map(move |f| {
-                    let thread_id = gh
-                        .and_then(|gc| {
-                            gc.comments
-                                .iter()
-                                .find(|c| {
-                                    c.finding_ref.as_deref() == Some(f.id.as_str())
-                                        && c.in_reply_to.is_none()
-                                })
-                                .map(|c| c.id.clone())
-                        })
-                        .or_else(|| {
-                            ai.questions.as_ref().and_then(|qs| {
-                                qs.questions
-                                    .iter()
-                                    .find(|q| {
-                                        q.finding_ref.as_deref() == Some(f.id.as_str())
-                                            && q.in_reply_to.is_none()
-                                    })
-                                    .map(|q| q.id.clone())
-                            })
-                        });
-                    let mut responses: Vec<FindingResponseSnapshot> = f
-                        .responses
+    let mut findings: Vec<FlatFinding> = Vec::new();
+    let mut resolved_findings: Vec<FlatFinding> = Vec::new();
+    let mut dropped_findings: Vec<FlatFinding> = Vec::new();
+    if let Some(review) = &ai.review {
+        let to_flat = |path: &String, f: &er_engine::ai::Finding| -> FlatFinding {
+            let promotions = &promotions;
+            let gh = ai.github_comments.as_ref();
+            let thread_id = gh
+                .and_then(|gc| {
+                    gc.comments
                         .iter()
-                        .map(|r| FindingResponseSnapshot {
-                            id: r.id.clone(),
-                            author: "AI".to_string(),
-                            kind: "ai".to_string(),
-                            timestamp: r.timestamp.clone(),
-                            body_markdown: r.text.clone(),
-                            origin: "finding_response".to_string(),
-                            editable: false,
-                            deletable: true,
+                        .find(|c| {
+                            c.finding_ref.as_deref() == Some(f.id.as_str())
+                                && c.in_reply_to.is_none()
                         })
-                        .collect();
-                    if let Some(pmap) = pending {
-                        let pending_key = format!("finding:{}", f.id);
-                        let is_pending = pmap
-                            .lock()
-                            .map(|g| g.contains_key(&pending_key))
-                            .unwrap_or(false);
-                        if is_pending {
-                            responses.push(FindingResponseSnapshot {
-                                id: String::new(),
-                                author: "AI".to_string(),
-                                kind: "ai".to_string(),
-                                timestamp: String::new(),
-                                body_markdown: "…thinking".to_string(),
-                                origin: "finding_response".to_string(),
-                                editable: false,
-                                deletable: false,
-                            });
-                        }
-                    }
-                    FlatFinding {
-                        id: f.id.clone(),
-                        file: path.clone(),
-                        line: f.line_start,
-                        hunk_index: f.hunk_index,
-                        severity: severity_str(&f.severity).to_string(),
-                        expert_label: er_engine::ai::expert_label_for_category(&f.category)
-                            .map(|s| s.to_string()),
-                        agent_label: er_engine::ai::agent_label_for_category(&f.category)
-                            .to_string(),
-                        title: f.title.clone(),
-                        message_markdown: f.description.clone(),
-                        promoted_to: promotions
-                            .get(&f.id)
-                            .cloned()
-                            .or_else(|| f.promoted_to.clone()),
-                        thread_id,
-                        responses,
-                    }
+                        .map(|c| c.id.clone())
                 })
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+                .or_else(|| {
+                    ai.questions.as_ref().and_then(|qs| {
+                        qs.questions
+                            .iter()
+                            .find(|q| {
+                                q.finding_ref.as_deref() == Some(f.id.as_str())
+                                    && q.in_reply_to.is_none()
+                            })
+                            .map(|q| q.id.clone())
+                    })
+                });
+            let mut responses: Vec<FindingResponseSnapshot> = f
+                .responses
+                .iter()
+                .map(|r| FindingResponseSnapshot {
+                    id: r.id.clone(),
+                    author: "AI".to_string(),
+                    kind: "ai".to_string(),
+                    timestamp: r.timestamp.clone(),
+                    body_markdown: r.text.clone(),
+                    // Tagged where the trail is read, so no reader has to
+                    // recognise a ruling by the sentence the arbiter wrote.
+                    origin: if er_engine::ai::is_arbiter_ruling(r) {
+                        "arbiter".to_string()
+                    } else {
+                        "finding_response".to_string()
+                    },
+                    editable: false,
+                    deletable: true,
+                })
+                .collect();
+            if let Some(pmap) = pending {
+                let pending_key = format!("finding:{}", f.id);
+                let is_pending = pmap
+                    .lock()
+                    .map(|g| g.contains_key(&pending_key))
+                    .unwrap_or(false);
+                if is_pending {
+                    responses.push(FindingResponseSnapshot {
+                        id: String::new(),
+                        author: "AI".to_string(),
+                        kind: "ai".to_string(),
+                        timestamp: String::new(),
+                        body_markdown: "…thinking".to_string(),
+                        origin: "finding_response".to_string(),
+                        editable: false,
+                        deletable: false,
+                    });
+                }
+            }
+            FlatFinding {
+                id: f.id.clone(),
+                file: path.clone(),
+                line: f.line_start,
+                hunk_index: f.hunk_index,
+                severity: severity_str(&f.severity).to_string(),
+                confidence: confidence_str(&f.confidence).to_string(),
+                lens_category: f.lens_category_tag(),
+                resolved: f.resolved,
+                expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
+                agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
+                raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
+                title: f.title.clone(),
+                message_markdown: f.description.clone(),
+                promoted_to: promotions
+                    .get(&f.id)
+                    .cloned()
+                    .or_else(|| f.promoted_to.clone()),
+                thread_id,
+                responses,
+            }
+        };
+        for (path, fr) in &review.files {
+            for f in &fr.findings {
+                let built = to_flat(path, f);
+                // Three lists, one mapping: what to draw, what the reader
+                // resolved, and what the arbiter ruled out. The last two stay
+                // out of the first so nothing reading it changes meaning.
+                if matches!(f.confidence, er_engine::ai::Confidence::Dropped) {
+                    dropped_findings.push(built);
+                } else if f.resolved {
+                    resolved_findings.push(built);
+                } else {
+                    findings.push(built);
+                }
+            }
+        }
+    }
 
     let file_risks: Vec<FileRiskSnapshot> =
         ai.review.as_ref().map(build_file_risks).unwrap_or_default();
@@ -3740,13 +4164,31 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 .map(|pf| TriagePriorityFileSnapshot {
                     path: pf.path.clone(),
                     reason: pf.reason.clone(),
-                    risk: pf.risk.clone(),
+                    risk: pf.risk.as_str().to_string(),
                 })
                 .collect(),
             files_changed: t.diff_stats.files_changed,
-            approx_risk: t.diff_stats.approx_risk.clone(),
+            approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
         }
+    });
+
+    // Same freshness rule the checklist feeds into `stale_reason` above, sent
+    // per artifact so the card can mark it without parsing the prose.
+    let checklist = ai.checklist.as_ref().map(|c| ChecklistSnapshot {
+        fresh: c.diff_hash == tab.branch_diff_hash,
+        items: c
+            .items
+            .iter()
+            .map(|i| ChecklistItemSnapshot {
+                id: i.id.clone(),
+                text: i.text.clone(),
+                category: i.category.clone(),
+                checked: i.checked,
+                related_findings: i.related_findings.clone(),
+                related_files: i.related_files.clone(),
+            })
+            .collect(),
     });
 
     // A diagram is fresh when it was generated against the diff it is viewed
@@ -3783,10 +4225,19 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         unpushed,
         threads,
         findings,
+        arbiter_dropped: ai.arbiter_effect.dropped,
+        arbiter_merged: ai.arbiter_effect.merged,
+        arbiter_unmatched: ai.arbiter_effect.unmatched,
+        arbiter_regraded: ai.arbiter_effect.regraded,
         file_risks,
+        resolved_findings,
+        dropped_findings,
+        min_trust_default: confidence_str(&er_engine::ai::min_trust_for(&ai.arbiter_effect))
+            .to_string(),
         has_review_json,
         eligible_comment_count,
         triage,
+        checklist,
         diagrams,
         diagram_presets: diagram_preset_snapshots(),
     }
@@ -3805,44 +4256,55 @@ pub fn build_pr_snapshot(tab: &TabState) -> Option<PrSnapshot> {
     })
 }
 
+/// Every `branch.<name>.merge` value in the repository, in one git call.
+///
+/// Branch config is repository-wide, so this answers for every worktree at once
+/// and belongs outside any per-worktree loop.
+fn pr_branch_merges(repo_root: &str) -> HashMap<String, String> {
+    let Ok(out) = std::process::Command::new("git")
+        .args(["config", "--local", "--get-regexp", r"^branch\..*\.merge$"])
+        .current_dir(repo_root)
+        .output()
+    else {
+        return HashMap::new();
+    };
+    if !out.status.success() {
+        return HashMap::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|line| {
+            let (key, value) = line.split_once(' ')?;
+            let name = key.strip_prefix("branch.")?.strip_suffix(".merge")?;
+            Some((name.to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+/// Per-worktree PR metadata, from repository-wide lookups.
+///
+/// `merges` and `merged` are read once for the repository rather than per
+/// worktree: refs and branch config both live in the shared `.git`, so every
+/// worktree would get the same answer anyway. The per-worktree form spawned two
+/// git processes per row — eighteen on a nine-worktree repo — on the snapshot
+/// path, with the App lock held.
 fn detect_pr_meta(
-    worktree_path: &str,
+    merges: &HashMap<String, String>,
+    merged: &std::collections::HashSet<String>,
     branch: &str,
     base: &str,
-    skip_merged: bool,
 ) -> (bool, Option<u64>, bool) {
-    let mut is_pr = false;
-    let mut pr_number: Option<u64> = None;
-    if let Ok(out) = std::process::Command::new("git")
-        .args(["config", "--get", &format!("branch.{}.merge", branch)])
-        .current_dir(worktree_path)
-        .output()
-    {
-        if out.status.success() {
-            let val = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            if let Some(rest) = val.strip_prefix("refs/pull/") {
-                if let Some(num_str) = rest.strip_suffix("/head") {
-                    if let Ok(n) = num_str.parse::<u64>() {
-                        is_pr = true;
-                        pr_number = Some(n);
-                    }
-                }
-            }
-        }
-    }
+    let pr_number = merges
+        .get(branch)
+        .and_then(|val| val.strip_prefix("refs/pull/"))
+        .and_then(|rest| rest.strip_suffix("/head"))
+        .and_then(|n| n.parse::<u64>().ok());
 
-    let is_merged = if skip_merged || base.is_empty() || branch == base {
-        false
-    } else {
-        std::process::Command::new("git")
-            .args(["merge-base", "--is-ancestor", branch, base])
-            .current_dir(worktree_path)
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
-    };
+    // `merged` is already empty when the check is skipped or the base is
+    // unknown — see `merged_branches` — so only the self-compare needs a guard.
+    let is_merged = !base.is_empty() && branch != base && merged.contains(branch);
 
-    (is_pr, pr_number, is_merged)
+    (pr_number.is_some(), pr_number, is_merged)
 }
 
 fn status_str(status: &FileStatus) -> String {
@@ -4422,9 +4884,9 @@ mod tests {
     #[test]
     fn lazy_pure_rename_is_not_a_stub_but_unparsed_content_is() {
         // A `DiffFile` with no hunks and zero +/- lines: a pure rename (or
-        // mode-only / binary change). In lazy mode this used to report as a
-        // stub forever — parsing it can never yield hunks, so the desktop UI
-        // spun on "Loading content…" with nothing to fetch.
+        // mode-only / binary change). In lazy mode this must not report as a
+        // stub — parsing it can never yield hunks, so the desktop UI would
+        // spin on "Loading content…" with nothing to fetch.
         let rename = DiffFile {
             path: "lib/components/qc/ReplicateDeviationSection.svelte".to_string(),
             status: FileStatus::Renamed(
@@ -4526,7 +4988,7 @@ mod tests {
         assert!(commits.is_empty());
     }
 
-    // ── Part B: stale-pill gate for PR tabs ──
+    // ── stale-pill gate for PR tabs ──
 
     /// Build an App whose single tab is a local PR (not remote) on the given
     /// mode, with `last_diff_head_oid` set, plus a pr_cache entry for that PR.
@@ -4612,11 +5074,11 @@ mod tests {
         assert!(diff_stale_for(&app, &pr_cache).is_none());
     }
 
-    // ── Part D: pr_cache_fingerprint folds in head_oid ──
+    // ── pr_cache_fingerprint folds in head_oid ──
 
     /// A head_oid change alone (same PR count, same fetch timestamps) must move
-    /// the fingerprint so a snapshot recompute fires — previously masked because
-    /// the fingerprint hashed only count + fetched_at.
+    /// the fingerprint so a snapshot recompute fires; hashing only count +
+    /// fetched_at would mask it.
     #[test]
     fn pr_cache_fingerprint_changes_when_head_oid_changes() {
         let mut pr = minimal_pr_info(42, "PR");
@@ -5009,5 +5471,375 @@ mod tests {
             2,
             "a changed worktree set must invalidate the cache and recompute"
         );
+    }
+
+    #[test]
+    fn worktrees_meta_cache_holds_entries_for_different_base_branches() {
+        use std::cell::Cell;
+
+        // The workflow this cap exists for: a few PRs open at once, alternating
+        // between tabs whose base branch differs. `base_branch` is part of the
+        // key, so a single-slot cache evicted the other tab on every switch and
+        // rebuilt it on the way back.
+        let calls = Cell::new(0u32);
+        let key_for = |base: &str| WorktreesMetaKey {
+            repo_root: "/two-base-repo".to_string(),
+            base_branch: base.to_string(),
+            // Distinct fingerprints so this test never collides with cached
+            // state other suites left in the shared static.
+            fingerprint: 0x0BAD_F00D,
+        };
+
+        let _ = worktrees_meta_cached(key_for("main"), || {
+            calls.set(calls.get() + 1);
+            HashMap::from([("/wt".to_string(), (false, None, false, None))])
+        });
+        let _ = worktrees_meta_cached(key_for("release/v1"), || {
+            calls.set(calls.get() + 1);
+            HashMap::from([("/wt".to_string(), (false, None, false, None))])
+        });
+        assert_eq!(calls.get(), 2);
+
+        // Both keys must still hit: neither evicted the other.
+        let _ = worktrees_meta_cached(key_for("main"), || {
+            calls.set(calls.get() + 1);
+            HashMap::new()
+        });
+        let _ = worktrees_meta_cached(key_for("release/v1"), || {
+            calls.set(calls.get() + 1);
+            HashMap::new()
+        });
+        assert_eq!(
+            calls.get(),
+            2,
+            "switching between two base branches must not rebuild either entry"
+        );
+    }
+
+    /// A repo with one branch merged back into `main` and one left open —
+    /// the two cases `merged_into_base` has to tell apart.
+    fn init_repo_with_a_merged_and_an_open_branch() -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        run_git(root, &["init", "-b", "main"]);
+        run_git(root, &["config", "user.email", "t@example.com"]);
+        run_git(root, &["config", "user.name", "t"]);
+        run_git(root, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("f.txt"), "one\n").unwrap();
+        run_git(root, &["add", "f.txt"]);
+        run_git(root, &["commit", "-qm", "base"]);
+
+        // Merged back into main.
+        run_git(root, &["checkout", "-q", "-b", "merged-branch"]);
+        run_git(
+            root,
+            &["commit", "-q", "--allow-empty", "-m", "merged work"],
+        );
+        run_git(root, &["checkout", "-q", "main"]);
+        run_git(
+            root,
+            &["merge", "-q", "--no-ff", "-m", "merge", "merged-branch"],
+        );
+
+        // Branched from main and left alone.
+        run_git(root, &["checkout", "-q", "-b", "open-branch"]);
+        run_git(root, &["commit", "-q", "--allow-empty", "-m", "open work"]);
+        run_git(root, &["checkout", "-q", "main"]);
+        tmp
+    }
+
+    #[test]
+    fn merged_into_base_lists_only_merged_branches() {
+        let dir = init_repo_with_a_merged_and_an_open_branch();
+        let root = dir.path().to_string_lossy().to_string();
+
+        let merged = merged_into_base(&root, "main");
+        assert!(merged.contains("merged-branch"), "got {merged:?}");
+        assert!(merged.contains("main"), "the base is merged into itself");
+        assert!(
+            !merged.contains("open-branch"),
+            "an unmerged branch must not be listed: {merged:?}"
+        );
+
+        // An unresolvable base yields nothing rather than a wrong answer —
+        // the same outcome the per-branch form's `.unwrap_or(false)` gave.
+        assert!(merged_into_base(&root, "no-such-base").is_empty());
+        assert!(merged_into_base(&root, "").is_empty());
+    }
+
+    #[test]
+    fn merged_branches_skips_the_check_above_the_worktree_threshold() {
+        // Above the threshold every branch renders uncoloured, which is the
+        // same outcome as "nothing is merged" — the guard belongs where it is
+        // now, not duplicated at both call sites.
+        let dir = init_repo_with_a_merged_and_an_open_branch();
+        let root = dir.path().to_string_lossy().to_string();
+
+        let at_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK);
+        assert!(
+            at_limit.contains("merged-branch"),
+            "at the threshold the check still runs: {at_limit:?}"
+        );
+
+        let over_limit = merged_branches(&root, "main", MAX_WORKTREES_FOR_MERGED_CHECK + 1);
+        assert!(
+            over_limit.is_empty(),
+            "past the threshold the check is skipped: {over_limit:?}"
+        );
+        assert!(
+            merged_branches(&root, "", 0).is_empty(),
+            "an empty base has nothing to compare against"
+        );
+    }
+
+    /// A tab whose viewed branch isn't a local checkout gets no control at all;
+    /// an eligible tab gets a snapshot even before the lazy lookup lands,
+    /// otherwise the control would be unreachable and could never trigger it.
+    #[test]
+    fn stack_snapshot_is_none_only_when_there_is_no_checkout() {
+        assert!(snapshot_stack_state(false, &StackState::default()).is_none());
+
+        let unknown = snapshot_stack_state(true, &StackState::default())
+            .expect("an eligible tab always has a stack snapshot");
+        assert!(unknown.layers.is_empty());
+        assert!(unknown.unavailable.is_none());
+        assert!(!unknown.retryable);
+        assert!(!unknown.loading);
+        assert!(unknown.trunk.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_reports_a_pending_lookup() {
+        let state = StackState {
+            loading: true,
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert!(snap.loading);
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_keeps_the_unavailable_reason() {
+        let state = StackState {
+            info: Some(er_engine::gh_stack::StackInfo::Unavailable(
+                "not in a stack".into(),
+            )),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(snap.unavailable.as_deref(), Some("not in a stack"));
+        assert!(
+            !snap.retryable,
+            "a definitive answer must not offer a retry"
+        );
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_surfaces_a_failed_lookup_reason() {
+        let state = StackState {
+            info: Some(er_engine::gh_stack::StackInfo::Failed(
+                "Failed to run `gh stack view`".into(),
+            )),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(
+            snap.unavailable.as_deref(),
+            Some("Failed to run `gh stack view`")
+        );
+        assert!(
+            snap.retryable,
+            "a failed lookup keeps the control retryable"
+        );
+        assert!(snap.layers.is_empty());
+    }
+
+    #[test]
+    fn stack_snapshot_numbers_layers_from_the_top() {
+        use er_engine::gh_stack::{Stack, StackEntry, StackInfo};
+
+        let entry = |branch: &str, pr: u64, is_current: bool| StackEntry {
+            branch: branch.into(),
+            pr_number: Some(pr),
+            pr_url: Some(format!("https://github.com/o/r/pull/{pr}")),
+            pr_state: Some("OPEN".into()),
+            is_current,
+            is_merged: false,
+            is_queued: false,
+            needs_rebase: false,
+        };
+        // `entries` is already top-of-stack first.
+        let stack = Stack {
+            trunk: "main".into(),
+            current_branch: Some("feat/api".into()),
+            entries: vec![entry("feat/ui", 43, false), entry("feat/api", 42, true)],
+        };
+        let state = StackState {
+            info: Some(StackInfo::Stack(stack)),
+            ..Default::default()
+        };
+        let snap = snapshot_stack_state(true, &state).unwrap();
+        assert_eq!(snap.size, 2);
+        assert_eq!(snap.position, Some(2));
+        assert_eq!(snap.trunk, "main");
+        assert_eq!(snap.layers[1].branch, "feat/api");
+        assert!(snap.layers[1].is_current);
+    }
+
+    use er_engine::ai::{ErFileReview, ErReview, Finding};
+
+    fn test_finding(id: &str, resolved: bool, confidence: er_engine::ai::Confidence) -> Finding {
+        Finding {
+            id: id.to_string(),
+            severity: RiskLevel::High,
+            lens: "security".to_string(),
+            category: "correctness".to_string(),
+            raised_by: Vec::new(),
+            title: format!("Finding {id}"),
+            description: "body".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(1),
+            line_end: None,
+            line_content: String::new(),
+            stale: false,
+            suggestion: String::new(),
+            related_files: Vec::new(),
+            outside_diff: false,
+            confidence,
+            verification_plan: String::new(),
+            evidence: Vec::new(),
+            responses: Vec::new(),
+            resolved,
+            resolved_note: String::new(),
+            resolved_at: String::new(),
+            promoted_to: None,
+        }
+    }
+
+    fn ai_snapshot_with(findings: Vec<Finding>) -> AiSnapshot {
+        use std::collections::HashMap;
+
+        let mut files = HashMap::new();
+        files.insert(
+            "a.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::High,
+                risk_reason: "critical".into(),
+                summary: String::new(),
+                findings,
+            },
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files,
+            file_hashes: HashMap::new(),
+        });
+        build_ai_snapshot(&tab, None)
+    }
+
+    /// Resolved rows travel apart from active ones so nothing reading `findings`
+    /// changes meaning, and dropped rows travel in neither.
+    #[test]
+    fn ai_snapshot_separates_resolved_and_dropped_findings() {
+        let snapshot = ai_snapshot_with(vec![
+            test_finding("act", false, er_engine::ai::Confidence::Confirmed),
+            test_finding("res", true, er_engine::ai::Confidence::Confirmed),
+            test_finding("drp", false, er_engine::ai::Confidence::Dropped),
+        ]);
+
+        let ids = |list: &[FlatFinding]| list.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&snapshot.findings), vec!["act"]);
+        assert_eq!(ids(&snapshot.resolved_findings), vec!["res"]);
+        // The arbiter's removals are listed rather than only counted, so the
+        // claim it rejected stays readable.
+        assert_eq!(ids(&snapshot.dropped_findings), vec!["drp"]);
+    }
+
+    /// The card renders from the wire, and its toggle sends back a position in
+    /// this list — so the order and the per-item fields both have to survive.
+    #[test]
+    fn ai_snapshot_carries_the_checklist_items_and_their_freshness() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.branch_diff_hash = "current".into();
+        tab.ai.checklist = Some(er_engine::ai::ErChecklist {
+            version: 1,
+            diff_hash: "older".into(),
+            items: vec![
+                er_engine::ai::ChecklistItem {
+                    id: "c-2".into(),
+                    text: "Tests cover the missing severity".into(),
+                    category: "tests".into(),
+                    checked: true,
+                    related_findings: vec!["f-1".into()],
+                    related_files: vec!["src/a.rs".into()],
+                },
+                er_engine::ai::ChecklistItem {
+                    id: "c-1".into(),
+                    text: "The migration backfills first".into(),
+                    category: "schema".into(),
+                    checked: false,
+                    related_findings: Vec::new(),
+                    related_files: Vec::new(),
+                },
+            ],
+        });
+
+        let snapshot = build_ai_snapshot(&tab, None);
+        let checklist = snapshot.checklist.expect("the checklist travels");
+        assert!(
+            !checklist.fresh,
+            "written against another diff, so the card marks it stale"
+        );
+        assert_eq!(
+            checklist
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c-2", "c-1"],
+            "file order is the toggle address and must not be re-sorted"
+        );
+        assert!(checklist.items[0].checked);
+        assert_eq!(checklist.items[0].category, "tests");
+        assert_eq!(checklist.items[0].related_findings, vec!["f-1".to_string()]);
+        assert_eq!(
+            checklist.items[0].related_files,
+            vec!["src/a.rs".to_string()]
+        );
+
+        tab.ai.checklist.as_mut().unwrap().diff_hash = "current".into();
+        assert!(build_ai_snapshot(&tab, None).checklist.unwrap().fresh);
+
+        tab.ai.checklist = None;
+        assert!(
+            build_ai_snapshot(&tab, None).checklist.is_none(),
+            "a bucket with no checklist sends null rather than an empty list"
+        );
+    }
+
+    /// The badge and the row tag need the grade and the defect kind on the wire;
+    /// neither crossed IPC before.
+    #[test]
+    fn flat_finding_carries_grade_and_lens_category() {
+        let snapshot = ai_snapshot_with(vec![test_finding(
+            "act",
+            false,
+            er_engine::ai::Confidence::Informational,
+        )]);
+
+        let finding = &snapshot.findings[0];
+        assert_eq!(finding.confidence, "informational");
+        // producer · category, with the general fallback dropped: this finding
+        // is filed under the security lens and categorised `correctness`.
+        assert_eq!(finding.lens_category, "security · correctness");
+        assert!(!finding.resolved);
     }
 }
