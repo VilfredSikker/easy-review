@@ -3130,14 +3130,25 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        crate::config::inject_agent_storage_access(
-            family,
-            &mut config_args,
-            Some(target.er_dir.as_str()),
-        );
-        // Diagrams: host writes the sidecar — deny agent edit tools. Still allow
-        // reading the managed bucket (diff-tmp) via external_directory allow.
-        let opencode_env = if host_write_diagram.is_some() {
+        // Diagrams: the host writes the sidecar, so the agent must not be able to
+        // write anything — its prompt carries untrusted diff content. Claude's
+        // `--allowedTools` allowlist and OpenCode's permission env deny edits
+        // themselves and still need the bucket to read diff-tmp from. Codex and
+        // Cursor have no tool list, so for them the only write control is the
+        // sandbox, and `--add-dir` is documented as adding a *writable* directory
+        // — so a read-only run withholds it and narrows the sandbox instead.
+        let readonly_run = host_write_diagram.is_some();
+        let storage_access = match family {
+            crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
+                None
+            }
+            _ => Some(target.er_dir.as_str()),
+        };
+        crate::config::inject_agent_storage_access(family, &mut config_args, storage_access);
+        if readonly_run {
+            crate::config::apply_readonly_spawn(family, &mut config_args);
+        }
+        let opencode_env = if readonly_run {
             crate::config::apply_opencode_readonly_storage_spawn(
                 family,
                 &mut config_args,

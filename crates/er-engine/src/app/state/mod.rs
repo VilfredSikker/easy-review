@@ -5304,7 +5304,7 @@ pub struct App {
     /// Input buffer for remote URL input mode
     pub remote_url_input: String,
 
-    /// Application configuration (loaded from .er-config.toml)
+    /// Application configuration (loaded from the managed `config.toml`)
     pub config: ErConfig,
 
     /// Active AI Hub provider. Seeded from persisted defaults on launch.
@@ -6629,7 +6629,7 @@ impl App {
     /// When [packages] is configured, a packages section appears at the top for mono-repo use.
     pub fn open_verify_hub(&mut self) {
         let cmds = &self.config.commands;
-        let not_configured = "set in [commands] in .er-config.toml";
+        let not_configured = "set in [commands] in the config hub (,)";
         let mut items: Vec<HubItem> = Vec::new();
 
         // Packages section — only shown when [packages] is configured
@@ -6724,7 +6724,7 @@ impl App {
 
     /// Open a package-specific verify hub showing that package's configured commands.
     pub fn open_package_commands_hub(&mut self, package_id: String) {
-        let not_configured = "set in [packages] in .er-config.toml";
+        let not_configured = "set in [packages] in the global config.toml";
         let fields = self.config.packages.items.get(&package_id).map(|p| {
             (
                 p.label.as_deref().unwrap_or(&package_id).to_owned(),

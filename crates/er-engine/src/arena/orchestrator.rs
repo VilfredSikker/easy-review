@@ -170,6 +170,11 @@ pub struct ArenaDiffPreview {
     pub cost_usd: f32,
     pub latency_sec: u32,
     pub cost_limit_usd: f32,
+    /// Highest round count the engine will actually run. The launcher offers
+    /// this as its maximum, so the number shown is the number that runs —
+    /// `effective_arena_rounds` silently clamps anything higher, and a picker
+    /// that offers more than this reports rounds nobody will execute.
+    pub max_rounds: u8,
 }
 
 pub fn estimate_latency_sec(
@@ -215,6 +220,7 @@ pub fn build_arena_diff_preview(
         cost_usd,
         latency_sec,
         cost_limit_usd: DEFAULT_COST_LIMIT_USD,
+        max_rounds: ARENA_ROUNDS_V1,
     })
 }
 

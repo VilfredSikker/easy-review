@@ -1376,6 +1376,49 @@ pub fn apply_opencode_readonly_spawn(
     Some(opencode_readonly_permission_env())
 }
 
+/// Narrow an invocation so the agent cannot write anything.
+///
+/// Claude is covered by the caller's `--allowedTools` allowlist and OpenCode by
+/// its permission env, so neither needs anything here. Codex and Cursor have no
+/// tool list at all — their only write control is the sandbox — so for those two
+/// the sandbox itself has to be narrowed:
+///
+/// - **Codex**: `--sandbox read-only`. Verified to still read paths outside the
+///   working directory, so the prepared diff stays reachable.
+/// - **Cursor**: `--mode plan`, the CLI's read-only mode. `--force` is dropped,
+///   because permitting what plan mode forbids is the whole of what it does.
+///
+/// Unknown families are left untouched: their command-line contracts are not
+/// known here, and guessing at one would be worse than the gap.
+///
+/// Callers must *also* withhold any `--add-dir` grant — that flag is documented
+/// as adding a *writable* directory, so it reopens what this closes.
+pub fn apply_readonly_spawn(family: CliFamily, args: &mut Vec<String>) {
+    match family {
+        CliFamily::Codex => {
+            if let Some(index) = args.iter().position(|arg| arg == "--sandbox") {
+                if let Some(value) = args.get_mut(index + 1) {
+                    *value = "read-only".to_string();
+                }
+            } else if !args.iter().any(|arg| arg.starts_with("--sandbox=")) {
+                args.push("--sandbox".to_string());
+                args.push("read-only".to_string());
+            }
+        }
+        CliFamily::Cursor => {
+            args.retain(|arg| arg != "--force" && arg != "--yolo");
+            if !args
+                .iter()
+                .any(|arg| arg == "--mode" || arg.starts_with("--mode="))
+            {
+                args.push("--mode".to_string());
+                args.push("plan".to_string());
+            }
+        }
+        CliFamily::Claude | CliFamily::OpenCode | CliFamily::Other => {}
+    }
+}
+
 /// Allow built-in agent CLIs to access a specific Easy Review storage directory.
 ///
 /// Managed sidecars normally live outside the repository, so a child CLI with
@@ -3543,6 +3586,63 @@ mod tests {
         assert_eq!(parsed["edit"], "deny");
         assert_eq!(parsed["external_directory"]["*"], "deny");
         assert!(apply_opencode_readonly_spawn(CliFamily::Claude, &mut args).is_none());
+    }
+
+    #[test]
+    fn apply_readonly_spawn_narrows_the_codex_sandbox() {
+        let mut args = vec![
+            "exec".to_string(),
+            "--sandbox".to_string(),
+            "workspace-write".to_string(),
+            "{prompt}".to_string(),
+        ];
+        apply_readonly_spawn(CliFamily::Codex, &mut args);
+        let index = args.iter().position(|a| a == "--sandbox").unwrap();
+        assert_eq!(args[index + 1], "read-only");
+        assert!(!args.iter().any(|a| a == "workspace-write"));
+    }
+
+    #[test]
+    fn apply_readonly_spawn_adds_a_codex_sandbox_when_the_catalog_omits_one() {
+        let mut args = vec!["exec".to_string(), "{prompt}".to_string()];
+        apply_readonly_spawn(CliFamily::Codex, &mut args);
+        assert!(
+            args.windows(2)
+                .any(|pair| pair[0] == "--sandbox" && pair[1] == "read-only"),
+            "a missing sandbox must be added, not assumed"
+        );
+    }
+
+    #[test]
+    fn apply_readonly_spawn_swaps_cursor_force_for_plan_mode() {
+        let mut args = vec![
+            "--print".to_string(),
+            "--trust".to_string(),
+            "--force".to_string(),
+            "-p".to_string(),
+            "{prompt}".to_string(),
+        ];
+        apply_readonly_spawn(CliFamily::Cursor, &mut args);
+        assert!(
+            !args.iter().any(|a| a == "--force" || a == "--yolo"),
+            "--force permits exactly what plan mode forbids"
+        );
+        assert!(args
+            .windows(2)
+            .any(|pair| pair[0] == "--mode" && pair[1] == "plan"));
+        assert!(args.iter().any(|a| a == "--print"), "still non-interactive");
+    }
+
+    #[test]
+    fn apply_readonly_spawn_leaves_the_self_guarding_families_alone() {
+        // Claude carries its own allowlist and OpenCode its own permission env;
+        // touching their argv here would be a second, divergent source of truth.
+        for family in [CliFamily::Claude, CliFamily::OpenCode, CliFamily::Other] {
+            let mut args = vec!["--print".to_string(), "{prompt}".to_string()];
+            let before = args.clone();
+            apply_readonly_spawn(family, &mut args);
+            assert_eq!(args, before, "{family:?} must be handled by its own path");
+        }
     }
 
     #[test]

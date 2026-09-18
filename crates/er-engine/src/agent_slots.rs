@@ -1,8 +1,7 @@
 //! Process-wide cap on concurrently running AI agent subprocesses.
 //!
-//! Every path that launches a provider CLI acquires a slot here first, so
-//! starting many reviews or several arena runs at once cannot fork more agent
-//! processes than the caps allow.
+//! A spawn path is capped only if it acquires a slot here first; one that
+//! spawns without acquiring is unbounded, so this is not a cap on every spawn.
 //!
 //! Two caps, not one, because the two workloads starve each other. A long
 //! background review and a short arena round competing for a single pool means

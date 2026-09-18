@@ -3061,10 +3061,11 @@ pub async fn submit_github_review(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    // Off the main thread: this refreshes the diff, reads anchors and shells
-    // out to `gh`, all under the App lock. As a sync command it held the one
-    // thread that also pumps the window for the whole of that.
-    crate::commands::run_blocking(move || {
+    // The body refreshes the diff (`refetch_and_refresh_diff`), which shells out
+    // to git while holding the app lock. On the main thread that freezes the
+    // window for the length of the diff — the failure ADR 0015 exists to
+    // prevent, on the Submit review button.
+    run_blocking(move || {
     use er_engine::ai::ErGitHubComments;
     use er_engine::github;
 

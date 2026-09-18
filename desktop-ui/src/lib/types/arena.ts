@@ -10,6 +10,8 @@ export interface ArenaEstimate {
   cost_usd: number;
   latency_sec: number;
   cost_limit_usd: number;
+  /** Highest round count the engine will run — clamp the picker to this. */
+  max_rounds: number;
 }
 
 export interface ArenaProgressState {
