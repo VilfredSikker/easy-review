@@ -1076,6 +1076,16 @@ pub struct FindingResponseSnapshot {
     pub deletable: bool,
 }
 
+/// The wire form of a finding's grade.
+fn confidence_str(c: &er_engine::ai::Confidence) -> &'static str {
+    match c {
+        er_engine::ai::Confidence::Confirmed => "confirmed",
+        er_engine::ai::Confidence::Tentative => "tentative",
+        er_engine::ai::Confidence::Informational => "informational",
+        er_engine::ai::Confidence::Dropped => "dropped",
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct FlatFinding {
     pub id: String,
@@ -1083,6 +1093,18 @@ pub struct FlatFinding {
     pub line: Option<usize>,
     pub hunk_index: Option<usize>,
     pub severity: String, // "high" | "med" | "low"
+    /// The producer's own grade, which an arbiter pass may have replaced.
+    #[serde(default)]
+    pub confidence: String,
+    /// `producers · category`, built by the engine so both front ends render one
+    /// definition of the tag rather than reimplementing it.
+    #[serde(default)]
+    pub lens_category: String,
+    /// The user has fixed this one. Rows carrying it live in
+    /// `resolved_findings`, and render dimmed when the diff view is asked to
+    /// show them.
+    #[serde(default)]
+    pub resolved: bool,
     /// Set when the finding's `lens` names a specialized expert.
     pub expert_label: Option<String>,
     /// Agent that produced this finding (pill label): General, Security, Professor, …
@@ -1148,11 +1170,30 @@ pub struct AiSnapshot {
     /// Per-file risk assessments from review.json (not counted as findings).
     #[serde(default)]
     pub file_risks: Vec<FileRiskSnapshot>,
+    /// Findings the user has resolved. Held apart from `findings` so nothing
+    /// reading that list changes meaning; the diff view surfaces these behind a
+    /// toggle instead.
+    #[serde(default)]
+    pub resolved_findings: Vec<FlatFinding>,
+    /// Findings an arbiter ruled out. The card counts these and can expand to
+    /// show them — a claim that vanished without a way to read it is how people
+    /// stop trusting a filter.
+    #[serde(default)]
+    pub dropped_findings: Vec<FlatFinding>,
+    /// The confidence gate this review defaults to: `tentative` once an arbiter
+    /// has graded it, `informational` while the grades are self-reported. Sent
+    /// rather than derived in the UI so the rule has one definition.
+    #[serde(default)]
+    pub min_trust_default: String,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
     pub eligible_comment_count: usize,
     pub triage: Option<TriageSnapshot>,
+    /// The review checklist (`checklist.json`) — the outcomes a human is meant
+    /// to verify. `None` when the bucket has no checklist yet.
+    #[serde(default)]
+    pub checklist: Option<ChecklistSnapshot>,
     /// Mermaid diagrams of the diff (`diagrams/*.json`), for the Context tab.
     pub diagrams: Vec<DiagramSnapshot>,
     /// Built-in diagram generate presets (mental-model / subsystems / flows).
@@ -1191,6 +1232,33 @@ pub struct TriagePriorityFileSnapshot {
     pub path: String,
     pub reason: String,
     pub risk: String,
+}
+
+/// The review checklist (`checklist.json`) for the active view bucket.
+///
+/// The items are sent in file order: that index is the toggle address the
+/// frontend sends back, and the one the engine's index-addressed toggle
+/// resolves against. Nothing here is a gate — an unchecked item blocks nothing.
+#[derive(Debug, Clone, Serialize)]
+pub struct ChecklistSnapshot {
+    pub items: Vec<ChecklistItemSnapshot>,
+    /// False when the checklist was generated against a different diff than the
+    /// one on screen, so the card can say so instead of quietly showing it.
+    pub fresh: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ChecklistItemSnapshot {
+    pub id: String,
+    pub text: String,
+    /// Outcome category (`schema` / `tests` / `api` / `auth` / `plan`), free-form
+    /// and often empty for checklists written before the categories existed.
+    pub category: String,
+    pub checked: bool,
+    /// Finding ids this item is about, for linking into the review.
+    pub related_findings: Vec<String>,
+    /// File paths this item is about, for jumping into the diff.
+    pub related_files: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2697,9 +2765,13 @@ fn empty_ai_snapshot() -> AiSnapshot {
         arbiter_unmatched: 0,
         arbiter_regraded: 0,
         file_risks: Vec::new(),
+        resolved_findings: Vec::new(),
+        dropped_findings: Vec::new(),
+        min_trust_default: String::new(),
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
+        checklist: None,
         diagrams: Vec::new(),
         diagram_presets: diagram_preset_snapshots(),
     }
@@ -3960,93 +4032,111 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     // Flat findings list for AiReviewCard. Merge promoted_to from the sibling
     // `.er/finding-promotions.json` so the UI can show "Promoted to #N".
     let promotions = crate::commands::load_finding_promotions(&tab.er_dir());
-    let findings: Vec<FlatFinding> = if let Some(review) = &ai.review {
-        review
-            .files
-            .iter()
-            .flat_map(|(path, fr)| {
-                let promotions = &promotions;
-                let gh = ai.github_comments.as_ref();
-                fr.findings.iter().filter(|f| f.is_active()).map(move |f| {
-                    let thread_id = gh
-                        .and_then(|gc| {
-                            gc.comments
-                                .iter()
-                                .find(|c| {
-                                    c.finding_ref.as_deref() == Some(f.id.as_str())
-                                        && c.in_reply_to.is_none()
-                                })
-                                .map(|c| c.id.clone())
-                        })
-                        .or_else(|| {
-                            ai.questions.as_ref().and_then(|qs| {
-                                qs.questions
-                                    .iter()
-                                    .find(|q| {
-                                        q.finding_ref.as_deref() == Some(f.id.as_str())
-                                            && q.in_reply_to.is_none()
-                                    })
-                                    .map(|q| q.id.clone())
-                            })
-                        });
-                    let mut responses: Vec<FindingResponseSnapshot> = f
-                        .responses
+    let mut findings: Vec<FlatFinding> = Vec::new();
+    let mut resolved_findings: Vec<FlatFinding> = Vec::new();
+    let mut dropped_findings: Vec<FlatFinding> = Vec::new();
+    if let Some(review) = &ai.review {
+        let to_flat = |path: &String, f: &er_engine::ai::Finding| -> FlatFinding {
+            let promotions = &promotions;
+            let gh = ai.github_comments.as_ref();
+            let thread_id = gh
+                .and_then(|gc| {
+                    gc.comments
                         .iter()
-                        .map(|r| FindingResponseSnapshot {
-                            id: r.id.clone(),
-                            author: "AI".to_string(),
-                            kind: "ai".to_string(),
-                            timestamp: r.timestamp.clone(),
-                            body_markdown: r.text.clone(),
-                            origin: "finding_response".to_string(),
-                            editable: false,
-                            deletable: true,
+                        .find(|c| {
+                            c.finding_ref.as_deref() == Some(f.id.as_str())
+                                && c.in_reply_to.is_none()
                         })
-                        .collect();
-                    if let Some(pmap) = pending {
-                        let pending_key = format!("finding:{}", f.id);
-                        let is_pending = pmap
-                            .lock()
-                            .map(|g| g.contains_key(&pending_key))
-                            .unwrap_or(false);
-                        if is_pending {
-                            responses.push(FindingResponseSnapshot {
-                                id: String::new(),
-                                author: "AI".to_string(),
-                                kind: "ai".to_string(),
-                                timestamp: String::new(),
-                                body_markdown: "…thinking".to_string(),
-                                origin: "finding_response".to_string(),
-                                editable: false,
-                                deletable: false,
-                            });
-                        }
-                    }
-                    FlatFinding {
-                        id: f.id.clone(),
-                        file: path.clone(),
-                        line: f.line_start,
-                        hunk_index: f.hunk_index,
-                        severity: severity_str(&f.severity).to_string(),
-                        expert_label: er_engine::ai::expert_label_for_id(&f.lens)
-                            .map(|s| s.to_string()),
-                        agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
-                        raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
-                        title: f.title.clone(),
-                        message_markdown: f.description.clone(),
-                        promoted_to: promotions
-                            .get(&f.id)
-                            .cloned()
-                            .or_else(|| f.promoted_to.clone()),
-                        thread_id,
-                        responses,
-                    }
+                        .map(|c| c.id.clone())
                 })
-            })
-            .collect()
-    } else {
-        vec![]
-    };
+                .or_else(|| {
+                    ai.questions.as_ref().and_then(|qs| {
+                        qs.questions
+                            .iter()
+                            .find(|q| {
+                                q.finding_ref.as_deref() == Some(f.id.as_str())
+                                    && q.in_reply_to.is_none()
+                            })
+                            .map(|q| q.id.clone())
+                    })
+                });
+            let mut responses: Vec<FindingResponseSnapshot> = f
+                .responses
+                .iter()
+                .map(|r| FindingResponseSnapshot {
+                    id: r.id.clone(),
+                    author: "AI".to_string(),
+                    kind: "ai".to_string(),
+                    timestamp: r.timestamp.clone(),
+                    body_markdown: r.text.clone(),
+                    // Tagged where the trail is read, so no reader has to
+                    // recognise a ruling by the sentence the arbiter wrote.
+                    origin: if er_engine::ai::is_arbiter_ruling(r) {
+                        "arbiter".to_string()
+                    } else {
+                        "finding_response".to_string()
+                    },
+                    editable: false,
+                    deletable: true,
+                })
+                .collect();
+            if let Some(pmap) = pending {
+                let pending_key = format!("finding:{}", f.id);
+                let is_pending = pmap
+                    .lock()
+                    .map(|g| g.contains_key(&pending_key))
+                    .unwrap_or(false);
+                if is_pending {
+                    responses.push(FindingResponseSnapshot {
+                        id: String::new(),
+                        author: "AI".to_string(),
+                        kind: "ai".to_string(),
+                        timestamp: String::new(),
+                        body_markdown: "…thinking".to_string(),
+                        origin: "finding_response".to_string(),
+                        editable: false,
+                        deletable: false,
+                    });
+                }
+            }
+            FlatFinding {
+                id: f.id.clone(),
+                file: path.clone(),
+                line: f.line_start,
+                hunk_index: f.hunk_index,
+                severity: severity_str(&f.severity).to_string(),
+                confidence: confidence_str(&f.confidence).to_string(),
+                lens_category: f.lens_category_tag(),
+                resolved: f.resolved,
+                expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
+                agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
+                raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
+                title: f.title.clone(),
+                message_markdown: f.description.clone(),
+                promoted_to: promotions
+                    .get(&f.id)
+                    .cloned()
+                    .or_else(|| f.promoted_to.clone()),
+                thread_id,
+                responses,
+            }
+        };
+        for (path, fr) in &review.files {
+            for f in &fr.findings {
+                let built = to_flat(path, f);
+                // Three lists, one mapping: what to draw, what the reader
+                // resolved, and what the arbiter ruled out. The last two stay
+                // out of the first so nothing reading it changes meaning.
+                if matches!(f.confidence, er_engine::ai::Confidence::Dropped) {
+                    dropped_findings.push(built);
+                } else if f.resolved {
+                    resolved_findings.push(built);
+                } else {
+                    findings.push(built);
+                }
+            }
+        }
+    }
 
     let file_risks: Vec<FileRiskSnapshot> =
         ai.review.as_ref().map(build_file_risks).unwrap_or_default();
@@ -4081,6 +4171,24 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
         }
+    });
+
+    // Same freshness rule the checklist feeds into `stale_reason` above, sent
+    // per artifact so the card can mark it without parsing the prose.
+    let checklist = ai.checklist.as_ref().map(|c| ChecklistSnapshot {
+        fresh: c.diff_hash == tab.branch_diff_hash,
+        items: c
+            .items
+            .iter()
+            .map(|i| ChecklistItemSnapshot {
+                id: i.id.clone(),
+                text: i.text.clone(),
+                category: i.category.clone(),
+                checked: i.checked,
+                related_findings: i.related_findings.clone(),
+                related_files: i.related_files.clone(),
+            })
+            .collect(),
     });
 
     // A diagram is fresh when it was generated against the diff it is viewed
@@ -4122,9 +4230,14 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         arbiter_unmatched: ai.arbiter_effect.unmatched,
         arbiter_regraded: ai.arbiter_effect.regraded,
         file_risks,
+        resolved_findings,
+        dropped_findings,
+        min_trust_default: confidence_str(&er_engine::ai::min_trust_for(&ai.arbiter_effect))
+            .to_string(),
         has_review_json,
         eligible_comment_count,
         triage,
+        checklist,
         diagrams,
         diagram_presets: diagram_preset_snapshots(),
     }
@@ -5573,5 +5686,160 @@ mod tests {
         assert_eq!(snap.trunk, "main");
         assert_eq!(snap.layers[1].branch, "feat/api");
         assert!(snap.layers[1].is_current);
+    }
+
+    use er_engine::ai::{ErFileReview, ErReview, Finding};
+
+    fn test_finding(id: &str, resolved: bool, confidence: er_engine::ai::Confidence) -> Finding {
+        Finding {
+            id: id.to_string(),
+            severity: RiskLevel::High,
+            lens: "security".to_string(),
+            category: "correctness".to_string(),
+            raised_by: Vec::new(),
+            title: format!("Finding {id}"),
+            description: "body".to_string(),
+            hunk_index: Some(0),
+            line_start: Some(1),
+            line_end: None,
+            line_content: String::new(),
+            stale: false,
+            suggestion: String::new(),
+            related_files: Vec::new(),
+            outside_diff: false,
+            confidence,
+            verification_plan: String::new(),
+            evidence: Vec::new(),
+            responses: Vec::new(),
+            resolved,
+            resolved_note: String::new(),
+            resolved_at: String::new(),
+            promoted_to: None,
+        }
+    }
+
+    fn ai_snapshot_with(findings: Vec<Finding>) -> AiSnapshot {
+        use std::collections::HashMap;
+
+        let mut files = HashMap::new();
+        files.insert(
+            "a.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::High,
+                risk_reason: "critical".into(),
+                summary: String::new(),
+                findings,
+            },
+        );
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files,
+            file_hashes: HashMap::new(),
+        });
+        build_ai_snapshot(&tab, None)
+    }
+
+    /// Resolved rows travel apart from active ones so nothing reading `findings`
+    /// changes meaning, and dropped rows travel in neither.
+    #[test]
+    fn ai_snapshot_separates_resolved_and_dropped_findings() {
+        let snapshot = ai_snapshot_with(vec![
+            test_finding("act", false, er_engine::ai::Confidence::Confirmed),
+            test_finding("res", true, er_engine::ai::Confidence::Confirmed),
+            test_finding("drp", false, er_engine::ai::Confidence::Dropped),
+        ]);
+
+        let ids = |list: &[FlatFinding]| list.iter().map(|f| f.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&snapshot.findings), vec!["act"]);
+        assert_eq!(ids(&snapshot.resolved_findings), vec!["res"]);
+        // The arbiter's removals are listed rather than only counted, so the
+        // claim it rejected stays readable.
+        assert_eq!(ids(&snapshot.dropped_findings), vec!["drp"]);
+    }
+
+    /// The card renders from the wire, and its toggle sends back a position in
+    /// this list — so the order and the per-item fields both have to survive.
+    #[test]
+    fn ai_snapshot_carries_the_checklist_items_and_their_freshness() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.branch_diff_hash = "current".into();
+        tab.ai.checklist = Some(er_engine::ai::ErChecklist {
+            version: 1,
+            diff_hash: "older".into(),
+            items: vec![
+                er_engine::ai::ChecklistItem {
+                    id: "c-2".into(),
+                    text: "Tests cover the missing severity".into(),
+                    category: "tests".into(),
+                    checked: true,
+                    related_findings: vec!["f-1".into()],
+                    related_files: vec!["src/a.rs".into()],
+                },
+                er_engine::ai::ChecklistItem {
+                    id: "c-1".into(),
+                    text: "The migration backfills first".into(),
+                    category: "schema".into(),
+                    checked: false,
+                    related_findings: Vec::new(),
+                    related_files: Vec::new(),
+                },
+            ],
+        });
+
+        let snapshot = build_ai_snapshot(&tab, None);
+        let checklist = snapshot.checklist.expect("the checklist travels");
+        assert!(
+            !checklist.fresh,
+            "written against another diff, so the card marks it stale"
+        );
+        assert_eq!(
+            checklist
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["c-2", "c-1"],
+            "file order is the toggle address and must not be re-sorted"
+        );
+        assert!(checklist.items[0].checked);
+        assert_eq!(checklist.items[0].category, "tests");
+        assert_eq!(checklist.items[0].related_findings, vec!["f-1".to_string()]);
+        assert_eq!(
+            checklist.items[0].related_files,
+            vec!["src/a.rs".to_string()]
+        );
+
+        tab.ai.checklist.as_mut().unwrap().diff_hash = "current".into();
+        assert!(build_ai_snapshot(&tab, None).checklist.unwrap().fresh);
+
+        tab.ai.checklist = None;
+        assert!(
+            build_ai_snapshot(&tab, None).checklist.is_none(),
+            "a bucket with no checklist sends null rather than an empty list"
+        );
+    }
+
+    /// The badge and the row tag need the grade and the defect kind on the wire;
+    /// neither crossed IPC before.
+    #[test]
+    fn flat_finding_carries_grade_and_lens_category() {
+        let snapshot = ai_snapshot_with(vec![test_finding(
+            "act",
+            false,
+            er_engine::ai::Confidence::Informational,
+        )]);
+
+        let finding = &snapshot.findings[0];
+        assert_eq!(finding.confidence, "informational");
+        // producer · category, with the general fallback dropped: this finding
+        // is filed under the security lens and categorised `correctness`.
+        assert_eq!(finding.lens_category, "security · correctness");
+        assert!(!finding.resolved);
     }
 }

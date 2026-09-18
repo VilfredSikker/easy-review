@@ -92,15 +92,42 @@ pub struct ArbiterEffect {
     pub merged: usize,
     /// Findings whose confidence the arbiter regraded.
     pub regraded: usize,
+    /// Findings the arbiter looked at and let stand.
+    ///
+    /// Counted even though nothing about those findings changed: it is the only
+    /// evidence that a pass ran at all when the arbiter agreed with every
+    /// producer, and the confidence gate tightens on whether the diff has been
+    /// graded rather than on how many findings moved.
+    pub kept: usize,
     /// Verdicts that matched no finding. Non-zero means the file and the review
     /// disagree — a stale hash, or keys that moved — and the pass did nothing.
     /// Without this, a silent no-op looks exactly like a clean result.
     pub unmatched: usize,
 }
 
+/// Whether an `AiResponse` is an arbiter ruling rather than a validation reply.
+///
+/// `regrade_response` assigns the `arbiter-` prefix, and the desktop reads that
+/// prefix to tag a finding's response trail, so the format is a contract
+/// between the crates. `a_regrade_is_tagged_as_the_arbiters_own` pins it in
+/// this file's tests, and it is a predicate rather than a sentence match so no
+/// reader has to parse what the arbiter happened to write.
+pub fn is_arbiter_ruling(response: &crate::ai::AiResponse) -> bool {
+    response.id.starts_with("arbiter-")
+}
+
 impl ArbiterEffect {
     pub const fn hidden(&self) -> usize {
         self.dropped + self.merged
+    }
+
+    /// Whether an arbiter has graded anything on this diff.
+    ///
+    /// `kept` counts: a pass that affirmed every finding still read the code,
+    /// which is the difference the confidence gate is about. One definition, so
+    /// the gate and anything that explains the gate cannot drift apart.
+    pub const fn graded(&self) -> bool {
+        self.dropped + self.merged + self.regraded + self.kept > 0
     }
 }
 
@@ -194,7 +221,11 @@ fn apply_verdict(
             }
             return;
         }
-        ArbiterRuling::Kept | ArbiterRuling::Escalated => {}
+        ArbiterRuling::Kept | ArbiterRuling::Escalated => {
+            if first_application {
+                effect.kept += 1;
+            }
+        }
     }
 
     // The producer's original grade goes into the response trail rather than
@@ -310,6 +341,30 @@ mod tests {
     }
 
     #[test]
+    fn a_regrade_is_tagged_as_the_arbiters_own() {
+        // The desktop tags a finding's response trail off this prefix
+        // (`crates/er-desktop/src/snapshot.rs`), so the format is a contract
+        // between the crates rather than a private detail of the regrade.
+        let response = regrade_response(
+            &finding(Confidence::Tentative),
+            Confidence::Confirmed,
+            &verdict(ArbiterRuling::Kept, Some(Confidence::Confirmed)),
+        );
+        assert!(is_arbiter_ruling(&response), "id was {:?}", response.id);
+        assert!(
+            response.id.starts_with("arbiter-"),
+            "the predicate and the assignment must agree on the format"
+        );
+
+        // Any other reply — a validation pass, a producer — carries no tag.
+        let plain = crate::ai::AiResponse {
+            id: "r-1".to_string(),
+            ..response
+        };
+        assert!(!is_arbiter_ruling(&plain));
+    }
+
+    #[test]
     fn a_regrade_replaces_the_self_report_and_keeps_the_original() {
         let mut review = review_with(vec![finding(Confidence::Confirmed)]);
         let before = review.files["src/a.rs"].findings[0].confidence;
@@ -345,7 +400,15 @@ mod tests {
 
         let f = &review.files["src/a.rs"].findings[0];
         assert!(f.responses.is_empty(), "no regrade, no trail");
-        assert_eq!(effect, ArbiterEffect::default());
+        // Nothing about the finding moved, but the pass did run and that is
+        // what the confidence gate reads.
+        assert_eq!(
+            effect,
+            ArbiterEffect {
+                kept: 1,
+                ..Default::default()
+            }
+        );
     }
 
     #[test]

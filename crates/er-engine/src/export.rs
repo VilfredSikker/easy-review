@@ -27,6 +27,7 @@ pub struct ExportOpts {
     pub include_findings: bool,
     pub only_unresolved: bool,
     pub include_annotations: bool,
+    pub include_checklist: bool,
     pub include_comment_ids: Option<Vec<String>>,
     pub include_question_ids: Option<Vec<String>>,
     pub include_note_ids: Option<Vec<String>>,
@@ -46,6 +47,10 @@ impl Default for ExportOpts {
             include_findings: true,
             only_unresolved: false,
             include_annotations: true,
+            // Off unless a caller asks: the checklist section was added for the
+            // desktop's Review tab, and every other export path — the TUI
+            // picker, MCP — has no control for it yet.
+            include_checklist: false,
             include_comment_ids: None,
             include_question_ids: None,
             include_note_ids: None,
@@ -208,7 +213,16 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
         Vec::new()
     };
 
-    if groups.is_empty() && ui_annotations.is_empty() {
+    // The checklist is a summary of the review rather than an annotation on a
+    // file, so it goes above the file groups: it is what you paste into a pull
+    // request description.
+    let checklist = if opts.include_checklist {
+        tab.ai.checklist.as_ref()
+    } else {
+        None
+    };
+
+    if groups.is_empty() && ui_annotations.is_empty() && checklist.is_none() {
         return format!("# Review export — {branch}\nNo annotations.\n");
     }
 
@@ -216,6 +230,10 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     out.push_str(&format!("# Review export — {branch}\n\n"));
     out.push_str(HANDLING_RULES);
     out.push('\n');
+
+    if let Some(checklist) = checklist {
+        render_checklist(&mut out, checklist);
+    }
 
     for (file, items) in &groups {
         out.push_str(&format!("## {file}\n\n"));
@@ -230,6 +248,48 @@ pub fn render_markdown(tab: &TabState, opts: &ExportOpts) -> String {
     }
 
     out
+}
+
+/// Render a `## Review checklist` section: the outcomes the review asked the
+/// reader to confirm, grouped by category.
+///
+/// Unchecked items are rendered rather than omitted — what is left to confirm
+/// is the useful half of a checklist, and this is the section people paste into
+/// a pull request description.
+fn render_checklist(out: &mut String, checklist: &crate::ai::ErChecklist) {
+    if checklist.items.is_empty() {
+        return;
+    }
+
+    out.push_str("## Review checklist\n\n");
+
+    // Categories in the order the checklist raises them, so a generated list
+    // reads the way its prompt asked for it.
+    let mut categories: Vec<&str> = Vec::new();
+    for item in &checklist.items {
+        let category = item.category.trim();
+        if !categories.contains(&category) {
+            categories.push(category);
+        }
+    }
+
+    for category in categories {
+        if !category.is_empty() {
+            out.push_str(&format!("### {category}\n\n"));
+        }
+        for item in checklist
+            .items
+            .iter()
+            .filter(|i| i.category.trim() == category)
+        {
+            out.push_str(&format!(
+                "- [{}] {}\n",
+                if item.checked { "x" } else { " " },
+                item.text.trim()
+            ));
+        }
+        out.push('\n');
+    }
 }
 
 /// Render a `## UI annotations` section grouped by `url`. Pins are numbered
@@ -483,6 +543,76 @@ mod tests {
         tab.ai = ai;
         tab.current_branch = "feature".into();
         tab
+    }
+
+    fn checklist_item(
+        id: &str,
+        category: &str,
+        text: &str,
+        checked: bool,
+    ) -> crate::ai::ChecklistItem {
+        crate::ai::ChecklistItem {
+            id: id.into(),
+            text: text.into(),
+            category: category.into(),
+            checked,
+            related_findings: Vec::new(),
+            related_files: Vec::new(),
+        }
+    }
+
+    /// The checklist is the section you paste into a pull request description,
+    /// so what is still unchecked has to survive the export.
+    #[test]
+    fn checklist_export_groups_by_category_and_keeps_unchecked_items() {
+        let mut ai = AiState::default();
+        ai.checklist = Some(crate::ai::ErChecklist {
+            version: 1,
+            diff_hash: "abc".into(),
+            items: vec![
+                checklist_item("c1", "schema", "Migration is reversible", true),
+                checklist_item("c2", "tests", "Tests cover the new behaviour", false),
+                checklist_item("c3", "schema", "No backfill inside the write lock", false),
+            ],
+        });
+
+        // Opt-in: the section exists for callers that ask for it.
+        let opts = ExportOpts {
+            include_checklist: true,
+            ..Default::default()
+        };
+        let out = render_markdown(&tab_with_ai(ai), &opts);
+
+        assert!(out.contains("## Review checklist"), "{out}");
+        // Categories in the order the checklist raises them.
+        let schema_at = out.find("### schema").expect("schema group");
+        let tests_at = out.find("### tests").expect("tests group");
+        assert!(schema_at < tests_at, "first-raised category comes first");
+        assert!(out.contains("- [x] Migration is reversible"));
+        assert!(out.contains("- [ ] Tests cover the new behaviour"));
+        assert!(
+            out.contains("- [ ] No backfill inside the write lock"),
+            "the second item of a group is not dropped"
+        );
+    }
+
+    #[test]
+    fn checklist_export_is_omitted_when_not_asked_for() {
+        let mut ai = AiState::default();
+        ai.checklist = Some(crate::ai::ErChecklist {
+            version: 1,
+            diff_hash: "abc".into(),
+            items: vec![checklist_item("c1", "tests", "Tests cover it", false)],
+        });
+
+        let opts = ExportOpts {
+            include_checklist: false,
+            ..Default::default()
+        };
+        let out = render_markdown(&tab_with_ai(ai), &opts);
+
+        assert!(!out.contains("## Review checklist"));
+        assert!(out.contains("No annotations."));
     }
 
     fn make_question(

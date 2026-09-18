@@ -6,7 +6,7 @@ pub(super) mod navigation;
 pub(super) mod preload;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use crate::config::{self, ErConfig, WatchedConfig};
+use crate::config::{self, ErConfig, ImportanceRepoConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
 };
@@ -497,6 +497,12 @@ pub enum HubAction {
     ToggleComments,
     ToggleQuestions,
     ToggleHideResolved,
+    /// Cycle the confidence gate: all grades → informational hidden → confirmed only.
+    CycleMinTrust,
+    /// Run the agent that proposes this repo's importance rules.
+    RunImportanceAgent,
+    /// List the findings the arbiter ruled out, under their count.
+    ToggleDroppedFindings,
     CleanupQuestions,
     CleanupReviews,
     /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
@@ -825,6 +831,12 @@ pub struct TabState {
     // ── Watched files state ──
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
+
+    /// This repo's declared importance rules, copied off the app's config.
+    ///
+    /// The filter resolves a tier from here rather than reaching for `ErConfig`,
+    /// which lives on `App` — same shape as `watched_config`.
+    pub importance: ImportanceRepoConfig,
 
     /// Git-ignored files opted into visibility
     pub watched_files: Vec<WatchedFile>,
@@ -1500,6 +1512,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1629,6 +1642,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1752,6 +1766,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1875,6 +1890,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -3603,6 +3619,11 @@ impl TabState {
             None => ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref()),
         };
         self.finish_ai_reload(&er_dir, prev_stale_files, prev_tour_stale);
+        // The gate follows the review rather than a remembered choice, so it is
+        // recomputed on every load — unless the reviewer set it by hand.
+        if !self.layers.min_trust_pinned {
+            self.layers.min_trust = ai::min_trust_for(&self.ai.arbiter_effect);
+        }
     }
 
     /// The in-memory post-load steps of [`reload_ai_state`] (PR-scoped GitHub
@@ -4137,6 +4158,29 @@ impl TabState {
         self.layers.show_ai_findings = !self.layers.show_ai_findings;
     }
 
+    pub const fn toggle_show_dropped(&mut self) {
+        self.layers.show_dropped = !self.layers.show_dropped;
+    }
+
+    /// Tighten or loosen the confidence gate. Setting it by hand pins it, so a
+    /// later reload does not silently move it back to the review's default.
+    pub fn set_min_trust(&mut self, level: ai::Confidence) {
+        self.layers.min_trust = level;
+        self.layers.min_trust_pinned = true;
+    }
+
+    /// Advance the gate to its next level, pinned by hand. One definition, so
+    /// the key binding and the hub cannot cycle differently.
+    pub fn cycle_min_trust(&mut self) -> ai::Confidence {
+        let next = match self.layers.min_trust {
+            ai::Confidence::Informational => ai::Confidence::Tentative,
+            ai::Confidence::Tentative => ai::Confidence::Confirmed,
+            _ => ai::Confidence::Informational,
+        };
+        self.set_min_trust(next);
+        next
+    }
+
     /// Forward cycle order for the side panel. `FileDetail` and `AgentLog` are
     /// always available; the others are skipped when their data is absent.
     const PANEL_CYCLE: [PanelContent; 5] = [
@@ -4316,7 +4360,12 @@ impl TabState {
         if !self.filter_rules.is_empty() {
             let review = self.ai.review.as_ref();
             visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_review(&self.filter_rules, f, review)
+                super::filter::apply_filter_with_context(
+                    &self.filter_rules,
+                    f,
+                    review,
+                    Some(&self.importance),
+                )
             });
         }
 
@@ -4867,7 +4916,12 @@ impl TabState {
         let (mut total, mut reviewed) = (0, 0);
         let review = self.ai.review.as_ref();
         for f in &self.files {
-            if super::filter::apply_filter_with_review(&self.filter_rules, f, review) {
+            if super::filter::apply_filter_with_context(
+                &self.filter_rules,
+                f,
+                review,
+                Some(&self.importance),
+            ) {
                 total += 1;
                 if self.reviewed.contains_key(&f.path) {
                     reviewed += 1;
@@ -5954,7 +6008,7 @@ impl App {
         }
         tab.reload_remote_comments();
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         self.active_tab = self.tabs.len() - 1;
         self.notify(&format!("Opened remote: {}", name));
         Ok(())
@@ -6000,6 +6054,42 @@ impl App {
 
     // ── Tab Management ──
 
+    /// Open a tab, handing it the config it reads.
+    ///
+    /// Anything a tab resolves out of `ErConfig` is copied on the way in, so a
+    /// tab opened after a config change filters the same way as one that was
+    /// already open.
+    fn push_tab(&mut self, mut tab: TabState) {
+        tab.importance = Self::importance_for(&self.config.importance, &tab.repo_root);
+        self.tabs.push(tab);
+    }
+
+    /// The rules `repo_root` declares, or an empty table.
+    ///
+    /// Takes the table rather than `&self` so a caller holding `self.tabs`
+    /// mutably can still resolve a tab's rules.
+    fn importance_for(
+        importance: &config::ImportanceConfig,
+        repo_root: &str,
+    ) -> ImportanceRepoConfig {
+        importance
+            .repo(&crate::storage::slug_repo(repo_root))
+            .cloned()
+            .unwrap_or_default()
+    }
+
+    /// Copy each repo's declared importance rules onto its open tabs.
+    ///
+    /// The filter resolves a tier off the tab and the config lives on the app,
+    /// so this is where the two meet. Call it after the config changes, the way
+    /// `watched_config` is pushed.
+    pub fn sync_importance_to_tabs(&mut self) {
+        let importance = self.config.importance.clone();
+        for tab in self.tabs.iter_mut() {
+            tab.importance = Self::importance_for(&importance, &tab.repo_root);
+        }
+    }
+
     /// Open a repo in a new tab (or switch to existing tab if already open)
     pub fn open_in_new_tab(&mut self, repo_root: String) -> Result<()> {
         // Check if this repo is already open in a tab
@@ -6015,7 +6105,7 @@ impl App {
 
         let tab = TabState::new(repo_root)?;
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         self.active_tab = self.tabs.len() - 1;
         self.overlay = None;
         self.notify(&format!("Opened: {}", name));
@@ -6061,7 +6151,7 @@ impl App {
             self.notify(&msg);
         }
         let name = tab.tab_name();
-        self.tabs.push(tab);
+        self.push_tab(tab);
         let idx = self.tabs.len() - 1;
         self.active_tab = idx;
         self.sync_config_from_active_tab();
@@ -6475,6 +6565,30 @@ impl App {
                 hint: "X".into(),
                 description: "Toggle hiding resolved comments".into(),
                 action: HubAction::ToggleHideResolved,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Confidence gate".into(),
+                hint: "T".into(),
+                description: "Cycle which grades show: all, tentative+, confirmed only".into(),
+                action: HubAction::CycleMinTrust,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Show arbiter's drops".into(),
+                hint: "".into(),
+                description: "List the findings the arbiter ruled out".into(),
+                action: HubAction::ToggleDroppedFindings,
+                is_header: false,
+                enabled: true,
+            },
+            HubItem {
+                label: "Propose importance rules".into(),
+                hint: "".into(),
+                description: "Agent reads the repo and writes its [importance] table".into(),
+                action: HubAction::RunImportanceAgent,
                 is_header: false,
                 enabled: true,
             },
@@ -7734,6 +7848,8 @@ impl App {
         // Watched paths are mirrored onto the active tab so `W` sees updates
         // without requiring an explicit Save.
         self.tab_mut().watched_config = self.config.watched.clone();
+        // Same for the importance rules the file filter resolves against.
+        self.sync_importance_to_tabs();
     }
 
     /// Toggle/cycle/activate the currently selected config hub item
@@ -8747,6 +8863,7 @@ mod tests {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
+            importance: ImportanceRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -9370,6 +9487,43 @@ mod tests {
         assert_eq!(visible.len(), 2);
         assert_eq!(visible[0].0, 0);
         assert_eq!(visible[1].0, 1);
+    }
+
+    /// The rules live on the app's config and the filter reads them off the tab,
+    /// so what matters is that the copy on the tab is what decides.
+    #[test]
+    fn visible_files_filters_by_the_importance_rules_on_the_tab() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("docs/guide.md", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.importance = ImportanceRepoConfig {
+            default: None,
+            rules: std::collections::BTreeMap::from([(
+                "src/**".to_string(),
+                "foundational".to_string(),
+            )]),
+        };
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+
+        let visible: Vec<&str> = tab
+            .visible_files()
+            .iter()
+            .map(|(_, f)| f.path.as_str())
+            .collect();
+        assert_eq!(visible, vec!["src/lib.rs"]);
+    }
+
+    /// Nothing declared means every path is `normal`, so a tier filter selects
+    /// nothing rather than everything.
+    #[test]
+    fn visible_files_without_importance_rules_selects_no_tier() {
+        let files = vec![make_file("src/lib.rs", vec![], 1, 0)];
+        let mut tab = make_test_tab(files);
+        tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
+
+        assert!(tab.visible_files().is_empty());
     }
 
     #[test]

@@ -13,6 +13,7 @@
     includeNotes: boolean;
     includeFindings: boolean;
     includeAnnotations: boolean;
+    includeChecklist: boolean;
     onlyUnresolved: boolean;
     includeCommentIds?: string[];
     includeQuestionIds?: string[];
@@ -26,6 +27,7 @@
   let includeNotes = $state(true);
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
+  let includeChecklist = $state(true);
   let onlyUnresolved = $state(false);
 
   // Per-item exclusions. Empty set = export the whole category (no allow-list
@@ -65,6 +67,7 @@
       includeNotes,
       includeFindings,
       includeAnnotations,
+      includeChecklist,
       onlyUnresolved,
       includeCommentIds: allowList(excludedCommentIds, commentItems.map((t) => t.id)),
       includeQuestionIds: allowList(excludedQuestionIds, questionItems.map((t) => t.id)),
@@ -304,6 +307,14 @@
         onchange={(e) => onExportOptionChange("includeAnnotations", e)}
       />
       <span>UI annotations</span>
+    </label>
+    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
+      <input
+        type="checkbox"
+        checked={includeChecklist}
+        onchange={(e) => onExportOptionChange("includeChecklist", e)}
+      />
+      <span>Review checklist</span>
     </label>
     <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
       <input

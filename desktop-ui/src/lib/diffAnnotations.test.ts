@@ -7,8 +7,10 @@ import {
   findingBelongsToHunk,
   findingRendersInline,
   findingReviewSide,
+  findingsForDiff,
   findingsForLine,
   findingsForSplitRow,
+  type FindingView,
   hunkLevelFindings,
   lineHasAnchorRangeHighlight,
   threadAnchorEnd,
@@ -54,6 +56,9 @@ function mkFinding(opts: Partial<FlatFinding> & Pick<FlatFinding, "id" | "file">
     line: null,
     hunk_index: null,
     severity: "med",
+    confidence: "tentative",
+    lens_category: "",
+    resolved: false,
     expert_label: null,
     agent_label: "General",
     title: "t",
@@ -129,6 +134,49 @@ function buildFixture(): { ai: { threads: ThreadSnapshot[]; findings: FlatFindin
 }
 
 // ---- Tests ----
+
+describe("findingsForDiff", () => {
+  const active = mkFinding({ id: "active", file: FILE, line: 1 });
+  const done = mkFinding({ id: "done", file: FILE, line: 2, resolved: true });
+  const payload = { threads: [], findings: [active], resolved_findings: [done] };
+  const open: FindingView = { showResolved: false, minTrust: "informational" };
+
+  it("draws only the active list until asked", () => {
+    expect(findingsForDiff(payload, open).map((f) => f.id)).toEqual(["active"]);
+  });
+
+  it("merges the resolved rows in when the toggle is on", () => {
+    expect(findingsForDiff(payload, { ...open, showResolved: true }).map((f) => f.id)).toEqual([
+      "active",
+      "done",
+    ]);
+  });
+
+  it("tolerates a payload with no resolved array", () => {
+    expect(
+      findingsForDiff({ threads: [], findings: [active] }, { ...open, showResolved: true }).map(
+        (f) => f.id,
+      ),
+    ).toEqual(["active"]);
+  });
+
+  it("hides findings below the gate, and counts what it hid", () => {
+    const tentative = mkFinding({ id: "tent", file: FILE, line: 3, confidence: "tentative" });
+    const informational = mkFinding({
+      id: "info",
+      file: FILE,
+      line: 4,
+      confidence: "informational",
+    });
+    const graded = { threads: [], findings: [tentative, informational] };
+    const gated: FindingView = { showResolved: false, minTrust: "tentative" };
+
+    expect(findingsForDiff(graded, gated).map((f) => f.id)).toEqual(["tent"]);
+
+    // The open gate hides nothing.
+    expect(findingsForDiff(graded, open).map((f) => f.id)).toEqual(["tent", "info"]);
+  });
+});
 
 describe("buildAnnotationIndex", () => {
   it("populates all index maps", () => {

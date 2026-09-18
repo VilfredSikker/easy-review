@@ -130,6 +130,22 @@
       <code>triage.json</code>. Useful before committing to a full review.
     </p>
 
+    <h3>Importance rules</h3>
+    <table>
+      <thead><tr><th>App</th><th>Invocation</th></tr></thead>
+      <tbody>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Propose importance rules</strong></td></tr>
+        <tr><td>Desktop</td><td>Settings → General → <strong>File importance</strong> → <strong>Propose rules</strong></td></tr>
+      </tbody>
+    </table>
+    <p>
+      Reads the repo and writes this repo's <code>[importance.&lt;repo&gt;]</code> table into the global
+      config, where each rule declares a path, glob or file type as <code>foundational</code> or
+      <code>isolated</code>. The table ranks files by how much of the tree depends on them without asking a
+      model at review time, so an unreviewed diff can be filtered with <code>importance:foundational</code>.
+      The agent reports the share each tier covers; a table that claims most of the tree is visible there.
+    </p>
+
     <h3>Professor</h3>
     <table>
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>

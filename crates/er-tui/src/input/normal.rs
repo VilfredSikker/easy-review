@@ -449,6 +449,24 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
+        // Cycle the confidence gate (T). Tightening it is only meaningful once
+        // an arbiter has graded the diff, so the message says which mode the
+        // review is in rather than leaving the behaviour change silent.
+        KeyCode::Char('T') => {
+            let graded = app.tab().ai.arbiter_effect.graded();
+            let next = app.tab_mut().cycle_min_trust();
+            app.notify(&format!(
+                "Confidence: {} — {}",
+                super::min_trust_label(next),
+                if graded {
+                    "arbiter-graded"
+                } else {
+                    "self-reported grades, nothing graded yet"
+                }
+            ));
+            return Ok(());
+        }
+
         // GitHub comment sync (pull)
         KeyCode::Char('G') => {
             sync_github_comments(app)?;

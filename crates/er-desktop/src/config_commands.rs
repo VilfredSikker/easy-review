@@ -67,6 +67,9 @@ fn apply_config_side_effects(app: &mut er_engine::app::App, watched_changed: boo
         app.tab_mut().watched_config = app.config.watched.clone();
         app.tab_mut().refresh_watched_files();
     }
+    // The filter resolves importance off the tab, so a config change has to
+    // reach the tabs that are already open.
+    app.sync_importance_to_tabs();
     clamp_tab_mode_to_features(app);
 }
 
@@ -91,7 +94,7 @@ fn family_options() -> Vec<String> {
 pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let repo_root = app.tab().repo_root.clone();
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
+    let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(&app));
     let providers = list_providers_inner(&app);
     let default_selection = app
         .config
@@ -129,7 +132,7 @@ pub async fn apply_config_patch(
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let settings = desktop_settings_snapshot(&app.config, &repo_root);
+        let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(&app));
         let providers = list_providers_inner(&app);
         let default_selection = app
             .config
@@ -337,12 +340,21 @@ fn hub_response(app: &er_engine::app::App) -> GetConfigHubResponse {
     hub_response_with_warnings(app, Vec::new())
 }
 
+/// The active tab's changed paths, for the importance list's per-file answers.
+///
+/// Read off the tab rather than off the working tree: the files that raise the
+/// question "why does this one have that tier" are the ones in front of the
+/// reviewer, and the tab is what holds them.
+fn changed_paths(app: &er_engine::app::App) -> Vec<String> {
+    app.tab().files.iter().map(|f| f.path.clone()).collect()
+}
+
 fn hub_response_with_warnings(
     app: &er_engine::app::App,
     warnings: Vec<String>,
 ) -> GetConfigHubResponse {
     let repo_root = app.tab().repo_root.clone();
-    let settings = desktop_settings_snapshot(&app.config, &repo_root);
+    let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(app));
     let providers = list_providers_inner(app);
     let default_selection = app
         .config

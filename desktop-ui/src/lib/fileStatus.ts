@@ -29,3 +29,15 @@ export function fileStatusDisplay(status: FileSnapshot["status"]): FileStatusDis
       return { glyph: "·", icon: "pencil", className: "text-muted", title: "Changed" };
   }
 }
+
+/** The colour of the dot that marks a file's risk.
+ *
+ * One definition for the file tree and the risk queue: the same verdict drawn
+ * in two colours in two places is the kind of drift nobody notices until a
+ * reader trusts the wrong one.
+ */
+export function riskDotClass(risk: "high" | "med" | "low"): string {
+  if (risk === "high") return "bg-risk-high";
+  if (risk === "med") return "bg-risk-med";
+  return "bg-risk-low";
+}

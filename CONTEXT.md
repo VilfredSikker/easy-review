@@ -48,6 +48,32 @@ belong to the AI that wrote them; a person reads them and acts, and does not
 edit them.
 _Avoid_: issue, comment, annotation
 
+**Lens**:
+Who produced a finding — an expert id, `general`, `professor`, or `arbiter`. A
+finding merged from several producers carries all of them.
+_Avoid_: agent, source, producer
+
+**Category**:
+What kind of defect a finding describes — `correctness`, `security`,
+`performance`. Told apart from the lens deliberately: one is about the finding,
+the other about who wrote it.
+_Avoid_: label, tag, type
+
+**Confidence**:
+How much a finding's grade can be trusted, in four levels, the lowest reserved
+for claims a validation pass disproved. A producer grades its own finding; an
+arbiter pass replaces that grade with one from something that read the code, so
+the number means different things depending on whether that pass has run.
+_Avoid_: severity, priority, score
+
+**Gate**:
+The lowest Confidence a view will draw, and the ordering that compares the two
+(the code's `trust_rank`, where the lowest number is the most trusted). It
+follows the review rather than a remembered choice — an arbiter's grades move
+it — and holds still once a reviewer sets it by hand. Separate from Confidence:
+a grade is a claim about one finding, a gate is a policy over all of them.
+_Avoid_: threshold, cutoff, severity filter
+
 **Question**:
 Something the reviewer wants answered. Private to the reviewer, and it never
 reaches a pull request.
@@ -102,6 +128,30 @@ _Avoid_: panel, tribunal, multi-review
 A cheap first pass that classifies a diff and recommends where to look, without
 reviewing it. Its output routes review effort; it is not itself a review.
 _Avoid_: scan, summary, overview
+
+**Arbiter**:
+A pass that judges findings other reviewers produced: merging duplicates,
+regrading confidence, and dropping claims it cannot substantiate. It records its
+rulings beside the findings rather than editing them, so the disagreement stays
+legible. See [`docs/adr/0035`](./docs/adr/0035-arbiter-verdict-overlay.md).
+_Avoid_: judge, validator, moderator
+
+**Importance**:
+How much of the codebase depends on a file. Declared as rules rather than
+computed, so it exists before any review has run, and it is allowed to disagree
+with risk — that disagreement is the useful part. See
+[`docs/adr/0036`](./docs/adr/0036-importance-as-declared-config.md).
+_Avoid_: risk, priority, weight, blast radius
+
+**Tier**:
+A file's importance: `foundational`, `normal`, or `isolated`.
+_Avoid_: level, rank, class
+
+**Checklist**:
+A list of outcomes a reviewer works through for one view — the schema changed,
+the tests cover it, the public surface did not move — rather than a list of
+places to read. Informational: an unchecked item blocks nothing.
+_Avoid_: todo list, tasks, steps
 
 **Hub**:
 A modal list of actions or settings opened from a key. Distinct from an overlay

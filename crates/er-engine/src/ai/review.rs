@@ -14,6 +14,30 @@ pub struct InlineLayers {
     pub show_github_comments: bool,
     pub show_ai_findings: bool,
     pub hide_resolved: bool,
+    /// Least trustworthy grade a finding may carry and still render. Resolved
+    /// from whether an arbiter has graded the current diff, so the gate follows
+    /// the state of the review rather than a remembered preference.
+    pub min_trust: Confidence,
+    /// The gate was set by hand, so a review reload must not overwrite it.
+    pub min_trust_pinned: bool,
+    /// List the findings the arbiter ruled out, under the count of them. Off by
+    /// default: the count is the signal, and the rows are what you ask for when
+    /// the count surprises you.
+    pub show_dropped: bool,
+}
+
+/// What the confidence gate defaults to for a review in this state.
+///
+/// Graded by an arbiter, `confidence` is a second opinion from something that
+/// read the code, so hiding `Informational` is meaningful. Ungraded, it is the
+/// producer grading its own finding, and hiding on that is the failure this
+/// whole plan exists to stop.
+pub fn min_trust_for(effect: &super::arbiter::ArbiterEffect) -> Confidence {
+    if effect.graded() {
+        Confidence::Tentative
+    } else {
+        Confidence::Informational
+    }
 }
 
 impl Default for InlineLayers {
@@ -23,6 +47,9 @@ impl Default for InlineLayers {
             show_github_comments: true,
             show_ai_findings: true,
             hide_resolved: false,
+            min_trust: Confidence::Informational,
+            min_trust_pinned: false,
+            show_dropped: false,
         }
     }
 }
@@ -208,6 +235,20 @@ impl Confidence {
             Self::Informational
         }
     }
+
+    /// Trust ordering, **lower meaning more trustworthy**.
+    ///
+    /// Named `trust_rank` rather than `rank` so a call site cannot misread the
+    /// direction: every gate and sort in the codebase compares these with `<=`
+    /// or ascending order.
+    pub const fn trust_rank(self) -> u8 {
+        match self {
+            Self::Confirmed => 0,
+            Self::Tentative => 1,
+            Self::Informational => 2,
+            Self::Dropped => 3,
+        }
+    }
 }
 
 /// One read or grep result the AI used to justify (or revise) a finding.
@@ -314,6 +355,14 @@ impl Finding {
     /// false positive (`Confidence::Dropped`).
     pub const fn is_active(&self) -> bool {
         !self.resolved && !matches!(self.confidence, Confidence::Dropped)
+    }
+
+    /// Whether this finding clears the layers' confidence gate.
+    ///
+    /// `is_active()` runs first, so `Dropped` never reaches the comparison and a
+    /// `min_trust` of `Dropped` cannot resurrect a removed finding.
+    pub fn passes(&self, layers: &InlineLayers) -> bool {
+        self.is_active() && self.confidence.trust_rank() <= layers.min_trust.trust_rank()
     }
 
     /// Recompute `stale` against the current diff.
@@ -892,10 +941,11 @@ impl AiState {
         self.review.as_ref()?.files.get(path)
     }
 
-    /// Active (non-resolved, non-dropped) findings for a file path.
-    pub fn file_active_findings(&self, path: &str) -> Vec<&Finding> {
+    /// Findings for a file path that clear the layers' gate: not resolved, not
+    /// dropped, and at least as trustworthy as `min_trust`.
+    pub fn file_active_findings(&self, path: &str, layers: &InlineLayers) -> Vec<&Finding> {
         self.file_review(path)
-            .map(|fr| fr.findings.iter().filter(|f| f.is_active()).collect())
+            .map(|fr| fr.findings.iter().filter(|f| f.passes(layers)).collect())
             .unwrap_or_default()
     }
 
@@ -918,12 +968,16 @@ impl AiState {
         path: &str,
         hunk_index: usize,
         _total_hunks: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
+                    if !f.passes(layers) {
+                        return false;
+                    }
                     if f.line_start.is_some() {
                         return false;
                     }
@@ -944,13 +998,15 @@ impl AiState {
         path: &str,
         hunk_index: usize,
         line_num: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
-                    f.line_start == Some(line_num)
+                    f.passes(layers)
+                        && f.line_start == Some(line_num)
                         && (f.hunk_index == Some(hunk_index) || f.hunk_index.is_none())
                 })
                 .collect(),
@@ -960,12 +1016,17 @@ impl AiState {
 
     /// Get findings anchored to a specific line (by line number, no hunk index).
     /// Used for non-branch diff modes where `hunk_index` doesn't match.
-    pub fn findings_for_line_by_range(&self, path: &str, line_num: usize) -> Vec<&Finding> {
+    pub fn findings_for_line_by_range(
+        &self,
+        path: &str,
+        line_num: usize,
+        layers: &InlineLayers,
+    ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
-                .filter(|f| f.line_start == Some(line_num))
+                .filter(|f| f.passes(layers) && f.line_start == Some(line_num))
                 .collect(),
             None => Vec::new(),
         }
@@ -981,12 +1042,16 @@ impl AiState {
         _new_count: usize,
         hunk_index: usize,
         _total_hunks: usize,
+        layers: &InlineLayers,
     ) -> Vec<&Finding> {
         match self.file_review(path) {
             Some(fr) => fr
                 .findings
                 .iter()
                 .filter(|f| {
+                    if !f.passes(layers) {
+                        return false;
+                    }
                     // Skip line-anchored findings — they render inline
                     if f.line_start.is_some() {
                         return false;
@@ -1903,6 +1968,209 @@ mod tests {
         assert_eq!(f.lens_category_tag(), "professor");
     }
 
+    /// The open gate. These tests are about matching and activity, not grading.
+    fn layers() -> InlineLayers {
+        InlineLayers::default()
+    }
+
+    /// One file, "a.rs", holding `findings`.
+    fn ai_with_findings(findings: Vec<Finding>) -> AiState {
+        let mut files = HashMap::new();
+        files.insert(
+            "a.rs".to_string(),
+            ErFileReview {
+                risk: RiskLevel::Low,
+                risk_reason: String::new(),
+                summary: String::new(),
+                findings,
+            },
+        );
+        AiState {
+            review: Some(ErReview {
+                version: 1,
+                diff_hash: "h".to_string(),
+                created_at: String::new(),
+                base_branch: String::new(),
+                head_branch: String::new(),
+                files,
+                file_hashes: HashMap::new(),
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn ids(found: Vec<&Finding>) -> Vec<&str> {
+        found.iter().map(|f| f.id.as_str()).collect()
+    }
+
+    #[test]
+    fn trust_rank_orders_most_trustworthy_first() {
+        assert!(Confidence::Confirmed.trust_rank() < Confidence::Tentative.trust_rank());
+        assert!(Confidence::Tentative.trust_rank() < Confidence::Informational.trust_rank());
+        assert!(Confidence::Informational.trust_rank() < Confidence::Dropped.trust_rank());
+    }
+
+    /// The gate tightens only once an arbiter has graded the diff. Gating on a
+    /// producer's own self-assessment is the failure the plan exists to stop.
+    #[test]
+    fn gate_default_follows_whether_an_arbiter_graded_the_diff() {
+        use crate::ai::ArbiterEffect;
+
+        assert_eq!(
+            min_trust_for(&ArbiterEffect::default()),
+            Confidence::Informational,
+            "nothing graded: everything shows"
+        );
+        for graded in [
+            ArbiterEffect {
+                regraded: 2,
+                ..Default::default()
+            },
+            ArbiterEffect {
+                dropped: 1,
+                ..Default::default()
+            },
+            ArbiterEffect {
+                merged: 1,
+                ..Default::default()
+            },
+            // A pass that affirmed everything still graded the diff, so the
+            // gate tightens on it too.
+            ArbiterEffect {
+                kept: 1,
+                ..Default::default()
+            },
+        ] {
+            assert_eq!(min_trust_for(&graded), Confidence::Tentative);
+        }
+
+        // Verdicts that matched no finding are not grades, so they must not
+        // tighten anything.
+        assert_eq!(
+            min_trust_for(&ArbiterEffect {
+                unmatched: 3,
+                ..Default::default()
+            }),
+            Confidence::Informational
+        );
+    }
+
+    #[test]
+    fn passes_gate_truth_table() {
+        let passes = |level: Confidence, min_trust: Confidence| {
+            let mut f = make_finding("f", Some(0), RiskLevel::Low);
+            f.confidence = level;
+            f.passes(&InlineLayers {
+                min_trust,
+                ..Default::default()
+            })
+        };
+
+        // The open default: every active grade shows.
+        assert!(passes(Confidence::Confirmed, Confidence::Informational));
+        assert!(passes(Confidence::Tentative, Confidence::Informational));
+        assert!(passes(Confidence::Informational, Confidence::Informational));
+
+        // What an arbiter-graded diff defaults to: Informational is hidden.
+        assert!(passes(Confidence::Confirmed, Confidence::Tentative));
+        assert!(passes(Confidence::Tentative, Confidence::Tentative));
+        assert!(!passes(Confidence::Informational, Confidence::Tentative));
+
+        assert!(passes(Confidence::Confirmed, Confidence::Confirmed));
+        assert!(!passes(Confidence::Tentative, Confidence::Confirmed));
+    }
+
+    #[test]
+    fn passes_never_admits_a_dropped_or_resolved_finding() {
+        // Even a gate that would admit everything must not resurrect these.
+        let open = InlineLayers {
+            min_trust: Confidence::Dropped,
+            ..Default::default()
+        };
+
+        let mut dropped = make_finding("d", Some(0), RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+        assert!(!dropped.passes(&open));
+
+        let mut resolved = make_finding("r", Some(0), RiskLevel::Low);
+        resolved.confidence = Confidence::Confirmed;
+        resolved.resolved = true;
+        assert!(!resolved.passes(&open));
+    }
+
+    /// The four inline queries returned everything and left the UI to dim it, so
+    /// inline findings disagreed with the panel. They filter now.
+    #[test]
+    fn inline_queries_drop_inactive_findings() {
+        let mut active = make_finding_with_lines("act", Some(0), Some(1), None, RiskLevel::Low);
+        active.confidence = Confidence::Confirmed;
+        let mut resolved = make_finding_with_lines("res", Some(0), Some(1), None, RiskLevel::Low);
+        resolved.resolved = true;
+        let mut dropped = make_finding_with_lines("drp", Some(0), Some(1), None, RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+
+        let ai = ai_with_findings(vec![active, resolved, dropped]);
+        let open = InlineLayers::default();
+
+        assert_eq!(ids(ai.findings_for_line("a.rs", 0, 1, &open)), vec!["act"]);
+        assert_eq!(
+            ids(ai.findings_for_line_by_range("a.rs", 1, &open)),
+            vec!["act"]
+        );
+        assert_eq!(ids(ai.file_active_findings("a.rs", &open)), vec!["act"]);
+    }
+
+    #[test]
+    fn inline_hunk_queries_drop_inactive_findings() {
+        let mut active = make_finding("h-act", Some(0), RiskLevel::Low);
+        active.confidence = Confidence::Confirmed;
+        let mut dropped = make_finding("h-drp", Some(0), RiskLevel::Low);
+        dropped.confidence = Confidence::Dropped;
+
+        let ai = ai_with_findings(vec![active, dropped]);
+        let open = InlineLayers::default();
+
+        assert_eq!(
+            ids(ai.findings_for_hunk("a.rs", 0, 1, &open)),
+            vec!["h-act"]
+        );
+        assert_eq!(
+            ids(ai.findings_for_hunk_by_line_range("a.rs", 0, 5, 0, 1, &open)),
+            vec!["h-act"]
+        );
+    }
+
+    /// The gate reaches the inline path, not just the panel count.
+    #[test]
+    fn inline_queries_honour_min_trust() {
+        let mut confirmed = make_finding_with_lines("conf", Some(0), Some(1), None, RiskLevel::Low);
+        confirmed.confidence = Confidence::Confirmed;
+        let tentative = make_finding_with_lines("tent", Some(0), Some(1), None, RiskLevel::Low);
+
+        let ai = ai_with_findings(vec![confirmed, tentative]);
+        let graded = InlineLayers {
+            min_trust: Confidence::Tentative,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            ids(ai.findings_for_line("a.rs", 0, 1, &graded)),
+            vec!["conf", "tent"]
+        );
+        assert_eq!(
+            ids(ai.findings_for_line(
+                "a.rs",
+                0,
+                1,
+                &InlineLayers {
+                    min_trust: Confidence::Confirmed,
+                    ..Default::default()
+                }
+            )),
+            vec!["conf"]
+        );
+    }
+
     fn make_finding(id: &str, hunk_index: Option<usize>, severity: RiskLevel) -> Finding {
         Finding {
             id: id.to_string(),
@@ -2153,12 +2421,14 @@ mod tests {
         )]));
 
         let ids: Vec<&str> = state
-            .file_active_findings("a.rs")
+            .file_active_findings("a.rs", &layers())
             .iter()
             .map(|f| f.id.as_str())
             .collect();
         assert_eq!(ids, vec!["a"]);
-        assert!(state.file_active_findings("missing.rs").is_empty());
+        assert!(state
+            .file_active_findings("missing.rs", &layers())
+            .is_empty());
     }
 
     // ── AiState::findings_for_hunk ──
@@ -2166,7 +2436,7 @@ mod tests {
     #[test]
     fn findings_for_hunk_no_review_returns_empty() {
         let state = AiState::default();
-        assert!(state.findings_for_hunk("a.rs", 0, 1).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 0, 1, &layers()).is_empty());
     }
 
     #[test]
@@ -2181,7 +2451,7 @@ mod tests {
                 make_finding("3", Some(0), RiskLevel::Low),
             ],
         )]));
-        let results = state.findings_for_hunk("a.rs", 0, 2);
+        let results = state.findings_for_hunk("a.rs", 0, 2, &layers());
         assert_eq!(results.len(), 2);
         assert!(results.iter().any(|f| f.id == "1"));
         assert!(results.iter().any(|f| f.id == "3"));
@@ -2195,7 +2465,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("a.rs", 99, 100);
+        let results = state.findings_for_hunk("a.rs", 99, 100, &layers());
         assert!(results.is_empty());
     }
 
@@ -2207,7 +2477,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk("unknown.rs", 0, 1);
+        let results = state.findings_for_hunk("unknown.rs", 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -2220,8 +2490,8 @@ mod tests {
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
         // File-level findings (hunk_index: None, line_start: None) must not render inline
-        assert!(state.findings_for_hunk("a.rs", 0, 3).is_empty());
-        assert!(state.findings_for_hunk("a.rs", 2, 3).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 0, 3, &layers()).is_empty());
+        assert!(state.findings_for_hunk("a.rs", 2, 3, &layers()).is_empty());
     }
 
     // ── AiState::findings_for_file_level ──
@@ -2283,7 +2553,7 @@ mod tests {
             ],
         )]));
         // Hunk-level finding with hunk_index=0 matches
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 2);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 2, &layers());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "1");
     }
@@ -2303,7 +2573,7 @@ mod tests {
             )],
         )]));
         // Line-anchored findings are rendered inline, not at hunk level
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 10, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -2315,14 +2585,14 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", Some(0), RiskLevel::High)],
         )]));
-        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("unknown.rs", 10, 5, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
     #[test]
     fn hunk_by_line_range_no_review_returns_empty() {
         let state = AiState::default();
-        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 1);
+        let results = state.findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 1, &layers());
         assert!(results.is_empty());
     }
 
@@ -2336,10 +2606,10 @@ mod tests {
         )]));
         // File-level findings (hunk_index: None, line_start: None) must not render inline
         assert!(state
-            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2)
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2, &layers())
             .is_empty());
         assert!(state
-            .findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2)
+            .findings_for_hunk_by_line_range("a.rs", 10, 5, 1, 2, &layers())
             .is_empty());
     }
 
@@ -2357,7 +2627,7 @@ mod tests {
                 make_finding("3", Some(0), RiskLevel::Low),
             ],
         )]));
-        let results = state.findings_for_line("a.rs", 0, 10);
+        let results = state.findings_for_line("a.rs", 0, 10, &layers());
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].id, "1");
     }
@@ -2376,7 +2646,7 @@ mod tests {
                 RiskLevel::High,
             )],
         )]));
-        let results = state.findings_for_line("a.rs", 0, 99);
+        let results = state.findings_for_line("a.rs", 0, 99, &layers());
         assert!(results.is_empty());
     }
 
@@ -2392,7 +2662,7 @@ mod tests {
             ],
         )]));
         // Both findings match line 10 regardless of hunk_index
-        let results = state.findings_for_line_by_range("a.rs", 10);
+        let results = state.findings_for_line_by_range("a.rs", 10, &layers());
         assert_eq!(results.len(), 2);
     }
 
