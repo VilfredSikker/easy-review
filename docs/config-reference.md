@@ -144,7 +144,7 @@ Rules:
 - Triage forces low effort regardless of `default_effort`. A model chosen for a single run overrides the default for that run only.
 - Claude, Codex and Cursor Agent spawns that write sidecars receive the active review bucket as `--add-dir`, never the storage root, and Codex treats it as writable under `workspace-write`. Custom provider commands are never given unknown CLI flags.
 - OpenCode runs as `opencode run --auto` with an `OPENCODE_PERMISSION` env object (bare permission JSON; no `--add-dir`) denying every `external_directory` path but the active bucket. Card AI keeps `--auto` with a read-only permission object instead.
-- `max_concurrent_reviews` bounds the background review queue and arena reviewer rounds (default 3; the pickers offer 1–6 in the TUI and 1–16 in the desktop). Every path that spawns a review agent acquires a slot — the background review dispatch, arena reviewer rounds, the arena arbiter, the AI Hub, card AI and `spawn_command`; `model_discovery::run_models_command` is a listing probe and takes none. See `docs/adr/0021-agent-concurrency.md`.
+- `max_concurrent_reviews` bounds the background review queue and arena reviewer rounds (default 3; the pickers offer 1–6 in the TUI and 1–16 in the desktop). Every review-agent spawn goes through the slot pool; a path that spawns something else does not. See `docs/adr/0021-agent-concurrency.md`.
 
 ## Review sidecars
 

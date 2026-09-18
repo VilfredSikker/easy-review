@@ -79,10 +79,9 @@ docs and release chores do land on `main`.
   (on macOS `~/Library/Application Support/easy-review/config.toml`). There is no
   repo-local `.er-config.toml`; do not reintroduce one, and do not add a reload
   path that overwrites live config. ADR 0005 records what those two cost.
-- **Agent slots cover every review-agent spawn path, not every subprocess.** The
-  background queue dispatch, arena reviewer rounds, the arena arbiter, the AI Hub,
-  card AI and `spawn_command` each acquire one; model discovery's listing probe
-  and the desktop PTY take none. See ADR 0021.
+- **The agent-slot cap covers review agents, not every subprocess.** A spawn
+  path that launches something else takes no slot, so the pool is not a global
+  process limit. See ADR 0021.
 - **The desktop is push-driven.** The backend emits a revision event; the 30s
   timer is only a safety net. Fix revision invalidation before touching a timer.
 - **One `er` instance per worktree.** Multi-worktree tabs work through the
