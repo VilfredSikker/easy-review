@@ -445,8 +445,8 @@ fn safe_proxied_response(
 }
 
 /// Install a custom application menu. Mirrors Tauri's default menu but defines
-/// Select All as a custom item with a native ⌘A accelerator — restoring
-/// macOS's default Select All behavior (desktop-ui no longer claims ⌘A).
+/// Select All as a custom item with a native ⌘A accelerator — desktop-ui does
+/// not claim ⌘A, so the app supplies macOS's default Select All itself.
 fn install_app_menu(app: &tauri::AppHandle) -> tauri::Result<()> {
     let pkg = app.package_info();
     let app_name = pkg.name.clone();
@@ -927,14 +927,9 @@ fn main() {
     // explicit tab open/switch/close still refreshes via `kick_active_gh_status`
     // (itself 10s-gated, sharing dedup state through `gh_status_in_flight`).
 
-    // NOTE: a remote-PR auto-swap loop used to live here (300s for remote
-    // tabs, 60s otherwise), calling snapshot_for_remote_diff_refresh →
-    // fetch_remote_diff_data → apply_remote_diff_result. It was removed for
-    // consistency: it auto-swapped the live diff for remote tabs only, while
-    // local-PR tabs required manual Sync. Now BOTH require manual Sync, and
-    // the 30s PR-head probe (above, "pr_head_probe") lights the stale pill
-    // quickly for both. The old fetch/apply plumbing was deleted — the manual
-    // Sync path (refetch_and_refresh_diff) fetches head/base/diff directly.
+    // Diff refresh is manual for both remote-PR and local-PR tabs. Nothing
+    // auto-swaps the live diff; the 30s PR-head probe (above, "pr_head_probe")
+    // is what lights the stale pill telling the user to Sync.
 
     // Background base-branch staleness probe on a 60s cadence. The ONLY new
     // network cost for branch ("Local Diff") freshness. Mirrors the remote-PR
@@ -1152,8 +1147,8 @@ fn main() {
         let gh_status_in_flight_bg = Arc::clone(&gh_status_in_flight);
         let gh_status_desktop_rev = Arc::clone(&desktop_revision);
         std::thread::spawn(move || loop {
-            // Sleep FIRST: kills the startup burst (this loop used to fire
-            // immediately on launch because the sleep sat at the bottom).
+            // Sleep FIRST: kills the startup burst — a sleep at the bottom
+            // lets the loop fire immediately on launch.
             std::thread::sleep(std::time::Duration::from_secs(30));
 
             // Snapshot identity in a short critical section.
@@ -1328,7 +1323,7 @@ fn main() {
                         Ok(result) => {
                             // The fetched data supersedes any cached bundle —
                             // a manual pull within the bundle TTL must not
-                            // regress this fresher file (review-fix-loop F2).
+                            // regress this fresher file.
                             er_engine::github::invalidate_pr_comments_cache();
                             // Phase 3: brief lock — apply pre-fetched results to the correct tab.
                             match comments_app.lock() {
@@ -1670,9 +1665,8 @@ fn main() {
 
                 // Phase 2 — no lock: the PR's network legs, if this tab has any.
                 // Timed separately from the rebuild, because this is the leg that
-                // reaches the network and the only one that can stall. The warmup
-                // log used to report the rebuild alone, which left the fetch — the
-                // part worth watching — invisible.
+                // reaches the network and the only one that can stall — reporting
+                // the rebuild alone would leave the part worth watching invisible.
                 let mut fetch_failed = false;
                 let t_fetch = std::time::Instant::now();
                 let fetched = inputs.and_then(|inputs| {
@@ -2147,9 +2141,9 @@ fn active_tab_watched_branch(app: &App) -> Option<String> {
 }
 
 /// Mirror the watcher target onto the tab. Local PR tabs with a GitHub slug
-/// must not treat `desired = None` as "clear checkout" — that used to fire
-/// because `remote_repo` made both sides `None`, which hid Local Branch and
-/// made Branch/PR Diff load the same `gh pr diff`.
+/// must not treat `desired = None` as "clear checkout": `remote_repo` makes
+/// both sides `None`, which hides Local Branch and makes Branch/PR Diff load
+/// the same `gh pr diff`.
 fn apply_watch_checkout_root(
     tab: &mut er_engine::app::TabState,
     desired: Option<(String, String)>,
@@ -2201,7 +2195,7 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    // ── comment_sync_recently_synced (finding 2a skip gate) ──
+    // ── comment_sync_recently_synced (skip gate) ──
     // `base` is the synced-at instant; `base + elapsed` is "now", so the gate
     // sees exactly `elapsed` since the last sync without depending on wall time.
 
@@ -2326,7 +2320,7 @@ mod tests {
         assert!(tab.local_branch_checkout_root.is_none());
     }
 
-    // ── probe_recently_done (finding 3 throttle) ──
+    // ── probe_recently_done (throttle) ──
 
     #[test]
     fn probe_skips_within_throttle_window() {

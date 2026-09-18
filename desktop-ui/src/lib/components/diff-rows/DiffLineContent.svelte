@@ -37,7 +37,7 @@
     return [{ text, changed: false }];
   });
 
-  // Reference highlight (issue #69): when an identifier is selected, split
+  // Reference highlight: when an identifier is selected, split
   // segments at matches and mark them. The store's matchOptions select
   // word-boundary (identifier click) vs substring/smart-case (Cmd+F search)
   // semantics. No-op (same array back) for lines without a match.

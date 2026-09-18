@@ -216,7 +216,7 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     // snapshot field, not by the hunks). Share the source view's token so
     // Guide↔Diff toggles reuse the differential map instead of clearing it
     // and resending every hunk (a full ~200–400 ms snapshot + large IPC
-    // payload on big PRs — see review-fix-loop follow-up).
+    // payload on big PRs).
     let mode = match mode {
         "tour" => {
             if tab.tour_context_is_pr() {
@@ -2464,7 +2464,7 @@ fn build_snapshot_inner(
     // Resolve the active tab's GitHub status from the cache. The key prefers the
     // tab's own PR number for PR tabs (remote or local) and only falls back to a
     // head_ref match for plain branch/working tabs — see `resolve_github_status_key`.
-    // Matching purely by head_ref previously let a branch with two open PRs show
+    // Matching purely by head_ref would let a branch with two open PRs show
     // an arbitrary one, so a freshly opened PR's Branch card could display a
     // different PR entirely.
     let github = pr_cache
@@ -4884,9 +4884,9 @@ mod tests {
     #[test]
     fn lazy_pure_rename_is_not_a_stub_but_unparsed_content_is() {
         // A `DiffFile` with no hunks and zero +/- lines: a pure rename (or
-        // mode-only / binary change). In lazy mode this used to report as a
-        // stub forever — parsing it can never yield hunks, so the desktop UI
-        // spun on "Loading content…" with nothing to fetch.
+        // mode-only / binary change). In lazy mode this must not report as a
+        // stub — parsing it can never yield hunks, so the desktop UI would
+        // spin on "Loading content…" with nothing to fetch.
         let rename = DiffFile {
             path: "lib/components/qc/ReplicateDeviationSection.svelte".to_string(),
             status: FileStatus::Renamed(
@@ -4988,7 +4988,7 @@ mod tests {
         assert!(commits.is_empty());
     }
 
-    // ── Part B: stale-pill gate for PR tabs ──
+    // ── stale-pill gate for PR tabs ──
 
     /// Build an App whose single tab is a local PR (not remote) on the given
     /// mode, with `last_diff_head_oid` set, plus a pr_cache entry for that PR.
@@ -5074,11 +5074,11 @@ mod tests {
         assert!(diff_stale_for(&app, &pr_cache).is_none());
     }
 
-    // ── Part D: pr_cache_fingerprint folds in head_oid ──
+    // ── pr_cache_fingerprint folds in head_oid ──
 
     /// A head_oid change alone (same PR count, same fetch timestamps) must move
-    /// the fingerprint so a snapshot recompute fires — previously masked because
-    /// the fingerprint hashed only count + fetched_at.
+    /// the fingerprint so a snapshot recompute fires; hashing only count +
+    /// fetched_at would mask it.
     #[test]
     fn pr_cache_fingerprint_changes_when_head_oid_changes() {
         let mut pr = minimal_pr_info(42, "PR");
@@ -5569,9 +5569,9 @@ mod tests {
 
     #[test]
     fn merged_branches_skips_the_check_above_the_worktree_threshold() {
-        // The guard used to sit duplicated at both call sites; this pins it
-        // where it now lives. Above the threshold every branch renders
-        // uncoloured, which is the same outcome as "nothing is merged".
+        // Above the threshold every branch renders uncoloured, which is the
+        // same outcome as "nothing is merged" — the guard belongs where it is
+        // now, not duplicated at both call sites.
         let dir = init_repo_with_a_merged_and_an_open_branch();
         let root = dir.path().to_string_lossy().to_string();
 

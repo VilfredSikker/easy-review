@@ -113,8 +113,8 @@ const fn severity_label(level: RiskLevel) -> &'static str {
 /// Which producer raised a finding, as a stable label for the exported item:
 /// `professor`, `expert:<id>`, or `review` for the general pass.
 ///
-/// Reads the finding's `lens`. It used to read `category`, which held the
-/// producer only for arena-imported findings and now holds a defect kind.
+/// Reads the finding's `lens`. `category` holds a defect kind, not the
+/// producer, so it is the wrong field for this.
 fn finding_source(lens: &str) -> String {
     if lens == crate::ai::PROFESSOR_ID {
         "professor".to_string()

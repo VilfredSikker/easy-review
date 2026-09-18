@@ -2489,7 +2489,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // File-level findings (hunk_index: None, line_start: None) no longer render inline
+        // File-level findings (hunk_index: None, line_start: None) must not render inline
         assert!(state.findings_for_hunk("a.rs", 0, 3, &layers()).is_empty());
         assert!(state.findings_for_hunk("a.rs", 2, 3, &layers()).is_empty());
     }
@@ -2604,7 +2604,7 @@ mod tests {
             RiskLevel::High,
             vec![make_finding("1", None, RiskLevel::High)],
         )]));
-        // File-level findings (hunk_index: None, line_start: None) no longer render inline
+        // File-level findings (hunk_index: None, line_start: None) must not render inline
         assert!(state
             .findings_for_hunk_by_line_range("a.rs", 10, 5, 0, 2, &layers())
             .is_empty());

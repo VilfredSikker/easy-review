@@ -5,16 +5,14 @@
  * those tokens over the app theme's tinted add/del line backgrounds — and, for
  * changed words, over an even darker/saturated highlight box. Muted tones
  * (comments) and saturated tones (strings, keywords) routinely drop below a
- * legible contrast there, worst of all on light themes where a faint gray
- * comment over a green "changed word" box measures ~1.4:1 (see the daylight
- * report that motivated this).
+ * legible contrast there, worst of all on light themes: a faint gray comment
+ * over a green "changed word" box measures ~1.4:1.
  *
- * Rather than the old hand-maintained hex→hex table (which only covered
- * one-dark-pro and never touched light themes), this nudges any token color
- * toward black or white — hue preserved — only as far as needed to clear the
- * WCAG AA threshold against the actual background it lands on. Colors that
- * already pass are returned untouched, so the native palette survives wherever
- * it is already readable.
+ * This nudges any token color toward black or white — hue preserved — only as
+ * far as needed to clear the WCAG AA threshold against the actual background
+ * it lands on. A static hex→hex table cannot cover every theme x background
+ * pair. Colors that already pass are returned untouched, so the native palette
+ * survives wherever it is already readable.
  */
 import type { AppTheme } from "./themes";
 

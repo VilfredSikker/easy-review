@@ -8,8 +8,7 @@ import type { FileSnapshot } from "$lib/types";
  * importing component internals or reaching into the DOM directly.
  *
  * In legacy (non-flat) mode `getModel()` returns `null` and the store falls
- * back to `document.getElementById(...)` so the migration is non-breaking
- * before the flat virtualizer (Step C) ships.
+ * back to `document.getElementById(...)`, keeping both modes working.
  */
 export interface DiffNavigator {
   scrollToRow(rowIdx: number, align?: "start" | "center"): void;

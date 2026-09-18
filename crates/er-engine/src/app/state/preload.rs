@@ -143,8 +143,8 @@ impl TabState {
         let base_matches = normalize_base(&pre.base_branch) == normalize_base(&self.base_branch);
         // `pr_head_ref` drifts from None to Some when the background ref
         // fetch lands after open. Parity content (`gh pr diff`) depends only
-        // on the PR number, so ref drift must not drop it (collapsed Branch
-        // view used to wait on a synchronous fetch).
+        // on the PR number, so ref drift must not drop it — the collapsed
+        // Branch view has no synchronous fetch to fall back on.
         let ref_matches = pre.pr_head_ref == self.pr_head_ref || pre.parity;
         let valid = base_matches
             && ref_matches
@@ -255,7 +255,7 @@ mod tests {
         // `kick_pr_ref_fetch` rewrites `tab.base_branch` from "main" to
         // "origin/main" ~1.8 s after open. The branch scope for local PR tabs
         // is `gh pr diff`, which does not depend on the base name — the
-        // one-shot preload must survive the drift (review-fix-loop Spec-1).
+        // one-shot preload must survive the drift.
         let mut tab = tab_with(|t| t.preloaded_branch_raw = Some(make_preloaded("raw")));
         assert_eq!(tab.base_branch, "main");
         tab.base_branch = "origin/main".to_string();

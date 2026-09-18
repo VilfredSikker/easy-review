@@ -1,4 +1,4 @@
-/** AI Review Arena snapshot contract (C0 — mirrors `er_engine::arena`). */
+/** AI Review Arena snapshot contract (mirrors `er_engine::arena`). */
 
 export type ArenaScope = "branch" | "unstaged" | "staged";
 

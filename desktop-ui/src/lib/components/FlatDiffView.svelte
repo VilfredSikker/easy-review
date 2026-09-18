@@ -1392,7 +1392,7 @@
   }
 
   // ── Reference-highlight usages: overview ruler + Cmd+click popover ───────
-  // (issue #69). Collected over ALL model rows (not just the viewport): the
+  // Collected over ALL model rows (not just the viewport): the
   // ruler shows where every match lives in the scrollable content, and the
   // popover lists them. Only computed while a highlight is active.
   const RULER_MARK_HEIGHT_PX = 3;
@@ -1596,7 +1596,7 @@
     await jumpToUsage(rowIdx);
   }
 
-  // ── Cmd+F search navigation (PR #73) ──────────────────────────────────────
+  // ── Cmd+F search navigation ───────────────────────────────────────────────
   // Flat list of match row indices, one entry per range (a line with three
   // matches contributes three stops). Only materialized while the bar is open.
   const searchMatches = $derived.by((): number[] => {
@@ -1905,7 +1905,7 @@
     return () => heightRo?.disconnect();
   });
 
-  // ── DEV height validator (Step F) ────────────────────────────────────────
+  // ── DEV height validator ─────────────────────────────────────────────────
   let devRo: ResizeObserver | null = null;
   $effect(() => {
     if (!import.meta.env.DEV || !scrollEl) return;

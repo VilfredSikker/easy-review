@@ -1469,10 +1469,10 @@ impl App {
 
     /// Keep the in-memory questions in step with a sidecar we just rewrote.
     ///
-    /// Thread mutations used to call `reload_ai_state()`, which re-reads every
-    /// sidecar (review.json, experts, tour, …) to learn about a change this
-    /// process just made. Adopting the written list instead is what already
-    /// keeps `submit_github_comment` fast; delete/edit/resolve follow suit.
+    /// Adopting the written list avoids `reload_ai_state()`, which re-reads
+    /// every sidecar (review.json, experts, tour, …) to learn about a change
+    /// this process just made. That is what keeps `submit_github_comment` fast;
+    /// delete/edit/resolve follow the same path.
     fn adopt_questions(&mut self, qs: ai::ErQuestions, path: &str) {
         let tab = self.tab_mut();
         tab.ai.questions = Some(qs);
@@ -2498,10 +2498,10 @@ impl App {
         std::thread::spawn(move || {
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
-                // Waits for a slot like the background path. It used to be
-                // admitted immediately, which is why `queue_ms` read ~0 here
-                // even with the cap saturated -- a measurement that recorded
-                // the absence of the gate rather than the absence of a queue.
+                // Waits for a slot like the background path. Admitting this
+                // immediately would make `queue_ms` read ~0 even with the cap
+                // saturated -- a measurement of the absent gate rather than of
+                // a queue.
                 let Some(_slot) = crate::agent_slots::acquire(
                     crate::agent_slots::Workload::Background,
                     slot_cap,
@@ -3593,7 +3593,7 @@ impl App {
             let wrote_importance = handle.task.kind == crate::ai::prompts::IMPORTANCE_TASK_KIND;
 
             // Force reload only on matching tabs. No `last_ai_check = None`
-            // reset here (O5): the agent's freshly written sidecars have
+            // reset here: the agent's freshly written sidecars have
             // newer mtimes than the previous check, so `check_ai_files_changed`
             // fires the reload naturally — while a tab whose poll already
             // loaded the final files skips the redundant full re-read.
@@ -4235,10 +4235,9 @@ mod background_queue_tests {
         }
 
         let debug_log = std::fs::read_to_string(tmp.join(".er/debug-agent.log")).unwrap();
-        // Assert the flag rather than its position. The literal adjacency this
-        // used to require broke when `--add-dir` started being injected ahead
-        // of it, and the claim -- Codex is told not to read the user's config
-        // -- was true the whole time.
+        // Assert the flag rather than its position: other flags (e.g. `--add-dir`)
+        // may be injected ahead of it, and the claim -- Codex is told not to
+        // read the user's config -- holds regardless of order.
         let command_line = debug_log
             .lines()
             .find(|l| l.starts_with("command: "))

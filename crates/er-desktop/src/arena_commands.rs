@@ -1,4 +1,4 @@
-//! Tauri commands for AI Review Arena (S8).
+//! Tauri commands for AI Review Arena.
 
 use crate::commands::AppState;
 use crate::snapshot::{ArenaRunSnapshotWire, ArenaRunSummaryWire};

@@ -1,10 +1,10 @@
-//! Parent-side preparation of agent diff artifacts (plan O1/O2).
+//! Parent-side preparation of agent diff artifacts.
 //!
 //! Every agent command (review, expert, professor, triage, tour, validate,
-//! scoped multi-reviewer) hands the agent a prepared diff. Previously each
-//! agent subprocess re-hashed (`sha256sum`) and re-annotated (`awk`) the same
-//! bytes the parent already holds in memory, and the parent rewrote
-//! `diff-tmp` per command. This module centralizes that preparation:
+//! scoped multi-reviewer) hands the agent a prepared diff. The parent already
+//! holds the raw bytes in memory, so having each agent subprocess re-hash
+//! (`sha256sum`) and re-annotate (`awk`) them repeats work the parent can do
+//! once. This module centralizes that preparation:
 //!
 //! - [`ensure_diff_artifacts`] writes `diff-tmp` + `diff-annotated` only when
 //!   the content changed (marker files) and returns the SHA-256 hash the
@@ -18,9 +18,9 @@ use std::sync::Mutex;
 
 /// Serializes the check+write of the diff artifacts across threads: two
 /// concurrent commands on the same er_dir with different raws must not
-/// interleave so one's prompt pins hash A while diff-tmp holds writer B's
-/// bytes (review-fix-loop F1). Held for microseconds per command — commands
-/// are seconds apart, so contention is negligible.
+/// interleave, or one's prompt pins hash A while diff-tmp holds writer B's
+/// bytes. Held for microseconds per command — commands are seconds apart, so
+/// contention is negligible.
 static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Write `diff-tmp` and `diff-annotated` under `er_dir` when their content
@@ -29,13 +29,12 @@ static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 ///
 /// Both markers record the **raw** hash they were derived from, not the hash
 /// of the file they name. `diff-annotated` is a pure function of `raw`, so one
-/// hash then proves both artifacts current and the whole preparation can be
-/// skipped — previously every call rebuilt the annotated string and hashed it
-/// again, only to discard both when the write turned out to be unnecessary.
+/// hash proves both artifacts current and the whole preparation can be skipped
+/// — otherwise every call rebuilds the annotated string and hashes it, only to
+/// discard both when the write turns out to be unnecessary.
 ///
 /// Content files are written via tmp+rename (atomic): with the hash pinned
-/// into the prompt, a torn read would silently mismatch the pinned hash
-/// (review-fix-loop A2).
+/// into the prompt, a torn read would silently mismatch the pinned hash.
 pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> {
     let _guard = ARTIFACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let dir = Path::new(er_dir);
@@ -63,8 +62,7 @@ pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> 
 /// Whether both artifacts on disk were already derived from `hash`.
 ///
 /// The content files must exist as well as the markers: a surviving marker
-/// must never suppress a rewrite for a missing content file
-/// (review-fix-loop F6).
+/// must never suppress a rewrite for a missing content file.
 fn artifacts_current(dir: &Path, hash: &str) -> bool {
     dir.join("diff-tmp").exists()
         && dir.join("diff-annotated").exists()
@@ -98,8 +96,8 @@ pub fn diff_tmp_hash(er_dir: &str) -> Option<String> {
 }
 
 fn content_changed(dir: &Path, marker: &str, hash: &str, content_file: &str) -> bool {
-    // A surviving marker must never suppress a rewrite for a missing content
-    // file (e.g. external cleanup of the artifact — review-fix-loop F6).
+    // Same rule as `artifacts_current`: a marker alone must not suppress a
+    // rewrite for a missing content file (e.g. external cleanup).
     if !dir.join(content_file).exists() {
         return true;
     }

@@ -77,9 +77,9 @@ pub fn review_rules_preamble(
     review_rules_preamble_with_hash(output_dir, prepared_diff, caps, git_diff_capture, None)
 }
 
-/// Like [`review_rules_preamble`], but with the harness-computed diff hash
-/// (O1): the agent skips `sha256sum` and the `awk` annotation — the parent
-/// wrote `diff-annotated` already and hands the hash over in the prompt.
+/// Like [`review_rules_preamble`], but with the harness-computed diff hash:
+/// the agent skips `sha256sum` and the `awk` annotation — the parent wrote
+/// `diff-annotated` already and hands the hash over in the prompt.
 fn review_rules_preamble_with_hash(
     output_dir: &str,
     prepared_diff: bool,
@@ -2444,8 +2444,8 @@ mod tests {
             build_professor_review_prompt_prepared_diff("branch", "/tmp/out", None, false, HASH);
         assert!(prompt.contains("Professor lens"));
         assert!(prompt.contains("professor.json"));
-        // The producer name used to be smuggled through `category`; the loader
-        // sets `lens` now, so the prompt must not claim a defect kind at all.
+        // The loader sets `lens`; a professor prompt claims no defect kind, so
+        // it must not emit `category`.
         assert!(!prompt.contains("\"category\""));
         assert!(prompt.contains("\"summary\""));
         assert!(prompt.contains("teaching tone"));

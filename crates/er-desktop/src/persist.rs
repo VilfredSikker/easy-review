@@ -3,10 +3,9 @@
 //! Every desktop cache (tabs, projects, PR cache, GitHub-status cache,
 //! open-diff cache, inbox) persists as pretty JSON via a tmp file + rename so
 //! a crash mid-save can never truncate the real file. This helper is the
-//! single implementation of that pattern — previously each writer re-inlined
-//! it, and most silently swallowed failures. Returning the error lets callers
-//! log with context (see the project rule: user-visible failures produce
-//! durable `log::error!` entries).
+//! single implementation of that pattern, so a failure surfaces as a returned
+//! error rather than being swallowed: callers log with context (see the project
+//! rule: user-visible failures produce durable `log::error!` entries).
 
 use std::io;
 use std::io::Write;

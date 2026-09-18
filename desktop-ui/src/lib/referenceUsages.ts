@@ -1,7 +1,6 @@
 /**
  * Usage collection + presentation helpers for the reference-highlight
- * feature (issue #69): the scrollbar overview ruler and the Cmd+click
- * usages popover.
+ * feature: the scrollbar overview ruler and the Cmd+click usages popover.
  *
  * Everything here is pure. The component layer (FlatDiffView and the
  * popover/ruler components) feeds in row/line data plus geometry and renders

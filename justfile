@@ -192,15 +192,24 @@ check-ui:
 docs-check:
     ./scripts/docs-check.sh
 
-# All static checks: rustfmt, clippy, the frontend type-check, and the docs check.
+# Reject inline comments that cite a change, a review finding, a plan step or a
+# tracker number — none of which a later reader can resolve.
+# See docs/agents/writing-docs.md, "Inline comments".
 [group('lint')]
-lint: fmt-check clippy check-ui docs-check
+comments-check:
+    ./scripts/comments-check.sh
+
+# All static checks: rustfmt, clippy, the frontend type-check, and the two
+# citation checks (docs, and inline comments).
+[group('lint')]
+lint: fmt-check clippy check-ui docs-check comments-check
 
 # ───────────────────────────────── aggregates ────────────────────────────────────
 
-# Mirror the GitHub CI gate: format, clippy, tests, docs check, headless engine builds.
+# Mirror the GitHub CI gate, plus the two citation checks CI does not run:
+# format, clippy, tests, docs and inline comments, headless engine builds.
 [group('ci')]
-ci: fmt-check clippy docs-check test build-engine-headless
+ci: fmt-check clippy docs-check comments-check test build-engine-headless
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]

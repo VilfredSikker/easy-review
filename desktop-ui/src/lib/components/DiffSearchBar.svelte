@@ -1,6 +1,6 @@
 <script lang="ts">
   /**
-   * Cmd+F lexical search bar for the diff view (PR #73). A dense single-row
+   * Cmd+F lexical search bar for the diff view. A dense single-row
    * overlay in the top-right of the diff viewport, positioned just below the
    * 40px sticky file-path header (`top-12`) so the two don't overlap. Typing drives the shared
    * reference-highlight store in "query" mode (substring + smart-case), so
