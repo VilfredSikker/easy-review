@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { AiSnapshot, Confidence, FlatFinding } from "$lib/types";
-  import { findingPassesTrust } from "$lib/diffAnnotations";
+  import { confidenceGlyph, findingPassesTrust, TRUST_RANK } from "$lib/diffAnnotations";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
@@ -128,27 +128,14 @@
   /// panel draws. Without it the rows come out in whatever order the review's
   /// file map iterated in.
   const SEVERITY_ORDER: Record<FlatFinding["severity"], number> = { high: 0, med: 1, low: 2 };
-  const TRUST_ORDER: Record<Confidence, number> = {
-    confirmed: 0,
-    tentative: 1,
-    informational: 2,
-    dropped: 3,
-  };
   const ordered = $derived(
     [...visible].sort(
       (a, b) =>
         SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity] ||
-        TRUST_ORDER[a.confidence] - TRUST_ORDER[b.confidence] ||
+        TRUST_RANK[a.confidence] - TRUST_RANK[b.confidence] ||
         a.file.localeCompare(b.file),
     ),
   );
-
-  const CONFIDENCE_GLYPH: Record<Confidence, string> = {
-    confirmed: "✓",
-    tentative: "?",
-    informational: "i",
-    dropped: "✗",
-  };
 
   /// The arbiter's removals, listed on demand behind the count.
   const droppedFindings = $derived(ai.dropped_findings ?? []);
@@ -480,7 +467,7 @@
                   <span
                     class="px-1 py-0.5 rounded border border-hairline text-[9px] text-muted shrink-0"
                     title="Confidence: {finding.confidence}"
-                  >{CONFIDENCE_GLYPH[finding.confidence]}</span>
+                  >{confidenceGlyph(finding.confidence)}</span>
                   {#if arbiterRuling(finding)}
                     <span
                       class="px-1 py-0.5 rounded border border-hairline text-[9px] text-ai"

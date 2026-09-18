@@ -66,6 +66,14 @@ arbiter pass replaces that grade with one from something that read the code, so
 the number means different things depending on whether that pass has run.
 _Avoid_: severity, priority, score
 
+**Gate**:
+The lowest Confidence a view will draw, and the ordering that compares the two
+(the code's `trust_rank`, where the lowest number is the most trusted). It
+follows the review rather than a remembered choice — an arbiter's grades move
+it — and holds still once a reviewer sets it by hand. Separate from Confidence:
+a grade is a claim about one finding, a gate is a policy over all of them.
+_Avoid_: threshold, cutoff, severity filter
+
 **Question**:
 Something the reviewer wants answered. Private to the reviewer, and it never
 reaches a pull request.

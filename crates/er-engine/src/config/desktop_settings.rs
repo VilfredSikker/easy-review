@@ -398,6 +398,7 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::test_support::importance_rules;
     use crate::config::ErConfig;
 
     #[test]
@@ -540,19 +541,9 @@ mod tests {
         assert!(validate_config_text_field("agent.args", "-p {prompt}").is_none());
     }
 
-    fn importance_table(entries: &[(&str, &str)], default: &str) -> ImportanceRepoConfig {
-        ImportanceRepoConfig {
-            default: Some(default.to_string()),
-            rules: entries
-                .iter()
-                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
-                .collect(),
-        }
-    }
-
     #[test]
     fn importance_file_rows_report_the_rule_that_claimed_each_path() {
-        let table = importance_table(
+        let table = importance_rules(
             &[
                 ("crates/er-engine/src/app/filter.rs", "normal"),
                 ("crates/er-engine/src/**", "foundational"),

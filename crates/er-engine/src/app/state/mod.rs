@@ -4182,21 +4182,6 @@ impl TabState {
         next
     }
 
-    /// How a gate level reads in a notification.
-    pub const fn min_trust_label(level: ai::Confidence) -> &'static str {
-        match level {
-            ai::Confidence::Informational => "all findings",
-            ai::Confidence::Tentative => "informational hidden",
-            _ => "confirmed only",
-        }
-    }
-
-    /// The gate the review would pick on its own, re-applied and unpinned.
-    pub fn reset_min_trust(&mut self) {
-        self.layers.min_trust_pinned = false;
-        self.layers.min_trust = ai::min_trust_for(&self.ai.arbiter_effect);
-    }
-
     /// Forward cycle order for the side panel. `FileDetail` and `AgentLog` are
     /// always available; the others are skipped when their data is absent.
     const PANEL_CYCLE: [PanelContent; 5] = [

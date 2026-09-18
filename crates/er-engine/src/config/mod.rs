@@ -122,9 +122,9 @@ pub struct ImportanceRepoConfig {
 /// A rule table an agent proposed, before the host merges it into the config.
 ///
 /// The agent prints this; the host validates and writes it. Rules whose tier
-/// does not read are dropped and counted rather than failing the whole table —
-/// one bad line should not cost the reviewer the rest of it, and dropping it
-/// silently would be worse than either.
+/// does not read, or whose pattern does not compile, are dropped and counted
+/// rather than failing the whole table — one bad line should not cost the
+/// reviewer the rest of it, and dropping it silently would be worse than either.
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct ImportanceProposal {
@@ -166,7 +166,7 @@ impl ImportanceProposal {
         Ok((kept, dropped))
     }
 
-    /// The repo config this proposes, plus how many rules were unreadable.
+    /// The repo config this proposes, plus how many rules were unusable.
     ///
     /// The default tier is treated the same way: an unreadable default falls
     /// back to `normal` rather than taking the table down with it.
@@ -175,12 +175,17 @@ impl ImportanceProposal {
         let rules = self
             .rules
             .into_iter()
-            .filter(|(_, tier)| {
+            .filter(|(key, tier)| {
                 let readable = ImportanceTier::parse(tier).is_some();
-                if !readable {
+                // A pattern the matcher cannot compile is stored, listed in
+                // the settings table, and matched against nothing — a rule
+                // that reads as active and can never fire. Exact keys are
+                // looked up rather than compiled, so only patterns are built.
+                let usable = !is_pattern(key) || Pattern::new(key).is_ok();
+                if !readable || !usable {
                     dropped += 1;
                 }
-                readable
+                readable && usable
             })
             .collect();
 
@@ -2274,6 +2279,31 @@ fn terminal_config_hub_items(_config: &ErConfig) -> Vec<ConfigItem> {
     ]
 }
 
+/// Fixtures the importance tests share across modules.
+///
+/// Three copies of the same table builder had grown in `config`, `app::filter`
+/// and `desktop_settings`; one definition means a change to the shape of a
+/// rule table cannot leave one of the three testing an older one.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::ImportanceRepoConfig;
+    use std::collections::BTreeMap;
+
+    /// A rule table holding `entries`, falling back to `default`.
+    pub(crate) fn importance_rules(
+        entries: &[(&str, &str)],
+        default: &str,
+    ) -> ImportanceRepoConfig {
+        ImportanceRepoConfig {
+            default: Some(default.to_string()),
+            rules: entries
+                .iter()
+                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
+                .collect::<BTreeMap<_, _>>(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2306,6 +2336,35 @@ mod tests {
     #[test]
     fn a_reply_without_a_marked_table_proposes_nothing() {
         assert!(ImportanceProposal::from_reply("I could not read the tree.").is_none());
+    }
+
+    /// A pattern the matcher cannot compile is the same kind of bad line as an
+    /// unreadable tier: stored, it would be listed as an active rule and match
+    /// nothing, so it is dropped at write time instead.
+    #[test]
+    fn a_pattern_that_cannot_compile_is_dropped_and_counted() {
+        let proposal = ImportanceProposal {
+            repo: "er".into(),
+            default: Some("normal".into()),
+            rules: BTreeMap::from([
+                ("src/**".to_string(), "foundational".to_string()),
+                // An unclosed class: never compiles, so it could only ever be
+                // a rule that reads as active and matches nothing.
+                ("crates/[".to_string(), "foundational".to_string()),
+            ]),
+            report: String::new(),
+        };
+
+        let (table, dropped) = proposal.into_repo_config();
+
+        assert_eq!(
+            table.rules.keys().collect::<Vec<_>>(),
+            vec!["src/**"],
+            "the pattern that cannot compile is not written"
+        );
+        assert_eq!(dropped, 1);
+        assert_eq!(table.resolve("src/a.rs"), ImportanceTier::Foundational);
+        assert_eq!(table.resolve("crates/a.rs"), ImportanceTier::Normal);
     }
 
     /// One unreadable tier must not take the rest of the table with it, and it
@@ -2862,15 +2921,7 @@ mod tests {
 
     // ── importance ──
 
-    fn importance_rules(entries: &[(&str, &str)], default: &str) -> ImportanceRepoConfig {
-        ImportanceRepoConfig {
-            default: Some(default.to_string()),
-            rules: entries
-                .iter()
-                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
-                .collect(),
-        }
-    }
+    use super::test_support::importance_rules;
 
     #[test]
     fn importance_resolution_takes_the_most_specific_matching_rule() {

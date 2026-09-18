@@ -457,7 +457,7 @@ pub fn handle_normal_input(
             let next = app.tab_mut().cycle_min_trust();
             app.notify(&format!(
                 "Confidence: {} — {}",
-                er_engine::app::TabState::min_trust_label(next),
+                super::min_trust_label(next),
                 if graded {
                     "arbiter-graded"
                 } else {

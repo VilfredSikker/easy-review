@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { fileStatusDisplay } from "./fileStatus";
+import { fileStatusDisplay, riskDotClass } from "./fileStatus";
 
 describe("fileStatusDisplay", () => {
   it("maps git statuses to glyphs, icons, and titles", () => {
@@ -33,5 +33,15 @@ describe("fileStatusDisplay", () => {
       icon: "alert",
       title: "Unmerged",
     });
+  });
+});
+
+describe("riskDotClass", () => {
+  it("draws every verdict in its own colour", () => {
+    // The tree and the risk queue both call this, so a level that fell through
+    // to another level's colour would show the same file two ways at once.
+    expect(riskDotClass("high")).toBe("bg-risk-high");
+    expect(riskDotClass("med")).toBe("bg-risk-med");
+    expect(riskDotClass("low")).toBe("bg-risk-low");
   });
 });

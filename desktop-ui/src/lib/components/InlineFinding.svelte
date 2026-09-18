@@ -5,6 +5,7 @@
   import EditMessageModal from "$lib/components/EditMessageModal.svelte";
   import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import { confidenceGlyph } from "$lib/diffAnnotations";
 
   type MergedReply = {
     id: string;
@@ -37,14 +38,6 @@
   const agentLabel = $derived(finding.agent_label ?? finding.expert_label ?? "General");
   const isProfessor = $derived(agentLabel === "Professor");
   const headerKind = $derived(isProfessor ? "Insight" : "Finding");
-
-  /// Same glyphs the TUI draws, so a grade reads the same in both front ends.
-  const confidenceGlyph = $derived(
-    finding.confidence === "confirmed" ? "✓"
-    : finding.confidence === "informational" ? "i"
-    : finding.confidence === "dropped" ? "✗"
-    : "?",
-  );
 
   /// The engine's `producers · category` tag, hidden when it only repeats the
   /// agent pill beside it.
@@ -241,7 +234,7 @@
       <span
         class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border border-hairline text-muted shrink-0"
         title="Confidence: {finding.confidence}"
-      >{confidenceGlyph}</span>
+      >{confidenceGlyph(finding.confidence)}</span>
     {/if}
     {#if showLensCategory}
       <span class="text-muted shrink-0">{lensCategory}</span>

@@ -94,12 +94,30 @@ export type FindingView = {
   minTrust: Confidence;
 };
 
-/** Mirrors the engine's `Confidence::trust_rank`: lower is more trustworthy. */
-const TRUST_RANK: Record<Confidence, number> = {
+/**
+ * Mirrors the engine's `Confidence::trust_rank`: lower is more trustworthy.
+ *
+ * Exported for the card that orders rows by grade — one ranking, so the sort
+ * and the gate cannot disagree about which grade outranks which.
+ */
+export const TRUST_RANK: Record<Confidence, number> = {
   confirmed: 0,
   tentative: 1,
   informational: 2,
   dropped: 3,
+};
+
+/** The one-letter glyph a grade draws as. Both front ends and every surface in
+ *  this one use it, so a grade reads the same wherever it appears. */
+export function confidenceGlyph(confidence: Confidence): string {
+  return CONFIDENCE_GLYPH[confidence];
+}
+
+const CONFIDENCE_GLYPH: Record<Confidence, string> = {
+  confirmed: "✓",
+  tentative: "?",
+  informational: "i",
+  dropped: "✗",
 };
 
 /**

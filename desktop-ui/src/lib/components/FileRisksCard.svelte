@@ -5,6 +5,7 @@
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import { riskCounts, riskQueueRows, type RiskQueueSort } from "$lib/fileRiskQueue";
+  import { riskDotClass } from "$lib/fileStatus";
 
   interface Props {
     risks: FileRiskSnapshot[];
@@ -27,12 +28,6 @@
 
   const rows = $derived(riskQueueRows(risks, app.snapshot?.files ?? [], sort));
   const counts = $derived(riskCounts(rows));
-
-  function riskDotClass(risk: FileRiskSnapshot["risk"]): string {
-    if (risk === "high") return "bg-risk-high";
-    if (risk === "med") return "bg-risk-med";
-    return "bg-risk-low";
-  }
 
   async function jumpTo(path: string) {
     const snap = app.snapshot;

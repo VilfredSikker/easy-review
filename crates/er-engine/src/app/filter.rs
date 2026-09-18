@@ -880,15 +880,7 @@ mod tests {
 
     // ── Importance filter tests ──
 
-    fn importance_rules(entries: &[(&str, &str)]) -> ImportanceRepoConfig {
-        ImportanceRepoConfig {
-            default: Some("normal".to_string()),
-            rules: entries
-                .iter()
-                .map(|(key, tier)| ((*key).to_string(), (*tier).to_string()))
-                .collect(),
-        }
-    }
+    use crate::config::test_support::importance_rules;
 
     fn review_with_risk(path: &str, risk: RiskLevel) -> ErReview {
         use std::collections::HashMap;
@@ -958,7 +950,7 @@ mod tests {
         // The case `risk:*` cannot serve: nothing has been reviewed, so every
         // call passes no review, and the declared tier still decides.
         let rules = parse_filter_expr("+importance:foundational");
-        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")]);
+        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")], "normal");
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,
@@ -983,7 +975,7 @@ mod tests {
     #[test]
     fn importance_exclude_hides_only_the_tier_it_names() {
         let rules = parse_filter_expr("-importance:isolated");
-        let importance = importance_rules(&[("*.md", "isolated")]);
+        let importance = importance_rules(&[("*.md", "isolated")], "normal");
         let doc = make_file("docs/readme.md", FileStatus::Modified, 2, 0);
         let code = make_file("src/main.rs", FileStatus::Modified, 5, 3);
         assert!(!apply_filter_with_context(
@@ -1005,7 +997,7 @@ mod tests {
         // A review exists here, which is what a risk rule needs and an
         // importance rule must not: the tier answers the same either way.
         let rules = parse_filter_expr("+importance:foundational");
-        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")]);
+        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")], "normal");
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,

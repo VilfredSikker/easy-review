@@ -107,9 +107,11 @@ pub struct ArbiterEffect {
 
 /// Whether an `AiResponse` is an arbiter ruling rather than a validation reply.
 ///
-/// `regrade_response` assigns the `arbiter-` prefix; the test lives beside that
-/// assignment so the two cannot drift, and so no reader has to match on the
-/// sentence the arbiter happened to write.
+/// `regrade_response` assigns the `arbiter-` prefix, and the desktop reads that
+/// prefix to tag a finding's response trail, so the format is a contract
+/// between the crates. `a_regrade_is_tagged_as_the_arbiters_own` pins it in
+/// this file's tests, and it is a predicate rather than a sentence match so no
+/// reader has to parse what the arbiter happened to write.
 pub fn is_arbiter_ruling(response: &crate::ai::AiResponse) -> bool {
     response.id.starts_with("arbiter-")
 }
@@ -336,6 +338,30 @@ mod tests {
             run_id: "arena-1".to_string(),
             verdicts,
         }
+    }
+
+    #[test]
+    fn a_regrade_is_tagged_as_the_arbiters_own() {
+        // The desktop tags a finding's response trail off this prefix
+        // (`crates/er-desktop/src/snapshot.rs`), so the format is a contract
+        // between the crates rather than a private detail of the regrade.
+        let response = regrade_response(
+            &finding(Confidence::Tentative),
+            Confidence::Confirmed,
+            &verdict(ArbiterRuling::Kept, Some(Confidence::Confirmed)),
+        );
+        assert!(is_arbiter_ruling(&response), "id was {:?}", response.id);
+        assert!(
+            response.id.starts_with("arbiter-"),
+            "the predicate and the assignment must agree on the format"
+        );
+
+        // Any other reply — a validation pass, a producer — carries no tag.
+        let plain = crate::ai::AiResponse {
+            id: "r-1".to_string(),
+            ..response
+        };
+        assert!(!is_arbiter_ruling(&plain));
     }
 
     #[test]

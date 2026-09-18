@@ -9,6 +9,7 @@
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import type { FileSnapshot } from "$lib/types";
   import { findingPassesTrust } from "$lib/diffAnnotations";
+  import { riskDotClass } from "$lib/fileStatus";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
 
   interface Props {
@@ -542,11 +543,7 @@
                    reached carries none, which is the distinction the dot makes. -->
               {#if file.risk}
                 <span
-                  class="w-1.5 h-1.5 rounded-full shrink-0 {file.risk === "high"
-                    ? "bg-risk-high"
-                    : file.risk === "med"
-                      ? "bg-risk-med"
-                      : "bg-risk-low"}"
+                  class="w-1.5 h-1.5 rounded-full shrink-0 {riskDotClass(file.risk)}"
                   title="Risk: {file.risk}"
                   aria-hidden="true"
                 ></span>

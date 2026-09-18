@@ -11,6 +11,20 @@ pub mod normal;
 
 pub use normal::handle_normal_input;
 
+/// How a gate level reads in a notification.
+///
+/// Phrasing for this surface, so it lives here rather than on the engine state:
+/// the desktop names the same three levels its own way, and both are sentences
+/// about a number neither front end owns.
+fn min_trust_label(level: er_engine::ai::Confidence) -> &'static str {
+    use er_engine::ai::Confidence;
+    match level {
+        Confidence::Informational => "all findings",
+        Confidence::Tentative => "informational hidden",
+        Confidence::Confirmed | Confidence::Dropped => "confirmed only",
+    }
+}
+
 /// Byte index of the char boundary immediately before `pos` (0 if at start).
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
     s[..pos].char_indices().last().map(|(i, _)| i).unwrap_or(0)
@@ -251,10 +265,7 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
         }
         HubAction::CycleMinTrust => {
             let next = app.tab_mut().cycle_min_trust();
-            app.notify(&format!(
-                "Confidence: {}",
-                er_engine::app::TabState::min_trust_label(next)
-            ));
+            app.notify(&format!("Confidence: {}", min_trust_label(next)));
         }
         HubAction::ToggleDroppedFindings => {
             app.tab_mut().toggle_show_dropped();
