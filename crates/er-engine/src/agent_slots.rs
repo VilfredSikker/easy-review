@@ -1,7 +1,9 @@
 //! Process-wide cap on concurrently running AI agent subprocesses.
 //!
-//! A spawn path is capped only if it acquires a slot here first; one that
-//! spawns without acquiring is unbounded, so this is not a cap on every spawn.
+//! Every path that spawns a review agent acquires a slot here first, so
+//! starting many reviews or several arena runs at once cannot fork more agent
+//! processes than the caps allow. Two subprocess paths take none, neither of
+//! them a review agent: model discovery's listing probe, and the desktop PTY.
 //!
 //! Two caps, not one, because the two workloads starve each other. A long
 //! background review and a short arena round competing for a single pool means
