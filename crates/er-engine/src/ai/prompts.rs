@@ -1636,6 +1636,100 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
     )
 }
 
+/// Probe pass: Hub writes at most [`crate::ai::PROBE_CAP`] Questions.
+///
+/// The agent prints JSON on stdout. The host writes `questions.json`.
+/// Do not write Findings. Do not Promote.
+pub fn build_probes_prompt_prepared_diff(scope: &str, output_dir: &str, diff_hash: &str) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir);
+    let cap = crate::ai::PROBE_CAP;
+    let begin = crate::ai::PROBE_JSON_BEGIN;
+    let end = crate::ai::PROBE_JSON_END;
+    format!(
+        r#"You are writing probes for a code review. A probe is a Question that should fail if the change is wrong.
+
+A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`. The diff hash is `{diff_hash}` — SHA-256 of that file, computed by the harness. Do not run sha256sum.
+
+## Rules
+- Write at most {cap} probes. Never more. A questionnaire is a failure.
+- Each probe is one claim that should fail if the change is wrong.
+- Do not restate a pull request body. Ask about the code.
+- Do not write Findings. Do not write review.json. Do not Promote.
+- The person did not ask these Questions. You are the Hub writing them.
+
+## Steps
+1. Read `{safe_output_dir}/diff-tmp`.
+2. You may read `{safe_output_dir}/diff-annotated` if it exists — lines carry `[h<hunk> L<file_line>]` tags.
+3. Emit JSON in your final reply. Do not use Write, Edit, or file tools. Wrap it exactly:
+
+{begin}
+{{
+  "probes": [
+    {{
+      "file": "<path from the diff>",
+      "hunk_index": 0,
+      "line_start": 1,
+      "line_content": "<the line, or empty>",
+      "text": "<one Question that should fail if this change is wrong>"
+    }}
+  ]
+}}
+{end}
+
+Print only that block. The harness writes the Questions and drops extras past {cap}."#
+    )
+}
+
+/// Probe pass: Hub answers the Questions the person picked.
+///
+/// Stamp pass, fail, or empty. Do not rewrite Findings. Do not Promote.
+pub fn build_probe_answers_prompt_prepared_diff(
+    scope: &str,
+    output_dir: &str,
+    diff_hash: &str,
+    selected_ids: &[String],
+) -> String {
+    let safe_output_dir = sanitize_for_shell(output_dir);
+    let ids = selected_ids.join(", ");
+    let begin = crate::ai::PROBE_JSON_BEGIN;
+    let end = crate::ai::PROBE_JSON_END;
+    format!(
+        r#"You are answering selected probes. A probe is a Question. Stamp each answer pass, fail, or empty.
+
+A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`. The diff hash is `{diff_hash}`.
+
+Read `{safe_output_dir}/questions.json`. Answer only these Question ids: {ids}
+
+## Stamp
+- pass — the claim holds; the change is not wrong that way.
+- fail — the claim failed; the change is wrong that way.
+- empty — you cannot tell from the diff.
+
+## Rules
+- The person does not answer. You do.
+- Do not write Findings. Do not rewrite Finding text. Do not write review.json.
+- Do not Promote. Do not add new Questions.
+- If you cannot tell, stamp empty. Do not guess pass.
+
+## Output
+Do not use Write or Edit. Emit JSON in your final reply:
+
+{begin}
+{{
+  "answers": [
+    {{
+      "id": "<one of the selected ids>",
+      "stamp": "pass",
+      "text": "<short reason, citing the diff>"
+    }}
+  ]
+}}
+{end}
+
+`stamp` must be pass, fail, or empty. The harness writes the replies."#
+    )
+}
+
 /// Build the note-addressing prompt for local-managed app/TUI runs.
 pub fn build_notes_prompt_local_managed(
     base_branch: &str,
@@ -2055,6 +2149,31 @@ mod tests {
         let prompt = build_questions_prompt_local_managed("main", "branch", "/tmp/er-test");
         assert!(prompt.contains("'/tmp/er-test/diff-annotated'"));
         assert!(prompt.contains("[h<hunk> L<file_line>]"));
+    }
+
+    #[test]
+    fn probes_prompt_caps_and_does_not_write_findings() {
+        let prompt = build_probes_prompt_prepared_diff("branch", "/tmp/er-test", "abc");
+        assert!(prompt.contains(&crate::ai::PROBE_CAP.to_string()));
+        assert!(prompt.contains(crate::ai::PROBE_JSON_BEGIN));
+        assert!(prompt.contains("Do not write Findings"));
+        assert!(prompt.contains("Do not Promote"));
+        assert!(prompt.contains("Do not write review.json"));
+    }
+
+    #[test]
+    fn probe_answers_prompt_stamps_selected_only() {
+        let prompt = build_probe_answers_prompt_prepared_diff(
+            "branch",
+            "/tmp/er-test",
+            "abc",
+            &["q-1".into(), "q-2".into()],
+        );
+        assert!(prompt.contains("q-1, q-2"));
+        assert!(prompt.contains("pass, fail, or empty"));
+        assert!(prompt.contains("Do not rewrite Finding text"));
+        assert!(prompt.contains("Do not Promote"));
+        assert!(prompt.contains("Do not write review.json"));
     }
 
     #[test]

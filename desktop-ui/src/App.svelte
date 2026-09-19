@@ -31,6 +31,8 @@
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
   import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
+  import ProbePassView from "$lib/components/ProbePassView.svelte";
+  import { probePass } from "$lib/stores/probePass.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { browserHide } from "$lib/stores/browserHost";
@@ -327,10 +329,17 @@
             style="flex: {diffColumnFlex};"
           >
             {#if app.mainView === "diff"}
-              {#if app.snapshot?.mode !== "tour"}
-                <FileTree collapsed={!layoutPanels.tree} />
+              {#if probePass.active}
+                <ProbePassView />
+                {#if !probePass.filesClosed}
+                  <DiffView />
+                {/if}
+              {:else}
+                {#if app.snapshot?.mode !== "tour"}
+                  <FileTree collapsed={!layoutPanels.tree} />
+                {/if}
+                <DiffView />
               {/if}
-              <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />
             {:else}

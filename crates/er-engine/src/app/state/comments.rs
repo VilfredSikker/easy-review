@@ -356,6 +356,8 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            probe: false,
+            probe_stamp: None,
         });
 
         // Write atomically
@@ -465,6 +467,8 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            probe: false,
+            probe_stamp: None,
         });
 
         // Write atomically
@@ -2730,6 +2734,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            None,
         )
     }
 
@@ -2751,6 +2756,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            None,
         )
     }
 
@@ -2767,6 +2773,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
             None,
         )
     }
@@ -2817,6 +2824,7 @@ impl App {
             target,
             prompt,
             false,
+            None,
             None,
         )
     }
@@ -2899,6 +2907,32 @@ impl App {
             prompt,
             prepared_diff,
             Some(host_write),
+            None,
+        )
+    }
+
+    /// Probe pass: Hub writes or answers Questions. Host-write from stdout.
+    pub fn spawn_background_probes(
+        &mut self,
+        kind: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+        host_write: super::background::HostWriteProbes,
+    ) -> Result<()> {
+        let command_name = if kind == crate::ai::PROBE_ANSWER_TASK_KIND {
+            "probe-answers"
+        } else {
+            "probes"
+        };
+        self.spawn_background_agent_task(
+            kind.to_string(),
+            command_name,
+            target,
+            prompt,
+            prepared_diff,
+            None,
+            Some(host_write),
         )
     }
 
@@ -2916,6 +2950,7 @@ impl App {
             prompt,
             prepared_diff,
             None,
+            None,
         )
     }
 
@@ -2932,6 +2967,7 @@ impl App {
             target,
             prompt,
             prepared_diff,
+            None,
             None,
         )
     }
@@ -2955,6 +2991,7 @@ impl App {
         prompt: String,
         prepared_diff: bool,
         host_write_diagram: Option<super::background::HostWriteDiagram>,
+        host_write_probes: Option<super::background::HostWriteProbes>,
     ) -> Result<()> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
@@ -2984,6 +3021,7 @@ impl App {
                 prompt,
                 prepared_diff,
                 host_write_diagram,
+                host_write_probes,
                 // Snapshot at enqueue so a mid-queue palette change cannot retarget
                 // an already-queued job.
                 ai_selection: Some(self.pending_ai_selection_override.clone().unwrap_or_else(
@@ -3026,6 +3064,7 @@ impl App {
             prompt,
             prepared_diff,
             host_write_diagram,
+            host_write_probes,
             ai_selection,
         } = pending;
         let command_name = command_name.as_str();
@@ -3137,7 +3176,7 @@ impl App {
         // Cursor have no tool list, so for them the only write control is the
         // sandbox, and `--add-dir` is documented as adding a *writable* directory
         // — so a read-only run withholds it and narrows the sandbox instead.
-        let readonly_run = host_write_diagram.is_some();
+        let readonly_run = host_write_diagram.is_some() || host_write_probes.is_some();
         let storage_access = match family {
             crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
                 None
@@ -3469,6 +3508,18 @@ impl App {
                     )
                     .with_context(|| {
                         format!("{command_name_fail}: failed to persist diagram sidecar")
+                    })?;
+                }
+                if let Some(hw) = &host_write_probes {
+                    crate::ai::persist_probes_from_agent_stdout(
+                        &stdout_lines.join("\n"),
+                        is_stream_json,
+                        &hw.er_dir,
+                        &hw.diff_hash,
+                        hw.mode.clone(),
+                    )
+                    .with_context(|| {
+                        format!("{command_name_fail}: failed to persist probe Questions")
                     })?;
                 }
                 // Selected-file reviews overwrite sidecars with a subset —

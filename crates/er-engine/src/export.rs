@@ -644,6 +644,8 @@ mod tests {
             author: "you".into(),
             promoted_to: None,
             finding_ref: None,
+            probe: false,
+            probe_stamp: None,
         }
     }
 

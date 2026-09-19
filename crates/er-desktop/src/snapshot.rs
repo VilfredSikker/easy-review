@@ -1043,6 +1043,12 @@ pub struct ThreadSnapshot {
     pub replies: Vec<ThreadMessage>,
     /// For questions: the GitHub comment id this was promoted to (if any).
     pub promoted_to: Option<String>,
+    /// Hub-written probe Question.
+    #[serde(default)]
+    pub probe: bool,
+    /// pass | fail | empty
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_stamp: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1201,6 +1207,24 @@ pub struct AiSnapshot {
     /// a parallel list that can drift from `prompts.rs` / kind validation.
     #[serde(default)]
     pub diagram_presets: Vec<DiagramPresetSnapshot>,
+    /// Hub-written probe Questions for the probe pass view.
+    #[serde(default)]
+    pub probes: Vec<ProbeSnapshot>,
+    /// True when no probe has stamp fail or empty. Files stay closed.
+    #[serde(default)]
+    pub probe_files_closed: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeSnapshot {
+    pub id: String,
+    pub text: String,
+    pub file: String,
+    pub line: Option<usize>,
+    pub hunk_index: Option<usize>,
+    /// pass | fail | empty
+    pub stamp: Option<String>,
+    pub resolved: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1585,6 +1609,19 @@ fn comment_ref_to_thread(
             CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
             _ => None,
         },
+        probe: matches!(c, CommentRef::Question(q) if q.probe),
+        probe_stamp: match c {
+            CommentRef::Question(q) => q.probe_stamp.map(probe_stamp_label),
+            _ => None,
+        },
+    }
+}
+
+fn probe_stamp_label(stamp: er_engine::ai::ProbeStamp) -> String {
+    match stamp {
+        er_engine::ai::ProbeStamp::Pass => "pass".into(),
+        er_engine::ai::ProbeStamp::Fail => "fail".into(),
+        er_engine::ai::ProbeStamp::Empty => "empty".into(),
     }
 }
 
@@ -2774,6 +2811,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         checklist: None,
         diagrams: Vec::new(),
         diagram_presets: diagram_preset_snapshots(),
+        probes: Vec::new(),
+        probe_files_closed: true,
     }
 }
 
@@ -3951,6 +3990,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
+                        probe: q.probe,
+                        probe_stamp: q.probe_stamp.map(probe_stamp_label),
                     });
                 }
             }
@@ -3984,6 +4025,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&nref, tab, pending),
                         promoted_to: n.promoted_to.clone(),
+                        probe: false,
+                        probe_stamp: None,
                     });
                 }
             }
@@ -4022,6 +4065,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         },
                         replies: build_replies(&cref, tab, pending),
                         promoted_to: None,
+                        probe: false,
+                        probe_stamp: None,
                     });
                 }
             }
@@ -4209,6 +4254,32 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         })
         .collect();
 
+    let probes: Vec<ProbeSnapshot> = ai
+        .questions
+        .as_ref()
+        .map(|qs| {
+            qs.questions
+                .iter()
+                .filter(|q| er_engine::ai::is_probe_question(q))
+                .map(|q| ProbeSnapshot {
+                    id: q.id.clone(),
+                    text: q.text.clone(),
+                    file: q.file.clone(),
+                    line: q.line_start,
+                    hunk_index: q.hunk_index,
+                    stamp: q.probe_stamp.map(probe_stamp_label),
+                    resolved: q.resolved,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let probe_files_closed = er_engine::ai::files_stay_closed(
+        ai.questions
+            .as_ref()
+            .map(|q| q.questions.as_slice())
+            .unwrap_or(&[]),
+    );
+
     AiSnapshot {
         fresh: !ai.is_stale,
         stale_reason,
@@ -4240,6 +4311,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         checklist,
         diagrams,
         diagram_presets: diagram_preset_snapshots(),
+        probes,
+        probe_files_closed,
     }
 }
 

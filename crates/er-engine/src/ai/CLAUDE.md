@@ -11,11 +11,13 @@ bucket or `prs/pr-<N>/`. `docs/adr/0004-per-view-artifact-scoping.md`.
 
 ## Who writes which file
 
-**`er` writes these:** `questions.json` (things you want answered),
-`notes.json` (instructions to hand an agent), `github-comments.json` (the shared
-GitHub threads, two-way synced). The first two are private. The questions and
-notes AI actions are the exception — each rewrites its store in the bucket,
-leaving a `.prev.json` beside it.
+**`er` writes these:** `questions.json` (things you want answered, including
+Hub-written probes), `notes.json` (instructions to hand an agent),
+`github-comments.json` (the shared GitHub threads, two-way synced). The first
+two are private. The questions and notes AI actions are the exception — each
+rewrites its store in the bucket, leaving a `.prev.json` beside it. Probe pass
+is host-written from stdout: the agent cannot write `questions.json`, and the
+host drops extras past the cap.
 
 **AI-owned, read-only to `er` as a whole:** `review.json`, `order.json`,
 `summary.md`, `triage.json`, `professor.json`, `experts/*.json`, `tour.json`.
@@ -25,8 +27,9 @@ its `checked` flags are the reviewer's own progress, written by the toggle in
 either front end (`App::toggle_checklist_item_at`). Nothing else in the file is
 theirs to write, and the agent that generates it never sets `checked`.
 
-**Agent-emitted, host-written:** `diagrams/*.json`. The diagram agent runs
-read-only and prints its JSON on stdout; the host parses and writes the file.
+**Agent-emitted, host-written:** `diagrams/*.json`, and probe Questions in
+`questions.json`. The agent runs read-only and prints JSON on stdout; the host
+parses and writes the file.
 Never hand that agent a write path — its prompt carries untrusted diff content,
 so `Write` there is a prompt-injection primitive. Read-only is enforced per CLI
 family (Claude allowlist, OpenCode permission env, Codex `--sandbox read-only`,

@@ -261,6 +261,8 @@ fn append_question_reply(
         author: author.to_string(),
         promoted_to: None,
         finding_ref: parent.finding_ref.clone(),
+        probe: false,
+        probe_stamp: None,
     });
 
     std::fs::create_dir_all(er_dir)?;
@@ -305,6 +307,8 @@ fn append_note_reply(
         author: author.to_string(),
         promoted_to: None,
         finding_ref: parent.finding_ref.clone(),
+        probe: false,
+        probe_stamp: None,
     });
 
     std::fs::create_dir_all(er_dir)?;
@@ -523,6 +527,8 @@ mod tests {
             author: "You".into(),
             promoted_to: None,
             finding_ref: None,
+            probe: false,
+            probe_stamp: None,
         }
     }
 

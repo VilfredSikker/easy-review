@@ -2,6 +2,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
+  import { probePass } from "$lib/stores/probePass.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
@@ -230,6 +231,20 @@
         group: "AI" as const,
         kbd: "c",
         run: () => { void dismissAndRun(() => app.cmd("export_to_agent")); },
+      },
+      {
+        id: "ai-probe-pass",
+        label: "Probe pass",
+        description: reviewScope
+          ? "Hub writes Questions. You pick which to run. Files stay closed on pass."
+          : "Not available in this view",
+        group: "AI" as const,
+        run: guard(() => {
+          dismissLocal(() => {
+            probePass.enter();
+            app.setMainView("diff");
+          });
+        }),
       },
       {
         id: "ai-provider-model",

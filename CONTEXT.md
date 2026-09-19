@@ -178,3 +178,9 @@ _Avoid_: worker, thread, lock
 The set of AI actions `er` offers over a diff. The hub builds the prompt and
 runs the agent; it does not itself reason about the code.
 _Avoid_: AI panel, copilot, assistant
+
+**Probe**:
+A Question the Hub writes to test whether a change is wrong. The person picks
+which probes to run. A pass, fail, or empty stamp lands on the answer. Private,
+like any Question, and not Promoted unless the person does it.
+_Avoid_: test, check, assertion, query

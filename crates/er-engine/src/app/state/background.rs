@@ -69,6 +69,8 @@ pub fn kind_label(kind: &str) -> String {
     match kind {
         "" | "review" | "general" => "Review".to_string(),
         "tour" => "Guide".to_string(),
+        crate::ai::PROBE_TASK_KIND => "Probes".to_string(),
+        crate::ai::PROBE_ANSWER_TASK_KIND => "Probe answers".to_string(),
         other if other.starts_with("diagram:") => {
             let sub = other.trim_start_matches("diagram:");
             format!("Diagram ({})", crate::ai::diagram_kind_label(sub))
@@ -135,6 +137,8 @@ pub struct PendingBackgroundTask {
     /// When set, the agent runs read-only and this sidecar is written by the
     /// host from stdout (diagram confinement against prompt injection).
     pub host_write_diagram: Option<HostWriteDiagram>,
+    /// Probe pass: host writes Questions from stdout (cap is structural).
+    pub host_write_probes: Option<HostWriteProbes>,
     /// Optional action-bound provider/model/effort selection. This is captured
     /// when a TUI action is queued so it cannot leak into later actions or be
     /// replaced by a changed global default before launch.
@@ -148,6 +152,14 @@ pub struct HostWriteDiagram {
     pub kind: String,
     pub diff_hash: String,
     pub custom_prompt: Option<String>,
+}
+
+/// Host-owned probe write — agent emits JSON; the host writes Questions.
+#[derive(Debug, Clone)]
+pub struct HostWriteProbes {
+    pub er_dir: std::path::PathBuf,
+    pub diff_hash: String,
+    pub mode: crate::ai::ProbeHostMode,
 }
 
 /// In-flight + recently finished background task channels. The `App` owns

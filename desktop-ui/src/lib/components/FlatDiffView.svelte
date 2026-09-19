@@ -3,6 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app, type DiffViewMode } from "$lib/stores/app.svelte";
   import { layoutPanels } from "$lib/stores/layoutPanels.svelte";
+  import { probePass } from "$lib/stores/probePass.svelte";
   import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
@@ -153,6 +154,10 @@
       for (const f of all) {
         if (!seen.has(f.path)) out.push(f);
       }
+      if (probePass.active && !probePass.filesClosed) {
+        const open = new Set(probePass.openPaths);
+        return out.filter((f) => open.has(f.path));
+      }
       return out;
     }
     const orderedPaths = flattenForNav(buildTree(all));
@@ -160,6 +165,10 @@
     for (const p of orderedPaths) {
       const f = byPath.get(p);
       if (f) out.push(f);
+    }
+    if (probePass.active && !probePass.filesClosed) {
+      const open = new Set(probePass.openPaths);
+      return out.filter((f) => open.has(f.path));
     }
     return out;
   });

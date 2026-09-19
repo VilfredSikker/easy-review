@@ -316,6 +316,8 @@ mod tests {
                 author: "You".into(),
                 promoted_to: None,
                 finding_ref: Some("f-1".into()),
+                probe: false,
+                probe_stamp: None,
             }],
         });
         ai.github_comments = Some(ErGitHubComments {

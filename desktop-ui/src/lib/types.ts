@@ -56,6 +56,10 @@ export interface ThreadSnapshot {
   replies: ThreadMessage[];
   /** For questions: id of the GitHub comment this thread was promoted to. */
   promoted_to: string | null;
+  /** Hub-written probe Question. */
+  probe?: boolean;
+  /** pass | fail | empty */
+  probe_stamp?: string | null;
 }
 
 export interface HunkSnapshot {
@@ -316,6 +320,20 @@ export interface AiSnapshot {
   diagrams: DiagramSnapshot[];
   /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
   diagram_presets: DiagramPresetSnapshot[];
+  /** Hub-written probe Questions. */
+  probes?: ProbeSnapshot[];
+  /** True when no probe has stamp fail or empty. */
+  probe_files_closed?: boolean;
+}
+
+export interface ProbeSnapshot {
+  id: string;
+  text: string;
+  file: string;
+  line: number | null;
+  hunk_index: number | null;
+  stamp: "pass" | "fail" | "empty" | null;
+  resolved: boolean;
 }
 
 export interface PrSnapshot {

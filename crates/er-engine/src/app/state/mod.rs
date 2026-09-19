@@ -11748,6 +11748,8 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                probe: false,
+                probe_stamp: None,
             }],
         });
         let mut app = make_test_app(tab);

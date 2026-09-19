@@ -291,6 +291,21 @@ pub struct ReviewQuestion {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub finding_ref: Option<String>,
+    /// Hub-written probe. Private Question (ADR 0007). Never a Finding.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub probe: bool,
+    /// Pass, fail, or empty stamp on a probe. Set on the Question, not a Finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub probe_stamp: Option<ProbeStamp>,
+}
+
+/// Verdict the Hub stamps on a probe after answering it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ProbeStamp {
+    Pass,
+    Fail,
+    Empty,
 }
 
 // ── .er-github-comments.json — GitHub PR comments ──
@@ -393,6 +408,10 @@ fn default_anchor_status() -> String {
 
 fn default_author() -> String {
     "You".to_string()
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 // ── .er/ui-annotations.json — browser-view annotations ──
@@ -555,6 +574,8 @@ mod tests {
             author: "You".into(),
             promoted_to: None,
             finding_ref: None,
+            probe: false,
+            probe_stamp: None,
         }
     }
 
@@ -596,6 +617,26 @@ mod tests {
         let back: ReviewQuestion = serde_json::from_str(&json).unwrap();
 
         assert_eq!(back.promoted_to.as_deref(), Some("c-42"));
+    }
+
+    #[test]
+    fn review_question_probe_stamp_roundtrips_and_skips_false() {
+        let mut q = sample_question();
+        q.probe = true;
+        q.probe_stamp = Some(ProbeStamp::Fail);
+
+        let json = serde_json::to_string(&q).unwrap();
+        assert!(json.contains("\"probe\":true"));
+        assert!(json.contains("\"fail\""));
+        let back: ReviewQuestion = serde_json::from_str(&json).unwrap();
+        assert!(back.probe);
+        assert_eq!(back.probe_stamp, Some(ProbeStamp::Fail));
+        assert!(back.promoted_to.is_none());
+
+        let plain = sample_question();
+        let plain_json = serde_json::to_string(&plain).unwrap();
+        assert!(!plain_json.contains("probe"));
+        assert!(!plain_json.contains("probe_stamp"));
     }
 
     #[test]

@@ -1018,6 +1018,14 @@ function successToastForCommand(command: string): string | null {
     case "run_ai_professor_review":
     case "run_ai_scoped_review":
       return null;
+    case "run_probe_pass":
+      return "Writing probes";
+    case "answer_probes":
+      return "Answering probes";
+    case "seed_probe_pass":
+      return "Probes written";
+    case "seed_probe_answers":
+      return "Probes stamped";
     default:
       return null;
   }

@@ -3878,6 +3878,228 @@ pub async fn generate_diagram(
     .await
 }
 
+fn probe_task_target(
+    app: &er_engine::app::App,
+) -> Result<(er_engine::app::BackgroundTaskTarget, String, bool), String> {
+    let tab = app.tab();
+    let branch_label = tab
+        .local_branch_view
+        .clone()
+        .unwrap_or_else(|| tab.current_branch.clone());
+    let is_remote = tab.remote_repo.is_some();
+    Ok((
+        er_engine::app::BackgroundTaskTarget {
+            repo_root: tab.repo_root.clone(),
+            er_dir: tab.er_dir(),
+            branch_label,
+            base_branch: tab.base_branch.clone(),
+            scope: "branch".to_string(),
+            pr_number: tab.pr_number,
+            remote_repo: tab.remote_repo.clone(),
+            managed_local: !is_remote,
+        },
+        tab.er_dir(),
+        is_remote,
+    ))
+}
+
+/// Hub writes a handful of probe Questions. Host-write from stdout. Cap is 5.
+#[tauri::command]
+pub async fn run_probe_pass(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = "branch".to_string();
+        let (target, er_dir, _) = probe_task_target(&app)?;
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create managed directory: {e}"))?;
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(
+            &target.repo_root,
+            target.remote_repo.as_deref(),
+        );
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to probe".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let scope_label = if app.tab().tour_context_is_pr() {
+            "PR diff"
+        } else {
+            "branch diff"
+        };
+        let prompt = er_engine::ai::prompts::build_probes_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &diff_hash,
+        );
+        let host_write = er_engine::app::HostWriteProbes {
+            er_dir: std::path::PathBuf::from(&er_dir),
+            diff_hash,
+            mode: er_engine::ai::ProbeHostMode::Write,
+        };
+        app.spawn_background_probes(
+            er_engine::ai::PROBE_TASK_KIND,
+            target,
+            prompt,
+            true,
+            host_write,
+        )
+        .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Hub answers the probe Questions the person picked.
+#[tauri::command]
+pub async fn answer_probes(
+    ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if ids.is_empty() {
+            return Err("Pick at least one probe".to_string());
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let scope = "branch".to_string();
+        let (target, er_dir, _) = probe_task_target(&app)?;
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create managed directory: {e}"))?;
+        let mut raw = app
+            .tab()
+            .raw_diff_for_review(&scope)
+            .map_err(|e| e.to_string())?;
+        let ignore = projects::review_ignore_globs_for_repo(
+            &target.repo_root,
+            target.remote_repo.as_deref(),
+        );
+        if !ignore.is_empty() {
+            raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+        }
+        if raw.trim().is_empty() {
+            return Err("Nothing to probe".to_string());
+        }
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let scope_label = if app.tab().tour_context_is_pr() {
+            "PR diff"
+        } else {
+            "branch diff"
+        };
+        let prompt = er_engine::ai::prompts::build_probe_answers_prompt_prepared_diff(
+            scope_label,
+            &er_dir,
+            &diff_hash,
+            &ids,
+        );
+        let host_write = er_engine::app::HostWriteProbes {
+            er_dir: std::path::PathBuf::from(&er_dir),
+            diff_hash,
+            mode: er_engine::ai::ProbeHostMode::Answer { ids },
+        };
+        app.spawn_background_probes(
+            er_engine::ai::PROBE_ANSWER_TASK_KIND,
+            target,
+            prompt,
+            true,
+            host_write,
+        )
+        .map_err(|e| e.to_string())?;
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// PoC: write capped probes from the current diff without an agent.
+#[tauri::command]
+pub async fn seed_probe_pass(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let er_dir = app.tab().er_dir();
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create managed directory: {e}"))?;
+        let paths: Vec<String> = app
+            .tab()
+            .files
+            .iter()
+            .map(|f| f.path.clone())
+            .take(er_engine::ai::PROBE_CAP)
+            .collect();
+        if paths.is_empty() {
+            return Err("Nothing to probe".to_string());
+        }
+        let mut diff_hash = app.tab().branch_diff_hash.clone();
+        if diff_hash.is_empty() {
+            diff_hash = app.tab().diff_hash.clone();
+        }
+        let drafts = er_engine::ai::drafts_from_paths(paths);
+        er_engine::ai::persist_probe_write(std::path::Path::new(&er_dir), &diff_hash, drafts)
+            .map_err(|e| e.to_string())?;
+        app.tab_mut().reload_ai_state();
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// PoC: stamp selected probes without an agent. stamp is pass, fail, or empty.
+#[tauri::command]
+pub async fn seed_probe_answers(
+    ids: Vec<String>,
+    stamp: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if ids.is_empty() {
+            return Err("Pick at least one probe".to_string());
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let er_dir = app.tab().er_dir();
+        let parsed = er_engine::ai::parse_probe_stamp(&stamp);
+        let mut diff_hash = app.tab().branch_diff_hash.clone();
+        if diff_hash.is_empty() {
+            diff_hash = app.tab().diff_hash.clone();
+        }
+        let answers: Vec<er_engine::ai::ProbeAnswerDraft> = ids
+            .iter()
+            .map(|id| er_engine::ai::ProbeAnswerDraft {
+                id: id.clone(),
+                stamp: parsed,
+                text: format!("PoC stamp: {stamp}"),
+            })
+            .collect();
+        er_engine::ai::persist_probe_answers(
+            std::path::Path::new(&er_dir),
+            &diff_hash,
+            &ids,
+            answers,
+        )
+        .map_err(|e| e.to_string())?;
+        app.tab_mut().reload_ai_state();
+        state
+            .desktop_revision
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
 /// Delete one diagram sidecar (`{er_dir}/diagrams/<id>.json`) from the active
 /// view bucket.
 #[tauri::command]
@@ -10358,6 +10580,10 @@ fn compute_content_revision(app: &App) -> u64 {
             last.timestamp.hash(&mut h);
             last.resolved.hash(&mut h);
         }
+        for q in qs.questions.iter().filter(|q| q.probe) {
+            q.id.hash(&mut h);
+            q.probe_stamp.hash(&mut h);
+        }
     }
     if let Some(ns) = &tab.ai.notes {
         if let Some(last) = ns.notes.last() {
@@ -11162,6 +11388,8 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                probe: false,
+                probe_stamp: None,
             }],
         };
         std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
@@ -11846,6 +12074,10 @@ mod tests {
             "run_ai_validate",
             "run_ai_expert_review",
             "generate_tour",
+            "run_probe_pass",
+            "answer_probes",
+            "seed_probe_pass",
+            "seed_probe_answers",
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",

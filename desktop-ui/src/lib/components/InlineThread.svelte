@@ -19,6 +19,7 @@
 
   const isQuestion = $derived(thread.kind === "question");
   const isNote = $derived(thread.kind === "note");
+  const isProbe = $derived(!!thread.probe);
   // Questions and notes are private, local-only, yellow-accented.
   const isLocal = $derived(isQuestion || isNote);
   const isPromoted = $derived(thread.promoted_to != null);
@@ -208,6 +209,12 @@
     {#if isNote}
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
       <span class="text-question text-sm font-medium">Note</span>
+    {:else if isProbe}
+      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
+      <span class="text-question text-sm font-medium">Probe</span>
+      {#if thread.probe_stamp}
+        <span class="text-[10px] font-mono text-muted">{thread.probe_stamp}</span>
+      {/if}
     {:else if isQuestion}
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
       <span class="text-question text-sm font-medium">Local question</span>
@@ -397,13 +404,13 @@
 
   <!-- Footer actions -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap text-[11px]">
-    {#if !showReply}
+    {#if !isProbe && !showReply}
       <button onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
     {/if}
-    {#if !showAskAi}
+    {#if !isProbe && !showAskAi}
       <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
-    {#if isQuestion}
+    {#if !isProbe && isQuestion}
       <button
         type="button"
         onclick={() => void elaborateWithAi()}
@@ -413,7 +420,7 @@
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
         Elaborate
       </button>
-    {:else}
+    {:else if !isProbe}
       <button
         type="button"
         onclick={() => void validateWithAi()}
@@ -437,7 +444,7 @@
         Copy
       {/if}
     </button>
-    {#if !thread.resolved}
+    {#if !isProbe && !thread.resolved}
       <button onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
     {/if}
     {#if !isLocal && !thread.synced}
@@ -452,7 +459,7 @@
         {pushing ? "Pushing…" : "Push only this"}
       </button>
     {/if}
-    {#if isQuestion}
+    {#if isQuestion && !isProbe}
       <button
         onclick={() => void promoteToNote()}
         title="Turn this question into a local actionable note"
@@ -462,7 +469,7 @@
         Promote to note
       </button>
     {/if}
-    {#if (isQuestion || isNote) && !isPromoted}
+    {#if (isQuestion || isNote) && !isPromoted && !isProbe}
       <button
         onclick={() => (showPromote = true)}
         class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
