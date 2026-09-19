@@ -1907,6 +1907,7 @@ fn main() {
             commands::jump_to_unreviewed,
             commands::set_mode,
             commands::toggle_reviewed,
+            commands::toggle_delta_filter,
             commands::mark_reviewed,
             commands::unmark_reviewed,
             commands::bulk_review_pillar,

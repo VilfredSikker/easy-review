@@ -13,9 +13,11 @@ pub mod scoped_merge;
 pub mod triage;
 
 pub mod arbiter;
+mod delta;
 pub mod identity;
 pub use arbiter::*;
 pub use comments::*;
+pub use delta::*;
 pub use diagrams::*;
 pub use experts::*;
 pub use finding_cleanup::*;

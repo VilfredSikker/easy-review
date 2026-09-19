@@ -15,6 +15,7 @@ commands.allow = [
   "jump_to_unreviewed",
   "set_mode",
   "toggle_reviewed",
+  "toggle_delta_filter",
   "mark_reviewed",
   "unmark_reviewed",
   "bulk_review_pillar",

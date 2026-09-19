@@ -594,6 +594,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             }
             hints.push(Hint::new("f", " filter "));
             hints.push(Hint::new("!", " unreviewed "));
+            hints.push(Hint::new("D", " delta "));
             hints.push(Hint::new("</>", " tree w "));
             hints.push(Hint::new("{/}", " panel w "));
         }
@@ -650,6 +651,7 @@ fn build_hints(app: &App) -> Vec<Hint> {
             hints.push(Hint::new("f", " filter "));
             hints.push(Hint::new("!", " unreviewed "));
             hints.push(Hint::new("U", " next unreviewed "));
+            hints.push(Hint::new("D", " delta "));
             hints.push(Hint::new("m", " recent "));
             if tab.ai.has_data() {
                 hints.push(Hint::new("A", " AI toggle "));
@@ -690,6 +692,12 @@ fn build_hints(app: &App) -> Vec<Hint> {
         hints.push(Hint {
             key: String::new(),
             label: " [unreviewed] ".to_string(),
+        });
+    }
+    if tab.show_delta_only {
+        hints.push(Hint {
+            key: String::new(),
+            label: " [delta] ".to_string(),
         });
     }
     if tab.show_watched && !tab.watched_files.is_empty() {

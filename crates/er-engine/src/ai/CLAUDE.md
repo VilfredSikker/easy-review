@@ -78,6 +78,10 @@ stored hash does not match. `summary.md` carries none.
   usually means this, not a missing file. Placeholders (`unknown`, `<head branch
   if known>`, `pr/<N>`) do not count as a declaration and must not disqualify.
 - A reload replaces `AiState` wholesale, so anything that has to outlive one is
-  carried across by hand in `finish_ai_reload` — today `stale_files` and
-  `tour_stale`. A new field is reset on every reload unless it joins that list,
-  and a second adoption path that skips `finish_ai_reload` loses them all.
+  carried across by hand in `finish_ai_reload` — today `stale_files`, `delta`,
+  and `tour_stale`. A new field is reset on every reload unless it joins that
+  list, and a second adoption path that skips `finish_ai_reload` loses them all.
+- Delta re-review is a Tab filter on a Stale review, not a Tour (ADR 0038). Do
+  not regenerate or repair a Tour on this path. The skip needs a per-file hash
+  baseline; when the agent left `file_hashes` empty, the host writes
+  `review-hashes.json` in the view bucket while the review is still fresh.

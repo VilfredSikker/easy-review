@@ -316,6 +316,17 @@ export interface AiSnapshot {
   diagrams: DiagramSnapshot[];
   /** Built-in generate presets from the engine catalog (never hand-rolled in UI). */
   diagram_presets: DiagramPresetSnapshot[];
+  /** Delta re-review when the review is Stale. Absent or null when fresh. */
+  delta?: DeltaSnapshot | null;
+}
+
+export interface DeltaSnapshot {
+  available: boolean;
+  active: boolean;
+  file_count: number;
+  skipped_count: number;
+  moved_finding_count: number;
+  sampled_finding_count: number;
 }
 
 export interface PrSnapshot {

@@ -743,6 +743,10 @@ pub struct AiState {
     pub tour_stale: bool,
     /// Files whose diff has changed since the review (per-file staleness)
     pub stale_files: HashSet<String>,
+    /// Delta re-review set for a Stale review. None when the review is fresh.
+    /// Recomputed on refresh; preserved across sidecar reload the same way as
+    /// `stale_files`.
+    pub delta: Option<super::delta::DeltaSet>,
     /// What the arbiter's verdicts hid or regraded on the loaded review. The
     /// hidden findings are still in `review` — carrying `Confidence::Dropped` —
     /// so a UI can list them rather than only counting them.
@@ -770,6 +774,7 @@ impl Default for AiState {
             is_stale: false,
             tour_stale: false,
             stale_files: HashSet::new(),
+            delta: None,
             arbiter_effect: super::arbiter::ArbiterEffect::default(),
             comment_index: RefCell::new(None),
         }

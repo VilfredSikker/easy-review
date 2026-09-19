@@ -198,7 +198,9 @@
       Every sidecar records the SHA-256 hash of the diff it was generated against. When the diff changes — which happens
       constantly in watch mode — any AI data whose hash no longer matches is dimmed with a <strong>stale</strong>
       warning. You are never misled into trusting analysis of code that has since changed. Re-run the relevant action
-      from the AI Hub to refresh it.
+      from the AI Hub to refresh it. When a review is Stale, the file list defaults to the <strong>delta</strong>.
+      That is files whose hash moved, Findings whose key moved, and a small sample of claims that did not.
+      Press <kbd>D</kbd> to show every file again. This is not a Tour.
     </p>
 
     <h2>Choosing a model: the AI Hub</h2>

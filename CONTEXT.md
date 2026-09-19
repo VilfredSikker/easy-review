@@ -108,6 +108,12 @@ the diff it was generated against no longer matches, and a *comment* is stale
 when the line it was anchored to can no longer be found.
 _Avoid_: outdated, invalid, expired
 
+**Delta**:
+The subset of a Stale review the person is asked to look at: files whose
+per-file hash moved, Findings whose `finding_key` moved, and a sample of claims
+that did not. It is a filter on the Tab, not a Tour.
+_Avoid_: patch, incremental review, tour
+
 **Tour**:
 A guided walkthrough that reorders a diff into a narrative. A tour is bound to
 the diff it was generated from, and is regenerated rather than edited when that

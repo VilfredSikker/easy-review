@@ -571,6 +571,12 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
+        // Delta file list on a Stale review. Not a Tour.
+        KeyCode::Char('D') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
+            app.toggle_delta_filter();
+            return Ok(());
+        }
+
         // Toggle reviewed — review tracking is per-branch, not meaningful in History.
         // Tour handles `space` in its own handler (operates on the tour file list).
         KeyCode::Char(' ') if !matches!(mode, DiffMode::History | DiffMode::Tour) => {
