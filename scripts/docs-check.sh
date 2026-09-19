@@ -66,7 +66,7 @@ echo
 #     anywhere, which is a weaker check but catches a file being deleted
 # Runtime artifacts are skipped: review.json and config.toml live in managed
 # storage and are created by the app, so they are correctly absent from the tree.
-RUNTIME_ARTIFACTS="config.toml review.json questions.json notes.json order.json checklist.json github-comments.json session.json tour.json triage.json professor.json summary.md reviewed"
+RUNTIME_ARTIFACTS="config.toml review.json questions.json notes.json order.json checklist.json github-comments.json session.json tour.json triage.json professor.json summary.md reviewed review-hashes.json"
 is_runtime() {
   for x in $RUNTIME_ARTIFACTS; do [ "$1" = "$x" ] && return 0; done
   return 1

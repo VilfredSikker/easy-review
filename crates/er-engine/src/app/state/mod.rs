@@ -722,6 +722,13 @@ pub struct TabState {
     /// Only show unreviewed files in the file tree
     pub show_unreviewed_only: bool,
 
+    /// When a review is Stale, hide files that the delta set skipped.
+    pub show_delta_only: bool,
+
+    /// The reviewer turned delta off for this Stale review. Cleared when the
+    /// review is fresh again so the next Stale load can default back on.
+    pub delta_opt_out: bool,
+
     /// Sort files by mtime (newest first) — works in any diff mode
     pub sort_by_mtime: bool,
 
@@ -1531,6 +1538,8 @@ impl TabState {
             reviewed: HashMap::new(),
             reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
+            show_delta_only: false,
+            delta_opt_out: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
             search_query_lower: String::new(),
@@ -1661,6 +1670,8 @@ impl TabState {
             reviewed: HashMap::new(),
             reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
+            show_delta_only: false,
+            delta_opt_out: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
             search_query_lower: String::new(),
@@ -1785,6 +1796,8 @@ impl TabState {
             reviewed: HashMap::new(),
             reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
+            show_delta_only: false,
+            delta_opt_out: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
             search_query_lower: String::new(),
@@ -1909,6 +1922,8 @@ impl TabState {
             reviewed: HashMap::new(),
             reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
+            show_delta_only: false,
+            delta_opt_out: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
             search_query_lower: String::new(),
@@ -3181,6 +3196,9 @@ impl TabState {
                 self.reload_ai_state();
             }
             log_branch_profile_phase(self, "local_branch_ai_reload", t_ai_reload);
+            if scope == "branch" {
+                self.compute_stale_files(&raw);
+            }
             // Full refreshes and quick-with-unmark refreshes recompute per-file
             // hashes; plain quick refreshes skip the SHA-256 pass.
             if recompute_branch_hash || compute_per_file_hashes {
@@ -3254,9 +3272,7 @@ impl TabState {
                 }
                 self.relocate_all_comments();
                 self.refresh_finding_staleness();
-                if self.ai.is_stale {
-                    self.compute_stale_files(&raw);
-                }
+                self.compute_stale_files(&raw);
                 // Full refreshes and quick-with-unmark refreshes recompute
                 // per-file hashes; plain quick refreshes skip.
                 if recompute_branch_hash || compute_per_file_hashes {
@@ -3447,12 +3463,13 @@ impl TabState {
         self.refresh_finding_staleness();
         log_branch_profile_phase(self, "refresh_finding_staleness", t);
 
-        // Compute per-file staleness when the review is stale and has file_hashes.
-        // Reuse the branch_raw we already fetched — no additional git call.
-        if self.ai.is_stale {
-            if let Some(ref branch_diff) = branch_raw_owned {
-                self.compute_stale_files(branch_diff);
-            }
+        // Per-file hashes vs the review, plus the delta set. Fresh reviews
+        // still run this so the host baseline is written while they match.
+        if let Some(ref branch_diff) = branch_raw_owned {
+            self.compute_stale_files(branch_diff);
+        } else if !self.ai.is_stale {
+            self.ai.delta = None;
+            self.sync_delta_visibility();
         }
 
         // Restore selection by path (file order may change after sort/re-parse)
@@ -3607,6 +3624,7 @@ impl TabState {
 
     pub fn reload_ai_state(&mut self) {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
+        let prev_delta = self.ai.delta.take();
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
         let prev_tour_stale = self.ai.tour_stale;
@@ -3618,7 +3636,7 @@ impl TabState {
             Some(ai) => ai,
             None => ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref()),
         };
-        self.finish_ai_reload(&er_dir, prev_stale_files, prev_tour_stale);
+        self.finish_ai_reload(&er_dir, prev_stale_files, prev_delta, prev_tour_stale);
         // The gate follows the review rather than a remembered choice, so it is
         // recomputed on every load — unless the reviewer set it by hand.
         if !self.layers.min_trust_pinned {
@@ -3634,6 +3652,7 @@ impl TabState {
         &mut self,
         er_dir: &str,
         prev_stale_files: std::collections::HashSet<String>,
+        prev_delta: Option<ai::DeltaSet>,
         prev_tour_stale: bool,
     ) {
         // GitHub PR comments are PR-scoped: stored in the shared PR bucket and shown
@@ -3701,6 +3720,10 @@ impl TabState {
         // Preserve per-file staleness across .er-* file reloads (recomputed in refresh_diff)
         if self.ai.is_stale {
             self.ai.stale_files = prev_stale_files;
+            self.ai.delta = prev_delta;
+        } else {
+            self.show_delta_only = false;
+            self.delta_opt_out = false;
         }
         // Clamp cursor to valid range after reload (item count may have decreased)
         let item_count = match self.review_focus {
@@ -4053,15 +4076,29 @@ impl TabState {
         }
     }
 
-    /// Compute which files have changed since the review, populating stale_files
+    /// Compute which files have changed since the review, and the delta set a
+    /// Stale review should show. Also snapshots host hashes while the review is
+    /// still fresh, so a later Stale load can skip.
     fn compute_stale_files(&mut self, branch_raw_diff: &str) {
-        if let Some(ref review) = self.ai.review {
-            if review.file_hashes.is_empty() {
-                return;
-            }
-            let current_hashes = ai::compute_per_file_hashes(branch_raw_diff);
-            let mut stale = std::collections::HashSet::new();
-            for (file, review_hash) in &review.file_hashes {
+        let current_hashes = ai::compute_per_file_hashes(branch_raw_diff);
+        let er_dir = self.er_dir();
+        let branch_hash = self.branch_diff_hash.clone();
+        let Some(review) = self.ai.review.as_ref() else {
+            self.ai.stale_files.clear();
+            self.ai.delta = None;
+            self.sync_delta_visibility();
+            return;
+        };
+        let baseline = ai::resolve_baseline_hashes(
+            review,
+            &current_hashes,
+            &branch_hash,
+            Some(std::path::Path::new(&er_dir)),
+        );
+
+        let mut stale = std::collections::HashSet::new();
+        if !baseline.is_empty() {
+            for (file, review_hash) in &baseline {
                 match current_hashes.get(file) {
                     Some(current_hash) if current_hash == review_hash => {}
                     _ => {
@@ -4069,8 +4106,39 @@ impl TabState {
                     }
                 }
             }
-            // Files in current diff but not in review are new (not stale)
-            self.ai.stale_files = stale;
+        }
+        self.ai.stale_files = stale;
+
+        if self.ai.is_stale {
+            if let Some(review) = self.ai.review.as_ref() {
+                self.ai.delta = Some(ai::compute_delta_set(
+                    review,
+                    &baseline,
+                    &current_hashes,
+                    &self.files,
+                ));
+            }
+        } else {
+            self.ai.delta = None;
+        }
+        self.sync_delta_visibility();
+    }
+
+    /// Default the file list to the delta when a Stale review can skip files.
+    /// Tour is not this path: the flag is ignored in Tour mode.
+    fn sync_delta_visibility(&mut self) {
+        let can = self.ai.is_stale
+            && matches!(self.mode, DiffMode::Branch | DiffMode::PrDiff)
+            && self.ai.delta.as_ref().is_some_and(|d| d.can_filter());
+        if can {
+            if !self.delta_opt_out {
+                self.show_delta_only = true;
+            }
+        } else {
+            self.show_delta_only = false;
+            if !self.ai.is_stale {
+                self.delta_opt_out = false;
+            }
         }
     }
 
@@ -4350,8 +4418,8 @@ impl TabState {
         self.selected_file
     }
 
-    /// Get the list of files, filtered by filter rules, search query, and reviewed status.
-    /// Pipeline: filter rules → search → unreviewed toggle
+    /// Get the list of files, filtered by filter rules, search query, reviewed status, and delta.
+    /// Pipeline: filter rules → search → unreviewed toggle → delta
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
         let mut visible: Vec<(usize, &DiffFile)> =
             self.active_diff_files().iter().enumerate().collect();
@@ -4377,6 +4445,16 @@ impl TabState {
         // Phase 3: Apply unreviewed-only toggle
         if self.show_unreviewed_only {
             visible.retain(|(_, f)| !self.reviewed.contains_key(&f.path));
+        }
+
+        // Phase 4: Delta re-review. Tour and working-tree modes keep their own
+        // lists. A leftover flag must not hide files there.
+        if self.show_delta_only && matches!(self.mode, DiffMode::Branch | DiffMode::PrDiff) {
+            if let Some(delta) = self.ai.delta.as_ref() {
+                if delta.can_filter() {
+                    visible.retain(|(_, f)| delta.contains_file(&f.path));
+                }
+            }
         }
 
         visible
@@ -7041,6 +7119,14 @@ impl App {
                 enabled: false,
             },
             HubItem {
+                label: "D".into(),
+                hint: "".into(),
+                description: "Toggle delta (stale review)".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            },
+            HubItem {
                 label: "q".into(),
                 hint: "".into(),
                 description: "Add review question (Ctrl+t → note)".into(),
@@ -8567,6 +8653,28 @@ impl App {
         }
     }
 
+    /// Toggle the delta file list on a Stale review. No-op outside Branch / PR Diff.
+    pub fn toggle_delta_filter(&mut self) {
+        if !matches!(self.tab().mode, DiffMode::Branch | DiffMode::PrDiff) {
+            return;
+        }
+        let can = self.tab().ai.delta.as_ref().is_some_and(|d| d.can_filter());
+        if !can {
+            self.notify("No delta. The review is fresh, or per-file hashes are missing.");
+            return;
+        }
+        let tab = self.tab_mut();
+        tab.show_delta_only = !tab.show_delta_only;
+        tab.delta_opt_out = !tab.show_delta_only;
+        tab.snap_to_visible();
+        let showing = tab.show_delta_only;
+        if showing {
+            self.notify("Showing delta");
+        } else {
+            self.notify("Showing all files");
+        }
+    }
+
     /// Jump to the next unreviewed file (wraps around). Reports if all reviewed.
     pub fn next_unreviewed_file(&mut self) {
         // Collect the data we need before any mutable borrow.
@@ -8882,6 +8990,8 @@ mod tests {
             reviewed: HashMap::new(),
             reviewed_file_hashes: HashMap::new(),
             show_unreviewed_only: false,
+            show_delta_only: false,
+            delta_opt_out: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
             search_query_lower: String::new(),
@@ -9612,6 +9722,49 @@ mod tests {
         let visible = tab.visible_files();
         assert_eq!(visible.len(), 1);
         assert_eq!(visible[0].1.path, "src/lib.rs");
+    }
+
+    #[test]
+    fn visible_files_delta_hides_skipped_files() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.ai.is_stale = true;
+        tab.show_delta_only = true;
+        tab.ai.delta = Some(crate::ai::DeltaSet {
+            changed_files: ["a.rs".into()].into_iter().collect(),
+            files: ["a.rs".into()].into_iter().collect(),
+            skipped_files: ["b.rs".into()].into_iter().collect(),
+            moved_finding_keys: Default::default(),
+            sample_finding_keys: Default::default(),
+        });
+        let visible: Vec<&str> = tab
+            .visible_files()
+            .iter()
+            .map(|(_, f)| f.path.as_str())
+            .collect();
+        assert_eq!(visible, vec!["a.rs"]);
+    }
+
+    #[test]
+    fn visible_files_delta_is_ignored_in_tour() {
+        let files = vec![
+            make_file("a.rs", vec![], 1, 0),
+            make_file("b.rs", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.mode = DiffMode::Tour;
+        tab.show_delta_only = true;
+        tab.ai.delta = Some(crate::ai::DeltaSet {
+            changed_files: ["a.rs".into()].into_iter().collect(),
+            files: ["a.rs".into()].into_iter().collect(),
+            skipped_files: ["b.rs".into()].into_iter().collect(),
+            moved_finding_keys: Default::default(),
+            sample_finding_keys: Default::default(),
+        });
+        assert_eq!(tab.visible_files().len(), 2);
     }
 
     // ── reviewed_count ──
