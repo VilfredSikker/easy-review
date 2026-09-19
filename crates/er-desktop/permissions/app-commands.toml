@@ -180,4 +180,8 @@ commands.allow = [
   "arena_cancel",
   "arena_override",
   "dev_log_filter",
+  "run_probe_pass",
+  "answer_probes",
+  "seed_probe_pass",
+  "seed_probe_answers",
 ]
