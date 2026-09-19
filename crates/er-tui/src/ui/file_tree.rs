@@ -103,8 +103,10 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     let visible_watched = tab.visible_watched_files();
     let watched_count = visible_watched.len();
     let visible_count = visible.len();
-    let has_filter =
-        !tab.filter_expr.is_empty() || !tab.search_query.is_empty() || tab.show_unreviewed_only;
+    let has_filter = !tab.filter_expr.is_empty()
+        || !tab.search_query.is_empty()
+        || tab.show_unreviewed_only
+        || tab.show_delta_only;
     let count_label = if has_filter {
         format!("{}/{}", visible_count, total)
     } else {
@@ -112,7 +114,15 @@ pub fn render(f: &mut Frame, area: Rect, app: &App) {
     };
     let title = if in_overlay && tab.ai.has_data() {
         let findings = tab.ai.total_findings();
-        if ai_stale && stale_count > 0 {
+        if tab.show_delta_only {
+            let skipped = tab
+                .ai
+                .delta
+                .as_ref()
+                .map(|d| d.skipped_files.len())
+                .unwrap_or(0);
+            format!(" FILES ({}) ⚠ delta · {} skipped ", count_label, skipped)
+        } else if ai_stale && stale_count > 0 {
             format!(
                 " FILES ({}) ⚠ {} findings · {} stale ",
                 count_label, findings, stale_count

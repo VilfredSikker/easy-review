@@ -885,6 +885,43 @@ mod tests {
     }
 
     #[test]
+    fn shift_d_toggles_delta_filter_when_a_delta_exists() {
+        let mut app = make_app(vec![make_file_with_hunk(), make_file_with_hunk()]);
+        app.tab_mut().ai.is_stale = true;
+        app.tab_mut().ai.delta = Some(er_engine::ai::DeltaSet {
+            changed_files: ["a.rs".into()].into_iter().collect(),
+            files: ["a.rs".into()].into_iter().collect(),
+            skipped_files: ["b.rs".into()].into_iter().collect(),
+            moved_finding_keys: Default::default(),
+            sample_finding_keys: Default::default(),
+        });
+        app.tab_mut().show_delta_only = true;
+        send_key(&mut app, KeyCode::Char('D'), KeyModifiers::NONE);
+        assert!(
+            !app.tab().show_delta_only,
+            "D must toggle show_delta_only off"
+        );
+        assert!(app.tab().delta_opt_out);
+    }
+
+    #[test]
+    fn shift_d_is_ignored_in_tour() {
+        let mut app = make_app(vec![make_file_with_hunk(), make_file_with_hunk()]);
+        app.tab_mut().mode = er_engine::app::DiffMode::Tour;
+        app.tab_mut().ai.delta = Some(er_engine::ai::DeltaSet {
+            changed_files: ["a.rs".into()].into_iter().collect(),
+            files: ["a.rs".into()].into_iter().collect(),
+            skipped_files: ["b.rs".into()].into_iter().collect(),
+            moved_finding_keys: Default::default(),
+            sample_finding_keys: Default::default(),
+        });
+        app.tab_mut().show_delta_only = true;
+        send_key(&mut app, KeyCode::Char('D'), KeyModifiers::NONE);
+        assert!(app.tab().show_delta_only, "D must not toggle delta in Tour");
+        assert!(!app.tab().delta_opt_out);
+    }
+
+    #[test]
     fn bang_does_not_scroll_diff() {
         let mut app = make_app(vec![make_file_with_hunk()]);
         app.tab_mut().diff_scroll = 20;
