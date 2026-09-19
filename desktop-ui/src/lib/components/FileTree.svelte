@@ -38,14 +38,15 @@
   }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
+  const delta = $derived(snapshot?.ai.delta ?? null);
+  const showDeltaBanner = $derived(
+    !pickerMode && !!delta?.available && snapshot?.mode !== "history",
+  );
 
-  /** Accurate tooltip for the annotation badge — breaks out comments / questions
-   *  / findings so a question never reads as a "comment". */
-  /// Findings the confidence gate is holding back, per file.
-  ///
-  /// The backend's `finding_count` is every active finding; the gate is the
-  /// reader's, so only the client can say how many it is hiding. A count that
-  /// silently shrinks is how a filter stops being trusted.
+  // Findings the confidence gate is holding back, per file.
+  // The backend's finding_count is every active finding; the gate is the
+  // reader's, so only the client can say how many it is hiding. A count that
+  // silently shrinks is how a filter stops being trusted.
   const hiddenFindings = $derived.by(() => {
     const ai = app.snapshot?.ai;
     const counts = new Map<string, number>();
@@ -58,6 +59,8 @@
     return counts;
   });
 
+  /** Accurate tooltip for the annotation badge. Breaks out comments, questions,
+   *  and findings so a question never reads as a comment. */
   function annotationTitle(file: FileSnapshot): string {
     const parts: string[] = [];
     if (file.comment_count > 0)
@@ -428,6 +431,25 @@
       {:else if !pickerMode && snapshot}
         <span>{snapshot.reviewed_count}/{snapshot.total_count} reviewed</span>
       {/if}
+    </div>
+  {/if}
+
+  {#if showDeltaBanner && delta}
+    <div class="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-hairline text-[11px] mono shrink-0">
+      <span class="text-ai min-w-0 truncate">
+        {#if delta.active}
+          Delta · {delta.file_count} files · {delta.skipped_count} skipped
+        {:else}
+          Delta hidden · {delta.skipped_count} skipped
+        {/if}
+      </span>
+      <button
+        type="button"
+        class="text-[10px] text-fg-3 hover:text-fg-2 shrink-0"
+        onclick={() => app.cmd("toggle_delta_filter")}
+      >
+        {delta.active ? "Show all" : "Show delta"}
+      </button>
     </div>
   {/if}
 

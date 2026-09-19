@@ -315,6 +315,11 @@
   {#if !ai.fresh && staleHelpOpen}
     <div class="mb-2 rounded border border-hairline bg-bg px-2 py-1.5 text-[11px] text-fg-2">
       {staleReason}
+      {#if ai.delta?.available}
+        <p class="mt-1">
+          Delta shows files whose hash moved, Findings whose key moved, and {ai.delta.sampled_finding_count} unchanged claims sampled.
+        </p>
+      {/if}
     </div>
   {/if}
   {#if summaryOpen || isEmpty || agentSummaryOnly}

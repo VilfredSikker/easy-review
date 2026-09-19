@@ -307,6 +307,12 @@ export function initKeyboard(): () => void {
         e.preventDefault();
         app.toggleDiffViewMode();
         break;
+      case "D":
+        if (app.snapshot?.ai.delta?.available) {
+          e.preventDefault();
+          app.cmd("toggle_delta_filter");
+        }
+        break;
       case "R":
         app.cmd("refresh_diff");
         break;

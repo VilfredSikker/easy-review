@@ -234,6 +234,7 @@ fn snapshot_view_token(app: &App, tab: &TabState, mode: &str) -> u64 {
     tab.local_branch_view.hash(&mut h);
     tab.filter_expr.hash(&mut h);
     tab.show_unreviewed_only.hash(&mut h);
+    tab.show_delta_only.hash(&mut h);
     h.finish()
 }
 
@@ -1201,6 +1202,21 @@ pub struct AiSnapshot {
     /// a parallel list that can drift from `prompts.rs` / kind validation.
     #[serde(default)]
     pub diagram_presets: Vec<DiagramPresetSnapshot>,
+    /// Delta re-review for a Stale review. None when the review is fresh.
+    #[serde(default)]
+    pub delta: Option<DeltaSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DeltaSnapshot {
+    /// True when at least one file can be skipped.
+    pub available: bool,
+    /// The Tab is filtering to the delta set.
+    pub active: bool,
+    pub file_count: usize,
+    pub skipped_count: usize,
+    pub moved_finding_count: usize,
+    pub sampled_finding_count: usize,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2774,6 +2790,7 @@ fn empty_ai_snapshot() -> AiSnapshot {
         checklist: None,
         diagrams: Vec::new(),
         diagram_presets: diagram_preset_snapshots(),
+        delta: None,
     }
 }
 
@@ -4138,8 +4155,28 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         }
     }
 
-    let file_risks: Vec<FileRiskSnapshot> =
+    let mut file_risks: Vec<FileRiskSnapshot> =
         ai.review.as_ref().map(build_file_risks).unwrap_or_default();
+
+    let delta = if ai.is_stale {
+        ai.delta.as_ref().map(|d| DeltaSnapshot {
+            available: d.can_filter(),
+            active: tab.show_delta_only,
+            file_count: d.files.len(),
+            skipped_count: d.skipped_files.len(),
+            moved_finding_count: d.moved_finding_keys.len(),
+            sampled_finding_count: d.sample_finding_keys.len(),
+        })
+    } else {
+        None
+    };
+
+    if tab.show_delta_only {
+        if let Some(d) = ai.delta.as_ref() {
+            findings.retain(|f| d.contains_file(&f.file));
+            file_risks.retain(|r| d.contains_file(&r.path));
+        }
+    }
 
     let er_dir = tab.er_dir();
     let has_review_json = std::path::Path::new(&er_dir).join("review.json").exists();
@@ -4240,6 +4277,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         checklist,
         diagrams,
         diagram_presets: diagram_preset_snapshots(),
+        delta,
     }
 }
 

@@ -1088,6 +1088,13 @@ pub fn toggle_reviewed(state: State<AppState>) -> Result<AppSnapshot, String> {
 }
 
 #[tauri::command]
+pub fn toggle_delta_filter(state: State<AppState>) -> Result<AppSnapshot, String> {
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    app.toggle_delta_filter();
+    Ok(snap_from(&app, &state))
+}
+
+#[tauri::command]
 pub fn mark_reviewed(path: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     {
@@ -10322,6 +10329,7 @@ fn compute_content_revision(app: &App) -> u64 {
     tab.current_hunk.hash(&mut h);
     tab.files.len().hash(&mut h);
     tab.filter_expr.hash(&mut h);
+    tab.show_delta_only.hash(&mut h);
     tab.ai
         .questions
         .as_ref()
