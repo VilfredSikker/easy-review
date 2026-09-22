@@ -10,11 +10,16 @@
 
   const probes = $derived(probePass.probes);
   const filesClosed = $derived(probePass.filesClosed);
-  const running = $derived(
-    (app.snapshot?.background_tasks ?? []).some(
-      (t) =>
-        (t.kind === "probes" || t.kind === "probe-answers") && t.status === "running",
+  const probeTask = $derived(
+    (app.snapshot?.background_tasks ?? []).find(
+      (t) => t.kind === "probes" || t.kind === "probe-answers",
     ),
+  );
+  const running = $derived(probeTask?.status === "running");
+  const failError = $derived(
+    probeTask?.status === "failed"
+      ? (probeTask.error ? probeTask.error : "Probe pass failed")
+      : "",
   );
   const unstamped = $derived(probes.filter((p) => !p.stamp));
 
@@ -105,6 +110,8 @@
 
   {#if running}
     <p class="px-3 pb-2 text-[11px] text-accent">Hub running…</p>
+  {:else if failError}
+    <p class="px-3 pb-2 text-[11px] text-del-fg">{failError}</p>
   {/if}
 
   {#if filesClosed}

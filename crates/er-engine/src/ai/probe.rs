@@ -707,6 +707,41 @@ mod tests {
     }
 
     #[test]
+    fn missing_stdout_payload_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let err = persist_probes_from_agent_stdout(
+            "hub said nothing useful",
+            false,
+            dir.path(),
+            "h",
+            ProbeHostMode::Write,
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("did not emit a probe JSON payload"),
+            "{err}"
+        );
+        assert!(!dir.path().join("questions.json").exists());
+    }
+
+    #[test]
+    fn empty_probes_json_persists_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let stdout = format!(
+            "{PROBE_JSON_BEGIN}\n{}\n{PROBE_JSON_END}",
+            serde_json::json!({ "probes": [] })
+        );
+        persist_probes_from_agent_stdout(&stdout, false, dir.path(), "h", ProbeHostMode::Write)
+            .unwrap();
+        let loaded: ErQuestions = serde_json::from_str(
+            &std::fs::read_to_string(dir.path().join("questions.json")).unwrap(),
+        )
+        .unwrap();
+        assert!(loaded.questions.iter().all(|q| !is_probe_question(q)));
+    }
+
+    #[test]
     fn missing_stamp_is_empty() {
         assert_eq!(parse_probe_stamp(""), ProbeStamp::Empty);
         assert_eq!(parse_probe_stamp("PASS"), ProbeStamp::Pass);

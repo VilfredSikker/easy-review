@@ -10639,6 +10639,9 @@ fn compute_content_revision(app: &App) -> u64 {
             er_engine::app::CommandStatus::Failed(_) => 2u8.hash(&mut h),
         }
     }
+    // App-level tasks (reviews, diagrams, probes). Host-write probes can
+    // finish without touching questions.json. ADR 0034: hash the field.
+    app.hash_background_task_status(&mut h);
     tab.agent_log.len().hash(&mut h);
     if let Some(last) = tab.agent_log.back() {
         last.text.hash(&mut h);

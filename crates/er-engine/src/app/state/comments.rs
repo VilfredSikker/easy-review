@@ -6,6 +6,58 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+/// Claude `--allowedTools` for a background agent.
+///
+/// Host-write runs (diagrams, probes) stay read-only. The harness persists
+/// stdout. Giving Write/Edit on that path is a permission prompt the desktop
+/// never answers, so the pane sits on "Hub running" until the 15 minute cap.
+fn claude_background_allowed_tools(
+    host_write: bool,
+    prepared_diff: bool,
+) -> &'static [&'static str] {
+    if host_write {
+        &[
+            "Read",
+            "Bash(grep *)",
+            "Bash(rg *)",
+            "Bash(git grep*)",
+            "Bash(git show*)",
+            "Bash(git log*)",
+        ]
+    } else if prepared_diff {
+        &[
+            "Read",
+            "Write",
+            "Edit",
+            "Bash(grep *)",
+            "Bash(rg *)",
+            "Bash(git grep*)",
+            "Bash(git show*)",
+            "Bash(git fetch origin pull/*)",
+            "Bash(cp .er/*)",
+            "Bash(shasum*)",
+            "Bash(sha256sum*)",
+            "Bash(mkdir*)",
+            "Bash(awk*)",
+        ]
+    } else {
+        &[
+            "Read",
+            "Write",
+            "Edit",
+            "Bash(gh pr *)",
+            "Bash(cp .er/*)",
+            "Bash(git diff*)",
+            "Bash(git grep*)",
+            "Bash(git show*)",
+            "Bash(git fetch origin pull/*)",
+            "Bash(shasum*)",
+            "Bash(sha256sum*)",
+            "Bash(mkdir*)",
+        ]
+    }
+}
+
 /// Whether a completed agent run writes its full transcript to
 /// `debug-agent.log`.
 ///
@@ -3169,13 +3221,13 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
-        // Diagrams: the host writes the sidecar, so the agent must not be able to
-        // write anything — its prompt carries untrusted diff content. Claude's
-        // `--allowedTools` allowlist and OpenCode's permission env deny edits
-        // themselves and still need the bucket to read diff-tmp from. Codex and
-        // Cursor have no tool list, so for them the only write control is the
-        // sandbox, and `--add-dir` is documented as adding a *writable* directory
-        // — so a read-only run withholds it and narrows the sandbox instead.
+        // Host-write sidecars (diagrams, probes): the agent must not write.
+        // Its prompt carries untrusted diff content. Claude's `--allowedTools`
+        // allowlist and OpenCode's permission env deny edits themselves and
+        // still need the bucket to read diff-tmp from. Codex and Cursor have
+        // no tool list, so for them the only write control is the sandbox, and
+        // `--add-dir` is documented as adding a *writable* directory — so a
+        // read-only run withholds it and narrows the sandbox instead.
         let readonly_run = host_write_diagram.is_some() || host_write_probes.is_some();
         let storage_access = match family {
             crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
@@ -3269,48 +3321,10 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed: &[&str] = if host_write_diagram.is_some() {
-                        // Read-only: harness persists the diagram JSON from stdout.
-                        &[
-                            "Read",
-                            "Bash(grep *)",
-                            "Bash(rg *)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git log*)",
-                        ]
-                    } else if prepared_diff {
-                        &[
-                            "Read",
-                            "Write",
-                            "Edit",
-                            "Bash(grep *)",
-                            "Bash(rg *)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git fetch origin pull/*)",
-                            "Bash(cp .er/*)",
-                            "Bash(shasum*)",
-                            "Bash(sha256sum*)",
-                            "Bash(mkdir*)",
-                            "Bash(awk*)",
-                        ]
-                    } else {
-                        &[
-                            "Read",
-                            "Write",
-                            "Edit",
-                            "Bash(gh pr *)",
-                            "Bash(cp .er/*)",
-                            "Bash(git diff*)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git fetch origin pull/*)",
-                            "Bash(shasum*)",
-                            "Bash(sha256sum*)",
-                            "Bash(mkdir*)",
-                        ]
-                    };
+                    let allowed = claude_background_allowed_tools(
+                        host_write_diagram.is_some() || host_write_probes.is_some(),
+                        prepared_diff,
+                    );
                     for rule in allowed.iter().rev() {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());
@@ -3340,6 +3354,7 @@ impl App {
                 let mut cmd = std::process::Command::new(&agent_cmd);
                 cmd.args(&agent_args)
                     .current_dir(work_dir)
+                    .stdin(std::process::Stdio::null())
                     .stdout(std::process::Stdio::piped())
                     .stderr(std::process::Stdio::piped());
                 if let Some((key, value)) = &opencode_env {
@@ -3940,6 +3955,98 @@ impl App {
             .get(task_id)
             .map(|h| h.recent_log.iter().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// Fingerprint of in-flight and queued background task status.
+    ///
+    /// Desktop poll hashes this (ADR 0034). Host-write probes can finish
+    /// without touching `questions.json`; without it the pane stays running.
+    pub fn hash_background_task_status<H: std::hash::Hasher>(&self, hasher: &mut H) {
+        use std::hash::Hash;
+        let mut items: Vec<(String, String, u8, Option<String>)> = self
+            .background_tasks
+            .values()
+            .map(|h| {
+                (
+                    h.task.id.clone(),
+                    h.task.kind.clone(),
+                    match &h.task.status {
+                        CommandStatus::Running => 0u8,
+                        CommandStatus::Done => 1u8,
+                        CommandStatus::Failed(_) => 2u8,
+                    },
+                    h.task.error.clone(),
+                )
+            })
+            .collect();
+        items.extend(
+            self.pending_background_tasks
+                .iter()
+                .map(|p| (p.task.id.clone(), p.task.kind.clone(), 3u8, None)),
+        );
+        items.sort();
+        for item in items {
+            item.hash(hasher);
+        }
+    }
+}
+
+#[cfg(test)]
+mod background_spawn_tests {
+    use super::claude_background_allowed_tools;
+    use crate::app::{App, BackgroundTask, BackgroundTaskTarget};
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::Hasher;
+
+    #[test]
+    fn host_write_claude_tools_are_read_only() {
+        let tools = claude_background_allowed_tools(true, true);
+        assert!(tools.contains(&"Read"));
+        assert!(
+            !tools.iter().any(|t| *t == "Write" || *t == "Edit"),
+            "host-write probes must not get Write/Edit"
+        );
+        let writable = claude_background_allowed_tools(false, true);
+        assert!(writable.contains(&"Write"));
+        assert!(writable.contains(&"Edit"));
+    }
+
+    #[test]
+    fn background_task_status_hash_moves_when_queued() {
+        let mut app = App::new_for_test(vec![]);
+        let mut empty_hasher = DefaultHasher::new();
+        app.hash_background_task_status(&mut empty_hasher);
+        let empty = empty_hasher.finish();
+
+        app.pending_background_tasks
+            .push_back(super::background::PendingBackgroundTask {
+                task: BackgroundTask::new(
+                    crate::ai::PROBE_TASK_KIND.to_string(),
+                    BackgroundTaskTarget {
+                        repo_root: "/repo".into(),
+                        er_dir: "/repo/.er".into(),
+                        branch_label: "feat".into(),
+                        base_branch: "main".into(),
+                        scope: "branch".into(),
+                        pr_number: None,
+                        remote_repo: None,
+                        managed_local: false,
+                    },
+                ),
+                command_name: "probes".into(),
+                prompt: String::new(),
+                prepared_diff: true,
+                host_write_diagram: None,
+                host_write_probes: None,
+                ai_selection: None,
+            });
+        let mut queued_hasher = DefaultHasher::new();
+        app.hash_background_task_status(&mut queued_hasher);
+        assert_ne!(
+            empty,
+            queued_hasher.finish(),
+            "queued probes must move the poll hash so the pane can leave running"
+        );
     }
 }
 
