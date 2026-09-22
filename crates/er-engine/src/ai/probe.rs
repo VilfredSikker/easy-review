@@ -290,10 +290,7 @@ fn drop_existing_probes(questions: &mut Vec<ReviewQuestion>) {
         if probe_ids.contains(&q.id) {
             return false;
         }
-        match &q.in_reply_to {
-            Some(parent) if probe_ids.contains(parent) => false,
-            _ => true,
-        }
+        !matches!(&q.in_reply_to, Some(parent) if probe_ids.contains(parent))
     });
 }
 

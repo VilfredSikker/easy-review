@@ -3035,6 +3035,7 @@ impl App {
     /// App-level background agent task (review or expert). When the number
     /// of running tasks has reached `ai_hub.max_concurrent_reviews`, the
     /// task is queued and launched later by `poll_background_tasks`.
+    #[allow(clippy::too_many_arguments)] // host_write_probes is the extra host-write sibling of diagrams
     fn spawn_background_agent_task(
         &mut self,
         kind: String,
