@@ -108,6 +108,8 @@ label = "GPT-6 Astra"
 description = "Frontier intelligence · most demanding work"
 args = ["--model", "gpt-6-astra"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
+cost_per_1k_in = 0.010
+cost_per_1k_out = 0.050
 avg_latency_ms = 22000
 
 [[ai_hub.providers.codex.models]]
@@ -116,6 +118,8 @@ label = "GPT-6 Sol"
 description = "Workhorse · coding + everyday work"
 args = ["--model", "gpt-6-sol"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
+cost_per_1k_in = 0.002
+cost_per_1k_out = 0.010
 avg_latency_ms = 16000
 
 [[ai_hub.providers.codex.models]]
@@ -124,36 +128,38 @@ label = "GPT-6 Luna"
 description = "Fast & affordable · easier tasks"
 args = ["--model", "gpt-6-luna"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
+cost_per_1k_in = 0.0001
+cost_per_1k_out = 0.0005
 avg_latency_ms = 8000
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-sol"
 label = "GPT-5.6 Sol"
-description = "Flagship reasoning · detail + polish"
+description = "Previous generation · complex work"
 args = ["--model", "gpt-5.6-sol"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
-cost_per_1k_in = 0.005
-cost_per_1k_out = 0.030
+cost_per_1k_in = 0.004
+cost_per_1k_out = 0.020
 avg_latency_ms = 20000
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-terra"
 label = "GPT-5.6 Terra"
-description = "Strong everyday coding + tool use"
+description = "Previous generation · balanced coding"
 args = ["--model", "gpt-5.6-terra"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
-cost_per_1k_in = 0.0025
-cost_per_1k_out = 0.015
+cost_per_1k_in = 0.002
+cost_per_1k_out = 0.012
 avg_latency_ms = 14000
 
 [[ai_hub.providers.codex.models]]
 id = "gpt-5.6-luna"
 label = "GPT-5.6 Luna"
-description = "Fast, efficient repeatable work"
+description = "Previous generation · fast + cheap"
 args = ["--model", "gpt-5.6-luna"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
-cost_per_1k_in = 0.001
-cost_per_1k_out = 0.005
+cost_per_1k_in = 0.0002
+cost_per_1k_out = 0.0012
 avg_latency_ms = 8000
 
 [[ai_hub.providers.codex.models]]
