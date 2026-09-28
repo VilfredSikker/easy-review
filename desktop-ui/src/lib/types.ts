@@ -818,7 +818,12 @@ export type ConfigHubField =
   | { kind: "listEntry"; key: string; label: string; index: number }
   | { kind: "listAdd"; key: string; label: string };
 
-export type SettingsTab = "general" | "projects" | "terminal";
+export type SettingsTab = "general" | "ai" | "review" | "projects" | "terminal";
+
+export interface RefreshAiModelsResponse {
+  providers: AiProviderInfo[];
+  errors: string[];
+}
 
 /** One declared importance rule, as written. */
 export interface ImportanceRuleSnapshot {

@@ -29,6 +29,14 @@ pub struct GetConfigHubResponse {
     pub family_options: Vec<String>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshAiModelsResponse {
+    pub providers: Vec<AiProviderInfo>,
+    /// One line per provider whose listing failed; the prior cache still applies.
+    pub errors: Vec<String>,
+}
+
 const fn feature_allows_mode(features: &FeatureFlags, mode: DiffMode) -> bool {
     match mode {
         DiffMode::Branch => features.view_branch,
@@ -374,14 +382,18 @@ pub async fn refresh_ai_models(
     provider_id: Option<String>,
     force: Option<bool>,
     state: State<'_, AppState>,
-) -> Result<Vec<AiProviderInfo>, String> {
+) -> Result<RefreshAiModelsResponse, String> {
     let force = force.unwrap_or(false);
     let state_clone = state.inner().clone();
     crate::commands::run_blocking(move || {
+        let mut errors = Vec::new();
         let targets: Vec<(String, Vec<String>)> = {
             let app = state_clone.app.lock().map_err(|e| e.to_string())?;
             if !app.config.features.model_discovery {
-                return Ok(list_providers_inner(&app));
+                return Ok(RefreshAiModelsResponse {
+                    providers: list_providers_inner(&app),
+                    errors: vec!["Model discovery is turned off in Settings → AI".into()],
+                });
             }
             app.config
                 .ai_hub
@@ -433,13 +445,17 @@ pub async fn refresh_ai_models(
                         app.apply_discovered_models(&pid, &cache.models);
                     }
                     log::warn!("refresh_ai_models({pid}): {e}");
+                    errors.push(format!("{pid}: {e:#}"));
                 }
             }
         }
 
         bump_revision(&state_clone);
         let app = state_clone.app.lock().map_err(|e| e.to_string())?;
-        Ok(list_providers_inner(&app))
+        Ok(RefreshAiModelsResponse {
+            providers: list_providers_inner(&app),
+            errors,
+        })
     })
     .await
 }
