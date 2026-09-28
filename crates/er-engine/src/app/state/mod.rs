@@ -4,6 +4,7 @@ pub(super) mod comments;
 pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
+pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
 use crate::config::{self, ErConfig, ImportanceRepoConfig, WatchedConfig};
