@@ -333,12 +333,12 @@ mod tests {
         }
     }
 
-    fn ctx<'a>(
+    fn ctx(
         is_my_pr: bool,
         requested_me: bool,
         is_new_pr: bool,
-        triaged: Option<&'a str>,
-    ) -> AutoTriageQueueContext<'a> {
+        triaged: Option<&str>,
+    ) -> AutoTriageQueueContext<'_> {
         AutoTriageQueueContext {
             is_my_pr,
             requested_me,

@@ -1,8 +1,6 @@
-// Deliberate style decision: keep `if let Some(x) = ... { } else { }` chains
-// instead of `Option::map_or[_else]` — the branches here are usually complex
-// (multi-statement bodies, nested matches, else-if fallbacks) and the if-let
-// form reads better. Clippy's nursery lint disagrees; we opt out crate-wide.
-#![allow(clippy::option_if_let_else)]
+// The engine runs under the TUI's alternate screen and inside the desktop app,
+// so a print to stdout paints over the TUI. Report through dev_log or a Result.
+#![deny(clippy::print_stdout)]
 
 pub mod agent_run;
 pub mod agent_slots;

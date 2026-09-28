@@ -231,12 +231,11 @@ fn relocate_hunk_level(anchor: &CommentAnchor, diff_file: &DiffFile) -> Relocati
             let original_idx = anchor.hunk_index.unwrap_or(usize::MAX);
             if hunk_idx == original_idx {
                 return RelocationResult::Unchanged;
-            } else {
-                return RelocationResult::Relocated {
-                    new_hunk_index: hunk_idx,
-                    new_line_start: hunk.new_start,
-                };
             }
+            return RelocationResult::Relocated {
+                new_hunk_index: hunk_idx,
+                new_line_start: hunk.new_start,
+            };
         }
     }
 

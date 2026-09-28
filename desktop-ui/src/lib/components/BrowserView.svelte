@@ -894,7 +894,6 @@
     </button>
   </div>
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={browserPaneEl}
     class="relative flex-1 overflow-hidden bg-transparent pointer-events-none"

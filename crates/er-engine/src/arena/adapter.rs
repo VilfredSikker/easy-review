@@ -85,7 +85,9 @@ pub fn run_provider_json(
                 if class == ErrorClass::Fatal || attempt == MAX_RETRIES {
                     break;
                 }
-                thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                thread::sleep(std::time::Duration::from_millis(
+                    500 * (u64::from(attempt) + 1),
+                ));
             }
         }
     }

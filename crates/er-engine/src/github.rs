@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -1005,7 +1003,6 @@ fn review_comment_field_args(
 }
 
 /// Push a new review comment to a PR (`line_end` inclusive; omit or equal to start for single-line).
-#[allow(clippy::too_many_arguments)]
 pub fn gh_pr_push_comment(
     owner: &str,
     repo: &str,
@@ -2050,7 +2047,6 @@ fn parse_review_threads_response(json: &str) -> Result<HashMap<u64, ReviewThread
 }
 
 /// Push a new review comment to a remote PR (no local clone needed).
-#[allow(clippy::too_many_arguments)]
 pub fn gh_pr_push_comment_remote(
     owner: &str,
     repo: &str,
@@ -2222,7 +2218,6 @@ fn pr_review_payload_json(
     payload
 }
 
-#[allow(clippy::too_many_arguments)]
 fn post_pr_review(
     owner: &str,
     repo: &str,

@@ -1,0 +1,19 @@
+[package]
+name = "er-lint-gate"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Clippy as a ratcheted gate: every diagnostic fails except budgeted lints, which may only shrink"
+publish = false
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+
+[lints]
+workspace = true

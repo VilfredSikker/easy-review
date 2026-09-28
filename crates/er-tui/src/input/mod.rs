@@ -123,7 +123,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     };
                     app.config_hub_switch_tab(next);
                 }
-                KeyCode::Char('s') | KeyCode::Char('S') => app.config_hub_close(),
+                KeyCode::Char('s' | 'S') => app.config_hub_close(),
                 KeyCode::Esc | KeyCode::Char('q') => app.config_hub_close(),
                 _ => {}
             }
@@ -790,7 +790,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 let full_path = format!("{}/{}", app.tab().repo_root, path);
                 app.input_mode = InputMode::Normal;
                 match std::fs::remove_file(&full_path) {
-                    Ok(_) => {
+                    Ok(()) => {
                         app.tab_mut().refresh_watched_files();
                         // Clamp selection after removal
                         let count = app.tab().watched_files.len();

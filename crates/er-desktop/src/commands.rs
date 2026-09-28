@@ -1599,7 +1599,6 @@ fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec
     }
 }
 
-#[allow(clippy::too_many_arguments)] // prefs must come from App; adding it exceeds the 7-arg cap
 pub fn process_inbox_after_pr_refresh(
     pr_cache: &Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
     gh_user_state: &GhUser,
@@ -1900,7 +1899,6 @@ pub fn process_inbox_after_pr_refresh(
     }
 }
 
-#[allow(clippy::too_many_arguments)] // prefs must come from App; adding it exceeds the 7-arg cap
 fn ingest_github_notifications(
     inbox_handle: &InboxHandle,
     project_by_remote: &HashMap<String, projects::ProjectRecord>,
@@ -2279,7 +2277,6 @@ pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // ── Threads ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn add_comment(
     file: String,
     hunk_idx: usize,
@@ -2321,7 +2318,6 @@ pub async fn add_comment(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn add_question(
     file: String,
     hunk_idx: usize,
@@ -2362,7 +2358,6 @@ pub async fn add_question(
 }
 
 #[tauri::command]
-#[allow(clippy::too_many_arguments)]
 pub async fn add_note(
     file: String,
     hunk_idx: usize,
@@ -4102,7 +4097,7 @@ pub async fn run_ai_scoped_review(
             er_dir: er_dir.clone(),
             branch_label,
             base_branch,
-            scope: scope.to_string(),
+            scope: scope.clone(),
             pr_number,
             remote_repo,
             managed_local: !is_remote,
@@ -4160,7 +4155,6 @@ pub async fn run_ai_scoped_review(
     .await
 }
 
-#[allow(clippy::too_many_arguments)]
 fn spawn_scoped_reviewers(
     app: &mut er_engine::app::App,
     scope: &str,
@@ -8324,7 +8318,7 @@ pub async fn sync_pr(
                     );
                 }
                 Err(e) => {
-                    log::warn!("sync_pr: cache-persist diff fetch failed for #{pr_number}: {e}")
+                    log::warn!("sync_pr: cache-persist diff fetch failed for #{pr_number}: {e}");
                 }
             }
         }
@@ -8774,7 +8768,7 @@ pub async fn reply_to_finding(
 fn reply_to_finding_impl(
     finding_id: String,
     body: String,
-    _ai_assist: bool,
+    ai_assist: bool,
     id: Option<String>,
     view: Option<crate::snapshot::OptimisticView>,
     state: &AppState,
@@ -8812,7 +8806,7 @@ fn reply_to_finding_impl(
     let (file, hunk_idx, line_start) =
         target.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
 
-    if _ai_assist {
+    if ai_assist {
         let prompt = if body.trim().is_empty() {
             DEFAULT_ASK_AI_PROMPT.to_string()
         } else {
@@ -9696,7 +9690,6 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
     });
 }
 
-#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn update_tab_browser(
     layout: Option<String>,
@@ -9885,7 +9878,7 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
     let mut buf: u32 = 0;
     let mut bits: u32 = 0;
     for &b in stripped {
-        let v = val(b)? as u32;
+        let v = u32::from(val(b)?);
         buf = (buf << 6) | v;
         bits += 6;
         if bits >= 8 {

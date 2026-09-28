@@ -188,7 +188,6 @@
     const row = (e.currentTarget as HTMLElement).parentElement;
     if (!row) return;
     const rect = row.getBoundingClientRect();
-    const startX = e.clientX;
 
     const onMove = (ev: MouseEvent) => {
       const frac = (ev.clientX - rect.left) / rect.width;

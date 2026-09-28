@@ -87,6 +87,13 @@ docs and release chores do land on `main`.
 - **One `er` instance per worktree.** Multi-worktree tabs work through the
   worktree picker.
 - **`main` and `release/v*` can differ** — check the branch you are actually on.
+- **Lint is a gate that only tightens** (ADR 0038). `just clippy` and
+  `just lint-ui` must exit 0. Never grow a baseline to get green: fix the
+  violation, or scope a disable to the one site with its reason
+  (`#[expect(lint, reason = …)]`, `// eslint-disable-next-line rule -- why`).
+  After fixing a baselined violation, run `just clippy-prune` or
+  `just lint-ui-prune`, or the gate fails as stale. When a cohesion rule
+  flags a file, split it along the groups the warning names.
 
 The TUI binary is self-contained, but AI actions spawn the configured agent CLI,
 clipboard actions shell out to the platform tool, and the desktop embeds an HTTP

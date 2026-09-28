@@ -27,7 +27,7 @@
   let includeNotes = $state(true);
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
-  let includeChecklist = $state(true);
+  const includeChecklist = $state(true);
   let onlyUnresolved = $state(false);
 
   // Per-item exclusions. Empty set = export the whole category (no allow-list

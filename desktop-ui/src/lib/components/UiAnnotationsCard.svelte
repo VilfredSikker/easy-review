@@ -11,7 +11,6 @@
   import { dismissBrowserAnnotationComposerNow } from "$lib/stores/keyboard";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
-  import type { UiAnnotation } from "$lib/types";
 
   /** Only annotations for the URL currently loaded in the review browser. */
   const annotations = $derived.by(() => {
@@ -26,7 +25,7 @@
   const pageLabel = $derived(urlPath(pageKey(browser.url) || browser.url));
 
   /** Lazy-loaded thumbnails keyed by screenshot_path. */
-  let thumbs = $state<Record<string, string>>({});
+  const thumbs = $state<Record<string, string>>({});
 
   function ensureThumb(path: string | null) {
     if (!path || thumbs[path]) return;

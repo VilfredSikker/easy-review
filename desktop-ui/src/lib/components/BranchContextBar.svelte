@@ -294,7 +294,7 @@
       <button
         role="tab"
         aria-selected={prActive}
-        onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber: prNumber })}
+        onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber })}
         class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>

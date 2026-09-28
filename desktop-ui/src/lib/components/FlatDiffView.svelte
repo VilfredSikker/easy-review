@@ -43,7 +43,6 @@
     getCrossFileModel,
     rowLineOnSide,
     unifiedLineSide,
-    type CrossFileModel,
     type CrossFileFlatRow,
     type PillarHeaderInfo,
   } from "$lib/diffRenderModel";
@@ -917,8 +916,9 @@
         app.snapshot.mode !== reqMode ||
         app.snapshot.base !== reqBase ||
         app.snapshot.branch !== reqBranch
-      )
+      ) {
         return;
+      }
       for (const newFile of files) {
         const oldFile = app.snapshot.files.find((f) => f.source_index === newFile.source_index);
         if (!oldFile) continue;
@@ -973,8 +973,9 @@
         _requestingFiles.has(row.sourceIndex) ||
         _deadStubs.has(`${row.sourceIndex}:${row.filePath ?? ""}`) ||
         seen.has(row.sourceIndex)
-      )
+      ) {
         continue;
+      }
       seen.add(row.sourceIndex);
       into.push(row.sourceIndex);
     }
@@ -1603,7 +1604,7 @@
     if (!refHighlight.searchOpen) return [];
     const out: number[] = [];
     for (const u of usageLines) {
-      for (let i = 0; i < u.ranges.length; i++) out.push(u.rowIdx);
+      for (const _range of u.ranges) out.push(u.rowIdx);
     }
     return out;
   });
@@ -2200,7 +2201,6 @@
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
   <div class="flex-1 min-h-0 relative flex flex-col">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"

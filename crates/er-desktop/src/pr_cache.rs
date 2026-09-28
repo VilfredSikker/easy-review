@@ -40,7 +40,6 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-#[allow(clippy::type_complexity)]
 pub fn load_persisted_pr_cache(
 ) -> Result<Option<(HashMap<String, Vec<PrInfo>>, HashMap<String, u64>)>> {
     let Some(path) = pr_cache_path() else {

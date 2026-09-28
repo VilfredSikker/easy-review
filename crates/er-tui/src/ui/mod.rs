@@ -91,7 +91,15 @@ pub fn draw(f: &mut Frame, app: &App, hl: &mut Highlighter) {
                 editing,
                 ..
             } => {
-                settings::render_config_hub(f, f.area(), app, *tab, items, *selected, editing);
+                settings::render_config_hub(
+                    f,
+                    f.area(),
+                    app,
+                    *tab,
+                    items,
+                    *selected,
+                    editing.as_ref(),
+                );
             }
             _ => {
                 overlay::render_overlay(f, f.area(), overlay_data);

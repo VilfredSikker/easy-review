@@ -15,10 +15,8 @@ use er_engine::app::App;
 // PR check conclusion display helpers
 fn check_icon(bucket: Option<&str>) -> (&'static str, ratatui::style::Color) {
     match bucket {
-        Some("pass") | Some("success") => ("✓", styles::GREEN()),
-        Some("fail") | Some("failure") | Some("cancelled") | Some("timed_out") => {
-            ("✗", styles::RED_TEXT())
-        }
+        Some("pass" | "success") => ("✓", styles::GREEN()),
+        Some("fail" | "failure" | "cancelled" | "timed_out") => ("✗", styles::RED_TEXT()),
         Some("skipped") => ("–", styles::MUTED()),
         _ => ("○", styles::DIM()),
     }
@@ -428,7 +426,7 @@ fn render_file_detail<'a>(
                                     sev_style,
                                 ),
                                 Span::styled(conf_glyph, conf_style),
-                                Span::styled(wrapped.to_string(), sev_style),
+                                Span::styled(wrapped.clone(), sev_style),
                             ]));
                         } else {
                             lines.push(Line::from(vec![Span::styled(

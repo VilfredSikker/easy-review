@@ -1,5 +1,3 @@
-#![allow(clippy::too_many_arguments)]
-
 use super::adapter::{is_cancelled_error, resolve_provider_command, run_provider_json};
 use super::agents::agent_meta;
 use super::merge::findings_from_round1;
@@ -141,7 +139,7 @@ pub fn estimate_cost_usd(
     hub: &crate::config::AiHubConfig,
 ) -> f32 {
     let rounds_n = effective_arena_rounds(rounds);
-    let rounds = rounds_n as f64;
+    let rounds = f64::from(rounds_n);
     let reviewer_count = reviewers.len().max(1) as f64;
     let tokens_in = (diff_bytes as f64 * reviewer_count * rounds * 1.2) as f32;
     let mut rate_sum = 0.0f32;
@@ -194,7 +192,7 @@ pub fn estimate_latency_sec(
     if max_latency == 0 {
         max_latency = 12_000;
     }
-    let sec = ((max_latency as f64) * (rounds as f64) * 0.85 / 1000.0).round() as u32;
+    let sec = (f64::from(max_latency) * f64::from(rounds) * 0.85 / 1000.0).round() as u32;
     sec.max(5)
 }
 

@@ -117,7 +117,6 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
 
 /// Resolve the PR bucket (optionally refresh `diff-tmp`), validate the
 /// diagram JSON against the current diff hash, and atomically write it.
-#[allow(clippy::too_many_arguments)]
 pub fn upload_diagram(
     owner: &str,
     repo: &str,

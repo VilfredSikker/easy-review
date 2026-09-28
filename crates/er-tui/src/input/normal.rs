@@ -513,7 +513,7 @@ pub fn handle_normal_input(
         }
 
         // Expand / collapse context lines for current file
-        KeyCode::Char('+') | KeyCode::Char('=') => {
+        KeyCode::Char('+' | '=') => {
             if app.tab().is_remote() {
                 app.notify("Context expansion not available in remote mode");
                 return Ok(());
@@ -762,10 +762,9 @@ pub fn handle_ai_review_input(app: &mut App, key: KeyEvent) -> Result<()> {
 
         // Switch focus between left/right columns
         KeyCode::Tab
-        | KeyCode::Char('l')
+        | KeyCode::Char('l' | 'h')
         | KeyCode::Right
         | KeyCode::BackTab
-        | KeyCode::Char('h')
         | KeyCode::Left => {
             app.tab_mut().review_toggle_focus();
             let (files_offset, checklist_offset) = app.tab().ai_summary_section_offsets();

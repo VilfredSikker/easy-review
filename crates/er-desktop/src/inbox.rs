@@ -490,7 +490,6 @@ fn aggregate_review_decision_items(
     items
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pr_item(
     kind: &str,
     severity: &str,

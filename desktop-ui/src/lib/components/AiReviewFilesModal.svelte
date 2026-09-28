@@ -330,7 +330,7 @@
           embedded={true}
           files={pickerFiles}
           selectedPaths={selected}
-          onSelectedPathsChange={onSelectedPathsChange}
+          {onSelectedPathsChange}
           onPickerEnter={goToReviewers}
         />
       {/if}

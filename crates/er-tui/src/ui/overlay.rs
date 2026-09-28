@@ -476,6 +476,10 @@ fn render_modal_hub(
     f.render_stateful_widget(list, popup, &mut state);
 }
 
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "one flag per export category, passed straight from the overlay state"
+)]
 fn render_export_picker(
     f: &mut Frame,
     area: Rect,

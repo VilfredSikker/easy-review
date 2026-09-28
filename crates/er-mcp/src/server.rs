@@ -521,7 +521,7 @@ async fn query_single_repo(args: &PrsQueryArgs) -> Result<serde_json::Value, Mcp
     let (repo, project_id) = query_repo_args(&args.target);
     let (owner, name, project_name, mut prs) = load_queue(repo, project_id).await?;
 
-    let needs_ci = matches!(filter.as_deref(), Some("blocked") | Some("failing_ci"));
+    let needs_ci = matches!(filter.as_deref(), Some("blocked" | "failing_ci"));
     if needs_ci {
         let n = prs.len().min(scan);
         enrich_ci(&owner, &name, &mut prs[..n], scan).await;
@@ -542,7 +542,7 @@ async fn query_single_repo(args: &PrsQueryArgs) -> Result<serde_json::Value, Mcp
     let ranked: Vec<RankedPr> = match filter.as_deref() {
         Some("review_debt") => filter_review_debt(&prs, limit),
         Some("stale") => {
-            let days = args.stale_days.unwrap_or(14).clamp(1, 365) as u64;
+            let days = u64::from(args.stale_days.unwrap_or(14).clamp(1, 365));
             filter_stale(&prs, days, now_epoch_secs(), limit)
         }
         Some("blocked") => filter_blocked(&prs, limit),
@@ -1321,6 +1321,10 @@ impl ErMcp {
     }
 }
 
+#[expect(
+    clippy::unused_async_trait_impl,
+    reason = "#[tool_handler] generates the async trait methods; there is nothing to await in them"
+)]
 #[tool_handler]
 impl ServerHandler for ErMcp {
     fn get_info(&self) -> ServerInfo {

@@ -3,7 +3,10 @@
 //!
 //! Every integration-test binary compiles this module independently and only
 //! uses a subset of the helpers, hence the dead-code allow.
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "each test binary uses a different subset of these helpers"
+)]
 
 use std::fs;
 use std::path::Path;

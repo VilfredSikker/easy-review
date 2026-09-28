@@ -1077,7 +1077,7 @@ pub struct FindingResponseSnapshot {
 }
 
 /// The wire form of a finding's grade.
-fn confidence_str(c: &er_engine::ai::Confidence) -> &'static str {
+fn confidence_str(c: er_engine::ai::Confidence) -> &'static str {
     match c {
         er_engine::ai::Confidence::Confirmed => "confirmed",
         er_engine::ai::Confidence::Tentative => "tentative",
@@ -1491,7 +1491,7 @@ fn default_thread_side() -> String {
     "RIGHT".to_string()
 }
 
-const fn severity_str(r: &RiskLevel) -> &'static str {
+const fn severity_str(r: RiskLevel) -> &'static str {
     match r {
         RiskLevel::High => "high",
         RiskLevel::Medium => "med",
@@ -1499,7 +1499,7 @@ const fn severity_str(r: &RiskLevel) -> &'static str {
     }
 }
 
-const fn risk_sort_ord(r: &RiskLevel) -> u8 {
+const fn risk_sort_ord(r: RiskLevel) -> u8 {
     match r {
         RiskLevel::High => 0,
         RiskLevel::Medium => 1,
@@ -1511,15 +1511,15 @@ const fn risk_sort_ord(r: &RiskLevel) -> u8 {
 fn build_file_risks(review: &er_engine::ai::ErReview) -> Vec<FileRiskSnapshot> {
     let mut entries: Vec<_> = review.files.iter().collect();
     entries.sort_by(|(pa, fa), (pb, fb)| {
-        risk_sort_ord(&fa.risk)
-            .cmp(&risk_sort_ord(&fb.risk))
+        risk_sort_ord(fa.risk)
+            .cmp(&risk_sort_ord(fb.risk))
             .then_with(|| pa.cmp(pb))
     });
     entries
         .into_iter()
         .map(|(path, fr)| FileRiskSnapshot {
             path: path.clone(),
-            risk: severity_str(&fr.risk).to_string(),
+            risk: severity_str(fr.risk).to_string(),
             risk_reason: fr.risk_reason.clone(),
             summary: fr.summary.clone(),
         })
@@ -1961,7 +1961,7 @@ fn build_file_snapshot_with_keys(
         .review
         .as_ref()
         .and_then(|r| r.files.get(&f.path))
-        .map(|fr| severity_str(&fr.risk).to_string());
+        .map(|fr| severity_str(fr.risk).to_string());
 
     let (lines_key, delta_key) = match precomputed {
         Some(keys) => keys,
@@ -2174,7 +2174,6 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
 /// Build a full snapshot, with differential-snapshot support: when
 /// `sent_files` is provided, files whose hunk content the frontend already
 /// holds are sent with `hunks_omitted = true` and no hunk payload.
-#[allow(clippy::too_many_arguments)]
 pub fn build_snapshot_with_delta(
     app: &App,
     pr_cache: Option<&PrCache>,
@@ -2206,7 +2205,6 @@ pub fn build_snapshot_with_delta(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 pub fn build_chrome_snapshot(
     app: &App,
     pr_cache: Option<&PrCache>,
@@ -2237,7 +2235,6 @@ pub fn build_chrome_snapshot(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_snapshot_inner(
     app: &App,
     pr_cache: Option<&PrCache>,
@@ -4104,8 +4101,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 file: path.clone(),
                 line: f.line_start,
                 hunk_index: f.hunk_index,
-                severity: severity_str(&f.severity).to_string(),
-                confidence: confidence_str(&f.confidence).to_string(),
+                severity: severity_str(f.severity).to_string(),
+                confidence: confidence_str(f.confidence).to_string(),
                 lens_category: f.lens_category_tag(),
                 resolved: f.resolved,
                 expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
@@ -4232,7 +4229,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         file_risks,
         resolved_findings,
         dropped_findings,
-        min_trust_default: confidence_str(&er_engine::ai::min_trust_for(&ai.arbiter_effect))
+        min_trust_default: confidence_str(er_engine::ai::min_trust_for(&ai.arbiter_effect))
             .to_string(),
         has_review_json,
         eligible_comment_count,

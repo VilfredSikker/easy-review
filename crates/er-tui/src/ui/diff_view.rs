@@ -203,7 +203,6 @@ fn line_findings_for_mode<'a>(
 /// [`line_findings_for_mode`].
 // The parameters are the caller's own hunk coordinates, forwarded untouched;
 // bundling them would add a type the render loop has to build per row.
-#[allow(clippy::too_many_arguments)]
 fn hunk_findings_for_mode<'a>(
     ai: &'a er_engine::ai::AiState,
     mode: DiffMode,

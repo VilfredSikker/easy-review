@@ -34,6 +34,7 @@
     {open ? "Hide" : "Show"} arena
   </button>
 
+  <!-- eslint-disable no-alert -- the story shows which command a click would send -->
   <ArenaOverlay
     {open}
     {snapshot}
@@ -41,4 +42,5 @@
     onClose={() => (open = false)}
     onNewRun={() => alert("arena_start")}
   />
+  <!-- eslint-enable no-alert -->
 </div>

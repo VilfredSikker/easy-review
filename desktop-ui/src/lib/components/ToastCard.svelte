@@ -92,7 +92,6 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_mouse_events_have_key_events -->
 <div
   role={toast.kind === "error" || toast.kind === "warn" ? "alert" : "status"}
   onmouseenter={onMouseEnter}

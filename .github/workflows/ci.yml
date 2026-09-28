@@ -31,7 +31,7 @@ jobs:
             libxdo-dev \
             libssl-dev \
             pkg-config
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-targets
 
@@ -56,9 +56,23 @@ jobs:
             libxdo-dev \
             libssl-dev \
             pkg-config
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
+
+  desktop-ui-lint:
+    name: Desktop UI lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop-ui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      # The ratchet gate (ADR 0038), then its own tests.
+      - run: bun run lint --no-cache
+      - run: bun test scripts
 
   herdr-plugin:
     name: Herdr plugin
@@ -91,18 +105,20 @@ jobs:
             libxdo-dev \
             libssl-dev \
             pkg-config
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+      # The ratchet gate (ADR 0038). The budget is counted on macOS, where
+      # platform-gated code differs, so the stale check stays local.
+      - run: cargo run -q -p er-lint-gate -- --no-stale
 
   fmt:
     name: Format
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -112,7 +128,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       # No Tauri system deps on purpose: er-engine without UI features must
       # build in a bare container.
@@ -124,7 +140,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2

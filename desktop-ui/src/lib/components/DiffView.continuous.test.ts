@@ -77,6 +77,7 @@ describe("continuous-scroll snapshot contract", () => {
     }
   });
 
+  // eslint-disable-next-line no-template-curly-in-string -- the test name quotes the id format
   it("uses an anchor id of `file-${path}` for FileTree → DiffView scroll-to", () => {
     // FileTree.svelte calls getElementById(`file-${file.path}`). The contract
     // is: every rendered <section> in DiffView must use this exact id format.

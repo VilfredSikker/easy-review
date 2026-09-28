@@ -35,7 +35,7 @@
   const expandedDiagram = $derived(diagrams.find((d) => d.id === expandedId) ?? null);
 
   function generate(kind: string, prompt?: string) {
-    void app.cmd("generate_diagram", { kind, custom_prompt: prompt ?? null });
+    void app.cmd("generate_diagram", { kind, customPrompt: prompt ?? null });
   }
 
   function generateCustom() {

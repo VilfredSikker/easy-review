@@ -1,0 +1,431 @@
+{
+	".storybook/main.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		}
+	},
+	"scripts/eslint-rules/project-rules.test.ts": {
+		"no-restricted-syntax": {
+			"count": 3
+		}
+	},
+	"src/App.svelte": {
+		"svelte/valid-compile": {
+			"count": 2
+		}
+	},
+	"src/lib/commandPaletteKeys.test.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		}
+	},
+	"src/lib/components/AgentOutputCard.svelte": {
+		"svelte/require-each-key": {
+			"count": 2
+		}
+	},
+	"src/lib/components/AgentOutputView.svelte": {
+		"svelte/button-has-type": {
+			"count": 2
+		},
+		"svelte/require-each-key": {
+			"count": 3
+		}
+	},
+	"src/lib/components/AiReviewCard.svelte": {
+		"svelte/button-has-type": {
+			"count": 9
+		}
+	},
+	"src/lib/components/AnnotationOverlay.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"@typescript-eslint/no-use-before-define": {
+			"count": 12
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		}
+	},
+	"src/lib/components/BackgroundTasks.svelte": {
+		"svelte/button-has-type": {
+			"count": 3
+		}
+	},
+	"src/lib/components/BranchCard.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"svelte/button-has-type": {
+			"count": 4
+		},
+		"svelte/require-each-key": {
+			"count": 2
+		}
+	},
+	"src/lib/components/BranchContextBar.svelte": {
+		"svelte/button-has-type": {
+			"count": 8
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/BrowserView.svelte": {
+		"@typescript-eslint/no-use-before-define": {
+			"count": 3
+		}
+	},
+	"src/lib/components/CommandPalette.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"@typescript-eslint/no-use-before-define": {
+			"count": 1
+		},
+		"svelte/button-has-type": {
+			"count": 1
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/CommentsCard.svelte": {
+		"svelte/button-has-type": {
+			"count": 10
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		}
+	},
+	"src/lib/components/DiffComposer.svelte": {
+		"svelte/button-has-type": {
+			"count": 5
+		}
+	},
+	"src/lib/components/EditMessageModal.svelte": {
+		"svelte/button-has-type": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/EmptyState.svelte": {
+		"svelte/button-has-type": {
+			"count": 3
+		}
+	},
+	"src/lib/components/ExportReviewView.svelte": {
+		"svelte/button-has-type": {
+			"count": 4
+		}
+	},
+	"src/lib/components/FileTree.svelte": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		},
+		"svelte/button-has-type": {
+			"count": 1
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 3
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/FlatDiffView.svelte": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		},
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"@typescript-eslint/no-use-before-define": {
+			"count": 8
+		},
+		"svelte/button-has-type": {
+			"count": 13
+		},
+		"svelte/no-dom-manipulating": {
+			"count": 1
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 18
+		}
+	},
+	"src/lib/components/InboxPanel.svelte": {
+		"svelte/button-has-type": {
+			"count": 4
+		}
+	},
+	"src/lib/components/InlineFinding.svelte": {
+		"@typescript-eslint/no-shadow": {
+			"count": 2
+		},
+		"svelte/button-has-type": {
+			"count": 2
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/InlineThread.svelte": {
+		"svelte/button-has-type": {
+			"count": 10
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/LeftSidebar.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"svelte/button-has-type": {
+			"count": 8
+		},
+		"svelte/prefer-svelte-reactivity": {
+			"count": 2
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/MermaidDiagram.svelte": {
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/PromoteModal.svelte": {
+		"svelte/button-has-type": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/ReferenceUsagesPopover.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		}
+	},
+	"src/lib/components/ReviewerPickerList.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		}
+	},
+	"src/lib/components/RightPanel.svelte": {
+		"svelte/require-each-key": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/RunningAgentPanel.svelte": {
+		"svelte/button-has-type": {
+			"count": 2
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/components/ScopeSelector.svelte": {
+		"svelte/button-has-type": {
+			"count": 6
+		}
+	},
+	"src/lib/components/TabStrip.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 2
+		},
+		"svelte/button-has-type": {
+			"count": 7
+		}
+	},
+	"src/lib/components/Terminal.svelte": {
+		"@typescript-eslint/no-use-before-define": {
+			"count": 3
+		}
+	},
+	"src/lib/components/UiAnnotationsCard.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 2
+		}
+	},
+	"src/lib/components/arena/ArenaFinalTruth.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		},
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/arena/ArenaLauncher.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 2
+		}
+	},
+	"src/lib/components/arena/ArenaOverlay.svelte": {
+		"svelte/require-each-key": {
+			"count": 3
+		}
+	},
+	"src/lib/components/arena/ArenaProcessBracket.svelte": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 1
+		},
+		"svelte/require-each-key": {
+			"count": 3
+		}
+	},
+	"src/lib/components/arena/ArenaProcessFunnel.svelte": {
+		"svelte/require-each-key": {
+			"count": 2
+		}
+	},
+	"src/lib/components/arena/ArenaProcessMatrix.svelte": {
+		"svelte/require-each-key": {
+			"count": 3
+		}
+	},
+	"src/lib/components/arena/ArenaVoteLegend.svelte": {
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/components/diff-rows/PillarRail.svelte": {
+		"svelte/button-has-type": {
+			"count": 1
+		}
+	},
+	"src/lib/components/diff-rows/SplitContentRow.svelte": {
+		"svelte/button-has-type": {
+			"count": 2
+		}
+	},
+	"src/lib/components/diff-rows/UnifiedRow.svelte": {
+		"svelte/button-has-type": {
+			"count": 1
+		}
+	},
+	"src/lib/components/settings/ProjectSettingsCard.svelte": {
+		"svelte/prefer-writable-derived": {
+			"count": 1
+		}
+	},
+	"src/lib/components/settings/SettingsPage.svelte": {
+		"@typescript-eslint/no-shadow": {
+			"count": 2
+		}
+	},
+	"src/lib/components/settings/SettingsTextField.svelte": {
+		"svelte/prefer-writable-derived": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 2
+		}
+	},
+	"src/lib/components/ui/IconButton.svelte": {
+		"svelte/button-has-type": {
+			"count": 1
+		}
+	},
+	"src/lib/components/ui/MarkdownText.svelte": {
+		"svelte/require-each-key": {
+			"count": 6
+		}
+	},
+	"src/lib/diffAnnotations.test.ts": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 3
+		}
+	},
+	"src/lib/diffAnnotations.ts": {
+		"@typescript-eslint/no-use-before-define": {
+			"count": 1
+		}
+	},
+	"src/lib/diffRenderModel.test.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		}
+	},
+	"src/lib/dom.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 2
+		}
+	},
+	"src/lib/stores/app.svelte.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		}
+	},
+	"src/lib/stores/diffFileCollapse.svelte.ts": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 4
+		}
+	},
+	"src/lib/stores/fileTreeCollapse.svelte.ts": {
+		"svelte/prefer-svelte-reactivity": {
+			"count": 2
+		}
+	},
+	"src/lib/stores/keyboard.ts": {
+		"@typescript-eslint/no-shadow": {
+			"count": 1
+		}
+	},
+	"src/lib/stories/ArenaHarness.svelte": {
+		"svelte/prefer-writable-derived": {
+			"count": 1
+		},
+		"svelte/valid-compile": {
+			"count": 1
+		}
+	},
+	"src/lib/stories/ArenaSwatch.svelte": {
+		"svelte/require-each-key": {
+			"count": 1
+		}
+	},
+	"src/lib/stories/DiffViewHarness.svelte": {
+		"no-restricted-syntax": {
+			"count": 1
+		}
+	},
+	"src/lib/stories/MainLayout.svelte": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		},
+		"no-restricted-syntax": {
+			"count": 16
+		},
+		"svelte/button-has-type": {
+			"count": 7
+		}
+	},
+	"src/lib/stories/MainLayoutPlayground.svelte": {
+		"no-restricted-syntax": {
+			"count": 12
+		}
+	},
+	"src/lib/stories/fixtures.ts": {
+		"@typescript-eslint/no-unused-vars": {
+			"count": 1
+		}
+	}
+}

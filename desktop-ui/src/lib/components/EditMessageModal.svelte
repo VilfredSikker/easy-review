@@ -51,7 +51,7 @@
 <ModalShell
   {open}
   ariaLabel="Edit comment"
-  onClose={onClose}
+  {onClose}
   onKeydown={handleKey}
   focusSelector="textarea"
   backdropClass="fixed inset-0 z-50 flex items-center justify-center bg-bg/60 p-6"
