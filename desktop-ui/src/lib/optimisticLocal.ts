@@ -1054,7 +1054,7 @@ export function applyOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void {
         dismissed.delete(op.prNumber);
       }
       project.dismissed_prs = [...dismissed];
-      return;
+      
     }
   }
 }
@@ -1228,7 +1228,7 @@ export function rollbackOptimisticOp(snap: AppSnapshot, op: OptimisticOp): void 
         dismissed.add(op.prNumber);
       }
       project.dismissed_prs = [...dismissed];
-      return;
+      
     }
   }
 }

@@ -495,7 +495,7 @@
   kind={isNote ? "note" : "question"}
   sourceId={thread.id}
   initialBody={buildPromoteBody()}
-  targetLineLabel={targetLineLabel}
+  {targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
 />

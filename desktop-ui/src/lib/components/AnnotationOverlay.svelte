@@ -172,7 +172,7 @@
   });
 
   /** Lazy thumbnails for pin hover, keyed by screenshot_path. */
-  let pinThumbs = $state<Record<string, string>>({});
+  const pinThumbs = $state<Record<string, string>>({});
   const pinRequested = new Set<string>();
   function ensurePinThumb(path: string | null | undefined) {
     if (!path || pinThumbs[path] || pinRequested.has(path)) return;

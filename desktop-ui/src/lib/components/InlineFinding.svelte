@@ -368,7 +368,7 @@
   kind="finding"
   sourceId={finding.id}
   initialBody={buildPromoteBody()}
-  targetLineLabel={targetLineLabel}
+  {targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
 />

@@ -942,8 +942,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     unifiedPairsByFile.set(block.filePath, block.unifiedPairsByHunk);
     splitRowsByFile.set(block.filePath, block.splitRowsByHunk);
     maxColsByFile.set(block.filePath, block.maxCols);
-    for (let j = 0; j < block.rows.length; j++) {
-      const row = block.rows[j];
+    for (const row of block.rows) {
       rows[writeIdx] = row;
       rowFile[writeIdx] = fi;
       cumulativeOffsets[writeIdx + 1] = cumulativeOffsets[writeIdx] + row.height;

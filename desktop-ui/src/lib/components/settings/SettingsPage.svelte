@@ -72,7 +72,7 @@
     await app.cmd("run_importance_agent");
   }
   let addPattern = $state("");
-  let textWarnings = $state<Record<string, string | null>>({});
+  const textWarnings = $state<Record<string, string | null>>({});
   let editProviders = $state(false);
   let refreshingModels = $state(false);
 

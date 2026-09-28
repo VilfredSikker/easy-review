@@ -771,8 +771,6 @@
 >
   <div class="flex items-center gap-3 px-4 py-3 border-b border-hairline">
     {#if activeSubmenu}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button
         type="button"
         aria-label="Back"

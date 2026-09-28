@@ -86,8 +86,6 @@
 </script>
 
 {#if props.open}
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     data-modal={dataModalValue()}
     class={props.backdropClass ?? "fixed inset-0 z-[250] bg-bg/50"}

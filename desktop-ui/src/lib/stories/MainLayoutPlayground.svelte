@@ -109,7 +109,7 @@
 
   // ── right panel resize plumbing (mirrors App.svelte) ────────────────────
   const RIGHT_PANEL_DEFAULT = 340;
-  let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
+  const rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
   let rightPanelCollapsed = $derived(rightRail === "collapsed");
 
   function onCollapseToggle() {
@@ -179,7 +179,7 @@
         width={rightPanelWidth}
         dragging={false}
         onResizeStart={undefined}
-        onCollapseToggle={onCollapseToggle}
+        {onCollapseToggle}
       />
     {:else if rightRail === "collapsed"}
       <CollapsedRightRail

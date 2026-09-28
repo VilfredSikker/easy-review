@@ -60,12 +60,15 @@
 
   function annotationTitle(file: FileSnapshot): string {
     const parts: string[] = [];
-    if (file.comment_count > 0)
+    if (file.comment_count > 0) {
       parts.push(`${file.comment_count} comment${file.comment_count !== 1 ? "s" : ""}`);
-    if (file.question_count > 0)
+    }
+    if (file.question_count > 0) {
       parts.push(`${file.question_count} question${file.question_count !== 1 ? "s" : ""}`);
-    if (file.finding_count > 0)
+    }
+    if (file.finding_count > 0) {
       parts.push(`${file.finding_count} finding${file.finding_count !== 1 ? "s" : ""}`);
+    }
     const hidden = hiddenFindings.get(file.path) ?? 0;
     if (hidden > 0) parts.push(`${hidden} hidden by the confidence gate`);
     return parts.join(" · ");
@@ -401,7 +404,6 @@
     {#if !pickerMode && inputFocused && filterDraft.trim().length === 0 && (snapshot?.filter_suggestions?.length ?? 0) > 0}
       <div class="border-t border-hairline max-h-40 overflow-y-auto">
         {#each snapshot?.filter_suggestions ?? [] as sug}
-          <!-- svelte-ignore a11y_click_events_have_key_events -->
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover"
@@ -525,7 +527,7 @@
                 <input
                   type="checkbox"
                   class="shrink-0 size-3.5 accent-accent"
-                  checked={checked}
+                  {checked}
                   onclick={(e) => e.stopPropagation()}
                   onchange={() => toggleSelection(file.path)}
                   aria-label="Include {node.name} in review"

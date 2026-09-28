@@ -236,7 +236,7 @@
           bind:value={summary}
           rows="3"
           class="w-full bg-transparent text-sm px-3 py-2 outline-none resize-none font-sans placeholder:text-muted"
-          placeholder={`Overall review comment (optional)… e.g. "Looks great overall. One typing question on the new options API."`}
+          placeholder='Overall review comment (optional)… e.g. "Looks great overall. One typing question on the new options API."'
         ></textarea>
 
         <div class="px-3 py-2 border-t border-hairline">
