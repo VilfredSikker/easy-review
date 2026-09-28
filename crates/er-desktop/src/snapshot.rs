@@ -3294,7 +3294,7 @@ fn build_auto_branches(
     result
 }
 
-fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
+pub(crate) fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
     PrInfo {
         number,
         title: title.to_string(),

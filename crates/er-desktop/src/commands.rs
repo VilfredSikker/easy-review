@@ -5594,6 +5594,14 @@ fn build_remote_pr_tab(
         repo: repo.to_string(),
         number,
     };
+    // Same 3 s budget as the local open's `join_in_flight_pr_prefetch`.
+    crate::remote_pr_open_cache::wait_for_remote_pr_open(
+        &state.remote_pr_open_in_flight,
+        owner,
+        repo,
+        number,
+        std::time::Duration::from_secs(3),
+    );
     if let Some(entry) = crate::remote_pr_open_cache::get_remote_pr_open_entry(
         &state.remote_pr_open_cache,
         owner,
@@ -7441,6 +7449,15 @@ pub fn prefetch_pr_open(
     hint: PrOpenHint,
     state: State<AppState>,
 ) -> Result<(), String> {
+    prefetch_pr_open_impl(project_id, pr_number, hint, state.inner())
+}
+
+fn prefetch_pr_open_impl(
+    project_id: String,
+    pr_number: u64,
+    hint: PrOpenHint,
+    state: &AppState,
+) -> Result<(), String> {
     let file = projects::load();
     let Some(proj) = file.projects.iter().find(|p| p.id == project_id).cloned() else {
         return Ok(());
@@ -7566,6 +7583,15 @@ pub fn prefetch_remote_pr_open(
     repo: String,
     number: u64,
     state: State<AppState>,
+) -> Result<(), String> {
+    prefetch_remote_pr_open_impl(owner, repo, number, state.inner())
+}
+
+fn prefetch_remote_pr_open_impl(
+    owner: String,
+    repo: String,
+    number: u64,
+    state: &AppState,
 ) -> Result<(), String> {
     // Skip when already cached or already in flight.
     if crate::remote_pr_open_cache::get_remote_pr_open_entry(
@@ -7902,20 +7928,23 @@ pub async fn open_inbox_item(
     run_blocking(move || open_inbox_item_impl(id, new_tab.unwrap_or(false), &state)).await
 }
 
-/// Build a `PrOpenHint` for an inbox PR open by looking up the PR metadata
-/// in the cached PR list for the project's remote. Returns `None` if the PR
-/// is not in the cache or any required field is missing — the caller then
-/// falls back to the no-hint (async-miss) path.
-fn build_inbox_pr_hint(
+/// Build a `PrOpenHint` for an inbox PR open from the cached PR list. Returns
+/// `None` if the PR is not cached or a required field is missing; the open
+/// then falls back to the no-hint (async-miss) path.
+///
+/// The cache is keyed by each project's `remote` as written in projects.json
+/// (`VilfredSikker/easy-review`), while inbox targets carry the lowercased
+/// slug, so the key has to be matched after normalizing both sides.
+fn inbox_pr_hint_from_cache(
+    cache: &HashMap<String, Vec<crate::snapshot::PrInfo>>,
     pr_number: u64,
-    remote: Option<&str>,
-    state: &AppState,
+    remote: &str,
 ) -> Option<PrOpenHint> {
-    let remote_slug = remote?;
-    let key = normalize_remote_slug(remote_slug);
-    let cache = state.pr_cache.lock().ok()?;
-    let prs = cache.get(&key)?;
-    let pr = prs.iter().find(|p| p.number == pr_number)?;
+    let slug = normalize_remote_slug(remote);
+    let pr = cache
+        .iter()
+        .filter(|(key, _)| normalize_remote_slug(key) == slug)
+        .find_map(|(_, prs)| prs.iter().find(|p| p.number == pr_number))?;
     if pr.base_ref.trim().is_empty()
         || pr.head_ref.trim().is_empty()
         || pr.head_oid.trim().is_empty()
@@ -7932,6 +7961,117 @@ fn build_inbox_pr_hint(
     })
 }
 
+/// What an inbox item opens, resolved the way the sidebar picks its command,
+/// so a notification open and a sidebar click take the same path.
+enum InboxOpenTarget {
+    LocalPr {
+        project_id: String,
+        pr_number: u64,
+        hint: Option<PrOpenHint>,
+    },
+    /// A remote-only project has no clone for `open_pr_review` to run in.
+    RemotePr {
+        owner: String,
+        repo: String,
+        number: u64,
+    },
+    Branch {
+        project_id: String,
+        branch: String,
+    },
+}
+
+fn resolve_inbox_open_target(target: InboxTarget, state: &AppState) -> Option<InboxOpenTarget> {
+    let file = projects::load();
+    // A poisoned cache only costs the hint, not the open.
+    let empty = HashMap::new();
+    let guard = state.pr_cache.lock().ok();
+    inbox_open_target_in(&file, guard.as_deref().unwrap_or(&empty), target)
+}
+
+fn inbox_open_target_in(
+    file: &projects::ProjectsFile,
+    cache: &HashMap<String, Vec<crate::snapshot::PrInfo>>,
+    target: InboxTarget,
+) -> Option<InboxOpenTarget> {
+    // Always re-resolve: a stored id can name a project that no longer exists,
+    // and an unchecked id makes the open a hard "Project not found" error.
+    let project_id = projects::resolve_inbox_project_in_file(
+        file,
+        target.project_id.as_deref(),
+        target.repo_root.as_deref(),
+        target.remote.as_deref(),
+    )?;
+    let Some(pr_number) = target.pr_number else {
+        return target
+            .branch
+            .map(|branch| InboxOpenTarget::Branch { project_id, branch });
+    };
+    let proj = file.projects.iter().find(|p| p.id == project_id)?;
+    if proj.root_path.is_empty() {
+        let remote = proj.remote.as_deref().or(target.remote.as_deref())?;
+        let (owner, repo) = remote_owner_repo(remote)?;
+        return Some(InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number: pr_number,
+        });
+    }
+    let hint = target
+        .remote
+        .as_deref()
+        .or(proj.remote.as_deref())
+        .and_then(|remote| inbox_pr_hint_from_cache(cache, pr_number, remote));
+    Some(InboxOpenTarget::LocalPr {
+        project_id,
+        pr_number,
+        hint,
+    })
+}
+
+/// Split a project remote into `(owner, repo)` keeping its spelling, which is
+/// what the sidebar passes and so what the remote open cache is keyed by.
+fn remote_owner_repo(remote: &str) -> Option<(String, String)> {
+    let slug = projects::remote_slug_as_written(remote);
+    let (owner, repo) = slug.split_once('/')?;
+    if owner.is_empty() || repo.is_empty() || repo.contains('/') {
+        return None;
+    }
+    Some((owner.to_string(), repo.to_string()))
+}
+
+fn inbox_item_target(id: &str, state: &AppState) -> Option<InboxTarget> {
+    let inbox = state.inbox.lock().ok()?;
+    inbox
+        .items
+        .iter()
+        .find(|i| i.id == id)
+        .map(|i| i.target.clone())
+}
+
+/// Warm the open cache for an inbox item while its message dialog is up, the
+/// same warmup the sidebar runs on hover. A cold open pays the full
+/// `gh pr diff` round-trip that a warmed sidebar click skips.
+#[tauri::command]
+pub fn prefetch_inbox_item(id: String, state: State<AppState>) -> Result<(), String> {
+    let Some(target) = inbox_item_target(&id, &state) else {
+        return Ok(());
+    };
+    match resolve_inbox_open_target(target, &state) {
+        Some(InboxOpenTarget::LocalPr {
+            project_id,
+            pr_number,
+            hint: Some(hint),
+        }) => prefetch_pr_open_impl(project_id, pr_number, hint, &state),
+        Some(InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+        }) => prefetch_remote_pr_open_impl(owner, repo, number, &state),
+        _ => Ok(()),
+    }
+}
+
 fn open_inbox_item_impl(
     id: String,
     new_tab: bool,
@@ -7939,7 +8079,7 @@ fn open_inbox_item_impl(
 ) -> Result<AppSnapshot, String> {
     let replace = Some(!new_tab);
     let now = now_ms();
-    let mut target = {
+    let target = {
         let mut inbox = state.inbox.lock().map_err(|e| {
             log::error!("[inbox] command=open_inbox_item failed to lock inbox: {e}");
             e.to_string()
@@ -7955,26 +8095,21 @@ fn open_inbox_item_impl(
     crate::inbox::save_inbox_state(&state.inbox);
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
-    if let Some(mut target) = target.take() {
-        // Always re-resolve: a stored id can name a project that no longer
-        // exists, and passing one through unchecked turned the open into a hard
-        // "Project not found" error.
-        target.project_id = projects::resolve_project_id_for_inbox(
-            target.project_id.as_deref(),
-            target.repo_root.as_deref(),
-            target.remote.as_deref(),
-        );
-        if let (Some(project_id), Some(pr_number)) = (target.project_id.clone(), target.pr_number) {
-            // Build a hint from the PR cache so the open can take the fast
-            // path (skip `gh pr view`, use cached diff) — same as the sidebar.
-            // Without a hint the code always takes the async-miss path, which
-            // historically has left the tab stuck on "Loading diff…" for inbox opens.
-            let hint = build_inbox_pr_hint(pr_number, target.remote.as_deref(), state);
-            return open_pr_review_impl(project_id, pr_number, replace, hint, state);
+    match target.and_then(|t| resolve_inbox_open_target(t, state)) {
+        Some(InboxOpenTarget::LocalPr {
+            project_id,
+            pr_number,
+            hint,
+        }) => return open_pr_review_impl(project_id, pr_number, replace, hint, state),
+        Some(InboxOpenTarget::RemotePr {
+            owner,
+            repo,
+            number,
+        }) => return open_remote_pr_impl(owner, repo, number, replace, state),
+        Some(InboxOpenTarget::Branch { project_id, branch }) => {
+            return open_local_branch_impl(project_id, branch, replace, state)
         }
-        if let (Some(project_id), Some(branch)) = (target.project_id, target.branch) {
-            return open_local_branch_impl(project_id, branch, replace, state);
-        }
+        None => {}
     }
 
     if let Ok(mut app) = state.app.lock() {
@@ -12046,5 +12181,118 @@ mod tests {
             !body.contains("snap_from"),
             "toggle_panel must not rebuild a snapshot"
         );
+    }
+
+    fn cached_pr(number: u64) -> crate::snapshot::PrInfo {
+        let mut pr = crate::snapshot::minimal_pr_info(number, "t");
+        pr.base_ref = "main".into();
+        pr.head_ref = "feat/x".into();
+        pr.head_oid = "abc123".into();
+        pr
+    }
+
+    /// Inbox targets carry the lowercased slug; the cache keeps the project's
+    /// spelling. A miss drops the hint and the open takes the slow path.
+    #[test]
+    fn inbox_pr_hint_matches_mixed_case_cache_key() {
+        let mut cache = HashMap::new();
+        cache.insert(
+            "VilfredSikker/TechProfessor".to_string(),
+            vec![cached_pr(7)],
+        );
+        let hint = inbox_pr_hint_from_cache(&cache, 7, "vilfredsikker/techprofessor")
+            .expect("hint from mixed-case cache key");
+        assert_eq!(hint.head_oid, "abc123");
+        assert_eq!(hint.base_ref, "main");
+    }
+
+    #[test]
+    fn inbox_pr_hint_ignores_other_repos_with_same_number() {
+        let mut cache = HashMap::new();
+        cache.insert("other/repo".to_string(), vec![cached_pr(7)]);
+        assert!(inbox_pr_hint_from_cache(&cache, 7, "vilfredsikker/techprofessor").is_none());
+    }
+
+    fn project(id: &str, root_path: &str, remote: &str) -> projects::ProjectRecord {
+        projects::ProjectRecord {
+            id: id.to_string(),
+            name: id.to_string(),
+            root_path: root_path.to_string(),
+            remote: Some(remote.to_string()),
+            dismissed_prs: Vec::new(),
+            tracked_prs: Vec::new(),
+            tracked_branches: Vec::new(),
+            dismissed_branches: Vec::new(),
+            recent_prs: Vec::new(),
+            saved_prs: Vec::new(),
+            auto_triage: false,
+            auto_triage_own_prs: false,
+            auto_triage_when: "new-and-push".to_string(),
+            auto_triage_max_diff_kb: 0,
+            review_ignore_globs: Vec::new(),
+        }
+    }
+
+    fn pr_target(remote: &str, pr_number: u64) -> InboxTarget {
+        InboxTarget {
+            project_id: None,
+            repo_root: None,
+            remote: Some(remote.to_string()),
+            pr_number: Some(pr_number),
+            branch: Some("feat/x".to_string()),
+            url: None,
+        }
+    }
+
+    /// A remote-only project has no clone for `open_pr_review` to run in, so
+    /// its PR must open the way the sidebar opens it, via `open_remote_pr`.
+    #[test]
+    fn inbox_open_routes_remote_only_project_to_remote_pr() {
+        let file = projects::ProjectsFile {
+            projects: vec![project("ai-models", "", "ReshapeBiotech/ai-models")],
+            active_id: None,
+        };
+        let resolved = inbox_open_target_in(
+            &file,
+            &HashMap::new(),
+            pr_target("reshapebiotech/ai-models", 3),
+        );
+        assert!(matches!(
+            resolved,
+            Some(InboxOpenTarget::RemotePr { ref owner, ref repo, number: 3 })
+                if owner == "ReshapeBiotech" && repo == "ai-models"
+        ));
+    }
+
+    #[test]
+    fn inbox_open_routes_local_project_to_pr_review_with_hint() {
+        let file = projects::ProjectsFile {
+            projects: vec![project("tp", "/repo/tp", "VilfredSikker/TechProfessor")],
+            active_id: None,
+        };
+        let mut cache = HashMap::new();
+        cache.insert(
+            "VilfredSikker/TechProfessor".to_string(),
+            vec![cached_pr(7)],
+        );
+        let resolved =
+            inbox_open_target_in(&file, &cache, pr_target("vilfredsikker/techprofessor", 7));
+        assert!(matches!(
+            resolved,
+            Some(InboxOpenTarget::LocalPr { ref project_id, pr_number: 7, hint: Some(_) })
+                if project_id == "tp"
+        ));
+    }
+
+    /// Keeps the project's spelling: the remote open cache is keyed by what the
+    /// sidebar passes, so a lowercased owner would miss its prefetch.
+    #[test]
+    fn remote_owner_repo_keeps_spelling_and_strips_url() {
+        assert_eq!(
+            remote_owner_repo("https://github.com/ReshapeBiotech/ai-models.git"),
+            Some(("ReshapeBiotech".to_string(), "ai-models".to_string()))
+        );
+        assert_eq!(remote_owner_repo("owner"), None);
+        assert_eq!(remote_owner_repo("a/b/c"), None);
     }
 }
