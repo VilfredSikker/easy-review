@@ -286,16 +286,41 @@ cargo build --workspace
 cargo build --workspace --release
 
 # Lint / format
-cargo clippy --workspace --all-targets -- -D warnings
+just clippy
 cargo fmt --all -- --check
 ```
 
-Fast CI-style subset (no desktop):
+## Lint gates
+
+Both halves of the repo lint through a ratcheted gate: a new violation fails,
+and so does a fixed one until its baseline is pruned. Why it is shaped this way
+is [ADR 0038](adr/0038-lint-is-a-ratcheted-gate.md).
 
 ```bash
-cargo tui-test
-cargo clippy -p er-engine -p er-tui --all-targets -- -D warnings
+just clippy          # Rust: every diagnostic fails except the budgeted lints
+just clippy-prune    # after fixing budgeted warnings, shrink the budget
+just clippy-accept   # take new budgeted warnings into the budget (the diff is reviewed)
+
+just lint-ui         # desktop-ui: ESLint errors against the suppressions, warnings against the budget
+just lint-ui-prune   # after fixing baselined violations
+cd desktop-ui && bun run lint -- --accept-warnings   # take new warnings into the budget
+cd desktop-ui && bun run lint:raw                    # every violation, baselines ignored
 ```
+
+`cargo clippy -- -D warnings` fails on the budgeted lints, which are
+warnings by design; use `just clippy`.
+
+Disable one site, with the reason, rather than growing a baseline:
+
+- Rust: `#[expect(clippy::lint, reason = "…")]`. It fails once the lint stops
+  firing, so it cannot go stale. Use `allow` only where the lint fires under one
+  cfg and not another.
+- TypeScript: `// eslint-disable-next-line <rule> -- <why>`. In Svelte markup,
+  wrap the element in `<!-- eslint-disable <rule> -- <why> -->` …
+  `<!-- eslint-enable <rule> -->`, since a comment between a tag's attributes is
+  invalid. Unused disables are errors.
+
+Unused-on-purpose names start with `_` in TypeScript.
 
 ## Releasing the TUI (`er`)
 
