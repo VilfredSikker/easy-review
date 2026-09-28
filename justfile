@@ -152,7 +152,7 @@ test-herdr-plugin:
 # Test the desktop frontend (bun).
 [group('test')]
 test-ui:
-    cd desktop-ui && bun test src
+    cd desktop-ui && bun run test
 
 # Test the entire workspace (slow — compiles Tauri into target/).
 [group('test')]
@@ -171,10 +171,21 @@ fmt:
 fmt-check:
     cargo fmt --all -- --check
 
-# Clippy across the whole workspace, warnings = errors.
+# Clippy as a gate: every diagnostic fails except the budgeted lints, which are
+# ratcheted per file against clippy-warning-budget.json (ADR 0038).
 [group('lint')]
-clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+clippy *ARGS:
+    cargo run -q -p er-lint-gate -- {{ARGS}}
+
+# Shrink the clippy budget after fixing budgeted warnings.
+[group('lint')]
+clippy-prune:
+    cargo run -q -p er-lint-gate -- --prune
+
+# Accept new budgeted warnings into clippy-warning-budget.json (the diff is reviewed).
+[group('lint')]
+clippy-accept:
+    cargo run -q -p er-lint-gate -- --accept-warnings
 
 # Type-check the workspace without producing binaries.
 [group('lint')]
@@ -185,6 +196,17 @@ check:
 [group('lint')]
 check-ui:
     cd desktop-ui && bun run check
+
+# ESLint gate for the desktop frontend: new errors and warnings fail, and a
+# fixed baselined violation fails until pruned (ADR 0038).
+[group('lint')]
+lint-ui:
+    cd desktop-ui && bun run lint
+
+# Shrink the frontend lint baselines after fixing baselined violations.
+[group('lint')]
+lint-ui-prune:
+    cd desktop-ui && bun run lint:prune
 
 # Verify agent-facing docs cite files, links and ADRs that still exist.
 # Catches the rot that prose acquires silently — see docs/agents/writing-docs.md.
@@ -199,17 +221,18 @@ docs-check:
 comments-check:
     ./scripts/comments-check.sh
 
-# All static checks: rustfmt, clippy, the frontend type-check, and the two
-# citation checks (docs, and inline comments).
+# All static checks: rustfmt, clippy, the frontend type-check and lint gate,
+# and the two citation checks (docs, and inline comments).
 [group('lint')]
-lint: fmt-check clippy check-ui docs-check comments-check
+lint: fmt-check clippy check-ui lint-ui docs-check comments-check
 
 # ───────────────────────────────── aggregates ────────────────────────────────────
 
 # Mirror the GitHub CI gate, plus the two citation checks CI does not run:
-# format, clippy, tests, docs and inline comments, headless engine builds.
+# format, the clippy and frontend lint gates, tests, docs and inline comments,
+# headless engine builds.
 [group('ci')]
-ci: fmt-check clippy docs-check comments-check test build-engine-headless
+ci: fmt-check clippy lint-ui docs-check comments-check test build-engine-headless
 
 # Build the headless engine the way CI does (no UI features, then +highlight).
 [group('ci')]
