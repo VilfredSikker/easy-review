@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
@@ -42,6 +43,11 @@
   function openInboxMessageModal(item: InboxItemSnapshot) {
     selectedInboxMessage = item;
     void app.cmd("mark_inbox_item_read", { id: item.id });
+    // Warm the open while the message is read, as the sidebar does on hover.
+    // Raw invoke: it returns (), which app.cmd would store as the snapshot.
+    invoke("prefetch_inbox_item", { id: item.id }).catch(() => {
+      // Background warmup; a failed one only means a cold open.
+    });
   }
 
   function closeInboxMessageModal() {

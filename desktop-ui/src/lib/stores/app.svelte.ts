@@ -121,6 +121,7 @@ const SLOW_COMMANDS = new Set([
   "set_mode",
   "open_remote_pr",
   "open_pr_branch",
+  "open_inbox_item",
 ]);
 
 /** Commands whose snapshot is allowed to replace a different tab than the one painted. */
@@ -1031,6 +1032,8 @@ function switchingLabelForCommand(command: string): string {
     case "open_remote_pr":
     case "open_pr_branch":
       return "Opening PR...";
+    case "open_inbox_item":
+      return "Opening notification...";
     case "select_tab":
       return "Switching tab...";
     case "set_mode":

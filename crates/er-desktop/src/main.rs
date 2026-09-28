@@ -2014,6 +2014,7 @@ fn main() {
             commands::open_pr_branch,
             commands::open_pr_review,
             commands::prefetch_pr_open,
+            commands::prefetch_inbox_item,
             commands::prefetch_remote_pr_open,
             commands::refresh_pr_list,
             commands::refresh_project_pr_list,

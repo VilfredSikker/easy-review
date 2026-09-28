@@ -116,15 +116,19 @@ fn record_recent_pr_on_project(proj: &mut ProjectRecord, pr_number: u64, title: 
 /// Normalize a GitHub remote reference (URL or `owner/repo`) to a lowercase
 /// `owner/repo` slug. Does not validate the shape — see [`valid_remote_slug`].
 pub fn normalize_remote_slug(remote: &str) -> String {
+    remote_slug_as_written(remote).to_ascii_lowercase()
+}
+
+/// [`normalize_remote_slug`] without the lowercasing. Caches keyed by the
+/// spelling the sidebar passes need this form to hit.
+pub fn remote_slug_as_written(remote: &str) -> &str {
     let trimmed = remote.trim();
-    let without_scheme = trimmed
+    trimmed
         .strip_prefix("https://github.com/")
         .or_else(|| trimmed.strip_prefix("http://github.com/"))
-        .unwrap_or(trimmed);
-    without_scheme
+        .unwrap_or(trimmed)
         .trim_end_matches(".git")
         .trim_matches('/')
-        .to_ascii_lowercase()
 }
 
 /// Like [`normalize_remote_slug`], but returns `None` unless the result is a
@@ -1009,7 +1013,7 @@ pub fn resolve_project_id_for_inbox(
     resolve_inbox_project_in_file(&load(), stored_id, repo_root, remote)
 }
 
-fn resolve_inbox_project_in_file(
+pub(crate) fn resolve_inbox_project_in_file(
     file: &ProjectsFile,
     stored_id: Option<&str>,
     repo_root: Option<&str>,
