@@ -102,8 +102,13 @@ fn upstream_url_for_proxy(uri: &tauri::http::Uri, upstream_scheme: &str) -> Stri
 
 const PROXY_HTML_SIZE_LIMIT: usize = 10 * 1024 * 1024; // 10 MB
 
-// `app` is only used inside the `#[cfg(target_os = "macos")]` block below.
-#[cfg_attr(not(target_os = "macos"), allow(unused_variables))]
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        unused_variables,
+        reason = "`app` is only used inside the #[cfg(target_os = \"macos\")] block below"
+    )
+)]
 fn reveal_main_window(
     window: &tauri::WebviewWindow,
     app: &tauri::AppHandle,
