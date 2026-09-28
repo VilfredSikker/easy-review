@@ -3,7 +3,13 @@ use std::sync::{OnceLock, RwLock, RwLockReadGuard};
 
 #[derive(Debug, Clone)]
 pub struct Theme {
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "read only by tests, which check a preset carries its own name"
+        )
+    )]
     pub name: String,
 
     // Background layer
@@ -107,7 +113,11 @@ fn hex(s: &str) -> Rgb {
 fn hexa(s: &str) -> (Rgb, f32) {
     let trimmed = s.trim_start_matches('#');
     let a = if trimmed.len() >= 8 {
-        f32::from(u8::from_str_radix(&trimmed[6..8], 16).unwrap_or(255)) / 255.0
+        let alpha = trimmed
+            .get(6..8)
+            .and_then(|s| u8::from_str_radix(s, 16).ok())
+            .unwrap_or(255);
+        f32::from(alpha) / 255.0
     } else {
         1.0
     };
@@ -202,16 +212,24 @@ fn build(t: &Tokens) -> Theme {
 
 static CURRENT_THEME: OnceLock<RwLock<Theme>> = OnceLock::new();
 
+#[expect(
+    clippy::expect_used,
+    reason = "the lock is poisoned only if a theme write panicked; no styled frame can be drawn after that"
+)]
 pub fn current() -> RwLockReadGuard<'static, Theme> {
     CURRENT_THEME
         .get_or_init(|| RwLock::new(graphite()))
         .read()
-        .unwrap()
+        .expect("theme lock poisoned")
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the lock is poisoned only if a theme write panicked; no styled frame can be drawn after that"
+)]
 pub fn set_theme(theme: Theme) {
     let lock = CURRENT_THEME.get_or_init(|| RwLock::new(graphite()));
-    *lock.write().unwrap() = theme;
+    *lock.write().expect("theme lock poisoned") = theme;
 }
 
 pub fn set_theme_by_name(name: &str) {
@@ -245,7 +263,10 @@ pub fn theme_by_name(name: &str) -> Option<Theme> {
     }
 }
 
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the preset list is only enumerated by tests")
+)]
 pub fn available_themes() -> Vec<&'static str> {
     vec![
         "graphite",

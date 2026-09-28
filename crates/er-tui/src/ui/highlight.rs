@@ -34,11 +34,30 @@ impl Highlighter {
 
 fn parse_hex_color(hex: &str) -> Color {
     if hex.len() == 7 && hex.starts_with('#') {
-        let r = u8::from_str_radix(&hex[1..3], 16).unwrap_or(204);
-        let g = u8::from_str_radix(&hex[3..5], 16).unwrap_or(204);
-        let b = u8::from_str_radix(&hex[5..7], 16).unwrap_or(204);
-        Color::Rgb(r, g, b)
+        let channel = |range| {
+            hex.get(range)
+                .and_then(|s| u8::from_str_radix(s, 16).ok())
+                .unwrap_or(204)
+        };
+        Color::Rgb(channel(1..3), channel(3..5), channel(5..7))
     } else {
         Color::Reset
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_hex_color_reads_rgb() {
+        assert_eq!(parse_hex_color("#1a2b3c"), Color::Rgb(0x1a, 0x2b, 0x3c));
+        assert_eq!(parse_hex_color("1a2b3c"), Color::Reset);
+    }
+
+    #[test]
+    fn parse_hex_color_survives_multibyte_input() {
+        // 7 bytes, but byte 3 falls inside 'é': slicing [1..3] used to panic.
+        assert_eq!(parse_hex_color("#aé123"), Color::Rgb(204, 204, 0x23));
     }
 }

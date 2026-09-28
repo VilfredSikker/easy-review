@@ -115,18 +115,32 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
     resolve_managed_root_for_pr_bucket(&slug, pr).er_dir()
 }
 
+/// One diagram file to upload into a PR bucket.
+#[derive(Debug, Clone, Copy)]
+pub struct DiagramUpload<'a> {
+    pub kind: &'a str,
+    pub file_name: &'a str,
+    pub content: &'a str,
+    pub custom_prompt: Option<&'a str>,
+    /// Re-fetch `diff-tmp` before validating, even when one already exists.
+    pub refresh_diff: bool,
+}
+
 /// Resolve the PR bucket (optionally refresh `diff-tmp`), validate the
 /// diagram JSON against the current diff hash, and atomically write it.
 pub fn upload_diagram(
     owner: &str,
     repo: &str,
     pr: u64,
-    kind: &str,
-    file_name: &str,
-    content: &str,
-    custom_prompt: Option<&str>,
-    refresh_diff: bool,
+    upload: DiagramUpload<'_>,
 ) -> Result<UploadDiagramResult> {
+    let DiagramUpload {
+        kind,
+        file_name,
+        content,
+        custom_prompt,
+        refresh_diff,
+    } = upload;
     if !is_valid_diagram_kind(kind) {
         bail!("unknown diagram kind '{kind}'; expected mental-model|subsystems|flows|custom");
     }
@@ -227,11 +241,13 @@ mod tests {
                 "acme",
                 "widgets",
                 5,
-                "flows",
-                "flows.json",
-                body,
-                None,
-                false,
+                DiagramUpload {
+                    kind: "flows",
+                    file_name: "flows.json",
+                    content: body,
+                    custom_prompt: None,
+                    refresh_diff: false,
+                },
             )
             .unwrap();
             assert_eq!(result.id, "flows");
@@ -254,11 +270,13 @@ mod tests {
                 "acme",
                 "widgets",
                 6,
-                "flows",
-                "mental-model.json",
-                "{}",
-                None,
-                false,
+                DiagramUpload {
+                    kind: "flows",
+                    file_name: "mental-model.json",
+                    content: "{}",
+                    custom_prompt: None,
+                    refresh_diff: false,
+                },
             )
             .unwrap_err();
             assert!(err.to_string().contains("must upload as 'flows.json'"));
@@ -277,22 +295,26 @@ mod tests {
                 "acme",
                 "widgets",
                 7,
-                "custom",
-                "custom-1.json",
-                &body,
-                Some("what the user asked"),
-                false,
+                DiagramUpload {
+                    kind: "custom",
+                    file_name: "custom-1.json",
+                    content: &body,
+                    custom_prompt: Some("what the user asked"),
+                    refresh_diff: false,
+                },
             )
             .unwrap();
             upload_diagram(
                 "acme",
                 "widgets",
                 7,
-                "custom",
-                "custom-2.json",
-                &body,
-                Some("a different ask"),
-                false,
+                DiagramUpload {
+                    kind: "custom",
+                    file_name: "custom-2.json",
+                    content: &body,
+                    custom_prompt: Some("a different ask"),
+                    refresh_diff: false,
+                },
             )
             .unwrap();
 

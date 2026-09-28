@@ -7,6 +7,10 @@
     dead_code,
     reason = "each test binary uses a different subset of these helpers"
 )]
+#![expect(
+    clippy::unwrap_used,
+    reason = "test scaffolding: a fixture that cannot be written must fail the test loudly"
+)]
 
 use std::fs;
 use std::path::Path;

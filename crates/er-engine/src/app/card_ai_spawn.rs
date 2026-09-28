@@ -276,22 +276,7 @@ fn extract_reply_from_stdout(stdout: &str, uses_stream_json: bool) -> String {
             }
         }
         if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            if let Some(content) = v
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-            {
-                for item in content {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                            let t = text.trim();
-                            if !t.is_empty() {
-                                assistant_text.push(t.to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
         }
     }
 

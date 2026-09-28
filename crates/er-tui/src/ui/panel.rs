@@ -245,253 +245,7 @@ fn render_file_detail<'a>(
         }
     }
 
-    // All findings for this file — sorted by severity, then location
-    if tab.layers.show_ai_findings {
-        if let Some(fr) = tab.ai.file_review(path) {
-            if !fr.findings.is_empty() {
-                let file_stale = tab.ai.is_file_stale(path);
-                let max_w = area.width.saturating_sub(5) as usize;
-
-                let mut sorted_findings: Vec<&er_engine::ai::Finding> =
-                    fr.findings.iter().collect();
-                sorted_findings.sort_by(|a, b| {
-                    let sev_ord = |r: &RiskLevel| match r {
-                        RiskLevel::High => 0,
-                        RiskLevel::Medium => 1,
-                        RiskLevel::Low => 2,
-                        RiskLevel::Info => 3,
-                    };
-                    // Resolved findings sink to the bottom; active ones sort by
-                    // how much the grade can be trusted, then severity. The
-                    // direction lives on the type (`trust_rank`), not here.
-                    a.resolved
-                        .cmp(&b.resolved)
-                        .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
-                        .then_with(|| a.hunk_index.cmp(&b.hunk_index))
-                        .then_with(|| a.line_start.cmp(&b.line_start))
-                        .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
-                });
-
-                // The count describes what the list is about to draw, and names
-                // what it is not drawing. A number that counts hidden rows is
-                // how a filter stops being trusted.
-                let visible: Vec<&er_engine::ai::Finding> = sorted_findings
-                    .iter()
-                    .copied()
-                    .filter(|f| f.passes(&tab.layers))
-                    .collect();
-                let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
-                let dropped_count = sorted_findings
-                    .iter()
-                    .filter(|f| matches!(f.confidence, Confidence::Dropped))
-                    .count();
-                let below_gate = sorted_findings
-                    .len()
-                    .saturating_sub(visible.len() + resolved_count + dropped_count);
-                let mut header = format!(" Findings ({})", visible.len());
-                if below_gate > 0 {
-                    header.push_str(&format!(" · {} below gate", below_gate));
-                }
-                if resolved_count > 0 {
-                    header.push_str(&format!(" · {} resolved", resolved_count));
-                }
-                lines.push(Line::from(vec![Span::styled(
-                    header,
-                    Style::default()
-                        .fg(styles::PURPLE())
-                        .add_modifier(Modifier::BOLD),
-                )]));
-                // A filter that hides things without saying so is how people
-                // stop trusting it, so the arbiter's rulings are counted here
-                // rather than the list just being shorter.
-                let effect = tab.ai.arbiter_effect;
-                let mut parts = Vec::new();
-                if effect.dropped > 0 {
-                    parts.push(format!("{} dropped", effect.dropped));
-                }
-                if effect.merged > 0 {
-                    parts.push(format!("{} merged", effect.merged));
-                }
-                if effect.regraded > 0 {
-                    parts.push(format!("{} regraded", effect.regraded));
-                }
-                if !parts.is_empty() {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!(" {} by arbiter", parts.join(", ")),
-                        Style::default().fg(styles::DIM()),
-                    )]));
-                    // The claims the arbiter removed, on request. The count is
-                    // the signal; the rows are what you read when it surprises
-                    // you, and without them a drop is indistinguishable from a
-                    // finding that was never raised.
-                    if tab.layers.show_dropped {
-                        for finding in fr
-                            .findings
-                            .iter()
-                            .filter(|f| matches!(f.confidence, Confidence::Dropped))
-                        {
-                            let anchor = finding
-                                .line_start
-                                .map_or_else(|| "file".to_string(), |l| format!("line {l}"));
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("   ⊘ {} · {}", anchor, finding.title),
-                                Style::default().fg(styles::DIM()),
-                            )]));
-                        }
-                    }
-                }
-                // Verdicts that matched nothing mean the arbiter's grades exist
-                // but no longer describe this review — worth saying, because the
-                // pass did nothing and that reads as a clean result otherwise.
-                if effect.unmatched > 0 {
-                    lines.push(Line::from(vec![Span::styled(
-                        format!(
-                            " {} arbiter {} no longer apply — re-run validation",
-                            effect.unmatched,
-                            if effect.unmatched == 1 {
-                                "verdict"
-                            } else {
-                                "verdicts"
-                            }
-                        ),
-                        Style::default().fg(styles::YELLOW()),
-                    )]));
-                }
-                lines.push(Line::from(""));
-
-                for finding in visible {
-                    let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
-                    let bg = if is_focused {
-                        styles::FINDING_FOCUS_BG()
-                    } else {
-                        styles::SURFACE()
-                    };
-                    let prefix = if is_focused { "▸" } else { " " };
-
-                    let sev_style = if finding.resolved {
-                        // Resolved findings render dimmed + strikethrough regardless of severity.
-                        Style::default()
-                            .fg(styles::MUTED())
-                            .add_modifier(Modifier::CROSSED_OUT)
-                            .bg(bg)
-                    } else if file_stale {
-                        styles::stale_style().bg(bg)
-                    } else {
-                        match finding.severity {
-                            RiskLevel::High => styles::risk_high().bg(bg),
-                            RiskLevel::Medium => styles::risk_medium().bg(bg),
-                            RiskLevel::Low => styles::risk_low().bg(bg),
-                            RiskLevel::Info => Style::default().fg(styles::BLUE()).bg(bg),
-                        }
-                    };
-
-                    // Confidence badge: a one-glyph tag rendered before the title.
-                    // Resolved findings always show green ✓, overriding the confidence badge.
-                    let (conf_glyph, conf_style) = if finding.resolved {
-                        ("✓ ", Style::default().fg(styles::GREEN()).bg(bg))
-                    } else {
-                        match finding.confidence {
-                            Confidence::Confirmed => {
-                                ("✓ ", Style::default().fg(styles::GREEN()).bg(bg))
-                            }
-                            Confidence::Tentative => {
-                                ("? ", Style::default().fg(styles::DIM()).bg(bg))
-                            }
-                            Confidence::Informational => {
-                                ("i ", Style::default().fg(styles::BLUE()).bg(bg))
-                            }
-                            Confidence::Dropped => (
-                                "✗ ",
-                                Style::default()
-                                    .fg(styles::MUTED())
-                                    .add_modifier(Modifier::CROSSED_OUT)
-                                    .bg(bg),
-                            ),
-                        }
-                    };
-                    // Word-wrap the title line: first line gets icon + confidence prefix,
-                    // continuation lines get indent to align under text
-                    let tag = finding.lens_category_tag();
-                    let title_text = if tag.is_empty() {
-                        finding.title.clone()
-                    } else {
-                        format!("[{tag}] {}", finding.title)
-                    };
-                    let title_lines = word_wrap(&title_text, max_w);
-                    for (i, wrapped) in title_lines.iter().enumerate() {
-                        if i == 0 {
-                            lines.push(Line::from(vec![
-                                Span::styled(
-                                    format!("{}{} ", prefix, finding.severity.symbol()),
-                                    sev_style,
-                                ),
-                                Span::styled(conf_glyph, conf_style),
-                                Span::styled(wrapped.clone(), sev_style),
-                            ]));
-                        } else {
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("     {}", wrapped),
-                                sev_style,
-                            )]));
-                        }
-                    }
-
-                    // Location line for inline findings (hunk/line-anchored)
-                    if finding.hunk_index.is_some() || finding.line_start.is_some() {
-                        // Validate that the referenced hunk/line actually exists in the parsed diff.
-                        let diff_hunks = tab.files.get(tab.selected_file).map(|f| &f.hunks);
-                        let hunk_exists = finding
-                            .hunk_index
-                            .is_none_or(|h| diff_hunks.is_some_and(|hs| h < hs.len()));
-                        let line_in_diff = finding.line_start.is_none_or(|ls| {
-                            diff_hunks.is_some_and(|hs| {
-                                hs.iter()
-                                    .any(|hunk| hunk.lines.iter().any(|l| l.new_num == Some(ls)))
-                            })
-                        });
-                        let in_diff = hunk_exists && line_in_diff;
-
-                        let (loc, loc_style) = match (finding.hunk_index, finding.line_start) {
-                            (Some(h), Some(l)) if in_diff => (
-                                format!("   hunk {}, line {}", h + 1, l),
-                                Style::default().fg(styles::DIM()).bg(bg),
-                            ),
-                            (Some(_h), Some(l)) => (
-                                format!("   line {} (outside diff)", l),
-                                Style::default().fg(styles::MUTED()).bg(bg),
-                            ),
-                            (Some(h), None) if in_diff => (
-                                format!("   hunk {}", h + 1),
-                                Style::default().fg(styles::DIM()).bg(bg),
-                            ),
-                            (Some(_h), None) => (
-                                "   outside diff".to_string(),
-                                Style::default().fg(styles::MUTED()).bg(bg),
-                            ),
-                            (None, Some(l)) => (
-                                format!("   line {}", l),
-                                Style::default().fg(styles::DIM()).bg(bg),
-                            ),
-                            (None, None) => unreachable!(),
-                        };
-                        lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
-                    }
-
-                    if finding.resolved && !finding.resolved_note.is_empty() {
-                        let note_style = Style::default().fg(styles::GREEN()).bg(bg);
-                        for wrapped in word_wrap(&finding.resolved_note, max_w) {
-                            lines.push(Line::from(vec![Span::styled(
-                                format!("   resolved: {}", wrapped),
-                                note_style,
-                            )]));
-                        }
-                    }
-
-                    lines.push(Line::from(""));
-                }
-            }
-        }
-    }
+    render_file_findings(lines, area, tab, path);
 
     // Comments section — collect all top-level comments for this file across all hunks
     // hunk_count comes from the current diff model, not the AI sidecar; a stale
@@ -650,6 +404,274 @@ fn render_file_detail<'a>(
 
         lines.push(Line::from(""));
     }
+}
+
+/// All findings for this file — sorted by severity, then location.
+fn render_file_findings(
+    lines: &mut Vec<Line<'_>>,
+    area: Rect,
+    tab: &er_engine::app::TabState,
+    path: &str,
+) {
+    if !tab.layers.show_ai_findings {
+        return;
+    }
+    let Some(fr) = tab.ai.file_review(path) else {
+        return;
+    };
+    if fr.findings.is_empty() {
+        return;
+    }
+    let file_stale = tab.ai.is_file_stale(path);
+    let max_w = area.width.saturating_sub(5) as usize;
+
+    let mut sorted_findings: Vec<&er_engine::ai::Finding> = fr.findings.iter().collect();
+    sorted_findings.sort_by(|a, b| {
+        let sev_ord = |r: &RiskLevel| match r {
+            RiskLevel::High => 0,
+            RiskLevel::Medium => 1,
+            RiskLevel::Low => 2,
+            RiskLevel::Info => 3,
+        };
+        // Resolved findings sink to the bottom; active ones sort by
+        // how much the grade can be trusted, then severity. The
+        // direction lives on the type (`trust_rank`), not here.
+        a.resolved
+            .cmp(&b.resolved)
+            .then_with(|| a.confidence.trust_rank().cmp(&b.confidence.trust_rank()))
+            .then_with(|| a.hunk_index.cmp(&b.hunk_index))
+            .then_with(|| a.line_start.cmp(&b.line_start))
+            .then_with(|| sev_ord(&a.severity).cmp(&sev_ord(&b.severity)))
+    });
+
+    // The count describes what the list is about to draw, and names
+    // what it is not drawing. A number that counts hidden rows is
+    // how a filter stops being trusted.
+    let visible: Vec<&er_engine::ai::Finding> = sorted_findings
+        .iter()
+        .copied()
+        .filter(|f| f.passes(&tab.layers))
+        .collect();
+    let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
+    let dropped_count = sorted_findings
+        .iter()
+        .filter(|f| matches!(f.confidence, Confidence::Dropped))
+        .count();
+    let below_gate = sorted_findings
+        .len()
+        .saturating_sub(visible.len() + resolved_count + dropped_count);
+    let mut header = format!(" Findings ({})", visible.len());
+    if below_gate > 0 {
+        header.push_str(&format!(" · {} below gate", below_gate));
+    }
+    if resolved_count > 0 {
+        header.push_str(&format!(" · {} resolved", resolved_count));
+    }
+    lines.push(Line::from(vec![Span::styled(
+        header,
+        Style::default()
+            .fg(styles::PURPLE())
+            .add_modifier(Modifier::BOLD),
+    )]));
+    push_arbiter_effect(lines, tab, &fr.findings);
+    lines.push(Line::from(""));
+
+    for finding in visible {
+        push_finding(lines, tab, finding, file_stale, max_w);
+    }
+}
+
+fn push_arbiter_effect(
+    lines: &mut Vec<Line<'_>>,
+    tab: &er_engine::app::TabState,
+    findings: &[er_engine::ai::Finding],
+) {
+    // A filter that hides things without saying so is how people
+    // stop trusting it, so the arbiter's rulings are counted here
+    // rather than the list just being shorter.
+    let effect = tab.ai.arbiter_effect;
+    let mut parts = Vec::new();
+    if effect.dropped > 0 {
+        parts.push(format!("{} dropped", effect.dropped));
+    }
+    if effect.merged > 0 {
+        parts.push(format!("{} merged", effect.merged));
+    }
+    if effect.regraded > 0 {
+        parts.push(format!("{} regraded", effect.regraded));
+    }
+    if !parts.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" {} by arbiter", parts.join(", ")),
+            Style::default().fg(styles::DIM()),
+        )]));
+        // The claims the arbiter removed, on request. The count is
+        // the signal; the rows are what you read when it surprises
+        // you, and without them a drop is indistinguishable from a
+        // finding that was never raised.
+        if tab.layers.show_dropped {
+            for finding in findings
+                .iter()
+                .filter(|f| matches!(f.confidence, Confidence::Dropped))
+            {
+                let anchor = finding
+                    .line_start
+                    .map_or_else(|| "file".to_string(), |l| format!("line {l}"));
+                lines.push(Line::from(vec![Span::styled(
+                    format!("   ⊘ {} · {}", anchor, finding.title),
+                    Style::default().fg(styles::DIM()),
+                )]));
+            }
+        }
+    }
+    // Verdicts that matched nothing mean the arbiter's grades exist
+    // but no longer describe this review — worth saying, because the
+    // pass did nothing and that reads as a clean result otherwise.
+    if effect.unmatched > 0 {
+        lines.push(Line::from(vec![Span::styled(
+            format!(
+                " {} arbiter {} no longer apply — re-run validation",
+                effect.unmatched,
+                if effect.unmatched == 1 {
+                    "verdict"
+                } else {
+                    "verdicts"
+                }
+            ),
+            Style::default().fg(styles::YELLOW()),
+        )]));
+    }
+}
+
+fn push_finding(
+    lines: &mut Vec<Line<'_>>,
+    tab: &er_engine::app::TabState,
+    finding: &er_engine::ai::Finding,
+    file_stale: bool,
+    max_w: usize,
+) {
+    let is_focused = tab.focused_finding_id.as_deref() == Some(&finding.id);
+    let bg = if is_focused {
+        styles::FINDING_FOCUS_BG()
+    } else {
+        styles::SURFACE()
+    };
+    let prefix = if is_focused { "▸" } else { " " };
+
+    let sev_style = if finding.resolved {
+        // Resolved findings render dimmed + strikethrough regardless of severity.
+        Style::default()
+            .fg(styles::MUTED())
+            .add_modifier(Modifier::CROSSED_OUT)
+            .bg(bg)
+    } else if file_stale {
+        styles::stale_style().bg(bg)
+    } else {
+        match finding.severity {
+            RiskLevel::High => styles::risk_high().bg(bg),
+            RiskLevel::Medium => styles::risk_medium().bg(bg),
+            RiskLevel::Low => styles::risk_low().bg(bg),
+            RiskLevel::Info => Style::default().fg(styles::BLUE()).bg(bg),
+        }
+    };
+
+    // Confidence badge: a one-glyph tag rendered before the title.
+    // Resolved findings always show green ✓, overriding the confidence badge.
+    let (conf_glyph, conf_style) = if finding.resolved {
+        ("✓ ", Style::default().fg(styles::GREEN()).bg(bg))
+    } else {
+        match finding.confidence {
+            Confidence::Confirmed => ("✓ ", Style::default().fg(styles::GREEN()).bg(bg)),
+            Confidence::Tentative => ("? ", Style::default().fg(styles::DIM()).bg(bg)),
+            Confidence::Informational => ("i ", Style::default().fg(styles::BLUE()).bg(bg)),
+            Confidence::Dropped => (
+                "✗ ",
+                Style::default()
+                    .fg(styles::MUTED())
+                    .add_modifier(Modifier::CROSSED_OUT)
+                    .bg(bg),
+            ),
+        }
+    };
+    // Word-wrap the title line: first line gets icon + confidence prefix,
+    // continuation lines get indent to align under text
+    let tag = finding.lens_category_tag();
+    let title_text = if tag.is_empty() {
+        finding.title.clone()
+    } else {
+        format!("[{tag}] {}", finding.title)
+    };
+    let title_lines = word_wrap(&title_text, max_w);
+    for (i, wrapped) in title_lines.iter().enumerate() {
+        if i == 0 {
+            lines.push(Line::from(vec![
+                Span::styled(
+                    format!("{}{} ", prefix, finding.severity.symbol()),
+                    sev_style,
+                ),
+                Span::styled(conf_glyph, conf_style),
+                Span::styled(wrapped.clone(), sev_style),
+            ]));
+        } else {
+            lines.push(Line::from(vec![Span::styled(
+                format!("     {}", wrapped),
+                sev_style,
+            )]));
+        }
+    }
+
+    // Location line for inline findings (hunk/line-anchored)
+    if finding.hunk_index.is_some() || finding.line_start.is_some() {
+        // Validate that the referenced hunk/line actually exists in the parsed diff.
+        let diff_hunks = tab.files.get(tab.selected_file).map(|f| &f.hunks);
+        let hunk_exists = finding
+            .hunk_index
+            .is_none_or(|h| diff_hunks.is_some_and(|hs| h < hs.len()));
+        let line_in_diff = finding.line_start.is_none_or(|ls| {
+            diff_hunks.is_some_and(|hs| {
+                hs.iter()
+                    .any(|hunk| hunk.lines.iter().any(|l| l.new_num == Some(ls)))
+            })
+        });
+        let in_diff = hunk_exists && line_in_diff;
+
+        let (loc, loc_style) = match (finding.hunk_index, finding.line_start) {
+            (Some(h), Some(l)) if in_diff => (
+                format!("   hunk {}, line {}", h + 1, l),
+                Style::default().fg(styles::DIM()).bg(bg),
+            ),
+            (Some(_h), Some(l)) => (
+                format!("   line {} (outside diff)", l),
+                Style::default().fg(styles::MUTED()).bg(bg),
+            ),
+            (Some(h), None) if in_diff => (
+                format!("   hunk {}", h + 1),
+                Style::default().fg(styles::DIM()).bg(bg),
+            ),
+            (Some(_h), None) => (
+                "   outside diff".to_string(),
+                Style::default().fg(styles::MUTED()).bg(bg),
+            ),
+            (None, Some(l)) => (
+                format!("   line {}", l),
+                Style::default().fg(styles::DIM()).bg(bg),
+            ),
+            (None, None) => unreachable!(),
+        };
+        lines.push(Line::from(vec![Span::styled(loc, loc_style)]));
+    }
+
+    if finding.resolved && !finding.resolved_note.is_empty() {
+        let note_style = Style::default().fg(styles::GREEN()).bg(bg);
+        for wrapped in word_wrap(&finding.resolved_note, max_w) {
+            lines.push(Line::from(vec![Span::styled(
+                format!("   resolved: {}", wrapped),
+                note_style,
+            )]));
+        }
+    }
+
+    lines.push(Line::from(""));
 }
 
 // ── AiSummary ──
@@ -1015,9 +1037,7 @@ fn render_pr_overview<'a>(
     let wrapped_branch = word_wrap(&branch_text, max_w);
     for wrapped in &wrapped_branch {
         // Re-split on " → " to preserve per-segment styling on the first line
-        if let Some(arrow_pos) = wrapped.find(" → ") {
-            let head = &wrapped[..arrow_pos];
-            let base = &wrapped[arrow_pos + " → ".len()..];
+        if let Some((head, base)) = wrapped.split_once(" → ") {
             lines.push(Line::from(vec![
                 Span::styled(" ", Style::default()),
                 Span::styled(head.to_string(), Style::default().fg(styles::CYAN())),

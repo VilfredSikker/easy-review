@@ -51,14 +51,14 @@ pub fn rewrite_proxy_location(location: &str, upstream_scheme: &str) -> String {
 }
 
 pub fn upstream_origin(url: &str) -> Option<String> {
-    let scheme_end = url.find("://")?;
-    let after_scheme = &url[scheme_end + 3..];
-    let host_end = after_scheme.find('/').unwrap_or(after_scheme.len());
-    let authority = &after_scheme[..host_end];
+    let (scheme, after_scheme) = url.split_once("://")?;
+    let authority = after_scheme
+        .split_once('/')
+        .map_or(after_scheme, |(authority, _)| authority);
     if authority.is_empty() {
         return None;
     }
-    Some(format!("{}://{}", &url[..scheme_end], authority))
+    Some(format!("{scheme}://{authority}"))
 }
 
 pub fn same_upstream_origin(a: &str, b: &str) -> bool {
@@ -84,11 +84,9 @@ pub fn resolve_upstream_redirect_location(location: &str, current_target: &str) 
         return trimmed.to_string();
     }
     if trimmed.starts_with('/') {
-        if let Some(scheme_end) = current_target.find("://") {
-            let after_scheme = &current_target[scheme_end + 3..];
-            if let Some(slash) = after_scheme.find('/') {
-                let origin = &current_target[..scheme_end + 3 + slash];
-                return format!("{origin}{trimmed}");
+        if let Some((scheme, after_scheme)) = current_target.split_once("://") {
+            if let Some((authority, _)) = after_scheme.split_once('/') {
+                return format!("{scheme}://{authority}{trimmed}");
             }
             return format!("{current_target}{trimmed}");
         }
@@ -149,6 +147,10 @@ pub fn browser_redirect_response(status: u16, http_location: &str) -> http::Resp
 
 /// Cross-origin redirect via HTML `location.replace` — **deprecated for documents** (causes
 /// OAuth loops). Kept for tests; document navigations use [`browser_redirect_response`].
+#[expect(
+    clippy::expect_used,
+    reason = "a fixed status and static header values cannot make the builder fail"
+)]
 pub fn webview_navigation_handoff(http_location: &str) -> http::Response<Vec<u8>> {
     let proxy_url = to_proxy_scheme_url(http_location);
     log::info!("[erp] hop class=cross_origin_handoff -> {proxy_url}");
@@ -167,7 +169,7 @@ pub fn webview_navigation_handoff(http_location: &str) -> http::Response<Vec<u8>
         .header("Cache-Control", "no-cache")
         .header("Access-Control-Allow-Origin", "*")
         .body(body.into_bytes())
-        .unwrap()
+        .expect("static handoff response is always valid")
 }
 
 pub struct UpstreamFetch {
@@ -269,6 +271,36 @@ mod tests {
         assert_eq!(
             resolve_upstream_redirect_location("/login", "http://127.0.0.1:5173/"),
             "http://127.0.0.1:5173/login"
+        );
+    }
+
+    #[test]
+    fn upstream_origin_keeps_scheme_and_authority_only() {
+        assert_eq!(
+            upstream_origin("https://héllo.example/a/b?c=1").as_deref(),
+            Some("https://héllo.example")
+        );
+        assert_eq!(
+            upstream_origin("http://localhost:5173").as_deref(),
+            Some("http://localhost:5173")
+        );
+        assert_eq!(upstream_origin("http:///path"), None);
+        assert_eq!(upstream_origin("no-scheme/path"), None);
+    }
+
+    #[test]
+    fn resolve_relative_redirect_against_a_target_without_path() {
+        assert_eq!(
+            resolve_upstream_redirect_location("/login", "http://localhost:5173"),
+            "http://localhost:5173/login"
+        );
+        assert_eq!(
+            resolve_upstream_redirect_location("/login", "https://héllo.example/deep/page"),
+            "https://héllo.example/login"
+        );
+        assert_eq!(
+            resolve_upstream_redirect_location("/login", "not-a-url"),
+            "not-a-url"
         );
     }
 

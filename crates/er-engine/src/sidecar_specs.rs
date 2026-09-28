@@ -248,6 +248,10 @@ fn summary_md_schema() -> Value {
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the schema is a string literal, and all_kinds_have_schemas_and_prompts parses it"
+)]
 fn tour_schema() -> Value {
     // Parsed from a string to avoid json! macro recursion limits on deep nests.
     serde_json::from_str(

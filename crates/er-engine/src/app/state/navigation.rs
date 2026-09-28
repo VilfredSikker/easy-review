@@ -110,8 +110,8 @@ impl TabState {
                     // At first watched file — transition back to diff section
                     self.selected_watched = None;
                     let visible = self.visible_files();
-                    if !visible.is_empty() {
-                        self.selected_file = visible.last().unwrap().0;
+                    if let Some(&(last, _)) = visible.last() {
+                        self.selected_file = last;
                         self.current_hunk = 0;
                         self.current_line = None;
                         self.selection_anchor = None;
@@ -143,13 +143,13 @@ impl TabState {
                 } else {
                     // At first diff file — wrap to last item
                     let visible_watched = self.visible_watched_files();
-                    if !visible_watched.is_empty() {
-                        self.selected_watched = Some(visible_watched.last().unwrap().0);
+                    if let Some(&(last, _)) = visible_watched.last() {
+                        self.selected_watched = Some(last);
                         self.diff_scroll = 0;
                         self.h_scroll = 0;
-                    } else {
+                    } else if let Some(&(last, _)) = visible.last() {
                         // Wrap to last diff file
-                        self.selected_file = visible.last().unwrap().0;
+                        self.selected_file = last;
                         self.current_hunk = 0;
                         self.current_line = None;
                         self.selection_anchor = None;
@@ -557,30 +557,33 @@ impl TabState {
         }
         // Fallback: offset parse returned no hunks but file has changes — fetch from git directly
         // Skip git fallback in remote mode — raw_diff is our only source
-        if !self.is_remote() {
-            if let Some(file) = self.files.get(index) {
-                if file.adds + file.dels > 0 {
-                    let path = file.path.clone();
-                    let repo_root = self.repo_root.clone();
-                    let mode = self.mode.git_mode().to_string();
-                    let base = self.base_branch.clone();
-                    let head_ref_owned = self.pr_head_ref.clone();
-                    if let Ok(raw) = git::git_diff_raw_file(
-                        &mode,
-                        &base,
-                        &repo_root,
-                        &path,
-                        None,
-                        head_ref_owned.as_deref(),
-                    ) {
-                        let parsed = git::parse_diff(&raw);
-                        if let Some(p) = parsed.into_iter().next() {
-                            if let Some(file) = self.files.get_mut(index) {
-                                file.hunks = p.hunks;
-                                file.adds = p.adds;
-                                file.dels = p.dels;
-                            }
-                        }
+        let fallback_path = if self.is_remote() {
+            None
+        } else {
+            self.files
+                .get(index)
+                .filter(|file| file.adds + file.dels > 0)
+                .map(|file| file.path.clone())
+        };
+        if let Some(path) = fallback_path {
+            let repo_root = self.repo_root.clone();
+            let mode = self.mode.git_mode().to_string();
+            let base = self.base_branch.clone();
+            let head_ref_owned = self.pr_head_ref.clone();
+            if let Ok(raw) = git::git_diff_raw_file(
+                &mode,
+                &base,
+                &repo_root,
+                &path,
+                None,
+                head_ref_owned.as_deref(),
+            ) {
+                let parsed = git::parse_diff(&raw);
+                if let Some(p) = parsed.into_iter().next() {
+                    if let Some(file) = self.files.get_mut(index) {
+                        file.hunks = p.hunks;
+                        file.adds = p.adds;
+                        file.dels = p.dels;
                     }
                 }
             }
@@ -607,16 +610,14 @@ impl TabState {
             if use_raw_diff {
                 // Remote / local-PR with cached diff: re-parse from raw_diff
                 let header_idx = self.file_headers.iter().position(|h| h.path == path);
-                if let Some(raw) = self.raw_diff.clone() {
-                    if let Some(idx) = header_idx {
-                        let header = self.file_headers[idx].clone();
-                        let parsed = git::parse_file_at_offset(&raw, &header);
-                        if let Some(file) = self.files.get_mut(self.selected_file) {
-                            file.hunks = parsed.hunks;
-                            file.adds = parsed.adds;
-                            file.dels = parsed.dels;
-                            file.compacted = false;
-                        }
+                if let (Some(raw), Some(idx)) = (self.raw_diff.clone(), header_idx) {
+                    let header = self.file_headers[idx].clone();
+                    let parsed = git::parse_file_at_offset(&raw, &header);
+                    if let Some(file) = self.files.get_mut(self.selected_file) {
+                        file.hunks = parsed.hunks;
+                        file.adds = parsed.adds;
+                        file.dels = parsed.dels;
+                        file.compacted = false;
                     }
                 }
             } else {

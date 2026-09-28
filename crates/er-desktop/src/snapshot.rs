@@ -2171,85 +2171,60 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
     }
 }
 
-/// Build a full snapshot, with differential-snapshot support: when
-/// `sent_files` is provided, files whose hunk content the frontend already
-/// holds are sent with `hunks_omitted = true` and no hunk payload.
-pub fn build_snapshot_with_delta(
-    app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
-    sent_files: Option<&SentFilesHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
-) -> AppSnapshot {
-    build_snapshot_inner(
-        app,
-        pr_cache,
-        pr_cache_fetched_at,
-        meta_cache,
-        gh_user,
-        pending_ai,
-        gh_status_cache,
-        loading,
-        watch_status,
-        inbox,
-        false,
-        sent_files,
-        branch_base_remote_oid,
-    )
+/// The desktop-owned state a snapshot reads beside the engine `App`. Every
+/// source is optional so tests can build a snapshot from only what they seed.
+#[derive(Clone, Copy, Default)]
+pub struct SnapshotSources<'a> {
+    pub pr_cache: Option<&'a PrCache>,
+    pub pr_cache_fetched_at: Option<&'a PrCacheFetchedAt>,
+    pub meta_cache: Option<&'a MetaCache>,
+    pub gh_user: Option<&'a GhUser>,
+    pub pending_ai: Option<&'a PendingAiReplies>,
+    pub gh_status_cache: Option<&'a GhStatusCache>,
+    pub loading: Option<&'a LoadingState>,
+    pub watch_status: Option<&'a WatchStatusState>,
+    pub inbox: Option<&'a InboxHandle>,
+    pub sent_files: Option<&'a SentFilesHandle>,
+    pub branch_base_remote_oid: Option<&'a BranchBaseRemoteOid>,
 }
 
-pub fn build_chrome_snapshot(
-    app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
-) -> AppSnapshot {
+/// Build a full snapshot, with differential-snapshot support: when
+/// `sources.sent_files` is provided, files whose hunk content the frontend
+/// already holds are sent with `hunks_omitted = true` and no hunk payload.
+pub fn build_snapshot_with_delta(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
+    build_snapshot_inner(app, sources, false)
+}
+
+/// Chrome-only snapshot: no diff files, so `sources.sent_files` is ignored.
+pub fn build_chrome_snapshot(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
     build_snapshot_inner(
         app,
-        pr_cache,
-        pr_cache_fetched_at,
-        meta_cache,
-        gh_user,
-        pending_ai,
-        gh_status_cache,
-        loading,
-        watch_status,
-        inbox,
+        &SnapshotSources {
+            sent_files: None,
+            ..*sources
+        },
         true,
-        None,
-        branch_base_remote_oid,
     )
 }
 
 fn build_snapshot_inner(
     app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
+    sources: &SnapshotSources<'_>,
     chrome_only: bool,
-    sent_files: Option<&SentFilesHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
 ) -> AppSnapshot {
+    let SnapshotSources {
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+        pending_ai,
+        gh_status_cache,
+        loading,
+        watch_status,
+        inbox,
+        sent_files,
+        branch_base_remote_oid,
+    } = *sources;
     let t0 = std::time::Instant::now();
     let tab = app.tab();
 
@@ -5019,17 +4994,10 @@ mod tests {
     fn diff_stale_for(app: &App, pr_cache: &PrCache) -> Option<DiffStaleSnapshot> {
         build_snapshot_with_delta(
             app,
-            Some(pr_cache),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &SnapshotSources {
+                pr_cache: Some(pr_cache),
+                ..SnapshotSources::default()
+            },
         )
         .diff_stale
     }
@@ -5262,17 +5230,10 @@ mod tests {
     fn delta_snap(app: &App, sent: &SentFilesHandle) -> AppSnapshot {
         build_snapshot_with_delta(
             app,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(sent),
-            None,
+            &SnapshotSources {
+                sent_files: Some(sent),
+                ..SnapshotSources::default()
+            },
         )
     }
 

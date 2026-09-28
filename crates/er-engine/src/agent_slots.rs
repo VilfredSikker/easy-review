@@ -166,6 +166,10 @@ impl SlotPool {
     }
 
     /// Acquire without a cancel path.
+    #[expect(
+        clippy::expect_used,
+        reason = "acquire returns None only when the cancel flag is set, and this one is a never-set static"
+    )]
     pub fn acquire_blocking(
         &self,
         workload: Workload,

@@ -257,11 +257,7 @@ fn relocate_hunk_level(anchor: &CommentAnchor, diff_file: &DiffFile) -> Relocati
 
 /// Extract the context string from a hunk header (the part after " @@ ")
 fn extract_hunk_context(header: &str) -> &str {
-    if let Some(idx) = header.find(" @@ ") {
-        &header[idx + 4..]
-    } else {
-        ""
-    }
+    header.split_once(" @@ ").map_or("", |(_, context)| context)
 }
 
 #[cfg(test)]

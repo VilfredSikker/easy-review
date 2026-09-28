@@ -18,7 +18,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-#[allow(unused_imports)]
 use std::time::Instant;
 use tui_textarea::TextArea;
 
@@ -36,6 +35,20 @@ static STACK_LOOKUP_SEQ: AtomicU64 = AtomicU64::new(1);
 
 fn profile_branch_enabled() -> bool {
     std::env::var("ER_DESKTOP_PROFILE_BRANCH").as_deref() == Ok("1")
+}
+
+/// Write `github-comments.json` under `gh_dir` through a temp file, ignoring
+/// failures: the caller keeps the comments in memory either way.
+fn write_github_comments_best_effort(
+    gh_dir: &str,
+    gh_path: &std::path::Path,
+    gc: &ai::ErGitHubComments,
+) {
+    let _ = std::fs::create_dir_all(gh_dir);
+    if let Ok(json) = serde_json::to_string_pretty(gc) {
+        let tmp = format!("{}.tmp", gh_path.to_string_lossy());
+        let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, gh_path));
+    }
 }
 
 fn log_branch_profile_phase(tab: &TabState, phase: &str, started_at: Instant) {
@@ -101,6 +114,16 @@ pub struct LineAnchor {
     context_after: Vec<String>,
     old_line_start: Option<usize>,
     hunk_header: String,
+}
+
+/// Where a comment submitted without the input-mode flow is placed.
+#[derive(Debug, Clone)]
+pub struct CommentTarget {
+    pub file: String,
+    pub hunk_idx: usize,
+    pub line_num: Option<usize>,
+    /// Inclusive end line for a range comment; ignored unless it is past `line_num`.
+    pub line_num_end: Option<usize>,
 }
 
 // ── Enums ──
@@ -299,7 +322,6 @@ impl TourState {
 
 /// Whether we're navigating or typing in the search filter / comment
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum InputMode {
     Normal,
     Search,
@@ -313,7 +335,6 @@ pub enum InputMode {
 
 /// Actions that require user confirmation (y/n)
 #[derive(Debug, Clone, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum ConfirmAction {
     DeleteComment {
         comment_id: String,
@@ -3657,15 +3678,12 @@ impl TabState {
                     let mut pr_comments = std::fs::read_to_string(&gh_path)
                         .ok()
                         .and_then(|c| serde_json::from_str::<ai::ErGitHubComments>(&c).ok());
-                    if Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments) {
-                        if let Some(ref gc) = pr_comments {
-                            let _ = std::fs::create_dir_all(&gh_dir);
-                            if let Ok(json) = serde_json::to_string_pretty(gc) {
-                                let tmp = format!("{}.tmp", gh_path.to_string_lossy());
-                                let _ = std::fs::write(&tmp, json)
-                                    .and_then(|()| std::fs::rename(&tmp, &gh_path));
-                            }
-                        }
+                    let migrated =
+                        Self::migrate_orphaned_github_comments(orphaned, &mut pr_comments);
+                    if let Some(gc) = pr_comments.as_ref().filter(|_| migrated) {
+                        write_github_comments_best_effort(&gh_dir, &gh_path, gc);
+                    }
+                    if migrated {
                         // Drop the orphan file so the migration runs only once.
                         let orphan_path =
                             std::path::Path::new(&er_dir).join("github-comments.json");
@@ -4726,16 +4744,14 @@ impl TabState {
                 let _ = self.refresh_diff_mode_switch();
 
                 // Restore selection by path (file order may differ between modes)
-                if let Some(path) = prev_path {
-                    if let Some(idx) = self.files.iter().position(|f| f.path == path) {
-                        self.selected_file = idx;
-                        // Restore hunk/line if the file still has enough hunks
-                        if prev_hunk < self.total_hunks() {
-                            self.current_hunk = prev_hunk;
-                            self.current_line = prev_line;
-                        }
-                    } else {
-                        self.selected_file = 0;
+                let prev_idx =
+                    prev_path.and_then(|path| self.files.iter().position(|f| f.path == path));
+                if let Some(idx) = prev_idx {
+                    self.selected_file = idx;
+                    // Restore hunk/line if the file still has enough hunks
+                    if prev_hunk < self.total_hunks() {
+                        self.current_hunk = prev_hunk;
+                        self.current_line = prev_line;
                     }
                 } else {
                     self.selected_file = 0;
@@ -8119,7 +8135,10 @@ impl App {
 
     // ── Overlay: Navigation ──
 
-    #[allow(clippy::collapsible_match)]
+    #[expect(
+        clippy::collapsible_match,
+        reason = "the bounds check belongs inside the arm; as a guard, an at-end selection would fall through to the catch-all"
+    )]
     pub fn overlay_next(&mut self) {
         match &mut self.overlay {
             Some(OverlayData::WorktreePicker {
@@ -8193,7 +8212,10 @@ impl App {
         }
     }
 
-    #[allow(clippy::collapsible_match)]
+    #[expect(
+        clippy::collapsible_match,
+        reason = "the bounds check belongs inside the arm; as a guard, an at-end selection would fall through to the catch-all"
+    )]
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
             Some(

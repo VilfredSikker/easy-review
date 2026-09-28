@@ -16,6 +16,47 @@ fn debug_agent_log_enabled() -> bool {
     std::env::var("ER_DEBUG").is_ok()
 }
 
+/// Delete GitHub comments in order on a background thread, discarding results.
+fn spawn_github_comment_deletes(gh: ai::GitHubSyncState, ids: Vec<u64>, repo_root: String) {
+    std::thread::spawn(move || {
+        for id in ids {
+            let _ = crate::github::gh_pr_delete_comment(&gh.owner, &gh.repo, id, &repo_root);
+        }
+    });
+}
+
+/// What one agent stdout line adds to the agent log: the parsed stream-json
+/// event, or the trimmed raw line for other formats. `None` when that is empty.
+fn stdout_log_text(line: &str, is_stream_json: bool) -> Option<String> {
+    let display = if is_stream_json {
+        parse_stream_json_line(line)
+    } else {
+        Some(line.trim().to_string())
+    };
+    display.filter(|text| !text.is_empty())
+}
+
+/// Cap a command failure at 80 chars for the status bar (safe for multi-byte UTF-8).
+fn status_bar_failure(msg: String) -> String {
+    if msg.len() <= 80 {
+        return msg;
+    }
+    let boundary = msg.char_indices().nth(80).map_or(msg.len(), |(i, _)| i);
+    format!("{}…", msg.get(..boundary).unwrap_or_default())
+}
+
+/// A failed agent's stderr, trimmed and capped at 280 chars for the error
+/// message. Char-safe: agent stderr often includes multi-byte text.
+fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
+    const MAX_CHARS: usize = 280;
+    let joined = stderr_lines.join("\n");
+    let trimmed = joined.trim();
+    match trimmed.char_indices().nth(MAX_CHARS) {
+        Some((boundary, _)) => format!("{}…", trimmed.get(..boundary).unwrap_or_default()),
+        None => trimmed.to_string(),
+    }
+}
+
 fn mint_comment_id(prefix: &str) -> String {
     let seq = COMMENT_SEQ.fetch_add(1, Ordering::Relaxed);
     format!(
@@ -701,26 +742,13 @@ impl App {
     /// Used by the desktop app where there is no TextArea widget.
     pub fn submit_comment_text(
         &mut self,
-        file: String,
-        hunk_idx: usize,
-        line_num: Option<usize>,
-        line_num_end: Option<usize>,
+        target: CommentTarget,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
         finding_ref: Option<String>,
     ) -> Result<()> {
-        self.submit_comment_text_inner(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
-            text,
-            comment_type,
-            reply_to,
-            finding_ref,
-            None,
-        )
+        self.submit_comment_text_inner(target, text, comment_type, reply_to, finding_ref, None)
     }
 
     /// Submit a comment/question whose `author` field is set to the provided
@@ -729,10 +757,7 @@ impl App {
     /// sets a transient override consumed by submit_question/submit_github_comment.
     pub fn submit_comment_text_as_author(
         &mut self,
-        file: String,
-        hunk_idx: usize,
-        line_num: Option<usize>,
-        line_num_end: Option<usize>,
+        target: CommentTarget,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
@@ -740,10 +765,7 @@ impl App {
         author: String,
     ) -> Result<()> {
         self.submit_comment_text_inner(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
+            target,
             text,
             comment_type,
             reply_to,
@@ -754,16 +776,19 @@ impl App {
 
     fn submit_comment_text_inner(
         &mut self,
-        file: String,
-        hunk_idx: usize,
-        line_num: Option<usize>,
-        line_num_end: Option<usize>,
+        target: CommentTarget,
         text: String,
         comment_type: CommentType,
         reply_to: Option<String>,
         finding_ref: Option<String>,
         author: Option<String>,
     ) -> Result<()> {
+        let CommentTarget {
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
+        } = target;
         {
             let tab = self.tab_mut();
             tab.comment_file = file;
@@ -1530,53 +1555,45 @@ impl App {
         } else {
             // Delete from github-comments.json (uses cache dir in remote mode)
             let path = self.tab().github_comments_path();
-            if let Ok(content) = std::fs::read_to_string(&path) {
-                if let Ok(mut gc) = serde_json::from_str::<ai::ErGitHubComments>(&content) {
-                    // Check if the comment has a github_id for API deletion
-                    let github_id = gc
-                        .comments
-                        .iter()
-                        .find(|c| c.id == comment_id)
-                        .and_then(|c| c.github_id);
+            if let Some(mut gc) = std::fs::read_to_string(&path)
+                .ok()
+                .and_then(|content| serde_json::from_str::<ai::ErGitHubComments>(&content).ok())
+            {
+                // Check if the comment has a github_id for API deletion
+                let github_id = gc
+                    .comments
+                    .iter()
+                    .find(|c| c.id == comment_id)
+                    .and_then(|c| c.github_id);
 
-                    let reply_github_ids: Vec<u64> = gc
-                        .comments
-                        .iter()
-                        .filter(|c| {
-                            c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some()
-                        })
-                        .filter_map(|c| c.github_id)
-                        .collect();
+                let reply_github_ids: Vec<u64> = gc
+                    .comments
+                    .iter()
+                    .filter(|c| {
+                        c.in_reply_to.as_deref() == Some(comment_id) && c.github_id.is_some()
+                    })
+                    .filter_map(|c| c.github_id)
+                    .collect();
 
-                    // Remove comment and cascade replies
-                    gc.comments.retain(|c| {
-                        c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id)
-                    });
+                // Remove comment and cascade replies
+                gc.comments
+                    .retain(|c| c.id != comment_id && c.in_reply_to.as_deref() != Some(comment_id));
 
-                    let json = serde_json::to_string_pretty(&gc)?;
-                    let tmp_path = format!("{}.tmp", path);
-                    std::fs::write(&tmp_path, &json)?;
-                    std::fs::rename(&tmp_path, &path)?;
+                let json = serde_json::to_string_pretty(&gc)?;
+                let tmp_path = format!("{}.tmp", path);
+                std::fs::write(&tmp_path, &json)?;
+                std::fs::rename(&tmp_path, &path)?;
 
-                    // Delete from GitHub off this thread. The results were already
-                    // discarded (`let _ =`), and running `gh` inline held the
-                    // desktop's app lock for the whole network round trip, so every
-                    // poll and click queued behind a comment deletion.
-                    if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
-                        std::thread::spawn(move || {
-                            let _ = crate::github::gh_pr_delete_comment(
-                                &gh.owner, &gh.repo, gh_id, &repo_root,
-                            );
-                            for reply_id in reply_github_ids {
-                                let _ = crate::github::gh_pr_delete_comment(
-                                    &gh.owner, &gh.repo, reply_id, &repo_root,
-                                );
-                            }
-                        });
-                    }
-
-                    self.adopt_github_comments(gc, &path);
+                // Delete from GitHub off this thread. The results were already
+                // discarded (`let _ =`), and running `gh` inline held the
+                // desktop's app lock for the whole network round trip, so every
+                // poll and click queued behind a comment deletion.
+                if let (Some(gh_id), Some(gh)) = (github_id, gc.github.clone()) {
+                    let ids = std::iter::once(gh_id).chain(reply_github_ids).collect();
+                    spawn_github_comment_deletes(gh, ids, repo_root);
                 }
+
+                self.adopt_github_comments(gc, &path);
             }
         }
 
@@ -1647,10 +1664,10 @@ impl App {
                     .and_then(|fr| {
                         fr.findings
                             .iter()
-                            .filter(|f| f.hunk_index.is_some())
-                            .min_by_key(|f| (f.hunk_index, f.line_start))
+                            .filter_map(|f| Some((f.hunk_index?, f)))
+                            .min_by_key(|(hunk, f)| (*hunk, f.line_start))
                     })
-                    .map(|f| (f.hunk_index.unwrap(), f.id.clone()));
+                    .map(|(hunk, f)| (hunk, f.id.clone()));
 
                 let tab = self.tab_mut();
                 tab.selected_file = idx;
@@ -2080,7 +2097,10 @@ impl App {
     /// Spawn a shell command in the background under the given name.
     /// The command string is run via `sh -c` in the repo root.
     /// Placeholders {base}, {branch}, {repo}, {output} are substituted.
-    #[allow(clippy::literal_string_with_formatting_args)] // {base}/{branch}/{repo}/{output} are template placeholders, not format args
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "{base}/{branch}/{repo}/{output} are template placeholders, not format args"
+    )]
     pub fn spawn_command(&mut self, name: &str, shell_cmd: &str) -> Result<()> {
         if self.tab().command_status.get(name) == Some(&CommandStatus::Running) {
             self.notify(&format!("{} already running", name));
@@ -2164,17 +2184,17 @@ impl App {
                 let log_tx_out = log_tx.clone();
                 let cmd_name_out = name_owned.clone();
                 let stdout_handle = std::thread::spawn(move || {
-                    if let Some(pipe) = stdout {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            let _ = log_tx_out.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: cmd_name_out.clone(),
-                                source: AgentLogSource::Stdout,
-                                text: line,
-                            });
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    for line in pipe_lines {
+                        let _ = log_tx_out.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: cmd_name_out.clone(),
+                            source: AgentLogSource::Stdout,
+                            text: line,
+                        });
                     }
                 });
 
@@ -2182,18 +2202,18 @@ impl App {
                 let cmd_name_err = name_owned.clone();
                 let mut stderr_lines: Vec<String> = Vec::new();
                 let stderr_handle = std::thread::spawn(move || -> Vec<String> {
-                    if let Some(pipe) = stderr {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            let _ = log_tx_err.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: cmd_name_err.clone(),
-                                source: AgentLogSource::Stderr,
-                                text: line.clone(),
-                            });
-                            stderr_lines.push(line);
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    for line in pipe_lines {
+                        let _ = log_tx_err.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: cmd_name_err.clone(),
+                            source: AgentLogSource::Stderr,
+                            text: line.clone(),
+                        });
+                        stderr_lines.push(line);
                     }
                     stderr_lines
                 });
@@ -2225,10 +2245,10 @@ impl App {
                 // Summary-specific: optionally push to PR body
                 if push_to_pr {
                     let summary_path = std::path::Path::new(&er_dir).join("summary.md");
-                    if let Ok(summary) = std::fs::read_to_string(&summary_path) {
-                        if !summary.trim().is_empty() {
-                            crate::github::gh_pr_edit_body(&repo_root, &summary)?;
-                        }
+                    // An unreadable summary is skipped, same as an empty one.
+                    let summary = std::fs::read_to_string(&summary_path).unwrap_or_default();
+                    if !summary.trim().is_empty() {
+                        crate::github::gh_pr_edit_body(&repo_root, &summary)?;
                     }
                 }
 
@@ -2304,48 +2324,39 @@ impl App {
                     None
                 };
 
-                if let Some(result) = result {
-                    tab.command_rx.remove(&name);
-                    match result {
-                        Ok(()) => {
-                            tab.command_status.insert(name.clone(), CommandStatus::Done);
-                            let _ = tab.log_tx.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: std::sync::Arc::from(name.as_str()),
-                                source: AgentLogSource::Status,
-                                text: format!("{} completed", name),
-                            });
-                            // Force AI reload for commands that write sidecar artifacts.
-                            // reload_ai_state() resets last_ai_check itself.
-                            if Self::agent_command_writes_ai_artifacts(&name) {
-                                tab.reload_ai_state();
-                            }
-                            let msg = Self::agent_completion_summary_for(tab, &name);
-                            notifications.push(msg);
+                let Some(result) = result else {
+                    continue;
+                };
+                tab.command_rx.remove(&name);
+                match result {
+                    Ok(()) => {
+                        tab.command_status.insert(name.clone(), CommandStatus::Done);
+                        let _ = tab.log_tx.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: std::sync::Arc::from(name.as_str()),
+                            source: AgentLogSource::Status,
+                            text: format!("{} completed", name),
+                        });
+                        // Force AI reload for commands that write sidecar artifacts.
+                        // reload_ai_state() resets last_ai_check itself.
+                        if Self::agent_command_writes_ai_artifacts(&name) {
+                            tab.reload_ai_state();
                         }
-                        Err(e) => {
-                            let msg = format!("{}", e);
-                            tab.command_status
-                                .insert(name.clone(), CommandStatus::Failed(msg.clone()));
-                            let _ = tab.log_tx.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: std::sync::Arc::from(name.as_str()),
-                                source: AgentLogSource::Status,
-                                text: format!("{} failed: {}", name, msg),
-                            });
-                            // Truncate long error messages to fit status bar (safe for multi-byte UTF-8)
-                            let short = if msg.len() > 80 {
-                                let boundary = msg
-                                    .char_indices()
-                                    .nth(80)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(msg.len());
-                                format!("{}…", &msg[..boundary])
-                            } else {
-                                msg
-                            };
-                            notifications.push(format!("{} failed: {}", name, short));
-                        }
+                        let msg = Self::agent_completion_summary_for(tab, &name);
+                        notifications.push(msg);
+                    }
+                    Err(e) => {
+                        let msg = format!("{}", e);
+                        tab.command_status
+                            .insert(name.clone(), CommandStatus::Failed(msg.clone()));
+                        let _ = tab.log_tx.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: std::sync::Arc::from(name.as_str()),
+                            source: AgentLogSource::Status,
+                            text: format!("{} failed: {}", name, msg),
+                        });
+                        let short = status_bar_failure(msg);
+                        notifications.push(format!("{} failed: {}", name, short));
                     }
                 }
             }
@@ -2608,27 +2619,22 @@ impl App {
                 let cmd_name_out = name_owned.clone();
                 let stdout_handle = std::thread::spawn(move || -> Vec<String> {
                     let mut lines: Vec<String> = Vec::new();
-                    if let Some(pipe) = stdout {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            lines.push(line.clone());
-                            // Try to parse as stream-json event
-                            let display = if is_stream_json {
-                                parse_stream_json_line(&line)
-                            } else {
-                                Some(line.trim().to_string())
-                            };
-                            if let Some(text) = display.filter(|text| !text.is_empty()) {
-                                let _ = log_tx_out.send(AgentLogEntry {
-                                    timestamp: std::time::Instant::now(),
-                                    command_name: cmd_name_out.clone(),
-                                    source: AgentLogSource::Stdout,
-                                    text,
-                                });
-                            }
-                            // Skip lines that parse to None (noise like empty results)
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    // Lines that parse to None (noise like empty results) are kept
+                    // in `lines` but not logged.
+                    let log_texts = pipe_lines
+                        .inspect(|line| lines.push(line.clone()))
+                        .filter_map(|line| stdout_log_text(&line, is_stream_json));
+                    for text in log_texts {
+                        let _ = log_tx_out.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: cmd_name_out.clone(),
+                            source: AgentLogSource::Stdout,
+                            text,
+                        });
                     }
                     lines
                 });
@@ -2638,18 +2644,18 @@ impl App {
                 let cmd_name_err = name_owned.clone();
                 let stderr_handle = std::thread::spawn(move || -> Vec<String> {
                     let mut lines: Vec<String> = Vec::new();
-                    if let Some(pipe) = stderr {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            let _ = log_tx_err.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: cmd_name_err.clone(),
-                                source: AgentLogSource::Stderr,
-                                text: line.clone(),
-                            });
-                            lines.push(line);
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    for line in pipe_lines {
+                        let _ = log_tx_err.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: cmd_name_err.clone(),
+                            source: AgentLogSource::Stderr,
+                            text: line.clone(),
+                        });
+                        lines.push(line);
                     }
                     lines
                 });
@@ -3010,7 +3016,10 @@ impl App {
     /// Actually spawn the agent subprocess for an accepted task. Split from
     /// `spawn_background_agent_task` so the dispatch loop can launch queued
     /// tasks when capacity frees up.
-    #[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a template placeholder substituted via .replace()
+    #[expect(
+        clippy::literal_string_with_formatting_args,
+        reason = "{prompt} is a template placeholder substituted via .replace()"
+    )]
     fn launch_background_agent_task(
         &mut self,
         pending: super::background::PendingBackgroundTask,
@@ -3319,25 +3328,22 @@ impl App {
                 let log_tx_out = log_tx_thread.clone();
                 let stdout_handle = std::thread::spawn(move || -> Vec<String> {
                     let mut lines: Vec<String> = Vec::new();
-                    if let Some(pipe) = stdout {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            lines.push(line.clone());
-                            let display = if is_stream_json {
-                                parse_stream_json_line(&line)
-                            } else {
-                                Some(line.trim().to_string())
-                            };
-                            if let Some(text) = display.filter(|t| !t.is_empty()) {
-                                let _ = log_tx_out.send(AgentLogEntry {
-                                    timestamp: std::time::Instant::now(),
-                                    command_name: command_name_stdout.clone(),
-                                    source: AgentLogSource::Stdout,
-                                    text,
-                                });
-                            }
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stdout.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    // Lines that parse to None (noise like empty results) are kept
+                    // in `lines` but not logged.
+                    let log_texts = pipe_lines
+                        .inspect(|line| lines.push(line.clone()))
+                        .filter_map(|line| stdout_log_text(&line, is_stream_json));
+                    for text in log_texts {
+                        let _ = log_tx_out.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: command_name_stdout.clone(),
+                            source: AgentLogSource::Stdout,
+                            text,
+                        });
                     }
                     lines
                 });
@@ -3345,18 +3351,18 @@ impl App {
                 let log_tx_err = log_tx_thread.clone();
                 let stderr_handle = std::thread::spawn(move || -> Vec<String> {
                     let mut lines: Vec<String> = Vec::new();
-                    if let Some(pipe) = stderr {
-                        use std::io::BufRead;
-                        let reader = std::io::BufReader::new(pipe);
-                        for line in reader.lines().map_while(Result::ok) {
-                            let _ = log_tx_err.send(AgentLogEntry {
-                                timestamp: std::time::Instant::now(),
-                                command_name: command_name_stderr.clone(),
-                                source: AgentLogSource::Stderr,
-                                text: line.clone(),
-                            });
-                            lines.push(line);
-                        }
+                    use std::io::BufRead;
+                    let pipe_lines = stderr.into_iter().flat_map(|pipe| {
+                        std::io::BufReader::new(pipe).lines().map_while(Result::ok)
+                    });
+                    for line in pipe_lines {
+                        let _ = log_tx_err.send(AgentLogEntry {
+                            timestamp: std::time::Instant::now(),
+                            command_name: command_name_stderr.clone(),
+                            source: AgentLogSource::Stderr,
+                            text: line.clone(),
+                        });
+                        lines.push(line);
                     }
                     lines
                 });
@@ -3395,26 +3401,7 @@ impl App {
                 }
 
                 if !status.success() {
-                    let stderr_snip = {
-                        let joined = stderr_lines.join("\n");
-                        let trimmed = joined.trim();
-                        if trimmed.is_empty() {
-                            String::new()
-                        } else {
-                            // Char-safe: agent stderr often includes multi-byte text.
-                            let max_chars = 280usize;
-                            if trimmed.chars().count() <= max_chars {
-                                trimmed.to_string()
-                            } else {
-                                let boundary = trimmed
-                                    .char_indices()
-                                    .nth(max_chars)
-                                    .map(|(i, _)| i)
-                                    .unwrap_or(trimmed.len());
-                                format!("{}…", &trimmed[..boundary])
-                            }
-                        }
-                    };
+                    let stderr_snip = agent_stderr_snippet(&stderr_lines);
                     if stderr_snip.to_lowercase().contains("not logged in")
                         || stderr_snip.to_lowercase().contains("authentication")
                         || stderr_snip.to_lowercase().contains("unauthorized")
@@ -3926,7 +3913,10 @@ mod background_queue_tests {
     /// body that started it, so it keeps its slot after the lock is released
     /// and the next test inherits a pool it does not own. The `Drop` waits for
     /// the pool to drain, which is what makes the next test's view its own.
-    struct PoolGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+    struct PoolGuard(
+        #[expect(dead_code, reason = "held only for its Drop, which releases the lock")]
+        std::sync::MutexGuard<'static, ()>,
+    );
 
     impl Drop for PoolGuard {
         fn drop(&mut self) {

@@ -6,12 +6,16 @@
 //! `github_comments_dir()` resolves to the branch view bucket while `pr_number`
 //! is None and to the PR bucket once it is set, so comments written early end up
 //! orphaned in the branch bucket and disappear from the panel.
+#![expect(
+    clippy::expect_used,
+    reason = "integration-test scaffolding: a failed setup step should abort the test"
+)]
 
 use std::process::Command;
 use std::sync::Mutex;
 
 use er_engine::ai::CommentType;
-use er_engine::app::App;
+use er_engine::app::{App, CommentTarget};
 
 /// These tests mutate the process-global `ER_STORAGE_ROOT` env var, so they must
 /// not run concurrently with each other.
@@ -78,10 +82,12 @@ fn local_comments_survive_late_pr_number_assignment() {
     // Add two comments BEFORE the PR number is known (as happens when a user
     // comments on a freshly opened local branch before toggling PR Diff).
     app.submit_comment_text(
-        file.clone(),
-        0,
-        Some(2),
-        None,
+        CommentTarget {
+            file: file.clone(),
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+        },
         "comment one".to_string(),
         CommentType::GitHubComment,
         None,
@@ -89,10 +95,12 @@ fn local_comments_survive_late_pr_number_assignment() {
     )
     .unwrap();
     app.submit_comment_text(
-        file.clone(),
-        0,
-        Some(2),
-        None,
+        CommentTarget {
+            file: file.clone(),
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+        },
         "comment two".to_string(),
         CommentType::GitHubComment,
         None,
@@ -131,10 +139,12 @@ fn local_comments_survive_late_pr_number_assignment() {
 
     // A comment added after the flip accumulates with the migrated ones.
     app.submit_comment_text(
-        file,
-        0,
-        Some(2),
-        None,
+        CommentTarget {
+            file,
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+        },
         "comment three".to_string(),
         CommentType::GitHubComment,
         None,
@@ -210,10 +220,12 @@ fn fresh_comment_is_anchored_to_diff_hash_and_survives_relocate() {
     assert_ne!(active_diff_hash, app.tab().branch_diff_hash);
 
     app.submit_comment_text(
-        file,
-        0,
-        Some(2),
-        None,
+        CommentTarget {
+            file,
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+        },
         "fresh comment".to_string(),
         CommentType::GitHubComment,
         None,
@@ -302,10 +314,12 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
     });
 
     app.submit_comment_text(
-        file,
-        0,
-        Some(2),
-        None,
+        CommentTarget {
+            file,
+            hunk_idx: 0,
+            line_num: Some(2),
+            line_num_end: None,
+        },
         "local only".to_string(),
         CommentType::GitHubComment,
         None,

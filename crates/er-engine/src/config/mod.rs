@@ -140,10 +140,9 @@ pub struct ImportanceProposal {
 impl ImportanceProposal {
     /// Pull the proposal out of an agent's reply, if it printed one.
     pub fn from_reply(reply: &str) -> Option<Self> {
-        let begin = reply.find(crate::ai::prompts::IMPORTANCE_JSON_BEGIN)?;
-        let rest = &reply[begin + crate::ai::prompts::IMPORTANCE_JSON_BEGIN.len()..];
-        let end = rest.find(crate::ai::prompts::IMPORTANCE_JSON_END)?;
-        serde_json::from_str(rest[..end].trim()).ok()
+        let (_, rest) = reply.split_once(crate::ai::prompts::IMPORTANCE_JSON_BEGIN)?;
+        let (body, _) = rest.split_once(crate::ai::prompts::IMPORTANCE_JSON_END)?;
+        serde_json::from_str(body.trim()).ok()
     }
 
     /// Merge a proposal into the on-disk global config and save it.
@@ -1533,11 +1532,12 @@ pub const AUTO_EFFORT: &str = "Auto";
 /// Title-case a catalog effort id for picker labels (`xhigh` → `XHigh`).
 pub fn effort_display_label(level: &str) -> String {
     if level.eq_ignore_ascii_case("xhigh") {
-        "XHigh".to_string()
-    } else if let Some(first) = level.chars().next() {
-        first.to_uppercase().collect::<String>() + &level[first.len_utf8()..]
-    } else {
-        String::new()
+        return "XHigh".to_string();
+    }
+    let mut chars = level.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 

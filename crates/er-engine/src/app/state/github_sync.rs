@@ -317,67 +317,24 @@ impl App {
             .collect();
 
         for cid in &comment_ids {
-            let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
-            if let Some(comment) = comment {
-                // General comments (empty file) route to the issues API
-                if comment.file.is_empty() {
-                    match if is_remote {
-                        github::gh_pr_general_comment_remote(
-                            &owner,
-                            &repo_name,
-                            pr_number,
-                            &comment.comment,
-                        )
-                    } else {
-                        github::gh_pr_general_comment(
-                            &owner,
-                            &repo_name,
-                            pr_number,
-                            &comment.comment,
-                            &repo_root,
-                        )
-                    } {
-                        Ok(github_id) => {
-                            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
-                                c.github_id = Some(github_id);
-                                c.synced = true;
-                            }
-                            pushed += 1;
-                        }
-                        Err(_) => {
-                            failed += 1;
-                        }
-                    }
-                    continue;
-                }
-
-                let path = &comment.file;
-                // Hunk-level comments have no line_start; the line-level push API requires
-                // a line, so they get anchored to line 1 on GitHub.
-                let start = comment.line_start.unwrap_or(1);
-                let end = comment.line_end.unwrap_or(start);
-                let side = comment.side.as_str();
+            let Some(comment) = gc.comments.iter().find(|c| c.id == *cid).cloned() else {
+                continue;
+            };
+            // General comments (empty file) route to the issues API
+            if comment.file.is_empty() {
                 match if is_remote {
-                    github::gh_pr_push_comment_remote(
+                    github::gh_pr_general_comment_remote(
                         &owner,
                         &repo_name,
                         pr_number,
-                        path,
-                        start,
-                        Some(end),
                         &comment.comment,
-                        side,
                     )
                 } else {
-                    github::gh_pr_push_comment(
+                    github::gh_pr_general_comment(
                         &owner,
                         &repo_name,
                         pr_number,
-                        path,
-                        start,
-                        Some(end),
                         &comment.comment,
-                        side,
                         &repo_root,
                     )
                 } {
@@ -392,6 +349,35 @@ impl App {
                         failed += 1;
                     }
                 }
+                continue;
+            }
+
+            // Hunk-level comments have no line_start; the line-level push API requires
+            // a line, so they get anchored to line 1 on GitHub.
+            let start = comment.line_start.unwrap_or(1);
+            let end = comment.line_end.unwrap_or(start);
+            let new_comment = github::NewLineComment {
+                path: &comment.file,
+                line_start: start,
+                line_end: Some(end),
+                body: &comment.comment,
+                side: comment.side.as_str(),
+            };
+            match if is_remote {
+                github::gh_pr_push_comment_remote(&owner, &repo_name, pr_number, new_comment)
+            } else {
+                github::gh_pr_push_comment(&owner, &repo_name, pr_number, new_comment, &repo_root)
+            } {
+                Ok(github_id) => {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                        c.github_id = Some(github_id);
+                        c.synced = true;
+                    }
+                    pushed += 1;
+                }
+                Err(_) => {
+                    failed += 1;
+                }
             }
         }
 
@@ -404,45 +390,45 @@ impl App {
             .collect();
 
         for cid in &reply_ids {
-            let comment = gc.comments.iter().find(|c| c.id == *cid).cloned();
-            if let Some(comment) = comment {
-                let parent_gh_id = comment
-                    .in_reply_to
-                    .as_ref()
-                    .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
-                    .and_then(|c| c.github_id);
+            let Some(comment) = gc.comments.iter().find(|c| c.id == *cid).cloned() else {
+                continue;
+            };
+            let parent_gh_id = comment
+                .in_reply_to
+                .as_ref()
+                .and_then(|rt| gc.comments.iter().find(|c| c.id == *rt))
+                .and_then(|c| c.github_id);
 
-                if let Some(parent_gh_id) = parent_gh_id {
-                    match if is_remote {
-                        github::gh_pr_reply_comment_remote(
-                            &owner,
-                            &repo_name,
-                            pr_number,
-                            parent_gh_id,
-                            &comment.comment,
-                        )
-                    } else {
-                        github::gh_pr_reply_comment(
-                            &owner,
-                            &repo_name,
-                            pr_number,
-                            parent_gh_id,
-                            &comment.comment,
-                            &repo_root,
-                        )
-                    } {
-                        Ok(github_id) => {
-                            if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
-                                c.github_id = Some(github_id);
-                                c.synced = true;
-                            }
-                            pushed += 1;
-                        }
-                        Err(_) => {
-                            failed += 1;
-                        }
+            let Some(parent_gh_id) = parent_gh_id else {
+                failed += 1;
+                continue;
+            };
+            match if is_remote {
+                github::gh_pr_reply_comment_remote(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    parent_gh_id,
+                    &comment.comment,
+                )
+            } else {
+                github::gh_pr_reply_comment(
+                    &owner,
+                    &repo_name,
+                    pr_number,
+                    parent_gh_id,
+                    &comment.comment,
+                    &repo_root,
+                )
+            } {
+                Ok(github_id) => {
+                    if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
+                        c.github_id = Some(github_id);
+                        c.synced = true;
                     }
-                } else {
+                    pushed += 1;
+                }
+                Err(_) => {
                     failed += 1;
                 }
             }
@@ -545,28 +531,21 @@ impl App {
                     )
                 })?;
                 let end = comment.line_end.unwrap_or(start);
-                let side = comment.side.as_str();
+                let new_comment = github::NewLineComment {
+                    path: &comment.file,
+                    line_start: start,
+                    line_end: Some(end),
+                    body: &comment.comment,
+                    side: comment.side.as_str(),
+                };
                 if is_remote {
-                    github::gh_pr_push_comment_remote(
-                        &owner,
-                        &repo_name,
-                        pr_number,
-                        &comment.file,
-                        start,
-                        Some(end),
-                        &comment.comment,
-                        side,
-                    )
+                    github::gh_pr_push_comment_remote(&owner, &repo_name, pr_number, new_comment)
                 } else {
                     github::gh_pr_push_comment(
                         &owner,
                         &repo_name,
                         pr_number,
-                        &comment.file,
-                        start,
-                        Some(end),
-                        &comment.comment,
-                        side,
+                        new_comment,
                         &repo_root,
                     )
                 }

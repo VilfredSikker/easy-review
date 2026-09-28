@@ -197,7 +197,6 @@ fn deduplicate_reviewers(reviews_arr: &[serde_json::Value]) -> Vec<ReviewerStatu
 
 /// GitHub review comment from the API
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct GitHubComment {
     pub id: u64,
     pub body: String,
@@ -957,8 +956,9 @@ pub fn gh_pr_comments(
                 ']' => {
                     depth -= 1;
                     if depth == 0 {
-                        if let Ok(mut batch) =
-                            serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i])
+                        if let Some(Ok(mut batch)) = stdout
+                            .get(start..=i)
+                            .map(serde_json::from_str::<Vec<GitHubComment>>)
                         {
                             results.append(&mut batch);
                         }
@@ -1002,18 +1002,32 @@ fn review_comment_field_args(
     args
 }
 
-/// Push a new review comment to a PR (`line_end` inclusive; omit or equal to start for single-line).
+/// A new line-anchored review comment to push. `line_end` is inclusive; omit it
+/// or set it equal to `line_start` for a single-line comment.
+#[derive(Debug, Clone, Copy)]
+pub struct NewLineComment<'a> {
+    pub path: &'a str,
+    pub line_start: usize,
+    pub line_end: Option<usize>,
+    pub body: &'a str,
+    pub side: &'a str,
+}
+
+/// Push a new review comment to a PR.
 pub fn gh_pr_push_comment(
     owner: &str,
     repo: &str,
     pr: u64,
-    path: &str,
-    line_start: usize,
-    line_end: Option<usize>,
-    body: &str,
-    side: &str,
+    comment: NewLineComment<'_>,
     repo_root: &str,
 ) -> Result<u64> {
+    let NewLineComment {
+        path,
+        line_start,
+        line_end,
+        body,
+        side,
+    } = comment;
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
         .args([
@@ -1700,8 +1714,9 @@ pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<Git
                 ']' => {
                     depth -= 1;
                     if depth == 0 {
-                        if let Ok(mut batch) =
-                            serde_json::from_str::<Vec<GitHubComment>>(&stdout[start..=i])
+                        if let Some(Ok(mut batch)) = stdout
+                            .get(start..=i)
+                            .map(serde_json::from_str::<Vec<GitHubComment>>)
                         {
                             results.append(&mut batch);
                         }
@@ -2051,12 +2066,15 @@ pub fn gh_pr_push_comment_remote(
     owner: &str,
     repo: &str,
     pr: u64,
-    path: &str,
-    line_start: usize,
-    line_end: Option<usize>,
-    body: &str,
-    side: &str,
+    comment: NewLineComment<'_>,
 ) -> Result<u64> {
+    let NewLineComment {
+        path,
+        line_start,
+        line_end,
+        body,
+        side,
+    } = comment;
     // Get the latest commit SHA for the PR
     let repo_slug = format!("{}/{}", owner, repo);
     let sha_output = Command::new("gh")
@@ -2173,12 +2191,22 @@ pub fn gh_pr_submit_review(
         owner,
         repo,
         pr,
-        &commit_id,
-        event,
-        body,
-        comments,
+        ReviewSubmission {
+            commit_id: &commit_id,
+            event,
+            body,
+            comments,
+        },
         Some(repo_root),
     )
+}
+
+/// The body of one `POST /pulls/{pr}/reviews` call.
+struct ReviewSubmission<'a> {
+    commit_id: &'a str,
+    event: &'a str,
+    body: &'a str,
+    comments: &'a [ReviewBatchEntry],
 }
 
 fn pr_review_payload_json(
@@ -2222,13 +2250,11 @@ fn post_pr_review(
     owner: &str,
     repo: &str,
     pr: u64,
-    commit_id: &str,
-    event: &str,
-    body: &str,
-    comments: &[ReviewBatchEntry],
+    review: ReviewSubmission<'_>,
     repo_root: Option<&str>,
 ) -> Result<()> {
-    let payload = pr_review_payload_json(commit_id, event, body, comments);
+    let payload =
+        pr_review_payload_json(review.commit_id, review.event, review.body, review.comments);
     // NamedTempFile: O_EXCL + 0600, so no symlink/race exposure in world-
     // writable /tmp and no world-readable payload (security review MEDIUM:
     // the previous fixed-name /tmp/er_review_payload_{pid}.json allowed
@@ -2306,7 +2332,18 @@ pub fn gh_pr_submit_review_remote(
         anyhow::bail!("Failed to get HEAD SHA: empty output");
     }
 
-    post_pr_review(owner, repo, pr, &commit_id, event, body, comments, None)
+    post_pr_review(
+        owner,
+        repo,
+        pr,
+        ReviewSubmission {
+            commit_id: &commit_id,
+            event,
+            body,
+            comments,
+        },
+        None,
+    )
 }
 
 /// Post a general comment on a PR (not attached to any file/line).
@@ -2644,8 +2681,7 @@ pub fn parse_remote_url(url: &str) -> Option<(String, String)> {
     // SCP-style SSH: git@host:owner/repo[.git]
     // Detected by: a colon present, no "://" scheme marker.
     if !url.contains("://") {
-        if let Some(colon_pos) = url.find(':') {
-            let after_colon = &url[colon_pos + 1..];
+        if let Some((_, after_colon)) = url.split_once(':') {
             return parse_path_components(after_colon);
         }
     }

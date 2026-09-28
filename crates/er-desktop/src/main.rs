@@ -194,6 +194,10 @@ fn proxy_size_limit(is_html: bool) -> usize {
         .unwrap_or(PROXY_ASSET_SIZE_LIMIT)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a fixed status and static header values cannot make the builder fail"
+)]
 fn oversized_response(
     bytes: usize,
     size_limit: usize,
@@ -220,7 +224,7 @@ fn oversized_response(
         .status(413)
         .header("Content-Type", content_type)
         .body(body.into_bytes())
-        .unwrap()
+        .expect("static 413 response is always valid")
 }
 
 /// Read at most `limit` bytes from `reader`. Returns `Ok(bytes)` on success,
@@ -280,6 +284,10 @@ fn forward_request_headers(headers: &tauri::http::HeaderMap) -> Vec<(String, Str
         .collect()
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a fixed status and static header values cannot make the builder fail"
+)]
 fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<u8>> {
     let msg = e.to_string();
     let status = if msg.contains("timed out") || msg.contains("TimedOut") {
@@ -297,10 +305,13 @@ fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<
         .status(status)
         .header("Content-Type", "text/html")
         .body(format!("<html><body><p>{}: {}</p></body></html>", label, e).into_bytes())
-        .unwrap()
+        .expect("static transport-error response is always valid")
 }
 
-#[allow(clippy::result_large_err)]
+#[expect(
+    clippy::result_large_err,
+    reason = "ureq::Error is the library's own type; boxing it at every call site buys nothing"
+)]
 fn upstream_request(
     agent: &ureq::Agent,
     request: &tauri::http::Request<Vec<u8>>,
@@ -320,6 +331,10 @@ fn upstream_request(
     }
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the fallback is a bare 500 with no headers, which the builder cannot reject"
+)]
 fn proxied_response(
     request: &tauri::http::Request<Vec<u8>>,
     upstream_scheme: &str,
@@ -407,7 +422,7 @@ fn proxied_response(
         tauri::http::Response::builder()
             .status(500)
             .body(vec![])
-            .unwrap()
+            .expect("bare 500 response is always valid")
     })
 }
 
@@ -419,6 +434,10 @@ fn proxied_response(
 /// upstream response (e.g. a header value the `http` crate rejects) would crash
 /// Easy Review rather than failing just the page load. Catch any panic and turn
 /// it into a 500 so the embedded browser can never take the app down with it.
+#[expect(
+    clippy::expect_used,
+    reason = "the fallback is a bare 500 with no headers, which the builder cannot reject"
+)]
 fn safe_proxied_response(
     request: &tauri::http::Request<Vec<u8>>,
     upstream_scheme: &str,
@@ -440,7 +459,7 @@ fn safe_proxied_response(
                     tauri::http::Response::builder()
                         .status(500)
                         .body(Vec::new())
-                        .unwrap()
+                        .expect("bare 500 response is always valid")
                 })
         }
     }
@@ -635,7 +654,190 @@ fn probe_recently_done(
     last_probe.is_some_and(|last_at| now.saturating_duration_since(*last_at) < ttl)
 }
 
-#[allow(clippy::large_stack_frames)] // Tauri's generate_context!/run closure carries a large match on RunEvent; boxing it adds noise for no real gain
+/// The active tab's PR as `(owner/repo, pr_number)` for the pr-head probe.
+/// `None` when the app is busy, the tab is not a PR tab, or its origin cannot
+/// be resolved — every case skips this tick.
+fn pr_head_probe_target(app: &Mutex<App>) -> Option<(String, u64)> {
+    let guard = app.try_lock().ok()?;
+    let tab = guard.tab();
+    let pr_number = tab.pr_number?;
+    // Remote tabs carry `remote_repo`; local-PR tabs resolve owner/repo from origin.
+    if let Some(slug) = tab.remote_repo.as_ref() {
+        return slug.split_once('/').map(|_| (slug.clone(), pr_number));
+    }
+    if tab.repo_root.is_empty() {
+        return None;
+    }
+    let (owner, repo) = er_engine::github::get_repo_info(&tab.repo_root).ok()?;
+    Some((format!("{owner}/{repo}"), pr_number))
+}
+
+/// The active tab's PR as `(owner, repo, number)`. A remote PR tab names it
+/// directly; a working-tree or local-branch tab is looked up in the PR cache by
+/// head ref, preferring an open PR.
+fn active_pr_identity(
+    tab: &er_engine::app::TabState,
+    pr_cache: &pr_cache::PrCacheMap,
+) -> Option<(String, String, u64)> {
+    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
+        return slug
+            .split_once('/')
+            .map(|(o, r)| (o.to_string(), r.to_string(), n));
+    }
+    let branch = tab
+        .local_branch_view
+        .as_deref()
+        .unwrap_or(&tab.current_branch);
+    let cache = pr_cache.lock().ok()?;
+    cache.iter().find_map(|(slug, prs)| {
+        prs.iter()
+            .filter(|p| p.head_ref == branch)
+            .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
+            .and_then(|p| {
+                slug.split_once('/')
+                    .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
+            })
+    })
+}
+
+/// The desktop active-branch watcher thread. Follows the currently active tab's
+/// local-branch checkout (project root or linked worktree) and refreshes the
+/// diff when tracked files in that checkout change.
+fn run_active_branch_watcher(
+    watcher_app: Arc<Mutex<App>>,
+    watcher_status: WatchStatusState,
+    watcher_desktop_rev: Arc<std::sync::atomic::AtomicU64>,
+) {
+    use er_engine::watch::{FileWatcher, WatchEvent};
+    use std::path::Path;
+    use std::sync::mpsc;
+
+    let (tx, rx) = mpsc::channel::<WatchEvent>();
+    // Held only for its Drop side effect: dropping stops the watcher.
+    let mut _watcher: Option<FileWatcher> = None;
+    let mut current_key: Option<(String, String)> = None;
+    let poll_interval = std::time::Duration::from_millis(400);
+
+    loop {
+        let desired = match watcher_app.lock() {
+            Ok(g) => desired_local_branch_watch(&g),
+            Err(_) => None,
+        };
+
+        if desired != current_key {
+            _watcher = None; // drop old watcher
+            if let Some((ref branch, ref root_path)) = desired {
+                match FileWatcher::new(Path::new(root_path), 250, tx.clone()) {
+                    Ok(w) => {
+                        _watcher = Some(w);
+                        if let Ok(mut s) = watcher_status.lock() {
+                            *s = WatchStatusSnapshot {
+                                active: true,
+                                branch: Some(branch.clone()),
+                                root_path: Some(root_path.clone()),
+                            };
+                        }
+                    }
+                    Err(e) => {
+                        log::error!(
+                            "er-desktop: active-branch watcher failed for {root_path}: {e}"
+                        );
+                        if let Ok(mut s) = watcher_status.lock() {
+                            *s = WatchStatusSnapshot::default();
+                        }
+                    }
+                }
+            } else if let Ok(mut s) = watcher_status.lock() {
+                *s = WatchStatusSnapshot::default();
+            }
+
+            // Mirror checkout root onto the active tab so refresh_diff
+            // uses the working-tree helper.
+            if let Ok(mut g) = watcher_app.lock() {
+                apply_watch_checkout_root(g.tab_mut(), desired.clone());
+            }
+            current_key = desired;
+            profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
+        }
+
+        // Drain any pending watch events. Coalesce — we only need to
+        // know "something changed" to trigger one refresh.
+        let mut got_event = false;
+        match rx.recv_timeout(poll_interval) {
+            Ok(WatchEvent::FilesChanged(_)) => {
+                got_event = true;
+                while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
+            }
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {}
+        }
+
+        if !got_event {
+            continue;
+        }
+        let Some((watched_branch, _root_path)) = current_key.clone() else {
+            continue;
+        };
+        let app = Arc::clone(&watcher_app);
+        let rev = Arc::clone(&watcher_desktop_rev);
+        std::thread::spawn(move || {
+            let result = app.lock().ok().and_then(|mut g| {
+                if active_tab_watched_branch(&g).as_deref() != Some(watched_branch.as_str()) {
+                    return None;
+                }
+                Some(g.tab_mut().refresh_diff_quick_with_unmark())
+            });
+            match result {
+                Some(Ok(())) => {
+                    let unmark_count = app
+                        .lock()
+                        .ok()
+                        .map(|mut g| std::mem::replace(&mut g.tab_mut().pending_unmark_count, 0))
+                        .unwrap_or(0);
+                    if unmark_count > 0 {
+                        log::info!(
+                            "active-branch watcher: auto-unmarked {unmark_count} reviewed file(s) whose diff changed (branch={watched_branch})"
+                        );
+                    }
+                    profile_log::bump_desktop_revision(&rev, "watcher_refresh");
+                }
+                Some(Err(e)) => {
+                    log::error!("active-branch watcher refresh failed: {e}");
+                }
+                None => {}
+            }
+        });
+    }
+}
+
+/// Emit `er://revision` whenever `desktop_revision` advances; see the call site.
+fn run_revision_watcher(watch_handle: &tauri::AppHandle, watch_rev: &std::sync::atomic::AtomicU64) {
+    use tauri::Emitter;
+    let mut last_emitted = u64::MAX;
+    loop {
+        let current = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+        if current != last_emitted {
+            // Brief debounce to coalesce bursts (e.g. several
+            // background threads bumping the revision at once).
+            std::thread::sleep(std::time::Duration::from_millis(40));
+            let coalesced = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
+            let delta_rev = coalesced.wrapping_sub(last_emitted);
+            last_emitted = coalesced;
+            if let Err(e) = watch_handle.emit("er://revision", coalesced) {
+                log::warn!("revision watcher emit failed: {e}");
+            } else {
+                profile_log::profile_log(
+                    "revision_emit",
+                    &[
+                        ("coalesced_rev", coalesced.to_string()),
+                        ("delta_rev", delta_rev.to_string()),
+                    ],
+                );
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(80));
+    }
+}
+
 fn main() {
     er_engine::env_path::init_cli_path();
     dev_log::init();
@@ -784,18 +986,21 @@ fn main() {
     {
         let gh_user_bg = Arc::clone(&gh_user);
         std::thread::spawn(move || {
-            if let Ok(out) = std::process::Command::new("gh")
+            let Ok(out) = std::process::Command::new("gh")
                 .args(["api", "user", "--jq", ".login"])
                 .output()
-            {
-                if out.status.success() {
-                    let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                    if !login.is_empty() {
-                        if let Ok(mut g) = gh_user_bg.lock() {
-                            *g = Some(login);
-                        }
-                    }
-                }
+            else {
+                return;
+            };
+            if !out.status.success() {
+                return;
+            }
+            let login = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if login.is_empty() {
+                return;
+            }
+            if let Ok(mut g) = gh_user_bg.lock() {
+                *g = Some(login);
             }
         });
     }
@@ -1047,36 +1252,7 @@ fn main() {
                 std::thread::sleep(std::time::Duration::from_secs(30));
 
                 // Phase 1: brief lock — capture the active PR tab's identity.
-                // `(repo_root, owner, repo, pr_number)`. For remote tabs use
-                // `remote_repo`; for local-PR tabs resolve owner/repo from origin.
-                let identity = {
-                    let guard = match probe_app.try_lock() {
-                        Ok(g) => g,
-                        Err(_) => continue,
-                    };
-                    let tab = guard.tab();
-                    let pr_number = match tab.pr_number {
-                        Some(n) => n,
-                        None => continue,
-                    };
-                    if let Some(slug) = tab.remote_repo.as_ref() {
-                        if slug.split_once('/').is_some() {
-                            Some((tab.repo_root.clone(), slug.clone(), pr_number))
-                        } else {
-                            None
-                        }
-                    } else if !tab.repo_root.is_empty() {
-                        match er_engine::github::get_repo_info(&tab.repo_root) {
-                            Ok((owner, repo)) => {
-                                Some((tab.repo_root.clone(), format!("{owner}/{repo}"), pr_number))
-                            }
-                            Err(_) => None,
-                        }
-                    } else {
-                        None
-                    }
-                };
-                let Some((_repo_root, slug, pr_number)) = identity else {
+                let Some((slug, pr_number)) = pr_head_probe_target(&probe_app) else {
                     continue;
                 };
 
@@ -1152,35 +1328,10 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_secs(30));
 
             // Snapshot identity in a short critical section.
-            let key: Option<(String, String, u64)> = match app_bg.lock() {
-                Ok(g) => {
-                    let tab = g.tab();
-                    // Remote PR tab — use remote_repo + pr_number directly.
-                    if let (Some(slug), Some(n)) = (tab.remote_repo.as_ref(), tab.pr_number) {
-                        slug.split_once('/')
-                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
-                    } else {
-                        // Working-tree or local-branch tab — look up by head ref.
-                        let branch = tab
-                            .local_branch_view
-                            .as_deref()
-                            .unwrap_or(&tab.current_branch)
-                            .to_string();
-                        pr_cache_bg.lock().ok().and_then(|cache| {
-                            cache.iter().find_map(|(slug, prs)| {
-                                prs.iter()
-                                    .filter(|p| p.head_ref == branch)
-                                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                                    .and_then(|p| {
-                                        slug.split_once('/')
-                                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                                    })
-                            })
-                        })
-                    }
-                }
-                Err(_) => None,
-            };
+            let key: Option<(String, String, u64)> = app_bg
+                .lock()
+                .ok()
+                .and_then(|g| active_pr_identity(g.tab(), &pr_cache_bg));
             // Lock released. Skip the fetch entirely when the cached snapshot
             // for this key is still fresh (<90s old) — most ticks on an idle
             // PR now do nothing at all.
@@ -1197,32 +1348,31 @@ fn main() {
                 )
             });
             // Register in-flight and shell out — skip if already fetching.
-            if let Some((owner, repo, number)) = key {
-                let registered = gh_status_in_flight_bg
-                    .lock()
-                    .map(|mut s| s.insert((owner.clone(), repo.clone(), number)))
-                    .unwrap_or(false);
-                if registered {
-                    if let Ok(mut f) = gh_status_loading.lock() {
-                        f.gh_status = true;
-                    }
-                    if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
-                        if let Ok(mut g) = gh_status_bg.lock() {
-                            g.insert((owner.clone(), repo.clone(), number), snap);
-                        }
-                        profile_log::bump_desktop_revision(
-                            &gh_status_desktop_rev,
-                            "gh_status_cache",
-                        );
-                    }
-                    if let Ok(mut f) = gh_status_loading.lock() {
-                        f.gh_status = false;
-                    }
-                    let _ = gh_status_in_flight_bg
-                        .lock()
-                        .map(|mut s| s.remove(&(owner, repo, number)));
-                }
+            let Some((owner, repo, number)) = key else {
+                continue;
+            };
+            let registered = gh_status_in_flight_bg
+                .lock()
+                .map(|mut s| s.insert((owner.clone(), repo.clone(), number)))
+                .unwrap_or(false);
+            if !registered {
+                continue;
             }
+            if let Ok(mut f) = gh_status_loading.lock() {
+                f.gh_status = true;
+            }
+            if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
+                if let Ok(mut g) = gh_status_bg.lock() {
+                    g.insert((owner.clone(), repo.clone(), number), snap);
+                }
+                profile_log::bump_desktop_revision(&gh_status_desktop_rev, "gh_status_cache");
+            }
+            if let Ok(mut f) = gh_status_loading.lock() {
+                f.gh_status = false;
+            }
+            let _ = gh_status_in_flight_bg
+                .lock()
+                .map(|mut s| s.remove(&(owner, repo, number)));
         });
     }
 
@@ -1259,29 +1409,10 @@ fn main() {
                         Ok(g) => g,
                         Err(_) => continue,
                     };
-                    let tab = guard.tab();
-                    let identity: Option<(String, String, u64)> = if let (Some(slug), Some(n)) =
-                        (tab.remote_repo.as_ref(), tab.pr_number)
-                    {
-                        slug.split_once('/')
-                            .map(|(o, r)| (o.to_string(), r.to_string(), n))
-                    } else {
-                        let branch = tab
-                            .local_branch_view
-                            .as_deref()
-                            .unwrap_or(&tab.current_branch)
-                            .to_string();
-                        comments_pr_cache.lock().ok().and_then(|cache| {
-                            cache.iter().find_map(|(slug, prs)| {
-                                prs.iter()
-                                    .filter(|p| p.head_ref == branch)
-                                    .min_by_key(|p| if p.state == "OPEN" { 0 } else { 1 })
-                                    .and_then(|p| {
-                                        slug.split_once('/')
-                                            .map(|(o, r)| (o.to_string(), r.to_string(), p.number))
-                                    })
-                            })
-                        })
+                    let Some((owner, repo, number)) =
+                        active_pr_identity(guard.tab(), &comments_pr_cache)
+                    else {
+                        continue;
                     };
 
                     // Throttle gate: same head OID already synced within the
@@ -1290,71 +1421,66 @@ fn main() {
                     // changed). An empty/unknown OID never skips (fail open —
                     // keep syncing every tick until the probe loop populates
                     // pr_cache).
-                    identity.and_then(|(owner, repo, number)| {
-                        let head_oid = cached_head_oid(&comments_pr_cache, &owner, &repo, number);
-                        let recently_synced = comment_sync_recently_synced(
-                            last_synced.get(&(owner.clone(), repo.clone(), number)),
-                            &head_oid,
-                            std::time::Instant::now(),
-                            std::time::Duration::from_secs(90),
-                        );
-                        if recently_synced {
-                            None
-                        } else {
-                            // Snapshot all data needed for the fetch — releases
-                            // the lock after this block. Carry the gate-time
-                            // head_oid forward (instead of re-reading it after
-                            // the fetch) so a push landing mid-fetch isn't
-                            // mistaken for "already synced" on the next tick.
-                            Some((
-                                guard.snapshot_for_comment_sync(owner, repo, number),
-                                head_oid,
-                            ))
-                        }
-                    })
+                    let head_oid = cached_head_oid(&comments_pr_cache, &owner, &repo, number);
+                    if comment_sync_recently_synced(
+                        last_synced.get(&(owner.clone(), repo.clone(), number)),
+                        &head_oid,
+                        std::time::Instant::now(),
+                        std::time::Duration::from_secs(90),
+                    ) {
+                        continue;
+                    }
+                    // Snapshot all data needed for the fetch — releases
+                    // the lock after this block. Carry the gate-time
+                    // head_oid forward (instead of re-reading it after
+                    // the fetch) so a push landing mid-fetch isn't
+                    // mistaken for "already synced" on the next tick.
+                    (
+                        guard.snapshot_for_comment_sync(owner, repo, number),
+                        head_oid,
+                    )
                 };
 
                 // Phase 2: network I/O — no lock held.
-                if let Some((ctx, head_oid)) = resolved {
-                    if let Ok(mut f) = comments_loading.lock() {
-                        f.gh_comments = true;
-                    }
-                    let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
-                        Ok(result) => {
-                            // The fetched data supersedes any cached bundle —
-                            // a manual pull within the bundle TTL must not
-                            // regress this fresher file.
-                            er_engine::github::invalidate_pr_comments_cache();
-                            // Phase 3: brief lock — apply pre-fetched results to the correct tab.
-                            match comments_app.lock() {
-                                Ok(mut g) => {
-                                    g.apply_comment_sync_result(result);
-                                    true
-                                }
-                                Err(e) => {
-                                    log::error!("comment sync apply lock failed: {e}");
-                                    false
-                                }
+                let (ctx, head_oid) = resolved;
+                if let Ok(mut f) = comments_loading.lock() {
+                    f.gh_comments = true;
+                }
+                let applied = match er_engine::app::fetch_comment_sync_data(&ctx) {
+                    Ok(result) => {
+                        // The fetched data supersedes any cached bundle —
+                        // a manual pull within the bundle TTL must not
+                        // regress this fresher file.
+                        er_engine::github::invalidate_pr_comments_cache();
+                        // Phase 3: brief lock — apply pre-fetched results to the correct tab.
+                        match comments_app.lock() {
+                            Ok(mut g) => {
+                                g.apply_comment_sync_result(result);
+                                true
+                            }
+                            Err(e) => {
+                                log::error!("comment sync apply lock failed: {e}");
+                                false
                             }
                         }
-                        Err(e) => {
-                            log::error!("github comment sync failed: {e}");
-                            false
-                        }
-                    };
-                    if let Ok(mut f) = comments_loading.lock() {
-                        f.gh_comments = false;
                     }
-                    if applied {
-                        last_synced.insert(
-                            (ctx.owner.clone(), ctx.repo_name.clone(), ctx.pr_number),
-                            (head_oid, std::time::Instant::now()),
-                        );
-                        profile_log::bump_desktop_revision(
-                            &comments_desktop_rev,
-                            "comment_sync_applied",
-                        );
+                    Err(e) => {
+                        log::error!("github comment sync failed: {e}");
+                        false
                     }
+                };
+                if let Ok(mut f) = comments_loading.lock() {
+                    f.gh_comments = false;
+                }
+                if applied {
+                    last_synced.insert(
+                        (ctx.owner.clone(), ctx.repo_name.clone(), ctx.pr_number),
+                        (head_oid, std::time::Instant::now()),
+                    );
+                    profile_log::bump_desktop_revision(
+                        &comments_desktop_rev,
+                        "comment_sync_applied",
+                    );
                 }
             }
         });
@@ -1363,121 +1489,12 @@ fn main() {
     // Spawn the desktop active-branch watcher. Follows the currently active
     // tab's local-branch checkout (project root or linked worktree) and
     // refreshes the diff when tracked files in that checkout change.
-    {
+    std::thread::spawn({
         let watcher_app = Arc::clone(&app_arc);
         let watcher_status = Arc::clone(&watch_status);
         let watcher_desktop_rev = Arc::clone(&desktop_revision);
-        #[allow(unused_assignments)]
-        std::thread::spawn(move || {
-            use er_engine::watch::{FileWatcher, WatchEvent};
-            use std::path::Path;
-            use std::sync::mpsc;
-
-            let (tx, rx) = mpsc::channel::<WatchEvent>();
-            // Held only for its Drop side effect: dropping stops the watcher.
-            // Held only for its Drop side effect: dropping stops the watcher.
-            #[allow(unused_assignments, unused_variables, clippy::collection_is_never_read)]
-            let mut watcher: Option<FileWatcher> = None;
-            let mut current_key: Option<(String, String)> = None;
-            let poll_interval = std::time::Duration::from_millis(400);
-
-            loop {
-                let desired = match watcher_app.lock() {
-                    Ok(g) => desired_local_branch_watch(&g),
-                    Err(_) => None,
-                };
-
-                if desired != current_key {
-                    watcher = None; // drop old watcher
-                    if let Some((ref branch, ref root_path)) = desired {
-                        match FileWatcher::new(Path::new(root_path), 250, tx.clone()) {
-                            Ok(w) => {
-                                watcher = Some(w);
-                                if let Ok(mut s) = watcher_status.lock() {
-                                    *s = WatchStatusSnapshot {
-                                        active: true,
-                                        branch: Some(branch.clone()),
-                                        root_path: Some(root_path.clone()),
-                                    };
-                                }
-                            }
-                            Err(e) => {
-                                log::error!(
-                                    "er-desktop: active-branch watcher failed for {root_path}: {e}"
-                                );
-                                if let Ok(mut s) = watcher_status.lock() {
-                                    *s = WatchStatusSnapshot::default();
-                                }
-                            }
-                        }
-                    } else if let Ok(mut s) = watcher_status.lock() {
-                        *s = WatchStatusSnapshot::default();
-                    }
-
-                    // Mirror checkout root onto the active tab so refresh_diff
-                    // uses the working-tree helper.
-                    if let Ok(mut g) = watcher_app.lock() {
-                        apply_watch_checkout_root(g.tab_mut(), desired.clone());
-                    }
-                    current_key = desired;
-                    profile_log::bump_desktop_revision(&watcher_desktop_rev, "watcher_status");
-                }
-
-                // Drain any pending watch events. Coalesce — we only need to
-                // know "something changed" to trigger one refresh.
-                let mut got_event = false;
-                match rx.recv_timeout(poll_interval) {
-                    Ok(WatchEvent::FilesChanged(_)) => {
-                        got_event = true;
-                        while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
-                    }
-                    Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
-                    }
-                }
-
-                if got_event {
-                    if let Some((watched_branch, _root_path)) = current_key.clone() {
-                        let app = Arc::clone(&watcher_app);
-                        let rev = Arc::clone(&watcher_desktop_rev);
-                        std::thread::spawn(move || {
-                            let result = app.lock().ok().and_then(|mut g| {
-                                if active_tab_watched_branch(&g).as_deref()
-                                    != Some(watched_branch.as_str())
-                                {
-                                    return None;
-                                }
-                                Some(g.tab_mut().refresh_diff_quick_with_unmark())
-                            });
-                            match result {
-                                Some(Ok(())) => {
-                                    let unmark_count = app
-                                        .lock()
-                                        .ok()
-                                        .map(|mut g| {
-                                            std::mem::replace(
-                                                &mut g.tab_mut().pending_unmark_count,
-                                                0,
-                                            )
-                                        })
-                                        .unwrap_or(0);
-                                    if unmark_count > 0 {
-                                        log::info!(
-                                            "active-branch watcher: auto-unmarked {unmark_count} reviewed file(s) whose diff changed (branch={watched_branch})"
-                                        );
-                                    }
-                                    profile_log::bump_desktop_revision(&rev, "watcher_refresh");
-                                }
-                                Some(Err(e)) => {
-                                    log::error!("active-branch watcher refresh failed: {e}");
-                                }
-                                None => {}
-                            }
-                        });
-                    }
-                }
-            }
-        });
-    }
+        move || run_active_branch_watcher(watcher_app, watcher_status, watcher_desktop_rev)
+    });
 
     // Global notifications refresh across ALL configured project remotes.
     // Startup fetch + conservative 10-minute cadence (not high-frequency polling).
@@ -1499,6 +1516,10 @@ fn main() {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
 
+        #[expect(
+            clippy::expect_used,
+            reason = "a worker thread that cannot build its runtime has nothing to fall back to"
+        )]
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1510,28 +1531,17 @@ fn main() {
             let failed =
                 rt.block_on(async { pr_cache::refresh_pr_cache(&bg_cache, &bg_fetched_at).await });
             let prefs = commands::clone_inbox_prefs(&bg_app);
+            let handles = commands::InboxRefreshHandles {
+                pr_cache: &bg_cache,
+                gh_user: &bg_gh_user,
+                inbox: &bg_inbox,
+                desktop_revision: &bg_desktop_rev,
+                app_handle: &bg_handle,
+            };
             for remote in failed {
-                commands::process_inbox_after_pr_refresh(
-                    &bg_cache,
-                    &bg_gh_user,
-                    &bg_inbox,
-                    &bg_desktop_rev,
-                    &bg_handle,
-                    &prefs,
-                    Some(remote),
-                    None,
-                );
+                commands::process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
             }
-            commands::process_inbox_after_pr_refresh(
-                &bg_cache,
-                &bg_gh_user,
-                &bg_inbox,
-                &bg_desktop_rev,
-                &bg_handle,
-                &prefs,
-                None,
-                None,
-            );
+            commands::process_inbox_after_pr_refresh(handles, &prefs, None, None);
             if let Ok(mut f) = bg_loading.lock() {
                 f.pr_list = false;
             }
@@ -1549,12 +1559,15 @@ fn main() {
                     .await
             });
             let prefs = commands::clone_inbox_prefs(&bg_app);
+            let handles = commands::InboxRefreshHandles {
+                pr_cache: &bg_cache,
+                gh_user: &bg_gh_user,
+                inbox: &bg_inbox,
+                desktop_revision: &bg_desktop_rev,
+                app_handle: &bg_handle,
+            };
             commands::process_inbox_after_pr_refresh(
-                &bg_cache,
-                &bg_gh_user,
-                &bg_inbox,
-                &bg_desktop_rev,
-                &bg_handle,
+                handles,
                 &prefs,
                 if success { None } else { Some(active_remote) },
                 None,
@@ -1586,6 +1599,10 @@ fn main() {
     let meta_desktop_rev = Arc::clone(&desktop_revision);
     let meta_app = Arc::clone(&app_arc);
     std::thread::spawn(move || {
+        #[expect(
+            clippy::expect_used,
+            reason = "a worker thread that cannot build its runtime has nothing to fall back to"
+        )]
         let rt = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1735,6 +1752,10 @@ fn main() {
     // true at the end of the startup reveal.
     let window_ready = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let window_ready_event = Arc::clone(&window_ready);
+    #[expect(
+        clippy::expect_used,
+        reason = "the app cannot run without its Tauri context; failing to build is fatal at startup"
+    )]
     let tauri_app = tauri::Builder::default()
         .plugin(
             tauri_plugin_log::Builder::new()
@@ -1778,15 +1799,17 @@ fn main() {
                 // 400ms) so the last position+size survive rebuilds and crashes.
                 tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_) => {
                     use tauri_plugin_window_state::AppHandleExt;
-                    if window_ready_event.load(std::sync::atomic::Ordering::Acquire) {
-                        if let Ok(mut last) = window_geom_last_save.lock() {
-                            if last.elapsed() >= std::time::Duration::from_millis(400) {
-                                *last = std::time::Instant::now();
-                                let _ = window
-                                    .app_handle()
-                                    .save_window_state(window_state_save_flags());
-                            }
-                        }
+                    if !window_ready_event.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    let Ok(mut last) = window_geom_last_save.lock() else {
+                        return;
+                    };
+                    if last.elapsed() >= std::time::Duration::from_millis(400) {
+                        *last = std::time::Instant::now();
+                        let _ = window
+                            .app_handle()
+                            .save_window_state(window_state_save_flags());
                     }
                 }
                 _ => {}
@@ -1811,33 +1834,7 @@ fn main() {
                 // react within ~50ms of a real change.
                 let watch_handle = app.handle().clone();
                 let watch_rev = Arc::clone(&state.desktop_revision);
-                std::thread::spawn(move || {
-                    use tauri::Emitter;
-                    let mut last_emitted = u64::MAX;
-                    loop {
-                        let current = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
-                        if current != last_emitted {
-                            // Brief debounce to coalesce bursts (e.g. several
-                            // background threads bumping the revision at once).
-                            std::thread::sleep(std::time::Duration::from_millis(40));
-                            let coalesced = watch_rev.load(std::sync::atomic::Ordering::Relaxed);
-                            let delta_rev = coalesced.wrapping_sub(last_emitted);
-                            last_emitted = coalesced;
-                            if let Err(e) = watch_handle.emit("er://revision", coalesced) {
-                                log::warn!("revision watcher emit failed: {e}");
-                            } else {
-                                profile_log::profile_log(
-                                    "revision_emit",
-                                    &[
-                                        ("coalesced_rev", coalesced.to_string()),
-                                        ("delta_rev", delta_rev.to_string()),
-                                    ],
-                                );
-                            }
-                        }
-                        std::thread::sleep(std::time::Duration::from_millis(80));
-                    }
-                });
+                std::thread::spawn(move || run_revision_watcher(&watch_handle, &watch_rev));
             }
 
             install_app_menu(app.handle())?;
