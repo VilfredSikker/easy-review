@@ -46,7 +46,7 @@ pub fn render_config_hub(
         .take(visible_rows)
     {
         let is_sel = idx == selected;
-        let is_editing_this = editing.map(|e| e.item_index == idx).unwrap_or(false);
+        let editing_this = editing.filter(|e| e.item_index == idx);
 
         match item {
             ConfigItem::SectionHeader(title) => {
@@ -189,8 +189,7 @@ pub fn render_config_hub(
             } => {
                 let marker = if is_sel { "▸ " } else { "  " };
 
-                let line = if is_editing_this {
-                    let edit = editing.unwrap();
+                let line = if let Some(edit) = editing_this {
                     let buf = &edit.buffer;
                     Line::from(vec![
                         Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),
@@ -325,8 +324,7 @@ pub fn render_config_hub(
             ConfigItem::ListAdd { label, .. } => {
                 let marker = if is_sel { "▸ " } else { "  " };
 
-                let line = if is_editing_this {
-                    let edit = editing.unwrap();
+                let line = if let Some(edit) = editing_this {
                     Line::from(vec![
                         Span::styled(marker, ratatui::style::Style::default().fg(styles::CYAN())),
                         Span::styled("+ ", ratatui::style::Style::default().fg(styles::CYAN())),

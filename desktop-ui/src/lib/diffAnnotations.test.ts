@@ -15,7 +15,9 @@ import {
   lineHasAnchorRangeHighlight,
   threadAnchorEnd,
   threadsForLine,
+  type AnnotationIndex,
   type CommentVisibility,
+  type HunkQuery,
 } from "./diffAnnotations";
 import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "./types";
 
@@ -110,6 +112,14 @@ const hunkLines: LineSnapshot[] = [
   mkLine({ kind: "add", old_num: null, new_num: 13, text: "added" }),
 ];
 const hunk = mkHunk({ new_start: 10, new_count: 4, lines: hunkLines });
+
+function hunkQuery(
+  idx: AnnotationIndex,
+  vis: CommentVisibility = VIS_OFF,
+  lines: LineSnapshot[] = hunkLines,
+): HunkQuery {
+  return { idx, filePath: FILE, hunkIndex: 0, hunkLines: lines, mode: "branch", vis };
+}
 
 const baseThread = mkThread({ id: "t1", file: FILE, line: 13 });
 const resolvedThread = mkThread({ id: "t2", file: FILE, line: 13, resolved: true });
@@ -223,7 +233,7 @@ describe("buildAnnotationIndex", () => {
       ],
     };
 
-    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, "Testing");
+    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, { agentFilter: "Testing" });
 
     expect(idx.findingsByFileLine.get(`${FILE}:12`)?.map((f) => f.id)).toEqual(["f-testing"]);
     expect(idx.findingsByFileLine.get(`${FILE}:13`)).toBeUndefined();
@@ -231,7 +241,7 @@ describe("buildAnnotationIndex", () => {
     expect(idx.findingMap.has("f-general")).toBe(false);
     expect(idx.findingThreadIds.has("tTesting")).toBe(true);
     expect(idx.findingThreadIds.has("tGeneralOwned")).toBe(true);
-    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF)).toEqual([]);
+    expect(threadsForLine(hunkQuery(idx), 13)).toEqual([]);
   });
 
   it("filters findings by severity while keeping hidden finding-owned threads suppressed", () => {
@@ -261,13 +271,13 @@ describe("buildAnnotationIndex", () => {
       ],
     };
 
-    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, "all", "high");
+    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF, { agentFilter: "all", severityFilter: "high" });
 
     expect(idx.findingsByFileLine.get(`${FILE}:12`)?.map((f) => f.id)).toEqual(["f-high"]);
     expect(idx.findingsByFileLine.get(`${FILE}:13`)).toBeUndefined();
     expect(idx.findingThreadIds.has("tHigh")).toBe(true);
     expect(idx.findingThreadIds.has("tLowOwned")).toBe(true);
-    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF)).toEqual([]);
+    expect(threadsForLine(hunkQuery(idx), 13)).toEqual([]);
   });
 });
 
@@ -275,7 +285,7 @@ describe("findingsForLine", () => {
   it("returns line-anchored findings", () => {
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
-    const out = findingsForLine(idx, FILE, 0, 13, hunkLines, false, "branch");
+    const out = findingsForLine(hunkQuery(idx), 13, false);
     expect(out.map((f) => f.id).sort()).toEqual(["f-line-13", "f-owned"]);
   });
 
@@ -284,22 +294,20 @@ describe("findingsForLine", () => {
     // new_num=13 line, the candidates should be filtered out.
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
-    const out = findingsForLine(idx, FILE, 0, 13, hunkLines, true, "branch");
+    const out = findingsForLine(hunkQuery(idx), 13, true);
     expect(out.length).toBe(0);
   });
 });
 
 describe("findingRendersInline", () => {
   it("true when finding's line appears in hunkLines (and not suppressed)", () => {
-    const { ai, files } = buildFixture();
-    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
+    const { ai } = buildFixture();
     const f = ai.findings.find((x) => x.id === "f-line-13")!;
     expect(findingRendersInline(f, FILE, 0, hunkLines, "branch")).toBe(true);
   });
 
   it("false in branch mode when hunk_index mismatches", () => {
-    const { ai, files } = buildFixture();
-    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
+    const { ai } = buildFixture();
     const f = ai.findings.find((x) => x.id === "f-line-13")!;
     expect(findingRendersInline(f, FILE, 99, hunkLines, "branch")).toBe(false);
   });
@@ -307,8 +315,7 @@ describe("findingRendersInline", () => {
   it("del-only finding (line not in new_num set) still renders inline at the del row", () => {
     // Line 10 appears as del (old_num=10, kind=del). Since no add line has new_num=10,
     // the suppression branch doesn't fire, so it renders.
-    const { ai, files } = buildFixture();
-    const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
+    const { ai } = buildFixture();
     const f = ai.findings.find((x) => x.id === "f-del-only")!;
     expect(findingRendersInline(f, FILE, 0, hunkLines, "branch")).toBe(true);
   });
@@ -352,7 +359,7 @@ describe("fallbackFindings", () => {
     ];
     const files: FileSnapshot[] = [mkFile(FILE, [sparseHunk])];
     const idx = buildAnnotationIndex({ threads: [], findings }, files, "branch", VIS_OFF);
-    const out = fallbackFindings(idx, FILE, 0, sparseHunk, sparseLines, "branch");
+    const out = fallbackFindings(hunkQuery(idx, VIS_OFF, sparseLines), sparseHunk);
     expect(out.map((f) => f.id)).toEqual(["fb"]);
   });
 });
@@ -361,7 +368,7 @@ describe("findingsForSplitRow", () => {
   it("dedupes a finding that matches both left and right line numbers", () => {
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
-    const out = findingsForSplitRow(idx, FILE, 0, 13, 13, hunkLines, "branch");
+    const out = findingsForSplitRow(hunkQuery(idx), 13, 13);
     const ids = out.map((f) => f.id);
     expect(ids).toEqual(["f-line-13", "f-owned"]); // each appears once
   });
@@ -372,17 +379,17 @@ describe("threadsForLine", () => {
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
 
-    const all = threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF);
+    const all = threadsForLine(hunkQuery(idx), 13);
     // baseThread (t1), resolvedThread (t2), staleThread (t3); tOwned excluded.
     expect(all.map((t) => t.id).sort()).toEqual(["t1", "t2", "t3"]);
 
-    const hideResolved = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideResolved: true });
+    const hideResolved = threadsForLine(hunkQuery(idx, { ...VIS_OFF, hideResolved: true }), 13);
     expect(hideResolved.map((t) => t.id).sort()).toEqual(["t1", "t3"]);
 
-    const hideOutdated = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideOutdated: true });
+    const hideOutdated = threadsForLine(hunkQuery(idx, { ...VIS_OFF, hideOutdated: true }), 13);
     expect(hideOutdated.map((t) => t.id).sort()).toEqual(["t1", "t2"]);
 
-    const hideAll = threadsForLine(idx, FILE, 0, 13, hunkLines, { ...VIS_OFF, hideAll: true });
+    const hideAll = threadsForLine(hunkQuery(idx, { ...VIS_OFF, hideAll: true }), 13);
     expect(hideAll.length).toBe(0);
   });
 
@@ -409,8 +416,8 @@ describe("threadsForLine", () => {
     };
     const ai = { threads: [rangeThread], findings: [] as FlatFinding[] };
     const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
-    expect(threadsForLine(idx, FILE, 0, 11, hunkLines, VIS_OFF).map((t) => t.id)).toEqual([]);
-    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF).map((t) => t.id)).toEqual(["t-range"]);
+    expect(threadsForLine(hunkQuery(idx), 11).map((t) => t.id)).toEqual([]);
+    expect(threadsForLine(hunkQuery(idx), 13).map((t) => t.id)).toEqual(["t-range"]);
     expect(threadAnchorEnd(rangeThread)).toBe(13);
     expect(lineHasAnchorRangeHighlight(idx, FILE, 12, "new", VIS_OFF)).toBe(true);
     expect(lineHasAnchorRangeHighlight(idx, FILE, 10, "new", VIS_OFF)).toBe(false);
@@ -437,8 +444,8 @@ describe("threadsForLine", () => {
     };
     const ai = { threads: [left, right], findings: [] as FlatFinding[] };
     const idx = buildAnnotationIndex(ai, [file], "branch", VIS_OFF);
-    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "old").map((t) => t.id)).toEqual(["t-left"]);
-    expect(threadsForLine(idx, FILE, 0, 13, hunkLines, VIS_OFF, "new").map((t) => t.id)).toEqual(["t-right"]);
+    expect(threadsForLine(hunkQuery(idx), 13, "old").map((t) => t.id)).toEqual(["t-left"]);
+    expect(threadsForLine(hunkQuery(idx), 13, "new").map((t) => t.id)).toEqual(["t-right"]);
   });
 });
 
@@ -477,7 +484,7 @@ describe("fallbackThreadsForHunk", () => {
     const { ai, files } = buildFixture();
     const idx = buildAnnotationIndex(ai, files, "branch", VIS_OFF);
     const rendered = new Set<number>([13]); // t1/t2/t3 match line 13
-    const out = fallbackThreadsForHunk(idx, FILE, 0, hunk, rendered, VIS_OFF);
+    const out = fallbackThreadsForHunk(hunkQuery(idx), rendered);
     expect(out.map((t) => t.id)).toEqual(["t4"]);
   });
 });
@@ -543,15 +550,15 @@ describe("annotationVersion", () => {
 
   it("changes when agent filter changes", () => {
     const a = fix();
-    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "General");
-    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "Testing");
+    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, { agentFilter: "General" });
+    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, { agentFilter: "Testing" });
     expect(v1).not.toBe(v2);
   });
 
   it("changes when severity filter changes", () => {
     const a = fix();
-    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "all", "all");
-    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, "all", "high");
+    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, { agentFilter: "all", severityFilter: "all" });
+    const v2 = annotationVersion(a.ai, a.files, "branch", VIS_OFF, { agentFilter: "all", severityFilter: "high" });
     expect(v1).not.toBe(v2);
   });
 });

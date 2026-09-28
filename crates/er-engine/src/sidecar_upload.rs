@@ -152,6 +152,13 @@ fn check_diff_hash(label: &str, actual: &str, expected: &str) -> Result<()> {
     Ok(())
 }
 
+/// A file the upload's required-file check already confirmed is present.
+fn required_file<'a>(files: &'a BTreeMap<String, String>, name: &str) -> Result<&'a String> {
+    files
+        .get(name)
+        .with_context(|| format!("missing required file '{name}'"))
+}
+
 /// Parse + hash-check in memory so failed uploads never touch the destination files.
 fn validate_contents_before_write(
     kind: SidecarKind,
@@ -162,27 +169,27 @@ fn validate_contents_before_write(
 
     match kind {
         SidecarKind::Triage => {
-            let raw = files.get("triage.json").expect("checked");
+            let raw = required_file(files, "triage.json")?;
             let parsed: TriageReview = serde_json::from_str(raw).context("invalid triage.json")?;
             check_diff_hash("triage.json", &parsed.diff_hash, expected_hash)?;
         }
         SidecarKind::Tour => {
-            let raw = files.get("tour.json").expect("checked");
+            let raw = required_file(files, "tour.json")?;
             let parsed: ErTour = serde_json::from_str(raw).context("invalid tour.json")?;
             check_diff_hash("tour.json", &parsed.diff_hash, expected_hash)?;
         }
         SidecarKind::Review => {
-            let review: ErReview = serde_json::from_str(files.get("review.json").expect("checked"))
+            let review: ErReview = serde_json::from_str(required_file(files, "review.json")?)
                 .context("invalid review.json")?;
             check_diff_hash("review.json", &review.diff_hash, expected_hash)?;
-            let order: ErOrder = serde_json::from_str(files.get("order.json").expect("checked"))
+            let order: ErOrder = serde_json::from_str(required_file(files, "order.json")?)
                 .context("invalid order.json")?;
             check_diff_hash("order.json", &order.diff_hash, expected_hash)?;
             let checklist: ErChecklist =
-                serde_json::from_str(files.get("checklist.json").expect("checked"))
+                serde_json::from_str(required_file(files, "checklist.json")?)
                     .context("invalid checklist.json")?;
             check_diff_hash("checklist.json", &checklist.diff_hash, expected_hash)?;
-            let summary = files.get("summary.md").expect("checked");
+            let summary = required_file(files, "summary.md")?;
             if summary.trim().is_empty() {
                 bail!("summary.md must be non-empty markdown");
             }
@@ -329,7 +336,7 @@ pub fn upload_artifacts_to_dir(
 
     let mut written = Vec::new();
     for name in &required {
-        let content = files.get(*name).expect("checked above");
+        let content = required_file(files, name)?;
         let path = Path::new(er_dir).join(name);
         write_atomic(&path, content)?;
         written.push(path.to_string_lossy().into_owned());

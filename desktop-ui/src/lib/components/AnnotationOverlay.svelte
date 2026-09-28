@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
+  import type { ComponentProps } from "svelte";
   import { app } from "$lib/stores/app.svelte";
   import { browser } from "$lib/stores/browser.svelte";
   import { annotationMatchesPage } from "$lib/stores/browserUrl";
@@ -28,14 +29,7 @@
     /** Returns the iframe's bounding rect so screenshots can be cropped. */
     getIframeRect?: () => DOMRect | null;
     /** Called when the user submits a new annotation. */
-    onSubmit: (
-      bbox: [number, number, number, number],
-      selector: string | null,
-      text: string,
-      screenshotDataUrl: string | null,
-      elementContext: string | null,
-      domContext: UiDomContext | null,
-    ) => void;
+    onSubmit: ComponentProps<typeof AnnotationComposer>["onSave"];
   }
 
   const { width, height, pageHandlesAnnotate = false, hoveredEl = null, livePinRect = null, allPinRects = {}, onHoverPin, queryHoverAt, onPointerLeave, getIframeRect, onSubmit }: Props = $props();
@@ -60,6 +54,13 @@
     /** Cached PNG data URL from a successful screen-capture, attached on save. */
     screenshotDataUrl: string | null;
   } | null>(null);
+
+  let hoveredPinId = $state<string | null>(null);
+  let expandedPinId = $state<string | null>(null);
+
+  /** Coords saved from onOverlayClick when hoveredEl is null — resolved once hoveredEl arrives. */
+  let pendingNativeClick = $state<{ x: number; y: number } | null>(null);
+  let pendingNativeClickTimer = $state<ReturnType<typeof setTimeout> | null>(null);
 
   let hoverRafPending = false;
 
@@ -173,6 +174,7 @@
 
   /** Lazy thumbnails for pin hover, keyed by screenshot_path. */
   const pinThumbs = $state<Record<string, string>>({});
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- request-dedupe cache, never read reactively; pinThumbs carries the state
   const pinRequested = new Set<string>();
   function ensurePinThumb(path: string | null | undefined) {
     if (!path || pinThumbs[path] || pinRequested.has(path)) return;
@@ -213,18 +215,10 @@
     return a.element_context ? `${a.element_context}\n${a.text}` : a.text;
   }
 
-  let hoveredPinId = $state<string | null>(null);
-  let expandedPinId = $state<string | null>(null);
-
-  /** Coords saved from onOverlayClick when hoveredEl is null — resolved once hoveredEl arrives. */
-  let pendingNativeClick = $state<{ x: number; y: number } | null>(null);
-  let pendingNativeClickTimer = $state<ReturnType<typeof setTimeout> | null>(null);
-
   // When a hoveredEl result arrives and there's a pending native click, resolve it.
   $effect(() => {
     if (!pendingNativeClick || !hoveredEl?.rect) return;
     if (pendingNativeClickTimer !== null) { clearTimeout(pendingNativeClickTimer); pendingNativeClickTimer = null; }
-    const pending = pendingNativeClick;
     pendingNativeClick = null;
     if (composer) return;
     composer = {

@@ -146,6 +146,7 @@
       <span class="text-muted text-[11px]">·</span>
       <span class="text-muted text-[11px]">base</span>
       {#if editingBase}
+        <!-- svelte-ignore a11y_autofocus (mounts only after the user clicks the base chip to edit it) -->
         <input
           class="px-1.5 py-0.5 rounded bg-ink-900 border border-border text-fg text-[10px] font-mono w-36 outline-none shrink-0"
           bind:value={baseDraft}
@@ -156,7 +157,7 @@
           autofocus
         />
       {:else if canChangeBase}
-        <button
+        <button type="button"
           class="px-1.5 py-0.5 rounded bg-ink-700 border border-hairline text-fg-3 text-[10px] font-mono whitespace-nowrap shrink-0 hover:text-fg hover:border-border transition-colors"
           data-testid="context-base"
           title="Change compare base — click to edit (e.g. a release branch)"
@@ -177,7 +178,7 @@
   <!-- Quick-action icon row -->
   <div class="flex items-center gap-0.5 ml-1 shrink-0">
     <!-- Copy branch name -->
-    <button
+    <button type="button"
       class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
       title="Copy branch name"
       onclick={copyBranchName}
@@ -190,7 +191,7 @@
 
     <!-- Worktree path: click copies · ⌘-click reveals in Finder -->
     {#if worktreePath}
-      <button
+      <button type="button"
         class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
         title="Click to copy worktree path · ⌘-click to reveal in Finder"
         onclick={handleWorktreeClick}
@@ -204,7 +205,7 @@
 
     <!-- Open PR (with inline #NNNN badge) -->
     {#if prUrl}
-      <button
+      <button type="button"
         class="flex items-center gap-1 h-7 px-1.5 rounded hover:bg-ink-700 text-muted hover:text-fg-2 transition-colors shrink-0"
         title="Click to copy · ⌘-click to open"
         onclick={handlePrClick}
@@ -221,7 +222,7 @@
     {/if}
 
     <!-- Terminal toggle (active state) -->
-    <button
+    <button type="button"
       class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors shrink-0 {terminal.open ? 'text-periwinkle bg-ink-700' : 'text-muted hover:text-fg-2'}"
       title={terminal.open ? "Hide terminal" : "Show terminal"}
       aria-pressed={terminal.open}
@@ -256,7 +257,7 @@
       title={diffStale.message}
     >
       <span class="text-[10px] font-medium uppercase tracking-wide text-warning">Stale</span>
-      <button
+      <button type="button"
         class="w-5 h-5 rounded flex items-center justify-center text-warning hover:bg-warning/20 transition-colors disabled:opacity-50 disabled:cursor-default"
         title={diffStale.message}
         disabled={syncing}
@@ -283,7 +284,7 @@
   <!-- Local Branch | PR Diff segmented toggle (right side) -->
   {#if showSourceToggle}
     <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0">
-      <button
+      <button type="button"
         role="tab"
         aria-selected={!prActive}
         onclick={() => void app.cmd("set_mode", { mode: "branch" })}
@@ -291,7 +292,7 @@
       >
         Local Branch
       </button>
-      <button
+      <button type="button"
         role="tab"
         aria-selected={prActive}
         onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber })}

@@ -52,4 +52,6 @@ import "@fontsource/jetbrains-mono/500.css";
 
 import "./app.css";
 
-mount(App, { target: document.getElementById("app")! });
+const target = document.getElementById("app");
+if (!target) throw new Error("index.html is missing the #app mount point");
+mount(App, { target });

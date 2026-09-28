@@ -77,13 +77,16 @@
       localStorage.setItem(NOTES_SUBTAB_KEY, t);
     } catch { /* ignore */ }
   }
-  const visibleNotesThreads = $derived(
-    notesSubTab === "notes"
-      ? noteThreads
-      : notesSubTab === "questions"
-        ? questionThreads
-        : [...noteThreads, ...questionThreads],
-  );
+  const visibleNotesThreads = $derived.by(() => {
+    if (notesSubTab === "notes") return noteThreads;
+    if (notesSubTab === "questions") return questionThreads;
+    return [...noteThreads, ...questionThreads];
+  });
+  const NOTES_SUBTAB_COPY: Record<NotesSubTab, { label: string; empty: string }> = {
+    notes: { label: "Notes", empty: "No notes yet — select lines in the diff and choose Note." },
+    questions: { label: "Questions", empty: "No questions yet." },
+    all: { label: "All notes & questions", empty: "No notes or questions yet." },
+  };
 
   const currentWorktree = $derived(
     app.snapshot?.worktrees.find((w) => w.is_current) ?? null
@@ -197,7 +200,7 @@
 
   function exportLabel(): string {
     if (activeTab !== "notes") return tabs.find((t) => t.id === activeTab)?.label ?? "section";
-    return notesSubTab === "notes" ? "Notes" : notesSubTab === "questions" ? "Questions" : "All notes & questions";
+    return NOTES_SUBTAB_COPY[notesSubTab].label;
   }
 
   let copying = $state(false);
@@ -236,6 +239,7 @@
     4px drag handle along the panel's left edge.
   -->
   {#if onResizeStart}
+    <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
     <div
       class="absolute -left-[2px] top-0 bottom-0 w-1 cursor-ew-resize z-10 hover:bg-accent/40 {dragging ? 'bg-accent/60' : ''}"
       onmousedown={onResizeStart}
@@ -368,7 +372,7 @@
             { id: "all", label: "All", count: noteCount + questionCount },
             { id: "notes", label: "Notes", count: noteCount },
             { id: "questions", label: "Questions", count: questionCount },
-          ] as sub}
+          ] as sub (sub.id)}
             {@const active = notesSubTab === sub.id}
             <button
               type="button"
@@ -397,11 +401,7 @@
           </p>
           {#if visibleNotesThreads.length === 0}
             <p class="text-[11px] text-muted">
-              {notesSubTab === "questions"
-                ? "No questions yet."
-                : notesSubTab === "notes"
-                  ? "No notes yet — select lines in the diff and choose Note."
-                  : "No notes or questions yet."}
+              {NOTES_SUBTAB_COPY[notesSubTab].empty}
             </p>
           {:else}
             {#each visibleNotesThreads as thread (thread.id)}

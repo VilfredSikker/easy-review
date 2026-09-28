@@ -107,18 +107,18 @@ export const TRUST_RANK: Record<Confidence, number> = {
   dropped: 3,
 };
 
-/** The one-letter glyph a grade draws as. Both front ends and every surface in
- *  this one use it, so a grade reads the same wherever it appears. */
-export function confidenceGlyph(confidence: Confidence): string {
-  return CONFIDENCE_GLYPH[confidence];
-}
-
 const CONFIDENCE_GLYPH: Record<Confidence, string> = {
   confirmed: "✓",
   tentative: "?",
   informational: "i",
   dropped: "✗",
 };
+
+/** The one-letter glyph a grade draws as. Both front ends and every surface in
+ *  this one use it, so a grade reads the same wherever it appears. */
+export function confidenceGlyph(confidence: Confidence): string {
+  return CONFIDENCE_GLYPH[confidence];
+}
 
 /**
  * Mirrors the engine's `Finding::passes`.
@@ -146,6 +146,23 @@ export function findingsForDiff(ai: AiWithResolved, view: FindingView): FlatFind
 
 export type FindingSeverityFilter = "all" | FlatFinding["severity"];
 
+/** The reviewer-side filters an index is built under; both default to showing everything. */
+export interface AnnotationFilters {
+  agentFilter?: AgentFilter;
+  severityFilter?: FindingSeverityFilter;
+}
+
+/** One hunk's lookup inputs. The row builders create it once per hunk, so the
+ *  per-row queries below take only what varies by row. */
+export interface HunkQuery {
+  idx: AnnotationIndex;
+  filePath: string;
+  hunkIndex: number;
+  hunkLines: LineSnapshot[];
+  mode: string;
+  vis?: CommentVisibility;
+}
+
 function lineNum(line: LineSnapshot): number | null {
   return line.new_num ?? line.old_num;
 }
@@ -164,8 +181,7 @@ export function annotationVersion(
   files: FileSnapshot[],
   mode: string,
   vis: CommentVisibility,
-  agentFilter: AgentFilter = ALL_REVIEWERS,
-  severityFilter: FindingSeverityFilter = "all",
+  { agentFilter = ALL_REVIEWERS, severityFilter = "all" }: AnnotationFilters = {},
 ): number {
   let h = 17;
   for (const t of ai.threads) h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0)) | 0;
@@ -192,19 +208,25 @@ export function annotationVersion(
   return h;
 }
 
+function visibleFindingsFor(
+  findings: FlatFinding[],
+  visibility: CommentVisibility,
+  { agentFilter = ALL_REVIEWERS, severityFilter = "all" }: AnnotationFilters,
+): FlatFinding[] {
+  if (visibility.hideFindings) return [];
+  return filterByAgent(findings, agentFilter).filter(
+    (f) => severityFilter === "all" || f.severity === severityFilter,
+  );
+}
+
 export function buildAnnotationIndex(
   ai: AiInput,
   files: FileSnapshot[],
   mode: string,
   visibility: CommentVisibility,
-  agentFilter: AgentFilter = ALL_REVIEWERS,
-  severityFilter: FindingSeverityFilter = "all",
+  filters: AnnotationFilters = {},
 ): AnnotationIndex {
-  const visibleFindings = visibility.hideFindings
-    ? []
-    : filterByAgent(ai.findings, agentFilter).filter(
-        (f) => severityFilter === "all" || f.severity === severityFilter,
-      );
+  const visibleFindings = visibleFindingsFor(ai.findings, visibility, filters);
   const findingsByFileLine = new Map<string, FlatFinding[]>();
   const findingsByFile = new Map<string, FlatFinding[]>();
   for (const f of visibleFindings) {
@@ -265,7 +287,7 @@ export function buildAnnotationIndex(
     findingThreadIds,
     threadsByHunk,
     threadRangesByFile,
-    version: annotationVersion(ai, files, mode, visibility, agentFilter, severityFilter),
+    version: annotationVersion(ai, files, mode, visibility, filters),
   };
 }
 
@@ -291,14 +313,11 @@ export function findingBelongsToHunk(
 }
 
 export function findingsForLine(
-  idx: AnnotationIndex,
-  filePath: string,
-  hunkIndex: number,
+  q: HunkQuery,
   targetLine: number,
-  hunkLines: LineSnapshot[],
   skipDelDuplicate: boolean,
-  mode: string,
 ): FlatFinding[] {
+  const { idx, filePath, hunkIndex, hunkLines, mode } = q;
   const candidates = idx.findingsByFileLine.get(`${filePath}:${targetLine}`) ?? [];
   return candidates.filter((f) => {
     if (!findingMatchesHunk(f, hunkIndex, mode)) return false;
@@ -337,13 +356,10 @@ export function hunkLevelFindings(
 }
 
 export function fallbackFindings(
-  idx: AnnotationIndex,
-  filePath: string,
-  hunkIndex: number,
+  q: HunkQuery,
   hunk: { new_start: number; new_count: number },
-  hunkLines: LineSnapshot[],
-  mode: string,
 ): FlatFinding[] {
+  const { idx, filePath, hunkIndex, hunkLines, mode } = q;
   const lo = hunk.new_start;
   const hi = hunk.new_start + hunk.new_count;
   const out: FlatFinding[] = [];
@@ -360,19 +376,15 @@ export function fallbackFindings(
 }
 
 export function findingsForSplitRow(
-  idx: AnnotationIndex,
-  filePath: string,
-  hunkIndex: number,
+  q: HunkQuery,
   leftLn: number | null,
   rightLn: number | null,
-  hunkLines: LineSnapshot[],
-  mode: string,
 ): FlatFinding[] {
   const out: FlatFinding[] = [];
   const seen = new Set<string>();
   for (const ln of [rightLn, leftLn]) {
     if (ln === null) continue;
-    for (const f of findingsForLine(idx, filePath, hunkIndex, ln, hunkLines, false, mode)) {
+    for (const f of findingsForLine(q, ln, false)) {
       if (seen.has(f.id)) continue;
       seen.add(f.id);
       out.push(f);
@@ -399,14 +411,11 @@ function visibleThreads(
 }
 
 export function threadsForLine(
-  idx: AnnotationIndex,
-  filePath: string,
-  hunkIndex: number,
+  q: HunkQuery,
   line: number,
-  _hunkLines: LineSnapshot[],
-  vis: CommentVisibility = ALL_VISIBLE,
   side: "old" | "new" | null = null,
 ): ThreadSnapshot[] {
+  const { idx, filePath, hunkIndex, vis = ALL_VISIBLE } = q;
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
   return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => {
     if (side !== null && threadReviewSide(t) !== side) return false;
@@ -435,13 +444,10 @@ export function lineHasAnchorRangeHighlight(
 }
 
 export function fallbackThreadsForHunk(
-  idx: AnnotationIndex,
-  filePath: string,
-  hunkIndex: number,
-  _hunk: { new_start: number; new_count: number },
+  q: HunkQuery,
   renderedLineNums: Set<number>,
-  vis: CommentVisibility = ALL_VISIBLE,
 ): ThreadSnapshot[] {
+  const { idx, filePath, hunkIndex, vis = ALL_VISIBLE } = q;
   const threads = idx.threadsByHunk.get(`${filePath}#${hunkIndex}`) ?? [];
   return visibleThreads(threads, idx.findingThreadIds, vis).filter((t) => {
     const end = threadAnchorEnd(t);

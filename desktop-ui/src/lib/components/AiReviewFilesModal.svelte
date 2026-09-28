@@ -51,17 +51,13 @@
   const mode = $derived(app.snapshot?.mode);
   const reviewScope = $derived(reviewScopeFromMode(mode));
 
-  const scopeLabel = $derived(
-    mode === "pr"
-      ? "PR Diff"
-      : mode === "branch" || mode === "tour"
-        ? "All changes"
-        : mode === "unstaged"
-          ? "Unstaged"
-          : mode === "staged"
-            ? "Staged"
-            : "—",
-  );
+  const scopeLabel = $derived.by(() => {
+    if (mode === "pr") return "PR Diff";
+    if (mode === "branch" || mode === "tour") return "All changes";
+    if (mode === "unstaged") return "Unstaged";
+    if (mode === "staged") return "Staged";
+    return "—";
+  });
 
   const selectedCount = $derived(selected.size);
   const reviewerCount = $derived(selectedReviewers.size);
@@ -103,6 +99,10 @@
   }
 
   const isPickOnly = $derived(pickerMode === "pick-only");
+  const headerTitle = $derived.by(() => {
+    if (isPickOnly) return "Select files";
+    return subView === "files" ? "Review selected files" : "Choose reviewers";
+  });
 
   function close() {
     open = false;
@@ -271,11 +271,7 @@
 >
   <div class="px-4 pt-3 pb-2 border-b border-ink-600 flex items-center gap-2 shrink-0">
     <span class="text-xs text-ink-300 font-mono">
-      {isPickOnly
-        ? "Select files"
-        : subView === "files"
-          ? "Review selected files"
-          : "Choose reviewers"}
+      {headerTitle}
     </span>
     <span class="text-[10px] text-ink-400 font-mono ml-1">
       {scopeLabel}{#if subView === "files" && pickerFiles.length > 0} · {pickerFiles.length} files{/if}

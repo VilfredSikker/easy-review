@@ -44,8 +44,10 @@
   const right = $derived(splitRow.right);
   const leftLn = $derived(left ? (left.new_num ?? left.old_num) : null);
   const rightLn = $derived(right ? (right.new_num ?? right.old_num) : null);
-  const isModifyPair = $derived(!!(left && right && left.kind === "del" && right.kind === "add"));
-  const wd = $derived(isModifyPair ? wordDiff(left!.text, right!.text) : null);
+  const wd = $derived.by(() => {
+    if (!left || !right || left.kind !== "del" || right.kind !== "add") return null;
+    return wordDiff(left.text, right.text);
+  });
 
   function selLeft(ln: number | null): boolean {
     if (ln === null || !diffSel.sel(ln)) return false;
@@ -109,7 +111,7 @@
   >
     {left?.old_num ?? ""}
     {#if left && leftLn !== null && left.kind !== "fold"}
-      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, filePath, "old", rowIdx)}>+</button>
+      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, { file: filePath, side: "old", startRowIdx: rowIdx })}>+</button>
     {/if}
   </div>
   <!-- Left code -->
@@ -145,7 +147,7 @@
   >
     {right?.new_num ?? ""}
     {#if right && rightLn !== null && right.kind !== "fold"}
-      <button class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, filePath, "new", rowIdx)}>+</button>
+      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, { file: filePath, side: "new", startRowIdx: rowIdx })}>+</button>
     {/if}
   </div>
   <!-- Right code -->

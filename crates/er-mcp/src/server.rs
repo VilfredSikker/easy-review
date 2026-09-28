@@ -4,7 +4,9 @@ use std::borrow::Cow;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use er_engine::diagram_upload::{list_diagrams, prepare_diagram_kit, upload_diagram};
+use er_engine::diagram_upload::{
+    list_diagrams, prepare_diagram_kit, upload_diagram, DiagramUpload,
+};
 use er_engine::git::ProdDiffStats;
 use er_engine::github::{
     gh_pr_checks_state_remote, gh_pr_list_queue, gh_pr_prod_diff_stats,
@@ -37,7 +39,12 @@ use crate::projects::{self, PrTargetInput, ResolvedPr};
 
 #[derive(Clone)]
 pub struct ErMcp {
-    #[allow(dead_code)]
+    // Tests read the router directly; the server only through the code
+    // #[tool_handler] generates, which dead-code analysis does not see.
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "read only by #[tool_handler]-generated code")
+    )]
     tool_router: ToolRouter<Self>,
 }
 
@@ -1007,12 +1014,12 @@ impl ErMcp {
                 let files = args.files.filter(|f| !f.is_empty()).ok_or_else(|| {
                     tool_err("upload requires files: { \"<output_file>\": \"...\" }")
                 })?;
-                if files.len() != 1 {
+                let mut entries = files.into_iter();
+                let (Some((file_name, content)), None) = (entries.next(), entries.next()) else {
                     return Err(tool_err(
                         "upload accepts exactly one file entry (the kit.output_file from prepare)",
                     ));
-                }
-                let (file_name, content) = files.into_iter().next().expect("checked len == 1");
+                };
                 let custom_prompt = args.prompt.clone();
                 let refresh_diff = args.refresh_diff.unwrap_or(false);
 
@@ -1021,11 +1028,13 @@ impl ErMcp {
                         &owner,
                         &name,
                         number,
-                        &kind,
-                        &file_name,
-                        &content,
-                        custom_prompt.as_deref(),
-                        refresh_diff,
+                        DiagramUpload {
+                            kind: &kind,
+                            file_name: &file_name,
+                            content: &content,
+                            custom_prompt: custom_prompt.as_deref(),
+                            refresh_diff,
+                        },
                     )
                 })
                 .await

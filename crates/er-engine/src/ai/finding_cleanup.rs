@@ -163,15 +163,12 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                     let root_set: std::collections::HashSet<&str> =
                         roots.iter().map(|s| s.as_str()).collect();
                     qs.questions.retain(|q| {
-                        if root_set.contains(q.id.as_str()) {
-                            return false;
-                        }
-                        if let Some(parent) = q.in_reply_to.as_deref() {
-                            if root_set.contains(parent) {
-                                return false;
-                            }
-                        }
-                        q.finding_ref.as_deref() != Some(finding_id)
+                        !root_set.contains(q.id.as_str())
+                            && !q
+                                .in_reply_to
+                                .as_deref()
+                                .is_some_and(|parent| root_set.contains(parent))
+                            && q.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&q_path, &qs)?;
                     changed = true;
@@ -196,15 +193,12 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                     let root_set: std::collections::HashSet<&str> =
                         roots.iter().map(|s| s.as_str()).collect();
                     ns.notes.retain(|n| {
-                        if root_set.contains(n.id.as_str()) {
-                            return false;
-                        }
-                        if let Some(parent) = n.in_reply_to.as_deref() {
-                            if root_set.contains(parent) {
-                                return false;
-                            }
-                        }
-                        n.finding_ref.as_deref() != Some(finding_id)
+                        !root_set.contains(n.id.as_str())
+                            && !n
+                                .in_reply_to
+                                .as_deref()
+                                .is_some_and(|parent| root_set.contains(parent))
+                            && n.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&notes_path, &ns)?;
                     changed = true;
@@ -229,15 +223,12 @@ pub fn delete_threads_linked_to_finding(er_dir: &str, finding_id: &str) -> std::
                     let root_set: std::collections::HashSet<&str> =
                         roots.iter().map(|s| s.as_str()).collect();
                     gc.comments.retain(|c| {
-                        if root_set.contains(c.id.as_str()) {
-                            return false;
-                        }
-                        if let Some(parent) = c.in_reply_to.as_deref() {
-                            if root_set.contains(parent) {
-                                return false;
-                            }
-                        }
-                        c.finding_ref.as_deref() != Some(finding_id)
+                        !root_set.contains(c.id.as_str())
+                            && !c
+                                .in_reply_to
+                                .as_deref()
+                                .is_some_and(|parent| root_set.contains(parent))
+                            && c.finding_ref.as_deref() != Some(finding_id)
                     });
                     write_json_atomic(&gc_path, &gc)?;
                     changed = true;

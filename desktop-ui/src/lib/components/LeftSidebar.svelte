@@ -5,8 +5,9 @@
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
-  import { tick } from "svelte";
+  import { buildPrHint, createPrPrefetch, remoteParts, shouldReplaceTab, yieldForPendingPaint } from "$lib/prOpen";
   import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
+  import { orderedByIds } from "$lib/projectOrder";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
 
   interface PinnedItem {
@@ -107,7 +108,7 @@
   let branchPickerFlip = $state(false);
 
   const PROJECT_MENU_EST_HEIGHT = 200;
-  const BRANCH_PICKER_EST_HEIGHT = 256;
+  const _BRANCH_PICKER_EST_HEIGHT = 256;
   const ROW_MENU_EST_HEIGHT = 176;
   /** Settings footer + gap — keep menus above it when flipping. */
   const SIDEBAR_FOOTER_RESERVE_PX = 52;
@@ -147,23 +148,9 @@
           return false;
         }),
   );
-  const displayProjects = $derived.by(() => {
-    const list = filteredProjects;
-    if (!pendingOrder || searchActive) return list;
-    const byId = new Map(list.map((p) => [p.id, p]));
-    const out: ProjectSnapshot[] = [];
-    for (const id of pendingOrder) {
-      const p = byId.get(id);
-      if (p) {
-        out.push(p);
-        byId.delete(id);
-      }
-    }
-    for (const p of list) {
-      if (byId.has(p.id)) out.push(p);
-    }
-    return out;
-  });
+  const displayProjects = $derived(
+    !pendingOrder || searchActive ? filteredProjects : orderedByIds(filteredProjects, pendingOrder),
+  );
 
   // Branch-picker state for the project 3-dot menu "New" item.
   let addingTo = $state<string | null>(null);
@@ -679,27 +666,7 @@
     projectMenuAnchor = null;
   }
 
-  /** Plain click replaces the active tab. Cmd/Ctrl-click or middle-click opens
-   * a new tab. (Inverse of the previous behavior — power users use modifiers
-   * when they want to keep the current tab around.) */
-  function shouldReplaceTab(e: MouseEvent): boolean {
-    return !(e.metaKey || e.ctrlKey || e.button === 1);
-  }
-
-  function nextAnimationFrame(): Promise<void> {
-    return new Promise((resolve) => {
-      if (typeof requestAnimationFrame === "function") {
-        requestAnimationFrame(() => resolve());
-      } else {
-        setTimeout(resolve, 0);
-      }
-    });
-  }
-
-  async function yieldForPendingPaint() {
-    await tick();
-    await nextAnimationFrame();
-  }
+  const { schedulePrPrefetch, scheduleRemotePrPrefetch, cancelPrPrefetch } = createPrPrefetch();
 
   async function openBranch(projectId: string, name: string, e: MouseEvent) {
     const branchKey = `${projectId}:${name}`;
@@ -715,18 +682,6 @@
     } finally {
       if (pendingBranchKey === branchKey) pendingBranchKey = null;
     }
-  }
-
-  function remoteParts(project: ProjectSnapshot): { owner: string; repo: string } | null {
-    const remote = project.remote?.trim();
-    if (!remote) return null;
-    const withoutScheme = remote
-      .replace(/^https?:\/\/github\.com\//, "")
-      .replace(/\.git$/, "")
-      .replace(/^\/+|\/+$/g, "");
-    const [owner, repo] = withoutScheme.split("/");
-    if (!owner || !repo) return null;
-    return { owner, repo };
   }
 
   async function openPr(project: ProjectSnapshot, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
@@ -760,87 +715,6 @@
     }
   }
 
-  // ── PR hover-prefetch ──
-  // After a short debounce on hover, kick a background `prefetch_pr_open` to
-  // warm the diff cache so the click feels instant. If the cursor leaves
-  // before the debounce fires, the timer is cleared and no fetch starts.
-  const PR_HOVER_PREFETCH_DELAY_MS = 150;
-  const prPrefetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
-
-  function buildPrHint(pr: PrInfo): {
-    baseRef: string;
-    headRef: string;
-    headOid: string;
-    updatedAt: string;
-    title: string;
-    author: string;
-  } | undefined {
-    if (!pr.base_ref?.trim() || !pr.head_ref?.trim() || !pr.head_oid?.trim()) {
-      return undefined;
-    }
-    return {
-      baseRef: pr.base_ref,
-      headRef: pr.head_ref,
-      headOid: pr.head_oid,
-      updatedAt: pr.updated_at,
-      title: pr.title,
-      author: pr.author,
-    };
-  }
-
-  function schedulePrPrefetch(projectId: string, pr: PrInfo) {
-    // No useful hint to send → skip; the open path falls back to the slow
-    // synchronous gh-pr-view round-trip anyway.
-    if (!pr.head_oid || !pr.base_ref) return;
-    const key = `${projectId}:${pr.number}`;
-    if (prPrefetchTimers.has(key)) return;
-    const timer = setTimeout(() => {
-      prPrefetchTimers.delete(key);
-      // Bypass app.cmd() — that assigns the return value to app.snapshot, and
-      // prefetch_pr_open returns () which would null out the snapshot and
-      // render the empty page. Fire-and-forget invoke is correct here.
-      invoke("prefetch_pr_open", {
-        projectId,
-        prNumber: pr.number,
-        hint: buildPrHint(pr),
-      }).catch(() => {
-        // Background fetch — failure is logged in Rust, nothing to do here.
-      });
-    }, PR_HOVER_PREFETCH_DELAY_MS);
-    prPrefetchTimers.set(key, timer);
-  }
-
-  /** Remote-only projects have no local clone — the open path would be three
-   *  synchronous `gh` calls. Warm the remote PR open cache on hover so the
-   *  click opens with zero network. Same debounce/dedupe/cancel discipline. */
-  function scheduleRemotePrPrefetch(project: ProjectSnapshot, pr: PrInfo) {
-    const parts = remoteParts(project);
-    if (!parts) return;
-    const key = `remote:${project.id}:${pr.number}`;
-    if (prPrefetchTimers.has(key)) return;
-    const timer = setTimeout(() => {
-      prPrefetchTimers.delete(key);
-      invoke("prefetch_remote_pr_open", {
-        owner: parts.owner,
-        repo: parts.repo,
-        number: pr.number,
-      }).catch(() => {
-        // Background fetch — failure is logged in Rust, nothing to do here.
-      });
-    }, PR_HOVER_PREFETCH_DELAY_MS);
-    prPrefetchTimers.set(key, timer);
-  }
-
-  function cancelPrPrefetch(projectId: string, prNumber: number) {
-    for (const key of [`${projectId}:${prNumber}`, `remote:${projectId}:${prNumber}`]) {
-      const timer = prPrefetchTimers.get(key);
-      if (timer !== undefined) {
-        clearTimeout(timer);
-        prPrefetchTimers.delete(key);
-      }
-    }
-  }
-
   function revealCount(map: Record<string, number>, projectId: string): number {
     return map[projectId] ?? 5;
   }
@@ -854,7 +728,7 @@
 {#if collapsed}
   <!-- Collapsed rail -->
   <aside class="w-11 bg-surface border-r border-hairline shrink-0 flex flex-col items-center py-3 gap-2 transition-[width] duration-200">
-    <button
+    <button type="button"
       onclick={() => app.togglePanel("left")}
       title="Expand sidebar"
       aria-label="Expand left sidebar"
@@ -862,7 +736,7 @@
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
     </button>
-    <button
+    <button type="button"
       onclick={() => (app.showEmptyState = true)}
       title="New review"
       aria-label="New review"
@@ -870,11 +744,11 @@
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
     </button>
-    <button title="Search (⌘K)" aria-label="Search" onclick={() => commandPalette.show()} class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
+    <button type="button" title="Search (⌘K)" aria-label="Search" onclick={() => commandPalette.show()} class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     </button>
     <div class="h-px w-5 bg-hairline my-1"></div>
-    <button title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
+    <button type="button" title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
     </button>
     <div class="mt-auto flex flex-col items-center gap-1 pb-0.5">
@@ -887,7 +761,7 @@
           class="w-2 h-2 rounded-full bg-accent shrink-0"
         ></button>
       {/if}
-      <button title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded flex items-center justify-center hover:bg-hover"><AppMark size={24} /></button>
+      <button type="button" title="Settings" aria-label="Settings" onclick={() => app.setMainView("settings")} class="w-7 h-7 rounded flex items-center justify-center hover:bg-hover"><AppMark size={24} /></button>
     </div>
   </aside>
 {:else}
@@ -897,14 +771,14 @@
   <div class="flex-1 overflow-y-auto min-h-0">
   <!-- Top actions -->
   <div class="px-2 pt-2 pb-2 space-y-0.5">
-    <button
+    <button type="button"
       onclick={() => (app.showEmptyState = true)}
       class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-2"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
       <span>New review</span>
     </button>
-    <button
+    <button type="button"
       onclick={() => { document.querySelector<HTMLInputElement>('[data-left-sidebar-search-input]')?.focus(); }}
       class="w-full flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-hover text-[12px] text-fg-3"
     >
@@ -1192,7 +1066,7 @@
                 {@const prMenuOpen = isPrRowMenuOpen(project.id, pr.number)}
                 {@const prSyncing = syncingPrKey === `${project.id}:${pr.number}`}
                 {@const prBusy = prTriaging || prSyncing}
-                <div class="group relative flex items-center" onmouseleave={() => cancelPrPrefetch(project.id, pr.number)}>
+                <div class="group relative flex items-center" role="group" onmouseleave={() => cancelPrPrefetch(project.id, pr.number)}>
                   <button
                     type="button"
                     title="{pr.title} #{pr.number}"
@@ -1611,7 +1485,7 @@
       </button>
     {/if}
   </div>
-  <button
+  <button type="button"
     onclick={() => app.setMainView("settings")}
     class="px-3 pb-3 pt-1.5 flex items-center gap-2 text-[12px] text-fg-3 shrink-0 hover:bg-hover text-left"
   >

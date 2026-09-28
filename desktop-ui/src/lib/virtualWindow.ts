@@ -37,6 +37,17 @@ export function windowFromScroll(
   return { start, end, paddingTop, paddingBottom };
 }
 
+export interface WindowOverscan {
+  /** Rows rendered beyond the viewport in each direction. */
+  overscan?: number;
+  // Pixel band rendered beyond the viewport in each direction. A fixed row
+  // `overscan` can't cover a fast momentum flick (it moves many rows per frame);
+  // a viewport-proportional pixel band keeps the rendered window ahead of the
+  // native scroll so the spacer never shows as a black gap. Default 0 preserves
+  // the original row-only behavior.
+  overscanPx?: number;
+}
+
 /**
  * Variable-height mode: uses precomputed cumulative offsets array.
  *
@@ -54,13 +65,7 @@ export function windowFromScrollVariable(
   totalHeight: number,
   scrollTop: number,
   viewportHeight: number,
-  overscan = DEFAULT_OVERSCAN,
-  // Pixel band rendered beyond the viewport in each direction. A fixed row
-  // `overscan` can't cover a fast momentum flick (it moves many rows per frame);
-  // a viewport-proportional pixel band keeps the rendered window ahead of the
-  // native scroll so the spacer never shows as a black gap. Default 0 preserves
-  // the original row-only behavior.
-  overscanPx = 0,
+  { overscan = DEFAULT_OVERSCAN, overscanPx = 0 }: WindowOverscan = {},
 ): VirtualWindow {
   const rowCount = Math.max(0, cumulativeOffsets.length - 1);
   if (rowCount === 0) {

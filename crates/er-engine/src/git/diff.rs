@@ -81,6 +81,24 @@ pub struct DiffFileHeader {
     pub byte_length: usize,
 }
 
+/// The path from a "diff --git a/PATH b/PATH" line.
+///
+/// For non-rename diffs both paths are identical, so after stripping
+/// "diff --git a/" the rest is "PATH b/PATH": total = 2*PATH_len + 3, so
+/// PATH_len = (total - 3) / 2. Both halves are compared to tell a non-rename
+/// from a rename; a rename (or a split point inside a multi-byte char) falls
+/// back to the path after the last " b/".
+fn path_from_diff_git_line(line: &str) -> String {
+    let Some(after_a) = line.strip_prefix("diff --git a/") else {
+        return line.split(" b/").last().unwrap_or("").to_string();
+    };
+    let path_len = (after_a.len().saturating_sub(3)) / 2;
+    match (after_a.get(..path_len), after_a.get(path_len + 3..)) {
+        (Some(old), Some(new)) if path_len > 0 && old == new => old.to_string(),
+        _ => after_a.split(" b/").last().unwrap_or("").to_string(),
+    }
+}
+
 /// Fast header-only scan of a raw diff.
 /// Extracts file paths, status, +/- counts, and byte offsets without
 /// allocating DiffLine structs. ~10x faster than full parse for large diffs.
@@ -89,10 +107,13 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
     let mut current_header: Option<DiffFileHeader> = None;
     let mut byte_pos: usize = 0;
 
-    for line in raw.lines() {
-        // Byte offsets assume LF line endings; .lines() also strips CRLF, so CRLF
-        // input would drift the offsets used by parse_file_at_offset().
-        let line_byte_end = byte_pos + line.len() + 1; // +1 for \n
+    // Count each line's real length, terminator included: a fixed `+ 1` for the
+    // newline undercounts every CRLF line, drifting the offsets that
+    // parse_file_at_offset() and the filters slice by.
+    for piece in raw.split_inclusive('\n') {
+        let line_byte_end = byte_pos + piece.len();
+        let line = piece.strip_suffix('\n').unwrap_or(piece);
+        let line = line.strip_suffix('\r').unwrap_or(line);
 
         if line.starts_with("diff --git") {
             // Flush previous header
@@ -101,20 +122,7 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
                 headers.push(h.clone());
             }
 
-            // Extract path
-            let path = if let Some(after_a) = line.strip_prefix("diff --git a/") {
-                let path_len = (after_a.len().saturating_sub(3)) / 2;
-                if path_len > 0
-                    && after_a.len() >= path_len + 3
-                    && after_a.get(..path_len) == after_a.get(path_len + 3..)
-                {
-                    after_a[..path_len].to_string()
-                } else {
-                    after_a.split(" b/").last().unwrap_or("").to_string()
-                }
-            } else {
-                line.split(" b/").last().unwrap_or("").to_string()
-            };
+            let path = path_from_diff_git_line(line);
 
             current_header = Some(DiffFileHeader {
                 path,
@@ -168,7 +176,7 @@ pub fn filter_raw_diff_by_paths(raw: &str, paths: &[String]) -> String {
     for h in headers {
         if path_set.contains(h.path.as_str()) {
             let end = (h.byte_offset + h.byte_length).min(raw.len());
-            out.push_str(&raw[h.byte_offset..end]);
+            out.push_str(raw.get(h.byte_offset..end).unwrap_or(""));
         }
     }
     out
@@ -305,27 +313,7 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 files.push(file);
             }
 
-            // Extract path from "diff --git a/PATH b/PATH"
-            // For non-rename diffs both paths are identical, so the format is:
-            //   "diff --git a/PATH b/PATH"
-            // After stripping "diff --git a/" we have: "PATH b/PATH"
-            // Total = 2*PATH_len + 3, so PATH_len = (total - 3) / 2
-            // We validate both halves match to distinguish non-renames from renames.
-            // For renames (different paths), fall back to split(" b/").last().
-            let path = if let Some(after_a) = line.strip_prefix("diff --git a/") {
-                let path_len = (after_a.len().saturating_sub(3)) / 2;
-                if path_len > 0
-                    && after_a.len() >= path_len + 3
-                    && after_a.get(..path_len) == after_a.get(path_len + 3..)
-                {
-                    after_a[..path_len].to_string()
-                } else {
-                    // Rename or edge case: paths differ, use the new path after " b/"
-                    after_a.split(" b/").last().unwrap_or("").to_string()
-                }
-            } else {
-                line.split(" b/").last().unwrap_or("").to_string()
-            };
+            let path = path_from_diff_git_line(line);
 
             current_file = Some(DiffFile {
                 path,
@@ -411,11 +399,7 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
             } else if line.starts_with(' ') || line.is_empty() {
                 // A bare empty line inside a hunk is treated as an empty context line
                 // (both old_num and new_num advance).
-                let content = if line.is_empty() {
-                    String::new()
-                } else {
-                    line[1..].to_string()
-                };
+                let content = line.strip_prefix(' ').unwrap_or_default().to_string();
                 hunk.lines.push(DiffLine {
                     line_type: LineType::Context,
                     content,
@@ -452,9 +436,8 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
 fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
     // Find the range info between @@ markers
     let after_first = line.strip_prefix("@@ ")?;
-    let end_idx = after_first.find(" @@")?;
-    let range_str = &after_first[..end_idx];
-    let context = after_first[end_idx + 3..].trim().to_string();
+    let (range_str, context) = after_first.split_once(" @@")?;
+    let context = context.trim().to_string();
 
     // Parse "-old_start,old_count +new_start,new_count"
     let parts: Vec<&str> = range_str.split_whitespace().collect();
@@ -693,6 +676,28 @@ pub fn refetch_file_with_context(
 mod tests {
     use super::super::status::FileStatus;
     use super::*;
+
+    #[test]
+    fn filter_by_paths_keeps_the_exact_section_of_a_crlf_diff() {
+        // With LF-only accounting, each CRLF line drifted the offsets back a
+        // byte, and three lines put the second header's offset inside the
+        // two-byte `é`: slicing panicked, and `get` returned nothing.
+        let second = "diff --git a/b b/b\r\n@@ -0,0 +1 @@\r\n+x\r\n";
+        let raw = format!("diff --git a/a b/a\r\n@@ -0,0 +1 @@\r\n+é\r\n{second}");
+        assert_eq!(filter_raw_diff_by_paths(&raw, &["b".to_string()]), second);
+        let headers = parse_diff_headers(&raw);
+        assert_eq!(headers[1].byte_offset, raw.len() - second.len());
+        assert_eq!(parse_file_at_offset(&raw, &headers[1]).path, "b");
+    }
+
+    #[test]
+    fn diff_git_line_split_inside_multibyte_chars_does_not_panic() {
+        // A rename to a shorter path puts both same-path split points inside
+        // multi-byte chars (`€` is three bytes), where neither half is a str.
+        let raw = "diff --git a/€€€ b/a\n--- a/€€€\n+++ b/a\n@@ -1 +1 @@\n-x\n+y\n";
+        assert_eq!(parse_diff_headers(raw)[0].path, "a");
+        assert_eq!(parse_diff(raw)[0].path, "a");
+    }
 
     // === Existing tests ===
 

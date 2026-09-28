@@ -81,7 +81,7 @@ where
         {
             let f = f
                 .take()
-                .expect("apply_to_findings called after finding matched");
+                .ok_or_else(|| anyhow::anyhow!("apply_to_findings called after finding matched"))?;
             f(finding)?;
             return Ok(true);
         }

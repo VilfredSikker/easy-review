@@ -73,7 +73,7 @@
 </script>
 
 <div class="flex min-h-0 flex-1 flex-col items-center gap-0 overflow-y-auto px-4 py-4">
-  {#each stages as stage, i}
+  {#each stages as stage, i (stage.key)}
     {#if stage.peelAfter}
       {@const peeled = peeledAt(stage.peelAfter)}
       {#if peeled.length > 0}
@@ -127,7 +127,7 @@
                 onclick={() => onSelect(f.id)}
               >
                 <span class="flex -space-x-0.5">
-                  {#each f.raised_by.slice(0, 2) as rid}
+                  {#each f.raised_by.slice(0, 2) as rid, ri (ri)}
                     {@const r = reviewerMap[rid]}
                     {#if r}
                       <span

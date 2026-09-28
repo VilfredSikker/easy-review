@@ -40,8 +40,10 @@ fn now_epoch_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub fn load_persisted_pr_cache(
-) -> Result<Option<(HashMap<String, Vec<PrInfo>>, HashMap<String, u64>)>> {
+/// PRs per repo, and when each repo's list was last fetched.
+pub type PersistedPrCache = (HashMap<String, Vec<PrInfo>>, HashMap<String, u64>);
+
+pub fn load_persisted_pr_cache() -> Result<Option<PersistedPrCache>> {
     let Some(path) = pr_cache_path() else {
         return Ok(None);
     };

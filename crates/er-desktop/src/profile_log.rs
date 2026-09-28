@@ -26,6 +26,10 @@ fn wall_ms() -> u128 {
         .unwrap_or(0)
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "the map is private to this fn and its critical section only reads and inserts, so it cannot be poisoned"
+)]
 fn since_last_ms(kind: &str) -> u64 {
     let map = LAST_BY_KIND.get_or_init(|| Mutex::new(HashMap::new()));
     let now = Instant::now();
@@ -64,6 +68,10 @@ pub fn profile_log(kind: &str, fields: &[(&str, String)]) {
 }
 
 /// Bump desktop revision and log `rev_bump` (throttled to one line per source per 200ms).
+#[expect(
+    clippy::expect_used,
+    reason = "the map is private to this fn, so a poisoned lock means this path already panicked once"
+)]
 pub fn bump_desktop_revision(counter: &AtomicU64, source: &'static str) -> u64 {
     let new = counter.fetch_add(1, Ordering::Relaxed) + 1;
     if !profile_enabled() {

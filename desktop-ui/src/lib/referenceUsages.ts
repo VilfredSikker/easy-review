@@ -281,20 +281,17 @@ export function buildRulerMarks(
 }
 
 /**
- * Clamp a popover's top-left corner so a `w`×`h` box stays inside the
- * `vw`×`vh` viewport with `pad` breathing room. When the box can't fit, the
+ * Clamp a popover's top-left corner so a `box`-sized popover stays inside the
+ * `viewport` with `pad` breathing room. When the box can't fit, the
  * top/left edge wins (content scrolls; the anchor edge stays reachable).
  */
 export function clampPopoverPosition(
-  x: number,
-  y: number,
-  w: number,
-  h: number,
-  vw: number,
-  vh: number,
+  at: { x: number; y: number },
+  box: { w: number; h: number },
+  viewport: { w: number; h: number },
   pad = 8,
 ): { left: number; top: number } {
-  const left = Math.max(pad, Math.min(x, vw - w - pad));
-  const top = Math.max(pad, Math.min(y, vh - h - pad));
+  const left = Math.max(pad, Math.min(at.x, viewport.w - box.w - pad));
+  const top = Math.max(pad, Math.min(at.y, viewport.h - box.h - pad));
   return { left, top };
 }

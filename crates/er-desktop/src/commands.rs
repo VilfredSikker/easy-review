@@ -24,7 +24,7 @@ use er_engine::ai::CommentType;
 use er_engine::app::CardAiInvocation;
 use er_engine::app::{
     build_card_ai_system_context, plan_card_ai_invocation, run_card_ai_subprocess, App,
-    BrowserLayout, CardAiContextParams, DiffMode, InputMode,
+    BrowserLayout, CardAiContextParams, CommentTarget, DiffMode, InputMode,
 };
 use er_engine::config::InboxConfig;
 
@@ -263,20 +263,23 @@ macro_rules! snap {
 /// Build a snapshot using the lock guards directly (when callers already hold them).
 /// Differential: hunks the frontend already holds are omitted (`hunks_omitted`).
 pub fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
-    crate::snapshot::build_snapshot_with_delta(
-        app,
-        Some(&state.pr_cache),
-        Some(&state.pr_cache_fetched_at),
-        Some(&state.meta_cache),
-        Some(&state.gh_user),
-        Some(&state.pending_ai_replies),
-        Some(&state.gh_status_cache),
-        Some(&state.loading),
-        Some(&state.watch_status),
-        Some(&state.inbox),
-        Some(&state.sent_files),
-        Some(&state.branch_base_remote_oid),
-    )
+    crate::snapshot::build_snapshot_with_delta(app, &snapshot_sources(state))
+}
+
+fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
+    crate::snapshot::SnapshotSources {
+        pr_cache: Some(&state.pr_cache),
+        pr_cache_fetched_at: Some(&state.pr_cache_fetched_at),
+        meta_cache: Some(&state.meta_cache),
+        gh_user: Some(&state.gh_user),
+        pending_ai: Some(&state.pending_ai_replies),
+        gh_status_cache: Some(&state.gh_status_cache),
+        loading: Some(&state.loading),
+        watch_status: Some(&state.watch_status),
+        inbox: Some(&state.inbox),
+        sent_files: Some(&state.sent_files),
+        branch_base_remote_oid: Some(&state.branch_base_remote_oid),
+    }
 }
 
 /// Skip the sidecar write when the active view is no longer the one the
@@ -373,19 +376,7 @@ fn snap_from_command_invalidate(app: &App, state: &AppState) {
 }
 
 fn chrome_snap_from(app: &App, state: &AppState) -> AppSnapshot {
-    build_chrome_snapshot(
-        app,
-        Some(&state.pr_cache),
-        Some(&state.pr_cache_fetched_at),
-        Some(&state.meta_cache),
-        Some(&state.gh_user),
-        Some(&state.pending_ai_replies),
-        Some(&state.gh_status_cache),
-        Some(&state.loading),
-        Some(&state.watch_status),
-        Some(&state.inbox),
-        Some(&state.branch_base_remote_oid),
-    )
+    build_chrome_snapshot(app, &snapshot_sources(state))
 }
 
 fn log_branch_open_phase(
@@ -1568,10 +1559,9 @@ fn parse_github_slug(remote: &str) -> Option<String> {
     if let Some(rest) = normalized.strip_prefix("git@github.com:") {
         return Some(rest.to_string());
     }
-    if let Some(pos) = normalized.find("github.com/") {
-        return Some(normalized[(pos + "github.com/".len())..].to_string());
-    }
-    None
+    normalized
+        .split_once("github.com/")
+        .map(|(_, slug)| slug.to_string())
 }
 
 fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec<String>) {
@@ -1599,16 +1589,29 @@ fn normalize_check_state(checks: &[er_engine::github::CheckRun]) -> (String, Vec
     }
 }
 
+/// The shared state a PR-list refresh hands to [`process_inbox_after_pr_refresh`].
+#[derive(Clone, Copy)]
+pub struct InboxRefreshHandles<'a> {
+    pub pr_cache: &'a Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
+    pub gh_user: &'a GhUser,
+    pub inbox: &'a InboxHandle,
+    pub desktop_revision: &'a Arc<AtomicU64>,
+    pub app_handle: &'a Arc<Mutex<Option<tauri::AppHandle>>>,
+}
+
 pub fn process_inbox_after_pr_refresh(
-    pr_cache: &Arc<Mutex<HashMap<String, Vec<PrInfo>>>>,
-    gh_user_state: &GhUser,
-    inbox_handle: &InboxHandle,
-    desktop_revision: &Arc<AtomicU64>,
-    app_handle_state: &Arc<Mutex<Option<tauri::AppHandle>>>,
+    handles: InboxRefreshHandles<'_>,
     prefs: &InboxConfig,
     refresh_failed_remote: Option<String>,
     auto_triage: Option<&crate::auto_triage::AutoTriageContext>,
 ) {
+    let InboxRefreshHandles {
+        pr_cache,
+        gh_user: gh_user_state,
+        inbox: inbox_handle,
+        desktop_revision,
+        app_handle: app_handle_state,
+    } = handles;
     let now = now_ms();
     if let Ok(mut inbox) = inbox_handle.lock() {
         inbox.last_refresh_ms = now;
@@ -2277,6 +2280,10 @@ pub async fn clear_filter(state: State<'_, AppState>) -> Result<AppSnapshot, Str
 // ── Threads ───────────────────────────────────────────────────────────────────
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
+)]
 pub async fn add_comment(
     file: String,
     hunk_idx: usize,
@@ -2302,10 +2309,12 @@ pub async fn add_comment(
             app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num,
+                line_num_end,
+            },
             text,
             CommentType::GitHubComment,
             None,
@@ -2318,6 +2327,10 @@ pub async fn add_comment(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
+)]
 pub async fn add_question(
     file: String,
     hunk_idx: usize,
@@ -2342,10 +2355,12 @@ pub async fn add_question(
             app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num,
+                line_num_end,
+            },
             text,
             CommentType::Question,
             None,
@@ -2358,6 +2373,10 @@ pub async fn add_question(
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
+)]
 pub async fn add_note(
     file: String,
     hunk_idx: usize,
@@ -2382,10 +2401,12 @@ pub async fn add_note(
             app.tab_mut().comment_id_override = Some(id);
         }
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_num,
-            line_num_end,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num,
+                line_num_end,
+            },
             text,
             CommentType::Note,
             None,
@@ -2460,10 +2481,12 @@ pub async fn reply_to_thread(
             }
         };
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_num,
-            None,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num,
+                line_num_end: None,
+            },
             text,
             comment_type,
             Some(parent_id),
@@ -4105,8 +4128,6 @@ pub async fn run_ai_scoped_review(
 
         let (started, skipped) = spawn_scoped_reviewers(
             &mut app,
-            &scope,
-            &er_dir,
             target,
             &reviewer_kinds,
             focus_prompt.as_deref(),
@@ -4157,8 +4178,6 @@ pub async fn run_ai_scoped_review(
 
 fn spawn_scoped_reviewers(
     app: &mut er_engine::app::App,
-    scope: &str,
-    er_dir: &str,
     target: er_engine::app::BackgroundTaskTarget,
     reviewer_kinds: &[String],
     focus_prompt: Option<&str>,
@@ -4166,6 +4185,9 @@ fn spawn_scoped_reviewers(
     diff_hash: &str,
 ) -> Result<(Vec<String>, Vec<String>), String> {
     use er_engine::ai::{prompts, ReviewerKind};
+
+    let scope = target.scope.as_str();
+    let er_dir = target.er_dir.as_str();
 
     let mut started = Vec::new();
     let mut skipped = Vec::new();
@@ -4647,10 +4669,12 @@ pub async fn promote_to_comment(
         // 3. Create the new comment on the same review side as the source.
         app.tab_mut().comment_side = Some(side);
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_start,
-            None,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num: line_start,
+                line_num_end: None,
+            },
             text,
             CommentType::GitHubComment,
             None,
@@ -4738,10 +4762,12 @@ pub async fn promote_to_note(
 
         app.tab_mut().comment_side = Some(side);
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_start,
-            None,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num: line_start,
+                line_num_end: None,
+            },
             text,
             CommentType::Note,
             None,
@@ -5084,10 +5110,12 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
             let _ = app.submit_comment_text_as_author(
-                file,
-                hunk_idx,
-                line_num,
-                None,
+                CommentTarget {
+                    file,
+                    hunk_idx,
+                    line_num,
+                    line_num_end: None,
+                },
                 body,
                 comment_type,
                 Some(thread_id_for_thread.clone()),
@@ -5577,28 +5605,14 @@ fn build_remote_pr_tab(
         // fetched at: equal oid ⇒ pill stays off; advanced ⇒ it lights. Fall
         // back to the PR-list cache only when the entry has no oid (pre-upgrade
         // entries / failed oid fetch).
-        tab.last_diff_head_oid = match entry.head_oid {
-            Some(oid) => Some(oid),
-            None => {
-                if let Ok(guard) = state.pr_cache.lock() {
-                    if let Some(prs) = guard.get(&format!("{owner}/{repo}")) {
-                        if let Some(pr) = prs.iter().find(|p| p.number == number) {
-                            if !pr.head_oid.is_empty() {
-                                Some(pr.head_oid.clone())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        }
-                    } else {
-                        None
-                    }
-                } else {
-                    None
-                }
-            }
-        };
+        tab.last_diff_head_oid = entry.head_oid.or_else(|| {
+            let guard = state.pr_cache.lock().ok()?;
+            let pr = guard
+                .get(&format!("{owner}/{repo}"))?
+                .iter()
+                .find(|p| p.number == number)?;
+            (!pr.head_oid.is_empty()).then(|| pr.head_oid.clone())
+        });
         log::info!("remote_pr_open {owner}/{repo}#{number} cache=hit");
         return Ok(tab);
     }
@@ -7651,6 +7665,10 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
         let app = Arc::clone(&state.app);
         std::thread::spawn(move || {
+            #[expect(
+                clippy::expect_used,
+                reason = "a worker thread that cannot build its runtime has nothing to fall back to"
+            )]
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -7660,28 +7678,17 @@ pub fn refresh_pr_list(state: State<AppState>) -> Result<AppSnapshot, String> {
                     async move { crate::pr_cache::refresh_pr_cache(&cache, &fetched_at).await },
                 );
             let prefs = clone_inbox_prefs(&app);
+            let handles = InboxRefreshHandles {
+                pr_cache: &pr_cache,
+                gh_user: &gh_user,
+                inbox: &inbox,
+                desktop_revision: &desktop_rev,
+                app_handle: &app_handle_state,
+            };
             for remote in failed {
-                process_inbox_after_pr_refresh(
-                    &pr_cache,
-                    &gh_user,
-                    &inbox,
-                    &desktop_rev,
-                    &app_handle_state,
-                    &prefs,
-                    Some(remote),
-                    None,
-                );
+                process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
             }
-            process_inbox_after_pr_refresh(
-                &pr_cache,
-                &gh_user,
-                &inbox,
-                &desktop_rev,
-                &app_handle_state,
-                &prefs,
-                None,
-                None,
-            );
+            process_inbox_after_pr_refresh(handles, &prefs, None, None);
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
@@ -7732,6 +7739,10 @@ pub fn refresh_project_pr_list(
         let app_handle_state = Arc::clone(&state.tauri_app_handle);
         let app = Arc::clone(&state.app);
         std::thread::spawn(move || {
+            #[expect(
+                clippy::expect_used,
+                reason = "a worker thread that cannot build its runtime has nothing to fall back to"
+            )]
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
@@ -7742,28 +7753,17 @@ pub fn refresh_project_pr_list(
                     .await
             });
             let prefs = clone_inbox_prefs(&app);
+            let handles = InboxRefreshHandles {
+                pr_cache: &pr_cache,
+                gh_user: &gh_user,
+                inbox: &inbox,
+                desktop_revision: &desktop_rev,
+                app_handle: &app_handle_state,
+            };
             if !success {
-                process_inbox_after_pr_refresh(
-                    &pr_cache,
-                    &gh_user,
-                    &inbox,
-                    &desktop_rev,
-                    &app_handle_state,
-                    &prefs,
-                    Some(remote),
-                    None,
-                );
+                process_inbox_after_pr_refresh(handles, &prefs, Some(remote), None);
             }
-            process_inbox_after_pr_refresh(
-                &pr_cache,
-                &gh_user,
-                &inbox,
-                &desktop_rev,
-                &app_handle_state,
-                &prefs,
-                None,
-                None,
-            );
+            process_inbox_after_pr_refresh(handles, &prefs, None, None);
             if let Ok(mut f) = loading.lock() {
                 f.pr_list = false;
             }
@@ -8145,7 +8145,10 @@ pub fn delete_project(project_id: String, state: State<AppState>) -> Result<AppS
 }
 
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "camelCase parameters match the keys of the JS IPC payload"
+)]
 pub fn reorder_projects(
     orderedIds: Vec<String>,
     state: State<AppState>,
@@ -8269,29 +8272,30 @@ pub async fn sync_pr(
                 .map(|(i, _)| i)
                 .collect();
             for i in indices {
-                if let Some(tab) = app.tabs.get_mut(i) {
-                    match tab.refetch_and_refresh_diff() {
-                        Ok(()) => {
-                            // Remote tabs can't form the local open key (their
-                            // repo_root is the launch CWD, not the checkout) — and
-                            // the remote open path doesn't read the cache yet, so
-                            // only local PR tabs are worth persisting here.
-                            if tab.is_remote() {
-                                // Realign the stale-pill baseline after a legit
-                                // sync: refetch_and_refresh_diff's remote branch
-                                // never updates last_diff_head_oid, so without
-                                // this the pill stays lit forever.
-                                if let Some(pr_number) = tab.pr_number {
-                                    if let Some(oid) = pr_cache_head_oid_for_pr(&state, pr_number) {
-                                        tab.last_diff_head_oid = Some(oid);
-                                    }
-                                }
-                            } else if refreshed_local_diff_oid.is_none() {
-                                refreshed_local_diff_oid = Some(tab.last_diff_head_oid.clone());
-                            }
-                        }
-                        Err(e) => log::warn!("sync_pr: diff refresh failed for tab {i}: {e}"),
+                let Some(tab) = app.tabs.get_mut(i) else {
+                    continue;
+                };
+                if let Err(e) = tab.refetch_and_refresh_diff() {
+                    log::warn!("sync_pr: diff refresh failed for tab {i}: {e}");
+                    continue;
+                }
+                // Remote tabs can't form the local open key (their
+                // repo_root is the launch CWD, not the checkout) — and
+                // the remote open path doesn't read the cache yet, so
+                // only local PR tabs are worth persisting here.
+                if tab.is_remote() {
+                    // Realign the stale-pill baseline after a legit
+                    // sync: refetch_and_refresh_diff's remote branch
+                    // never updates last_diff_head_oid, so without
+                    // this the pill stays lit forever.
+                    if let Some(oid) = tab
+                        .pr_number
+                        .and_then(|pr_number| pr_cache_head_oid_for_pr(&state, pr_number))
+                    {
+                        tab.last_diff_head_oid = Some(oid);
                     }
+                } else if refreshed_local_diff_oid.is_none() {
+                    refreshed_local_diff_oid = Some(tab.last_diff_head_oid.clone());
                 }
             }
         }
@@ -8668,31 +8672,22 @@ fn promote_finding_to_comment_impl(
 
     let er_dir = app.tab().er_dir();
 
-    let found = {
-        let tab = app.tab();
-        let mut result: Option<(String, usize, Option<usize>, String)> = None;
-        if let Some(review) = tab.ai.review.as_ref() {
-            'outer: for (path, file) in review.files.iter() {
-                for f in file.findings.iter() {
-                    if f.id == finding_id {
-                        let default = if f.description.is_empty() {
-                            f.title.clone()
-                        } else {
-                            format!("{}\n\n{}", f.title, f.description)
-                        };
-                        result = Some((
-                            path.clone(),
-                            f.hunk_index.unwrap_or(0),
-                            f.line_start,
-                            default,
-                        ));
-                        break 'outer;
-                    }
-                }
-            }
-        }
-        result
-    };
+    let found = app.tab().ai.review.as_ref().and_then(|review| {
+        review.files.iter().find_map(|(path, file)| {
+            let f = file.findings.iter().find(|f| f.id == finding_id)?;
+            let default = if f.description.is_empty() {
+                f.title.clone()
+            } else {
+                format!("{}\n\n{}", f.title, f.description)
+            };
+            Some((
+                path.clone(),
+                f.hunk_index.unwrap_or(0),
+                f.line_start,
+                default,
+            ))
+        })
+    });
 
     let (file, hunk_idx, line_start, default_body) =
         found.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
@@ -8715,10 +8710,12 @@ fn promote_finding_to_comment_impl(
     };
 
     app.submit_comment_text(
-        file,
-        hunk_idx,
-        line_start,
-        None,
+        CommentTarget {
+            file,
+            hunk_idx,
+            line_num: line_start,
+            line_num_end: None,
+        },
         text,
         CommentType::GitHubComment,
         None,
@@ -8824,10 +8821,12 @@ fn reply_to_finding_impl(
             root
         } else {
             app.submit_comment_text(
-                file,
-                hunk_idx,
-                line_start,
-                None,
+                CommentTarget {
+                    file,
+                    hunk_idx,
+                    line_num: line_start,
+                    line_num_end: None,
+                },
                 "AI follow-up requested for this finding.".to_string(),
                 CommentType::GitHubComment,
                 None,
@@ -8856,10 +8855,12 @@ fn reply_to_finding_impl(
     let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
     if let Some(root_id) = root_id {
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_start,
-            None,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num: line_start,
+                line_num_end: None,
+            },
             body,
             CommentType::GitHubComment,
             Some(root_id),
@@ -8868,10 +8869,12 @@ fn reply_to_finding_impl(
         .map_err(|e| e.to_string())?;
     } else {
         app.submit_comment_text(
-            file.clone(),
-            hunk_idx,
-            line_start,
-            None,
+            CommentTarget {
+                file: file.clone(),
+                hunk_idx,
+                line_num: line_start,
+                line_num_end: None,
+            },
             FINDING_THREAD_STUB.to_string(),
             CommentType::GitHubComment,
             None,
@@ -8894,10 +8897,12 @@ fn reply_to_finding_impl(
             })
             .ok_or_else(|| "Failed to create finding comment thread".to_string())?;
         app.submit_comment_text(
-            file,
-            hunk_idx,
-            line_start,
-            None,
+            CommentTarget {
+                file,
+                hunk_idx,
+                line_num: line_start,
+                line_num_end: None,
+            },
             body,
             CommentType::GitHubComment,
             Some(root_id),
@@ -9421,7 +9426,6 @@ pub fn branch_preload_target(
 /// input moved (base, PR, branch, checkout, remote). Errors are logged and
 /// otherwise ignored; a second kick for the same PR while one is in flight is
 /// a no-op.
-#[allow(clippy::suspicious_operation_groupings)] // t.local_branch_checkout_root vs inputs.checkout_root is intentional (matches preload slot field names)
 pub fn kick_branch_preload(app: &App, state: &AppState) {
     let idx = app.active_tab;
     let Some(inputs) = branch_preload_target(app, idx) else {
@@ -9691,6 +9695,10 @@ pub fn kick_pr_ref_fetch(app: &App, state: &AppState) {
 }
 
 #[tauri::command]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
+)]
 pub fn update_tab_browser(
     layout: Option<String>,
     url: Option<String>,
@@ -9754,7 +9762,10 @@ pub fn cycle_tab_browser_layout(
 }
 
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "camelCase parameters match the keys of the JS IPC payload"
+)]
 pub fn reorder_tabs(
     fromIdx: usize,
     toIdx: usize,
@@ -9769,7 +9780,11 @@ pub fn reorder_tabs(
 // ── UI annotations (browser view) ───────────────────────────────────────────
 
 #[tauri::command]
-#[allow(non_snake_case, clippy::too_many_arguments)]
+#[expect(
+    non_snake_case,
+    clippy::too_many_arguments,
+    reason = "the parameters, camelCase keys included, are the JS IPC payload"
+)]
 pub async fn add_ui_annotation(
     url: String,
     selector: Option<String>,
@@ -9847,12 +9862,10 @@ pub async fn add_ui_annotation(
 /// `None` if the prefix is missing or base64 is malformed. We accept any
 /// `data:image/*;base64,` MIME — the caller is trusted to produce PNG.
 fn decode_data_url_png(data_url: &str) -> Option<Vec<u8>> {
-    let comma = data_url.find(',')?;
-    let header = &data_url[..comma];
+    let (header, payload) = data_url.split_once(',')?;
     if !header.starts_with("data:image/") || !header.ends_with(";base64") {
         return None;
     }
-    let payload = &data_url[comma + 1..];
     base64_decode(payload).ok()
 }
 
@@ -11268,6 +11281,23 @@ mod tests {
         assert!(decode_data_url_png("data:image/png,plainstuff").is_none());
     }
 
+    #[test]
+    fn parse_github_slug_accepts_ssh_and_https_remotes() {
+        assert_eq!(
+            parse_github_slug("git@github.com:owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            parse_github_slug("https://github.com/owner/repo.git").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(
+            parse_github_slug("https://user@github.com/owner/repo").as_deref(),
+            Some("owner/repo")
+        );
+        assert_eq!(parse_github_slug("https://gitlab.com/owner/repo"), None);
+    }
+
     fn write_pkg(dir: &std::path::Path, body: &str) {
         std::fs::write(dir.join("package.json"), body).unwrap();
     }
@@ -11904,7 +11934,7 @@ mod tests {
         fn body_of<'a>(src: &'a str, name: &str) -> Option<&'a str> {
             let sig = format!("pub async fn {name}");
             let start = src.find(&sig)?;
-            let rest = &src[start + 1..];
+            let rest = src.get(start + 1..)?;
             let next = [
                 "\n#[tauri::command]",
                 "\npub async fn ",
@@ -11915,7 +11945,7 @@ mod tests {
             .filter_map(|m| rest.find(m).map(|i| i + 1))
             .min()
             .unwrap_or(rest.len());
-            Some(&src[start..start + 1 + next])
+            src.get(start..start + 1 + next)
         }
 
         let mut failures = Vec::new();
@@ -12004,14 +12034,12 @@ mod tests {
     #[test]
     fn toggle_panel_does_not_build_a_snapshot() {
         let src = include_str!("commands.rs");
-        let start = src
-            .find("pub async fn toggle_panel")
+        let (_, from) = src
+            .split_once("pub async fn toggle_panel")
             .expect("toggle_panel must be async");
-        let from = &src[start..];
-        let await_at = from
-            .find(".await")
+        let (body, _) = from
+            .split_once(".await")
             .expect("toggle_panel awaits run_blocking");
-        let body = &from[..await_at];
         assert!(body.contains("run_blocking"));
         assert!(body.contains("Ok(())"));
         assert!(

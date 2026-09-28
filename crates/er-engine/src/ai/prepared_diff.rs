@@ -208,8 +208,8 @@ const fn line_prefix(line_type: crate::git::LineType) -> char {
 
 /// New-side start number from `@@ -old(,count)? +new(,count)? @@ ...`.
 fn parse_hunk_new_start(rest: &str) -> Option<i64> {
-    let plus_idx = rest.find('+')?;
-    let num: String = rest[plus_idx + 1..]
+    let (_, after_plus) = rest.split_once('+')?;
+    let num: String = after_plus
         .chars()
         .take_while(|c| c.is_ascii_digit())
         .collect();

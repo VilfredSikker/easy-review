@@ -120,13 +120,17 @@
     return totalRounds > 0 ? Math.min(100, Math.round((r / totalRounds) * 100)) : 0;
   });
 
-  const headline = $derived(
-    batchMode
-      ? `${liveRuns.length} reviews in progress`
-      : isArena
-        ? `Arena in progress · Round ${Math.min(runProgress.round || 1, totalRounds)} of ${totalRounds}`
-        : "Review in progress",
-  );
+  const headline = $derived.by(() => {
+    if (batchMode) return `${liveRuns.length} reviews in progress`;
+    if (isArena) return `Arena in progress · Round ${Math.min(runProgress.round || 1, totalRounds)} of ${totalRounds}`;
+    return "Review in progress";
+  });
+
+  function roundSegmentClass(i: number): string {
+    if (i + 1 < runProgress.round) return "bg-[var(--arena-periwinkle)]";
+    if (i + 1 === runProgress.round) return "bg-[color-mix(in_srgb,var(--arena-periwinkle)_40%,transparent)]";
+    return "bg-[var(--arena-bg-3)]";
+  }
 
   function runLabel(entry: LiveRunEntry): string {
     if (entry.title) return entry.title;
@@ -360,14 +364,8 @@
         {#if !batchMode && isArena && totalRounds > 1}
           <div class="flex gap-1">
             {#each Array(totalRounds) as _, roundIdx (roundIdx)}
-              {@const i = roundIdx}
               <span
-                class="h-1 flex-1 rounded-sm
-                  {i + 1 < runProgress.round
-                  ? 'bg-[var(--arena-periwinkle)]'
-                  : i + 1 === runProgress.round
-                    ? 'bg-[color-mix(in_srgb,var(--arena-periwinkle)_40%,transparent)]'
-                    : 'bg-[var(--arena-bg-3)]'}"
+                class="h-1 flex-1 rounded-sm {roundSegmentClass(roundIdx)}"
               ></span>
             {/each}
           </div>

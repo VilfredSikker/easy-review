@@ -41,6 +41,10 @@ pub fn init_cli_path() {
 /// old PATH fused the last prefix dir with the first existing entry — on a
 /// Finder/Spotlight launch that destroyed `/usr/bin`, making `git`
 /// unresolvable and aborting desktop startup.)
+#[expect(
+    clippy::expect_used,
+    reason = "entries are fixed dirs, $HOME subdirs, or came from split_paths; only a $HOME holding the separator fails, and startup should stop then"
+)]
 fn merge_paths(mut prefix: Vec<PathBuf>, current: &Path) -> std::ffi::OsString {
     if !current.as_os_str().is_empty() {
         prefix.extend(std::env::split_paths(current));

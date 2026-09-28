@@ -148,14 +148,23 @@ const VIS_DEFAULT: CommentVisibility = {
   hideQuestions: false,
 };
 
+interface MkInputsOptions {
+  viewMode?: "unified" | "split";
+  vis?: CommentVisibility;
+  mode?: string;
+  fileIndex?: number;
+}
+
 function mkInputs(
   f: FileSnapshot,
   files: FileSnapshot[],
   ai: AiSnapshot,
-  viewMode: "unified" | "split" = "unified",
-  vis: CommentVisibility = VIS_DEFAULT,
-  mode: string = "branch",
-  fileIndex: number = 0,
+  {
+    viewMode = "unified",
+    vis = VIS_DEFAULT,
+    mode = "branch",
+    fileIndex = 0,
+  }: MkInputsOptions = {},
 ): RenderModelInputs {
   return {
     file: f,
@@ -216,16 +225,16 @@ describe("getFileBlock — split mode", () => {
       ],
     });
     const f = file({ path: "a.ts", hunks: [h1] });
-    const block = getFileBlock(mkInputs(f, [f], emptyAi(), "split"));
+    const block = getFileBlock(mkInputs(f, [f], emptyAi(), { viewMode: "split" }));
     const contentSplitRows = block.rows.filter((r) => r.type === "content-split");
     expect(contentSplitRows).toHaveLength(2);
     // del "a" + add "A" pair into one row; the context line spans both sides.
-    const splitRows = block.splitRowsByHunk[0];
-    expect(splitRows).toHaveLength(2);
-    expect(splitRows[0].left?.text).toBe("a");
-    expect(splitRows[0].right?.text).toBe("A");
-    expect(splitRows[1].left?.text).toBe("b");
-    expect(splitRows[1].right?.text).toBe("b");
+    const hunkRows = block.splitRowsByHunk[0];
+    expect(hunkRows).toHaveLength(2);
+    expect(hunkRows[0].left?.text).toBe("a");
+    expect(hunkRows[0].right?.text).toBe("A");
+    expect(hunkRows[1].left?.text).toBe("b");
+    expect(hunkRows[1].right?.text).toBe("b");
   });
 
   it("places a LEFT thread using old_num when split context old and new numbers differ", () => {
@@ -239,7 +248,7 @@ describe("getFileBlock — split mode", () => {
       threads: [t],
     });
     const f = file({ path: "a.ts", hunks: [h] });
-    const block = getFileBlock(mkInputs(f, [f], emptyAi([t]), "split"));
+    const block = getFileBlock(mkInputs(f, [f], emptyAi([t]), { viewMode: "split" }));
     const splitIdx = block.rows.findIndex((r) => r.type === "content-split");
     expect(splitIdx).toBe(2);
     expect(block.rows[splitIdx + 1]?.type).toBe("inline-thread");
@@ -544,7 +553,7 @@ describe("getFileBlock — geometry & invariants", () => {
     const nested = file({ path: "src/foo/bar.ts", hunks: [], source_index: 1 });
     const flat = file({ path: "src/baz.ts", hunks: [], source_index: 0 });
     const treeOrdered = [nested, flat];
-    const blockNested = getFileBlock(mkInputs(nested, treeOrdered, emptyAi(), "unified", VIS_DEFAULT, "branch", 0));
+    const blockNested = getFileBlock(mkInputs(nested, treeOrdered, emptyAi(), { fileIndex: 0 }));
     const header = blockNested.rows[0];
     expect(header.type).toBe("file-header");
     if (header.type === "file-header") {
@@ -595,8 +604,8 @@ describe("getFileBlock — caching", () => {
       ],
     });
     const f = file({ path: "a.ts", hunks: [h1] });
-    const u = getFileBlock(mkInputs(f, [f], emptyAi(), "unified"));
-    const s = getFileBlock(mkInputs(f, [f], emptyAi(), "split"));
+    const u = getFileBlock(mkInputs(f, [f], emptyAi(), { viewMode: "unified" }));
+    const s = getFileBlock(mkInputs(f, [f], emptyAi(), { viewMode: "split" }));
     expect(u).not.toBe(s);
     expect(u.modelKey).not.toBe(s.modelKey);
   });
@@ -628,9 +637,9 @@ describe("getFileBlock — caching", () => {
       lines: [line({ kind: "context", old_num: 1, new_num: 1 })],
     });
     const f = file({ path: "a.ts", hunks: [h1] });
-    const a = getFileBlock(mkInputs(f, [f], emptyAi(), "unified", VIS_DEFAULT));
+    const a = getFileBlock(mkInputs(f, [f], emptyAi(), { viewMode: "unified", vis: VIS_DEFAULT }));
     const visHide: CommentVisibility = { ...VIS_DEFAULT, hideAll: true };
-    const b = getFileBlock(mkInputs(f, [f], emptyAi(), "unified", visHide));
+    const b = getFileBlock(mkInputs(f, [f], emptyAi(), { viewMode: "unified", vis: visHide }));
     expect(a).not.toBe(b);
     expect(a.modelKey).not.toBe(b.modelKey);
   });
@@ -651,24 +660,16 @@ describe("getFileBlock — caching", () => {
       ],
     });
     const before = getFileBlock(
-      mkInputs(untouched, [untouched, target], emptyAi(), "unified", VIS_DEFAULT, "branch", 0),
+      mkInputs(untouched, [untouched, target], emptyAi(), { fileIndex: 0 }),
     );
 
     const t = thread("c-new", "edit.ts", 2);
     target.hunks[0].threads = [t];
     const afterUntouched = getFileBlock(
-      mkInputs(
-        untouched,
-        [untouched, target],
-        emptyAi([t]),
-        "unified",
-        VIS_DEFAULT,
-        "branch",
-        0,
-      ),
+      mkInputs(untouched, [untouched, target], emptyAi([t]), { fileIndex: 0 }),
     );
     const afterTarget = getFileBlock(
-      mkInputs(target, [untouched, target], emptyAi([t]), "unified", VIS_DEFAULT, "branch", 1),
+      mkInputs(target, [untouched, target], emptyAi([t]), { fileIndex: 1 }),
     );
 
     expect(afterUntouched).toBe(before);
@@ -762,9 +763,9 @@ describe("getCrossFileModel — concatenation & layout", () => {
     const f2 = makeSimpleFile("c.ts", 3);
     const ai = emptyAi();
     const m = mkCross([f0, f1, f2], ai, { snapshotKey: "s1" });
-    const b0 = getFileBlock(mkInputs(f0, [f0, f1, f2], ai, "unified", VIS_DEFAULT, "branch", 0));
-    const b1 = getFileBlock(mkInputs(f1, [f0, f1, f2], ai, "unified", VIS_DEFAULT, "branch", 1));
-    const b2 = getFileBlock(mkInputs(f2, [f0, f1, f2], ai, "unified", VIS_DEFAULT, "branch", 2));
+    const b0 = getFileBlock(mkInputs(f0, [f0, f1, f2], ai, { fileIndex: 0 }));
+    const b1 = getFileBlock(mkInputs(f1, [f0, f1, f2], ai, { fileIndex: 1 }));
+    const b2 = getFileBlock(mkInputs(f2, [f0, f1, f2], ai, { fileIndex: 2 }));
     expect(m.rows.length).toBe(b0.rows.length + b1.rows.length + b2.rows.length);
     expect(m.rows[0]).toBe(b0.rows[0]);
     expect(m.rows[b0.rows.length]).toBe(b1.rows[0]);
@@ -797,8 +798,8 @@ describe("getCrossFileModel — concatenation & layout", () => {
     const f1 = makeSimpleFile("b.ts", 3);
     const ai = emptyAi();
     const m = mkCross([f0, f1], ai, { snapshotKey: "s4" });
-    const b0 = getFileBlock(mkInputs(f0, [f0, f1], ai, "unified", VIS_DEFAULT, "branch", 0));
-    const b1 = getFileBlock(mkInputs(f1, [f0, f1], ai, "unified", VIS_DEFAULT, "branch", 1));
+    const b0 = getFileBlock(mkInputs(f0, [f0, f1], ai, { fileIndex: 0 }));
+    const b1 = getFileBlock(mkInputs(f1, [f0, f1], ai, { fileIndex: 1 }));
     expect(m.totalHeight).toBe(b0.totalHeight + b1.totalHeight);
     expect(m.cumulativeOffsets.length).toBe(m.rows.length + 1);
     expect(m.cumulativeOffsets[m.rows.length]).toBe(m.totalHeight);
@@ -1045,7 +1046,7 @@ describe("getFileBlock — word wrap heights", () => {
         }),
       ],
     });
-    const block = getFileBlock({ ...mkInputs(f, [f], emptyAi(), "split"), wrapCols: 80 });
+    const block = getFileBlock({ ...mkInputs(f, [f], emptyAi(), { viewMode: "split" }), wrapCols: 80 });
     const content = block.rows.filter((r) => r.type === "content-split");
     expect(content).toHaveLength(1);
     expect(content[0].height).toBe(2 * LINE_HEIGHT);

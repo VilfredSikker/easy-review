@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
@@ -12,7 +13,8 @@
 
   const { open, messageId, initialBody, onSubmit, onClose }: Props = $props();
 
-  let body = $state(initialBody);
+  // Seeded once; the effect below re-seeds when a different source opens.
+  let body = $state(untrack(() => initialBody));
   let submitting = $state(false);
   let textareaEl: HTMLTextAreaElement | null = $state(null);
   let lastMessageId = $state("");
@@ -59,7 +61,7 @@
 >
   <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
     <span class="text-sm font-medium text-fg-1">Edit comment</span>
-    <button
+    <button type="button"
       aria-label="Close"
       class="ml-auto text-muted hover:text-fg-2 px-2"
       onclick={onClose}

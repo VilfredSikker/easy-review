@@ -123,7 +123,7 @@
       <div class="text-xs text-muted px-2 py-1.5">No reviews yet</div>
 
       <div class="text-[11px] uppercase tracking-wider text-muted px-2 mt-6 mb-2">Get started</div>
-      <button onclick={openWorktree} class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2 flex items-center gap-2">
+      <button type="button" onclick={openWorktree} class="w-full text-left px-2 py-1.5 rounded-md hover:bg-hover text-sm text-fg-2 flex items-center gap-2">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
         Add project
       </button>
@@ -171,7 +171,7 @@
         </div>
 
         <div class="grid grid-cols-2 gap-3 mb-6">
-          <button onclick={openWorktree} class="group text-left p-5 rounded-xl border border-border hover:border-accent hover:bg-card transition">
+          <button type="button" onclick={openWorktree} class="group text-left p-5 rounded-xl border border-border hover:border-accent hover:bg-card transition">
             <div class="flex items-center gap-3 mb-2">
               <div class="w-9 h-9 rounded-lg bg-hover border border-border flex items-center justify-center group-hover:border-accent">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-2"><path d="M3 7l9-5 9 5v10l-9 5-9-5V7z"/></svg>
@@ -248,7 +248,7 @@
                 placeholder="branch-name"
                 class="flex-1 bg-bg border border-hairline rounded-md px-2 py-1.5 text-sm text-fg outline-none placeholder:text-muted mono"
               />
-              <button
+              <button type="button"
                 onclick={openProjectBranch}
                 disabled={!branchName.trim()}
                 class="px-3 py-1.5 rounded-md bg-accent hover:bg-accent/90 disabled:opacity-40 disabled:cursor-not-allowed text-on-accent text-xs font-medium"

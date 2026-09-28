@@ -16,6 +16,10 @@
 //! The test sets the env var itself, so `--nocapture` alone is enough. It is
 //! the only test in this binary, which keeps the process-global gate and
 //! `ER_FAKE_ARENA_DIR` free of cross-test races.
+#![expect(
+    clippy::expect_used,
+    reason = "integration-test scaffolding: a failed setup step should abort the test"
+)]
 
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -24,8 +28,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use er_engine::arena::{
-    load_run, start_arena_run, ArenaPaths, ArenaRegistry, ArenaScope, ArenaStartParams,
-    ReviewerRef, RunStatus,
+    load_run, start_arena_run, ArenaPaths, ArenaRegistry, ArenaRunInputs, ArenaScope,
+    ArenaStartParams, ReviewerRef, RunStatus,
 };
 use er_engine::config::{AiModelConfig, AiProviderConfig, ErConfig};
 
@@ -139,11 +143,13 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
     let run_id = start_arena_run(
         Arc::clone(&registry),
         config,
-        repo_root.to_string_lossy().to_string(),
-        er_dir_str.clone(),
-        "feature/x".to_string(),
-        "main".to_string(),
-        SAMPLE_DIFF.to_string(),
+        ArenaRunInputs {
+            repo_root: repo_root.to_string_lossy().to_string(),
+            er_dir: er_dir_str.clone(),
+            branch_ref: "feature/x".to_string(),
+            base_branch: "main".to_string(),
+            raw_diff: SAMPLE_DIFF.to_string(),
+        },
         params,
     )
     .expect("arena starts");

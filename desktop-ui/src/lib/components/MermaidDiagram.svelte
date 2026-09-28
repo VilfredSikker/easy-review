@@ -122,6 +122,7 @@
   });
 </script>
 
+<!-- svelte-ignore a11y_no_static_element_interactions (pointer pan and zoom surface; the diagram is also readable without it) -->
 <div
   bind:this={containerEl}
   class="mermaid-diagram {interactive ? 'overflow-hidden' : 'overflow-auto'} {className}"

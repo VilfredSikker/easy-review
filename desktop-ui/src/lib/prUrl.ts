@@ -55,6 +55,15 @@ export function githubStatusForActiveTab(
   return snapshot.github;
 }
 
+function activeRemote(snapshot: AppSnapshot): string | null {
+  return (
+    activeTab(snapshot)?.remote ??
+    snapshot.worktrees.find((w) => w.is_current)?.remote ??
+    snapshot.projects.find((p) => p.is_active)?.remote ??
+    null
+  );
+}
+
 /** PR URL for the active tab — same resolution as the right-panel Branch card. */
 export function resolveActivePrUrl(snapshot: AppSnapshot | null): string | null {
   if (!snapshot) return null;
@@ -71,13 +80,7 @@ export function resolveActivePrUrl(snapshot: AppSnapshot | null): string | null 
 
   if (prNumber == null) return null;
 
-  const tab = activeTab(snapshot);
-  const worktreeRemote = snapshot.worktrees.find((w) => w.is_current)?.remote ?? null;
-  const remote =
-    tab?.remote ??
-    worktreeRemote ??
-    snapshot.projects.find((p) => p.is_active)?.remote ??
-    null;
+  const remote = activeRemote(snapshot);
   if (!remote) return null;
 
   const slug = parseGithubSlug(remote) ?? (remote.includes("/") && !remote.includes(":") ? remote : null);

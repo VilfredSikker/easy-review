@@ -38,7 +38,7 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
   if (!snap) return;
   const currentPath = snap.files[snap.selected_file]?.path;
   if (thread.file && thread.file !== currentPath) {
-    const f = snap.files.find((f) => f.path === thread.file);
+    const f = snap.files.find((file) => file.path === thread.file);
     if (f) {
       await app.cmd("select_file", { idx: f.source_index });
       await tick();
@@ -70,7 +70,7 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
   if (!snap) return;
   const currentPath = snap.files[snap.selected_file]?.path;
   if (finding.file && finding.file !== currentPath) {
-    const f = snap.files.find((f) => f.path === finding.file);
+    const f = snap.files.find((file) => file.path === finding.file);
     if (f) {
       await app.cmd("select_file", { idx: f.source_index });
       await tick();

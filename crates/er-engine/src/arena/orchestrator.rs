@@ -237,16 +237,29 @@ pub fn reconcile_stale_runs(er_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The checkout and diff a run reviews, shared by every run in a batch.
+#[derive(Debug, Clone)]
+pub struct ArenaRunInputs {
+    pub repo_root: String,
+    pub er_dir: String,
+    pub branch_ref: String,
+    pub base_branch: String,
+    pub raw_diff: String,
+}
+
 pub fn start_arena_run(
     registry: Arc<ArenaRegistry>,
     config: ErConfig,
-    repo_root: String,
-    er_dir: String,
-    branch_ref: String,
-    base_branch: String,
-    raw_diff: String,
+    inputs: ArenaRunInputs,
     params: ArenaStartParams,
 ) -> Result<String> {
+    let ArenaRunInputs {
+        repo_root,
+        er_dir,
+        branch_ref,
+        base_branch,
+        raw_diff,
+    } = inputs;
     crate::dev_log::arena_line(format!(
         "start_arena_run repo={repo_root} branch={branch_ref} base={base_branch} diff_bytes={}",
         raw_diff.len()
@@ -354,18 +367,16 @@ pub fn start_arena_run(
     let patch_path = paths.diff_patch().display().to_string();
 
     let join = thread::spawn(move || {
-        let result = run_supervisor(
-            &registry_thread,
-            &config,
-            &repo_root,
-            &paths_clone,
-            &patch_path,
-            run_id_thread.clone(),
-            reviewers,
-            cancel.clone(),
-            children.clone(),
-            status.clone(),
-        );
+        let ctx = SupervisorCtx {
+            registry: &registry_thread,
+            config: &config,
+            repo_root: &repo_root,
+            paths: &paths_clone,
+            cancel: &cancel,
+            children: &children,
+            status: &status,
+        };
+        let result = run_supervisor(&ctx, &patch_path, run_id_thread.clone(), reviewers);
         if let Err(e) = result {
             if is_cancelled_error(&e) {
                 if let Ok(mut st) = status.lock() {
@@ -430,6 +441,10 @@ pub struct SeededStartParams {
 ///
 /// Returns `None` when there are no expert findings to validate, so a caller
 /// offers the action only when it would do something.
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
 pub fn start_seeded_run(
     registry: Arc<ArenaRegistry>,
     config: ErConfig,
@@ -483,7 +498,7 @@ pub fn start_seeded_run(
     let diff_hash = params.diff_hash.clone();
 
     let join = thread::spawn(move || {
-        let ctx = ArbiterCtx {
+        let ctx = SupervisorCtx {
             registry: &registry_thread,
             config: &config,
             repo_root: &repo_root,
@@ -507,7 +522,7 @@ pub fn start_seeded_run(
             Ok(ArbiterOutcome::Judged) => {
                 run.status = RunStatus::Complete;
                 run.completed_at = Some(crate::app::chrono_now());
-                *status.lock().unwrap() = RunStatus::Complete;
+                *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
                 let _ = save_run(&paths_clone, &run);
                 // The review's copy of the verdicts. The run record above is the
                 // arena's; this is the overlay the review loads, so `review.json`
@@ -526,7 +541,7 @@ pub fn start_seeded_run(
             }
             Err(e) => {
                 crate::dev_log::arena_line(format!("seeded {run_id_thread} failed: {e:#}"));
-                *status.lock().unwrap() = RunStatus::Failed;
+                *status.lock().expect("arena lock poisoned") = RunStatus::Failed;
                 run.status = RunStatus::Failed;
                 run.completed_at = Some(crate::app::chrono_now());
                 let _ = save_run(&paths_clone, &run);
@@ -597,11 +612,7 @@ fn arbiter_review_from_run(
 pub fn start_arena_batch(
     registry: Arc<ArenaRegistry>,
     config: ErConfig,
-    repo_root: String,
-    er_dir: String,
-    branch_ref: String,
-    base_branch: String,
-    raw_diff: String,
+    inputs: ArenaRunInputs,
     batch: ArenaBatchStartParams,
 ) -> Result<Vec<String>> {
     let mut run_ids = Vec::new();
@@ -629,7 +640,7 @@ pub fn start_arena_batch(
             .clone()
             .or_else(|| default_arbiter_from_hub(&config.ai_hub));
         total_est += estimate_cost_usd(
-            raw_diff.len(),
+            inputs.raw_diff.len(),
             &reviewers,
             rounds,
             arbiter.as_ref(),
@@ -658,11 +669,7 @@ pub fn start_arena_batch(
         let id = start_arena_run(
             Arc::clone(&registry),
             config.clone(),
-            repo_root.clone(),
-            er_dir.clone(),
-            branch_ref.clone(),
-            base_branch.clone(),
-            raw_diff.clone(),
+            inputs.clone(),
             params,
         )?;
         run_ids.push(id);
@@ -715,17 +722,25 @@ struct Round1ParallelOutcome {
     cancelled: bool,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
 fn run_round1_parallel(
-    registry: &ArenaRegistry,
-    config: &ErConfig,
-    repo_root: &str,
-    paths: &ArenaPaths,
+    ctx: &SupervisorCtx<'_>,
     patch_path: &str,
     reviewers: &[Reviewer],
     effort: Option<&str>,
-    cancel: &Arc<AtomicBool>,
-    children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Round1ParallelOutcome> {
+    let SupervisorCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel,
+        children,
+        ..
+    } = *ctx;
     for reviewer in reviewers {
         emit(
             registry,
@@ -814,7 +829,7 @@ fn run_round1_parallel(
                 Err(e) => {
                     failed
                         .lock()
-                        .unwrap()
+                        .expect("arena lock poisoned")
                         .push((reviewer.id.clone(), e.to_string()));
                     // `continue`, not `return`: this worker still has the rest
                     // of the queue to get through. Returning here would retire
@@ -844,12 +859,14 @@ fn run_round1_parallel(
                             },
                         );
                         notify_progress();
-                        ok.lock().unwrap().push((reviewer.id.clone(), out));
+                        ok.lock()
+                            .expect("arena lock poisoned")
+                            .push((reviewer.id.clone(), out));
                     }
                     Err(e) => {
                         failed
                             .lock()
-                            .unwrap()
+                            .expect("arena lock poisoned")
                             .push((reviewer.id.clone(), e.to_string()));
                     }
                 },
@@ -859,7 +876,7 @@ fn run_round1_parallel(
                     } else {
                         failed
                             .lock()
-                            .unwrap()
+                            .expect("arena lock poisoned")
                             .push((reviewer.id.clone(), e.to_string()));
                     }
                 }
@@ -877,11 +894,11 @@ fn run_round1_parallel(
         ok: Arc::try_unwrap(ok)
             .map_err(|_| anyhow::anyhow!("round1 ok lock"))?
             .into_inner()
-            .unwrap(),
+            .expect("arena lock poisoned"),
         failed: Arc::try_unwrap(failed)
             .map_err(|_| anyhow::anyhow!("round1 failed lock"))?
             .into_inner()
-            .unwrap(),
+            .expect("arena lock poisoned"),
         cancelled: cancelled.load(Ordering::SeqCst),
     })
 }
@@ -892,19 +909,27 @@ struct Round2ParallelOutcome {
     cancelled: bool,
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
 fn run_round2_parallel(
-    registry: &ArenaRegistry,
-    config: &ErConfig,
-    repo_root: &str,
-    paths: &ArenaPaths,
+    ctx: &SupervisorCtx<'_>,
     patch_path: &str,
     round: u8,
     findings_json: &str,
     reviewers: &[Reviewer],
     effort: Option<&str>,
-    cancel: &Arc<AtomicBool>,
-    children: &Arc<Mutex<Vec<Child>>>,
 ) -> Result<Round2ParallelOutcome> {
+    let SupervisorCtx {
+        registry,
+        config,
+        repo_root,
+        paths,
+        cancel,
+        children,
+        ..
+    } = *ctx;
     for reviewer in reviewers {
         emit(
             registry,
@@ -984,7 +1009,7 @@ fn run_round2_parallel(
                 Err(e) => {
                     failed
                         .lock()
-                        .unwrap()
+                        .expect("arena lock poisoned")
                         .push((reviewer.id.clone(), e.to_string()));
                     // `continue`, not `return` — see round 1: returning here
                     // would retire the worker and drop the rest of the queue.
@@ -1007,12 +1032,14 @@ fn run_round2_parallel(
                             },
                         );
                         notify_progress();
-                        ok.lock().unwrap().push((reviewer.id.clone(), out));
+                        ok.lock()
+                            .expect("arena lock poisoned")
+                            .push((reviewer.id.clone(), out));
                     }
                     Err(e) => {
                         failed
                             .lock()
-                            .unwrap()
+                            .expect("arena lock poisoned")
                             .push((reviewer.id.clone(), e.to_string()));
                     }
                 },
@@ -1022,7 +1049,7 @@ fn run_round2_parallel(
                     } else {
                         failed
                             .lock()
-                            .unwrap()
+                            .expect("arena lock poisoned")
                             .push((reviewer.id.clone(), e.to_string()));
                     }
                 }
@@ -1040,27 +1067,32 @@ fn run_round2_parallel(
         ok: Arc::try_unwrap(ok)
             .map_err(|_| anyhow::anyhow!("round2 ok lock"))?
             .into_inner()
-            .unwrap(),
+            .expect("arena lock poisoned"),
         failed: Arc::try_unwrap(failed)
             .map_err(|_| anyhow::anyhow!("round2 failed lock"))?
             .into_inner()
-            .unwrap(),
+            .expect("arena lock poisoned"),
         cancelled: cancelled.load(Ordering::SeqCst),
     })
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
 fn run_supervisor(
-    registry: &ArenaRegistry,
-    config: &ErConfig,
-    repo_root: &str,
-    paths: &ArenaPaths,
+    ctx: &SupervisorCtx<'_>,
     patch_path: &str,
     run_id: String,
     reviewers: Vec<Reviewer>,
-    cancel: Arc<AtomicBool>,
-    children: Arc<Mutex<Vec<std::process::Child>>>,
-    status: Arc<Mutex<RunStatus>>,
 ) -> Result<()> {
+    let SupervisorCtx {
+        registry,
+        paths,
+        cancel,
+        status,
+        ..
+    } = *ctx;
     let mut run = load_run(paths)?;
     let total_rounds = run.config.rounds;
     let run_effort = run.config.effort.clone();
@@ -1070,7 +1102,7 @@ fn run_supervisor(
             run.status = RunStatus::Cancelled;
             run.completed_at = Some(crate::app::chrono_now());
             save_run(paths, &run)?;
-            *status.lock().unwrap() = RunStatus::Cancelled;
+            *status.lock().expect("arena lock poisoned") = RunStatus::Cancelled;
             emit(
                 registry,
                 paths,
@@ -1092,7 +1124,7 @@ fn run_supervisor(
 
     // Round 1
     cancelled!();
-    *status.lock().unwrap() = RunStatus::Running { round: 1 };
+    *status.lock().expect("arena lock poisoned") = RunStatus::Running { round: 1 };
     run.status = RunStatus::Running { round: 1 };
     save_run(paths, &run)?;
     emit(
@@ -1106,17 +1138,7 @@ fn run_supervisor(
 
     let round1_started = std::time::Instant::now();
     cancelled!();
-    let round1 = run_round1_parallel(
-        registry,
-        config,
-        repo_root,
-        paths,
-        patch_path,
-        &reviewers,
-        run_effort.as_deref(),
-        &cancel,
-        &children,
-    )?;
+    let round1 = run_round1_parallel(ctx, patch_path, &reviewers, run_effort.as_deref())?;
     crate::agent_timing::emit(
         "arena_round",
         &[
@@ -1170,7 +1192,7 @@ fn run_supervisor(
         finalize_single_round_verdicts(&mut run.findings);
         run.status = RunStatus::Complete;
         run.completed_at = Some(crate::app::chrono_now());
-        *status.lock().unwrap() = RunStatus::Complete;
+        *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
         save_run(paths, &run)?;
         emit(registry, paths, &ProgressEvent::RunComplete { run_id });
         return Ok(());
@@ -1178,7 +1200,7 @@ fn run_supervisor(
 
     for round in 2..=total_rounds {
         cancelled!();
-        *status.lock().unwrap() = RunStatus::Running { round };
+        *status.lock().expect("arena lock poisoned") = RunStatus::Running { round };
         run.status = RunStatus::Running { round };
         save_run(paths, &run)?;
         emit(
@@ -1198,17 +1220,12 @@ fn run_supervisor(
         let round_started = std::time::Instant::now();
         cancelled!();
         let cross_out = run_round2_parallel(
-            registry,
-            config,
-            repo_root,
-            paths,
+            ctx,
             patch_path,
             round,
             &findings_json,
             &active,
             run_effort.as_deref(),
-            &cancel,
-            &children,
         )?;
         crate::agent_timing::emit(
             "arena_round",
@@ -1234,17 +1251,8 @@ fn run_supervisor(
     }
 
     // Arbiter phase (after all reviewer cross-check rounds)
-    let ctx = ArbiterCtx {
-        registry,
-        config,
-        repo_root,
-        paths,
-        cancel: &cancel,
-        children: &children,
-        status: &status,
-    };
     if matches!(
-        run_arbiter(&ctx, &mut run, run_effort.as_deref())?,
+        run_arbiter(ctx, &mut run, run_effort.as_deref())?,
         ArbiterOutcome::Cancelled
     ) {
         return Ok(());
@@ -1252,20 +1260,21 @@ fn run_supervisor(
 
     run.status = RunStatus::Complete;
     run.completed_at = Some(crate::app::chrono_now());
-    *status.lock().unwrap() = RunStatus::Complete;
+    *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
     save_run(paths, &run)?;
     emit(registry, paths, &ProgressEvent::RunComplete { run_id });
     Ok(())
 }
 
-/// The supervisor's ambient scope, bundled so the arbiter call can be shared by
-/// the normal path and the seeded one without a ten-argument signature.
-struct ArbiterCtx<'a> {
+/// The supervisor's ambient scope, bundled so the supervisor, its reviewer
+/// rounds, and the arbiter call (shared by the normal path and the seeded one)
+/// take it whole instead of as a ten-argument signature.
+struct SupervisorCtx<'a> {
     registry: &'a ArenaRegistry,
     config: &'a ErConfig,
     repo_root: &'a str,
     paths: &'a ArenaPaths,
-    cancel: &'a AtomicBool,
+    cancel: &'a Arc<AtomicBool>,
     children: &'a Arc<Mutex<Vec<Child>>>,
     status: &'a Mutex<RunStatus>,
 }
@@ -1284,12 +1293,16 @@ enum ArbiterOutcome {
 /// Shared by the normal path (after every cross-check round) and the seeded path
 /// (straight from the expert dedupe). The caller owns what follows — marking the
 /// run complete, or returning early on cancellation.
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
 fn run_arbiter(
-    ctx: &ArbiterCtx<'_>,
+    ctx: &SupervisorCtx<'_>,
     run: &mut ArenaRun,
     run_effort: Option<&str>,
 ) -> Result<ArbiterOutcome> {
-    let ArbiterCtx {
+    let SupervisorCtx {
         registry,
         config,
         repo_root,
@@ -1312,7 +1325,7 @@ fn run_arbiter(
         paths,
         &ProgressEvent::ArbiterStarted { arbiter_label },
     );
-    *status.lock().unwrap() = RunStatus::Running { round };
+    *status.lock().expect("arena lock poisoned") = RunStatus::Running { round };
     run.status = RunStatus::Running { round };
     save_run(paths, run)?;
 
@@ -1409,11 +1422,15 @@ fn run_arbiter(
 
 /// Mark the run cancelled and announce it, preserving what `bail_cancelled!`
 /// did at the call site before this was extracted.
-fn cancel_run(ctx: &ArbiterCtx<'_>, run: &mut ArenaRun) -> Result<ArbiterOutcome> {
+#[expect(
+    clippy::expect_used,
+    reason = "a poisoned arena lock means a reviewer or supervisor thread already panicked; re-panicking keeps that loud"
+)]
+fn cancel_run(ctx: &SupervisorCtx<'_>, run: &mut ArenaRun) -> Result<ArbiterOutcome> {
     run.status = RunStatus::Cancelled;
     run.completed_at = Some(crate::app::chrono_now());
     save_run(ctx.paths, run)?;
-    *ctx.status.lock().unwrap() = RunStatus::Cancelled;
+    *ctx.status.lock().expect("arena lock poisoned") = RunStatus::Cancelled;
     emit(
         ctx.registry,
         ctx.paths,

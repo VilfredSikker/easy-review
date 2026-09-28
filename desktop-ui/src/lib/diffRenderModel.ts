@@ -12,6 +12,7 @@ import {
   threadsForLine,
   type AnnotationIndex,
   type CommentVisibility,
+  type HunkQuery,
 } from "$lib/diffAnnotations";
 
 /**
@@ -391,27 +392,12 @@ function visBits(v: CommentVisibility): number {
 }
 
 /** Threads whose review side matches this diff line (LEFT↔old_num, RIGHT↔new_num). */
-function threadsForDiffLine(
-  annotationIndex: AnnotationIndex,
-  filePath: string,
-  hunkIdx: number,
-  line: LineSnapshot,
-  hunkLines: LineSnapshot[],
-  commentVisibility: CommentVisibility,
-): ThreadSnapshot[] {
+function threadsForDiffLine(q: HunkQuery, line: LineSnapshot): ThreadSnapshot[] {
   const out: ThreadSnapshot[] = [];
   const seen = new Set<string>();
   const take = (num: number | null, side: "old" | "new") => {
     if (num === null) return;
-    for (const t of threadsForLine(
-      annotationIndex,
-      filePath,
-      hunkIdx,
-      num,
-      hunkLines,
-      commentVisibility,
-      side,
-    )) {
+    for (const t of threadsForLine(q, num, side)) {
       if (seen.has(t.id)) continue;
       seen.add(t.id);
       out.push(t);
@@ -510,6 +496,203 @@ function hashStr(s: string): number {
   return h;
 }
 
+/** The single row that stands in for a file with no renderable hunks, or null
+ *  when the file's hunks render normally. */
+function stubRow(file: FileSnapshot, fileIndex: number): CrossFileFlatRow | null {
+  if (file.is_lazy_stub === true) {
+    return {
+      type: "lazy-stub",
+      filePath: file.path,
+      fileIndex,
+      sourceIndex: file.source_index,
+      height: estimateLazyStubHeight(file),
+      identity: `lazy:${file.path}`,
+    };
+  }
+  if (file.compacted === true) {
+    return {
+      type: "compacted-stub",
+      filePath: file.path,
+      fileIndex,
+      sourceIndex: file.source_index,
+      height: COMPACTED_STUB_HEIGHT,
+      identity: `compact:${file.path}`,
+    };
+  }
+  if (file.hunks.length === 0) {
+    return {
+      type: "no-changes",
+      filePath: file.path,
+      fileIndex,
+      sourceIndex: file.source_index,
+      height: NO_CHANGES_HEIGHT,
+      identity: `nochanges:${file.path}`,
+      renamed: file.status === "renamed",
+    };
+  }
+  return null;
+}
+
+/** Per-hunk state the row builders share, created once per hunk. */
+interface HunkBuild {
+  rows: CrossFileFlatRow[];
+  filePath: string;
+  hunkIdx: number;
+  side: "unified" | "split";
+  bodyCols: number;
+  wrapCols: number | null;
+  /** Shared across the file's hunks so a thread renders once per file. */
+  placedThreadIds: Set<string>;
+  renderedLineNums: Set<number>;
+  q: HunkQuery;
+}
+
+function pushFindingRow(
+  b: HunkBuild,
+  f: FlatFinding,
+  type: "inline-finding" | "fallback-finding",
+  idPrefix: "if" | "ff",
+): void {
+  b.rows.push({
+    type,
+    filePath: b.filePath,
+    hunkIdx: b.hunkIdx,
+    findingId: f.id,
+    side: b.side,
+    height: estimateFindingHeight(f, b.bodyCols),
+    identity: `${idPrefix}:${f.id}`,
+  });
+}
+
+/** Thread rows, skipping any thread an earlier row of this file already placed. */
+function pushThreadRows(
+  b: HunkBuild,
+  threads: ThreadSnapshot[],
+  type: "inline-thread" | "fallback-thread",
+  idPrefix: "it" | "ft",
+): void {
+  for (const t of threads) {
+    if (b.placedThreadIds.has(t.id)) continue;
+    b.placedThreadIds.add(t.id);
+    b.rows.push({
+      type,
+      filePath: b.filePath,
+      hunkIdx: b.hunkIdx,
+      threadId: t.id,
+      side: b.side,
+      height: estimateThreadHeight(t, b.bodyCols),
+      identity: `${idPrefix}:${t.id}`,
+    });
+  }
+}
+
+function pushUnifiedLine(b: HunkBuild, line: LineSnapshot, lineIdx: number): void {
+  if (line.kind === "fold") {
+    b.rows.push({
+      type: "content-fold",
+      filePath: b.filePath,
+      hunkIdx: b.hunkIdx,
+      lineIdx,
+      label: line.text || "··· folded lines ···",
+      height: LINE_HEIGHT,
+      identity: `cf:${b.filePath}:${b.hunkIdx}:${lineIdx}`,
+    });
+    return;
+  }
+  b.rows.push({
+    type: "content-unified",
+    filePath: b.filePath,
+    hunkIdx: b.hunkIdx,
+    lineIdx,
+    height: contentRowHeight(line.text, b.wrapCols),
+    identity: `cu:${b.filePath}:${b.hunkIdx}:${lineIdx}`,
+  });
+  if (line.old_num !== null) b.renderedLineNums.add(line.old_num);
+  if (line.new_num !== null) b.renderedLineNums.add(line.new_num);
+  const ln = lineNumOf(line);
+  if (ln === null) return;
+
+  const hunkLines = b.q.hunkLines;
+  const skipDel = line.kind === "del" && hunkLines.some((l) => l.new_num === ln);
+  for (const f of findingsForLine(b.q, ln, skipDel)) {
+    pushFindingRow(b, f, "inline-finding", "if");
+  }
+  const threads = threadsForDiffLine(b.q, line).filter((t) => {
+    if (threadReviewSide(t) === "old") return true;
+    return !(line.kind === "del" && hunkLines.some((l) => l.new_num === t.line));
+  });
+  pushThreadRows(b, threads, "inline-thread", "it");
+}
+
+/** Threads on one split row, deduped across sides; right side first (matches
+ *  findingsForSplitRow). */
+function splitRowThreads(
+  q: HunkQuery,
+  rightNew: number | null,
+  leftOld: number | null,
+): ThreadSnapshot[] {
+  const seenThreads = new Set<string>();
+  const collected: ThreadSnapshot[] = [];
+  for (const [ln, rowSide] of [
+    [rightNew, "new"],
+    [leftOld, "old"],
+  ] as const) {
+    if (ln === null) continue;
+    for (const t of threadsForLine(q, ln, rowSide)) {
+      if (seenThreads.has(t.id)) continue;
+      seenThreads.add(t.id);
+      collected.push(t);
+    }
+  }
+  return collected;
+}
+
+function sideHeight(line: LineSnapshot | null | undefined, wrapCols: number | null): number {
+  return line ? contentRowHeight(line.text, wrapCols) : LINE_HEIGHT;
+}
+
+function pushSplitRow(b: HunkBuild, r: SplitRow, splitRowIdx: number): void {
+  b.rows.push({
+    type: "content-split",
+    filePath: b.filePath,
+    hunkIdx: b.hunkIdx,
+    splitRowIdx,
+    // Sides wrap independently; the row is as tall as the taller side.
+    height: Math.max(sideHeight(r.left, b.wrapCols), sideHeight(r.right, b.wrapCols)),
+    identity: `cs:${b.filePath}:${b.hunkIdx}:${splitRowIdx}`,
+  });
+  const leftOld = r.left?.old_num ?? null;
+  const rightNew = r.right?.new_num ?? null;
+  const leftLn = r.left ? lineNumOf(r.left) : null;
+  const rightLn = r.right ? lineNumOf(r.right) : null;
+  if (leftOld !== null) b.renderedLineNums.add(leftOld);
+  if (rightNew !== null) b.renderedLineNums.add(rightNew);
+  if (leftLn !== null) b.renderedLineNums.add(leftLn);
+  if (rightLn !== null) b.renderedLineNums.add(rightLn);
+
+  for (const f of findingsForSplitRow(b.q, leftLn, rightLn)) {
+    pushFindingRow(b, f, "inline-finding", "if");
+  }
+  pushThreadRows(b, splitRowThreads(b.q, rightNew, leftOld), "inline-thread", "it");
+}
+
+/** Hunk-level findings (no line anchor), then line-anchored findings and
+ *  threads whose line did not render inline. */
+function pushHunkFallbacks(b: HunkBuild, hunk: HunkSnapshot): void {
+  const seenFindingIds = new Set<string>();
+  for (const list of [
+    hunkLevelFindings(b.q.idx, b.filePath, b.hunkIdx, hunk, b.q.mode),
+    fallbackFindings(b.q, hunk),
+  ]) {
+    for (const f of list) {
+      if (seenFindingIds.has(f.id)) continue;
+      seenFindingIds.add(f.id);
+      pushFindingRow(b, f, "fallback-finding", "ff");
+    }
+  }
+  pushThreadRows(b, fallbackThreadsForHunk(b.q, b.renderedLineNums), "fallback-thread", "ft");
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
   const wrapCols = input.wrapCols ?? null;
@@ -541,36 +724,12 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     deletions: file.deletions,
   });
 
-  if (file.is_lazy_stub === true) {
-    rows.push({
-      type: "lazy-stub",
-      filePath: file.path,
-      fileIndex,
-      sourceIndex: file.source_index,
-      height: estimateLazyStubHeight(file),
-      identity: `lazy:${file.path}`,
-    });
-  } else if (file.compacted === true) {
-    rows.push({
-      type: "compacted-stub",
-      filePath: file.path,
-      fileIndex,
-      sourceIndex: file.source_index,
-      height: COMPACTED_STUB_HEIGHT,
-      identity: `compact:${file.path}`,
-    });
-  } else if (file.hunks.length === 0) {
-    rows.push({
-      type: "no-changes",
-      filePath: file.path,
-      fileIndex,
-      sourceIndex: file.source_index,
-      height: NO_CHANGES_HEIGHT,
-      identity: `nochanges:${file.path}`,
-      renamed: file.status === "renamed",
-    });
+  const stub = stubRow(file, fileIndex);
+  if (stub) {
+    rows.push(stub);
   } else {
     const placedThreadIds = new Set<string>();
+    const side: "unified" | "split" = viewMode === "split" ? "split" : "unified";
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
       const hunk = file.hunks[hunkIdx];
       rows.push({
@@ -582,224 +741,35 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
         identity: `hh:${file.path}:${hunkIdx}`,
       });
 
-      const renderedLineNums = new Set<number>();
-      const side: "unified" | "split" = viewMode === "split" ? "split" : "unified";
-
+      const b: HunkBuild = {
+        rows,
+        filePath: file.path,
+        hunkIdx,
+        side,
+        bodyCols,
+        wrapCols,
+        placedThreadIds,
+        renderedLineNums: new Set<number>(),
+        q: {
+          idx: annotationIndex,
+          filePath: file.path,
+          hunkIndex: hunkIdx,
+          hunkLines: hunk.lines,
+          mode,
+          vis: commentVisibility,
+        },
+      };
       if (viewMode === "unified") {
         for (let lineIdx = 0; lineIdx < hunk.lines.length; lineIdx++) {
-          const line = hunk.lines[lineIdx];
-          if (line.kind === "fold") {
-            rows.push({
-              type: "content-fold",
-              filePath: file.path,
-              hunkIdx,
-              lineIdx,
-              label: line.text || "··· folded lines ···",
-              height: LINE_HEIGHT,
-              identity: `cf:${file.path}:${hunkIdx}:${lineIdx}`,
-            });
-            continue;
-          }
-          rows.push({
-            type: "content-unified",
-            filePath: file.path,
-            hunkIdx,
-            lineIdx,
-            height: contentRowHeight(line.text, wrapCols),
-            identity: `cu:${file.path}:${hunkIdx}:${lineIdx}`,
-          });
-          const ln = lineNumOf(line);
-          if (line.old_num !== null) renderedLineNums.add(line.old_num);
-          if (line.new_num !== null) renderedLineNums.add(line.new_num);
-          if (ln !== null) {
-            const skipDel =
-              line.kind === "del" && hunk.lines.some((l) => l.new_num === ln);
-            const findings = findingsForLine(
-              annotationIndex,
-              file.path,
-              hunkIdx,
-              ln,
-              hunk.lines,
-              skipDel,
-              mode,
-            );
-            for (const f of findings) {
-              rows.push({
-                type: "inline-finding",
-                filePath: file.path,
-                hunkIdx,
-                findingId: f.id,
-                side,
-                height: estimateFindingHeight(f, bodyCols),
-                identity: `if:${f.id}`,
-              });
-            }
-            const threads = threadsForDiffLine(
-              annotationIndex,
-              file.path,
-              hunkIdx,
-              line,
-              hunk.lines,
-              commentVisibility,
-            ).filter((t) => {
-              if (threadReviewSide(t) === "old") return true;
-              if (line.kind === "del" && hunk.lines.some((l) => l.new_num === t.line)) {
-                return false;
-              }
-              return true;
-            });
-            for (const t of threads) {
-              if (placedThreadIds.has(t.id)) continue;
-              placedThreadIds.add(t.id);
-              rows.push({
-                type: "inline-thread",
-                filePath: file.path,
-                hunkIdx,
-                threadId: t.id,
-                side,
-                height: estimateThreadHeight(t, bodyCols),
-                identity: `it:${t.id}`,
-              });
-            }
-          }
+          pushUnifiedLine(b, hunk.lines[lineIdx], lineIdx);
         }
       } else {
         const sRows = splitRowsByHunk[hunkIdx];
         for (let splitRowIdx = 0; splitRowIdx < sRows.length; splitRowIdx++) {
-          const r = sRows[splitRowIdx];
-          rows.push({
-            type: "content-split",
-            filePath: file.path,
-            hunkIdx,
-            splitRowIdx,
-            // Sides wrap independently; the row is as tall as the taller side.
-            height: Math.max(
-              r.left ? contentRowHeight(r.left.text, wrapCols) : LINE_HEIGHT,
-              r.right ? contentRowHeight(r.right.text, wrapCols) : LINE_HEIGHT,
-            ),
-            identity: `cs:${file.path}:${hunkIdx}:${splitRowIdx}`,
-          });
-          const leftOld = r.left?.old_num ?? null;
-          const rightNew = r.right?.new_num ?? null;
-          const leftLn = r.left ? lineNumOf(r.left) : null;
-          const rightLn = r.right ? lineNumOf(r.right) : null;
-          if (leftOld !== null) renderedLineNums.add(leftOld);
-          if (rightNew !== null) renderedLineNums.add(rightNew);
-          if (leftLn !== null) renderedLineNums.add(leftLn);
-          if (rightLn !== null) renderedLineNums.add(rightLn);
-
-          const findings = findingsForSplitRow(
-            annotationIndex,
-            file.path,
-            hunkIdx,
-            leftLn,
-            rightLn,
-            hunk.lines,
-            mode,
-          );
-          for (const f of findings) {
-            rows.push({
-              type: "inline-finding",
-              filePath: file.path,
-              hunkIdx,
-              findingId: f.id,
-              side,
-              height: estimateFindingHeight(f, bodyCols),
-              identity: `if:${f.id}`,
-            });
-          }
-          // Threads: dedup across left/right by id, prefer right (matches findingsForSplitRow pattern).
-          const seenThreads = new Set<string>();
-          const collected: ThreadSnapshot[] = [];
-          for (const [ln, rowSide] of [
-            [rightNew, "new"],
-            [leftOld, "old"],
-          ] as const) {
-            if (ln === null) continue;
-            const ts = threadsForLine(
-              annotationIndex,
-              file.path,
-              hunkIdx,
-              ln,
-              hunk.lines,
-              commentVisibility,
-              rowSide,
-            );
-            for (const t of ts) {
-              if (seenThreads.has(t.id)) continue;
-              seenThreads.add(t.id);
-              collected.push(t);
-            }
-          }
-          for (const t of collected) {
-            if (placedThreadIds.has(t.id)) continue;
-            placedThreadIds.add(t.id);
-            rows.push({
-              type: "inline-thread",
-              filePath: file.path,
-              hunkIdx,
-              threadId: t.id,
-              side,
-              height: estimateThreadHeight(t, bodyCols),
-              identity: `it:${t.id}`,
-            });
-          }
+          pushSplitRow(b, sRows[splitRowIdx], splitRowIdx);
         }
       }
-
-      // Hunk-level findings (no line anchor)
-      const hunkFindings = hunkLevelFindings(annotationIndex, file.path, hunkIdx, hunk, mode);
-      const seenFindingIds = new Set<string>();
-      for (const f of hunkFindings) {
-        if (seenFindingIds.has(f.id)) continue;
-        seenFindingIds.add(f.id);
-        rows.push({
-          type: "fallback-finding",
-          filePath: file.path,
-          hunkIdx,
-          findingId: f.id,
-          side,
-          height: estimateFindingHeight(f, bodyCols),
-          identity: `ff:${f.id}`,
-        });
-      }
-      // Fallback findings (line-anchored but not rendered inline)
-      const fbFindings = fallbackFindings(annotationIndex, file.path, hunkIdx, hunk, hunk.lines, mode);
-      for (const f of fbFindings) {
-        if (seenFindingIds.has(f.id)) continue;
-        seenFindingIds.add(f.id);
-        rows.push({
-          type: "fallback-finding",
-          filePath: file.path,
-          hunkIdx,
-          findingId: f.id,
-          side,
-          height: estimateFindingHeight(f, bodyCols),
-          identity: `ff:${f.id}`,
-        });
-      }
-      // Fallback threads (anchored to lines not rendered)
-      const fbThreads = fallbackThreadsForHunk(
-        annotationIndex,
-        file.path,
-        hunkIdx,
-        hunk,
-        renderedLineNums,
-        commentVisibility,
-      );
-      for (const t of fbThreads) {
-        if (placedThreadIds.has(t.id)) continue;
-        placedThreadIds.add(t.id);
-        rows.push({
-          type: "fallback-thread",
-          filePath: file.path,
-          hunkIdx,
-          threadId: t.id,
-          side,
-          height: estimateThreadHeight(t, bodyCols),
-          identity: `ft:${t.id}`,
-        });
-      }
+      pushHunkFallbacks(b, hunk);
     }
   }
 
@@ -938,7 +908,8 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   for (let fi = 0; fi < blocks.length; fi++) {
     const block = blocks[fi];
     fileStartRow.set(block.filePath, writeIdx);
-    hunkStartRow.set(block.filePath, []);
+    const hunkStarts: number[] = [];
+    hunkStartRow.set(block.filePath, hunkStarts);
     unifiedPairsByFile.set(block.filePath, block.unifiedPairsByHunk);
     splitRowsByFile.set(block.filePath, block.splitRowsByHunk);
     maxColsByFile.set(block.filePath, block.maxCols);
@@ -947,7 +918,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
       rowFile[writeIdx] = fi;
       cumulativeOffsets[writeIdx + 1] = cumulativeOffsets[writeIdx] + row.height;
       if (row.type === "hunk-header") {
-        hunkStartRow.get(block.filePath)!.push(writeIdx);
+        hunkStarts.push(writeIdx);
       } else if (row.type === "inline-thread" || row.type === "fallback-thread") {
         threadIdx.set(row.threadId, writeIdx);
       } else if (row.type === "inline-finding" || row.type === "fallback-finding") {
@@ -1048,15 +1019,19 @@ export function applyCollapsedFiles(
   const findingIdx = new Map<string, number>();
   const rowFile = new Uint32Array(rowCount);
 
+  // Every file's rows open with its file-header, so its hunk-headers land in
+  // the array that header created.
+  let hunkStarts: number[] = [];
   for (let i = 0; i < rowCount; i++) {
     const row = filteredRows[i];
     rowFile[i] = filteredRowFile[i];
     cumulativeOffsets[i + 1] = cumulativeOffsets[i] + row.height;
     if (row.type === "file-header") {
       fileStartRow.set(row.filePath, i);
-      hunkStartRow.set(row.filePath, []);
+      hunkStarts = [];
+      hunkStartRow.set(row.filePath, hunkStarts);
     } else if (row.type === "hunk-header") {
-      hunkStartRow.get(row.filePath)!.push(i);
+      hunkStarts.push(i);
     } else if (row.type === "inline-thread" || row.type === "fallback-thread") {
       threadIdx.set(row.threadId, i);
     } else if (row.type === "inline-finding" || row.type === "fallback-finding") {

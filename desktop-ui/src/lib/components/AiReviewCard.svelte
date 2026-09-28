@@ -114,9 +114,11 @@
       ai,
       aiReviewFilter.filter,
       scopedCounts,
-      new Set(agentScopedFindings.map((f) => f.file)).size,
-      isEmpty,
-      fileRisks.length,
+      {
+        fileCount: new Set(agentScopedFindings.map((f) => f.file)).size,
+        isEmpty,
+        fileRiskCount: fileRisks.length,
+      },
     ),
   );
   const summary = $derived(resolvedSummary.text);
@@ -378,21 +380,21 @@
   {/if}
 
   <div class="grid grid-cols-3 gap-2 mb-3">
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "high"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-high {filter === 'high' && open ? 'border-risk-high' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-high uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>High</div>
       <div class="text-lg font-semibold mono">{scopedCounts.high}</div>
     </button>
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "med"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-med {filter === 'med' && open ? 'border-risk-med' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-med uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>Med</div>
       <div class="text-lg font-semibold mono">{scopedCounts.med}</div>
     </button>
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "low"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-low {filter === 'low' && open ? 'border-risk-low' : 'border-border'}"
     >
@@ -404,10 +406,10 @@
   {#if open}
     <div class="mt-4 pt-3 border-t border-hairline mb-3">
       <div class="flex items-center gap-1.5 mb-2 text-[10px] mono">
-        <button onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
-        <button onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
-        <button onclick={() => filter = "med"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'med' ? 'bg-hairline text-risk-med' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>med</button>
-        <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
+        <button type="button" onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
+        <button type="button" onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
+        <button type="button" onclick={() => filter = "med"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'med' ? 'bg-hairline text-risk-med' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>med</button>
+        <button type="button" onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
       <!-- Confidence gate. The default follows the review — it tightens only
@@ -416,7 +418,7 @@
       <div class="flex items-center gap-1.5 mb-2 text-[10px] mono flex-wrap">
         <span class="text-fg-3" title="How much a finding's grade can be trusted">confidence</span>
         {#each GATE_OPTIONS as option (option.level)}
-          <button
+          <button type="button"
             title={option.hint}
             onclick={() =>
               findingsVisibility.setMinTrust(
@@ -484,7 +486,7 @@
         {@const dotClass = SEVERITY_DOT[finding.severity] ?? "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
         <div class="relative group">
-          <button
+          <button type="button"
             onclick={() => jumpTo(finding)}
             class="w-full text-left p-2 pr-6 rounded-md hover:bg-bg border border-transparent hover:border-border block"
           >
@@ -596,6 +598,7 @@
     display: -webkit-box;
     overflow: hidden;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
   }
 

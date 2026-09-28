@@ -133,7 +133,10 @@ impl TabState {
     /// depended on has moved — base branch, PR number, branch name, checkout
     /// root, or remote slug. Callers then run the normal synchronous fetch.
     /// Only meaningful for `scope == "branch"` refreshes; callers guard that.
-    #[allow(clippy::suspicious_operation_groupings)] // pre.* fields vs self.* fields intentionally differ in name (e.g. checkout_root vs local_branch_checkout_root)
+    #[expect(
+        clippy::suspicious_operation_groupings,
+        reason = "pre.* and self.* fields intentionally differ in name (e.g. checkout_root vs local_branch_checkout_root)"
+    )]
     pub fn take_preloaded_branch_raw(&mut self) -> Option<String> {
         let pre = self.preloaded_branch_raw.take()?;
         // `base_branch` may drift from its bare local name (e.g. "main") to
