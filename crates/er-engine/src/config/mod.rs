@@ -1729,9 +1729,9 @@ impl ErConfig {
 /// inner whitespace and strip the outer quotes.
 ///
 /// Examples:
-///   `--print -p {prompt}`         → ["--print", "-p", "{prompt}"]
-///   `--print -p "hello world"`    → ["--print", "-p", "hello world"]
-///   `--flag 'it'\''s quoted'`     → ["--flag", "it's quoted"]
+///   `--print -p {prompt}`         → `["--print", "-p", "{prompt}"]`
+///   `--print -p "hello world"`    → `["--print", "-p", "hello world"]`
+///   `--flag 'it'\''s quoted'`     → `["--flag", "it's quoted"]`
 pub fn split_shell_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
@@ -2051,7 +2051,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.agent.command.clone(),
             set: |c, v| {
                 if !v.is_empty() {
-                    c.agent.command = v
+                    c.agent.command = v;
                 }
             },
         },

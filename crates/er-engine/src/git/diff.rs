@@ -1633,7 +1633,7 @@ index aaa..bbb 100644
         // (empty hunks) instead of being eager-parsed, while compaction and
         // user-expand still apply per file.
         let mut raw = String::new();
-        for i in 0..(MAX_EAGER_LAZY_PARSE_FILES + 1) {
+        for i in 0..=MAX_EAGER_LAZY_PARSE_FILES {
             raw.push_str(&make_file_diff(&format!("src/small_{i}.rs"), 3));
         }
         raw.push_str(&make_file_diff("src/huge.rs", 2500));

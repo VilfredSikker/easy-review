@@ -4,6 +4,9 @@
 //! older initialize-based revisions via `rmcp` 3.x. Logging goes to stderr so it
 //! does not corrupt the protocol.
 
+// stdout is the JSON-RPC channel: one stray print breaks every client.
+#![deny(clippy::print_stdout)]
+
 mod projects;
 mod server;
 

@@ -1597,7 +1597,6 @@ impl AiState {
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
     /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
     /// Replies are included and sorted immediately after their parent.
-    #[allow(clippy::type_complexity)]
     pub fn all_hints_ordered(
         &self,
     ) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {

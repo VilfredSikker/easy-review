@@ -560,9 +560,12 @@ impl ArtifactBaseline {
                 |v| &v.diff_hash,
             )?,
             ArtifactContract::Tour { filename } => {
-                validate_json_hash::<ErTour>(output_dir, filename, expected_hash.as_deref(), |v| {
-                    &v.diff_hash
-                })?
+                validate_json_hash::<ErTour>(
+                    output_dir,
+                    filename,
+                    expected_hash.as_deref(),
+                    |v| &v.diff_hash,
+                )?;
             }
             ArtifactContract::Questions => {
                 validate_json_hash::<ErQuestions>(

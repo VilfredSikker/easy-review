@@ -1,6 +1,4 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-// See lib.rs for the rationale behind these two crate-wide allows.
-#![allow(clippy::option_if_let_else, clippy::significant_drop_tightening)]
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -766,7 +764,6 @@ fn main() {
         ));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    #[allow(clippy::type_complexity)]
     let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
         Arc::new(Mutex::new(
             gh_status_cache::load_persisted_gh_status_cache()
@@ -1431,8 +1428,8 @@ fn main() {
                         got_event = true;
                         while let Ok(WatchEvent::FilesChanged(_)) = rx.try_recv() {}
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout)
-                    | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+                    Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
+                    }
                 }
 
                 if got_event {
@@ -2078,7 +2075,9 @@ fn main() {
         .build(tauri::generate_context!())
         .expect("error building tauri application");
 
-    tauri_app.run(move |_handle, event| {
+    tauri_app.run(move |handle, event| {
+        #[cfg(not(target_os = "macos"))]
+        let _ = handle;
         match event {
             tauri::RunEvent::ExitRequested { .. } => {
                 if let Ok(guard) = persist_app.lock() {
@@ -2098,7 +2097,7 @@ fn main() {
                 log::info!(
                     "macOS reopen event received; has_visible_windows={has_visible_windows}"
                 );
-                reveal_main_window_from_handle(_handle, "macos_reopen");
+                reveal_main_window_from_handle(handle, "macos_reopen");
             }
             _ => {}
         }

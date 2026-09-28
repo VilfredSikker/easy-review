@@ -80,6 +80,7 @@ impl ProdDiffStats {
     }
 
     /// Compact summary without the per-file list (cheaper over MCP).
+    #[must_use]
     pub fn summary_only(&self) -> Self {
         Self {
             total: self.total.clone(),

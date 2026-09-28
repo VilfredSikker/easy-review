@@ -148,10 +148,7 @@ impl ArenaRegistry {
     }
 
     pub fn is_active(&self, run_id: &str) -> bool {
-        self.runs
-            .lock()
-            .ok()
-            .is_some_and(|m| m.contains_key(run_id))
+        self.runs.lock().is_ok_and(|m| m.contains_key(run_id))
     }
 
     /// Register a run as active with a given status, without spawning a

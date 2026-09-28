@@ -1030,6 +1030,7 @@ impl BrowserLayout {
         }
     }
 
+    #[must_use]
     pub const fn cycle(self) -> Self {
         match self {
             Self::Hidden => Self::Split,
@@ -2606,7 +2607,7 @@ impl TabState {
                 crate::github::gh_pr_base_branch(pr_number, repo_root)?,
                 crate::github::gh_pr_commits(repo_root, pr_number, 250)
                     .map_err(|e| {
-                        eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}")
+                        eprintln!("sync: pr commits re-fetch failed for #{pr_number}: {e}");
                     })
                     .unwrap_or_default(),
             ),
@@ -3662,7 +3663,7 @@ impl TabState {
                             if let Ok(json) = serde_json::to_string_pretty(gc) {
                                 let tmp = format!("{}.tmp", gh_path.to_string_lossy());
                                 let _ = std::fs::write(&tmp, json)
-                                    .and_then(|_| std::fs::rename(&tmp, &gh_path));
+                                    .and_then(|()| std::fs::rename(&tmp, &gh_path));
                             }
                         }
                         // Drop the orphan file so the migration runs only once.
@@ -3957,7 +3958,7 @@ impl TabState {
                 let path = format!("{}/questions.json", self.er_dir());
                 if let Ok(json) = serde_json::to_string_pretty(qs) {
                     let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
                 }
             }
         }
@@ -3966,7 +3967,7 @@ impl TabState {
                 let path = format!("{}/notes.json", self.er_dir());
                 if let Ok(json) = serde_json::to_string_pretty(ns) {
                     let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
                 }
             }
         }
@@ -3976,7 +3977,7 @@ impl TabState {
                 if let Ok(json) = serde_json::to_string_pretty(gc) {
                     let _ = std::fs::create_dir_all(self.github_comments_dir());
                     let tmp = format!("{}.tmp", path);
-                    let _ = std::fs::write(&tmp, json).and_then(|_| std::fs::rename(&tmp, &path));
+                    let _ = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, &path));
                 }
             }
         }
@@ -8195,9 +8196,11 @@ impl App {
     #[allow(clippy::collapsible_match)]
     pub fn overlay_prev(&mut self) {
         match &mut self.overlay {
-            Some(OverlayData::WorktreePicker { selected, .. })
-            | Some(OverlayData::DirectoryBrowser { selected, .. })
-            | Some(OverlayData::FilterHistory { selected, .. }) => {
+            Some(
+                OverlayData::WorktreePicker { selected, .. }
+                | OverlayData::DirectoryBrowser { selected, .. }
+                | OverlayData::FilterHistory { selected, .. },
+            ) => {
                 if *selected > 0 {
                     *selected -= 1;
                 }

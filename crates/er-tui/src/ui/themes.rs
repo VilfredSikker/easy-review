@@ -53,6 +53,10 @@ pub struct Theme {
     pub lost_indicator: Color,
 
     // Syntax highlighting
+    #[expect(
+        clippy::struct_field_names,
+        reason = "the name of a syntect theme, which is not this struct"
+    )]
     pub syntect_theme: String,
 }
 
@@ -103,7 +107,7 @@ fn hex(s: &str) -> Rgb {
 fn hexa(s: &str) -> (Rgb, f32) {
     let trimmed = s.trim_start_matches('#');
     let a = if trimmed.len() >= 8 {
-        u8::from_str_radix(&trimmed[6..8], 16).unwrap_or(255) as f32 / 255.0
+        f32::from(u8::from_str_radix(&trimmed[6..8], 16).unwrap_or(255)) / 255.0
     } else {
         1.0
     };
@@ -116,13 +120,17 @@ const fn col(rgb: Rgb) -> Color {
 
 /// Composite `fg` at opacity `a` over opaque `bg`.
 fn over(fg: Rgb, a: f32, bg: Rgb) -> Rgb {
-    let f = |x: u8, y: u8| (y as f32).mul_add(1.0 - a, x as f32 * a).round() as u8;
+    let f = |x: u8, y: u8| f32::from(y).mul_add(1.0 - a, f32::from(x) * a).round() as u8;
     (f(fg.0, bg.0), f(fg.1, bg.1), f(fg.2, bg.2))
 }
 
 /// Linear blend; t=0 → a, t=1 → b.
 fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
-    let f = |x: u8, y: u8| (y as f32 - x as f32).mul_add(t, x as f32).round() as u8;
+    let f = |x: u8, y: u8| {
+        (f32::from(y) - f32::from(x))
+            .mul_add(t, f32::from(x))
+            .round() as u8
+    };
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 

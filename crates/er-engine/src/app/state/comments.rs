@@ -699,7 +699,6 @@ impl App {
 
     /// Submit a comment or question without going through InputMode flow.
     /// Used by the desktop app where there is no TextArea widget.
-    #[allow(clippy::too_many_arguments)]
     pub fn submit_comment_text(
         &mut self,
         file: String,
@@ -728,7 +727,6 @@ impl App {
     /// value (e.g. "ai") instead of "You". Used by the desktop `ask_ai` flow
     /// to attribute AI-generated replies. Mirrors `submit_comment_text` and
     /// sets a transient override consumed by submit_question/submit_github_comment.
-    #[allow(clippy::too_many_arguments)]
     pub fn submit_comment_text_as_author(
         &mut self,
         file: String,
@@ -754,7 +752,6 @@ impl App {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn submit_comment_text_inner(
         &mut self,
         file: String,
