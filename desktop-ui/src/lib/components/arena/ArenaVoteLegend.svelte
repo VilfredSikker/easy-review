@@ -26,7 +26,7 @@
   role="list"
   aria-label="Vote legend"
 >
-  {#each items as item}
+  {#each items as item (item.vote)}
     <span class="inline-flex items-center gap-1 text-[var(--arena-fg-muted)]" role="listitem">
       <ArenaVoteIcon vote={item.vote} size={compact ? 12 : 14} />
       <span>{item.label}</span>

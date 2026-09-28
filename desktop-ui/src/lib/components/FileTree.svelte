@@ -8,7 +8,7 @@
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import type { FileSnapshot } from "$lib/types";
-  import { findingPassesTrust } from "$lib/diffAnnotations";
+  import { extChip, hiddenFindingCounts, toggledPath, toggledPaths } from "$lib/fileTreeModel";
   import { riskDotClass } from "$lib/fileStatus";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
 
@@ -46,17 +46,9 @@
   /// The backend's `finding_count` is every active finding; the gate is the
   /// reader's, so only the client can say how many it is hiding. A count that
   /// silently shrinks is how a filter stops being trusted.
-  const hiddenFindings = $derived.by(() => {
-    const ai = app.snapshot?.ai;
-    const counts = new Map<string, number>();
-    if (!ai) return counts;
-    const gate = findingsVisibility.minTrust(ai.min_trust_default);
-    for (const finding of ai.findings) {
-      if (findingPassesTrust(finding, gate)) continue;
-      counts.set(finding.file, (counts.get(finding.file) ?? 0) + 1);
-    }
-    return counts;
-  });
+  const hiddenFindings = $derived(
+    hiddenFindingCounts(app.snapshot?.ai, (fallback) => findingsVisibility.minTrust(fallback)),
+  );
 
   function annotationTitle(file: FileSnapshot): string {
     const parts: string[] = [];
@@ -95,7 +87,7 @@
   const tree = $derived(buildTree(files));
   const displayTree = $derived(visibleTree(tree, fileTreeCollapse.collapsed));
   const selectedFile = $derived(
-    pickerMode ? null : snapshot ? sourceFiles[snapshot.selected_file] : null,
+    pickerMode || !snapshot ? null : sourceFiles[snapshot.selected_file],
   );
   let pickerFocusIdx = $state(0);
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -166,12 +158,13 @@
   let viewportHeight = $state(0);
 
   $effect(() => {
-    if (!listEl) return;
+    const el = listEl;
+    if (!el) return;
     const ro = new ResizeObserver(() => {
-      viewportHeight = listEl!.clientHeight;
+      viewportHeight = el.clientHeight;
     });
-    ro.observe(listEl);
-    viewportHeight = listEl.clientHeight;
+    ro.observe(el);
+    viewportHeight = el.clientHeight;
     return () => ro.disconnect();
   });
 
@@ -192,11 +185,7 @@
   }
 
   function toggleSelection(path: string) {
-    const cur = selectedPaths ?? new Set<string>();
-    const next = new Set(cur);
-    if (next.has(path)) next.delete(path);
-    else next.add(path);
-    onSelectedPathsChange?.(next);
+    onSelectedPathsChange?.(toggledPath(selectedPaths, path));
   }
 
   function isPathSelected(path: string): boolean {
@@ -226,13 +215,8 @@
   function toggleFolderSelection(folderPath: string) {
     const under = filePathsUnderFolder(folderPath);
     if (under.length === 0) return;
-    const next = new Set(selectedPaths ?? []);
-    const state = folderCheckState(folderPath);
-    for (const p of under) {
-      if (state === "all") next.delete(p);
-      else next.add(p);
-    }
-    onSelectedPathsChange?.(next);
+    const allSelected = folderCheckState(folderPath) === "all";
+    onSelectedPathsChange?.(toggledPaths(selectedPaths, under, allSelected));
   }
 
   /** Sets the native `indeterminate` property (not an HTML attribute). */
@@ -242,8 +226,8 @@
   ): { update: (indeterminate: boolean) => void } {
     node.indeterminate = indeterminate;
     return {
-      update(indeterminate: boolean) {
-        node.indeterminate = indeterminate;
+      update(next: boolean) {
+        node.indeterminate = next;
       },
     };
   }
@@ -313,30 +297,12 @@
     return parts[parts.length - 1].toLowerCase();
   }
 
-  interface ExtChip { label: string; color: string }
-
-  function extChip(ext: string): ExtChip {
-    switch (ext) {
-      case "ts":
-      case "tsx":   return { label: ext === "tsx" ? "TSX" : "TS",  color: "var(--color-action)" };
-      case "js":
-      case "jsx":   return { label: ext === "jsx" ? "JSX" : "JS",  color: "var(--color-warning)" };
-      case "svelte": return { label: "SV",  color: "var(--color-accent)" };
-      case "css":
-      case "scss":  return { label: ext.toUpperCase().slice(0, 3), color: "var(--color-periwinkle)" };
-      case "rs":    return { label: "RS",   color: "var(--color-emphasis)" };
-      case "md":    return { label: "MD",   color: "var(--color-fg-3)" };
-      case "json":  return { label: "JSON", color: "var(--color-fg-3)" };
-      case "toml":  return { label: "TOML", color: "var(--color-fg-3)" };
-      case "yaml":
-      case "yml":   return { label: "YML",  color: "var(--color-fg-3)" };
-      case "html":  return { label: "HTML", color: "var(--color-emphasis)" };
-      case "py":    return { label: "PY",   color: "var(--color-success)" };
-      case "go":    return { label: "GO",   color: "var(--color-info)" };
-      case "sh":
-      case "bash":  return { label: "SH",   color: "var(--color-fg-3)" };
-      default:      return { label: ext ? ext.toUpperCase().slice(0, 3) : "·", color: "var(--color-muted)" };
-    }
+  function fileRowClass(row: { pickerFocused: boolean; selected: boolean; inViewport: boolean; checked: boolean }): string {
+    if (row.pickerFocused) return "bg-ink-700 border-accent/60";
+    if (row.selected) return "bg-tree-selected border-accent";
+    if (row.inViewport) return "border-accent/40 bg-card/60 hover:bg-hover";
+    if (row.checked) return "bg-card/40 border-transparent hover:bg-hover";
+    return "border-transparent hover:bg-hover";
   }
 
   const showTreeContent = $derived(
@@ -345,24 +311,19 @@
       : !!snapshot && displayTree.length > 0,
   );
 
-  const treeEmptyMessage = $derived(
-    pickerMode
-      ? sourceFiles.length === 0
-        ? "No files"
-        : displayTree.length === 0
-          ? "No matching files"
-          : null
-      : !snapshot
-        ? "Loading…"
-        : displayTree.length === 0
-          ? "No files"
-          : null,
-  );
+  const treeEmptyMessage = $derived.by(() => {
+    if (pickerMode) {
+      if (sourceFiles.length === 0) return "No files";
+      return displayTree.length === 0 ? "No matching files" : null;
+    }
+    if (!snapshot) return "Loading…";
+    return displayTree.length === 0 ? "No files" : null;
+  });
 </script>
 
 {#if collapsed && !pickerMode}
   <div class="w-10 border-r border-hairline bg-surface flex flex-col items-center py-3 gap-2 transition-[width] duration-200">
-    <button
+    <button type="button"
       onclick={() => app.togglePanel("tree")}
       title="Show file tree"
       aria-label="Show file tree"
@@ -403,7 +364,7 @@
          by an absolutely-positioned dropdown). -->
     {#if !pickerMode && inputFocused && filterDraft.trim().length === 0 && (snapshot?.filter_suggestions?.length ?? 0) > 0}
       <div class="border-t border-hairline max-h-40 overflow-y-auto">
-        {#each snapshot?.filter_suggestions ?? [] as sug}
+        {#each snapshot?.filter_suggestions ?? [] as sug, i (i)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
             class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover"
@@ -500,7 +461,7 @@
               <span class="truncate">{node.name}</span>
             </div>
           {:else if node.file}
-            {@const file = resolveTreeFile(filesByPath, node)!}
+            {@const file = resolveTreeFile(filesByPath, node) ?? node.file}
             {@const selected = !pickerMode && selectedFile?.path === file.path}
             {@const inViewport = !pickerMode && !selected && viewportPath === file.path}
             {@const pickerFocused = pickerMode && visibleFilePaths[pickerFocusIdx] === file.path}
@@ -511,7 +472,7 @@
               aria-level={node.depth + 1}
               aria-selected={pickerMode ? checked : selected}
               tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 transition-colors duration-75 {pickerFocused ? 'bg-ink-700 border-accent/60' : selected ? 'bg-tree-selected border-accent' : inViewport ? 'border-accent/40 bg-card/60 hover:bg-hover' : checked ? 'bg-card/40 border-transparent hover:bg-hover' : 'border-transparent hover:bg-hover'}"
+              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 transition-colors duration-75 {fileRowClass({ pickerFocused, selected, inViewport, checked })}"
               style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
               onclick={() =>
                 pickerMode

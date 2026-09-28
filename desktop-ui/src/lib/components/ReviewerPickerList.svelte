@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { ReviewerInfo } from "$lib/types";
+  import { toggled } from "$lib/immutableSet";
 
   interface Props {
     selected: Set<string>;
@@ -28,10 +29,7 @@
   });
 
   function toggle(kind: string) {
-    const next = new Set(selected);
-    if (next.has(kind)) next.delete(kind);
-    else next.add(kind);
-    onSelectedChange(next);
+    onSelectedChange(toggled(selected, kind));
   }
 
   function selectAll() {

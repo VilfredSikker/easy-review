@@ -194,17 +194,17 @@
     <div class="relative border-t border-hairline bg-ink-900 shrink-0" style="height: 240px">
       {#if mockTerminal}
         <!-- Visual stand-in: avoids Tauri invoke/listen calls that throw in Storybook -->
-        <div class="w-full h-full flex flex-col bg-[#0e0e0e] overflow-hidden">
-          <div class="h-6 shrink-0 border-b border-[#1f1f1f] bg-[#131313] flex items-center gap-2 px-2 text-[11px] font-mono text-[#999]">
+        <div class="w-full h-full flex flex-col bg-ink-870 overflow-hidden">
+          <div class="h-6 shrink-0 border-b border-hairline bg-ink-800 flex items-center gap-2 px-2 text-[11px] font-mono text-fg-3">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
               <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
             </svg>
             <span class="truncate">{app.snapshot?.branch ?? "—"}</span>
-            <span class="ml-2 text-[10px] text-[#555]">[story mode — real Terminal requires Tauri]</span>
+            <span class="ml-2 text-[10px] text-muted">[story mode — real Terminal requires Tauri]</span>
             <div class="flex-1"></div>
             <button
               type="button"
-              class="w-5 h-5 flex items-center justify-center rounded text-[#666] hover:text-[#ccc]"
+              class="w-5 h-5 flex items-center justify-center rounded text-muted hover:text-fg-2"
               onclick={() => (terminal.open = false)}
               title="Close terminal"
               aria-label="Close terminal"
@@ -214,17 +214,17 @@
               </svg>
             </button>
           </div>
-          <div class="flex-1 p-3 font-mono text-[12px] text-[#9ad79a] overflow-hidden">
-            <div class="text-[#7aa8e6]">~/Projects/discovery-platform (show-experiment-params)</div>
+          <div class="flex-1 p-3 font-mono text-[12px] text-syntax-string overflow-hidden">
+            <div class="text-action">~/Projects/discovery-platform (show-experiment-params)</div>
             <div class="mt-1 flex items-center gap-1">
-              <span class="text-[#ff6a3d]">$</span>
-              <span class="text-[#e6e6e6]">git status</span>
+              <span class="text-accent">$</span>
+              <span class="text-fg">git status</span>
             </div>
-            <div class="mt-1 text-[#5e5e5e]">On branch show-experiment-params</div>
-            <div class="text-[#5e5e5e]">nothing to commit, working tree clean</div>
+            <div class="mt-1 text-muted">On branch show-experiment-params</div>
+            <div class="text-muted">nothing to commit, working tree clean</div>
             <div class="mt-2 flex items-center gap-1">
-              <span class="text-[#ff6a3d]">$</span>
-              <span class="inline-block w-2 h-4 bg-[#ff6a3d] animate-pulse"></span>
+              <span class="text-accent">$</span>
+              <span class="inline-block w-2 h-4 bg-accent animate-pulse"></span>
             </div>
           </div>
         </div>

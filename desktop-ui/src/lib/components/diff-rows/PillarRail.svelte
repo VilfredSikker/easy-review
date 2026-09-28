@@ -71,7 +71,7 @@
     {:else}
       <span class="mono text-[11px] text-muted">{String(info.reviewedCount).padStart(2, "0")}/{String(info.totalCount).padStart(2, "0")} reviewed</span>
     {/if}
-    <button
+    <button type="button"
       class="ml-auto text-[10px] px-1.5 py-[2px] rounded border border-hairline text-fg-2 hover:bg-card"
       onclick={reviewAll}
     >{allReviewed ? "Unreview all" : "Review all"}</button>

@@ -10,14 +10,12 @@
   const { project, onpatch }: Props = $props();
 
   let addGlob = $state("");
-  let maxDiffInput = $state("");
 
   const maxDiffKb = $derived(project.auto_triage_max_diff_kb ?? 0);
   const ignoreGlobs = $derived(project.review_ignore_globs ?? []);
 
-  $effect(() => {
-    maxDiffInput = maxDiffKb === 0 ? "" : String(maxDiffKb);
-  });
+  // Editable draft; resets whenever the saved value changes.
+  let maxDiffInput = $derived(maxDiffKb === 0 ? "" : String(maxDiffKb));
 
 </script>
 

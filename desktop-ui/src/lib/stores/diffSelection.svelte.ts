@@ -49,9 +49,7 @@ class DiffSelection {
     line: number,
     shift: boolean,
     e?: MouseEvent,
-    file?: string | null,
-    side: SelectionSide = null,
-    startRowIdx?: number | null,
+    { file, side = null, startRowIdx }: { file?: string | null; side?: SelectionSide; startRowIdx?: number | null } = {},
   ) {
     if (e) {
       e.preventDefault();

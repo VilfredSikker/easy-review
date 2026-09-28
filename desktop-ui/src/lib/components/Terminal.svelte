@@ -16,6 +16,15 @@
 
   const { sessionId, cwd, visible, refitToken = 0 }: Props = $props();
 
+  let containerEl = $state<HTMLDivElement | null>(null);
+  let term: XTerm | null = null;
+  let unlistenOutput: (() => void) | null = null;
+  let unlistenExit: (() => void) | null = null;
+  let resizeObs: ResizeObserver | null = null;
+  let mountedSessionId = $state<string | null>(null);
+  /** After killSession, block remount until the drawer is hidden and reopened. */
+  let sessionEnded = $state(false);
+
   const branch = $derived(app.snapshot?.branch ?? "");
 
   const xtermTheme = $derived(xtermThemeFor(themeByName(app.snapshot?.theme)));
@@ -36,15 +45,6 @@
     }
     term?.focus();
   }
-
-  let containerEl = $state<HTMLDivElement | null>(null);
-  let term: XTerm | null = null;
-  let unlistenOutput: (() => void) | null = null;
-  let unlistenExit: (() => void) | null = null;
-  let resizeObs: ResizeObserver | null = null;
-  let mountedSessionId = $state<string | null>(null);
-  /** After killSession, block remount until the drawer is hidden and reopened. */
-  let sessionEnded = $state(false);
 
   const CHAR_W = 7.8;
   const CHAR_H = 17;

@@ -36,7 +36,7 @@
     <!-- command statuses -->
     {#if commands.length > 0}
       <div class="px-3 py-2 space-y-1 border-b border-hairline shrink-0">
-        {#each commands as cmd}
+        {#each commands as cmd, i (i)}
           <div class="flex items-center gap-2 text-xs font-mono">
             <span class="text-ink-400">{cmd.name}</span>
             <span class="{statusColor(cmd.status)} ml-auto">{cmd.status}</span>
@@ -51,7 +51,7 @@
     <!-- log output -->
     {#if log.length > 0}
       <div class="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-0.5">
-        {#each log as entry}
+        {#each log as entry, i (i)}
           <div class="text-[10px] font-mono leading-relaxed break-all {sourceColor(entry.source)}">
             {entry.text}
           </div>

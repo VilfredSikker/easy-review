@@ -35,6 +35,12 @@
 
   const stats = $derived(arenaStats(snapshot.run.findings));
   const isSingleReview = $derived(snapshot.run.reviewers.length === 1);
+  const gridCols = $derived.by(() => {
+    if (isSingleReview) return selectedId ? "lg:grid-cols-[minmax(0,1fr)_320px]" : "";
+    return selectedId
+      ? "lg:grid-cols-[minmax(0,1fr)_420px_320px]"
+      : "lg:grid-cols-[minmax(0,1fr)_420px]";
+  });
   const agentLabel = $derived.by(() => {
     const kind = snapshot.run.config.agent_kind;
     if (!kind) return null;
@@ -119,7 +125,7 @@
               { id: "bracket", label: "Bracket", icon: "bracket" },
               { id: "matrix", label: "Matrix", icon: "grid" },
               { id: "funnel", label: "Funnel", icon: "funnel" },
-            ] as opt}
+            ] as opt (opt.id)}
               <button
                 type="button"
                 role="tab"
@@ -165,7 +171,7 @@
           { label: "Escalated", value: stats.verdicts.escalated, color: "var(--arena-err)" },
           { label: "Merged", value: stats.verdicts.merged, color: "var(--arena-periwinkle)" },
           { label: "Dropped", value: stats.verdicts.dropped, strike: true },
-        ] as chip}
+        ] as chip (chip.label)}
           <span
             class="inline-flex items-center gap-1.5 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-2.5 py-1"
           >
@@ -184,13 +190,7 @@
     </header>
 
     <div
-      class="grid min-h-0 flex-1 grid-cols-1 {isSingleReview
-        ? selectedId
-          ? 'lg:grid-cols-[minmax(0,1fr)_320px]'
-          : ''
-        : selectedId
-          ? 'lg:grid-cols-[minmax(0,1fr)_420px_320px]'
-          : 'lg:grid-cols-[minmax(0,1fr)_420px]'}"
+      class="grid min-h-0 flex-1 grid-cols-1 {gridCols}"
     >
       {#if !isSingleReview}
         <section class="flex min-h-0 flex-col bg-[var(--arena-bg-0)]">
@@ -214,7 +214,7 @@
               <p class="font-medium text-[var(--arena-err)]">Arena run failed</p>
               {#if failedReviewers.length > 0}
                 <ul class="mt-2 space-y-1 text-[11px]">
-                  {#each failedReviewers as line}
+                  {#each failedReviewers as line, li (li)}
                     <li>{line}</li>
                   {/each}
                 </ul>

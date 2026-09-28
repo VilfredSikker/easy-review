@@ -42,17 +42,14 @@
     return "";
   });
 
-  const ciIconColor = $derived(
-    checksStatus === "success" ? "text-add-fg"
-    : checksStatus === "failure" ? "text-del-fg"
-    : "text-fg-3"
-  );
-  const ciBadgeClass = $derived(
-    checksStatus === "success" ? "bg-add-fg/20 text-add-fg"
-    : checksStatus === "failure" ? "bg-del-fg/20 text-del-fg"
-    : ""
-  );
-  const ciBadge = $derived(checksStatus === "success" ? "✓" : checksStatus === "failure" ? "!" : null);
+  const ci = $derived.by(() => {
+    if (checksStatus === "success") return { icon: "text-add-fg", badgeClass: "bg-add-fg/20 text-add-fg", badge: "✓" };
+    if (checksStatus === "failure") return { icon: "text-del-fg", badgeClass: "bg-del-fg/20 text-del-fg", badge: "!" };
+    return { icon: "text-fg-3", badgeClass: "", badge: null };
+  });
+  const ciIconColor = $derived(ci.icon);
+  const ciBadgeClass = $derived(ci.badgeClass);
+  const ciBadge = $derived(ci.badge);
 </script>
 
 <aside class="w-11 shrink-0 bg-surface border-l border-hairline flex flex-col items-center py-2 gap-1 overflow-hidden">

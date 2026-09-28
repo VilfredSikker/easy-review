@@ -132,6 +132,14 @@
     return "bg-del-fg";
   }
 
+  /** Task a pill expands: the first running/queued task, or the id in its key. */
+  function pillTaskId(key: string) {
+    if (key.startsWith("run-")) return running[0]?.id;
+    if (key.startsWith("queue-")) return queued[0]?.id;
+    if (key.startsWith("fail-")) return key.slice("fail-".length);
+    return key.slice("done-".length);
+  }
+
   function cancelQueued(taskId: string, event: MouseEvent) {
     event.stopPropagation();
     void app.cmd("cancel_queued_review", { id: taskId });
@@ -163,21 +171,15 @@
     {/if}
 
     {#each pills as pill (pill.key)}
-      {@const pillTaskId = pill.key.startsWith("run-")
-        ? running[0]?.id
-        : pill.key.startsWith("queue-")
-          ? queued[0]?.id
-          : pill.key.startsWith("fail-")
-            ? pill.key.slice("fail-".length)
-            : pill.key.slice("done-".length)}
+      {@const taskId = pillTaskId(pill.key)}
       <div
         class="bg-ink-800 text-ink-100 text-[11px] font-mono rounded-sm border border-ink-500 shadow flex items-center max-w-[280px]"
       >
-        <button
+        <button type="button"
           class="px-2.5 py-1 flex items-center gap-1.5 min-w-0 cursor-pointer hover:bg-ink-700 transition-colors rounded-sm"
           title={pill.title ?? ""}
           onclick={() => {
-            expandedTaskId = expandedTaskId === pillTaskId ? null : (pillTaskId ?? null);
+            expandedTaskId = expandedTaskId === taskId ? null : (taskId ?? null);
           }}
         >
           <span
@@ -187,21 +189,23 @@
           <span class="truncate">{pill.text}</span>
         </button>
         {#if pill.stopTaskId}
-          <button
+          {@const stopTaskId = pill.stopTaskId}
+          <button type="button"
             class="px-1.5 py-1 shrink-0 text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors rounded-sm cursor-pointer"
             title="Stop this review"
             aria-label="Stop running review"
-            onclick={(e) => stopRunning(pill.stopTaskId!, e)}
+            onclick={(e) => stopRunning(stopTaskId, e)}
           >
             ■
           </button>
         {/if}
         {#if pill.cancelTaskId}
-          <button
+          {@const cancelTaskId = pill.cancelTaskId}
+          <button type="button"
             class="px-1.5 py-1 shrink-0 text-ink-300 hover:text-ink-100 hover:bg-ink-700 transition-colors rounded-sm cursor-pointer"
             title="Remove from queue"
             aria-label="Remove queued review"
-            onclick={(e) => cancelQueued(pill.cancelTaskId!, e)}
+            onclick={(e) => cancelQueued(cancelTaskId, e)}
           >
             ✕
           </button>

@@ -32,6 +32,11 @@
     onDelete(runId);
   }
 
+  function deleteTitle(run: ArenaRunSummary): string {
+    if (isArenaRunActive(run.status)) return "Cancel the run before deleting";
+    return pendingDeleteId === run.id ? "Click again to confirm" : "Delete run";
+  }
+
   function statusLabel(status: RunStatus): string {
     if (status === "queued") return "Queued";
     if (status === "complete") return "Complete";
@@ -96,11 +101,7 @@
               {pendingDeleteId === run.id
                 ? 'opacity-100 bg-[var(--arena-bg-3)] text-[var(--arena-err)]'
                 : 'text-[var(--arena-fg-faint)] opacity-0 hover:bg-[var(--arena-bg-3)] hover:text-[var(--arena-err)] group-hover:opacity-100'}"
-            title={isArenaRunActive(run.status)
-              ? "Cancel the run before deleting"
-              : pendingDeleteId === run.id
-                ? "Click again to confirm"
-                : "Delete run"}
+            title={deleteTitle(run)}
             disabled={isArenaRunActive(run.status)}
             aria-label={pendingDeleteId === run.id ? "Confirm delete run" : "Delete run"}
             onclick={(e) => {

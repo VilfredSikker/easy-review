@@ -165,7 +165,8 @@ class ArenaStore {
     this.lastConfig = config;
     this.liveRunStates = {};
     try {
-      if (config.mode === "agents" && config.agent_groups?.length) {
+      const groups = config.agent_groups;
+      if (config.mode === "agents" && groups?.length) {
         const runIds = await invoke<string[]>("arena_start_batch", {
           req: {
             scope: config.scope,
@@ -174,7 +175,7 @@ class ArenaStore {
             arbiter: config.arbiter,
             confirm: config.confirm ?? false,
             effort: config.effort,
-            groups: config.agent_groups.map((g) => ({
+            groups: groups.map((g) => ({
               agent_kind: g.agent_kind,
               models: g.models,
               title: g.title,
@@ -183,8 +184,8 @@ class ArenaStore {
         });
         this.liveRuns = runIds.map((runId, i) => ({
           runId,
-          agentKind: config.agent_groups![i]?.agent_kind,
-          title: config.agent_groups![i]?.title,
+          agentKind: groups[i]?.agent_kind,
+          title: groups[i]?.title,
         }));
         this.liveRunId = runIds[0] ?? null;
       } else {
@@ -373,8 +374,8 @@ class ArenaStore {
       const snap = this.liveRunStates[e.runId]?.snapshot;
       return snap && !isArenaRunFromSnapshot(snap);
     });
-    if (arenaComplete.length > 0) {
-      const first = arenaComplete[0]!;
+    const [first] = arenaComplete;
+    if (first) {
       const snap = this.liveRunStates[first.runId]?.snapshot;
       if (snap) {
         this.openArenaOverlayForRun(first.runId, snap);
@@ -469,13 +470,13 @@ class ArenaStore {
     }
   }
 
+  private cancellableRunIds(): string[] {
+    if (this.liveRuns.length > 0) return this.liveRuns.map((e) => e.runId);
+    return this.liveRunId ? [this.liveRunId] : [];
+  }
+
   async cancelRun() {
-    const ids =
-      this.liveRuns.length > 0
-        ? this.liveRuns.map((e) => e.runId)
-        : this.liveRunId
-          ? [this.liveRunId]
-          : [];
+    const ids = this.cancellableRunIds();
     if (ids.length === 0) return;
     arenaLog("store: cancelRun", { runIds: ids });
     try {

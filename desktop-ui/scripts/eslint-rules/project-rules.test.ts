@@ -12,10 +12,12 @@ async function restricted(code: string, filePath = "src/lib/probe.ts"): Promise<
 
 describe("hard-coded hex classes", () => {
   it("flags hex in a string, a template and a Svelte class attribute", async () => {
+    /* eslint-disable no-restricted-syntax -- these strings are the hex fixtures the rule is tested on */
     expect(await restricted(`export const c = "px-2 bg-[#1e1e1e]";`)).toHaveLength(1);
     // eslint-disable-next-line no-template-curly-in-string -- source code under test
     expect(await restricted("export const c = (x: string) => `hover:text-[#fff] ${x}`;")).toHaveLength(1);
     const svelte = `<div class="p-1 border-[#abcdef]"></div>\n`;
+    /* eslint-enable no-restricted-syntax */
     expect(await restricted(svelte, "src/lib/components/Probe.svelte")).toHaveLength(1);
   });
 

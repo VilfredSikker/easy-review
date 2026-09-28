@@ -16,7 +16,7 @@
 <div class="bg-[var(--arena-bg-app)] p-6">
   <h1 class="mb-4 text-[14px] font-semibold text-[var(--arena-fg)]">Arena tokens</h1>
   <div class="grid grid-cols-2 gap-3 sm:grid-cols-5">
-    {#each swatches as [name, color]}
+    {#each swatches as [name, color] (name)}
       <div class="rounded-lg border border-[var(--arena-border)] p-2">
         <div class="mb-2 h-12 rounded" style="background:{color}"></div>
         <p class="mono text-[10px] text-[var(--arena-fg-muted)]">{name}</p>

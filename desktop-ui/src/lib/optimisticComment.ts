@@ -85,6 +85,12 @@ export function parseAddThreadArgs(
   };
 }
 
+const OPTIMISTIC_ID_PREFIX: Record<AddThreadCommand, string> = {
+  add_comment: "c",
+  add_note: "n",
+  add_question: "q",
+};
+
 export function buildOptimisticThread(
   command: AddThreadCommand,
   parsed: ParsedAddThread,
@@ -92,9 +98,7 @@ export function buildOptimisticThread(
   filePath: string,
   opts?: { nowIso?: string; id?: string },
 ): OptimisticThread {
-  const prefix =
-    command === "add_comment" ? "c" : command === "add_note" ? "n" : "q";
-  const id = opts?.id ?? nextOptimisticId({ prefix });
+  const id = opts?.id ?? nextOptimisticId({ prefix: OPTIMISTIC_ID_PREFIX[command] });
   const timestamp = opts?.nowIso ?? new Date().toISOString();
   const line = parsed.lineNum ?? 0;
   const thread: ThreadSnapshot = {

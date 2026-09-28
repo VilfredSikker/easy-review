@@ -15,11 +15,8 @@
   }: Props = $props();
 
   let open = $state(true);
-  let layoutMode = $state<ArenaLayoutMode>(initialLayout);
-
-  $effect(() => {
-    layoutMode = initialLayout;
-  });
+  // Follows the story arg, but the overlay can still switch layouts locally.
+  let layoutMode = $derived<ArenaLayoutMode>(initialLayout);
 </script>
 
 <div class="h-screen bg-[var(--arena-bg-app)] p-4">

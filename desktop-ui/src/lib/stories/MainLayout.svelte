@@ -33,7 +33,7 @@
     /** The label shown after "Review" in the titlebar chip — mock uses the project name, not the branch. */
     titlebarSubtitle?: string;
   }
-  const { snapshot, pinned, projects, titlebarSubtitle }: Props = $props();
+  const { snapshot, pinned, projects: _projects, titlebarSubtitle }: Props = $props();
 
   /**
    * Seed the global app store with the story's fixture so child components
@@ -47,43 +47,43 @@
   const panels = $derived(snapshot.panels);
 </script>
 
-<div class="h-screen flex flex-col bg-[#0a0a0a] text-[#e8e8e8] overflow-hidden font-sans">
-  <header class="h-11 border-b border-[#1f1f1f] bg-[#0d0d0d] flex items-center gap-1 shrink-0 px-3">
+<div class="h-screen flex flex-col bg-bg text-fg overflow-hidden font-sans">
+  <header class="h-11 border-b border-hairline bg-ink-870 flex items-center gap-1 shrink-0 px-3">
     <div class="flex items-center gap-2 mr-3">
-      <span class="w-3 h-3 rounded-full bg-[#ff5f56]"></span>
-      <span class="w-3 h-3 rounded-full bg-[#ffbd2e]"></span>
-      <span class="w-3 h-3 rounded-full bg-[#27c93f]"></span>
+      <span class="w-3 h-3 rounded-full bg-error"></span>
+      <span class="w-3 h-3 rounded-full bg-warning"></span>
+      <span class="w-3 h-3 rounded-full bg-success"></span>
     </div>
 
-    <div class="flex items-center gap-0.5 mr-3 text-[#666]">
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center text-[#ff6a3d] bg-[#1a1a1a]" aria-label="Toggle left">
+    <div class="flex items-center gap-0.5 mr-3 text-muted">
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-accent bg-hover" aria-label="Toggle left">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg>
       </button>
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center opacity-40" aria-label="Back">
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center opacity-40" aria-label="Back">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
       </button>
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center opacity-40" aria-label="Forward">
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center opacity-40" aria-label="Forward">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
       </button>
     </div>
 
     <div class="flex items-center gap-1">
-      <div class="flex items-center gap-2 px-3 py-1 rounded-md bg-[#1a1a1a] border border-[#2a2a2a] text-sm">
+      <div class="flex items-center gap-2 px-3 py-1 rounded-md bg-hover border border-border text-sm">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
         <span>Review</span>
-        <span class="mono text-[10px] text-[#666]">{titlebarSubtitle ?? snapshot.branch}</span>
+        <span class="mono text-[10px] text-muted">{titlebarSubtitle ?? snapshot.branch}</span>
       </div>
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center text-[#666]" aria-label="New tab">
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-muted" aria-label="New tab">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M5 12h14"/></svg>
       </button>
     </div>
 
-    <div class="ml-auto flex items-center gap-1 text-[#666]">
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center text-[#ff6a3d] bg-[#1a1a1a]" aria-label="Toggle tree">
+    <div class="ml-auto flex items-center gap-1 text-muted">
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-accent bg-hover" aria-label="Toggle tree">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
       </button>
-      <button class="text-xs text-[#999] hover:bg-[#1a1a1a] px-3 py-1 rounded-md mono">⌘K</button>
-      <button class="w-7 h-7 rounded hover:bg-[#1a1a1a] flex items-center justify-center text-[#ff6a3d] bg-[#1a1a1a]" aria-label="Toggle right">
+      <button type="button" class="text-xs text-fg-3 hover:bg-hover px-3 py-1 rounded-md mono">⌘K</button>
+      <button type="button" class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-accent bg-hover" aria-label="Toggle right">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/></svg>
       </button>
     </div>

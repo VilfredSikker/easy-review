@@ -13,7 +13,7 @@
   const { children, onclick, title, active = false, dim = false }: Props = $props();
 </script>
 
-<button
+<button type="button"
   {onclick}
   {title}
   aria-label={title}

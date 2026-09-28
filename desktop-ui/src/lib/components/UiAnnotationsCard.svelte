@@ -1,5 +1,7 @@
 <script module lang="ts">
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- cross-instance cache, never rendered; `thumbs` is the reactive copy
   const thumbnailCache = new Map<string, string>();
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- de-dupes in-flight requests, never rendered
   const requestedScreenshots = new Set<string>();
 </script>
 

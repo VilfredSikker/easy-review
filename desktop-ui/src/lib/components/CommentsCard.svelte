@@ -1,4 +1,5 @@
 <script module lang="ts">
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- module-level once-per-PR cache, never read reactively; autoPulledFor carries the state
   const autoPulledKeys = new Set<string>();
 </script>
 
@@ -85,11 +86,13 @@
     el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  const ghEvent = $derived(
-    decision === "approve" ? "APPROVE" :
-    decision === "changes" ? "REQUEST_CHANGES" :
-    "COMMENT"
-  );
+  const DECISIONS = {
+    comment: { ghEvent: "COMMENT", submitClass: "bg-accent hover:opacity-90", submitLabel: "Submit review" },
+    approve: { ghEvent: "APPROVE", submitClass: "bg-add-fg hover:opacity-90", submitLabel: "Submit approval" },
+    changes: { ghEvent: "REQUEST_CHANGES", submitClass: "bg-del-fg hover:opacity-90", submitLabel: "Submit changes request" },
+  } as const;
+  const decisionInfo = $derived(DECISIONS[decision]);
+  const ghEvent = $derived(decisionInfo.ghEvent);
 
   async function submitReview() {
     submitting = true;
@@ -196,7 +199,7 @@
 
     {#if pushMode === null}
       <div class="grid grid-cols-2 gap-2">
-        <button
+        <button type="button"
           onclick={() => pushMode = "review"}
           title="Backend doesn't yet accept summary/decision — currently pushes the same as Individually"
           class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
@@ -208,7 +211,7 @@
           </div>
           <div class="text-[10px] text-muted">Summary + decision · single approval gate</div>
         </button>
-        <button
+        <button type="button"
           onclick={() => pushMode = "individual"}
           class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
         >
@@ -227,7 +230,7 @@
           <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-add-fg"><path d="M9 11l3 3L22 4"/></svg>
           <span class="text-fg-2 font-medium">Push as review</span>
           <span class="text-muted">· {pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span>
-          <button onclick={() => pushMode = null} aria-label="Cancel push" title="Cancel" class="ml-auto text-muted hover:text-fg-2">
+          <button type="button" onclick={() => pushMode = null} aria-label="Cancel push" title="Cancel" class="ml-auto text-muted hover:text-fg-2">
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
           </button>
         </div>
@@ -242,21 +245,21 @@
         <div class="px-3 py-2 border-t border-hairline">
           <SectionLabel size="sm">Decision</SectionLabel>
           <div class="grid grid-cols-3 gap-1 mt-1.5">
-            <button
+            <button type="button"
               onclick={() => decision = "comment"}
               class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'comment' ? 'bg-hover text-fg ring-1 ring-border' : 'text-fg-3 hover:bg-card'}"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
               Comment
             </button>
-            <button
+            <button type="button"
               onclick={() => decision = "approve"}
               class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'approve' ? 'bg-add-bg text-add-fg ring-1 ring-add-fg/40' : 'text-fg-3 hover:bg-card'}"
             >
               <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
               Approve
             </button>
-            <button
+            <button type="button"
               onclick={() => decision = "changes"}
               class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'changes' ? 'bg-del-bg text-del-fg ring-1 ring-del-fg/40' : 'text-fg-3 hover:bg-card'}"
             >
@@ -268,12 +271,12 @@
 
         <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">
           <span class="text-[10px] mono text-muted">questions stay local</span>
-          <button
+          <button type="button"
             onclick={submitReview}
             disabled={submitting}
-            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-on-accent disabled:opacity-50 disabled:cursor-not-allowed {decision === 'approve' ? 'bg-add-fg hover:opacity-90' : decision === 'changes' ? 'bg-del-fg hover:opacity-90' : 'bg-accent hover:opacity-90'}"
+            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-on-accent disabled:opacity-50 disabled:cursor-not-allowed {decisionInfo.submitClass}"
           >
-            {#if submitting}Submitting…{:else}{decision === "approve" ? "Submit approval" : decision === "changes" ? "Submit changes request" : "Submit review"}{/if}
+            {#if submitting}Submitting…{:else}{decisionInfo.submitLabel}{/if}
           </button>
         </div>
       </div>
@@ -286,14 +289,14 @@
           <div class="text-sm text-fg-2 leading-snug">Push <span class="text-fg font-medium">{pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span> as a standalone GitHub comment? It won't be tied to a review submission.</div>
         </div>
         <div class="flex items-center gap-2">
-          <button onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
-          <button onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-on-accent disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
+          <button type="button" onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
+          <button type="button" onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-on-accent disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
         </div>
       </div>
     {/if}
   </div>
 
-  <button
+  <button type="button"
     onclick={() => app.setMainView("export-review")}
     class="mt-3 w-full px-3 py-1.5 text-xs rounded-md border border-border hover:bg-hover text-fg-2 flex items-center justify-center gap-2"
   >
