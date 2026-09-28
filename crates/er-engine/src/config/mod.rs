@@ -924,8 +924,11 @@ const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
 ];
 
 fn retire_preset_models(hub: &mut AiHubConfig) {
+    let default_provider = hub.resolve_provider_id(None);
     for &(provider_id, retired, successor) in RETIRED_PRESET_MODELS {
-        if hub.default_model.as_deref() == Some(retired) {
+        if default_provider.as_deref() == Some(provider_id)
+            && hub.default_model.as_deref() == Some(retired)
+        {
             hub.default_model = Some(successor.to_string());
         }
         if let Some(provider) = hub.providers.get_mut(provider_id) {
@@ -3399,6 +3402,53 @@ mod tests {
             hub.resolve_model_id("claude", hub.default_model.as_deref())
                 .as_deref(),
             Some("fable-5.1")
+        );
+    }
+
+    #[test]
+    fn supplement_ai_hub_does_not_remap_custom_model_with_retired_preset_id() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("custom".into()),
+            default_model: Some("fable-5".into()),
+            providers: BTreeMap::from([
+                (
+                    "claude".into(),
+                    AiProviderConfig {
+                        models: vec![AiModelConfig {
+                            id: "fable-5".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "custom".into(),
+                    AiProviderConfig {
+                        models: vec![
+                            AiModelConfig {
+                                id: "fable-5".into(),
+                                ..Default::default()
+                            },
+                            AiModelConfig {
+                                id: "custom-model".into(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_model.as_deref(), Some("fable-5"));
+        assert_eq!(
+            hub.resolve_default_selection(&AgentConfig::default())
+                .model_id
+                .as_deref(),
+            Some("fable-5")
         );
     }
 

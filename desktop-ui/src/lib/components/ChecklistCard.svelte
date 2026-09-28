@@ -19,6 +19,18 @@
   const groups = $derived(groupChecklistItems(items));
   const progress = $derived(checklistProgress(items));
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const reviewBranch = $derived(app.snapshot?.local_branch ?? app.snapshot?.branch);
+  const reviewRunning = $derived(
+    (app.snapshot?.background_tasks ?? []).some(
+      (task) =>
+        task.kind === "review" &&
+        (task.status === "queued" || task.status === "running") &&
+        task.scope === reviewScope &&
+        task.repo_root === activeTab?.repo_root &&
+        task.branch_label === reviewBranch,
+    ),
+  );
 
   // The address is the item's position in the flat list — grouping moves rows
   // around on screen without changing what a click targets.
@@ -53,7 +65,7 @@
   }
 
   function runReview() {
-    if (!reviewScope) return;
+    if (!reviewScope || reviewRunning) return;
     void app.cmd("run_ai_review", { scope: reviewScope });
   }
 </script>
@@ -65,8 +77,18 @@
       {#if checklist && !checklist.fresh}
         <span
           class="text-[9px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded bg-risk-med/15 text-risk-med"
-          title="Generated for an older diff — re-run the review to refresh it"
+          title="This checklist was generated for another diff"
         >stale</span>
+        {#if reviewScope}
+          <Button
+            variant="ghost"
+            class="px-2 py-0.5 text-[9px]"
+            disabled={reviewRunning}
+            title="Runs a new AI review for this diff and replaces the checklist."
+            aria-label={reviewRunning ? "Review running" : "Re-run review to refresh checklist"}
+            onclick={runReview}
+          >{reviewRunning ? "Review running" : "Re-run review"}</Button>
+        {/if}
       {/if}
       {#if items.length > 0}
         <span class="text-[10px] tabular-nums text-muted" aria-label="{progress} items checked">
@@ -82,7 +104,9 @@
       confirming by hand, rather than a second reading of the diff.
     </p>
     {#if reviewScope}
-      <Button class="mt-2" onclick={runReview}>Run review</Button>
+      <Button class="mt-2" disabled={reviewRunning} onclick={runReview}>
+        {reviewRunning ? "Review running" : "Run review"}
+      </Button>
     {/if}
   {:else}
     <div class="mt-2.5 max-h-72 space-y-2.5 overflow-y-auto">
