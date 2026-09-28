@@ -1,3 +1,31 @@
+# Easy Review v0.5.1
+
+## In plain terms
+
+- **What changed.** The model pickers are current again. Claude offers Fable 5.1, Opus 5.5, Sonnet 5 and Haiku 4.5; Codex offers the GPT-6 family, and **Refresh models** now asks the Codex CLI what it has. Picking a provider, model or effort in desktop Settings keeps your place on the page. Settings is split across more tabs, so General no longer holds everything.
+- **TL;DR.** New Claude and Codex models, a Refresh that works for Codex, Settings that stays put, and fewer settings per tab.
+
+## Highlights
+
+- **Refresh models works for Codex.** Refresh only runs for a provider that has a command to list its models, and neither Claude nor Codex had one, so clicking it did nothing for the two providers most people use. Codex now lists through `codex debug models`: the models Codex hides from its own picker stay hidden, and each listed model keeps the effort levels Codex reports for it. The Claude CLI has no listing, so Claude's models are the ones the release ships, and Refresh says so instead of doing nothing.
+- **Current Claude and Codex presets.** Claude gets Fable 5.1 and Opus 5.5 in place of Fable 5 and Opus 5. Codex gets GPT-6 Astra, Sol and Luna, keeps GPT-5.6 and GPT-5.5, and drops GPT-5.4, GPT-5.4 Mini and GPT-5.3 Codex Spark, which Codex itself no longer lists. Prices follow the providers' current rates: Fable was listed at half its real price, and the GPT-5.6 rows still carried launch prices.
+- **Retired presets leave saved configs.** A saved config keeps every preset it ever merged, so dropping one from the catalog never reached existing users. Retired presets are now removed from the loaded config, and a default that pointed at one moves to its successor on the same tier (Fable 5 → Fable 5.1, Opus 5 → Opus 5.5, GPT-5.4 → GPT-5.6 Terra). Before, a retired default fell back to Sonnet 5.
+- **Settings keeps your scroll position.** Every provider, model or effort pick reloaded the page through the loading skeleton, which rebuilt the scrolling area at the top and threw you back to the start of Settings. The skeleton now shows only on first open.
+- **Settings tabs.** General, AI, Review, Projects and Terminal. AI holds the AI Hub card, the agent command and the concurrency caps; Review holds the review commands and file importance. A section without a tab lands on General, so a new setting cannot go missing. The TUI's settings are unchanged.
+
+## What's Changed
+
+### Features
+- Codex model discovery through `codex debug models`, with hidden models filtered and per-model effort levels kept. Codex's `ultra` effort is left out: it delegates to subtasks, so it means something different from the shared low → max scale.
+- Claude presets: Fable 5.1 and Opus 5.5. Codex presets: GPT-6 Astra, Sol and Luna.
+- Desktop Settings splits into General, AI, Review, Projects and Terminal tabs.
+
+### Fixes
+- **Refresh models** reported nothing when it failed; each provider's failure now shows as a toast, and a provider with no listing says so.
+- Picking a provider, model or effort in desktop Settings no longer scrolls the page to the top.
+- Retired presets are removed from saved configs on load, and a retired default moves to its successor instead of the catalog default.
+- Model prices: Fable 5.1 at $10 / $50 per million tokens (Fable was listed at half), and GPT-5.6 Sol, Terra and Luna at OpenAI's current rates.
+
 # Easy Review v0.5.0
 
 ## In plain terms

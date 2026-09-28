@@ -850,7 +850,7 @@ mod tests {
         let mut config = ErConfig::default();
         crate::config::supplement_ai_hub(&mut config.ai_hub);
         config.ai_hub.default_provider = Some("codex".into());
-        config.ai_hub.default_model = Some("gpt-5.4".into());
+        config.ai_hub.default_model = Some("gpt-5.6-terra".into());
         config
     }
 
@@ -861,7 +861,7 @@ mod tests {
         let request = AgentInvocationRequest {
             selection: AgentSelection::Runtime {
                 provider_id: Some("codex"),
-                model_id: Some("gpt-5.4"),
+                model_id: Some("gpt-5.6-terra"),
             },
             task: &task,
             effort: None,
@@ -917,7 +917,7 @@ mod tests {
         let mut config = codex_config();
         // Catalog models may advertise effort; force an empty list for this case.
         if let Some(provider) = config.ai_hub.providers.get_mut("codex") {
-            if let Some(model) = provider.models.iter_mut().find(|m| m.id == "gpt-5.4") {
+            if let Some(model) = provider.models.iter_mut().find(|m| m.id == "gpt-5.6-terra") {
                 model.effort_levels.clear();
             }
         }
@@ -927,7 +927,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("codex"),
-                    model_id: Some("gpt-5.4"),
+                    model_id: Some("gpt-5.6-terra"),
                 },
                 task: &task,
                 effort: Some("high"),
@@ -1023,7 +1023,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("codex"),
-                    model_id: Some("gpt-5.4"),
+                    model_id: Some("gpt-5.6-terra"),
                 },
                 task: &task,
                 effort: None,
@@ -1095,7 +1095,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Exact {
                     provider_id: "codex",
-                    model_id: "gpt-5.4",
+                    model_id: "gpt-5.6-terra",
                 },
                 task: &task,
                 effort: None,
@@ -1106,7 +1106,11 @@ mod tests {
             },
         )
         .unwrap();
-        assert!(has_option_value(&invocation.args, "--model", "gpt-5.4"));
+        assert!(has_option_value(
+            &invocation.args,
+            "--model",
+            "gpt-5.6-terra"
+        ));
         assert!(!invocation.args.iter().any(|arg| arg == "--add-dir"));
     }
 
