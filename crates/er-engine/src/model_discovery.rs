@@ -15,10 +15,13 @@ pub const MODEL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 const CACHE_VERSION: u32 = 1;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveredModel {
     pub id: String,
     pub label: String,
+    /// Effort levels the CLI advertises; empty when its listing carries none.
+    #[serde(default)]
+    pub effort_levels: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -33,8 +36,61 @@ pub struct ModelCache {
     pub models: Vec<DiscoveredModel>,
 }
 
-/// Tolerant line parser for Cursor (`id - Label`) and OpenCode (bare ids).
+#[derive(Deserialize)]
+struct CodexCatalog {
+    models: Vec<CodexCatalogModel>,
+}
+
+#[derive(Deserialize)]
+struct CodexCatalogModel {
+    slug: String,
+    #[serde(default)]
+    display_name: Option<String>,
+    #[serde(default)]
+    visibility: Option<String>,
+    #[serde(default)]
+    supported_reasoning_levels: Vec<CodexReasoningLevel>,
+}
+
+#[derive(Deserialize)]
+struct CodexReasoningLevel {
+    effort: String,
+}
+
+/// Codex's `debug models` JSON. Hidden rows are internal (auto-review, reserve)
+/// and never offered in Codex's own picker, so they stay out of ours too.
+/// Efforts outside the shared set (Codex's `ultra` delegates to subtasks) are
+/// dropped so a picked level means the same thing on every provider.
+fn parse_codex_catalog(stdout: &str) -> Option<Vec<DiscoveredModel>> {
+    let catalog: CodexCatalog = serde_json::from_str(stdout).ok()?;
+    Some(
+        catalog
+            .models
+            .into_iter()
+            .filter(|m| m.visibility.as_deref().is_none_or(|v| v == "list"))
+            .filter(|m| !m.slug.trim().is_empty())
+            .map(|m| DiscoveredModel {
+                label: m.display_name.unwrap_or_else(|| m.slug.clone()),
+                effort_levels: m
+                    .supported_reasoning_levels
+                    .into_iter()
+                    .map(|level| level.effort)
+                    .filter(|effort| crate::config::EFFORT_LEVELS.contains(&effort.as_str()))
+                    .collect(),
+                id: m.slug,
+            })
+            .collect(),
+    )
+}
+
+/// Tolerant parser: Codex's JSON catalog, else lines of Cursor (`id - Label`)
+/// or OpenCode (bare ids).
 pub fn parse_models_output(stdout: &str) -> Vec<DiscoveredModel> {
+    if stdout.trim_start().starts_with('{') {
+        if let Some(models) = parse_codex_catalog(stdout) {
+            return models;
+        }
+    }
     let mut out = Vec::new();
     for raw in stdout.lines() {
         let line = raw.trim();
@@ -54,11 +110,13 @@ pub fn parse_models_output(stdout: &str) -> Vec<DiscoveredModel> {
                 } else {
                     label.to_string()
                 },
+                effort_levels: Vec::new(),
             });
         } else if !line.chars().any(char::is_whitespace) {
             out.push(DiscoveredModel {
                 id: line.to_string(),
                 label: line.to_string(),
+                effort_levels: Vec::new(),
             });
         }
     }
@@ -185,6 +243,36 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
+    fn parse_codex_catalog_fixture() {
+        // Trimmed `codex debug models`: one line of JSON, so the line parser
+        // skips it whole for containing whitespace.
+        let stdout = r#"{"models":[{"slug":"gpt-6-sol","display_name":"GPT-6-Sol","visibility":"list","supported_reasoning_levels":[{"effort":"low"},{"effort":"xhigh"},{"effort":"ultra"}]},{"slug":"codex-auto-review","display_name":"Codex Auto Review","visibility":"hide","supported_reasoning_levels":[{"effort":"low"}]},{"slug":"gpt-5.5","display_name":"GPT-5.5","visibility":"list","supported_reasoning_levels":[]}]}"#;
+        let models = parse_models_output(stdout);
+        assert_eq!(
+            models,
+            vec![
+                DiscoveredModel {
+                    id: "gpt-6-sol".into(),
+                    label: "GPT-6-Sol".into(),
+                    effort_levels: vec!["low".into(), "xhigh".into()],
+                },
+                DiscoveredModel {
+                    id: "gpt-5.5".into(),
+                    label: "GPT-5.5".into(),
+                    effort_levels: vec![],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn old_cache_without_effort_levels_still_loads() {
+        let json = r#"{"id":"m1","label":"M1"}"#;
+        let model: DiscoveredModel = serde_json::from_str(json).unwrap();
+        assert!(model.effort_levels.is_empty());
+    }
+
+    #[test]
     fn parse_cursor_fixture() {
         let stdout = "Available models\n\ngpt-5.2 - GPT-5.2\ncomposer-2.5 - Composer 2.5\n";
         let models = parse_models_output(stdout);
@@ -194,10 +282,12 @@ mod tests {
                 DiscoveredModel {
                     id: "gpt-5.2".into(),
                     label: "GPT-5.2".into(),
+                    ..Default::default()
                 },
                 DiscoveredModel {
                     id: "composer-2.5".into(),
                     label: "Composer 2.5".into(),
+                    ..Default::default()
                 },
             ]
         );
@@ -236,6 +326,7 @@ mod tests {
             models: vec![DiscoveredModel {
                 id: "m1".into(),
                 label: "M1".into(),
+                ..Default::default()
             }],
         };
         save_cache("cursor", &cache).unwrap();
@@ -282,6 +373,7 @@ mod tests {
             models: vec![DiscoveredModel {
                 id: "stale-m".into(),
                 label: "Stale".into(),
+                ..Default::default()
             }],
         };
         save_cache("cursor", &cache).unwrap();
