@@ -27,6 +27,7 @@
   import ArenaHistoryList from "$lib/components/arena/ArenaHistoryList.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { arena } from "$lib/stores/arena.svelte";
+  import { reviewScopeFromMode } from "$lib/reviewScope";
 
   interface Props {
     ai: AiSnapshot;
@@ -76,6 +77,22 @@
     aiReviewFilter.filter === ALL_REVIEWERS && agentLabels.length > 1,
   );
   const agentSummaryOnly = $derived(useAgentScopedSummary(aiReviewFilter.filter));
+  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const hasExpertFindings = $derived(
+    agentScopedFindings.some((finding) => finding.expert_label != null),
+  );
+  const canValidateGeneralReview = $derived(
+    !!ai.has_review_json && !!reviewScope && !!activeTab && activeTab.kind !== "remote_pr",
+  );
+  const canValidateFindings = $derived(hasExpertFindings || canValidateGeneralReview);
+  const validateFindingsHint = $derived(
+    hasExpertFindings
+      ? "Merge duplicate expert findings and regrade confidence with one arbiter pass"
+      : activeTab?.kind === "remote_pr"
+        ? "Check out this PR locally to validate its review findings"
+        : "Validate the review findings against the current diff and re-anchor their locations",
+  );
 
   const isEmpty = $derived(
     ai.findings.length === 0 &&
@@ -156,6 +173,15 @@
 
   function revealErFolder() {
     invoke("reveal_er_folder").catch(() => {});
+  }
+
+  function validateFindings() {
+    if (!canValidateFindings) return;
+    if (hasExpertFindings) {
+      void arena.validateFindings();
+    } else if (reviewScope) {
+      void app.cmd("run_ai_validate", { scope: reviewScope });
+    }
   }
 
   async function copyFindingsJson() {
@@ -521,17 +547,14 @@
   {/if}
 
   <div class="mt-2 flex flex-col gap-1">
-    <!-- The cheap path: triage picks the lenses, the experts run, and this makes
-         one arbiter pass over what they produced — merging duplicates and
-         regrading confidence. -->
+    <!-- Expert output gets an arbiter pass; a General review uses the normal
+         validator to check claims and re-anchor them against the current diff. -->
     <button
       type="button"
-      onclick={() => arena.validateFindings()}
-      disabled={!(ai.has_review_json || Object.keys(ai.agent_summaries).length > 0)}
+      onclick={validateFindings}
+      disabled={!canValidateFindings}
       class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
-      title={Object.keys(ai.agent_summaries).length > 0
-        ? "Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
-        : "Run the expert reviewers first — this validates what they produced"}
+      title={validateFindingsHint}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
         <path d="M20 6L9 17l-5-5"/>
