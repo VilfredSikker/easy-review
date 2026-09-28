@@ -58,16 +58,8 @@
     "clippy::expect_used": {
       "count": 3
     },
-    "clippy::type_complexity": {
-      "count": 1
-    },
     "clippy::unwrap_used": {
       "count": 4
-    }
-  },
-  "crates/er-desktop/src/pr_cache.rs": {
-    "clippy::type_complexity": {
-      "count": 1
     }
   },
   "crates/er-desktop/src/profile_log.rs": {
@@ -138,9 +130,6 @@
     },
     "clippy::excessive_nesting": {
       "count": 9
-    },
-    "clippy::type_complexity": {
-      "count": 1
     },
     "clippy::unwrap_used": {
       "count": 6
@@ -406,14 +395,6 @@
   "crates/er-tui/src/ui/settings.rs": {
     "clippy::unwrap_used": {
       "count": 2
-    }
-  },
-  "crates/er-tui/src/ui/styles.rs": {
-    "clippy::allow_attributes": {
-      "count": 34
-    },
-    "clippy::allow_attributes_without_reason": {
-      "count": 34
     }
   },
   "crates/er-tui/src/ui/themes.rs": {

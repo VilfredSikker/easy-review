@@ -7,8 +7,7 @@ use tauri::Manager;
 
 use er_desktop::frame_script::FRAME_SCRIPT;
 use er_desktop::snapshot::{
-    GithubStatusSnapshot, LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot,
-    WatchStatusState,
+    LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
 };
 use er_desktop::{
     arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
@@ -769,13 +768,12 @@ fn main() {
         ));
     let meta_cache: Arc<Mutex<HashMap<String, ProjectMeta>>> = Arc::new(Mutex::new(HashMap::new()));
     let gh_user: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-    let gh_status_cache: Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>> =
-        Arc::new(Mutex::new(
-            gh_status_cache::load_persisted_gh_status_cache()
-                .ok()
-                .flatten()
-                .unwrap_or_default(),
-        ));
+    let gh_status_cache: snapshot::GhStatusCache = Arc::new(Mutex::new(
+        gh_status_cache::load_persisted_gh_status_cache()
+            .ok()
+            .flatten()
+            .unwrap_or_default(),
+    ));
     let loading: LoadingState = Arc::new(Mutex::new(LoadingFlags::default()));
     let watch_status: WatchStatusState = Arc::new(Mutex::new(WatchStatusSnapshot::default()));
     let inbox = Arc::new(Mutex::new(inbox::load_inbox_state()));

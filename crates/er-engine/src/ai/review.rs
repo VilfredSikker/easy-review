@@ -776,6 +776,9 @@ impl Default for AiState {
     }
 }
 
+/// A navigable hint: `(file, hunk_index, line_start, id, hint_type)`.
+pub type OrderedHint = (String, Option<usize>, Option<usize>, String, HintType);
+
 impl AiState {
     /// Invalidate the comment index (forces rebuild on next query).
     /// Call this after mutating `questions` or `github_comments` in-place.
@@ -1595,11 +1598,8 @@ impl AiState {
     }
 
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
-    /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
     /// Replies are included and sorted immediately after their parent.
-    pub fn all_hints_ordered(
-        &self,
-    ) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
+    pub fn all_hints_ordered(&self) -> Vec<OrderedHint> {
         // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
         // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
         // position preserves insertion order within each (is_reply) group for stable output
