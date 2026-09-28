@@ -266,10 +266,9 @@ fn write_diagram_atomic(path: &Path, diagram: &ErDiagram) -> Result<()> {
 
 fn extract_diagram_json_payload(text: &str) -> Option<String> {
     let trimmed = text.trim();
-    if let Some(start) = trimmed.find(DIAGRAM_JSON_BEGIN) {
-        let after = &trimmed[start + DIAGRAM_JSON_BEGIN.len()..];
-        if let Some(end) = after.find(DIAGRAM_JSON_END) {
-            let body = after[..end].trim();
+    if let Some((_, after)) = trimmed.split_once(DIAGRAM_JSON_BEGIN) {
+        if let Some((body, _)) = after.split_once(DIAGRAM_JSON_END) {
+            let body = body.trim();
             if !body.is_empty() {
                 return Some(strip_optional_fence(body));
             }
@@ -293,23 +292,22 @@ fn extract_diagram_json_payload(text: &str) -> Option<String> {
 fn strip_optional_fence(s: &str) -> String {
     let t = s.trim();
     if let Some(rest) = t.strip_prefix("```json") {
-        if let Some(end) = rest.find("```") {
-            return rest[..end].trim().to_string();
+        if let Some((body, _)) = rest.split_once("```") {
+            return body.trim().to_string();
         }
     }
     if let Some(rest) = t.strip_prefix("```") {
-        if let Some(end) = rest.find("```") {
-            return rest[..end].trim().to_string();
+        if let Some((body, _)) = rest.split_once("```") {
+            return body.trim().to_string();
         }
     }
     t.to_string()
 }
 
 fn extract_fenced_json(s: &str) -> Option<String> {
-    let start = s.find("```json")?;
-    let rest = &s[start + 7..];
-    let end = rest.find("```")?;
-    Some(rest[..end].trim().to_string())
+    let (_, rest) = s.split_once("```json")?;
+    let (body, _) = rest.split_once("```")?;
+    Some(body.trim().to_string())
 }
 
 /// Pull the model's final text from Claude/Cursor `stream-json` NDJSON logs
@@ -332,22 +330,7 @@ fn extract_agent_stdout_text(stdout: &str) -> String {
             }
         }
         if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            if let Some(content) = v
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-            {
-                for item in content {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                            let t = text.trim();
-                            if !t.is_empty() {
-                                assistant_text.push(t.to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
         }
     }
 

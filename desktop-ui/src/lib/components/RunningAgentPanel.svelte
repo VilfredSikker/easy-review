@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import type { BackgroundTaskSnapshot, AgentLogEntry } from "$lib/types";
   import { sourceColor } from "$lib/utils/agentLog";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
@@ -15,7 +16,8 @@
 
   const LABEL_MAX = 20;
 
-  let activeTaskId = $state(tasks[0]?.id ?? "");
+  // Seeded once; the effect below re-points it when the task list drops it.
+  let activeTaskId = $state(untrack(() => tasks[0]?.id ?? ""));
   let logLines = $state<AgentLogEntry[]>([]);
   let logContainer = $state<HTMLDivElement | null>(null);
   let stickToBottom = $state(true);
@@ -119,7 +121,7 @@
   <!-- Tab strip -->
   <div class="flex items-center gap-0.5 px-1.5 pt-1.5 pb-0 shrink-0 overflow-x-auto">
     {#each tasks as task (task.id)}
-      <button
+      <button type="button"
         class="flex items-center gap-1 px-2 py-1 rounded-t text-[10px] font-mono shrink-0 transition-colors
           {activeTaskId === task.id ? 'bg-ink-700/60 text-ink-100' : 'text-ink-400 hover:text-ink-200 hover:bg-ink-800/60'}"
         onclick={() => { activeTaskId = task.id; }}
@@ -156,7 +158,7 @@
       class="flex-1 min-h-0 overflow-y-auto px-3 py-2 space-y-0.5"
     >
       {#if logLines.length > 0}
-        {#each logLines as entry}
+        {#each logLines as entry, i (i)}
           <div class="text-[10px] font-mono leading-relaxed break-all {sourceColor(entry.source)}">{entry.text}</div>
         {/each}
       {:else if activeTask.status === "running"}
@@ -164,9 +166,10 @@
       {/if}
 
       {#if activeTask.debug_log_path && (activeTask.status === "done" || activeTask.status === "failed")}
-        <button
+        {@const logPath = activeTask.debug_log_path}
+        <button type="button"
           class="text-[10px] text-accent font-mono mt-1 hover:underline"
-          onclick={() => copyLogPath(activeTask!.debug_log_path!)}
+          onclick={() => copyLogPath(logPath)}
         >
           Copy log path
         </button>

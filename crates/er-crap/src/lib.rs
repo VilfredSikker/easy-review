@@ -1,9 +1,5 @@
 //! CRAP (Change Risk Anti-Patterns) metric for Rust functions.
 //!
-//! Deliberate style decision (matches er-engine/er-tui/er-desktop): keep
-//! `match Some/None` / if-let chains over `Option::map_or[_else]`.
-#![allow(clippy::option_if_let_else)]
-//!
 //! CRAP combines a function's cyclomatic complexity with its unit-test
 //! coverage into a single risk score:
 //!
@@ -161,7 +157,8 @@ pub fn run(opts: &Opts) -> anyhow::Result<RunOutcome> {
     for (rel, source) in walk_rs_files(&opts.path)? {
         let rel_str = rel.to_string_lossy().to_string();
         for f in complexity::analyze_file(&source) {
-            let coverage_pct = coverage_pct_of(&coverage, &rel_str, f.start_line, f.end_line);
+            let coverage_pct =
+                coverage_pct_of(coverage.as_ref(), &rel_str, f.start_line, f.end_line);
             let score = crap_score(f.complexity as f64, coverage_pct);
             entries.push(report::Entry {
                 file: rel_str.clone(),
@@ -196,13 +193,12 @@ pub fn run(opts: &Opts) -> anyhow::Result<RunOutcome> {
 /// no coverage data at all score 0% (pessimistic — the same default as
 /// cargo-crap's `--missing pessimistic`).
 fn coverage_pct_of(
-    coverage: &Option<lcov::LcovCoverage>,
+    coverage: Option<&lcov::LcovCoverage>,
     file: &str,
     start: usize,
     end: usize,
 ) -> f64 {
     coverage
-        .as_ref()
         .and_then(|c| c.coverage_for(file, start, end))
         .map(|(covered, total)| {
             if total == 0 {

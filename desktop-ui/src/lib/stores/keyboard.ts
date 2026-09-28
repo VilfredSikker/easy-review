@@ -133,6 +133,188 @@ async function openInVsCode() {
   }
 }
 
+interface KeyContext {
+  target: HTMLElement;
+  inField: boolean;
+  modalOpen: boolean;
+}
+
+/** One shortcut: acts and returns true when it owns the key, else false. */
+type Shortcut = (e: KeyboardEvent, ctx: KeyContext) => boolean;
+
+const withMod = (e: KeyboardEvent) => e.metaKey || e.ctrlKey;
+const isLetter = (e: KeyboardEvent, lower: string) => e.key === lower || e.key === lower.toUpperCase();
+
+/** Stop after preventDefault; the shared tail of most shortcuts. */
+function handled(e: KeyboardEvent): true {
+  e.preventDefault();
+  return true;
+}
+
+function handleEscape(e: KeyboardEvent): boolean {
+  if (e.key !== "Escape") return false;
+  // Palette owns Escape (blur search, submenu back, or close).
+  if (commandPalette.open) return true;
+  if (overlay.dismissTopModal()) return handled(e);
+  // Esc precedence: usages popover → Cmd+F search bar → diff selection →
+  // identifier highlight.
+  if (refHighlight.popoverOpen) {
+    refHighlight.closePopover();
+    return handled(e);
+  }
+  if (refHighlight.searchOpen) {
+    refHighlight.closeSearch();
+    return handled(e);
+  }
+  if (diffSel.active) {
+    diffSel.clear();
+    return handled(e);
+  }
+  if (refHighlight.active) {
+    refHighlight.clear();
+    return handled(e);
+  }
+  if (dismissBrowserAnnotationComposer) {
+    dismissBrowserAnnotationComposer();
+    return handled(e);
+  }
+  if (blurActiveField()) return handled(e);
+  return false;
+}
+
+function selectTabByDigit(e: KeyboardEvent, { inField }: KeyContext): boolean {
+  if (!withMod(e) || e.shiftKey || inField || !/^[1-9]$/.test(e.key)) return false;
+  const tabIdx = parseInt(e.key, 10) - 1;
+  const tabs = app.snapshot?.tabs ?? [];
+  if (tabIdx < tabs.length) {
+    e.preventDefault();
+    app.cmd("select_tab", { idx: tabIdx });
+  }
+  return true;
+}
+
+/** Checked in order; the first that returns true ends the keydown. */
+const GLOBAL_SHORTCUTS: Shortcut[] = [
+  handleEscape,
+  (e) => {
+    if (!(e.ctrlKey && e.key === "q")) return false;
+    getCurrentWindow().close();
+    return true;
+  },
+  // Cmd/Ctrl+K belongs to the command palette.
+  (e) => withMod(e) && e.key === "k",
+  // Cmd/Ctrl+F opens the diff search bar. preventDefault suppresses the
+  // webview's native find UI; works even when focus is in an input (the bar
+  // refocuses its own field on open). An active text selection in the diff
+  // prefills the query (priority over the identifier-highlight fallback).
+  (e) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "f")) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    refHighlight.openSearch(diffSelectionPrefill());
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "b")) return false;
+    if (inField && !document.querySelector("[data-modal]")) return false;
+    e.preventDefault();
+    void browser.cycleLayout();
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "b") || inField) return false;
+    e.preventDefault();
+    void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
+    return true;
+  },
+  (e) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "e")) return false;
+    e.preventDefault();
+    openExportReviewView();
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || e.shiftKey || e.key !== "o" || inField) return false;
+    e.preventDefault();
+    app.cmd("open_worktree", {});
+    return true;
+  },
+  (e) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "p")) return false;
+    e.preventDefault();
+    focusSidebarSearchOrFileFilter();
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "t") || (inField && !terminal.open)) return false;
+    e.preventDefault();
+    terminal.toggle();
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "t") || inField) return false;
+    e.preventDefault();
+    app.cmd("new_tab");
+    return true;
+  },
+  (e, { inField }) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "w") || inField) return false;
+    e.preventDefault();
+    const idx = app.snapshot?.active_tab ?? 0;
+    app.cmd("close_tab", { idx });
+    return true;
+  },
+  selectTabByDigit,
+  (e) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "o")) return false;
+    e.preventDefault();
+    openPrUrlModal();
+    return true;
+  },
+  (e, { inField, modalOpen }) => {
+    const bare = !inField && !e.ctrlKey && !e.metaKey && !modalOpen;
+    return (bare || withMod(e)) && togglePanelForKey(e);
+  },
+  (e, { target, inField, modalOpen }) => {
+    if (e.key !== "`" || inField || modalOpen || target.closest(".xterm")) return false;
+    e.preventDefault();
+    terminal.toggle();
+    return true;
+  },
+  (e) => {
+    if (!withMod(e) || e.shiftKey || !isLetter(e, "r")) return false;
+    e.preventDefault();
+    app.cmd("force_refresh_diff");
+    return true;
+  },
+];
+
+/** Single-key shortcuts, only outside fields and modals and without modifiers. */
+function handleBareKey(e: KeyboardEvent) {
+  switch (e.key) {
+    case "j":
+      moveFile(1);
+      break;
+    case "k":
+      moveFile(-1);
+      break;
+    case "/":
+      e.preventDefault();
+      focusInput('input[placeholder^="Filter files"]');
+      break;
+    case "d":
+      e.preventDefault();
+      app.toggleDiffViewMode();
+      break;
+    case "R":
+      app.cmd("refresh_diff");
+      break;
+    case "e":
+      void openInVsCode();
+      break;
+  }
+}
+
 export function initKeyboard(): () => void {
   function handler(e: KeyboardEvent) {
     const target = e.target as HTMLElement;
@@ -143,177 +325,19 @@ export function initKeyboard(): () => void {
     const modalOpen = !!document.querySelector("[data-modal]");
 
     if (inTerminal) {
-      const isToggleTerminal =
-        (e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "t" || e.key === "T");
+      const isToggleTerminal = withMod(e) && !e.shiftKey && isLetter(e, "t");
       if (!isToggleTerminal) return;
     }
 
-    if (e.key === "Escape") {
-      if (commandPalette.open) {
-        // Palette owns Escape (blur search, submenu back, or close).
-        return;
-      }
-      if (overlay.dismissTopModal()) {
-        e.preventDefault();
-        return;
-      }
-      // Esc precedence: usages popover → Cmd+F search bar → diff selection →
-      // identifier highlight.
-      if (refHighlight.popoverOpen) {
-        refHighlight.closePopover();
-        e.preventDefault();
-        return;
-      }
-      if (refHighlight.searchOpen) {
-        refHighlight.closeSearch();
-        e.preventDefault();
-        return;
-      }
-      if (diffSel.active) {
-        diffSel.clear();
-        e.preventDefault();
-        return;
-      }
-      if (refHighlight.active) {
-        refHighlight.clear();
-        e.preventDefault();
-        return;
-      }
-      if (dismissBrowserAnnotationComposer) {
-        dismissBrowserAnnotationComposer();
-        e.preventDefault();
-        return;
-      }
-      if (blurActiveField()) {
-        e.preventDefault();
-        return;
-      }
-    }
-    if (e.ctrlKey && e.key === "q") {
-      getCurrentWindow().close();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.key === "k") {
-      return;
-    }
-    // Cmd/Ctrl+F opens the diff search bar. preventDefault suppresses the
-    // webview's native find UI; works even when focus is in an input (the bar
-    // refocuses its own field on open). An active text selection in the diff
-    // prefills the query (priority over the identifier-highlight fallback).
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "f" || e.key === "F")) {
-      e.preventDefault();
-      e.stopPropagation();
-      refHighlight.openSearch(diffSelectionPrefill());
-      return;
-    }
-    if (
-      (e.metaKey || e.ctrlKey) &&
-      !e.shiftKey &&
-      (e.key === "b" || e.key === "B") &&
-      (!inField || !!document.querySelector("[data-modal]"))
-    ) {
-      e.preventDefault();
-      void browser.cycleLayout();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "b" || e.key === "B") && !inField) {
-      e.preventDefault();
-      void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "e" || e.key === "E")) {
-      e.preventDefault();
-      openExportReviewView();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && e.key === "o" && !inField) {
-      e.preventDefault();
-      app.cmd("open_worktree", {});
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "p" || e.key === "P")) {
-      e.preventDefault();
-      focusSidebarSearchOrFileFilter();
-      return;
-    }
-    if (
-      (e.metaKey || e.ctrlKey) &&
-      !e.shiftKey &&
-      (e.key === "t" || e.key === "T") &&
-      (!inField || terminal.open)
-    ) {
-      e.preventDefault();
-      terminal.toggle();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "t" || e.key === "T") && !inField) {
-      e.preventDefault();
-      app.cmd("new_tab");
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "w" || e.key === "W") && !inField) {
-      e.preventDefault();
-      const idx = app.snapshot?.active_tab ?? 0;
-      app.cmd("close_tab", { idx });
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !inField && /^[1-9]$/.test(e.key)) {
-      const target = parseInt(e.key, 10) - 1;
-      const tabs = app.snapshot?.tabs ?? [];
-      if (target < tabs.length) {
-        e.preventDefault();
-        app.cmd("select_tab", { idx: target });
-      }
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && e.shiftKey && (e.key === "o" || e.key === "O")) {
-      e.preventDefault();
-      openPrUrlModal();
-      return;
-    }
-    if (
-      ((!inField && !e.ctrlKey && !e.metaKey && !modalOpen) || (e.metaKey || e.ctrlKey)) &&
-      togglePanelForKey(e)
-    ) {
-      return;
-    }
-    if (e.key === "`" && !inField && !modalOpen && !target.closest(".xterm")) {
-      e.preventDefault();
-      terminal.toggle();
-      return;
-    }
-    if ((e.metaKey || e.ctrlKey) && !e.shiftKey && (e.key === "r" || e.key === "R")) {
-      e.preventDefault();
-      app.cmd("force_refresh_diff");
-      return;
+    const ctx = { target, inField, modalOpen };
+    for (const shortcut of GLOBAL_SHORTCUTS) {
+      if (shortcut(e, ctx)) return;
     }
 
     if (inField) return;
     if (document.querySelector("[data-modal]")) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
-
-    switch (e.key) {
-      case "j":
-        moveFile(1);
-        break;
-      case "k":
-        moveFile(-1);
-        break;
-      case "/":
-        e.preventDefault();
-        focusInput('input[placeholder^="Filter files"]');
-        break;
-      case "d":
-        e.preventDefault();
-        app.toggleDiffViewMode();
-        break;
-      case "R":
-        app.cmd("refresh_diff");
-        break;
-      case "e":
-        void openInVsCode();
-        break;
-    }
+    handleBareKey(e);
   }
 
   window.addEventListener("keydown", handler, { capture: true });

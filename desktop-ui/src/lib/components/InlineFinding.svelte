@@ -6,19 +6,7 @@
   import ReplyActionBar from "$lib/components/ReplyActionBar.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { confidenceGlyph } from "$lib/diffAnnotations";
-
-  type MergedReply = {
-    id: string;
-    author: string;
-    kind: "you" | "human" | "ai";
-    timestamp: string;
-    body_markdown: string;
-    origin: "finding_response" | "thread_reply";
-    source?: string;
-    synced?: boolean;
-    editable?: boolean;
-    deletable?: boolean;
-  };
+  import { mergeFindingReplies, type MergedReply } from "$lib/findingReplies";
 
   interface Props {
     finding: FlatFinding;
@@ -27,11 +15,12 @@
 
   const { finding, thread = null }: Props = $props();
 
-  const severityColor = $derived(
-    finding.severity === "high" ? "var(--color-risk-high)"
-    : finding.severity === "med" ? "var(--color-risk-med)"
-    : "var(--color-risk-low)",
-  );
+  function severityColorFor(severity: FlatFinding["severity"]): string {
+    if (severity === "high") return "var(--color-risk-high)";
+    if (severity === "med") return "var(--color-risk-med)";
+    return "var(--color-risk-low)";
+  }
+  const severityColor = $derived(severityColorFor(finding.severity));
 
   const isPromoted = $derived(finding.promoted_to != null);
 
@@ -46,13 +35,15 @@
     lensCategory.length > 0 && lensCategory.toLowerCase() !== agentLabel.toLowerCase(),
   );
 
-  const agentPillStyle = $derived(
-    agentLabel === "Professor"
-      ? "background: color-mix(in srgb, var(--color-emphasis) 15%, transparent); color: var(--color-emphasis); border-color: color-mix(in srgb, var(--color-emphasis) 25%, transparent)"
-      : agentLabel === "General"
-        ? "background: color-mix(in srgb, var(--color-fg-3) 15%, transparent); color: var(--color-fg-3); border-color: color-mix(in srgb, var(--color-fg-3) 25%, transparent)"
-        : "background: color-mix(in srgb, var(--color-info) 15%, transparent); color: var(--color-info); border-color: color-mix(in srgb, var(--color-info) 25%, transparent)",
-  );
+  function agentPillColor(label: string): string {
+    if (label === "Professor") return "var(--color-emphasis)";
+    if (label === "General") return "var(--color-fg-3)";
+    return "var(--color-info)";
+  }
+  const agentPillStyle = $derived.by(() => {
+    const color = agentPillColor(agentLabel);
+    return `background: color-mix(in srgb, ${color} 15%, transparent); color: ${color}; border-color: color-mix(in srgb, ${color} 25%, transparent)`;
+  });
 
   let replyText = $state("");
   let showPromote = $state(false);
@@ -61,40 +52,7 @@
   let editInitialBody = $state("");
   let replyInputEl = $state<HTMLInputElement | null>(null);
 
-  const mergedReplies = $derived.by((): MergedReply[] => {
-    const byKey = new Map<string, MergedReply>();
-    const add = (r: MergedReply) => {
-      const key = `${r.origin}:${r.id || r.timestamp}:${r.body_markdown}`;
-      if (!byKey.has(key)) byKey.set(key, r);
-    };
-    for (const r of finding.responses ?? []) {
-      add({
-        id: r.id,
-        author: r.author,
-        kind: r.kind,
-        timestamp: r.timestamp,
-        body_markdown: r.body_markdown,
-        origin: "finding_response",
-        editable: r.editable,
-        deletable: r.deletable,
-      });
-    }
-    for (const r of thread?.replies ?? []) {
-      add({
-        id: r.id,
-        author: r.author,
-        kind: r.kind,
-        timestamp: r.timestamp,
-        body_markdown: r.body_markdown,
-        origin: r.origin ?? "thread_reply",
-        source: r.source,
-        synced: r.synced,
-        editable: r.editable ?? r.kind === "you",
-        deletable: r.deletable ?? true,
-      });
-    }
-    return [...byKey.values()].sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-  });
+  const mergedReplies = $derived(mergeFindingReplies(finding, thread));
 
   function focusReply() {
     replyInputEl?.focus();
@@ -125,10 +83,10 @@
     }
   }
 
-  function openEdit(reply: MergedReply) {
-    editMessageId = reply.id;
-    editOrigin = reply.origin;
-    editInitialBody = reply.body_markdown;
+  function openEdit(target: MergedReply) {
+    editMessageId = target.id;
+    editOrigin = target.origin;
+    editInitialBody = target.body_markdown;
   }
 
   function submitEdit(body: string) {
@@ -263,12 +221,12 @@
   <!-- Actions on the finding (not on replies below) -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-2 text-[11px] flex-wrap">
     {#if !isPromoted}
-      <button onclick={() => (showPromote = true)} class="px-2 py-0.5 rounded text-comment hover:bg-hover flex items-center gap-1">
+      <button type="button" onclick={() => (showPromote = true)} class="px-2 py-0.5 rounded text-comment hover:bg-hover flex items-center gap-1">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Promote to comment
       </button>
     {/if}
-    <button onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+    <button type="button" onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
     <button
       type="button"
       onclick={() => void askAi()}
@@ -302,37 +260,37 @@
   <!-- Validation / AI replies (finding.responses + legacy thread replies) -->
   {#if mergedReplies.length > 0}
     <div class="border-t border-hairline bg-surface">
-      {#each mergedReplies as reply, i}
+      {#each mergedReplies as entry, i (entry.key)}
         <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {reply.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-on-accent'}">
-            {#if reply.kind === "ai"}
+          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {entry.kind === 'ai' ? 'bg-ai/20' : 'bg-accent text-on-accent'}">
+            {#if entry.kind === "ai"}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
             {:else}
-              {(reply.author || "Y")[0].toUpperCase()}
+              {(entry.author || "Y")[0].toUpperCase()}
             {/if}
           </div>
-          <div class="flex-1 min-w-0 {reply.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
+          <div class="flex-1 min-w-0 {entry.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
             <div class="text-[11px] font-mono text-muted mb-0.5">
-              {#if reply.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{reply.author}</span>{/if}
-              {#if reply.timestamp}<span>· {formatTimestamp(reply.timestamp)}</span>{/if}
+              {#if entry.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{entry.author}</span>{/if}
+              {#if entry.timestamp}<span>· {formatTimestamp(entry.timestamp)}</span>{/if}
             </div>
-            {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
+            {#if entry.kind === "ai" && entry.body_markdown === "…thinking"}
               <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
             {:else}
               <div class="annotation-body-scroll">
-                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
+                <MarkdownText text={entry.body_markdown} className="text-sm text-fg-2" />
               </div>
             {/if}
-            {#if reply.id && reply.body_markdown !== "…thinking"}
+            {#if entry.id && entry.body_markdown !== "…thinking"}
               <ReplyActionBar
-                {reply}
+                reply={entry}
                 rootThreadId={thread?.id ?? null}
                 findingId={finding.id}
                 isQuestion={thread?.kind === "question"}
                 parentSynced={thread?.synced ?? false}
                 threadResolved={thread?.resolved ?? false}
-                onEdit={reply.editable ? () => openEdit(reply) : undefined}
-                onDelete={() => deleteReply(reply.id, reply.origin)}
+                onEdit={entry.editable ? () => openEdit(entry) : undefined}
+                onDelete={() => deleteReply(entry.id, entry.origin)}
               />
             {/if}
           </div>
@@ -368,7 +326,7 @@
   kind="finding"
   sourceId={finding.id}
   initialBody={buildPromoteBody()}
-  targetLineLabel={targetLineLabel}
+  {targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
 />

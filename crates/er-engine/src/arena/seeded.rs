@@ -246,14 +246,13 @@ fn collapse_groups(findings: Vec<ArenaFinding>) -> Vec<ArenaFinding> {
     let mut slots: Vec<Option<ArenaFinding>> = findings.into_iter().map(Some).collect();
     let mut out = Vec::with_capacity(groups.len());
     for members in groups.into_values() {
-        let mut group: Vec<ArenaFinding> = members
+        let group: Vec<ArenaFinding> = members
             .into_iter()
             .filter_map(|i| slots[i].take())
             .collect();
-        if group.len() == 1 {
-            out.push(group.pop().expect("one member"));
-        } else {
-            out.push(collapse_one(group));
+        match <[ArenaFinding; 1]>::try_from(group) {
+            Ok([only]) => out.push(only),
+            Err(group) => out.push(collapse_one(group)),
         }
     }
     out

@@ -40,7 +40,6 @@ pub fn build_snapshot_with_config(config: &ErConfig, run: ArenaRun) -> ArenaRunS
     }
 }
 
-#[allow(dead_code)]
 pub fn build_snapshot(run: ArenaRun) -> ArenaRunSnapshot {
     let matrix = build_matrix(&run.findings);
     let funnel = build_funnel(&run.findings);

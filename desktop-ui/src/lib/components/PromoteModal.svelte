@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
@@ -22,7 +23,8 @@
     onClose,
   }: Props = $props();
 
-  let body = $state(initialBody);
+  // Seeded once; the effect below re-seeds when a different source opens.
+  let body = $state(untrack(() => initialBody));
   let submitting = $state(false);
   let textareaEl: HTMLTextAreaElement | null = $state(null);
   let lastSourceId = $state("");
@@ -43,13 +45,12 @@
     }
   });
 
-  const title = $derived(
-    kind === "question"
-      ? "Promote question to comment"
-      : kind === "note"
-        ? "Promote note to comment"
-        : "Promote AI finding to comment",
-  );
+  const TITLES: Record<Props["kind"], string> = {
+    question: "Promote question to comment",
+    note: "Promote note to comment",
+    finding: "Promote AI finding to comment",
+  };
+  const title = $derived(TITLES[kind]);
 
   async function submit() {
     if (!body.trim() || submitting) return;
@@ -72,7 +73,7 @@
 <ModalShell
   {open}
   ariaLabel={title}
-  onClose={onClose}
+  {onClose}
   onKeydown={handleKey}
   focusSelector="textarea"
   backdropClass="fixed inset-0 z-50 flex items-center justify-center bg-bg/60 p-6"
@@ -82,7 +83,7 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-comment"
           ><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" /></svg>
         <span class="text-sm font-medium text-fg-1">{title}</span>
-        <button
+        <button type="button"
           aria-label="Close"
           class="ml-auto text-muted hover:text-fg-2 px-2"
           onclick={onClose}

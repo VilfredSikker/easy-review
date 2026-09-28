@@ -12,14 +12,14 @@
 
   const { mode, total_count, reviewed_count, commits = [] }: Props = $props();
 
-  const scopeLabel = $derived(
-    mode === "branch" ? "Branch" :
-    mode === "unstaged" ? "Unstaged" :
-    mode === "staged" ? "Staged" :
-    mode === "pr" ? "PR Diff" :
-    mode === "tour" ? "Guide" :
-    "History"
-  );
+  const SCOPE_LABELS: Partial<Record<Props["mode"], string>> = {
+    branch: "Branch",
+    unstaged: "Unstaged",
+    staged: "Staged",
+    pr: "PR Diff",
+    tour: "Guide",
+  };
+  const scopeLabel = $derived(SCOPE_LABELS[mode] ?? "History");
 
   const snapshot = $derived(app.snapshot);
   const features = $derived(
@@ -90,7 +90,7 @@
   <!-- View selector — driven by availableModes derived from snapshot state -->
   <div class="px-3 pt-2 pb-1.5 flex flex-col gap-0.5">
     {#if availableModes.includes("branch")}
-    <button
+    <button type="button"
       class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {allChangesActive ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => void app.cmd("set_mode", { mode: "branch" })}
     >
@@ -111,7 +111,7 @@
     {/if}
 
     {#if availableModes.includes("unstaged")}
-    <button
+    <button type="button"
       class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {mode === 'unstaged' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => void app.cmd("set_mode", { mode: "unstaged" })}
     >
@@ -128,7 +128,7 @@
     {/if}
 
     {#if availableModes.includes("staged")}
-    <button
+    <button type="button"
       class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {mode === 'staged' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => void app.cmd("set_mode", { mode: "staged" })}
     >
@@ -145,7 +145,7 @@
     {/if}
 
     {#if availableModes.includes("pr")}
-    <button
+    <button type="button"
       class="w-full text-left px-2 py-[5px] rounded-md flex items-center gap-2 relative {mode === 'pr' ? 'bg-ink-650 text-fg' : 'text-fg-2 hover:bg-card'}"
       onclick={() => void app.cmd("set_mode", { mode: "pr_diff" })}
     >
@@ -162,7 +162,7 @@
   <!-- Commits in scope (only when engine provides them; hidden on remote PR tabs) -->
   {#if commitsToShow.length > 0}
     <div class="border-t border-hairline overflow-hidden" style="max-height: {commitsCollapsed ? '30px' : '280px'}; transition: max-height 0.15s ease; flex-shrink: 0;">
-      <button
+      <button type="button"
         class="w-full flex items-center gap-1.5 px-3 py-[6px] text-[10px] uppercase tracking-[0.06em] font-semibold text-muted hover:text-fg-2 sticky top-0 bg-bg"
         onclick={() => (commitsCollapsed = !commitsCollapsed)}
         aria-expanded={!commitsCollapsed}
@@ -189,7 +189,7 @@
       <div class="overflow-y-auto pb-1" style="max-height: 250px;">
         {#each commitsToShow as commit (commit.sha)}
           {@const isSelected = commit.sha === selectedCommitSha}
-          <button
+          <button type="button"
             class="w-full text-left mx-[6px] rounded-[5px] relative {isSelected ? 'bg-card text-fg' : 'text-fg-2'} {commitsSelectable ? 'hover:bg-card/50 cursor-pointer' : 'cursor-default'}"
             style="width: calc(100% - 12px); padding: 5px 8px 5px 10px;"
             onclick={() => commitsSelectable && app.cmd("select_commit", { sha: commit.sha })}

@@ -9,14 +9,14 @@ const config: StorybookConfig = {
     options: {},
   },
   typescript: { check: false },
-  viteFinal: async (config) => {
+  viteFinal: async (viteConfig) => {
     // Reuse the same $lib alias as the main Vite build.
-    config.resolve = config.resolve ?? {};
-    config.resolve.alias = {
-      ...(config.resolve.alias ?? {}),
+    viteConfig.resolve = viteConfig.resolve ?? {};
+    viteConfig.resolve.alias = {
+      ...(viteConfig.resolve.alias ?? {}),
       $lib: fileURLToPath(new URL("../src/lib", import.meta.url)),
     };
-    return config;
+    return viteConfig;
   },
 };
 

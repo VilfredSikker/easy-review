@@ -244,7 +244,6 @@ const MATCH_OPTIONS: MatchOptions = MatchOptions {
 ///
 /// Note: risk and importance rules are evaluated without review data (always
 /// include). Use `apply_filter_with_context` when any rule data is available.
-#[cfg_attr(not(test), allow(dead_code))]
 pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
     apply_filter_with_context(rules, file, None, None)
 }

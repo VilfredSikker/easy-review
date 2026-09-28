@@ -407,6 +407,31 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ui_annotations[0]).toMatchObject({ url: "https://ex/app", text: "pin" });
   });
 
+  it("rolls back an added UI annotation and an added comment thread", () => {
+    const view = snap({ ui_annotations: [] });
+    const ann = buildOptimisticOp(
+      "add_ui_annotation",
+      { url: "https://ex/app", text: "pin", bbox: [1, 2, 3, 4], viewport: [800, 600] },
+      view,
+      { nowIso: now, id: "opt-a" },
+    );
+    applyOptimisticOp(view, ann!);
+    rollbackOptimisticOp(view, ann!);
+    expect(view.ui_annotations).toEqual([]);
+
+    const withFile = snap({ files: [file({ hunks: [hunk()] })] });
+    const add = buildOptimisticOp(
+      "add_comment",
+      { file: "src/a.ts", hunkIdx: 0, lineNum: 1, text: "hi" },
+      withFile,
+      { nowIso: now, id: "c-opt" },
+    );
+    applyOptimisticOp(withFile, add!);
+    expect(withFile.ai.threads.map((t) => t.id)).toEqual(["c-opt"]);
+    rollbackOptimisticOp(withFile, add!);
+    expect(withFile.ai.threads).toEqual([]);
+  });
+
   it("reapply skips a different view identity", () => {
     const view = withThread(commentThread());
     const op = buildOptimisticOp("resolve_thread", { id: "c-1" }, view, { id: "opt-res" });

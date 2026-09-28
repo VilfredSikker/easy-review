@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::cell::RefCell;
+use std::cell::{OnceCell, Ref, RefCell};
 use std::collections::{HashMap, HashSet};
 
 use super::relocate::{relocate_comment, CommentAnchor, RelocationResult};
@@ -695,6 +695,22 @@ enum CommentSource {
     GitHubComment,
 }
 
+fn indexed_hunk_index(comment: &CommentRef<'_>) -> Option<usize> {
+    match comment {
+        CommentRef::Question(q) | CommentRef::Note(q) => q.hunk_index,
+        CommentRef::GitHubComment(c) => c.hunk_index,
+        CommentRef::Legacy(c) => c.hunk_index,
+    }
+}
+
+fn indexed_line_start(comment: &CommentRef<'_>) -> Option<usize> {
+    match comment {
+        CommentRef::Question(q) | CommentRef::Note(q) => q.line_start,
+        CommentRef::GitHubComment(c) => c.line_start,
+        CommentRef::Legacy(c) => c.line_start,
+    }
+}
+
 type HunkIndexMap = HashMap<(String, Option<usize>), Vec<(CommentSource, usize)>>;
 
 /// Pre-built indexes for fast comment lookups.
@@ -748,8 +764,8 @@ pub struct AiState {
     /// so a UI can list them rather than only counting them.
     pub arbiter_effect: super::arbiter::ArbiterEffect,
     /// Lazily-built comment index for O(1) lookups.
-    /// `None` means unbuilt; rebuilt on first query after invalidation.
-    comment_index: RefCell<Option<CommentIndexData>>,
+    /// An empty cell means unbuilt; rebuilt on first query after invalidation.
+    comment_index: RefCell<OnceCell<CommentIndexData>>,
 }
 
 impl Default for AiState {
@@ -771,23 +787,49 @@ impl Default for AiState {
             tour_stale: false,
             stale_files: HashSet::new(),
             arbiter_effect: super::arbiter::ArbiterEffect::default(),
-            comment_index: RefCell::new(None),
+            comment_index: RefCell::new(OnceCell::new()),
         }
     }
 }
+
+/// A navigable hint: `(file, hunk_index, line_start, id, hint_type)`.
+pub type OrderedHint = (String, Option<usize>, Option<usize>, String, HintType);
 
 impl AiState {
     /// Invalidate the comment index (forces rebuild on next query).
     /// Call this after mutating `questions` or `github_comments` in-place.
     pub fn rebuild_comment_index(&self) {
-        *self.comment_index.borrow_mut() = None;
+        *self.comment_index.borrow_mut() = OnceCell::new();
     }
 
-    /// Build the comment index from current data if not already built.
-    fn ensure_index(&self) {
-        if self.comment_index.borrow().is_some() {
-            return;
+    /// The comment index, built from current data on first use after invalidation.
+    fn comment_index(&self) -> Ref<'_, CommentIndexData> {
+        Ref::map(self.comment_index.borrow(), |cell| {
+            cell.get_or_init(|| self.build_comment_index())
+        })
+    }
+
+    /// The comment an index entry points at, or `None` when that source is no
+    /// longer loaded or the entry is out of range.
+    fn indexed_comment(&self, source: &CommentSource, idx: usize) -> Option<CommentRef<'_>> {
+        match source {
+            CommentSource::Question => self
+                .questions
+                .as_ref()?
+                .questions
+                .get(idx)
+                .map(CommentRef::Question),
+            CommentSource::Note => self.notes.as_ref()?.notes.get(idx).map(CommentRef::Note),
+            CommentSource::GitHubComment => self
+                .github_comments
+                .as_ref()?
+                .comments
+                .get(idx)
+                .map(CommentRef::GitHubComment),
         }
+    }
+
+    fn build_comment_index(&self) -> CommentIndexData {
         let mut hunk_index: HunkIndexMap = HashMap::new();
         let mut line_index: HashMap<(String, usize), Vec<(CommentSource, usize)>> = HashMap::new();
         let mut file_comment_counts: HashMap<String, (usize, usize, usize)> = HashMap::new();
@@ -876,11 +918,11 @@ impl AiState {
             }
         }
 
-        *self.comment_index.borrow_mut() = Some(CommentIndexData {
+        CommentIndexData {
             hunk_index,
             line_index,
             file_comment_counts,
-        });
+        }
     }
 
     /// Whether a specific file's findings are stale (its diff changed since the review)
@@ -1074,38 +1116,15 @@ impl AiState {
     pub fn comments_for_hunk(&self, path: &str, hunk_index: usize) -> Vec<CommentRef<'_>> {
         // Use index only when questions, notes, or github_comments are present (not legacy fallback)
         if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             let key = (path.to_string(), Some(hunk_index));
-            let entries = index.hunk_index.get(&key);
             let mut result = Vec::new();
-            if let Some(entries) = entries {
-                for (source, idx) in entries {
-                    match source {
-                        CommentSource::Question => {
-                            if let Some(qs) = &self.questions {
-                                if let Some(q) = qs.questions.get(*idx) {
-                                    result.push(CommentRef::Question(q));
-                                }
-                            }
-                        }
-                        CommentSource::Note => {
-                            if let Some(ns) = &self.notes {
-                                if let Some(n) = ns.notes.get(*idx) {
-                                    result.push(CommentRef::Note(n));
-                                }
-                            }
-                        }
-                        CommentSource::GitHubComment => {
-                            if let Some(gc) = &self.github_comments {
-                                if let Some(c) = gc.comments.get(*idx) {
-                                    result.push(CommentRef::GitHubComment(c));
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(entries) = index.hunk_index.get(&key) {
+                result.extend(
+                    entries
+                        .iter()
+                        .filter_map(|(source, idx)| self.indexed_comment(source, *idx)),
+                );
             }
             return result;
         }
@@ -1274,45 +1293,17 @@ impl AiState {
         line_num: usize,
     ) -> Vec<CommentRef<'_>> {
         if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             let key = (path.to_string(), line_num);
-            let entries = index.line_index.get(&key);
             let mut result = Vec::new();
-            if let Some(entries) = entries {
-                for (source, idx) in entries {
-                    match source {
-                        CommentSource::Question => {
-                            if let Some(qs) = &self.questions {
-                                if let Some(q) = qs.questions.get(*idx) {
-                                    // Filter by hunk_idx too (line_index is keyed by file+line only)
-                                    if q.hunk_index == Some(hunk_idx) {
-                                        result.push(CommentRef::Question(q));
-                                    }
-                                }
-                            }
-                        }
-                        CommentSource::Note => {
-                            if let Some(ns) = &self.notes {
-                                if let Some(n) = ns.notes.get(*idx) {
-                                    if n.hunk_index == Some(hunk_idx) {
-                                        result.push(CommentRef::Note(n));
-                                    }
-                                }
-                            }
-                        }
-                        CommentSource::GitHubComment => {
-                            if let Some(gc) = &self.github_comments {
-                                if let Some(c) = gc.comments.get(*idx) {
-                                    if c.hunk_index == Some(hunk_idx) {
-                                        result.push(CommentRef::GitHubComment(c));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(entries) = index.line_index.get(&key) {
+                result.extend(
+                    entries
+                        .iter()
+                        .filter_map(|(source, idx)| self.indexed_comment(source, *idx))
+                        // Filter by hunk_idx too (line_index is keyed by file+line only)
+                        .filter(|c| indexed_hunk_index(c) == Some(hunk_idx)),
+                );
             }
             return result;
         }
@@ -1335,46 +1326,18 @@ impl AiState {
     /// Comments targeting the hunk as a whole (no specific line, top-level only)
     pub fn comments_for_hunk_only(&self, path: &str, hunk_idx: usize) -> Vec<CommentRef<'_>> {
         if self.questions.is_some() || self.notes.is_some() || self.github_comments.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             // Look up all comments for this (file, hunk_index) pair
             let key = (path.to_string(), Some(hunk_idx));
-            let entries = index.hunk_index.get(&key);
             let mut result = Vec::new();
-            if let Some(entries) = entries {
-                for (source, idx) in entries {
-                    match source {
-                        CommentSource::Question => {
-                            if let Some(qs) = &self.questions {
-                                if let Some(q) = qs.questions.get(*idx) {
-                                    // Hunk-only: no line_start, top-level only
-                                    if q.line_start.is_none() && q.in_reply_to.is_none() {
-                                        result.push(CommentRef::Question(q));
-                                    }
-                                }
-                            }
-                        }
-                        CommentSource::Note => {
-                            if let Some(ns) = &self.notes {
-                                if let Some(n) = ns.notes.get(*idx) {
-                                    if n.line_start.is_none() && n.in_reply_to.is_none() {
-                                        result.push(CommentRef::Note(n));
-                                    }
-                                }
-                            }
-                        }
-                        CommentSource::GitHubComment => {
-                            if let Some(gc) = &self.github_comments {
-                                if let Some(c) = gc.comments.get(*idx) {
-                                    if c.line_start.is_none() && c.in_reply_to.is_none() {
-                                        result.push(CommentRef::GitHubComment(c));
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+            if let Some(entries) = index.hunk_index.get(&key) {
+                result.extend(
+                    entries
+                        .iter()
+                        .filter_map(|(source, idx)| self.indexed_comment(source, *idx))
+                        // Hunk-only: no line_start, top-level only
+                        .filter(|c| indexed_line_start(c).is_none() && c.in_reply_to().is_none()),
+                );
             }
             return result;
         }
@@ -1475,9 +1438,7 @@ impl AiState {
     /// Count of questions for a file (all questions, including replies)
     pub fn file_question_count(&self, path: &str) -> usize {
         if self.questions.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             return index
                 .file_comment_counts
                 .get(path)
@@ -1501,9 +1462,7 @@ impl AiState {
     /// Count of notes for a file (all notes, including replies)
     pub fn file_note_count(&self, path: &str) -> usize {
         if self.notes.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             return index
                 .file_comment_counts
                 .get(path)
@@ -1515,9 +1474,7 @@ impl AiState {
     /// Count of GitHub comments for a file (top-level only, not replies)
     pub fn file_github_comment_count(&self, path: &str) -> usize {
         if self.github_comments.is_some() {
-            self.ensure_index();
-            let index = self.comment_index.borrow();
-            let index = index.as_ref().unwrap();
+            let index = self.comment_index();
             return index
                 .file_comment_counts
                 .get(path)
@@ -1595,12 +1552,8 @@ impl AiState {
     }
 
     /// All navigable hints (comments + questions + findings) merged and sorted by file + line.
-    /// Returns (file, hunk_index, line_start, id, hint_type) tuples.
     /// Replies are included and sorted immediately after their parent.
-    #[allow(clippy::type_complexity)]
-    pub fn all_hints_ordered(
-        &self,
-    ) -> Vec<(String, Option<usize>, Option<usize>, String, HintType)> {
+    pub fn all_hints_ordered(&self) -> Vec<OrderedHint> {
         // Extended tuple: (file, hunk_index, line_start, is_reply, position, id, hint_type)
         // is_reply=0 for parents, 1 for replies — ensures parents sort before their replies
         // position preserves insertion order within each (is_reply) group for stable output
@@ -1782,7 +1735,10 @@ impl AiState {
 }
 
 #[cfg(test)]
-#[allow(clippy::field_reassign_with_default)]
+#[expect(
+    clippy::field_reassign_with_default,
+    reason = "tests build fixtures by mutating a default one field at a time"
+)]
 mod tests {
     use super::super::comments::{FeedbackComment, GitHubReviewComment, ReviewQuestion};
     use super::*;

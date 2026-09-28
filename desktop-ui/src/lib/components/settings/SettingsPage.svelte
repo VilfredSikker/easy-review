@@ -72,7 +72,7 @@
     await app.cmd("run_importance_agent");
   }
   let addPattern = $state("");
-  let textWarnings = $state<Record<string, string | null>>({});
+  const textWarnings = $state<Record<string, string | null>>({});
   let editProviders = $state(false);
   let refreshingModels = $state(false);
 
@@ -254,12 +254,12 @@
 
   async function patchProjectReviewSettings(
     projectId: string,
-    patch: Record<string, unknown>,
+    changes: Record<string, unknown>,
   ) {
     try {
       const snap = await invoke<AppSnapshot>("patch_project_review_settings", {
         projectId,
-        patch,
+        patch: changes,
       });
       app.ingestCommandSnapshot(snap);
     } catch (e) {
@@ -410,7 +410,7 @@
             {#each projects as project (project.id)}
               <ProjectSettingsCard
                 {project}
-                onpatch={(patch) => patchProjectReviewSettings(project.id, patch)}
+                onpatch={(changes) => patchProjectReviewSettings(project.id, changes)}
               />
             {/each}
           {/if}

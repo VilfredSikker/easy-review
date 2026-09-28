@@ -1,7 +1,3 @@
-// Deliberate style decision: keep `if let Some(x) = ... { } else { }` chains over
-// `Option::map_or[_else]` (same rationale as er-engine).
-#![allow(clippy::option_if_let_else)]
-
 mod input;
 mod ui;
 
@@ -434,7 +430,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     let root_str = app.tab().repo_root.clone();
     let root = std::path::Path::new(&root_str);
     // If FileWatcher::new fails, watch mode is silently disabled (app.watching stays false).
-    let mut _watcher: Option<FileWatcher> = if app.tab().is_remote() {
+    let mut watcher: Option<FileWatcher> = if app.tab().is_remote() {
         None
     } else {
         match FileWatcher::new(root, 500, watch_tx.clone()) {
@@ -478,7 +474,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                         InputMode::RemoteUrl => handle_remote_url_input(app, key)?,
                         InputMode::BaseBranch => handle_base_branch_input(app, key)?,
                         InputMode::Normal => {
-                            handle_normal_input(app, key, &watch_tx, &mut _watcher)?
+                            handle_normal_input(app, key, &watch_tx, &mut watcher)?;
                         }
                     }
                 }

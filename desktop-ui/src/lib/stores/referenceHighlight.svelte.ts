@@ -111,7 +111,7 @@ class ReferenceHighlight {
         this.searchActiveIdx = -1;
         this.popoverAnchor = anchor;
         this.popoverOpen = true;
-        return;
+        
     }
   }
 

@@ -104,7 +104,7 @@ fn truncate_str_by_bytes(s: &str, max: usize) -> String {
     while end > 0 && !s.is_char_boundary(end) {
         end -= 1;
     }
-    let mut t = s[..end].to_string();
+    let mut t = s.get(..end).unwrap_or_default().to_string();
     t.push_str("\n… (truncated)\n");
     t
 }

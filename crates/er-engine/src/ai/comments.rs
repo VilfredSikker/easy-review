@@ -37,7 +37,7 @@ pub enum CommentRef<'a> {
     Legacy(&'a FeedbackComment),
 }
 
-impl<'a> CommentRef<'a> {
+impl CommentRef<'_> {
     pub fn id(&self) -> &str {
         match self {
             CommentRef::Question(q) | CommentRef::Note(q) => &q.id,

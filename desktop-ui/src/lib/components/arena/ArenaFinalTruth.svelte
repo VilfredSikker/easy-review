@@ -29,6 +29,8 @@
     }),
   );
 
+  const SEVERITIES = ["high", "med", "low"] as const;
+
   const bySeverity = $derived({
     high: truthFindings.filter((f) => latestSeverity(f) === "high"),
     med: truthFindings.filter((f) => latestSeverity(f) === "med"),
@@ -48,10 +50,9 @@
 
   function toggleExpand(id: string, e: MouseEvent) {
     e.stopPropagation();
-    const next = new Set(expandedIds);
-    if (next.has(id)) next.delete(id);
-    else next.add(id);
-    expandedIds = next;
+    expandedIds = expandedIds.has(id)
+      ? new Set([...expandedIds].filter((k) => k !== id))
+      : new Set([...expandedIds, id]);
   }
 
   function isExpanded(f: ArenaFinding): boolean {
@@ -108,8 +109,8 @@
   </header>
 
   <div class="min-h-0 flex-1 overflow-y-auto px-3 py-2">
-    {#each ["high", "med", "low"] as sev (sev)}
-      {@const list = sev === "high" ? bySeverity.high : sev === "med" ? bySeverity.med : bySeverity.low}
+    {#each SEVERITIES as sev (sev)}
+      {@const list = bySeverity[sev]}
       {#if list.length > 0}
         <p class="mb-1 mt-3 px-1 text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-fg-faint)]">
           {sev}
@@ -182,7 +183,7 @@
                   </div>
                 {/if}
                 <div class="mt-1 flex flex-wrap gap-1">
-                  {#each f.raised_by as rid}
+                  {#each f.raised_by as rid, ri (ri)}
                     {@const r = reviewerMap[rid]}
                     {#if r}
                       <span

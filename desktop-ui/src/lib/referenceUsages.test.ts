@@ -360,14 +360,14 @@ describe("clampPopoverPosition", () => {
   const POPOVER_H = 320;
 
   it("returns the anchor when the box fits", () => {
-    expect(clampPopoverPosition(100, 200, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+    expect(clampPopoverPosition({ x: 100, y: 200 }, { w: POPOVER_W, h: POPOVER_H }, { w: 1280, h: 800 })).toEqual({
       left: 100,
       top: 200,
     });
   });
 
   it("clamps against the right and bottom viewport edges", () => {
-    expect(clampPopoverPosition(1200, 750, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+    expect(clampPopoverPosition({ x: 1200, y: 750 }, { w: POPOVER_W, h: POPOVER_H }, { w: 1280, h: 800 })).toEqual({
       left: 1280 - POPOVER_W - 8,
       top: 800 - POPOVER_H - 8,
     });
@@ -376,14 +376,14 @@ describe("clampPopoverPosition", () => {
   it("clamps the 600px-wide popover on a mid-size viewport", () => {
     // Anchor near the right edge of a 1024px window: the box shifts left to
     // keep all 600px visible.
-    expect(clampPopoverPosition(900, 100, POPOVER_W, POPOVER_H, 1024, 768)).toEqual({
+    expect(clampPopoverPosition({ x: 900, y: 100 }, { w: POPOVER_W, h: POPOVER_H }, { w: 1024, h: 768 })).toEqual({
       left: 1024 - POPOVER_W - 8,
       top: 100,
     });
   });
 
   it("never goes above the padding minimum", () => {
-    expect(clampPopoverPosition(-50, -50, POPOVER_W, POPOVER_H, 1280, 800)).toEqual({
+    expect(clampPopoverPosition({ x: -50, y: -50 }, { w: POPOVER_W, h: POPOVER_H }, { w: 1280, h: 800 })).toEqual({
       left: 8,
       top: 8,
     });
@@ -392,13 +392,13 @@ describe("clampPopoverPosition", () => {
   it("pins to the left edge when the viewport is narrower than the popover", () => {
     // 500px viewport < 600px box: left edge wins so the (viewport-capped via
     // max-w) content stays reachable.
-    expect(clampPopoverPosition(200, 100, POPOVER_W, POPOVER_H, 500, 800)).toEqual({
+    expect(clampPopoverPosition({ x: 200, y: 100 }, { w: POPOVER_W, h: POPOVER_H }, { w: 500, h: 800 })).toEqual({
       left: 8,
       top: 100,
     });
   });
 
   it("prefers the top-left edge when the box cannot fit", () => {
-    expect(clampPopoverPosition(100, 100, 2000, 2000, 1280, 800)).toEqual({ left: 8, top: 8 });
+    expect(clampPopoverPosition({ x: 100, y: 100 }, { w: 2000, h: 2000 }, { w: 1280, h: 800 })).toEqual({ left: 8, top: 8 });
   });
 });

@@ -82,11 +82,12 @@
   function toggle(key: string) {
     if (isSingleMode) {
       selected = selected.has(key) ? new Set() : new Set([key]);
+    } else if (selected.has(key)) {
+      selected = new Set([...selected].filter((k) => k !== key));
+    } else if (selected.size < 6) {
+      selected = new Set([...selected, key]);
     } else {
-      const next = new Set(selected);
-      if (next.has(key)) next.delete(key);
-      else if (next.size < 6) next.add(key);
-      selected = next;
+      selected = new Set(selected);
     }
     costApproved = false;
     arenaLog("launcher: toggled model", { key, count: selected.size, isSingleMode });
@@ -167,9 +168,10 @@
   const usesEffortCapableModels = $derived(effortCapableModelIds.length > 0);
 
   const effortLevelsForRun = $derived.by(() => {
-    if (effortCapableModelIds.length === 0) return [] as readonly string[];
-    let levels = [...effortLevelsForModel(modelInfo(effortCapableModelIds[0]!))];
-    for (const id of effortCapableModelIds.slice(1)) {
+    const [first, ...rest] = effortCapableModelIds;
+    if (first === undefined) return [] as readonly string[];
+    let levels = [...effortLevelsForModel(modelInfo(first))];
+    for (const id of rest) {
       const next = effortLevelsForModel(modelInfo(id));
       levels = levels.filter((l) => next.includes(l));
     }
@@ -231,32 +233,33 @@
       labels.length <= 3
         ? labels.join(" × ")
         : `${labels.slice(0, 2).join(" × ")} +${labels.length - 2}`;
-    const prefix =
-      rounds >= 4 ? "Deep" : rounds === 3 ? "Standard" : rounds === 2 ? "Quick" : "Light";
-    return `${prefix} · ${body}`;
+    return `${roundsPrefix(rounds)} · ${body}`;
   });
 
-  const gitPoolLabel = $derived(
-    app.snapshot?.mode === "unstaged"
-      ? "unstaged"
-      : app.snapshot?.mode === "staged"
-        ? "staged"
-        : app.snapshot?.mode === "pr"
-          ? "PR Diff"
-          : "branch",
-  );
+  function roundsPrefix(n: number): string {
+    if (n >= 4) return "Deep";
+    if (n === 3) return "Standard";
+    if (n === 2) return "Quick";
+    return "Light";
+  }
 
-  const scopeHint = $derived(
-    scope === "branch"
-      ? "Every file on this branch vs base"
-      : scope === "unstaged"
-        ? "Working tree changes not yet staged"
-        : scope === "staged"
-          ? "Staged changes ready to commit"
-          : selectedPaths.length > 0
-            ? `${selectedPaths.length} file${selectedPaths.length === 1 ? "" : "s"} · from ${gitPoolLabel} view`
-            : `Pick files from the current ${gitPoolLabel} view`,
-  );
+  const gitPoolLabel = $derived.by(() => {
+    const mode = app.snapshot?.mode;
+    if (mode === "unstaged") return "unstaged";
+    if (mode === "staged") return "staged";
+    if (mode === "pr") return "PR Diff";
+    return "branch";
+  });
+
+  const scopeHint = $derived.by(() => {
+    if (scope === "branch") return "Every file on this branch vs base";
+    if (scope === "unstaged") return "Working tree changes not yet staged";
+    if (scope === "staged") return "Staged changes ready to commit";
+    if (selectedPaths.length > 0) {
+      return `${selectedPaths.length} file${selectedPaths.length === 1 ? "" : "s"} · from ${gitPoolLabel} view`;
+    }
+    return `Pick files from the current ${gitPoolLabel} view`;
+  });
 
   const arbiterRef = $derived(
     arbiterKey ? parseKey(arbiterKey) : null,
@@ -266,25 +269,19 @@
     arbiterRef && providers.length ? modelLabel(providers, arbiterRef) : "—",
   );
 
-  const roundsHint = $derived(
-    rounds <= 1
-      ? "Propose only — no cross-check or arbiter"
-      : rounds === 2
-        ? "Propose + 1 cross-check, then arbiter"
-        : `Propose + ${rounds - 1} cross-checks, then arbiter`,
-  );
+  const roundsHint = $derived.by(() => {
+    if (rounds <= 1) return "Propose only — no cross-check or arbiter";
+    if (rounds === 2) return "Propose + 1 cross-check, then arbiter";
+    return `Propose + ${rounds - 1} cross-checks, then arbiter`;
+  });
 
-  const footerEstimate = $derived(
-    estimateLoading
-      ? "Estimating…"
-      : estimateError
-        ? "Estimate unavailable"
-        : estimate
-          ? noDiff
-            ? "No diff in this scope — try Unstaged, Staged, or file selection"
-            : `~${estimate.latency_sec}s · ${(estimate.diff_bytes / 1024).toFixed(1)} KB · est. $${estimate.cost_usd.toFixed(2)}`
-          : "—",
-  );
+  const footerEstimate = $derived.by(() => {
+    if (estimateLoading) return "Estimating…";
+    if (estimateError) return "Estimate unavailable";
+    if (!estimate) return "—";
+    if (noDiff) return "No diff in this scope — try Unstaged, Staged, or file selection";
+    return `~${estimate.latency_sec}s · ${(estimate.diff_bytes / 1024).toFixed(1)} KB · est. $${estimate.cost_usd.toFixed(2)}`;
+  });
 
   function startScopePayload(): { scope: ArenaScope; files?: string[] } {
     if (scope === "selected") {
@@ -355,15 +352,13 @@
   }
 
   function toggleAgentModel(kind: string, key: string) {
-    const cur = new Set(agentSelection[kind] ?? []);
+    const cur = agentSelection[kind] ?? new Set<string>();
     if (isSingleMode) {
       agentSelection = { ...agentSelection, [kind]: cur.has(key) ? new Set() : new Set([key]) };
     } else if (cur.has(key)) {
-      cur.delete(key);
-      agentSelection = { ...agentSelection, [kind]: cur };
+      agentSelection = { ...agentSelection, [kind]: new Set([...cur].filter((k) => k !== key)) };
     } else {
-      cur.add(key);
-      agentSelection = { ...agentSelection, [kind]: cur };
+      agentSelection = { ...agentSelection, [kind]: new Set([...cur, key]) };
     }
     costApproved = false;
   }
@@ -432,12 +427,8 @@
   $effect(() => {
     if (!open) return;
     arenaLog("launcher: opened");
-    scope =
-      app.snapshot?.mode === "unstaged"
-        ? "unstaged"
-        : app.snapshot?.mode === "staged"
-          ? "staged"
-          : "branch";
+    const mode = app.snapshot?.mode;
+    scope = mode === "unstaged" || mode === "staged" ? mode : "branch";
     selectedPaths = [];
     costApproved = false;
     if (preset.length) {
@@ -510,6 +501,22 @@
       });
   });
 
+  function startBlockedReason(): string {
+    if (exceedsCostLimit && !costApproved) return "cost not approved";
+    if (scope === "selected" && selectedPaths.length === 0) return "no files selected";
+    if (picked.length < minReviewers) {
+      return isSingleMode ? "pick one model" : "need at least 2 reviewers";
+    }
+    if (arena.loading) return "already starting";
+    return "unknown";
+  }
+
+  const startLabel = $derived.by(() => {
+    if (arena.loading) return "Starting…";
+    if (isAgentsMode) return `Start (${agentArenaCount} arena · ${agentSingleCount} single)`;
+    return isArena ? "Start arena" : "Start review";
+  });
+
   function handleStart() {
     arenaLog("launcher: Start clicked", {
       canStart,
@@ -522,18 +529,7 @@
     });
     if (!canStart) {
       arenaWarn("launcher: start blocked", {
-        reason:
-          exceedsCostLimit && !costApproved
-            ? "cost not approved"
-            : scope === "selected" && selectedPaths.length === 0
-              ? "no files selected"
-              : picked.length < minReviewers
-                ? isSingleMode
-                  ? "pick one model"
-                  : "need at least 2 reviewers"
-                : arena.loading
-                  ? "already starting"
-                  : "unknown",
+        reason: startBlockedReason(),
       });
       return;
     }
@@ -919,13 +915,7 @@
             onclick={handleStart}
             class="inline-flex h-9 items-center rounded-md bg-[var(--arena-periwinkle)] px-4 text-[12px] font-semibold text-[var(--arena-bg-0)] disabled:opacity-40"
           >
-            {arena.loading
-              ? "Starting…"
-              : isAgentsMode
-                ? `Start (${agentArenaCount} arena · ${agentSingleCount} single)`
-                : isArena
-                  ? "Start arena"
-                  : "Start review"}
+            {startLabel}
           </button>
         </div>
       </div>

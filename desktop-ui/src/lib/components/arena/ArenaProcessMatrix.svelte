@@ -20,7 +20,7 @@
     <thead>
       <tr class="border-b border-[var(--arena-border)] text-[10px] uppercase tracking-wider text-[var(--arena-fg-faint)]">
         <th class="sticky left-0 z-10 bg-[var(--arena-bg-0)] px-2 py-2 font-semibold">Finding</th>
-        {#each reviewers as r}
+        {#each reviewers as r, ri (ri)}
           <th class="px-2 py-2 font-semibold" style="color:{r.color}">{r.name}</th>
         {/each}
         {#if snapshot.arbiter && snapshot.run.config.rounds >= 2}
@@ -30,7 +30,7 @@
       </tr>
     </thead>
     <tbody>
-      {#each snapshot.matrix as row}
+      {#each snapshot.matrix as row (row.finding_id)}
         {@const f = snapshot.run.findings.find((x) => x.id === row.finding_id)}
         {#if f}
           <tr
@@ -41,7 +41,7 @@
               <p class="truncate font-medium text-[var(--arena-fg)]">{f.title}</p>
               <p class="mono truncate text-[9px] text-[var(--arena-fg-faint)]">{basename(f.file)}</p>
             </td>
-            {#each reviewers as r}
+            {#each reviewers as r, ri (ri)}
               {@const vote = row.latest_vote[r.id]}
               <td class="px-2 py-2 text-center {voteCellClass(vote)}">
                 {#if vote}

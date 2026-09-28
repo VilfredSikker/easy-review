@@ -84,7 +84,7 @@ describe("windowFromScrollVariable (terminal-entry convention)", () => {
 
   it("includes the row that straddles scrollTop", () => {
     // scrollTop=35; row 1 spans 30..80 → must be in window
-    const w = windowFromScrollVariable(cumulative, totalHeight, 35, 60, 0);
+    const w = windowFromScrollVariable(cumulative, totalHeight, 35, 60, { overscan: 0 });
     expect(w.start).toBe(1);
     // visibleBottom=95; first row with top>=95 is row 3 (top=100) → end exclusive=3
     expect(w.end).toBe(3);
@@ -93,7 +93,7 @@ describe("windowFromScrollVariable (terminal-entry convention)", () => {
   });
 
   it("scrollTop=0 with overscan returns start=0", () => {
-    const w = windowFromScrollVariable(cumulative, totalHeight, 0, 60, 5);
+    const w = windowFromScrollVariable(cumulative, totalHeight, 0, 60, { overscan: 5 });
     expect(w.start).toBe(0);
     expect(w.paddingTop).toBe(0);
     // visibleBottom=60; first row top>=60 is row 2 (top=80) → end=2+5=7, clamp to rowCount=5
@@ -102,28 +102,28 @@ describe("windowFromScrollVariable (terminal-entry convention)", () => {
   });
 
   it("scrollTop=totalHeight clamps end at rowCount, not rowCount+1", () => {
-    const w = windowFromScrollVariable(cumulative, totalHeight, totalHeight, 60, 0);
+    const w = windowFromScrollVariable(cumulative, totalHeight, totalHeight, 60, { overscan: 0 });
     expect(w.end).toBeLessThanOrEqual(5);
     expect(w.paddingBottom).toBeGreaterThanOrEqual(0);
   });
 
   it("exact row-top boundary picks that row, not the predecessor", () => {
     // scrollTop=80 is exactly the top of row 2 → row 2 included
-    const w = windowFromScrollVariable(cumulative, totalHeight, 80, 20, 0);
+    const w = windowFromScrollVariable(cumulative, totalHeight, 80, 20, { overscan: 0 });
     expect(w.start).toBe(2);
     // visibleBottom=100 is top of row 3 → first not-visible=3 → end=3
     expect(w.end).toBe(3);
   });
 
   it("applies overscan in both directions", () => {
-    const w = windowFromScrollVariable(cumulative, totalHeight, 80, 20, 2);
+    const w = windowFromScrollVariable(cumulative, totalHeight, 80, 20, { overscan: 2 });
     expect(w.start).toBe(0);
     expect(w.end).toBe(5);
   });
 
   it("3 rows × 24px (model-shaped) — start at 0, end ≤ rowCount", () => {
     const cum = [0, 24, 48, 72];
-    const w = windowFromScrollVariable(cum, 72, 0, 100, 0);
+    const w = windowFromScrollVariable(cum, 72, 0, 100, { overscan: 0 });
     expect(w.start).toBe(0);
     expect(w.end).toBeLessThanOrEqual(3);
   });
@@ -131,13 +131,13 @@ describe("windowFromScrollVariable (terminal-entry convention)", () => {
   it("pixel overscan expands the window beyond the visible rows (fast-scroll buffer)", () => {
     // scrollTop=100 (top of row 3), viewport=20, no row overscan, no px band:
     // only the straddling row → start=3, end=4.
-    const base = windowFromScrollVariable(cumulative, totalHeight, 100, 20, 0, 0);
+    const base = windowFromScrollVariable(cumulative, totalHeight, 100, 20, { overscan: 0, overscanPx: 0 });
     expect(base.start).toBe(3);
     expect(base.end).toBe(4);
 
     // A 30px band each direction reaches row 1 above (top=30) and row 5 below,
     // pre-rendering ahead of the scroll so a fast flick lands on rendered rows.
-    const padded = windowFromScrollVariable(cumulative, totalHeight, 100, 20, 0, 30);
+    const padded = windowFromScrollVariable(cumulative, totalHeight, 100, 20, { overscan: 0, overscanPx: 30 });
     expect(padded.start).toBe(1);
     expect(padded.end).toBe(5);
     expect(padded.paddingTop).toBe(cumulative[1]); // 30

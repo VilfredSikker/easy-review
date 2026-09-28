@@ -34,7 +34,7 @@
 
   // Default to the live snapshot; props win when supplied (Storybook).
   const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
-  const active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
+  const _active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
   const canClose = $derived(tabs.length > 1);
   const aiProviderLabel = $derived(app.snapshot?.active_ai_provider_label ?? null);
   const aiModelLabel = $derived(app.snapshot?.active_ai_model_label ?? null);
@@ -63,7 +63,7 @@
     e.preventDefault();
     close(idx, e);
   }
-  function newTab() {
+  function _newTab() {
     if (onNew) onNew();
     else app.cmd("new_tab");
   }
@@ -143,7 +143,7 @@
 >
   {#if showToolbar}
     <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300">
-      <button
+      <button type="button"
         class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.left ? 'text-accent bg-ink-700' : ''}"
         onclick={() => app.togglePanel("left")}
         title="Toggle left panel [["
@@ -205,7 +205,7 @@
         ></span>
       {/if}
       {#if canClose}
-        <button
+        <button type="button"
           class="opacity-0 group-hover:opacity-100 text-ink-300 hover:text-ink-100 transition-opacity shrink-0 w-4 h-4 flex items-center justify-center"
           onclick={(e) => close(tab.idx, e)}
           title="Close tab"
@@ -224,7 +224,7 @@
 
   <!-- New tab dropdown -->
   <div class="relative shrink-0">
-    <button
+    <button type="button"
       class="w-7 h-7 rounded hover:bg-ink-700 flex items-center justify-center text-ink-300 hover:text-ink-100 transition-colors"
       onclick={openNewTabMenu}
       title="New tab"
@@ -239,7 +239,7 @@
       <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="fixed inset-0 z-40" onclick={() => (newTabMenuOpen = false)}></div>
       <div class="absolute left-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-40 py-1">
-        <button
+        <button type="button"
           class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
           onclick={newReviewTab}
         >
@@ -275,16 +275,16 @@
       {#if app.snapshot?.watch_active}
         <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1" title="Watch active"></span>
       {/if}
-      <button
+      <button type="button"
         class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.tree ? 'text-accent bg-ink-700' : ''}"
         onclick={() => app.togglePanel("tree")}
         title="Toggle file tree [\]"
       >
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
       </button>
-      <button class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors" onclick={() => commandPalette.show()} title="Open command palette (⌘K)">⌘K</button>
+      <button type="button" class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors" onclick={() => commandPalette.show()} title="Open command palette (⌘K)">⌘K</button>
       {#if onToggleRightCollapse}
-        <button
+        <button type="button"
           class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {rightCollapsed ? '' : 'text-accent bg-ink-700'}"
           onclick={onToggleRightCollapse}
           title={rightCollapsed ? "Expand right panel" : "Collapse right panel to rail"}

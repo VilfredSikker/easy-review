@@ -1,151 +1,123 @@
+#![expect(
+    non_snake_case,
+    reason = "each accessor reads as a colour constant at the call site (`styles::PURPLE()`); \
+              it is a function only so the theme can change at runtime"
+)]
+
 use ratatui::style::{Color, Modifier, Style};
 
 // ── Background colors ──
-#[allow(non_snake_case)]
 pub fn BG() -> Color {
     super::themes::current().bg
 }
-#[allow(non_snake_case)]
 pub fn SURFACE() -> Color {
     super::themes::current().surface
 }
-#[allow(non_snake_case)]
 pub fn PANEL() -> Color {
     super::themes::current().panel
 }
-#[allow(non_snake_case)]
 pub fn BORDER() -> Color {
     super::themes::current().border
 }
 
 // ── Text colors ──
-#[allow(non_snake_case)]
 pub fn TEXT() -> Color {
     super::themes::current().text
 }
-#[allow(non_snake_case)]
 pub fn DIM() -> Color {
     super::themes::current().text_dim
 }
-#[allow(non_snake_case)]
 pub fn MUTED() -> Color {
     super::themes::current().text_muted
 }
-#[allow(non_snake_case)]
 pub fn BRIGHT() -> Color {
     super::themes::current().text_bright
 }
 
 // ── Accent colors ──
-#[allow(non_snake_case)]
 pub fn BLUE() -> Color {
     super::themes::current().blue
 }
-#[allow(non_snake_case)]
 pub fn CYAN() -> Color {
     super::themes::current().cyan
 }
-#[allow(non_snake_case)]
 pub fn GREEN() -> Color {
     super::themes::current().green
 }
-#[allow(non_snake_case)]
 pub fn YELLOW() -> Color {
     super::themes::current().yellow
 }
-#[allow(non_snake_case)]
 pub fn RED() -> Color {
     super::themes::current().red
 }
-#[allow(non_snake_case)]
 pub fn RED_TEXT() -> Color {
     RED()
 }
-#[allow(non_snake_case)]
 pub fn PURPLE() -> Color {
     super::themes::current().purple
 }
 
 // ── AI overlay colors ──
-#[allow(non_snake_case)]
 pub fn ORANGE() -> Color {
     super::themes::current().orange
 }
 
 // ── Diff colors ──
-#[allow(non_snake_case)]
 pub fn ADD_BG() -> Color {
     super::themes::current().add_bg
 }
-#[allow(non_snake_case)]
 pub fn ADD_TEXT() -> Color {
     super::themes::current().add_text
 }
-#[allow(non_snake_case)]
 pub fn DEL_BG() -> Color {
     super::themes::current().del_bg
 }
-#[allow(non_snake_case)]
 pub fn DEL_TEXT() -> Color {
     super::themes::current().del_text
 }
-#[allow(non_snake_case)]
 pub fn HUNK_BG() -> Color {
     super::themes::current().hunk_bg
 }
 
 // ── Interactive colors ──
-#[allow(non_snake_case)]
 pub fn LINE_CURSOR_BG() -> Color {
     super::themes::current().line_cursor_bg
 }
-#[allow(non_snake_case)]
 pub fn FINDING_BG() -> Color {
     super::themes::current().finding_bg
 }
-#[allow(non_snake_case)]
 pub fn FINDING_FOCUS_BG() -> Color {
     super::themes::current().finding_focus_bg
 }
-#[allow(non_snake_case)]
 pub fn COMMENT_BG() -> Color {
     super::themes::current().comment_bg
 }
-#[allow(non_snake_case)]
 pub fn INLINE_COMMENT_BG() -> Color {
     super::themes::current().inline_comment_bg
 }
-#[allow(non_snake_case)]
 pub fn COMMENT_FOCUS_BG() -> Color {
     super::themes::current().comment_focus_bg
 }
 
 // ── Status colors ──
-#[allow(non_snake_case)]
 pub fn STALE() -> Color {
     super::themes::current().stale
 }
-#[allow(non_snake_case)]
 pub fn WATCHED_TEXT() -> Color {
     super::themes::current().watched_text
 }
-#[allow(non_snake_case)]
 pub fn WATCHED_MUTED() -> Color {
     super::themes::current().watched_muted
 }
-#[allow(non_snake_case)]
 pub fn WATCHED_BG() -> Color {
     super::themes::current().watched_bg
 }
-#[allow(non_snake_case)]
 pub fn UNMERGED() -> Color {
     super::themes::current().unmerged
 }
-#[allow(non_snake_case)]
 pub fn RELOCATED_INDICATOR() -> Color {
     super::themes::current().relocated_indicator
 }
-#[allow(non_snake_case)]
 pub fn LOST_INDICATOR() -> Color {
     super::themes::current().lost_indicator
 }

@@ -3,8 +3,8 @@ use crate::arena::{
     import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
     save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
     ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
-    ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride, ReviewerRef,
-    SeededStartParams, Verdict,
+    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride,
+    ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -144,11 +144,13 @@ impl App {
         let run_id = start_arena_run(
             registry,
             config,
-            repo_root,
-            er_dir,
-            branch_ref,
-            base_branch,
-            raw_diff,
+            ArenaRunInputs {
+                repo_root,
+                er_dir,
+                branch_ref,
+                base_branch,
+                raw_diff,
+            },
             params,
         )?;
         self.active_arena_runs
@@ -243,11 +245,13 @@ impl App {
         let run_ids = start_arena_batch(
             registry,
             config,
-            repo_root,
-            er_dir,
-            branch_ref,
-            base_branch,
-            raw_diff,
+            ArenaRunInputs {
+                repo_root,
+                er_dir,
+                branch_ref,
+                base_branch,
+                raw_diff,
+            },
             batch,
         )?;
         self.active_arena_runs

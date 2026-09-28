@@ -17,7 +17,7 @@
   class={`markdown-text min-w-0 max-w-full ${className}`}
   onclick={onExternalLinkClick}
 >
-  {#each nodes as n}
+  {#each nodes as n, ni (ni)}
     {#if n.t === "h"}
       {#if n.l === 1}<h1>{@html inline(n.v)}</h1>
       {:else if n.l === 2}<h2>{@html inline(n.v)}</h2>
@@ -28,9 +28,9 @@
     {:else if n.t === "p"}
       <p>{@html inline(n.v)}</p>
     {:else if n.t === "ul"}
-      <ul>{#each n.items as it}<li>{@html inline(it)}</li>{/each}</ul>
+      <ul>{#each n.items as it, ii (ii)}<li>{@html inline(it)}</li>{/each}</ul>
     {:else if n.t === "ol"}
-      <ol>{#each n.items as it}<li>{@html inline(it)}</li>{/each}</ol>
+      <ol>{#each n.items as it, ii (ii)}<li>{@html inline(it)}</li>{/each}</ol>
     {:else if n.t === "bq"}
       <blockquote>{@html inline(n.v)}</blockquote>
     {:else if n.t === "code"}
@@ -40,15 +40,15 @@
         <table>
           <thead>
             <tr>
-              {#each n.header as cell, c}
+              {#each n.header as cell, c (c)}
                 <th style={n.align[c] ? `text-align:${n.align[c]}` : ""}>{@html inline(cell)}</th>
               {/each}
             </tr>
           </thead>
           <tbody>
-            {#each n.rows as row}
+            {#each n.rows as row, r (r)}
               <tr>
-                {#each n.header as _, c}
+                {#each n.header as _, c (c)}
                   <td style={n.align[c] ? `text-align:${n.align[c]}` : ""}>{@html inline(row[c] ?? "")}</td>
                 {/each}
               </tr>

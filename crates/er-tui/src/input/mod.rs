@@ -27,7 +27,14 @@ fn min_trust_label(level: er_engine::ai::Confidence) -> &'static str {
 
 /// Byte index of the char boundary immediately before `pos` (0 if at start).
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
-    s[..pos].char_indices().last().map(|(i, _)| i).unwrap_or(0)
+    (0..pos).rev().find(|&i| s.is_char_boundary(i)).unwrap_or(0)
+}
+
+/// Byte index of the char boundary immediately after `pos` (`s.len()` if at end).
+fn next_char_boundary(s: &str, pos: usize) -> usize {
+    (pos + 1..s.len())
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(s.len())
 }
 
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
@@ -77,11 +84,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                                 edit.cursor_pos = prev_char_boundary(&edit.buffer, edit.cursor_pos);
                             }
                             KeyCode::Right if edit.cursor_pos < edit.buffer.len() => {
-                                let next_char = edit.buffer[edit.cursor_pos..]
-                                    .chars()
-                                    .next()
-                                    .unwrap_or('\0');
-                                edit.cursor_pos += next_char.len_utf8();
+                                edit.cursor_pos = next_char_boundary(&edit.buffer, edit.cursor_pos);
                             }
                             _ => {}
                         }
@@ -123,7 +126,7 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
                     };
                     app.config_hub_switch_tab(next);
                 }
-                KeyCode::Char('s') | KeyCode::Char('S') => app.config_hub_close(),
+                KeyCode::Char('s' | 'S') => app.config_hub_close(),
                 KeyCode::Esc | KeyCode::Char('q') => app.config_hub_close(),
                 _ => {}
             }
@@ -790,7 +793,7 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
                 let full_path = format!("{}/{}", app.tab().repo_root, path);
                 app.input_mode = InputMode::Normal;
                 match std::fs::remove_file(&full_path) {
-                    Ok(_) => {
+                    Ok(()) => {
                         app.tab_mut().refresh_watched_files();
                         // Clamp selection after removal
                         let count = app.tab().watched_files.len();
@@ -1237,13 +1240,7 @@ fn extract_anchor_from_diff_hunk(diff_hunk: &str) -> (String, Vec<String>) {
         .lines()
         .skip(1) // skip @@ header
         .filter(|l| !l.starts_with('-'))
-        .map(|l| {
-            if l.starts_with('+') || l.starts_with(' ') {
-                &l[1..]
-            } else {
-                l
-            }
-        })
+        .map(|l| l.strip_prefix(['+', ' ']).unwrap_or(l))
         .collect();
     let line_content = new_side.last().copied().unwrap_or("").to_string();
     let ctx_start = new_side.len().saturating_sub(4);
@@ -1256,6 +1253,70 @@ fn extract_anchor_from_diff_hunk(diff_hunk: &str) -> (String, Vec<String>) {
         Vec::new()
     };
     (line_content, context_before)
+}
+
+/// Where a synced GitHub comment anchors in the local diff. Empty when its line falls outside
+/// every hunk.
+#[derive(Default)]
+struct GithubAnchor {
+    hunk_index: Option<usize>,
+    line_content: String,
+    context_before: Vec<String>,
+    context_after: Vec<String>,
+    old_line: Option<usize>,
+    hunk_header: String,
+}
+
+fn github_anchor(line: usize, file: &git::DiffFile, diff_hunk: Option<&str>) -> GithubAnchor {
+    let Some((i, hunk)) = file
+        .hunks
+        .iter()
+        .enumerate()
+        .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
+    else {
+        return GithubAnchor::default();
+    };
+    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
+    let (line_content, old_line, context_before, context_after) = if let Some(idx) = target_idx {
+        let start = idx.saturating_sub(3);
+        let end = (idx + 4).min(hunk.lines.len());
+        (
+            hunk.lines[idx].content.clone(),
+            hunk.lines[idx].old_num,
+            hunk.lines[start..idx]
+                .iter()
+                .map(|l| l.content.clone())
+                .collect(),
+            hunk.lines[(idx + 1)..end]
+                .iter()
+                .map(|l| l.content.clone())
+                .collect(),
+        )
+    } else if let Some(dh) = diff_hunk {
+        // The line number doesn't map to a local DiffLine — PR base has drifted.
+        // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
+        // line in the hunk by new_num so the anchor is never blank.
+        let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
+        (fallback_lc, None, fallback_ctx, Vec::new())
+    } else {
+        let nearest = hunk
+            .lines
+            .iter()
+            .filter_map(|l| l.new_num.map(|n| (n, l)))
+            .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
+        let (lc, old_ln) = nearest
+            .map(|(_, l)| (l.content.clone(), l.old_num))
+            .unwrap_or_default();
+        (lc, old_ln, Vec::new(), Vec::new())
+    };
+    GithubAnchor {
+        hunk_index: Some(i),
+        line_content,
+        context_before,
+        context_after,
+        old_line,
+        hunk_header: hunk.header.clone(),
+    }
 }
 
 /// Given a GitHub `diff_hunk` string, find the matching local line number in a file's diff.
@@ -1276,13 +1337,7 @@ fn find_local_line_for_diff_hunk(diff_hunk: &str, file: &git::DiffFile) -> Optio
     // Strip the +/-/space prefix to get raw content (matching DiffLine.content which is pre-stripped).
     let stripped: Vec<&str> = content_lines
         .iter()
-        .map(|l| {
-            if l.starts_with('+') || l.starts_with('-') || l.starts_with(' ') {
-                &l[1..]
-            } else {
-                l
-            }
-        })
+        .map(|l| l.strip_prefix(['+', '-', ' ']).unwrap_or(l))
         .collect();
 
     // Use the last N lines as a sliding-window fingerprint.
@@ -1470,94 +1525,17 @@ pub fn sync_github_comments(app: &mut App) -> Result<()> {
             stable_line
         };
 
-        let (
+        let GithubAnchor {
             hunk_index,
-            anchor_line_content,
-            anchor_ctx_before,
-            anchor_ctx_after,
-            anchor_old_line,
-            anchor_hunk_header,
-        ) = if let Some(line) = resolved_line {
-            if let Some(f) = tab_files.iter().find(|f| f.path == file_path) {
-                if let Some((i, hunk)) = f
-                    .hunks
-                    .iter()
-                    .enumerate()
-                    .find(|(_, h)| line >= h.new_start && line < h.new_start + h.new_count)
-                {
-                    let target_idx = hunk.lines.iter().position(|l| l.new_num == Some(line));
-                    let (lc, old_ln, ctx_before, ctx_after) = if let Some(idx) = target_idx {
-                        let start = idx.saturating_sub(3);
-                        let end = (idx + 4).min(hunk.lines.len());
-                        (
-                            hunk.lines[idx].content.clone(),
-                            hunk.lines[idx].old_num,
-                            hunk.lines[start..idx]
-                                .iter()
-                                .map(|l| l.content.clone())
-                                .collect(),
-                            hunk.lines[(idx + 1)..end]
-                                .iter()
-                                .map(|l| l.content.clone())
-                                .collect(),
-                        )
-                    } else {
-                        // The line number doesn't map to a local DiffLine — PR base has drifted.
-                        // Priority: 1) extract from diff_hunk content, 2) snap to the nearest
-                        // line in the hunk by new_num so the anchor is never blank.
-                        if let Some(dh) = gh.diff_hunk.as_deref() {
-                            let (fallback_lc, fallback_ctx) = extract_anchor_from_diff_hunk(dh);
-                            (fallback_lc, None, fallback_ctx, Vec::new())
-                        } else {
-                            let nearest = hunk
-                                .lines
-                                .iter()
-                                .filter_map(|l| l.new_num.map(|n| (n, l)))
-                                .min_by_key(|(n, _)| (*n as isize - line as isize).unsigned_abs());
-                            let (lc, old_ln) = nearest
-                                .map(|(_, l)| (l.content.clone(), l.old_num))
-                                .unwrap_or_default();
-                            (lc, old_ln, Vec::new(), Vec::new())
-                        }
-                    };
-                    (
-                        Some(i),
-                        lc,
-                        ctx_before,
-                        ctx_after,
-                        old_ln,
-                        hunk.header.clone(),
-                    )
-                } else {
-                    (
-                        None,
-                        String::new(),
-                        Vec::new(),
-                        Vec::new(),
-                        None,
-                        String::new(),
-                    )
-                }
-            } else {
-                (
-                    None,
-                    String::new(),
-                    Vec::new(),
-                    Vec::new(),
-                    None,
-                    String::new(),
-                )
-            }
-        } else {
-            (
-                None,
-                String::new(),
-                Vec::new(),
-                Vec::new(),
-                None,
-                String::new(),
-            )
-        };
+            line_content: anchor_line_content,
+            context_before: anchor_ctx_before,
+            context_after: anchor_ctx_after,
+            old_line: anchor_old_line,
+            hunk_header: anchor_hunk_header,
+        } = resolved_line
+            .zip(tab_files.iter().find(|f| f.path == file_path))
+            .map(|(line, f)| github_anchor(line, f, gh.diff_hunk.as_deref()))
+            .unwrap_or_default();
 
         let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
         let state = thread_state.get(&gh.id).copied().unwrap_or_default();
@@ -1722,37 +1700,23 @@ fn push_all_comments_to_github(app: &mut App) -> Result<()> {
                 continue;
             }
 
-            let path = &comment.file;
             // Hunk-level comments have no line_start; the line-level push API requires a
             // line, so they get anchored to line 1 on GitHub.
             let line = comment.line_start.unwrap_or(1);
             // Push failures are only counted — individual error messages are not surfaced.
             let start = comment.line_start.unwrap_or(line);
             let end = comment.line_end.unwrap_or(start);
-            let side = comment.side.as_str();
+            let new_comment = github::NewLineComment {
+                path: &comment.file,
+                line_start: start,
+                line_end: Some(end),
+                body: &comment.comment,
+                side: comment.side.as_str(),
+            };
             match if is_remote {
-                github::gh_pr_push_comment_remote(
-                    &owner,
-                    &repo_name,
-                    pr_number,
-                    path,
-                    start,
-                    Some(end),
-                    &comment.comment,
-                    side,
-                )
+                github::gh_pr_push_comment_remote(&owner, &repo_name, pr_number, new_comment)
             } else {
-                github::gh_pr_push_comment(
-                    &owner,
-                    &repo_name,
-                    pr_number,
-                    path,
-                    start,
-                    Some(end),
-                    &comment.comment,
-                    side,
-                    &repo_root,
-                )
+                github::gh_pr_push_comment(&owner, &repo_name, pr_number, new_comment, &repo_root)
             } {
                 Ok(github_id) => {
                     if let Some(c) = gc.comments.iter_mut().find(|c| c.id == *cid) {
@@ -2412,5 +2376,51 @@ mod tests {
         .unwrap();
         assert_eq!(app.current_ai_model.as_deref(), Some("no-effort"));
         assert_eq!(overlay_kind(&app), Some(er_engine::app::HubKind::AiModel));
+    }
+
+    #[test]
+    fn char_boundaries_step_over_multibyte_chars() {
+        let s = "aé€b";
+        // a=0, é=1..3, €=3..6, b=6..7
+        assert_eq!(prev_char_boundary(s, 0), 0);
+        assert_eq!(prev_char_boundary(s, 1), 0);
+        assert_eq!(prev_char_boundary(s, 3), 1);
+        assert_eq!(prev_char_boundary(s, 6), 3);
+        assert_eq!(prev_char_boundary(s, 7), 6);
+        assert_eq!(next_char_boundary(s, 0), 1);
+        assert_eq!(next_char_boundary(s, 1), 3);
+        assert_eq!(next_char_boundary(s, 3), 6);
+        assert_eq!(next_char_boundary(s, 6), 7);
+    }
+
+    #[test]
+    fn extract_anchor_from_diff_hunk_strips_markers() {
+        let hunk = "@@ -1,3 +1,4 @@\n ctx é\n-gone\n+added\n+target €";
+        let (line, ctx) = extract_anchor_from_diff_hunk(hunk);
+        assert_eq!(line, "target €");
+        assert_eq!(ctx, vec!["ctx é".to_string(), "added".to_string()]);
+    }
+
+    fn anchor_file() -> git::DiffFile {
+        let raw = "diff --git a/f.rs b/f.rs\n--- a/f.rs\n+++ b/f.rs\n@@ -1,3 +1,4 @@\n one\n+two\n three\n+four\n";
+        git::parse_diff(raw).remove(0)
+    }
+
+    #[test]
+    fn github_anchor_takes_context_around_matched_line() {
+        let a = github_anchor(3, &anchor_file(), None);
+        assert_eq!(a.hunk_index, Some(0));
+        assert_eq!(a.line_content, "three");
+        assert_eq!(a.old_line, Some(2));
+        assert_eq!(a.context_before, vec!["one".to_string(), "two".to_string()]);
+        assert_eq!(a.context_after, vec!["four".to_string()]);
+        assert_eq!(a.hunk_header, "@@ -1,3 +1,4 @@");
+    }
+
+    #[test]
+    fn github_anchor_outside_every_hunk_is_empty() {
+        let a = github_anchor(40, &anchor_file(), Some("@@ -1 +1 @@\n+x"));
+        assert_eq!(a.hunk_index, None);
+        assert!(a.line_content.is_empty() && a.hunk_header.is_empty());
     }
 }

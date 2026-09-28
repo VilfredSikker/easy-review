@@ -1,7 +1,7 @@
 import { mount } from "svelte";
 import App from "./App.svelte";
 import { app } from "$lib/stores/app.svelte";
-import { attachConsole, error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
+import { attachConsole, error as logError, warn as logWarn } from "@tauri-apps/plugin-log";
 
 // Route Rust log output to the browser devtools console.
 attachConsole().catch(() => {});
@@ -20,13 +20,13 @@ const origWarn = console.warn.bind(console);
 console.error = (...args: unknown[]) => {
   origError(...args);
   const msg = fmt(args);
-  try { app.pushLog("error", "console", msg); } catch {}
+  try { app.pushLog("error", "console", msg); } catch { /* a console call must never throw */ }
   logError(msg).catch(() => {});
 };
 console.warn = (...args: unknown[]) => {
   origWarn(...args);
   const msg = fmt(args);
-  try { app.pushLog("warn", "console", msg); } catch {}
+  try { app.pushLog("warn", "console", msg); } catch { /* a console call must never throw */ }
   logWarn(msg).catch(() => {});
 };
 
@@ -52,4 +52,6 @@ import "@fontsource/jetbrains-mono/500.css";
 
 import "./app.css";
 
-mount(App, { target: document.getElementById("app")! });
+const target = document.getElementById("app");
+if (!target) throw new Error("index.html is missing the #app mount point");
+mount(App, { target });

@@ -22,6 +22,7 @@
     selectedModelDescription,
   } from "$lib/arena/effort";
   import { isPaletteSearchFocused, paletteQuickActionKey } from "$lib/commandPaletteKeys";
+  import { keybindIndex, paletteKeyIntent, providerDescription, validateDescription, type PaletteKeyIntent } from "$lib/commandPaletteModel";
 
   type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "PR" | "Files in this diff";
 
@@ -111,25 +112,21 @@
     const tourAvailable = snapshot?.tour?.available ?? false;
     const runningCommands = (snapshot?.agent_commands ?? []).filter((c) => c.status === "running");
     const activeAiLabel = snapshot?.active_ai_label ?? "";
-    const validateDescription = !reviewScope
-      ? scopeDescription
-      : !validateAvailable
-        ? "Run General review or add GitHub comments first"
-        : hasReviewJson && eligibleCommentCount > 0
-          ? `Re-anchor review + ${eligibleCommentCount} comment(s)`
-          : eligibleCommentCount > 0
-            ? `Re-anchor ${eligibleCommentCount} GitHub comment(s)`
-            : "Re-anchor AI review findings";
+    const validateHint = validateDescription({
+      inScope: !!reviewScope,
+      scopeDescription,
+      hasReviewJson,
+      eligibleCommentCount,
+    });
 
     const guard = (fn: () => void) => () => { if (!reviewScope) return; fn(); };
+    const scoped = (description: string) => (reviewScope ? description : "Not available in this view");
 
     return [
       {
         id: "ai-triage",
         label: "Triage branch",
-        description: reviewScope
-          ? "Fast scan — first impression and review routing (default model, low effort)"
-          : "Not available in this view",
+        description: scoped("Fast scan — first impression and review routing (default model, low effort)"),
         group: "AI" as const,
         kbd: "t",
         run: guard(() => { void dismissAndRun(() => app.cmd("run_ai_triage_review", { scope: reviewScope })); }),
@@ -137,9 +134,7 @@
       {
         id: "ai-run-review",
         label: "Run review",
-        description: reviewScope
-          ? `General review only — risk, order, checklist, summary (${scopeDescription.toLowerCase()})`
-          : "Not available in this view",
+        description: scoped(`General review only — risk, order, checklist, summary (${scopeDescription.toLowerCase()})`),
         group: "AI" as const,
         kbd: "r",
         run: guard(() => { void dismissAndRun(() => app.cmd("run_ai_review", { scope: reviewScope })); }),
@@ -147,9 +142,7 @@
       {
         id: "ai-run-reviewers",
         label: "Run reviewers…",
-        description: reviewScope
-          ? "Multi-select General, experts, and Professor"
-          : "Not available in this view",
+        description: scoped("Multi-select General, experts, and Professor"),
         group: "AI" as const,
         kbd: "v",
         view: "reviewers" as const,
@@ -158,9 +151,7 @@
       {
         id: "ai-professor",
         label: "Professor",
-        description: reviewScope
-          ? "Learn what this diff implements (not a code review)"
-          : "Not available in this view",
+        description: scoped("Learn what this diff implements (not a code review)"),
         group: "AI" as const,
         kbd: "p",
         run: guard(() => {
@@ -171,9 +162,7 @@
       {
         id: "ai-tour",
         label: tourAvailable ? "Regenerate tour" : "Generate tour",
-        description: reviewScope
-          ? "Group the diff into a guided walkthrough (pillars) for the Guide tab"
-          : "Not available in this view",
+        description: scoped("Group the diff into a guided walkthrough (pillars) for the Guide tab"),
         group: "AI" as const,
         kbd: "g",
         run: guard(() => { void dismissAndRun(() => app.cmd("generate_tour")); }),
@@ -181,9 +170,7 @@
       {
         id: "ai-diagrams",
         label: "Diagrams",
-        description: reviewScope
-          ? "Generate mermaid diagrams of this diff (mental model, subsystems, flows)"
-          : "Not available in this view",
+        description: scoped("Generate mermaid diagrams of this diff (mental model, subsystems, flows)"),
         group: "AI" as const,
         kbd: "d",
         run: guard(() => {
@@ -195,7 +182,7 @@
       {
         id: "ai-validate",
         label: "Validate / re-anchor",
-        description: validateDescription,
+        description: validateHint,
         group: "AI" as const,
         kbd: "l",
         run: guard(() => {
@@ -206,9 +193,7 @@
       {
         id: "ai-select-files",
         label: "Review select files",
-        description: reviewScope
-          ? `Choose files and reviewers (${scopeDescription.toLowerCase()})`
-          : "Not available in this view",
+        description: scoped(`Choose files and reviewers (${scopeDescription.toLowerCase()})`),
         group: "AI" as const,
         kbd: "s",
         run: guard(() => { dismissLocal(() => openAiReviewFilesModal()); }),
@@ -248,9 +233,7 @@
     return aiProviders.map((p) => ({
       id: `provider-${p.id}`,
       label: p.label,
-      description: p.models.length > 0
-        ? `${p.models.length} model${p.models.length === 1 ? "" : "s"}${p.is_selected ? " · active" : ""}`
-        : p.is_selected ? "active" : "no model presets",
+      description: providerDescription(p),
       group: "AI" as const,
       run: () => {
         if (p.models.length === 0) {
@@ -347,7 +330,7 @@
   function buildItems(): CommandItem[] {
     const mode = snapshot?.mode;
     const reviewScope = reviewScopeFromMode(mode);
-    const scopeDescription = scopeDescriptionFromMode(mode);
+    const _scopeDescription = scopeDescriptionFromMode(mode);
 
     const actionsItems: CommandItem[] = [
       {
@@ -610,16 +593,6 @@
   /** Root list: the menu containers, in order. */
   const flat = $derived(allRootItems);
 
-  /** Single-letter keybinds for the current view's items (root containers or
-   *  the active submenu's actions), e.g. a → AI, t → Triage, r → Run review. */
-  const viewKeybinds = $derived.by<Map<string, CommandItem>>(() => {
-    const m = new Map<string, CommandItem>();
-    for (const item of navList) {
-      if (item.kbd) m.set(item.kbd.toLowerCase(), item);
-    }
-    return m;
-  });
-
   /** Items shown in a submenu (filtered by the query). */
   const filtered = $derived(
     activeSubmenu
@@ -628,9 +601,14 @@
   );
 
   /** The list navigated by arrows/Enter in the current view. */
-  const navList = $derived(
-    activeSubmenu ? filtered : (query.trim() !== "" ? searchResults : flat),
-  );
+  const navList = $derived.by(() => {
+    if (activeSubmenu) return filtered;
+    return query.trim() !== "" ? searchResults : flat;
+  });
+
+  /** Single-letter keybinds for the current view's items (root containers or
+   *  the active submenu's actions), e.g. a → AI, t → Triage, r → Run review. */
+  const viewKeybinds = $derived(keybindIndex(navList));
 
   $effect(() => {
     if (!commandPalette.open) return;
@@ -673,66 +651,54 @@
     inputEl?.focus();
   }
 
-  function onModalKeydown(e: KeyboardEvent) {
-    if (!commandPalette.open) return;
-
-    const searchFocused = isPaletteSearchFocused(e.target);
-    const unchorded = !e.metaKey && !e.ctrlKey && !e.altKey;
-
-    if (activeSubmenu?.view === "reviewers") {
-      if (e.key === "Escape") { e.preventDefault(); goBack(); return; }
-      if (e.key === "ArrowDown") { e.preventDefault(); reviewerPickerRef?.moveHighlight(1); return; }
-      if (e.key === "ArrowUp") { e.preventDefault(); reviewerPickerRef?.moveHighlight(-1); return; }
-      if (e.key === " ") { e.preventDefault(); reviewerPickerRef?.toggleHighlighted(); return; }
-      if (e.key === "Enter") { e.preventDefault(); if (reviewerSelection.size > 0) void runSelectedReviewers(); return; }
-      return;
-    }
-
-    if (e.key === "Escape") {
-      e.preventDefault();
-      if (searchFocused) {
-        if (query.trim() !== "") {
-          query = "";
-          selectedIdx = 0;
-        } else {
-          inputEl?.blur();
-        }
-        return;
-      }
+  const KEY_INTENT_HANDLERS: Record<Exclude<PaletteKeyIntent, "none">, (e: KeyboardEvent) => void> = {
+    swallow: () => {},
+    back: () => goBack(),
+    leave: () => {
       if (activeSubmenu) goBack();
       else close();
-      return;
-    }
-    if (!searchFocused && e.key === "ArrowLeft" && activeSubmenu) {
-      e.preventDefault();
-      goBack();
-      return;
-    }
-    if (!searchFocused && e.key === "ArrowRight") {
-      e.preventDefault();
+    },
+    "clear-query": () => {
+      query = "";
+      selectedIdx = 0;
+    },
+    "blur-search": () => inputEl?.blur(),
+    "open-selected-submenu": () => {
       const item = navList[selectedIdx];
       if (item && (item.submenuItems || item.view)) openItem(item);
-      return;
-    }
-    if (e.key === "ArrowDown") { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, navList.length - 1); return; }
-    if (e.key === "ArrowUp") { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0); return; }
-    if (e.key === "Enter") { e.preventDefault(); const item = navList[selectedIdx]; if (item) openItem(item); return; }
-
-    const action = paletteQuickActionKey(e, searchFocused);
-    if (action === "search") {
-      e.preventDefault();
-      focusSearch();
-      return;
-    }
-    if (action === "letter") {
-      e.preventDefault();
+    },
+    "open-selected": () => {
+      const item = navList[selectedIdx];
+      if (item) openItem(item);
+    },
+    next: () => { selectedIdx = Math.min(selectedIdx + 1, navList.length - 1); },
+    prev: () => { selectedIdx = Math.max(selectedIdx - 1, 0); },
+    "focus-search": () => focusSearch(),
+    letter: (e) => {
       const item = viewKeybinds.get(e.key.toLowerCase());
       if (item) openItem(item);
-      return;
-    }
-    if (!searchFocused && unchorded && (e.key.length === 1 || e.key === "Backspace")) {
-      e.preventDefault();
-    }
+    },
+    "reviewer-down": () => reviewerPickerRef?.moveHighlight(1),
+    "reviewer-up": () => reviewerPickerRef?.moveHighlight(-1),
+    "reviewer-toggle": () => reviewerPickerRef?.toggleHighlighted(),
+    "reviewer-run": () => {
+      if (reviewerSelection.size > 0) void runSelectedReviewers();
+    },
+  };
+
+  function onModalKeydown(e: KeyboardEvent) {
+    if (!commandPalette.open) return;
+    const searchFocused = isPaletteSearchFocused(e.target);
+    const intent = paletteKeyIntent(e, {
+      reviewersView: activeSubmenu?.view === "reviewers",
+      searchFocused,
+      hasQuery: query.trim() !== "",
+      inSubmenu: activeSubmenu != null,
+      quickAction: paletteQuickActionKey(e, searchFocused),
+    });
+    if (intent === "none") return;
+    e.preventDefault();
+    KEY_INTENT_HANDLERS[intent](e);
   }
 
   $effect(() => {
@@ -771,8 +737,6 @@
 >
   <div class="flex items-center gap-3 px-4 py-3 border-b border-hairline">
     {#if activeSubmenu}
-      <!-- svelte-ignore a11y_click_events_have_key_events -->
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <button
         type="button"
         aria-label="Back"
@@ -806,7 +770,7 @@
 
   <div bind:this={listEl} class="max-h-[60vh] overflow-y-auto py-1">
     {#snippet paletteRow(item: CommandItem, idx: number, isActive: boolean)}
-      <button
+      <button type="button"
         data-active={isActive}
         onclick={() => openItem(item)}
         onmouseenter={() => (selectedIdx = idx)}
@@ -815,7 +779,7 @@
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class={isActive ? "text-accent" : "text-fg-3"}><circle cx="12" cy="12" r="9"/></svg>
         <div class="flex-1 min-w-0">
           <div class="text-sm {isActive ? 'text-fg' : 'text-fg-2'}">
-            {#each highlight(item.label, query) as part}{#if part.match}<span class="text-accent font-medium">{part.match}</span>{:else}{part.rest}{/if}{/each}
+            {#each highlight(item.label, query) as part, i (i)}{#if part.match}<span class="text-accent font-medium">{part.match}</span>{:else}{part.rest}{/if}{/each}
           </div>
           {#if item.submenuOf}
             <div class="text-[11px] text-muted">in {item.submenuOf}</div>

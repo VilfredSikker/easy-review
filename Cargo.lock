@@ -1402,6 +1402,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "er-lint-gate"
+version = "0.5.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "serde",
+ "serde_json",
+ "syn 2.0.117",
+ "toml 1.0.6+spec-1.1.0",
+]
+
+[[package]]
 name = "er-mcp"
 version = "0.5.0"
 dependencies = [

@@ -13,6 +13,6 @@
   $effect(() => { app.snapshot = snapshot; });
 </script>
 
-<div class="h-screen flex flex-col bg-[#0a0a0a] text-[#e8e8e8]">
+<div class="h-screen flex flex-col bg-bg text-fg">
   <DiffView {viewModeOverride} />
 </div>

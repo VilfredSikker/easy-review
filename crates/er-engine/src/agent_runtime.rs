@@ -361,7 +361,10 @@ pub struct AgentPrompt<'a> {
     pub user: &'a str,
 }
 
-#[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "{prompt} is a deliberate template placeholder, substituted via .replace()"
+)]
 pub fn build_argv(invocation: &AgentInvocation, prompt: AgentPrompt<'_>) -> Vec<String> {
     let mut args = invocation.args.clone();
     let has_placeholder = args.iter().any(|arg| arg.contains("{prompt}"));
@@ -397,6 +400,23 @@ pub fn build_argv(invocation: &AgentInvocation, prompt: AgentPrompt<'_>) -> Vec<
     args
 }
 
+/// The trimmed, non-empty text blocks of one `stream-json` assistant event, in order.
+pub(crate) fn assistant_text_blocks(
+    event: &serde_json::Value,
+) -> impl Iterator<Item = String> + '_ {
+    event
+        .get("message")
+        .and_then(|message| message.get("content"))
+        .and_then(|content| content.as_array())
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(|kind| kind.as_str()) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(|text| text.as_str()))
+        .map(str::trim)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+}
+
 pub fn decode_final_text(stdout: &str, protocol: OutputProtocol) -> String {
     if protocol == OutputProtocol::Plain {
         return stdout.to_string();
@@ -419,21 +439,7 @@ pub fn decode_final_text(stdout: &str, protocol: OutputProtocol) -> String {
                 }
             }
             Some("assistant") => {
-                if let Some(content) = value
-                    .get("message")
-                    .and_then(|message| message.get("content"))
-                    .and_then(|content| content.as_array())
-                {
-                    for item in content {
-                        if item.get("type").and_then(|kind| kind.as_str()) == Some("text") {
-                            if let Some(text) = item.get("text").and_then(|text| text.as_str()) {
-                                if !text.trim().is_empty() {
-                                    assistant_text.push(text.trim().to_string());
-                                }
-                            }
-                        }
-                    }
-                }
+                assistant_text.extend(assistant_text_blocks(&value));
             }
             _ => {}
         }
@@ -560,9 +566,12 @@ impl ArtifactBaseline {
                 |v| &v.diff_hash,
             )?,
             ArtifactContract::Tour { filename } => {
-                validate_json_hash::<ErTour>(output_dir, filename, expected_hash.as_deref(), |v| {
-                    &v.diff_hash
-                })?
+                validate_json_hash::<ErTour>(
+                    output_dir,
+                    filename,
+                    expected_hash.as_deref(),
+                    |v| &v.diff_hash,
+                )?;
             }
             ArtifactContract::Questions => {
                 validate_json_hash::<ErQuestions>(

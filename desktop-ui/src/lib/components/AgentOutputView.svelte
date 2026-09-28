@@ -48,15 +48,15 @@
     <span class="text-fg-2">Agent Output</span>
     {#if revisions.length > 0}
       <select bind:value={selectedRevisionId} class="ml-2 bg-bg border border-border rounded px-2 py-1 text-xs">
-        {#each revisions as rev}
+        {#each revisions as rev (rev.revision_id)}
           <option value={rev.revision_id}>{rev.active ? "active · " : ""}{rev.revision_id}</option>
         {/each}
       </select>
     {/if}
-    <button class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
+    <button type="button" class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
       Copy review.json
     </button>
-    <button class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
+    <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
       Back to diff
     </button>
   </div>
@@ -68,7 +68,7 @@
     {#if commands.length > 0}
       <div class="rounded border border-hairline bg-card p-3">
         <div class="text-xs text-fg-3 mb-2">Command status</div>
-        {#each commands as cmd}
+        {#each commands as cmd, i (i)}
           <div class="flex items-center text-xs font-mono mb-1">
             <span>{cmd.name}</span>
             <span class="ml-auto">{cmd.status}</span>
@@ -79,7 +79,7 @@
     {#if log.length > 0}
       <div class="rounded border border-hairline bg-card p-3">
         <div class="text-xs text-fg-3 mb-2">Log</div>
-        {#each log as entry}
+        {#each log as entry, i (i)}
           <div class="text-[11px] font-mono break-all">{entry.text}</div>
         {/each}
       </div>

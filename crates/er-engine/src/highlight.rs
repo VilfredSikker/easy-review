@@ -75,6 +75,10 @@ impl Highlighter {
 
     /// Highlight a single line. `theme_name` is a syntect theme name (e.g.
     /// "OneHalfDark"). Falls back to "OneHalfDark" if not found.
+    #[expect(
+        clippy::expect_used,
+        reason = "the theme set starts from syntect's bundled defaults, which are never empty"
+    )]
     pub fn highlight_line(
         &mut self,
         line: &str,
@@ -109,13 +113,7 @@ impl Highlighter {
         //   TS scopes from two_face's HTML syntax, so use TS for the whole file.
         let force_ts = matches!(
             ext_lower.as_deref(),
-            Some("ts")
-                | Some("tsx")
-                | Some("cts")
-                | Some("mts")
-                | Some("svelte")
-                | Some("vue")
-                | Some("astro")
+            Some("ts" | "tsx" | "cts" | "mts" | "svelte" | "vue" | "astro")
         );
         // The two lookups `find_syntax_for_file` does before it reaches for the
         // disk. Kept as hash lookups so the common case never touches the file.
@@ -184,7 +182,13 @@ impl Highlighter {
             .themes
             .get(theme_name)
             .or_else(|| self.theme_set.themes.get("OneHalfDark"))
-            .unwrap_or_else(|| self.theme_set.themes.values().next().unwrap());
+            .unwrap_or_else(|| {
+                self.theme_set
+                    .themes
+                    .values()
+                    .next()
+                    .expect("bundled themes are never empty")
+            });
 
         let mut hl = HighlightLines::new(syntax, theme);
         let input = if line.ends_with('\n') {

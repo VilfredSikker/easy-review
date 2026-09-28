@@ -20,8 +20,7 @@ pub fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
             continue;
         }
         // Capture leading whitespace to preserve indentation
-        let indent_len = line.len() - line.trim_start().len();
-        let indent = &line[..indent_len];
+        let indent = line.strip_suffix(line.trim_start()).unwrap_or("");
         let indent_chars = indent.chars().count();
 
         let mut current = String::new();

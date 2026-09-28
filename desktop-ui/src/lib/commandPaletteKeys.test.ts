@@ -5,11 +5,11 @@ import { fileURLToPath } from "node:url";
 import { isPaletteSearchFocused, paletteQuickActionKey } from "./commandPaletteKeys";
 
 function key(
-  key: string,
+  name: string,
   mods: { metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean } = {},
 ) {
   return {
-    key,
+    key: name,
     metaKey: mods.metaKey ?? false,
     ctrlKey: mods.ctrlKey ?? false,
     altKey: mods.altKey ?? false,
@@ -71,7 +71,7 @@ describe("CommandPalette.svelte search focus", () => {
 
   it("lets the palette own Escape while it is open", () => {
     expect(keyboard).toContain("commandPalette.open");
-    const esc = keyboard.slice(keyboard.indexOf('if (e.key === "Escape")'));
+    const esc = keyboard.slice(keyboard.indexOf("function handleEscape"));
     expect(esc.indexOf("commandPalette.open")).toBeLessThan(esc.indexOf("overlay.dismissTopModal"));
   });
 });

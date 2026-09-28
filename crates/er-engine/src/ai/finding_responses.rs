@@ -48,12 +48,12 @@ fn iso_now() -> String {
                 31,
             ];
             for (i, &md) in month_days.iter().enumerate() {
-                if d < md as i64 {
+                if d < i64::from(md) {
                     month = (i + 1) as u32;
                     day = (d + 1) as u32;
                     break;
                 }
-                d -= md as i64;
+                d -= i64::from(md);
             }
             break;
         }
@@ -81,7 +81,7 @@ where
         {
             let f = f
                 .take()
-                .expect("apply_to_findings called after finding matched");
+                .ok_or_else(|| anyhow::anyhow!("apply_to_findings called after finding matched"))?;
             f(finding)?;
             return Ok(true);
         }
