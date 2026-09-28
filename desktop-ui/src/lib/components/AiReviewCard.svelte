@@ -86,13 +86,16 @@
     !!ai.has_review_json && !!reviewScope && !!activeTab && activeTab.kind !== "remote_pr",
   );
   const canValidateFindings = $derived(hasExpertFindings || canValidateGeneralReview);
-  const validateFindingsHint = $derived(
-    hasExpertFindings
-      ? "Merge duplicate expert findings and regrade confidence with one arbiter pass"
-      : activeTab?.kind === "remote_pr"
-        ? "Check out this PR locally to validate its review findings"
-        : "Validate the review findings against the current diff and re-anchor their locations",
-  );
+  const validateFindingsHint = $derived.by(() => {
+    if (hasExpertFindings) {
+      return "Merge duplicate expert findings and regrade confidence with one arbiter pass";
+    }
+    if (activeTab?.kind === "remote_pr") {
+      return "Check out this PR locally to validate its review findings";
+    }
+    return "Validate the review findings against the current diff and re-anchor their locations";
+  });
+  const SEVERITY_DOT: Record<string, string> = { high: "bg-risk-high", med: "bg-risk-med" };
 
   const isEmpty = $derived(
     ai.findings.length === 0 &&
@@ -478,7 +481,7 @@
 
       <div class="findings-list space-y-1.5">
       {#each ordered as finding (finding.id)}
-        {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
+        {@const dotClass = SEVERITY_DOT[finding.severity] ?? "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
         <div class="relative group">
           <button

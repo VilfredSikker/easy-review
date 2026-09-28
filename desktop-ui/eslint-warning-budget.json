@@ -7,11 +7,6 @@
 			"count": 1
 		}
 	},
-	"src/lib/components/AiReviewCard.svelte": {
-		"no-nested-ternary": {
-			"count": 1
-		}
-	},
 	"src/lib/components/AiReviewFilesModal.svelte": {
 		"no-nested-ternary": {
 			"count": 4
