@@ -2,8 +2,8 @@
 
 ## In plain terms
 
-- **What changed.** The model pickers are current again. Claude offers Fable 5.1, Opus 5.5, Sonnet 5 and Haiku 4.5; Codex offers the GPT-6 family, and **Refresh models** now asks the Codex CLI what it has. Picking a provider, model or effort in desktop Settings keeps your place on the page. Settings is split across more tabs, so General no longer holds everything.
-- **TL;DR.** New Claude and Codex models, a Refresh that works for Codex, Settings that stays put, and fewer settings per tab.
+- **What changed.** The model pickers are current again. Claude offers Fable 5.1, Opus 5.5, Sonnet 5 and Haiku 4.5; Codex offers the GPT-6 family, and **Refresh models** now asks the Codex CLI what it has. Picking a provider, model or effort in desktop Settings keeps your place on the page. Settings is split across more tabs, so General no longer holds everything. Opening a PR from a notification is as fast as opening it from the sidebar. Lint is now a gate that only tightens, and paying its baseline down to zero fixed several panics on multi-byte and CRLF diffs.
+- **TL;DR.** New Claude and Codex models, a Refresh that works for Codex, Settings that stays put, fast notification opens, and fewer crashes on unusual diffs.
 
 ## Highlights
 
@@ -12,6 +12,8 @@
 - **Retired presets leave saved configs.** A saved config keeps every preset it ever merged, so dropping one from the catalog never reached existing users. Retired presets are now removed from the loaded config, and a default that pointed at one moves to its successor on the same tier (Fable 5 → Fable 5.1, Opus 5 → Opus 5.5, GPT-5.4 → GPT-5.6 Terra). Before, a retired default fell back to Sonnet 5.
 - **Settings keeps your scroll position.** Every provider, model or effort pick reloaded the page through the loading skeleton, which rebuilt the scrolling area at the top and threw you back to the start of Settings. The skeleton now shows only on first open.
 - **Settings tabs.** General, AI, Review, Projects and Terminal. AI holds the AI Hub card, the agent command and the concurrency caps; Review holds the review commands and file importance. A section without a tab lands on General, so a new setting cannot go missing. The TUI's settings are unchanged.
+- **Notification opens take the sidebar's fast path.** Opening a PR from the inbox was often slow or broken while the same PR opened instantly from the sidebar. The PR list cache is keyed by the remote as written (`VilfredSikker/easy-review`) and inbox targets carry the lowercased slug, so every mixed-case repo missed the cache and fell back to `gh pr view` with `main` guessed as base. The lookup is now case-insensitive, remote-only projects open as remote PR tabs, and the open cache is warmed when the notification dialog opens.
+- **Lint is a ratcheted gate** (ADR 0038). desktop-ui gains ESLint and Rust runs clippy's pedantic group through `er-lint-gate`, with per-file budgets that may only fall. Both baselines were then paid down to zero, and the rules found real bugs on the way, listed under Fixes.
 
 ## What's Changed
 
@@ -19,8 +21,16 @@
 - Codex model discovery through `codex debug models`, with hidden models filtered and per-model effort levels kept. Codex's `ultra` effort is left out: it delegates to subtasks, so it means something different from the shared low → max scale.
 - Claude presets: Fable 5.1 and Opus 5.5. Codex presets: GPT-6 Astra, Sol and Luna.
 - Desktop Settings splits into General, AI, Review, Projects and Terminal tabs.
+- The review card can validate general review findings as well as expert ones, and a stale checklist can rerun the review. Repeat runs are disabled while one is active.
+- File risks sort accessibly and only navigate to files in the current diff.
+- Inbox items prefetch when the notification dialog opens, reusing the sidebar's local and remote prefetch.
 
 ### Fixes
+- Opening a PR from a notification now hits the PR cache for mixed-case repos, opens remote-only projects as remote PR tabs, and shows the same "Opening…" overlay as the sidebar.
+- `parse_diff_headers` drifted on CRLF offsets, which panicked or silently dropped file sections.
+- Arena stderr truncation, `diff --git` path parsing and the TUI's `parse_hex_color` panicked on multi-byte text.
+- Custom diagrams were always rejected as missing their prompt, because `DiagramsCard` sent `custom_prompt` where the command expects `customPrompt`.
+- Migrating a retired preset ID keeps a custom model configured for that provider.
 - **Refresh models** reported nothing when it failed; each provider's failure now shows as a toast, and a provider with no listing says so.
 - Picking a provider, model or effort in desktop Settings no longer scrolls the page to the top.
 - Retired presets are removed from saved configs on load, and a retired default moves to its successor instead of the catalog default.
