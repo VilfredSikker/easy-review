@@ -22,7 +22,7 @@
     role="switch"
     aria-checked={checked}
     aria-label={label}
-    disabled={disabled}
+    {disabled}
     class="relative shrink-0 w-9 h-5 rounded-full border transition-colors duration-150 outline-none focus-visible:ring-2 focus-visible:ring-accent/40 {checked
       ? 'bg-accent border-accent'
       : 'bg-ink-700 border-border group-hover:border-ink-400'} disabled:cursor-not-allowed"

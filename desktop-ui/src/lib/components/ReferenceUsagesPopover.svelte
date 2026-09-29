@@ -24,6 +24,7 @@
    * - The list is capped (first 100 usages) with a "+N more" footer.
    */
   import { tick } from "svelte";
+  import { toggled } from "$lib/immutableSet";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import { findMatchRanges } from "$lib/referenceHighlight";
   import {
@@ -69,20 +70,17 @@
   });
 
   function toggleExpanded(i: number): void {
-    const next = new Set(expanded);
-    if (next.has(i)) next.delete(i);
-    else next.add(i);
-    expanded = next;
+    expanded = toggled(expanded, i);
   }
 
   const pos = $derived(
     clampPopoverPosition(
-      (anchor?.x ?? 0) + 10,
-      (anchor?.y ?? 0) + 14,
-      popW || 600,
-      popH || 320,
-      typeof window === "undefined" ? 1280 : window.innerWidth,
-      typeof window === "undefined" ? 800 : window.innerHeight,
+      { x: (anchor?.x ?? 0) + 10, y: (anchor?.y ?? 0) + 14 },
+      { w: popW || 600, h: popH || 320 },
+      {
+        w: typeof window === "undefined" ? 1280 : window.innerWidth,
+        h: typeof window === "undefined" ? 800 : window.innerHeight,
+      },
     ),
   );
 

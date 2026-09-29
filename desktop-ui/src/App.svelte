@@ -188,7 +188,6 @@
     const row = (e.currentTarget as HTMLElement).parentElement;
     if (!row) return;
     const rect = row.getBoundingClientRect();
-    const startX = e.clientX;
 
     const onMove = (ev: MouseEvent) => {
       const frac = (ev.clientX - rect.left) / rect.width;
@@ -339,6 +338,7 @@
           </div>
         {/if}
         {#if showBrowser && showDiff}
+          <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
           <div
             class="w-1 shrink-0 cursor-col-resize hover:bg-accent/40 {resizingBrowserSplit ? 'bg-accent/60' : 'bg-ink-650'}"
             onmousedown={onBrowserSplitResizeStart}
@@ -391,6 +391,7 @@
         on body via the `dragging` class so the cursor doesn't flicker when
         the pointer briefly leaves the handle.
       -->
+      <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
       <div
         class="absolute -top-[2px] left-0 right-0 h-1 cursor-row-resize z-10 hover:bg-accent/40 {dragging ? 'bg-accent/60' : ''}"
         onmousedown={onResizeStart}

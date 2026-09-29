@@ -1010,7 +1010,7 @@ mod tests {
         assert_eq!(ids, vec!["mental-model", "flows", "custom-1"]);
         assert!(!diagrams[1].stale); // flows matches the current diff hash
         assert!(diagrams[0].stale); // mental-model was generated for another diff
-        assert!(load_ai_state(er_dir, "abc", None).diagrams.len() == 3);
+        assert_eq!(load_ai_state(er_dir, "abc", None).diagrams.len(), 3);
     }
 
     #[test]

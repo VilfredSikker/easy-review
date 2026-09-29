@@ -180,8 +180,7 @@ describe("resolveAgentSummary", () => {
       },
       "Testing",
       counts,
-      2,
-      false,
+      { fileCount: 2, isEmpty: false },
     );
     expect(r.markdown).toBe(true);
     expect(r.text).toContain("Coverage gap");
@@ -192,8 +191,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: "General overview", agent_summaries: {} },
       "General",
       counts,
-      2,
-      false,
+      { fileCount: 2, isEmpty: false },
     );
     expect(r.text).toBe("General overview");
     expect(r.markdown).toBe(true);
@@ -204,8 +202,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {} },
       "Security",
       counts,
-      1,
-      false,
+      { fileCount: 1, isEmpty: false },
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("1 finding from Security");
@@ -222,8 +219,7 @@ describe("resolveAgentSummary", () => {
       },
       ALL_REVIEWERS,
       emptyCounts,
-      0,
-      true,
+      { fileCount: 0, isEmpty: true },
     );
     expect(r.markdown).toBe(true);
     expect(r.text).toContain("No actionable findings were identified");
@@ -240,8 +236,7 @@ describe("resolveAgentSummary", () => {
       },
       "Testing",
       emptyCounts,
-      0,
-      true,
+      { fileCount: 0, isEmpty: true },
     );
     expect(r.markdown).toBe(true);
     expect(r.text).toContain("Coverage looks complete");
@@ -252,8 +247,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {}, has_review_json: true },
       ALL_REVIEWERS,
       emptyCounts,
-      0,
-      true,
+      { fileCount: 0, isEmpty: true },
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("No findings.");
@@ -264,8 +258,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {} },
       ALL_REVIEWERS,
       emptyCounts,
-      0,
-      true,
+      { fileCount: 0, isEmpty: true },
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toContain("No findings written");
@@ -278,8 +271,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {} },
       "Security",
       emptyCounts,
-      0,
-      true,
+      { fileCount: 0, isEmpty: true },
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("No findings from Security.");
@@ -290,9 +282,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {} },
       ALL_REVIEWERS,
       emptyCounts,
-      0,
-      true,
-      15,
+      { fileCount: 0, isEmpty: true, fileRiskCount: 15 },
     );
     expect(r.markdown).toBe(false);
     expect(r.text).toBe("No line findings. 15 files assessed.");
@@ -303,9 +293,7 @@ describe("resolveAgentSummary", () => {
       { summary_markdown: null, agent_summaries: {} },
       ALL_REVIEWERS,
       emptyCounts,
-      0,
-      true,
-      1,
+      { fileCount: 0, isEmpty: true, fileRiskCount: 1 },
     );
     expect(r.text).toBe("No line findings. 1 file assessed.");
   });

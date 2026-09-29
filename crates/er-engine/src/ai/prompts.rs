@@ -359,6 +359,10 @@ Write findings and a lens-specific `summary` in the expert JSON — do not write
     lens
 }
 
+#[expect(
+    clippy::expect_used,
+    reason = "callers pass ids from the expert registry; an unknown id is a programming error"
+)]
 fn expert_review_output_section(output_dir: &str, expert_id: &str) -> String {
     let def = expert_by_id(expert_id).expect("unknown expert");
     let safe_output_dir = sanitize_for_shell(output_dir)
@@ -485,6 +489,10 @@ pub fn build_review_prompt_prepared_diff(
 }
 
 /// Specialized expert review for local-managed app/TUI runs.
+#[expect(
+    clippy::expect_used,
+    reason = "callers pass ids from the expert registry; an unknown id is a programming error"
+)]
 pub fn build_expert_review_prompt_local_managed(
     base_branch: &str,
     scope: &str,
@@ -524,6 +532,10 @@ pub fn build_expert_review_prompt_local_managed(
 }
 
 /// Specialized expert review when `{output_dir}/diff-tmp` is already prepared (desktop).
+#[expect(
+    clippy::expect_used,
+    reason = "callers pass ids from the expert registry; an unknown id is a programming error"
+)]
 pub fn build_expert_review_prompt_prepared_diff(
     scope: &str,
     output_dir: &str,

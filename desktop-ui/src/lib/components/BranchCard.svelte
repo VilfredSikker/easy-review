@@ -44,7 +44,7 @@
     checks_status,
     is_pr = false,
     pr_number = null,
-    is_merged = false,
+    is_merged: _is_merged = false,
     github_url = null,
     github = null,
   }: Props = $props();
@@ -517,7 +517,7 @@
             </button>
             {#if expandChecks}
               <ul class="space-y-1 pl-1 border-l border-hairline ml-1">
-                {#each github.checks as c}
+                {#each github.checks as c, i (i)}
                   <li class="flex items-center gap-2 text-[11px] pl-2">
                     <span
                       class="inline-block w-1.5 h-1.5 rounded-full shrink-0"
@@ -531,10 +531,11 @@
                         c.conclusion !== "fail"}
                     ></span>
                     {#if c.url}
+                      {@const url = c.url}
                       <button
                         type="button"
                         class="text-fg-2 hover:text-fg-1 hover:underline truncate text-left"
-                        onclick={() => openExternalUrl(c.url!)}
+                        onclick={() => openExternalUrl(url)}
                       >{c.name}</button>
                     {:else}
                       <span class="text-fg-2 truncate">{c.name}</span>
@@ -548,7 +549,7 @@
           <!-- Labels -->
           {#if github.labels.length > 0}
             <div class="flex flex-wrap gap-1">
-              {#each github.labels as label}
+              {#each github.labels as label (label)}
                 <span class="text-[10px] px-1.5 py-0.5 rounded border border-hairline text-fg-3">{label}</span>
               {/each}
             </div>
@@ -567,7 +568,7 @@
       <!-- Fallback: simple PR + checks rows when no live GitHub data -->
       {#if effectivePrNumber !== null}
         {#if effectiveGithubUrl}
-          <button
+          <button type="button"
             class="w-full flex items-center gap-2 hover:bg-hover rounded px-1.5 py-1 -mx-1 transition-colors"
             onclick={onOpenPr}
             aria-label="Open PR #{effectivePrNumber} on GitHub"
@@ -593,7 +594,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-success"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
           <span class="text-fg-2 text-[12px]">Checks successful</span>
           {#if github_url}
-            <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}
@@ -603,7 +604,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-warning"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>
           <span class="text-fg-2 text-[12px]">Checks pending</span>
           {#if github_url}
-            <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}
@@ -613,7 +614,7 @@
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-error"><circle cx="12" cy="12" r="10"/><path d="M15 9l-6 6M9 9l6 6"/></svg>
           <span class="text-fg-2 text-[12px]">Checks failing</span>
           {#if github_url}
-            <button class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
+            <button type="button" class="ml-auto text-muted hover:text-fg-2" onclick={() => app.cmd("open_url_in_browser", { url: github_url })} aria-label="View checks on GitHub">
               <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
             </button>
           {/if}

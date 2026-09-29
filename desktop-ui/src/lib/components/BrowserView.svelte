@@ -20,6 +20,16 @@
   } from "$lib/stores/browserHost";
   import type { UiDomContext } from "$lib/types";
   import AnnotationOverlay from "./AnnotationOverlay.svelte";
+  import type { AnnotationSubmission } from "./AnnotationComposer.svelte";
+  import {
+    composerSubmission,
+    hoverTarget,
+    iframeClick,
+    objectField,
+    reanchorUpdates,
+    stringField,
+    type PageRect,
+  } from "$lib/browserPayload";
   import {
     dismissBrowserAnnotationComposerNow,
     registerBrowserAnnotationComposerDismiss,
@@ -156,6 +166,17 @@
 
   type AnnotationReadiness = "waiting" | "ready" | "unsupported";
   let annotationReadiness = $state<AnnotationReadiness>("waiting");
+  const READINESS_BADGE_CLASS: Record<AnnotationReadiness, string> = {
+    ready: "text-success bg-success/15",
+    unsupported: "text-error bg-error/15",
+    waiting: "text-warning bg-warning/15",
+  };
+
+  /** Native child webview sits above the Svelte overlay — page script handles pointer. */
+  const pageHandlesAnnotate = $derived(!useProxyFallback);
+
+  let composerOpenInPage = $state(false);
+
   let readinessTimer: ReturnType<typeof setTimeout> | null = null;
   /** Avoid re-arming the readiness timer on every snapshot poll. */
   let readinessContextKey = $state<string | null>(null);
@@ -274,10 +295,6 @@
     });
   }
 
-  /** Native child webview sits above the Svelte overlay — page script handles pointer. */
-  const pageHandlesAnnotate = $derived(!useProxyFallback);
-
-  let composerOpenInPage = $state(false);
 
   function openPageComposer(p: {
     x: number;
@@ -468,159 +485,118 @@
     void sendToPage({ __er_query_rect: true, id: "__pin__", selector });
   }
 
-  function handleBrowserPayload(data: Record<string, unknown>) {
-    if (
-      "__er_hover_result" in data ||
-      "__er_annotate" in data ||
-      "__er_location" in data ||
-      "__er_ready" in data ||
-      "__er_query_rect_result" in data ||
-      "__er_reanchor_result" in data ||
-      "__er_annotate_mode_ack" in data
-    ) {
-      markAnnotationReady();
-    }
+  /** Any of these means the page script is alive and answering. */
+  const READY_MARKERS = [
+    "__er_hover_result",
+    "__er_annotate",
+    "__er_location",
+    "__er_ready",
+    "__er_query_rect_result",
+    "__er_reanchor_result",
+    "__er_annotate_mode_ack",
+  ];
 
-    if ((data as { __er_composer_submit?: boolean }).__er_composer_submit) {
-      if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
-      composerOpenInPage = false;
-      const box = (data as { box?: number[] }).box;
-      const bbox: [number, number, number, number] = Array.isArray(box) && box.length >= 4
-        ? [Number(box[0]) || 0, Number(box[1]) || 0, Number(box[2]) || 24, Number(box[3]) || 24]
-        : [0, 0, 24, 24];
-      const text = typeof (data as { text?: unknown }).text === "string"
-        ? (data as { text: string }).text
-        : "";
-      const selector = typeof (data as { selector?: unknown }).selector === "string"
-        ? (data as { selector: string }).selector
-        : null;
-      const element_context = typeof (data as { element_context?: unknown }).element_context === "string"
-        ? (data as { element_context: string }).element_context
-        : null;
-      const dom_context = (data as { dom_context?: unknown }).dom_context &&
-        typeof (data as { dom_context?: unknown }).dom_context === "object"
-        ? (data as { dom_context: UiDomContext }).dom_context
-        : null;
-      void submitAnnotation(bbox, selector, text, null, element_context, dom_context);
-      return;
+  function onComposerSubmit(data: Record<string, unknown>): boolean {
+    if (!data.__er_composer_submit) return false;
+    if (!app.canPaintOptimistic()) {
+      app.explainPaintBlocked();
+      return true;
     }
+    composerOpenInPage = false;
+    void submitAnnotation({ ...composerSubmission(data), screenshotDataUrl: null });
+    return true;
+  }
 
-    const shortcut = typeof (data as { __er_shortcut?: unknown }).__er_shortcut === "string"
-      ? (data as { __er_shortcut: string }).__er_shortcut
-      : null;
-    if (shortcut === "browser-cycle") {
-      void browser.cycleLayout();
-      return;
+  /** Keyboard shortcuts the page forwards while it has focus. */
+  function onPageShortcut(data: Record<string, unknown>): boolean {
+    switch (stringField(data, "__er_shortcut")) {
+      case "browser-cycle":
+        void browser.cycleLayout();
+        return true;
+      case "browser-fullscreen":
+        void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
+        return true;
+      case "export-review":
+        app.setMainView("export-review");
+        if (browser.layout === "fullscreen") void browser.setLayout("hidden");
+        return true;
+      case "dismiss-overlay":
+        dismissBrowserAnnotationComposerNow();
+        return true;
+      default:
+        return false;
     }
-    if (shortcut === "browser-fullscreen") {
-      void browser.setLayout(browser.layout === "fullscreen" ? "hidden" : "fullscreen");
-      return;
-    }
-    if (shortcut === "export-review") {
-      app.setMainView("export-review");
-      if (browser.layout === "fullscreen") void browser.setLayout("hidden");
-      return;
-    }
-    if (shortcut === "dismiss-overlay") {
-      dismissBrowserAnnotationComposerNow();
-      return;
-    }
+  }
 
-    if ((data as { __er_composer_cancel?: boolean }).__er_composer_cancel) {
+  function onQueryRectResult(data: Record<string, unknown>): boolean {
+    if (!data.__er_query_rect_result) return false;
+    const id = stringField(data, "id");
+    const parsedRect = objectField<PageRect>(data, "rect");
+    if (id === "__pin__") {
+      livePinRect = parsedRect;
+    } else if (id) {
+      allPinRects = { ...allPinRects, [id]: parsedRect };
+    }
+    return true;
+  }
+
+  function onReanchorResult(data: Record<string, unknown>): boolean {
+    if (!data.__er_reanchor_result) return false;
+    const updates = reanchorUpdates(data);
+    if (updates.length > 0) {
+      void app.cmd("update_ui_annotation_anchors", { updates });
+    }
+    return true;
+  }
+
+  /** Checked in order; the first that returns true has handled the payload. */
+  const PAYLOAD_HANDLERS: ((data: Record<string, unknown>) => boolean)[] = [
+    onComposerSubmit,
+    onPageShortcut,
+    (data) => {
+      if (!data.__er_composer_cancel) return false;
       closePageComposer();
       clearHoverState();
-      return;
-    }
-
-    if ((data as { __er_annotate_mode_ack?: boolean }).__er_annotate_mode_ack) {
+      return true;
+    },
+    (data) => {
+      if (!data.__er_annotate_mode_ack) return false;
       void syncAnnotateModeToPage();
-      return;
-    }
-
-    if ((data as { __er_ready?: boolean }).__er_ready) {
-      const readyHref = typeof (data as { href?: unknown }).href === "string"
-        ? (data as { href: string }).href
-        : null;
+      return true;
+    },
+    (data) => {
+      if (!data.__er_ready) return false;
+      const readyHref = stringField(data, "href");
       if (readyHref) applyPageLocation(readyHref);
       void syncAnnotateModeToPage();
-      return;
-    }
-
-    if ((data as { __er_location?: boolean }).__er_location) {
-      const href = typeof (data as { href?: unknown }).href === "string"
-        ? (data as { href: string }).href
-        : null;
+      return true;
+    },
+    (data) => {
+      if (!data.__er_location) return false;
+      const href = stringField(data, "href");
       if (href) applyPageLocation(href);
-      return;
-    }
-
-    if ((data as { __er_query_rect_result?: boolean }).__er_query_rect_result) {
-      const id = typeof (data as { id?: unknown }).id === "string" ? (data as { id: string }).id : null;
-      const rect = (data as { rect?: unknown }).rect;
-      const parsedRect = rect && typeof rect === "object"
-        ? (rect as { left: number; top: number; width: number; height: number })
-        : null;
-      if (id === "__pin__") {
-        livePinRect = parsedRect;
-      } else if (id) {
-        allPinRects = { ...allPinRects, [id]: parsedRect };
+      return true;
+    },
+    onQueryRectResult,
+    (data) => {
+      if (!data.__er_hover_result) return false;
+      if (browser.annotateMode) hoveredEl = hoverTarget(data);
+      return true;
+    },
+    onReanchorResult,
+    (data) => {
+      if (data.__er_annotate && browser.annotateMode) {
+        browser.pendingIframeClick = iframeClick(data);
       }
-      return;
-    }
+      return true;
+    },
+  ];
 
-    if ((data as { __er_hover_result?: boolean }).__er_hover_result) {
-      if (!browser.annotateMode) return;
-      const rect = (data as { rect?: unknown }).rect;
-      hoveredEl = rect && typeof rect === "object"
-        ? {
-            selector: typeof (data as { selector?: unknown }).selector === "string"
-              ? (data as { selector: string }).selector
-              : null,
-            rect: rect as { left: number; top: number; width: number; height: number },
-            element_context: typeof (data as { element_context?: unknown }).element_context === "string"
-              ? (data as { element_context: string }).element_context
-              : null,
-            dom_context: (data as { dom_context?: unknown }).dom_context &&
-              typeof (data as { dom_context?: unknown }).dom_context === "object"
-              ? (data as { dom_context: UiDomContext }).dom_context
-              : null,
-          }
-        : null;
-      return;
+  function handleBrowserPayload(data: Record<string, unknown>) {
+    if (READY_MARKERS.some((key) => key in data)) markAnnotationReady();
+    for (const handle of PAYLOAD_HANDLERS) {
+      if (handle(data)) return;
     }
-
-    if ((data as { __er_reanchor_result?: boolean }).__er_reanchor_result) {
-      const results = Array.isArray((data as { results?: unknown }).results)
-        ? ((data as { results: unknown[] }).results as Array<{
-            id: string;
-            fresh: boolean;
-            new_box?: [number, number, number, number];
-          }>)
-        : [];
-      if (results.length > 0) {
-        const updates = results.map((r) => ({
-          id: r.id,
-          fresh: !!r.fresh,
-          new_box: r.new_box ?? null,
-        }));
-        void app.cmd("update_ui_annotation_anchors", { updates });
-      }
-      return;
-    }
-
-    if (!(data as { __er_annotate?: boolean }).__er_annotate) return;
-    if (!browser.annotateMode) return;
-    browser.pendingIframeClick = {
-      x: Number(data.x) || 0,
-      y: Number(data.y) || 0,
-      w: Number(data.w) || 0,
-      h: Number(data.h) || 0,
-      selector: typeof data.selector === "string" ? data.selector : null,
-      element_context: typeof data.element_context === "string" ? data.element_context : null,
-      dom_context: data.dom_context && typeof data.dom_context === "object"
-        ? data.dom_context as UiDomContext
-        : null,
-    };
   }
 
   function onWindowMessage(e: MessageEvent) {
@@ -629,14 +605,14 @@
     handleBrowserPayload(data);
   }
 
-  function submitAnnotation(
-    bbox: [number, number, number, number],
-    selector: string | null,
-    text: string,
-    screenshotDataUrl: string | null,
-    elementContext: string | null,
-    domContext: UiDomContext | null,
-  ) {
+  function submitAnnotation({
+    bbox,
+    selector,
+    text,
+    screenshotDataUrl,
+    elementContext,
+    domContext,
+  }: AnnotationSubmission) {
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("add_ui_annotation", {
       url: pageKey(browser.url),
@@ -842,7 +818,7 @@
     </button>
     {#if browser.annotateMode}
       <span
-        class="text-[10px] px-1.5 py-0.5 rounded font-mono {annotationReadiness === 'ready' ? 'text-success bg-success/15' : annotationReadiness === 'unsupported' ? 'text-error bg-error/15' : 'text-warning bg-warning/15'}"
+        class="text-[10px] px-1.5 py-0.5 rounded font-mono {READINESS_BADGE_CLASS[annotationReadiness]}"
       >
         {annotationReadiness === 'ready' ? 'annotation ready' : annotationReadiness}
       </span>
@@ -894,7 +870,6 @@
     </button>
   </div>
 
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={browserPaneEl}
     class="relative flex-1 overflow-hidden bg-transparent pointer-events-none"

@@ -90,6 +90,10 @@
   // dialog), which silently aborted deletes of threads with replies. Use an
   // inline two-step confirm instead; the backend cascade-deletes root + replies.
   let confirmingDelete = $state(false);
+  const deleteTitle = $derived.by(() => {
+    if (confirmingDelete) return "Click again to confirm — deletes root + all replies";
+    return thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread";
+  });
   let confirmDeleteTimer: ReturnType<typeof setTimeout> | undefined;
 
   function deleteThread() {
@@ -279,7 +283,7 @@
       <button
         type="button"
         onclick={deleteThread}
-        title={confirmingDelete ? "Click again to confirm — deletes root + all replies" : thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+        title={deleteTitle}
         aria-label={confirmingDelete ? "Confirm delete thread" : "Delete thread"}
         class="p-0.5 rounded transition {confirmingDelete ? 'text-del-fg bg-hover !opacity-100' : 'text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover'}"
       >
@@ -291,7 +295,7 @@
   <!-- Replies -->
   {#if thread.replies.length > 0}
     <div class="border-t border-hairline bg-surface">
-      {#each thread.replies as reply, i}
+      {#each thread.replies as reply, i (i)}
         <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
           <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {avatarClass(reply.kind)}">
             {#if reply.kind === "ai"}
@@ -351,11 +355,11 @@
       ></textarea>
       <div class="mt-1 flex items-center gap-2">
         <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel · empty = default prompt</span>
-        <button
+        <button type="button"
           onclick={() => { showAskAi = false; askAiText = ""; }}
           class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
         >Cancel</button>
-        <button onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-ai hover:bg-hover border border-border">
+        <button type="button" onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-ai hover:bg-hover border border-border">
           Ask AI
         </button>
       </div>
@@ -384,11 +388,11 @@
       ></textarea>
       <div class="mt-1 flex items-center gap-2">
         <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel</span>
-        <button
+        <button type="button"
           onclick={() => { showReply = false; replyText = ""; }}
           class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
         >Cancel</button>
-        <button onclick={submitReply} disabled={!replyText.trim()} class="px-2 py-1 rounded-md text-[11px] text-fg-2 hover:bg-hover disabled:opacity-40 border border-border">
+        <button type="button" onclick={submitReply} disabled={!replyText.trim()} class="px-2 py-1 rounded-md text-[11px] text-fg-2 hover:bg-hover disabled:opacity-40 border border-border">
           Reply
         </button>
       </div>
@@ -398,10 +402,10 @@
   <!-- Footer actions -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap text-[11px]">
     {#if !showReply}
-      <button onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+      <button type="button" onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
     {/if}
     {#if !showAskAi}
-      <button onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
+      <button type="button" onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
     {#if isQuestion}
       <button
@@ -424,7 +428,7 @@
         Validate with AI
       </button>
     {/if}
-    <button
+    <button type="button"
       onclick={copyThread}
       title="Copy thread as markdown"
       class="px-2 py-0.5 rounded hover:bg-hover flex items-center gap-1 {justCopied ? 'text-add-fg' : 'text-fg-3'}"
@@ -438,7 +442,7 @@
       {/if}
     </button>
     {#if !thread.resolved}
-      <button onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
+      <button type="button" onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
     {/if}
     {#if !isLocal && !thread.synced}
       <button
@@ -453,7 +457,7 @@
       </button>
     {/if}
     {#if isQuestion}
-      <button
+      <button type="button"
         onclick={() => void promoteToNote()}
         title="Turn this question into a local actionable note"
         class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
@@ -463,7 +467,7 @@
       </button>
     {/if}
     {#if (isQuestion || isNote) && !isPromoted}
-      <button
+      <button type="button"
         onclick={() => (showPromote = true)}
         class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
       >
@@ -474,7 +478,7 @@
     <button
       type="button"
       onclick={deleteThread}
-      title={confirmingDelete ? "Click again to confirm — deletes root + all replies" : thread.replies.length > 0 ? "Delete thread (root + all replies)" : "Delete this thread"}
+      title={deleteTitle}
       class="px-2 py-0.5 rounded {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-3 hover:bg-hover hover:text-del-fg'}"
     >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
     {#if thread.replies.length > 0}
@@ -495,7 +499,7 @@
   kind={isNote ? "note" : "question"}
   sourceId={thread.id}
   initialBody={buildPromoteBody()}
-  targetLineLabel={targetLineLabel}
+  {targetLineLabel}
   onSubmit={submitPromote}
   onClose={() => (showPromote = false)}
 />

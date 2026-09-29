@@ -109,6 +109,33 @@ pub fn claim_remote_pr_open(
     guard.insert((owner.to_string(), repo.to_string(), number))
 }
 
+/// Block until an in-flight prefetch for this PR releases its claim, up to
+/// `budget`. Returns whether one was running. An open that lands mid-prefetch
+/// (an inbox dialog opens it within a second or two) would otherwise repeat
+/// the same `gh` calls in parallel. Polling rather than a condvar keeps the
+/// claim set a plain `HashSet`; the prefetch takes seconds, so 50 ms steps
+/// cost nothing noticeable.
+pub fn wait_for_remote_pr_open(
+    in_flight: &RemotePrOpenInFlight,
+    owner: &str,
+    repo: &str,
+    number: u64,
+    budget: std::time::Duration,
+) -> bool {
+    let key = (owner.to_string(), repo.to_string(), number);
+    let running = |in_flight: &RemotePrOpenInFlight| {
+        in_flight.lock().map(|g| g.contains(&key)).unwrap_or(false)
+    };
+    if !running(in_flight) {
+        return false;
+    }
+    let deadline = std::time::Instant::now() + budget;
+    while running(in_flight) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    true
+}
+
 /// Release an in-flight prefetch slot (call in a `finally`-style path).
 pub fn release_remote_pr_open(
     in_flight: &RemotePrOpenInFlight,
@@ -191,5 +218,59 @@ mod tests {
         assert!(!claim_remote_pr_open(&inflight, "o", "r", 3), "dedupes");
         release_remote_pr_open(&inflight, "o", "r", 3);
         assert!(claim_remote_pr_open(&inflight, "o", "r", 3), "released");
+    }
+
+    #[test]
+    fn wait_returns_at_once_when_nothing_is_in_flight() {
+        let inflight: RemotePrOpenInFlight = Arc::new(Mutex::new(Default::default()));
+        let t = std::time::Instant::now();
+        assert!(!wait_for_remote_pr_open(
+            &inflight,
+            "o",
+            "r",
+            3,
+            std::time::Duration::from_secs(3)
+        ));
+        assert!(t.elapsed() < std::time::Duration::from_millis(50));
+    }
+
+    #[test]
+    fn wait_blocks_until_the_prefetch_releases() {
+        let inflight: RemotePrOpenInFlight = Arc::new(Mutex::new(Default::default()));
+        assert!(claim_remote_pr_open(&inflight, "o", "r", 3));
+        let releaser = Arc::clone(&inflight);
+        let handle = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            release_remote_pr_open(&releaser, "o", "r", 3);
+        });
+        let t = std::time::Instant::now();
+        assert!(wait_for_remote_pr_open(
+            &inflight,
+            "o",
+            "r",
+            3,
+            std::time::Duration::from_secs(3)
+        ));
+        let waited = t.elapsed();
+        handle.join().unwrap();
+        assert!(waited >= std::time::Duration::from_millis(150));
+        assert!(waited < std::time::Duration::from_secs(3));
+    }
+
+    #[test]
+    fn wait_gives_up_after_the_budget() {
+        let inflight: RemotePrOpenInFlight = Arc::new(Mutex::new(Default::default()));
+        assert!(claim_remote_pr_open(&inflight, "o", "r", 3));
+        let t = std::time::Instant::now();
+        assert!(wait_for_remote_pr_open(
+            &inflight,
+            "o",
+            "r",
+            3,
+            std::time::Duration::from_millis(100),
+        ));
+        let waited = t.elapsed();
+        assert!(waited >= std::time::Duration::from_millis(100));
+        assert!(waited < std::time::Duration::from_secs(1));
     }
 }

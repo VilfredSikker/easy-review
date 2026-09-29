@@ -4,6 +4,10 @@
 //!
 //! One test in the file on purpose — `ER_FAKE_ARENA_DIR` is process-wide, and a
 //! second test here would race this one for it.
+#![expect(
+    clippy::unwrap_used,
+    reason = "integration-test scaffolding: a failed setup step should abort the test"
+)]
 
 use er_engine::ai::finding_key;
 use er_engine::arena::{

@@ -85,7 +85,9 @@ pub fn run_provider_json(
                 if class == ErrorClass::Fatal || attempt == MAX_RETRIES {
                     break;
                 }
-                thread::sleep(std::time::Duration::from_millis(500 * (attempt as u64 + 1)));
+                thread::sleep(std::time::Duration::from_millis(
+                    500 * (u64::from(attempt) + 1),
+                ));
             }
         }
     }
@@ -113,7 +115,10 @@ pub fn fake_arena_call_count() -> u8 {
     FAKE_ARENA_CALLS.load(Ordering::SeqCst)
 }
 
-#[allow(clippy::literal_string_with_formatting_args)] // {prompt} is a deliberate template placeholder, substituted via .replace()
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "{prompt} is a deliberate template placeholder, substituted via .replace()"
+)]
 fn run_once(
     cmd: &ProviderCommand,
     prompt: &str,
@@ -235,22 +240,7 @@ fn extract_agent_stdout_text(stdout: &str) -> String {
             }
         }
         if v.get("type").and_then(|t| t.as_str()) == Some("assistant") {
-            if let Some(content) = v
-                .get("message")
-                .and_then(|m| m.get("content"))
-                .and_then(|c| c.as_array())
-            {
-                for item in content {
-                    if item.get("type").and_then(|t| t.as_str()) == Some("text") {
-                        if let Some(text) = item.get("text").and_then(|t| t.as_str()) {
-                            let t = text.trim();
-                            if !t.is_empty() {
-                                assistant_text.push(t.to_string());
-                            }
-                        }
-                    }
-                }
-            }
+            assistant_text.extend(crate::agent_runtime::assistant_text_blocks(&v));
         }
     }
 
@@ -292,10 +282,9 @@ fn extract_json_from_text(text: &str) -> Result<Value> {
 }
 
 fn extract_fenced_json(s: &str) -> Option<String> {
-    let start = s.find("```json")?;
-    let rest = &s[start + 7..];
-    let end = rest.find("```")?;
-    Some(rest[..end].trim().to_string())
+    let (_, rest) = s.split_once("```json")?;
+    let (body, _) = rest.split_once("```")?;
+    Some(body.trim().to_string())
 }
 
 pub fn classify_error(err: &anyhow::Error) -> ErrorClass {
@@ -317,10 +306,14 @@ pub fn is_cancelled_error(err: &anyhow::Error) -> bool {
 
 fn truncate(s: &str, max: usize) -> String {
     if s.len() <= max {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max])
+        return s.to_string();
     }
+    // Back off to a char boundary so a multi-byte char is never split.
+    let end = (0..=max)
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    format!("{}…", s.get(..end).unwrap_or_default())
 }
 
 #[cfg(test)]
@@ -647,5 +640,13 @@ mod tests {
             "the child handle is removed from the shared vec, not leaked"
         );
         crate::agent_timing::emit_slot_summary("harness");
+    }
+
+    #[test]
+    fn truncate_stops_at_a_char_boundary() {
+        // "é" is two bytes, so byte 2 falls inside the first one.
+        assert_eq!(truncate("aéé", 2), "a…");
+        assert_eq!(truncate("aéé", 3), "aé…");
+        assert_eq!(truncate("aéé", 5), "aéé");
     }
 }

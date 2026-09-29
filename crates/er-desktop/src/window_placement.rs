@@ -155,6 +155,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "no overlap must give exactly zero, not a small fraction"
+    )]
     fn offscreen_window_on_disconnected_monitor_triggers_recenter() {
         // Regression: saved geometry pointed at a since-disconnected left-hand
         // external monitor (x = -2992). The only connected monitor is at the

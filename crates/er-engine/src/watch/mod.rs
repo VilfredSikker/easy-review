@@ -44,15 +44,9 @@ impl FileWatcher {
                             }
                             // Allow .git/index (staging) and .git/refs/ (commits) through
                             // but skip other .git/ noise (objects, logs, etc.)
-                            if p.contains("/.git/") {
-                                if p.ends_with("/.git/index") || p.contains("/.git/refs/") {
-                                    Some(p)
-                                } else {
-                                    None
-                                }
-                            } else {
-                                Some(p)
-                            }
+                            let git_noise = p.contains("/.git/")
+                                && !(p.ends_with("/.git/index") || p.contains("/.git/refs/"));
+                            (!git_noise).then_some(p)
                         })
                         .collect();
 

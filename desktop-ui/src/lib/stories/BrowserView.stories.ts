@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import BrowserView from "$lib/components/BrowserView.svelte";
-import { browser } from "$lib/stores/browser.svelte";
 import { app } from "$lib/stores/app.svelte";
 import type { UiAnnotation } from "$lib/types";
 import { diagramPresetsFixture } from "./fixtures";

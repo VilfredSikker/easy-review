@@ -1,7 +1,20 @@
+<script module lang="ts">
+  import type { UiDomContext } from "$lib/types";
+
+  /** What a saved annotation carries to `onSave`. */
+  export type AnnotationSubmission = {
+    bbox: [number, number, number, number];
+    selector: string | null;
+    text: string;
+    screenshotDataUrl: string | null;
+    elementContext: string | null;
+    domContext: UiDomContext | null;
+  };
+</script>
+
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { registerBrowserAnnotationComposerDismiss } from "$lib/stores/keyboard";
-  import type { UiDomContext } from "$lib/types";
 
   export type AnnotationComposerState = {
     x: number;
@@ -20,14 +33,7 @@
     width?: number;
     height?: number;
     getIframeRect?: () => DOMRect | null;
-    onSave: (
-      bbox: [number, number, number, number],
-      selector: string | null,
-      text: string,
-      screenshotDataUrl: string | null,
-      elementContext: string | null,
-      domContext: UiDomContext | null,
-    ) => void;
+    onSave: (submission: AnnotationSubmission) => void;
     onCancel?: () => void;
   }
 
@@ -47,6 +53,10 @@
 
   let capturing = $state(false);
   let captureError = $state<string | null>(null);
+  const captureLabel = $derived.by(() => {
+    if (capturing) return "Capturing…";
+    return composer?.screenshotDataUrl ? "Recapture" : "Capture screenshot";
+  });
 
   function clampedLeft(x: number, boxWidth: number) {
     return Math.max(0, Math.min(x, Math.max(0, width - boxWidth)));
@@ -89,14 +99,14 @@
       return;
     }
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
-    onSave(
-      [composer.x, composer.y, composer.w, composer.h],
-      composer.selector,
-      composer.text.trim(),
-      composer.screenshotDataUrl,
-      composer.element_context,
-      composer.dom_context,
-    );
+    onSave({
+      bbox: [composer.x, composer.y, composer.w, composer.h],
+      selector: composer.selector,
+      text: composer.text.trim(),
+      screenshotDataUrl: composer.screenshotDataUrl,
+      elementContext: composer.element_context,
+      domContext: composer.dom_context,
+    });
     composer = null;
     captureError = null;
   }
@@ -218,11 +228,7 @@
           disabled={capturing}
           title="Pick a screen/window to share; one frame is saved as PNG."
         >
-          {capturing
-            ? "Capturing…"
-            : composer.screenshotDataUrl
-              ? "Recapture"
-              : "Capture screenshot"}
+          {captureLabel}
         </button>
       {:else}
         <span class="text-[10px] text-muted italic" title="Screen capture unavailable in this webview">

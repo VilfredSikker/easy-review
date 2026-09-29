@@ -27,3 +27,6 @@ mutants.out.old/
 desktop-ui/dist
 desktop-ui/node_modules
 reasonix.toml
+
+# Lint-gate scratch output (raw clippy JSON, ESLint cache)
+/.tmp/

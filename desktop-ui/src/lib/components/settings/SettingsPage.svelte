@@ -10,9 +10,11 @@
     GetConfigHubResponse,
     ImportanceFileSnapshot,
     ImportanceRuleSnapshot,
+    RefreshAiModelsResponse,
     SettingsTab,
   } from "$lib/types";
   import { importanceFileWindow, matchedRuleLabel } from "$lib/importanceFiles";
+  import { tabForSection } from "$lib/settingsTabs";
   import Toggle from "./Toggle.svelte";
   import OptionGroup from "./OptionGroup.svelte";
   import SettingsTextField from "./SettingsTextField.svelte";
@@ -27,7 +29,21 @@
   const { onBack }: Props = $props();
 
   const TABS: { id: SettingsTab; label: string; blurb: string }[] = [
-    { id: "general", label: "General", blurb: "Shared config for both app and terminal." },
+    {
+      id: "general",
+      label: "General",
+      blurb: "Appearance, watched paths, and inbox. Shared by the app and the terminal.",
+    },
+    {
+      id: "ai",
+      label: "AI",
+      blurb: "Default provider and model, the agent command, and how many agents run at once.",
+    },
+    {
+      id: "review",
+      label: "Review",
+      blurb: "Commands the review runs, and the table ranking files by importance.",
+    },
     {
       id: "projects",
       label: "Projects",
@@ -56,7 +72,7 @@
     await app.cmd("run_importance_agent");
   }
   let addPattern = $state("");
-  let textWarnings = $state<Record<string, string | null>>({});
+  const textWarnings = $state<Record<string, string | null>>({});
   let editProviders = $state(false);
   let refreshingModels = $state(false);
 
@@ -71,7 +87,7 @@
   let focusUninstall = $state(false);
   let testNotifBusy = $state(false);
 
-  const fields = $derived(activeTab === "general" ? generalFields : terminalFields);
+  const fields = $derived(activeTab === "terminal" ? terminalFields : generalFields);
 
   const tabBlurb = $derived(TABS.find((t) => t.id === activeTab)?.blurb ?? "");
 
@@ -109,7 +125,8 @@
       }
     }
     if (current.fields.length > 0) out.push(current);
-    return out;
+    if (activeTab === "terminal") return out;
+    return out.filter((section) => tabForSection(section.title) === activeTab);
   });
 
   function fieldKey(field: ConfigHubField, i: number): string {
@@ -135,8 +152,10 @@
     }
   }
 
+  // `loading` starts true and is never set again: flipping it swaps the scroll
+  // container for the skeleton, and the new container mounts at the top, so
+  // every pick in the AI Hub card would scroll the page away from it.
   async function reload() {
-    loading = true;
     try {
       const res = await invoke<GetConfigHubResponse>("get_config_hub", {});
       applySettings(res);
@@ -193,13 +212,26 @@
   }
 
   async function refreshModels(force = true) {
+    const provider = selectedProvider;
+    if (!provider) return;
+    // Claude's CLI has no model listing, so its models are the ones er ships.
+    if (!provider.has_models_command) {
+      app.showToast("info", `${provider.label} has no model listing command; its models ship with Easy Review.`);
+      return;
+    }
     refreshingModels = true;
     try {
-      const list = await invoke<AiProviderInfo[]>("refresh_ai_models", {
-        providerId: null,
+      const res = await invoke<RefreshAiModelsResponse>("refresh_ai_models", {
+        providerId: provider.id,
         force,
       });
-      providers = list;
+      providers = res.providers;
+      if (res.errors.length > 0) {
+        for (const err of res.errors) app.showToast("error", err);
+      } else {
+        const count = res.providers.find((p) => p.id === provider.id)?.models.length ?? 0;
+        app.showToast("success", `${provider.label}: ${count} models`);
+      }
     } catch (e) {
       app.showToast("error", `refresh_ai_models: ${e}`);
     } finally {
@@ -222,12 +254,12 @@
 
   async function patchProjectReviewSettings(
     projectId: string,
-    patch: Record<string, unknown>,
+    changes: Record<string, unknown>,
   ) {
     try {
       const snap = await invoke<AppSnapshot>("patch_project_review_settings", {
         projectId,
-        patch,
+        patch: changes,
       });
       app.ingestCommandSnapshot(snap);
     } catch (e) {
@@ -378,11 +410,127 @@
             {#each projects as project (project.id)}
               <ProjectSettingsCard
                 {project}
-                onpatch={(patch) => patchProjectReviewSettings(project.id, patch)}
+                onpatch={(changes) => patchProjectReviewSettings(project.id, changes)}
               />
             {/each}
           {/if}
         {:else}
+          {#if activeTab === "ai"}
+            <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
+              <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
+              AI Hub
+            </h2>
+            {#if providers.length > 0}
+              <div class="bg-card border border-hairline rounded-xl px-4 py-3">
+                <p class="text-xs text-muted mb-3">
+                  The default provider, model, and reasoning effort for all AI Hub actions. Changes
+                  save to config immediately. Mid-session picks in the AI action palette stay
+                  session-only.
+                </p>
+                <div class="py-1">
+                  <div class="text-sm text-fg mb-1.5">Provider</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    {#each providers as p (p.id)}
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
+                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                        onclick={() => void selectProvider(p.id)}
+                      >
+                        {p.label}
+                      </button>
+                    {/each}
+                  </div>
+                </div>
+                {#if selectedModels.length > 0}
+                  <div class="py-2 mt-1">
+                    <div class="text-sm text-fg mb-1.5">Model</div>
+                    {#if selectedModels.length > 12}
+                      <input
+                        type="text"
+                        bind:value={modelQuery}
+                        placeholder="Search models…"
+                        class="w-full mb-2 px-2.5 py-1 text-xs rounded-md border border-hairline bg-surface text-fg-2 outline-none placeholder:text-muted focus:border-border"
+                      />
+                    {/if}
+                    <div class="flex flex-wrap gap-1.5 {selectedModels.length > 12 ? 'max-h-48 overflow-y-auto pr-1' : ''}">
+                      {#each filteredModels as m (m.id)}
+                        <button
+                          type="button"
+                          class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
+                            ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                            : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                          onclick={() => void selectModel(m.id)}
+                        >
+                          {m.label}
+                        </button>
+                      {/each}
+                      {#if filteredModels.length === 0}
+                        <span class="text-xs text-muted px-1">No models match “{modelQuery}”</span>
+                      {/if}
+                    </div>
+                  </div>
+                {/if}
+                <div class="py-2 mt-1">
+                  <div class="text-sm text-fg mb-1.5">Effort / reasoning</div>
+                  <div class="flex flex-wrap gap-1.5">
+                    {#each effortOptions as level (level)}
+                      <button
+                        type="button"
+                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {selectedEffort === level
+                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
+                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
+                        onclick={() => void selectEffort(level)}
+                      >
+                        {level === 'xhigh' ? 'XHigh' : level}
+                      </button>
+                    {/each}
+                  </div>
+                  <p class="text-[11px] text-muted mt-1.5">Auto uses the provider default.</p>
+                </div>
+                <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-hairline">
+                  <Button
+                    variant="ghost"
+                    disabled={refreshingModels}
+                    onclick={() => void refreshModels(true)}
+                  >
+                    {refreshingModels ? "Refreshing…" : "Refresh models"}
+                  </Button>
+                  <Button variant="ghost" onclick={() => (editProviders = !editProviders)}>
+                    {editProviders ? "Hide provider editor" : "Edit providers…"}
+                  </Button>
+                </div>
+                {#if editProviders}
+                  <AiProviderEditor
+                    {providers}
+                    {familyOptions}
+                    onUpdated={(res) => applySettings(res)}
+                    onError={(msg) => app.showToast("error", msg)}
+                  />
+                {/if}
+              </div>
+            {:else}
+              <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">
+                <p class="text-xs text-muted">
+                  No <code class="font-mono">[ai_hub]</code> providers configured — add one in Settings → AI
+                  Hub (settings are saved automatically to managed app data).
+                </p>
+                <div class="mt-3">
+                  <Button variant="ghost" onclick={() => (editProviders = true)}>Edit providers…</Button>
+                </div>
+                {#if editProviders}
+                  <AiProviderEditor
+                    {providers}
+                    {familyOptions}
+                    onUpdated={(res) => applySettings(res)}
+                    onError={(msg) => app.showToast("error", msg)}
+                  />
+                {/if}
+              </div>
+            {/if}
+          {/if}
+
           {#each sections as section, si (section.title ?? "untitled-" + si)}
             {#if section.title}
               <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5 first:mt-0">
@@ -473,265 +621,153 @@
               {/if}
             </div>
           {/each}
-        {/if}
 
-        {#if activeTab === "general"}
-          <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
-            <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
-            File importance
-          </h2>
-          <!-- Read-only: the table is written by the importance agent or by hand.
-               Two writers on one table is the shadowing problem that killed
-               per-repo config, so the UI shows it and does not edit it. -->
-          <div class="bg-card border border-hairline rounded-xl px-4 py-3">
-            <p class="text-xs text-muted mb-3">
-              Rules ranking files by how much of the tree depends on them, most specific first:
-              an exact path, then a glob, then a file type. Filter a diff with
-              <code class="mono">importance:foundational</code> to act on them.
-            </p>
-            {#if importanceRules.length === 0}
-              <p class="text-xs text-fg-3">
-                No rules declared for this repo. Hand-edit <code class="mono">[importance.&lt;repo&gt;]</code>
-                in the global config, or run the importance agent to propose a table. Until then every
-                file resolves to <span class="mono">{importanceDefault}</span>.
+          {#if activeTab === "review"}
+            <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
+              <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
+              File importance
+            </h2>
+            <!-- Read-only: the table is written by the importance agent or by hand.
+                 Two writers on one table is the shadowing problem that killed
+                 per-repo config, so the UI shows it and does not edit it. -->
+            <div class="bg-card border border-hairline rounded-xl px-4 py-3">
+              <p class="text-xs text-muted mb-3">
+                Rules ranking files by how much of the tree depends on them, most specific first:
+                an exact path, then a glob, then a file type. Filter a diff with
+                <code class="mono">importance:foundational</code> to act on them.
               </p>
-            {:else}
-              <ul class="space-y-1">
-                {#each importanceRules as rule (rule.matcher)}
-                  <li class="flex items-baseline gap-2 text-[11px]">
-                    <span class="mono text-fg-2 truncate-start min-w-0 flex-1">{rule.matcher}</span>
-                    <span class="mono text-muted shrink-0">{rule.tier}</span>
-                  </li>
-                {/each}
-              </ul>
-              <p class="mt-2 text-[10px] text-fg-3">
-                Anything else resolves to <span class="mono">{importanceDefault}</span>.
-              </p>
-            {/if}
-            {#if importanceFiles.length > 0}
-              <div class="mt-3 pt-3 border-t border-hairline">
-                <p class="text-[10px] uppercase tracking-wider text-muted mb-1.5">
-                  Changed files
+              {#if importanceRules.length === 0}
+                <p class="text-xs text-fg-3">
+                  No rules declared for this repo. Hand-edit <code class="mono">[importance.&lt;repo&gt;]</code>
+                  in the global config, or run the importance agent to propose a table. Until then every
+                  file resolves to <span class="mono">{importanceDefault}</span>.
                 </p>
-                <ul class="space-y-0.5">
-                  {#each importanceWindow.shown as file (file.path)}
+              {:else}
+                <ul class="space-y-1">
+                  {#each importanceRules as rule (rule.matcher)}
                     <li class="flex items-baseline gap-2 text-[11px]">
-                      <span class="mono text-fg-2 truncate-start min-w-0 flex-1" title={file.path}>
-                        {file.path}
-                      </span>
-                      <span
-                        class="mono text-muted shrink-0"
-                        title={file.matchedRule
-                          ? `matched by ${file.matchedRule}`
-                          : `no rule matched — the default (${importanceDefault}) applies`}
-                      >{matchedRuleLabel(file)}</span>
-                      <span class="mono shrink-0">{file.tier}</span>
+                      <span class="mono text-fg-2 truncate-start min-w-0 flex-1">{rule.matcher}</span>
+                      <span class="mono text-muted shrink-0">{rule.tier}</span>
                     </li>
                   {/each}
                 </ul>
-                {#if importanceWindow.hidden > 0}
-                  <p class="mt-1.5 text-[10px] text-fg-3">
-                    {importanceWindow.hidden} more changed files not listed.
+                <p class="mt-2 text-[10px] text-fg-3">
+                  Anything else resolves to <span class="mono">{importanceDefault}</span>.
+                </p>
+              {/if}
+              {#if importanceFiles.length > 0}
+                <div class="mt-3 pt-3 border-t border-hairline">
+                  <p class="text-[10px] uppercase tracking-wider text-muted mb-1.5">
+                    Changed files
                   </p>
-                {/if}
-              </div>
-            {/if}
-            <button
-              type="button"
-              class="mt-3 px-2 py-1 rounded text-[11px] text-ai hover:bg-hover border border-hairline"
-              onclick={() => void proposeImportanceRules()}
-            >Propose rules</button>
-            <p class="mt-1.5 text-[10px] text-fg-3">
-              The agent reads the repo and prints a table; the app validates it and replaces this
-              repo's rules. It takes a few minutes and replaces the table whole.
-            </p>
-          </div>
-
-          <h2 class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5">
-            <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
-            AI Hub
-          </h2>
-          {#if providers.length > 0}
-            <div class="bg-card border border-hairline rounded-xl px-4 py-3">
-              <p class="text-xs text-muted mb-3">
-                The default provider, model, and reasoning effort for all AI Hub actions. Changes
-                save to config immediately. Mid-session picks in the AI action palette stay
-                session-only.
-              </p>
-              <div class="py-1">
-                <div class="text-sm text-fg mb-1.5">Provider</div>
-                <div class="flex flex-wrap gap-1.5">
-                  {#each providers as p (p.id)}
-                    <button
-                      type="button"
-                      class="px-2.5 py-1 text-xs rounded-md border transition-colors {p.is_selected
-                        ? 'bg-accent-soft text-accent border-accent-border font-medium'
-                        : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                      onclick={() => void selectProvider(p.id)}
-                    >
-                      {p.label}
-                    </button>
-                  {/each}
-                </div>
-              </div>
-              {#if selectedModels.length > 0}
-                <div class="py-2 mt-1">
-                  <div class="text-sm text-fg mb-1.5">Model</div>
-                  {#if selectedModels.length > 12}
-                    <input
-                      type="text"
-                      bind:value={modelQuery}
-                      placeholder="Search models…"
-                      class="w-full mb-2 px-2.5 py-1 text-xs rounded-md border border-hairline bg-surface text-fg-2 outline-none placeholder:text-muted focus:border-border"
-                    />
-                  {/if}
-                  <div class="flex flex-wrap gap-1.5 {selectedModels.length > 12 ? 'max-h-48 overflow-y-auto pr-1' : ''}">
-                    {#each filteredModels as m (m.id)}
-                      <button
-                        type="button"
-                        class="px-2.5 py-1 text-xs rounded-md border transition-colors {m.is_selected
-                          ? 'bg-accent-soft text-accent border-accent-border font-medium'
-                          : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                        onclick={() => void selectModel(m.id)}
-                      >
-                        {m.label}
-                      </button>
+                  <ul class="space-y-0.5">
+                    {#each importanceWindow.shown as file (file.path)}
+                      <li class="flex items-baseline gap-2 text-[11px]">
+                        <span class="mono text-fg-2 truncate-start min-w-0 flex-1" title={file.path}>
+                          {file.path}
+                        </span>
+                        <span
+                          class="mono text-muted shrink-0"
+                          title={file.matchedRule
+                            ? `matched by ${file.matchedRule}`
+                            : `no rule matched — the default (${importanceDefault}) applies`}
+                        >{matchedRuleLabel(file)}</span>
+                        <span class="mono shrink-0">{file.tier}</span>
+                      </li>
                     {/each}
-                    {#if filteredModels.length === 0}
-                      <span class="text-xs text-muted px-1">No models match “{modelQuery}”</span>
-                    {/if}
-                  </div>
+                  </ul>
+                  {#if importanceWindow.hidden > 0}
+                    <p class="mt-1.5 text-[10px] text-fg-3">
+                      {importanceWindow.hidden} more changed files not listed.
+                    </p>
+                  {/if}
                 </div>
               {/if}
-              <div class="py-2 mt-1">
-                <div class="text-sm text-fg mb-1.5">Effort / reasoning</div>
-                <div class="flex flex-wrap gap-1.5">
-                  {#each effortOptions as level (level)}
-                    <button
-                      type="button"
-                      class="px-2.5 py-1 text-xs rounded-md border transition-colors {selectedEffort === level
-                        ? 'bg-accent-soft text-accent border-accent-border font-medium'
-                        : 'bg-surface text-fg-2 border-hairline hover:bg-hover hover:border-border'}"
-                      onclick={() => void selectEffort(level)}
-                    >
-                      {level === 'xhigh' ? 'XHigh' : level}
-                    </button>
-                  {/each}
-                </div>
-                <p class="text-[11px] text-muted mt-1.5">Auto uses the provider default.</p>
-              </div>
-              <div class="flex flex-wrap gap-2 mt-3 pt-3 border-t border-hairline">
-                <Button
-                  variant="ghost"
-                  disabled={refreshingModels}
-                  onclick={() => void refreshModels(true)}
-                >
-                  {refreshingModels ? "Refreshing…" : "Refresh models"}
-                </Button>
-                <Button variant="ghost" onclick={() => (editProviders = !editProviders)}>
-                  {editProviders ? "Hide provider editor" : "Edit providers…"}
-                </Button>
-              </div>
-              {#if editProviders}
-                <AiProviderEditor
-                  {providers}
-                  {familyOptions}
-                  onUpdated={(res) => applySettings(res)}
-                  onError={(msg) => app.showToast("error", msg)}
-                />
-              {/if}
-            </div>
-          {:else}
-            <div class="border border-dashed border-border rounded-xl px-6 py-8 text-center">
-              <p class="text-xs text-muted">
-                No <code class="font-mono">[ai_hub]</code> providers configured — add one in Settings → AI
-                Hub (settings are saved automatically to managed app data).
+              <button
+                type="button"
+                class="mt-3 px-2 py-1 rounded text-[11px] text-ai hover:bg-hover border border-hairline"
+                onclick={() => void proposeImportanceRules()}
+              >Propose rules</button>
+              <p class="mt-1.5 text-[10px] text-fg-3">
+                The agent reads the repo and prints a table; the app validates it and replaces this
+                repo's rules. It takes a few minutes and replaces the table whole.
               </p>
-              <div class="mt-3">
-                <Button variant="ghost" onclick={() => (editProviders = true)}>Edit providers…</Button>
-              </div>
-              {#if editProviders}
-                <AiProviderEditor
-                  {providers}
-                  {familyOptions}
-                  onUpdated={(res) => applySettings(res)}
-                  onError={(msg) => app.showToast("error", msg)}
-                />
-              {/if}
             </div>
           {/if}
 
-          <h2
-            id="settings-uninstall"
-            class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5 scroll-mt-4"
-          >
-            <span class="w-1 h-3 rounded-full bg-risk-high/70" aria-hidden="true"></span>
-            Uninstall
-          </h2>
-          <div class="bg-card border border-hairline rounded-xl px-4 py-4 space-y-3">
-            <p class="text-sm text-fg-3">
-              Remove Easy Review from this machine: config, review data, legacy cache, and installed
-              apps. Diff review of your repos is unaffected — only Easy Review’s own files are deleted.
-            </p>
-            {#if uninstallPreview}
-              <ul class="space-y-1.5 text-xs font-mono text-fg-3 max-h-40 overflow-y-auto">
-                {#each uninstallPreview.targets as t (t.path)}
-                  <li class="flex gap-2">
-                    <span class={t.exists ? "text-fg-2" : "text-muted"}>{t.exists ? "•" : "·"}</span>
-                    <span class="min-w-0 break-all">{t.description}{t.exists ? "" : " (not present)"}</span>
-                  </li>
-                {/each}
-              </ul>
-            {:else if uninstallLoading}
-              <p class="text-xs text-muted">Scanning install locations…</p>
-            {/if}
-            {#if !uninstallConfirm}
-              <div class="flex flex-wrap gap-2 pt-1">
-                <Button variant="ghost" onclick={() => void loadUninstallPreview()}>
-                  {uninstallPreview ? "Refresh list" : "Show what will be removed"}
-                </Button>
-                <Button
-                  variant="danger"
-                  disabled={!uninstallPreview || uninstallPreview.existingCount === 0 || uninstallBusy}
-                  onclick={() => (uninstallConfirm = true)}
-                >
-                  Uninstall…
-                </Button>
-              </div>
-            {:else}
-              <div class="rounded-lg border border-risk-high/40 bg-risk-high/5 px-3 py-3 space-y-2">
-                <p class="text-sm text-fg-1">
-                  Type <span class="font-mono text-risk-high">uninstall</span> to confirm. The app will quit afterward.
-                </p>
-                <input
-                  type="text"
-                  class="w-full bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none focus:border-risk-high/60"
-                  placeholder="uninstall"
-                  bind:value={uninstallTyped}
-                  disabled={uninstallBusy}
-                />
-                <div class="flex gap-2">
+          {#if activeTab === "general"}
+            <h2
+              id="settings-uninstall"
+              class="flex items-center gap-2 text-xs uppercase tracking-wider text-muted font-semibold mt-7 mb-2.5 scroll-mt-4"
+            >
+              <span class="w-1 h-3 rounded-full bg-risk-high/70" aria-hidden="true"></span>
+              Uninstall
+            </h2>
+            <div class="bg-card border border-hairline rounded-xl px-4 py-4 space-y-3">
+              <p class="text-sm text-fg-3">
+                Remove Easy Review from this machine: config, review data, legacy cache, and installed
+                apps. Diff review of your repos is unaffected — only Easy Review’s own files are deleted.
+              </p>
+              {#if uninstallPreview}
+                <ul class="space-y-1.5 text-xs font-mono text-fg-3 max-h-40 overflow-y-auto">
+                  {#each uninstallPreview.targets as t (t.path)}
+                    <li class="flex gap-2">
+                      <span class={t.exists ? "text-fg-2" : "text-muted"}>{t.exists ? "•" : "·"}</span>
+                      <span class="min-w-0 break-all">{t.description}{t.exists ? "" : " (not present)"}</span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else if uninstallLoading}
+                <p class="text-xs text-muted">Scanning install locations…</p>
+              {/if}
+              {#if !uninstallConfirm}
+                <div class="flex flex-wrap gap-2 pt-1">
+                  <Button variant="ghost" onclick={() => void loadUninstallPreview()}>
+                    {uninstallPreview ? "Refresh list" : "Show what will be removed"}
+                  </Button>
                   <Button
                     variant="danger"
-                    disabled={uninstallTyped.trim() !== "uninstall" || uninstallBusy}
-                    onclick={() => void confirmUninstall()}
+                    disabled={!uninstallPreview || uninstallPreview.existingCount === 0 || uninstallBusy}
+                    onclick={() => (uninstallConfirm = true)}
                   >
-                    {uninstallBusy ? "Removing…" : "Remove everything"}
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    disabled={uninstallBusy}
-                    onclick={() => {
-                      uninstallConfirm = false;
-                      uninstallTyped = "";
-                    }}
-                  >
-                    Cancel
+                    Uninstall…
                   </Button>
                 </div>
-              </div>
-            {/if}
-          </div>
+              {:else}
+                <div class="rounded-lg border border-risk-high/40 bg-risk-high/5 px-3 py-3 space-y-2">
+                  <p class="text-sm text-fg-1">
+                    Type <span class="font-mono text-risk-high">uninstall</span> to confirm. The app will quit afterward.
+                  </p>
+                  <input
+                    type="text"
+                    class="w-full bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none focus:border-risk-high/60"
+                    placeholder="uninstall"
+                    bind:value={uninstallTyped}
+                    disabled={uninstallBusy}
+                  />
+                  <div class="flex gap-2">
+                    <Button
+                      variant="danger"
+                      disabled={uninstallTyped.trim() !== "uninstall" || uninstallBusy}
+                      onclick={() => void confirmUninstall()}
+                    >
+                      {uninstallBusy ? "Removing…" : "Remove everything"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      disabled={uninstallBusy}
+                      onclick={() => {
+                        uninstallConfirm = false;
+                        uninstallTyped = "";
+                      }}
+                    >
+                      Cancel
+                    </Button>
+                  </div>
+                </div>
+              {/if}
+            </div>
+          {/if}
         {/if}
       </div>
     </div>

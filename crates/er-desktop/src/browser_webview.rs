@@ -350,7 +350,10 @@ pub fn on_tab_selected(
 
 /// Create or show a tab's review browser child webview and navigate to `url`.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_ensure(
     app: AppHandle,
     browser_state: State<'_, BrowserWebviewState>,
@@ -376,7 +379,10 @@ pub fn browser_suspend_for_overlay(
 
 /// Hide one tab's webview, or all when `tabIdx` is None.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_hide(
     app: AppHandle,
     tabIdx: Option<usize>,
@@ -395,7 +401,10 @@ pub fn browser_hide(
 
 /// Position and size a tab's review browser (logical pixels, relative to the main window).
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_set_bounds(
     app: AppHandle,
     tabIdx: Option<usize>,
@@ -418,7 +427,10 @@ pub fn browser_set_bounds(
 
 /// Navigate a tab's review browser to a real HTTP(S) URL.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_navigate(
     app: AppHandle,
     browser_state: State<'_, BrowserWebviewState>,
@@ -432,7 +444,10 @@ pub fn browser_navigate(
 
 /// Enable or disable in-page annotation listeners for a tab's webview.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_set_annotate_mode(
     app: AppHandle,
     active: bool,
@@ -456,7 +471,10 @@ pub fn browser_host_message(app: AppHandle, payload: serde_json::Value) -> Resul
 
 /// Reload the current page in a tab's review browser.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_reload(
     app: AppHandle,
     tabIdx: Option<usize>,
@@ -471,7 +489,10 @@ pub fn browser_reload(
 
 /// Deliver a host message to a tab's review browser page.
 #[tauri::command]
-#[allow(non_snake_case)]
+#[expect(
+    non_snake_case,
+    reason = "`tabIdx` matches the camelCase key of the JS IPC payload"
+)]
 pub fn browser_send_to_page(
     app: AppHandle,
     payload: serde_json::Value,

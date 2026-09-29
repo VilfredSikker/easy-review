@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import type { InboxItemSnapshot, ProjectSnapshot } from "$lib/types";
@@ -42,6 +43,11 @@
   function openInboxMessageModal(item: InboxItemSnapshot) {
     selectedInboxMessage = item;
     void app.cmd("mark_inbox_item_read", { id: item.id });
+    // Warm the open while the message is read, as the sidebar does on hover.
+    // Raw invoke: it returns (), which app.cmd would store as the snapshot.
+    invoke("prefetch_inbox_item", { id: item.id }).catch(() => {
+      // Background warmup; a failed one only means a cold open.
+    });
   }
 
   function closeInboxMessageModal() {
@@ -99,6 +105,12 @@
 
   const inboxGroups = $derived(groupInboxItems(inboxFiltered));
   const inboxUnreadCountAll = $derived(inboxByProject.filter((i) => i.read_at_ms == null).length);
+
+  function severityColor(severity: string | null | undefined): string {
+    if (severity === "error") return "text-del-fg";
+    if (severity === "warning") return "text-warning";
+    return "text-muted";
+  }
 </script>
 
 {#snippet inboxRow(item: InboxItemSnapshot, onClick: () => void)}
@@ -349,23 +361,23 @@
     panelClass="fixed left-1/2 top-1/2 z-[251] w-full max-w-2xl -translate-x-1/2 -translate-y-1/2 rounded-lg border border-border bg-surface shadow-xl outline-none"
   >
     <div class="px-4 py-3 border-b border-hairline flex items-center gap-2">
-      <span class={selectedInboxMessage.severity === "error" ? "text-del-fg" : selectedInboxMessage.severity === "warning" ? "text-warning" : "text-muted"}>●</span>
+      <span class={severityColor(selectedInboxMessage.severity)}>●</span>
       <div class="text-sm text-fg-1 truncate">{selectedInboxMessage.title}</div>
-      <button class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
+      <button type="button" class="ml-auto text-muted hover:text-fg px-2" onclick={closeInboxMessageModal}>×</button>
     </div>
     <div class="px-4 py-3 text-sm text-fg-2 whitespace-pre-wrap break-words max-h-[50vh] overflow-y-auto">
       {selectedInboxMessage.body || "(No message body)"}
     </div>
     <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2">
-      <button class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
-      <button
+      <button type="button" class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover" onclick={closeInboxMessageModal}>Close</button>
+      <button type="button"
         class="px-3 py-1.5 rounded border border-border text-sm text-fg-2 hover:bg-hover"
         title="Open the target without replacing the current tab"
         onclick={() => openSelectedInboxTarget(true)}
       >
         Open in new tab
       </button>
-      <button
+      <button type="button"
         class="px-3 py-1.5 rounded bg-accent text-on-accent text-sm hover:opacity-90"
         title="Open the target in the current tab"
         onclick={() => openSelectedInboxTarget(false)}

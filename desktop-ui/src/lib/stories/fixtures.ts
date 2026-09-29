@@ -33,13 +33,6 @@ const add = (new_num: number, text: string, color = ""): LineSnapshot => ({
   text,
   spans: [span(text, color)],
 });
-const del = (old_num: number, text: string, color = ""): LineSnapshot => ({
-  old_num,
-  new_num: null,
-  kind: "del",
-  text,
-  spans: [span(text, color)],
-});
 
 // ─── threads ────────────────────────────────────────────────────────────────
 

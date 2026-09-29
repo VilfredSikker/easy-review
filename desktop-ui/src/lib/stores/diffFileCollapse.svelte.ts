@@ -1,4 +1,5 @@
 import { untrack } from "svelte";
+import { toggled, withAll, without } from "$lib/immutableSet";
 
 /** Per-file diff body collapse in the flat diff view (keyed by file path). */
 let collapsed = $state<ReadonlySet<string>>(new Set());
@@ -23,38 +24,27 @@ function isCollapsed(filePath: string): boolean {
 // context, instead of requiring each call site to remember to untrack it.
 
 function toggle(filePath: string) {
-  untrack(() => {
-    const next = new Set(collapsed);
-    if (next.has(filePath)) next.delete(filePath);
-    else next.add(filePath);
-    commit(next);
-  });
+  untrack(() => commit(toggled(collapsed, filePath)));
 }
 
 function collapse(filePath: string) {
   untrack(() => {
     if (collapsed.has(filePath)) return;
-    const next = new Set(collapsed);
-    next.add(filePath);
-    commit(next);
+    commit(withAll(collapsed, [filePath]));
   });
 }
 
 function expand(filePath: string) {
   untrack(() => {
     if (!collapsed.has(filePath)) return;
-    const next = new Set(collapsed);
-    next.delete(filePath);
-    commit(next);
+    commit(without(collapsed, [filePath]));
   });
 }
 
 function collapseAll(paths: readonly string[]) {
   untrack(() => {
     if (paths.length === 0) return;
-    const next = new Set(collapsed);
-    for (const p of paths) next.add(p);
-    commit(next);
+    commit(withAll(collapsed, paths));
   });
 }
 

@@ -19,13 +19,10 @@
     oncommit,
   }: Props = $props();
 
-  let draft = $state(value);
+  // Editable draft; resets whenever the committed value changes.
+  let draft = $derived(value);
 
-  $effect(() => {
-    draft = value;
-  });
-
-  const inputId = "settings-field-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const inputId = $derived("settings-field-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
 </script>
 
 <div class="py-3">

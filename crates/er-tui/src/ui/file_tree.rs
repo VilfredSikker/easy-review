@@ -697,25 +697,18 @@ pub fn shorten_path(path: &str, max_width: usize) -> String {
     }
 
     // Try to show just the filename
-    if let Some(name) = path.rsplit('/').next() {
-        if name.len() <= max_width {
-            let remaining = max_width.saturating_sub(name.len() + 4);
-            if remaining > 0 {
-                // Show partial directory
-                let dir_part: String = path[..path.len() - name.len() - 1]
-                    .chars()
-                    .take(remaining)
-                    .collect();
-                return format!("{}…/{}", dir_part, name);
-            }
-            return name.to_string();
+    let (dir, name) = path.rsplit_once('/').unwrap_or(("", path));
+    if name.len() <= max_width {
+        let remaining = max_width.saturating_sub(name.len() + 4);
+        if remaining > 0 {
+            // Show partial directory
+            let dir_part: String = dir.chars().take(remaining).collect();
+            return format!("{}…/{}", dir_part, name);
         }
-        // Truncate the filename itself
-        let truncated: String = name.chars().take(max_width.saturating_sub(1)).collect();
-        return format!("{}…", truncated);
+        return name.to_string();
     }
-
-    let truncated: String = path.chars().take(max_width.saturating_sub(1)).collect();
+    // Truncate the filename itself
+    let truncated: String = name.chars().take(max_width.saturating_sub(1)).collect();
     format!("{}…", truncated)
 }
 
@@ -778,5 +771,10 @@ mod tests {
         // filename = "main.rs" (7), remaining = 11 - (7+4) = 0
         // remaining is not > 0, so returns filename only
         assert_eq!(shorten_path("some/dir/main.rs", 11), "main.rs");
+    }
+
+    #[test]
+    fn multibyte_directory_is_cut_on_char_boundaries() {
+        assert_eq!(shorten_path("dïr/sübdïr/f.rs", 12), "dïr/…/f.rs");
     }
 }

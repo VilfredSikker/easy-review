@@ -28,10 +28,10 @@ export function onExternalLinkClick(e: MouseEvent): void {
   const anchor = (e.target as HTMLElement | null)?.closest?.("a[href]");
   if (!anchor || !(anchor instanceof HTMLAnchorElement)) return;
   const href = anchor.getAttribute("href");
-  if (!isExternalHttpUrl(href)) return;
+  if (!href || !isExternalHttpUrl(href)) return;
   e.preventDefault();
   e.stopPropagation();
-  void openExternalUrl(href!);
+  void openExternalUrl(href);
 }
 
 /** Install a document-level capture listener (runs for welcome + review UI). */

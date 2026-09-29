@@ -4,7 +4,6 @@ import type { HunkHighlight } from "./highlightCache";
 import {
   buildHighlightSides,
   fileHasDeletions,
-  fileNeedsSyntaxSpans,
   spansToHunksFromSides,
 } from "./highlightPlan";
 import type { SyntaxTheme } from "./syntaxThemes";

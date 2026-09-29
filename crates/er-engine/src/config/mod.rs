@@ -140,10 +140,9 @@ pub struct ImportanceProposal {
 impl ImportanceProposal {
     /// Pull the proposal out of an agent's reply, if it printed one.
     pub fn from_reply(reply: &str) -> Option<Self> {
-        let begin = reply.find(crate::ai::prompts::IMPORTANCE_JSON_BEGIN)?;
-        let rest = &reply[begin + crate::ai::prompts::IMPORTANCE_JSON_BEGIN.len()..];
-        let end = rest.find(crate::ai::prompts::IMPORTANCE_JSON_END)?;
-        serde_json::from_str(rest[..end].trim()).ok()
+        let (_, rest) = reply.split_once(crate::ai::prompts::IMPORTANCE_JSON_BEGIN)?;
+        let (body, _) = rest.split_once(crate::ai::prompts::IMPORTANCE_JSON_END)?;
+        serde_json::from_str(body.trim()).ok()
     }
 
     /// Merge a proposal into the on-disk global config and save it.
@@ -905,7 +904,37 @@ pub fn ai_hub_catalog() -> AiHubConfig {
         .unwrap_or_default()
 }
 
-const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4.7", "opus-4.8"];
+/// Presets dropped from the catalog: `(provider, retired id, successor id)`.
+///
+/// A saved config keeps every preset it ever merged, and the merge below only
+/// adds, so a drop reaches existing configs through this list alone. The
+/// successor keeps a retired default on the same tier rather than falling back
+/// to the catalog default.
+const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
+    ("claude", "sonnet-4.6", "sonnet-5"),
+    ("claude", "opus-4.6", "opus-5.5"),
+    ("claude", "opus-4.7", "opus-5.5"),
+    ("claude", "opus-4.8", "opus-5.5"),
+    ("claude", "opus-5", "opus-5.5"),
+    ("claude", "fable-5", "fable-5.1"),
+    ("codex", "gpt-5.4", "gpt-5.6-terra"),
+    ("codex", "gpt-5.4-mini", "gpt-5.6-luna"),
+    ("codex", "gpt-5.3-codex-spark", "gpt-5.6-luna"),
+];
+
+fn retire_preset_models(hub: &mut AiHubConfig) {
+    let default_provider = hub.resolve_provider_id(None);
+    for &(provider_id, retired, successor) in RETIRED_PRESET_MODELS {
+        if default_provider.as_deref() == Some(provider_id)
+            && hub.default_model.as_deref() == Some(retired)
+        {
+            hub.default_model = Some(successor.to_string());
+        }
+        if let Some(provider) = hub.providers.get_mut(provider_id) {
+            provider.models.retain(|model| model.id != retired);
+        }
+    }
+}
 
 /// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
 ///
@@ -914,6 +943,7 @@ const DEPRECATED_CLAUDE_MODEL_IDS: &[&str] = &["sonnet-4.6", "opus-4.6", "opus-4
 /// from the catalog so new metadata reaches previously-saved configs.
 pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
     let catalog = ai_hub_catalog();
+    retire_preset_models(hub);
     if hub.providers.is_empty() {
         let removed_providers = std::mem::take(&mut hub.removed_catalog_providers);
         *hub = catalog;
@@ -922,19 +952,6 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
             hub.providers.remove(&id);
         }
         return;
-    }
-
-    let deprecated_default = hub
-        .default_model
-        .as_deref()
-        .is_some_and(|id| DEPRECATED_CLAUDE_MODEL_IDS.contains(&id));
-    if let Some(claude) = hub.providers.get_mut("claude") {
-        claude
-            .models
-            .retain(|model| !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model.id.as_str()));
-    }
-    if deprecated_default {
-        hub.default_model = catalog.default_model.clone();
     }
 
     let removed_providers: HashSet<&str> = hub
@@ -1029,7 +1046,7 @@ pub fn overlay_discovered_models(
             label: Some(model.label.clone()),
             description: None,
             args: vec!["--model".into(), model.id.clone()],
-            effort_levels: vec![],
+            effort_levels: model.effort_levels.clone(),
             cost_per_1k_in: None,
             cost_per_1k_out: None,
             avg_latency_ms: None,
@@ -1515,11 +1532,12 @@ pub const AUTO_EFFORT: &str = "Auto";
 /// Title-case a catalog effort id for picker labels (`xhigh` → `XHigh`).
 pub fn effort_display_label(level: &str) -> String {
     if level.eq_ignore_ascii_case("xhigh") {
-        "XHigh".to_string()
-    } else if let Some(first) = level.chars().next() {
-        first.to_uppercase().collect::<String>() + &level[first.len_utf8()..]
-    } else {
-        String::new()
+        return "XHigh".to_string();
+    }
+    let mut chars = level.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
     }
 }
 
@@ -1711,9 +1729,9 @@ impl ErConfig {
 /// inner whitespace and strip the outer quotes.
 ///
 /// Examples:
-///   `--print -p {prompt}`         → ["--print", "-p", "{prompt}"]
-///   `--print -p "hello world"`    → ["--print", "-p", "hello world"]
-///   `--flag 'it'\''s quoted'`     → ["--flag", "it's quoted"]
+///   `--print -p {prompt}`         → `["--print", "-p", "{prompt}"]`
+///   `--print -p "hello world"`    → `["--print", "-p", "hello world"]`
+///   `--flag 'it'\''s quoted'`     → `["--flag", "it's quoted"]`
 pub fn split_shell_args(s: &str) -> Vec<String> {
     let mut args = Vec::new();
     let mut current = String::new();
@@ -2033,7 +2051,7 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             get: |c| c.agent.command.clone(),
             set: |c, v| {
                 if !v.is_empty() {
-                    c.agent.command = v
+                    c.agent.command = v;
                 }
             },
         },
@@ -2490,7 +2508,7 @@ mod tests {
             AiProviderConfig {
                 command: "codex".into(),
                 models: vec![AiModelConfig {
-                    id: "gpt-5.4".into(),
+                    id: "my-codex-model".into(),
                     ..Default::default()
                 }],
                 ..Default::default()
@@ -2501,14 +2519,15 @@ mod tests {
 
         let codex = hub.providers.get("codex").unwrap();
         // The user's model is preserved and stays first.
-        assert_eq!(codex.models[0].id, "gpt-5.4");
+        assert_eq!(codex.models[0].id, "my-codex-model");
         // The catalog supplements the remaining codex models in-memory.
         assert!(!codex.models.iter().any(|m| m.id == "gpt-5.3-codex"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-6-astra"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-6-sol"));
+        assert!(codex.models.iter().any(|m| m.id == "gpt-6-luna"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-sol"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-terra"));
         assert!(codex.models.iter().any(|m| m.id == "gpt-5.6-luna"));
-        assert!(codex.models.iter().any(|m| m.id == "gpt-5.4-mini"));
-        assert!(codex.models.iter().any(|m| m.id == "gpt-5.3-codex-spark"));
     }
 
     // ── Default values ──
@@ -2771,8 +2790,8 @@ mod tests {
                 _ => None,
             })
             .expect("model cycle");
-        assert!(model_options(&config).contains(&"gpt-5.4-mini".into()));
-        model_set(&mut config, "gpt-5.4-mini".into());
+        assert!(model_options(&config).contains(&"gpt-6-luna".into()));
+        model_set(&mut config, "gpt-6-luna".into());
 
         let (effort_options, effort_get, effort_set) = items
             .iter()
@@ -3312,18 +3331,18 @@ mod tests {
         let claude = hub.providers.get("claude").expect("claude provider");
         let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"sonnet-5"), "missing sonnet-5: {ids:?}");
-        assert!(ids.contains(&"opus-5"), "missing opus-5: {ids:?}");
+        assert!(ids.contains(&"opus-5.5"), "missing opus-5.5: {ids:?}");
         assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
 
         let opus_5 = claude
             .models
             .iter()
-            .find(|m| m.id == "opus-5")
-            .expect("opus-5 entry");
-        assert_eq!(opus_5.label.as_deref(), Some("Opus 5"));
+            .find(|m| m.id == "opus-5.5")
+            .expect("opus-5.5 entry");
+        assert_eq!(opus_5.label.as_deref(), Some("Opus 5.5"));
         assert_eq!(
             opus_5.args,
-            vec!["--model".to_string(), "claude-opus-5".to_string()]
+            vec!["--model".to_string(), "claude-opus-5-5".to_string()]
         );
 
         // User-defined models and order are preserved.
@@ -3331,36 +3350,124 @@ mod tests {
     }
 
     #[test]
-    fn supplement_ai_hub_removes_deprecated_claude_models() {
-        let mut hub = AiHubConfig {
-            default_model: Some("opus-4.7".into()),
-            providers: BTreeMap::from([(
-                "claude".into(),
-                AiProviderConfig {
-                    models: DEPRECATED_CLAUDE_MODEL_IDS
-                        .iter()
-                        .map(|id| AiModelConfig {
-                            id: (*id).into(),
-                            ..Default::default()
-                        })
-                        .collect(),
+    fn supplement_ai_hub_retires_dropped_presets() {
+        let retired_for = |provider: &str| -> Vec<AiModelConfig> {
+            RETIRED_PRESET_MODELS
+                .iter()
+                .filter(|(p, _, _)| *p == provider)
+                .map(|(_, id, _)| AiModelConfig {
+                    id: (*id).into(),
                     ..Default::default()
-                },
-            )]),
+                })
+                .collect()
+        };
+        let mut hub = AiHubConfig {
+            default_provider: Some("claude".into()),
+            default_model: Some("fable-5".into()),
+            providers: BTreeMap::from([
+                (
+                    "claude".into(),
+                    AiProviderConfig {
+                        models: retired_for("claude"),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "codex".into(),
+                    AiProviderConfig {
+                        models: retired_for("codex"),
+                        ..Default::default()
+                    },
+                ),
+            ]),
             ..Default::default()
         };
 
         supplement_ai_hub(&mut hub);
 
-        let claude = hub.providers.get("claude").expect("claude provider");
-        assert!(claude
-            .models
-            .iter()
-            .all(|model| { !DEPRECATED_CLAUDE_MODEL_IDS.contains(&model.id.as_str()) }));
-        assert!(claude.models.iter().any(|model| model.id == "sonnet-5"));
+        for (provider_id, retired, successor) in RETIRED_PRESET_MODELS {
+            let provider = hub.providers.get(*provider_id).expect("provider kept");
+            assert!(
+                provider.models.iter().all(|m| m.id != *retired),
+                "{retired} should be gone from {provider_id}"
+            );
+            assert!(
+                provider.models.iter().any(|m| m.id == *successor),
+                "{successor} should replace {retired}"
+            );
+        }
+        // A retired default moves to its successor, not to the catalog default.
+        assert_eq!(hub.default_model.as_deref(), Some("fable-5.1"));
         assert_eq!(
-            hub.resolve_model_id("claude", None).as_deref(),
-            Some("sonnet-5")
+            hub.resolve_model_id("claude", hub.default_model.as_deref())
+                .as_deref(),
+            Some("fable-5.1")
+        );
+    }
+
+    #[test]
+    fn supplement_ai_hub_does_not_remap_custom_model_with_retired_preset_id() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("custom".into()),
+            default_model: Some("fable-5".into()),
+            providers: BTreeMap::from([
+                (
+                    "claude".into(),
+                    AiProviderConfig {
+                        models: vec![AiModelConfig {
+                            id: "fable-5".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "custom".into(),
+                    AiProviderConfig {
+                        models: vec![
+                            AiModelConfig {
+                                id: "fable-5".into(),
+                                ..Default::default()
+                            },
+                            AiModelConfig {
+                                id: "custom-model".into(),
+                                ..Default::default()
+                            },
+                        ],
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_model.as_deref(), Some("fable-5"));
+        assert_eq!(
+            hub.resolve_default_selection(&AgentConfig::default())
+                .model_id
+                .as_deref(),
+            Some("fable-5")
+        );
+    }
+
+    #[test]
+    fn supplement_ai_hub_backfills_codex_models_command() {
+        let mut hub = AiHubConfig {
+            providers: BTreeMap::from([(
+                "codex".into(),
+                AiProviderConfig {
+                    command: "codex".into(),
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+        supplement_ai_hub(&mut hub);
+        assert_eq!(
+            hub.providers["codex"].models_command,
+            vec!["codex".to_string(), "debug".into(), "models".into()]
         );
     }
 
@@ -3374,8 +3481,8 @@ mod tests {
         assert!(hub.providers.contains_key("opencode"));
         let claude = hub.providers.get("claude").unwrap();
         assert!(
-            claude.models.iter().any(|m| m.id == "opus-5"),
-            "catalog should include opus-5"
+            claude.models.iter().any(|m| m.id == "opus-5.5"),
+            "catalog should include opus-5.5"
         );
         let cursor = hub.providers.get("cursor").unwrap();
         let grok = cursor
@@ -4205,10 +4312,12 @@ mod tests {
             crate::model_discovery::DiscoveredModel {
                 id: "composer-2.5".into(),
                 label: "Discovered Composer".into(),
+                ..Default::default()
             },
             crate::model_discovery::DiscoveredModel {
                 id: "gpt-5.2".into(),
                 label: "GPT-5.2".into(),
+                ..Default::default()
             },
         ];
         overlay_discovered_models(&mut provider, &discovered);
@@ -4229,6 +4338,7 @@ mod tests {
             &[crate::model_discovery::DiscoveredModel {
                 id: "gpt-5.2".into(),
                 label: "GPT-5.2 refreshed".into(),
+                ..Default::default()
             }],
         );
         assert_eq!(provider.models.iter().filter(|m| m.discovered).count(), 1);

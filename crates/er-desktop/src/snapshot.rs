@@ -1077,7 +1077,7 @@ pub struct FindingResponseSnapshot {
 }
 
 /// The wire form of a finding's grade.
-fn confidence_str(c: &er_engine::ai::Confidence) -> &'static str {
+fn confidence_str(c: er_engine::ai::Confidence) -> &'static str {
     match c {
         er_engine::ai::Confidence::Confirmed => "confirmed",
         er_engine::ai::Confidence::Tentative => "tentative",
@@ -1491,7 +1491,7 @@ fn default_thread_side() -> String {
     "RIGHT".to_string()
 }
 
-const fn severity_str(r: &RiskLevel) -> &'static str {
+const fn severity_str(r: RiskLevel) -> &'static str {
     match r {
         RiskLevel::High => "high",
         RiskLevel::Medium => "med",
@@ -1499,7 +1499,7 @@ const fn severity_str(r: &RiskLevel) -> &'static str {
     }
 }
 
-const fn risk_sort_ord(r: &RiskLevel) -> u8 {
+const fn risk_sort_ord(r: RiskLevel) -> u8 {
     match r {
         RiskLevel::High => 0,
         RiskLevel::Medium => 1,
@@ -1511,15 +1511,15 @@ const fn risk_sort_ord(r: &RiskLevel) -> u8 {
 fn build_file_risks(review: &er_engine::ai::ErReview) -> Vec<FileRiskSnapshot> {
     let mut entries: Vec<_> = review.files.iter().collect();
     entries.sort_by(|(pa, fa), (pb, fb)| {
-        risk_sort_ord(&fa.risk)
-            .cmp(&risk_sort_ord(&fb.risk))
+        risk_sort_ord(fa.risk)
+            .cmp(&risk_sort_ord(fb.risk))
             .then_with(|| pa.cmp(pb))
     });
     entries
         .into_iter()
         .map(|(path, fr)| FileRiskSnapshot {
             path: path.clone(),
-            risk: severity_str(&fr.risk).to_string(),
+            risk: severity_str(fr.risk).to_string(),
             risk_reason: fr.risk_reason.clone(),
             summary: fr.summary.clone(),
         })
@@ -1961,7 +1961,7 @@ fn build_file_snapshot_with_keys(
         .review
         .as_ref()
         .and_then(|r| r.files.get(&f.path))
-        .map(|fr| severity_str(&fr.risk).to_string());
+        .map(|fr| severity_str(fr.risk).to_string());
 
     let (lines_key, delta_key) = match precomputed {
         Some(keys) => keys,
@@ -2171,88 +2171,60 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
     }
 }
 
+/// The desktop-owned state a snapshot reads beside the engine `App`. Every
+/// source is optional so tests can build a snapshot from only what they seed.
+#[derive(Clone, Copy, Default)]
+pub struct SnapshotSources<'a> {
+    pub pr_cache: Option<&'a PrCache>,
+    pub pr_cache_fetched_at: Option<&'a PrCacheFetchedAt>,
+    pub meta_cache: Option<&'a MetaCache>,
+    pub gh_user: Option<&'a GhUser>,
+    pub pending_ai: Option<&'a PendingAiReplies>,
+    pub gh_status_cache: Option<&'a GhStatusCache>,
+    pub loading: Option<&'a LoadingState>,
+    pub watch_status: Option<&'a WatchStatusState>,
+    pub inbox: Option<&'a InboxHandle>,
+    pub sent_files: Option<&'a SentFilesHandle>,
+    pub branch_base_remote_oid: Option<&'a BranchBaseRemoteOid>,
+}
+
 /// Build a full snapshot, with differential-snapshot support: when
-/// `sent_files` is provided, files whose hunk content the frontend already
-/// holds are sent with `hunks_omitted = true` and no hunk payload.
-#[allow(clippy::too_many_arguments)]
-pub fn build_snapshot_with_delta(
-    app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
-    sent_files: Option<&SentFilesHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
-) -> AppSnapshot {
-    build_snapshot_inner(
-        app,
-        pr_cache,
-        pr_cache_fetched_at,
-        meta_cache,
-        gh_user,
-        pending_ai,
-        gh_status_cache,
-        loading,
-        watch_status,
-        inbox,
-        false,
-        sent_files,
-        branch_base_remote_oid,
-    )
+/// `sources.sent_files` is provided, files whose hunk content the frontend
+/// already holds are sent with `hunks_omitted = true` and no hunk payload.
+pub fn build_snapshot_with_delta(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
+    build_snapshot_inner(app, sources, false)
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn build_chrome_snapshot(
-    app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
-) -> AppSnapshot {
+/// Chrome-only snapshot: no diff files, so `sources.sent_files` is ignored.
+pub fn build_chrome_snapshot(app: &App, sources: &SnapshotSources<'_>) -> AppSnapshot {
     build_snapshot_inner(
         app,
-        pr_cache,
-        pr_cache_fetched_at,
-        meta_cache,
-        gh_user,
-        pending_ai,
-        gh_status_cache,
-        loading,
-        watch_status,
-        inbox,
+        &SnapshotSources {
+            sent_files: None,
+            ..*sources
+        },
         true,
-        None,
-        branch_base_remote_oid,
     )
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_snapshot_inner(
     app: &App,
-    pr_cache: Option<&PrCache>,
-    pr_cache_fetched_at: Option<&PrCacheFetchedAt>,
-    meta_cache: Option<&MetaCache>,
-    gh_user: Option<&GhUser>,
-    pending_ai: Option<&PendingAiReplies>,
-    gh_status_cache: Option<&GhStatusCache>,
-    loading: Option<&LoadingState>,
-    watch_status: Option<&WatchStatusState>,
-    inbox: Option<&InboxHandle>,
+    sources: &SnapshotSources<'_>,
     chrome_only: bool,
-    sent_files: Option<&SentFilesHandle>,
-    branch_base_remote_oid: Option<&BranchBaseRemoteOid>,
 ) -> AppSnapshot {
+    let SnapshotSources {
+        pr_cache,
+        pr_cache_fetched_at,
+        meta_cache,
+        gh_user,
+        pending_ai,
+        gh_status_cache,
+        loading,
+        watch_status,
+        inbox,
+        sent_files,
+        branch_base_remote_oid,
+    } = *sources;
     let t0 = std::time::Instant::now();
     let tab = app.tab();
 
@@ -3322,7 +3294,7 @@ fn build_auto_branches(
     result
 }
 
-fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
+pub(crate) fn minimal_pr_info(number: u64, title: &str) -> PrInfo {
     PrInfo {
         number,
         title: title.to_string(),
@@ -4104,8 +4076,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 file: path.clone(),
                 line: f.line_start,
                 hunk_index: f.hunk_index,
-                severity: severity_str(&f.severity).to_string(),
-                confidence: confidence_str(&f.confidence).to_string(),
+                severity: severity_str(f.severity).to_string(),
+                confidence: confidence_str(f.confidence).to_string(),
                 lens_category: f.lens_category_tag(),
                 resolved: f.resolved,
                 expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
@@ -4232,7 +4204,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         file_risks,
         resolved_findings,
         dropped_findings,
-        min_trust_default: confidence_str(&er_engine::ai::min_trust_for(&ai.arbiter_effect))
+        min_trust_default: confidence_str(er_engine::ai::min_trust_for(&ai.arbiter_effect))
             .to_string(),
         has_review_json,
         eligible_comment_count,
@@ -5022,17 +4994,10 @@ mod tests {
     fn diff_stale_for(app: &App, pr_cache: &PrCache) -> Option<DiffStaleSnapshot> {
         build_snapshot_with_delta(
             app,
-            Some(pr_cache),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            &SnapshotSources {
+                pr_cache: Some(pr_cache),
+                ..SnapshotSources::default()
+            },
         )
         .diff_stale
     }
@@ -5265,17 +5230,10 @@ mod tests {
     fn delta_snap(app: &App, sent: &SentFilesHandle) -> AppSnapshot {
         build_snapshot_with_delta(
             app,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some(sent),
-            None,
+            &SnapshotSources {
+                sent_files: Some(sent),
+                ..SnapshotSources::default()
+            },
         )
     }
 

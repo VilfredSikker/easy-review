@@ -55,6 +55,27 @@ export interface ToastMessage {
   action?: { label: string; onClick: () => void };
 }
 
+/** What `cmd` decided about one command before invoking it. */
+interface CmdRun {
+  isTabChange: boolean;
+  isSetMode: boolean;
+  /** Tab-change generation when the command started. */
+  startedGen: number;
+  /** Generation this tab change claimed; null for other commands. */
+  myTabChangeGen: number | null;
+  /** Active tab when set_mode started; forwarded so the backend sets that tab's mode. */
+  modeTabIdx: number | undefined;
+  isSlow: boolean;
+  isForceRefresh: boolean;
+}
+
+const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
+  error: 10_000,
+  success: 4_200,
+  info: 3_200,
+  warn: 3_200,
+};
+
 export interface LogEntry {
   ts: string;
   level: "error" | "warn" | "info";
@@ -121,6 +142,7 @@ const SLOW_COMMANDS = new Set([
   "set_mode",
   "open_remote_pr",
   "open_pr_branch",
+  "open_inbox_item",
 ]);
 
 /** Commands whose snapshot is allowed to replace a different tab than the one painted. */
@@ -296,7 +318,7 @@ class AppStore {
   showToast(
     kind: ToastMessage["kind"],
     message: string,
-    durationMs = kind === "error" ? 10_000 : kind === "success" ? 4_200 : 3_200,
+    durationMs = TOAST_DURATION_MS[kind],
     opts?: { persist?: boolean; action?: ToastMessage["action"] },
   ) {
     const id = ++this.toastId;
@@ -396,6 +418,88 @@ class AppStore {
     }
   }
 
+  /** A changed polled snapshot: drop it (wrong tab), defer it (chrome identity), or apply it. */
+  private routePolledSnapshot(
+    next: PollResponse,
+    snapshot: AppSnapshot,
+    contentChanged: boolean,
+    invokeMs: number,
+    trigger: string,
+  ) {
+    const mergeOpts = {
+      chromeOnly: next.chrome_only,
+      contentChanged,
+    };
+    if (
+      this.snapshot !== null &&
+      !snapshotsShareTabCacheKey(this.snapshot, snapshot)
+    ) {
+      // Cache-hit paint of tab B can race a poll still built from tab A.
+      // Drop it. select_tab ingest applies B. Do not pollPending here
+      // (backend still on A would spin).
+      profileLog("snapshot_poll_wrong_tab", {
+        invoke_ms: invokeMs,
+        revision: next.revision,
+        trigger,
+      });
+    } else if (
+      shouldDeferChromeIdentityChange(this.snapshot, snapshot, mergeOpts)
+    ) {
+      if (!this.pendingTabSwitch && !this.switching) {
+        this.pollPending = true;
+      }
+      profileLog("snapshot_chrome_identity_deferred", {
+        invoke_ms: invokeMs,
+        revision: next.revision,
+        trigger,
+      });
+    } else {
+      this.applyPolledSnapshot(next, snapshot, mergeOpts, invokeMs, trigger);
+    }
+  }
+
+  /** Accept a polled snapshot for the current tab: chrome-merge or replace, then confirm it. */
+  private applyPolledSnapshot(
+    next: PollResponse,
+    snapshot: AppSnapshot,
+    mergeOpts: { chromeOnly: boolean; contentChanged: boolean },
+    invokeMs: number,
+    trigger: string,
+  ) {
+    this.lastPollRevision = next.revision;
+    this.lastPollContentRevision = next.content_revision;
+    this.lastPollChromeRevision = next.chrome_revision;
+    const prev = this.snapshot;
+    if (prev !== null && canChromeMerge(prev, snapshot, mergeOpts)) {
+      this.snapshot = mergeChromeSnapshot(prev, snapshot, "prev");
+      profileLog("snapshot_chrome_merge", {
+        invoke_ms: invokeMs,
+        revision: next.revision,
+        chrome_only: next.chrome_only ? 1 : 0,
+        trigger,
+      });
+    } else {
+      const hunkPrev =
+        prev !== null && snapshotsShareTabCacheKey(prev, snapshot)
+          ? prev
+          : this.tabCache.peek(tabSnapshotCacheKey(snapshot));
+      const delta = resolveOmittedHunks(hunkPrev, snapshot);
+      this.snapshot = snapshot;
+      profileLog("snapshot_replace", {
+        invoke_ms: invokeMs,
+        revision: next.revision,
+        files: snapshot.files.length,
+        delta_reused: delta.reused,
+        delta_refetch: delta.refetch,
+        trigger,
+      });
+    }
+    this.rememberSnapshot(this.snapshot);
+    this.lastConfirmedSnapshot = this.snapshot;
+    this.keepOptimisticOps();
+    this.syncSnapshotToast(this.snapshot);
+  }
+
   /**
    * Push model: the backend emits `er://revision` whenever its desktop_revision
    * counter advances. We respond by calling `poll` to fetch the updated
@@ -437,71 +541,7 @@ class AppStore {
           this.lastPollChromeRevision !== next.chrome_revision;
         if (contentChanged || chromeChanged) {
           if (next.snapshot !== null) {
-            const mergeOpts = {
-              chromeOnly: next.chrome_only,
-              contentChanged,
-            };
-            if (
-              this.snapshot !== null &&
-              !snapshotsShareTabCacheKey(this.snapshot, next.snapshot)
-            ) {
-              // Cache-hit paint of tab B can race a poll still built from tab A.
-              // Drop it. select_tab ingest applies B. Do not pollPending here
-              // (backend still on A would spin).
-              profileLog("snapshot_poll_wrong_tab", {
-                invoke_ms: invokeMs,
-                revision: next.revision,
-                trigger,
-              });
-            } else if (
-              shouldDeferChromeIdentityChange(this.snapshot, next.snapshot, mergeOpts)
-            ) {
-              if (!this.pendingTabSwitch && !this.switching) {
-                this.pollPending = true;
-              }
-              profileLog("snapshot_chrome_identity_deferred", {
-                invoke_ms: invokeMs,
-                revision: next.revision,
-                trigger,
-              });
-            } else {
-              this.lastPollRevision = next.revision;
-              this.lastPollContentRevision = next.content_revision;
-              this.lastPollChromeRevision = next.chrome_revision;
-              if (canChromeMerge(this.snapshot, next.snapshot, mergeOpts)) {
-                this.snapshot = mergeChromeSnapshot(
-                  this.snapshot!,
-                  next.snapshot,
-                  "prev",
-                );
-                profileLog("snapshot_chrome_merge", {
-                  invoke_ms: invokeMs,
-                  revision: next.revision,
-                  chrome_only: next.chrome_only ? 1 : 0,
-                  trigger,
-                });
-              } else {
-                const hunkPrev =
-                  this.snapshot !== null &&
-                  snapshotsShareTabCacheKey(this.snapshot, next.snapshot)
-                    ? this.snapshot
-                    : this.tabCache.peek(tabSnapshotCacheKey(next.snapshot));
-                const delta = resolveOmittedHunks(hunkPrev, next.snapshot);
-                this.snapshot = next.snapshot;
-                profileLog("snapshot_replace", {
-                  invoke_ms: invokeMs,
-                  revision: next.revision,
-                  files: next.snapshot.files.length,
-                  delta_reused: delta.reused,
-                  delta_refetch: delta.refetch,
-                  trigger,
-                });
-              }
-              this.rememberSnapshot(this.snapshot);
-              this.lastConfirmedSnapshot = this.snapshot;
-              this.keepOptimisticOps();
-              this.syncSnapshotToast(this.snapshot);
-            }
+            this.routePolledSnapshot(next, next.snapshot, contentChanged, invokeMs, trigger);
           } else {
             this.lastPollRevision = next.revision;
             this.lastPollContentRevision = next.content_revision;
@@ -536,14 +576,14 @@ class AppStore {
     });
 
     // Safety-net poll — long interval; only fires if events were missed.
-    const tick = async () => {
+    const safetyTick = async () => {
       if (this.pollTimer === null) return;
       await doPoll("safety_timer");
       if (this.pollTimer !== null) {
-        this.pollTimer = setTimeout(tick, this.pollIntervalMs);
+        this.pollTimer = setTimeout(safetyTick, this.pollIntervalMs);
       }
     };
-    this.pollTimer = setTimeout(tick, this.pollIntervalMs);
+    this.pollTimer = setTimeout(safetyTick, this.pollIntervalMs);
   }
 
   stopPolling() {
@@ -885,9 +925,45 @@ class AppStore {
     }
 
     const tStart = performance.now();
+    const run = this.beginCmd(command, args);
+    if (!run) return;
+    const tSwitchingSet = performance.now();
+    // Stays synchronous unless busy chrome must paint: an extra await here
+    // would let a later cmd bump the tab-change generation first.
+    if (this.showCmdBusyChrome(command, run)) {
+      await tick();
+      await nextAnimationFrame();
+    }
+    const tInvokeStart = performance.now();
+    try {
+      if (this.cmdSuperseded(run)) return;
+      if (VOID_COMMANDS.has(command)) {
+        await invoke<void>(command, args);
+        return;
+      }
+      const snapshot = await this.invokeCmdSnapshot(command, args, run);
+      if (snapshot === LATEST_INVOKE_SKIPPED) return;
+      const tInvokeDone = performance.now();
+      if (!this.applyCmdSnapshot(command, snapshot, run)) return;
+      logSlowCmdTiming(command, [tStart, tSwitchingSet, tInvokeStart, tInvokeDone, performance.now()]);
+    } catch (e) {
+      if (run.isTabChange && run.myTabChangeGen === this.tabChangeGeneration) {
+        this.restoreConfirmedSnapshot();
+      }
+      this.reportCmdError(command, e);
+    } finally {
+      this.settleCmdFlags(run);
+    }
+  }
+
+  /**
+   * Synchronous prologue of `cmd`: claim a tab-change generation and paint a
+   * cached tab. Null when a pending tab switch drops the command.
+   */
+  private beginCmd(command: string, args: Record<string, unknown> | undefined): CmdRun | null {
     const isTabChange = TAB_CHANGE_COMMANDS.has(command);
     const isSetMode = command === "set_mode";
-    if (this.pendingTabSwitch && !isTabChange && !isSetMode) return;
+    if (this.pendingTabSwitch && !isTabChange && !isSetMode) return null;
     const startedGen = this.tabChangeGeneration;
     const myTabChangeGen = isTabChange ? ++this.tabChangeGeneration : null;
     const modeTabIdx = isSetMode ? this.snapshot?.active_tab : undefined;
@@ -900,102 +976,128 @@ class AppStore {
       this.pendingTabSwitch = true;
     }
     if (cachedTab && this.snapshot && selectIdx !== null) {
-      this.snapshotGeneration += 1;
-      const painted = applyCachedTabSnapshot(cachedTab, this.snapshot, selectIdx);
-      if (snapshotViewIdentity(this.snapshot) !== snapshotViewIdentity(painted)) {
-        aiReviewFilter.reset();
-      }
-      this.snapshot = painted;
-      this.keepOptimisticOps();
-      this.initialLoadDone = true;
-      // Drop in-flight poll revisions from the previous tab.
-      this.lastPollRevision = null;
-      this.lastPollContentRevision = null;
-      this.lastPollChromeRevision = null;
+      this.paintCachedTab(cachedTab, this.snapshot, selectIdx);
     }
-    const isSlow = SLOW_COMMANDS.has(command) && cachedTab === null;
-    const isForceRefresh = command === "force_refresh_diff";
-    const tSwitchingSet = performance.now();
-    if (isSlow) {
+    return {
+      isTabChange,
+      isSetMode,
+      startedGen,
+      myTabChangeGen,
+      modeTabIdx,
+      isSlow: SLOW_COMMANDS.has(command) && cachedTab === null,
+      isForceRefresh: command === "force_refresh_diff",
+    };
+  }
+
+  /** Raise switching/refreshing chrome; true when it needs a paint before invoking. */
+  private showCmdBusyChrome(command: string, run: CmdRun): boolean {
+    if (run.isSlow) {
       this.inflightSlow += 1;
       this.switching = true;
       this.switchingLabel = switchingLabelForCommand(command);
     }
-    if (isForceRefresh) this.refreshing = true;
-    if (isSlow || isForceRefresh) {
-      await tick();
-      await nextAnimationFrame();
+    if (run.isForceRefresh) this.refreshing = true;
+    return run.isSlow || run.isForceRefresh;
+  }
+
+  /** A newer tab change started while this command waited to invoke. */
+  private cmdSuperseded(run: CmdRun): boolean {
+    if (run.myTabChangeGen !== null && run.myTabChangeGen !== this.tabChangeGeneration) {
+      return true;
     }
-    const tInvokeStart = performance.now();
-    try {
-      if (myTabChangeGen !== null && myTabChangeGen !== this.tabChangeGeneration) {
-        return;
-      }
-      if (isSetMode && startedGen !== this.tabChangeGeneration) {
-        return;
-      }
-      if (VOID_COMMANDS.has(command)) {
-        await invoke<void>(command, args);
-        return;
-      }
-      const invokeArgs =
-        isSetMode && modeTabIdx != null ? { ...args, tabIdx: modeTabIdx } : args;
-      const snapshot =
-        isTabChange && myTabChangeGen != null
-          ? await this.tabChangeInvokeQueue.enqueue(
-              () => myTabChangeGen === this.tabChangeGeneration,
-              () => invoke<AppSnapshot>(command, invokeArgs),
-            )
-          : isSetMode
-            ? await this.tabChangeInvokeQueue.enqueue(
-                () => startedGen === this.tabChangeGeneration,
-                () => invoke<AppSnapshot>(command, invokeArgs),
-              )
-            : await invoke<AppSnapshot>(command, args);
-      if (snapshot === LATEST_INVOKE_SKIPPED) return;
-      const tInvokeDone = performance.now();
-      const applied = this.ingestCommandSnapshot(snapshot, {
-        allowTabChange: isTabChange,
-        tabChangeGen: myTabChangeGen ?? undefined,
-      });
-      if (!applied) return;
-      const hadBackendToast = snapshot.notification != null;
-      if (!hadBackendToast) {
-        const message = successToastForCommand(command);
-        if (message) this.showToast("success", message);
-      }
-      const tSnapshotApplied = performance.now();
-      const totalMs = timingSegmentMs(tStart, tSnapshotApplied);
-      if (totalMs > 500) {
-        const paintMs = timingSegmentMs(tSwitchingSet, tInvokeStart);
-        const invokeMs = timingSegmentMs(tInvokeStart, tInvokeDone);
-        logWarn(
-          `cmd_timing command=${command} paint_ms=${paintMs} invoke_ms=${invokeMs} total_ms=${totalMs} snapshot_ms=${timingSegmentMs(tInvokeDone, tSnapshotApplied)}`
-        ).catch(() => {});
-      }
-    } catch (e) {
-      if (isTabChange && myTabChangeGen === this.tabChangeGeneration) {
-        this.restoreConfirmedSnapshot();
-      }
-      this.reportCmdError(command, e);
-    } finally {
-      if (isTabChange) {
-        this.inflightTabChanges = Math.max(0, this.inflightTabChanges - 1);
-        this.pendingTabSwitch = this.inflightTabChanges > 0;
-      }
-      if (isSlow) {
-        this.inflightSlow = Math.max(0, this.inflightSlow - 1);
-        if (this.inflightSlow === 0) {
-          this.switching = false;
-          this.switchingLabel = null;
-        }
-      }
-      if (isForceRefresh) this.refreshing = false;
+    return run.isSetMode && run.startedGen !== this.tabChangeGeneration;
+  }
+
+  /**
+   * Tab changes and set_mode queue behind each other and are skipped once a
+   * newer tab change supersedes the generation they started under.
+   */
+  private invokeCmdSnapshot(
+    command: string,
+    args: Record<string, unknown> | undefined,
+    run: CmdRun,
+  ): Promise<AppSnapshot | typeof LATEST_INVOKE_SKIPPED> {
+    const invokeArgs =
+      run.isSetMode && run.modeTabIdx != null ? { ...args, tabIdx: run.modeTabIdx } : args;
+    const { myTabChangeGen, startedGen } = run;
+    if (run.isTabChange && myTabChangeGen != null) {
+      return this.tabChangeInvokeQueue.enqueue(
+        () => myTabChangeGen === this.tabChangeGeneration,
+        () => invoke<AppSnapshot>(command, invokeArgs),
+      );
     }
+    if (run.isSetMode) {
+      return this.tabChangeInvokeQueue.enqueue(
+        () => startedGen === this.tabChangeGeneration,
+        () => invoke<AppSnapshot>(command, invokeArgs),
+      );
+    }
+    return invoke<AppSnapshot>(command, args);
+  }
+
+  /** Ingest a command's snapshot and toast success unless the backend already did. */
+  private applyCmdSnapshot(command: string, snapshot: AppSnapshot, run: CmdRun): boolean {
+    const applied = this.ingestCommandSnapshot(snapshot, {
+      allowTabChange: run.isTabChange,
+      tabChangeGen: run.myTabChangeGen ?? undefined,
+    });
+    if (!applied) return false;
+    const hadBackendToast = snapshot.notification != null;
+    if (!hadBackendToast) {
+      const message = successToastForCommand(command);
+      if (message) this.showToast("success", message);
+    }
+    return true;
+  }
+
+  /** Paint a cached snapshot of the target tab before select_tab's invoke returns. */
+  private paintCachedTab(cachedTab: AppSnapshot, current: AppSnapshot, selectIdx: number) {
+    this.snapshotGeneration += 1;
+    const painted = applyCachedTabSnapshot(cachedTab, current, selectIdx);
+    if (snapshotViewIdentity(current) !== snapshotViewIdentity(painted)) {
+      aiReviewFilter.reset();
+    }
+    this.snapshot = painted;
+    this.keepOptimisticOps();
+    this.initialLoadDone = true;
+    // Drop in-flight poll revisions from the previous tab.
+    this.lastPollRevision = null;
+    this.lastPollContentRevision = null;
+    this.lastPollChromeRevision = null;
+  }
+
+  /** Release the in-flight counters `cmd` took, clearing busy chrome at zero. */
+  private settleCmdFlags({ isTabChange, isSlow, isForceRefresh }: CmdRun) {
+    if (isTabChange) {
+      this.inflightTabChanges = Math.max(0, this.inflightTabChanges - 1);
+      this.pendingTabSwitch = this.inflightTabChanges > 0;
+    }
+    if (isSlow) {
+      this.inflightSlow = Math.max(0, this.inflightSlow - 1);
+      if (this.inflightSlow === 0) {
+        this.switching = false;
+        this.switchingLabel = null;
+      }
+    }
+    if (isForceRefresh) this.refreshing = false;
   }
 }
 
 export const app = new AppStore();
+
+/** Warn about a `cmd` slower than 500ms, split into paint / invoke / snapshot segments. */
+function logSlowCmdTiming(
+  command: string,
+  [tStart, tSwitchingSet, tInvokeStart, tInvokeDone, tSnapshotApplied]: [number, number, number, number, number],
+) {
+  const totalMs = timingSegmentMs(tStart, tSnapshotApplied);
+  if (totalMs <= 500) return;
+  const paintMs = timingSegmentMs(tSwitchingSet, tInvokeStart);
+  const invokeMs = timingSegmentMs(tInvokeStart, tInvokeDone);
+  logWarn(
+    `cmd_timing command=${command} paint_ms=${paintMs} invoke_ms=${invokeMs} total_ms=${totalMs} snapshot_ms=${timingSegmentMs(tInvokeDone, tSnapshotApplied)}`
+  ).catch(() => {});
+}
 
 function successToastForCommand(command: string): string | null {
   switch (command) {
@@ -1031,6 +1133,8 @@ function switchingLabelForCommand(command: string): string {
     case "open_remote_pr":
     case "open_pr_branch":
       return "Opening PR...";
+    case "open_inbox_item":
+      return "Opening notification...";
     case "select_tab":
       return "Switching tab...";
     case "set_mode":

@@ -13,11 +13,8 @@ pub struct CommitInfo {
     pub author: String,
     pub date: String,
     pub relative_date: String,
-    #[allow(dead_code)]
     pub file_count: usize,
-    #[allow(dead_code)]
     pub adds: usize,
-    #[allow(dead_code)]
     pub dels: usize,
     pub is_merge: bool,
 }
@@ -41,7 +38,6 @@ pub enum FileStatus {
     Modified,
     Deleted,
     Renamed(String), // old path
-    #[allow(dead_code)]
     Copied(String),
     Unmerged,
 }
@@ -124,7 +120,10 @@ pub fn detect_base_branch_in(repo_root: &str) -> Result<String> {
     detect_base_branch_impl(Some(repo_root))
 }
 
-#[allow(clippy::literal_string_with_formatting_args)] // "@{upstream}" is a literal git refspec, not a format arg
+#[expect(
+    clippy::literal_string_with_formatting_args,
+    reason = "\"@{upstream}\" is a literal git refspec, not a format arg"
+)]
 fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
     // Helper: run a git command and return trimmed stdout on success
     let run = |args: &[&str]| -> Option<String> {
@@ -164,9 +163,8 @@ fn detect_base_branch_impl(repo_root: Option<&str>) -> Result<String> {
         // Strip remote name prefix (first component) to get the branch name.
         // e.g. "origin/stack/foo" → "stack/foo", "origin/main" → "main"
         let branch = upstream
-            .find('/')
-            .map(|i| &upstream[i + 1..])
-            .unwrap_or(&upstream);
+            .split_once('/')
+            .map_or(upstream.as_str(), |(_, branch)| branch);
         if branch != current && !branch.is_empty() {
             // Verify the short name is a valid revision
             if run(&["rev-parse", "--verify", branch]).is_some() {
@@ -253,7 +251,7 @@ pub fn git_diff_raw(
             output.status.code(),
             stdout.len(),
             stderr,
-            &stdout[..stdout.len().min(200)],
+            byte_prefix(&stdout, 200),
         );
         let _ = std::fs::write("/tmp/er_debug.log", debug);
     }
@@ -565,8 +563,16 @@ pub fn git_unstage_file(repo_root: &str, file_path: &str) -> Result<()> {
     Ok(())
 }
 
+/// At most `max` bytes of `s`, backed off to a char boundary.
+fn byte_prefix(s: &str, max: usize) -> &str {
+    let end = (0..=max.min(s.len()))
+        .rev()
+        .find(|&i| s.is_char_boundary(i))
+        .unwrap_or(0);
+    s.get(..end).unwrap_or_default()
+}
+
 /// Stage all files
-#[allow(dead_code)]
 pub fn git_stage_all(repo_root: &str) -> Result<()> {
     let output = Command::new("git")
         .args(["add", "-A"])
@@ -827,16 +833,9 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
         let is_merge = parents.split_whitespace().count() > 1;
 
         // Parse the optional --shortstat line that follows (absent for empty commits)
-        let (file_count, adds, dels) = if let Some(next) = lines.peek() {
-            if !next.contains('\x1e') && !next.trim().is_empty() {
-                let stat_line = lines.next().unwrap();
-                parse_shortstat(stat_line)
-            } else {
-                (0, 0, 0)
-            }
-        } else {
-            (0, 0, 0)
-        };
+        let (file_count, adds, dels) = lines
+            .next_if(|next| !next.contains('\x1e') && !next.trim().is_empty())
+            .map_or((0, 0, 0), parse_shortstat);
 
         commits.push(CommitInfo {
             hash,
@@ -1157,6 +1156,14 @@ pub fn diff_watched_file_snapshot(
 mod tests {
     use super::*;
 
+    #[test]
+    fn byte_prefix_backs_off_to_a_char_boundary() {
+        // "é" is two bytes, so byte 2 falls inside the first one.
+        assert_eq!(byte_prefix("aéé", 2), "a");
+        assert_eq!(byte_prefix("aéé", 3), "aé");
+        assert_eq!(byte_prefix("aéé", 200), "aéé");
+    }
+
     // ── FileStatus::symbol ──
 
     #[test]
@@ -1196,9 +1203,8 @@ mod tests {
         // "origin/main" → strip remote prefix → "main"
         let upstream = "origin/main";
         let branch = upstream
-            .find('/')
-            .map(|i| &upstream[i + 1..])
-            .unwrap_or(upstream);
+            .split_once('/')
+            .map_or(upstream, |(_, branch)| branch);
         assert_eq!(branch, "main");
     }
 
@@ -1208,9 +1214,8 @@ mod tests {
         // This must match current branch "stack/foo-bar" to skip upstream detection
         let upstream = "origin/stack/foo-bar";
         let branch = upstream
-            .find('/')
-            .map(|i| &upstream[i + 1..])
-            .unwrap_or(upstream);
+            .split_once('/')
+            .map_or(upstream, |(_, branch)| branch);
         assert_eq!(branch, "stack/foo-bar");
     }
 
@@ -1218,9 +1223,8 @@ mod tests {
     fn upstream_strip_deeply_nested_branch() {
         let upstream = "origin/user/feature/sub-task";
         let branch = upstream
-            .find('/')
-            .map(|i| &upstream[i + 1..])
-            .unwrap_or(upstream);
+            .split_once('/')
+            .map_or(upstream, |(_, branch)| branch);
         assert_eq!(branch, "user/feature/sub-task");
     }
 
@@ -1439,9 +1443,8 @@ mod tests {
     /// Helper to replicate the upstream branch name extraction logic from detect_base_branch_impl
     fn strip_upstream(upstream: &str) -> &str {
         upstream
-            .find('/')
-            .map(|i| &upstream[i + 1..])
-            .unwrap_or(upstream)
+            .split_once('/')
+            .map_or(upstream, |(_, branch)| branch)
     }
 
     #[test]

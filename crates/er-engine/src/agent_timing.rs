@@ -73,7 +73,7 @@ pub fn record_slot_wait(waited: Duration) {
     if !enabled() {
         return;
     }
-    let ms = waited.as_millis().min(u64::MAX as u128) as u64;
+    let ms = waited.as_millis().min(u128::from(u64::MAX)) as u64;
     SLOT_ACQUIRES.fetch_add(1, Ordering::Relaxed);
     SLOT_WAIT_TOTAL_MS.fetch_add(ms, Ordering::Relaxed);
     SLOT_WAIT_MAX_MS.fetch_max(ms, Ordering::Relaxed);

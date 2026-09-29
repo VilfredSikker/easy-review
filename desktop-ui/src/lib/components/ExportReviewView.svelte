@@ -27,7 +27,7 @@
   let includeNotes = $state(true);
   let includeFindings = $state(true);
   let includeAnnotations = $state(true);
-  let includeChecklist = $state(true);
+  const includeChecklist = $state(true);
   let onlyUnresolved = $state(false);
 
   // Per-item exclusions. Empty set = export the whole category (no allow-list
@@ -245,24 +245,24 @@
     {#if loadingPreview}
       <span class="text-[11px] text-muted mono">Refreshing…</span>
     {/if}
-    <button
+    <button type="button"
       class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover"
       onclick={handleCopyToClipboard}
       disabled={loadingPreview && !preview}
     >
       Copy to clipboard
     </button>
-    <button
+    <button type="button"
       class="px-2 py-1 text-xs border border-border rounded hover:bg-hover"
       onclick={saveToFile}
       disabled={loadingPreview && !preview}
     >
       Save to file
     </button>
-    <button class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
+    <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
       Copy review.json
     </button>
-    <button class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
+    <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
       Back to diff
     </button>
   </div>

@@ -26,6 +26,15 @@
   /** Success/info wrap inside the card instead of nowrap (avoids horizontal scrollbar). */
   const wrapsText = $derived(toast.kind === "success" || toast.kind === "info");
 
+  /** Line-clamp styles: multiline toasts clamp to 3 lines until expanded. */
+  const clamp = $derived.by(() => {
+    if (!isMultiline) {
+      return { overflowY: "hidden", maxHeight: undefined, lineClamp: undefined };
+    }
+    if (expanded) return { overflowY: "auto", maxHeight: "280px", lineClamp: "unset" };
+    return { overflowY: "hidden", maxHeight: "calc(3 * 1.45em)", lineClamp: "3" };
+  });
+
   interface KindStyle {
     ruleClass: string;
     iconPath: string;
@@ -92,7 +101,6 @@
   }
 </script>
 
-<!-- svelte-ignore a11y_mouse_events_have_key_events -->
 <div
   role={toast.kind === "error" || toast.kind === "warn" ? "alert" : "status"}
   onmouseenter={onMouseEnter}
@@ -120,13 +128,9 @@
       style:overflow-wrap="anywhere"
       style:white-space={isMultiline || wrapsText ? "normal" : "nowrap"}
       style:overflow-x="hidden"
-      style:overflow-y={isMultiline ? (expanded ? "auto" : "hidden") : "hidden"}
-      style:max-height={isMultiline
-        ? expanded
-          ? "280px"
-          : "calc(3 * 1.45em)"
-        : undefined}
-      style:-webkit-line-clamp={!isMultiline ? undefined : expanded ? "unset" : "3"}
+      style:overflow-y={clamp.overflowY}
+      style:max-height={clamp.maxHeight}
+      style:-webkit-line-clamp={clamp.lineClamp}
       style:-webkit-box-orient={!isMultiline ? undefined : "vertical"}
       style:display={!isMultiline ? undefined : "-webkit-box"}
       class="leading-[1.45] text-ink-100"

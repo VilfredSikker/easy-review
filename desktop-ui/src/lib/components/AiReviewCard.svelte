@@ -27,6 +27,7 @@
   import ArenaHistoryList from "$lib/components/arena/ArenaHistoryList.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { arena } from "$lib/stores/arena.svelte";
+  import { reviewScopeFromMode } from "$lib/reviewScope";
 
   interface Props {
     ai: AiSnapshot;
@@ -76,6 +77,25 @@
     aiReviewFilter.filter === ALL_REVIEWERS && agentLabels.length > 1,
   );
   const agentSummaryOnly = $derived(useAgentScopedSummary(aiReviewFilter.filter));
+  const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const activeTab = $derived(app.snapshot?.tabs.find((tab) => tab.is_active));
+  const hasExpertFindings = $derived(
+    agentScopedFindings.some((finding) => finding.expert_label != null),
+  );
+  const canValidateGeneralReview = $derived(
+    !!ai.has_review_json && !!reviewScope && !!activeTab && activeTab.kind !== "remote_pr",
+  );
+  const canValidateFindings = $derived(hasExpertFindings || canValidateGeneralReview);
+  const validateFindingsHint = $derived.by(() => {
+    if (hasExpertFindings) {
+      return "Merge duplicate expert findings and regrade confidence with one arbiter pass";
+    }
+    if (activeTab?.kind === "remote_pr") {
+      return "Check out this PR locally to validate its review findings";
+    }
+    return "Validate the review findings against the current diff and re-anchor their locations";
+  });
+  const SEVERITY_DOT: Record<string, string> = { high: "bg-risk-high", med: "bg-risk-med" };
 
   const isEmpty = $derived(
     ai.findings.length === 0 &&
@@ -94,9 +114,11 @@
       ai,
       aiReviewFilter.filter,
       scopedCounts,
-      new Set(agentScopedFindings.map((f) => f.file)).size,
-      isEmpty,
-      fileRisks.length,
+      {
+        fileCount: new Set(agentScopedFindings.map((f) => f.file)).size,
+        isEmpty,
+        fileRiskCount: fileRisks.length,
+      },
     ),
   );
   const summary = $derived(resolvedSummary.text);
@@ -156,6 +178,15 @@
 
   function revealErFolder() {
     invoke("reveal_er_folder").catch(() => {});
+  }
+
+  function validateFindings() {
+    if (!canValidateFindings) return;
+    if (hasExpertFindings) {
+      void arena.validateFindings();
+    } else if (reviewScope) {
+      void app.cmd("run_ai_validate", { scope: reviewScope });
+    }
   }
 
   async function copyFindingsJson() {
@@ -349,21 +380,21 @@
   {/if}
 
   <div class="grid grid-cols-3 gap-2 mb-3">
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "high"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-high {filter === 'high' && open ? 'border-risk-high' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-high uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>High</div>
       <div class="text-lg font-semibold mono">{scopedCounts.high}</div>
     </button>
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "med"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-med {filter === 'med' && open ? 'border-risk-med' : 'border-border'}"
     >
       <div class="flex items-center gap-1.5 text-[10px] text-risk-med uppercase tracking-wider"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>Med</div>
       <div class="text-lg font-semibold mono">{scopedCounts.med}</div>
     </button>
-    <button
+    <button type="button"
       onclick={() => { open = true; filter = "low"; }}
       class="rounded-md bg-bg border px-2 py-1.5 text-left hover:border-risk-low {filter === 'low' && open ? 'border-risk-low' : 'border-border'}"
     >
@@ -375,10 +406,10 @@
   {#if open}
     <div class="mt-4 pt-3 border-t border-hairline mb-3">
       <div class="flex items-center gap-1.5 mb-2 text-[10px] mono">
-        <button onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
-        <button onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
-        <button onclick={() => filter = "med"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'med' ? 'bg-hairline text-risk-med' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>med</button>
-        <button onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
+        <button type="button" onclick={() => filter = "all"} class="px-2 py-0.5 rounded {filter === 'all' ? 'bg-hairline text-fg' : 'text-fg-3 hover:bg-hover'}">all</button>
+        <button type="button" onclick={() => filter = "high"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'high' ? 'bg-hairline text-risk-high' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-high"></span>high</button>
+        <button type="button" onclick={() => filter = "med"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'med' ? 'bg-hairline text-risk-med' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-med"></span>med</button>
+        <button type="button" onclick={() => filter = "low"} class="px-2 py-0.5 rounded flex items-center gap-1 {filter === 'low' ? 'bg-hairline text-risk-low' : 'text-fg-3 hover:bg-hover'}"><span class="w-1.5 h-1.5 rounded-full bg-risk-low"></span>low</button>
       </div>
 
       <!-- Confidence gate. The default follows the review — it tightens only
@@ -387,7 +418,7 @@
       <div class="flex items-center gap-1.5 mb-2 text-[10px] mono flex-wrap">
         <span class="text-fg-3" title="How much a finding's grade can be trusted">confidence</span>
         {#each GATE_OPTIONS as option (option.level)}
-          <button
+          <button type="button"
             title={option.hint}
             onclick={() =>
               findingsVisibility.setMinTrust(
@@ -452,10 +483,10 @@
 
       <div class="findings-list space-y-1.5">
       {#each ordered as finding (finding.id)}
-        {@const dotClass = finding.severity === "high" ? "bg-risk-high" : finding.severity === "med" ? "bg-risk-med" : "bg-risk-low"}
+        {@const dotClass = SEVERITY_DOT[finding.severity] ?? "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
         <div class="relative group">
-          <button
+          <button type="button"
             onclick={() => jumpTo(finding)}
             class="w-full text-left p-2 pr-6 rounded-md hover:bg-bg border border-transparent hover:border-border block"
           >
@@ -521,17 +552,14 @@
   {/if}
 
   <div class="mt-2 flex flex-col gap-1">
-    <!-- The cheap path: triage picks the lenses, the experts run, and this makes
-         one arbiter pass over what they produced — merging duplicates and
-         regrading confidence. -->
+    <!-- Expert output gets an arbiter pass; a General review uses the normal
+         validator to check claims and re-anchor them against the current diff. -->
     <button
       type="button"
-      onclick={() => arena.validateFindings()}
-      disabled={!(ai.has_review_json || Object.keys(ai.agent_summaries).length > 0)}
+      onclick={validateFindings}
+      disabled={!canValidateFindings}
       class="w-full flex items-center justify-center gap-2 text-[11px] mono text-fg-3 hover:text-fg py-1.5 rounded hover:bg-bg border border-transparent hover:border-border disabled:opacity-40 disabled:pointer-events-none"
-      title={Object.keys(ai.agent_summaries).length > 0
-        ? "Merge duplicate findings and regrade confidence with one arbiter pass over the expert output"
-        : "Run the expert reviewers first — this validates what they produced"}
+      title={validateFindingsHint}
     >
       <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0" aria-hidden="true">
         <path d="M20 6L9 17l-5-5"/>
@@ -570,6 +598,7 @@
     display: -webkit-box;
     overflow: hidden;
     -webkit-line-clamp: 2;
+    line-clamp: 2;
     -webkit-box-orient: vertical;
   }
 

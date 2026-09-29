@@ -50,7 +50,10 @@
     if (line.kind === "add") return wordDiff(partner.text, line.text);
     return null;
   });
-  const wdSpans = $derived(wdU ? (line.kind === "del" ? wdU.old : wdU.new) : null);
+  const wdSpans = $derived.by(() => {
+    if (!wdU) return null;
+    return line.kind === "del" ? wdU.old : wdU.new;
+  });
   const wdBg = $derived(line.kind === "del" ? "wd-change-del" : "wd-change-add");
   const bgKind = $derived(diffBgKind(line.kind));
 
@@ -93,9 +96,9 @@
   <div class="leading-6 text-right pr-2 gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
     {line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}
     {#if ln !== null && line.kind !== "fold"}
-      <button
+      <button type="button"
         class="add-comment-btn"
-        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, filePath, side, rowIdx)}
+        onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, { file: filePath, side, startRowIdx: rowIdx })}
       >+</button>
     {/if}
   </div>

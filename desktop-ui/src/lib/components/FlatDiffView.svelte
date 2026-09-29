@@ -43,7 +43,6 @@
     getCrossFileModel,
     rowLineOnSide,
     unifiedLineSide,
-    type CrossFileModel,
     type CrossFileFlatRow,
     type PillarHeaderInfo,
   } from "$lib/diffRenderModel";
@@ -81,7 +80,18 @@
   import { findComposerAnchorRow, foldRowExtras } from "$lib/composerPlacement";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
+  /* eslint-disable svelte/prefer-svelte-reactivity -- span/stub memo bookkeeping that is non-reactive on purpose; making it reactive would bring back the effect loops it exists to prevent */
   const _spansAppliedKeys = new Set<string>();
+  /** Source indices that came back still-lazy after a parse attempt (no parseable
+   *  hunks: binary, mode-only, rename-without-content, empty). Re-requesting can't
+   *  produce hunks, so we never ask again — this avoids wasted IPC on every scroll
+   *  re-run and closes a latent spin if a perpetual stub's cache_key ever churned.
+   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys.
+   *  Keyed by `sourceIndex:path` — indices can shift on a watch refresh within
+   *  the same view, and a stale index-only entry would silently block another
+   *  file's lazy load. */
+  const _deadStubs = new Set<string>();
+  /* eslint-enable svelte/prefer-svelte-reactivity */
 
   const COMPOSER_APPROX_HEIGHT_PX = 220;
 
@@ -135,6 +145,7 @@
     // files are contiguous (its header is injected before the first one).
     if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
       const out: FileSnapshot[] = [];
+      // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local dedup set used only while this derived builds its list
       const seen = new Set<string>();
       const pushPath = (path: string) => {
         const f = byPath.get(path);
@@ -195,16 +206,6 @@
 
   let settingsOpen = $state(false);
 
-  async function collapseAllDiffFiles() {
-    diffFileCollapse.collapseAll(files.map((f) => f.path));
-    await tick();
-    if (!scrollEl) return;
-    const maxTop = Math.max(0, effectiveGeometry.totalHeight - viewportHeightPx);
-    if (scrollEl.scrollTop > maxTop) {
-      scrollEl.scrollTop = maxTop;
-    }
-  }
-
   const snapshotKey = $derived(
     snapshot ? `${snapshot.active_tab}:${snapshot.mode}:${snapshot.base}:${snapshot.branch}` : mode,
   );
@@ -224,14 +225,10 @@
   });
 
   const annotationIndex = $derived.by(() =>
-    buildAnnotationIndex(
-      aiForDiff,
-      files,
-      mode,
-      app.commentVisibility,
-      aiReviewFilter.filter,
-      aiFindingFilter.severity,
-    ),
+    buildAnnotationIndex(aiForDiff, files, mode, app.commentVisibility, {
+      agentFilter: aiReviewFilter.filter,
+      severityFilter: aiFindingFilter.severity,
+    }),
   );
   const threadMap = $derived(annotationIndex.threadMap);
 
@@ -326,6 +323,7 @@
   let railHeights = $state(new Map<string, number>());
   function setRailHeight(pillarId: string, px: number) {
     if ((railHeights.get(pillarId) ?? -1) === px) return;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy assigned whole to the `railHeights` $state; reactivity comes from the assignment
     const next = new Map(railHeights);
     next.set(pillarId, px);
     railHeights = next;
@@ -346,6 +344,7 @@
   $effect(() => {
     const validIds = new Set(crossFileModel.rows.map((r) => r.identity));
     if (overlayHeights.size === 0) return;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy assigned whole to the `overlayHeights` $state; reactivity comes from the assignment
     const next = new Map<string, number>();
     overlayHeights.forEach((v, k) => { if (validIds.has(k)) next.set(k, v); });
     if (next.size !== overlayHeights.size) {
@@ -378,12 +377,14 @@
   // flush lands uses its previous height for at most one frame; the measured
   // overlay corrects it, which is the same drift-correction this overlay
   // already relies on.
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- per-frame height buffer, non-reactive on purpose: flushHeights publishes it to `overlayHeights` once per frame, and making it reactive would bring back the per-row rebuild it exists to prevent
   let pendingHeights = new Map<string, number>();
   let heightFlushQueued = false;
 
   function flushHeights() {
     heightFlushQueued = false;
     if (pendingHeights.size === 0) return;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy assigned whole to the `overlayHeights` $state; reactivity comes from the assignment
     const next = new Map(overlayHeights);
     for (const [id, px] of pendingHeights) next.set(id, px);
     pendingHeights = new Map();
@@ -484,11 +485,14 @@
     };
   });
 
+  const tourActive = $derived(snapshot?.mode === "tour");
+
   // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
   // region is at least as tall as its (measured) rail — keyed by that row's
   // identity. Derived from baseGeometry (never effectiveGeometry) to avoid a
   // feedback loop. Empty outside tour mode.
   const pillarPadByRowIdentity = $derived.by<Map<string, number>>(() => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
     const pad = new Map<string, number>();
     if (!tourActive || railHeights.size === 0) return pad;
     const model = crossFileModel;
@@ -555,6 +559,16 @@
   let lastViewKey: string | null = null;
   let scrollSaveTimer: ReturnType<typeof setTimeout> | null = null;
   let treeFollowTimer: ReturnType<typeof setTimeout> | null = null;
+
+  async function collapseAllDiffFiles() {
+    diffFileCollapse.collapseAll(files.map((f) => f.path));
+    await tick();
+    if (!scrollEl) return;
+    const maxTop = Math.max(0, effectiveGeometry.totalHeight - viewportHeightPx);
+    if (scrollEl.scrollTop > maxTop) {
+      scrollEl.scrollTop = maxTop;
+    }
+  }
 
   function onScroll() {
     if (!scrollEl) return;
@@ -655,9 +669,14 @@
 
   /** Route horizontal wheel/trackpad gestures (and shift+wheel) to the panel
    *  under the pointer. Registered non-passive so preventDefault sticks. */
+  function wheelDx(e: WheelEvent): number {
+    if (e.deltaX !== 0) return e.deltaX;
+    return e.shiftKey ? e.deltaY : 0;
+  }
+
   function onDiffWheel(e: WheelEvent) {
     if (wrapEnabled) return;
-    const dx = e.deltaX !== 0 ? e.deltaX : e.shiftKey ? e.deltaY : 0;
+    const dx = wheelDx(e);
     if (dx === 0) return;
     if (!e.shiftKey && Math.abs(e.deltaX) <= Math.abs(e.deltaY)) return;
     const bar = hbarForClientX(e.clientX);
@@ -675,6 +694,7 @@
     probe.style.cssText =
       "position:absolute;visibility:hidden;white-space:pre;font-size:13px;line-height:1;";
     probe.textContent = "0".repeat(100);
+    // eslint-disable-next-line svelte/no-dom-manipulating -- a hidden probe inserted and removed in the same tick, so Svelte never renders around it; it must sit inside scrollEl to inherit the diff's font settings
     scrollEl.appendChild(probe);
     const w = probe.getBoundingClientRect().width / 100;
     probe.remove();
@@ -714,8 +734,7 @@
       effectiveGeometry.totalHeight,
       rowScrollTopPx,
       viewportHeightPx,
-      OVERSCAN,
-      OVERSCAN_PX,
+      { overscan: OVERSCAN, overscanPx: OVERSCAN_PX },
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
@@ -748,7 +767,6 @@
   );
 
   // ── Guide mode: Split View pillar lane ───────────────────────────────────
-  const tourActive = $derived(snapshot?.mode === "tour");
   /** Width of the left pillar rail lane in Guide mode. */
   const RAIL_W = 320;
 
@@ -796,6 +814,7 @@
    *  order. Co-located related files are excluded here and rendered nested via
    *  {@link relatedRows}. */
   const pillarFileRows = $derived.by((): Map<string, FileSnapshot[]> => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
     const m = new Map<string, FileSnapshot[]>();
     if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -813,6 +832,7 @@
   /** Map of primary file path → its co-located related rows (test/style/…), for
    *  nested rendering in the pillar rail. */
   const relatedRows = $derived.by((): Map<string, { file: FileSnapshot; kind: string }[]> => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
     const m = new Map<string, { file: FileSnapshot; kind: string }[]>();
     if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
     const byPath = new Map(files.map((f) => [f.path, f]));
@@ -839,6 +859,7 @@
       _prevReviewedTour = new Set();
       return;
     }
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- stored in the plain `_prevReviewedTour` for the next run to compare against; never read reactively
     const cur = new Set<string>();
     for (const f of files) {
       if (!f.reviewed) continue;
@@ -875,16 +896,8 @@
   });
 
   // ── Lazy-load effect ──────────────────────────────────────────────────────
+  // eslint-disable-next-line svelte/prefer-svelte-reactivity -- in-flight request bookkeeping that is non-reactive on purpose; making it reactive would bring back the effect loops it exists to prevent
   const _requestingFiles = new Set<number>();
-  /** Source indices that came back still-lazy after a parse attempt (no parseable
-   *  hunks: binary, mode-only, rename-without-content, empty). Re-requesting can't
-   *  produce hunks, so we never ask again — this avoids wasted IPC on every scroll
-   *  re-run and closes a latent spin if a perpetual stub's cache_key ever churned.
-   *  Cleared on context change (tab/branch/mode) alongside _spansAppliedKeys.
-   *  Keyed by `sourceIndex:path` — indices can shift on a watch refresh within
-   *  the same view, and a stale index-only entry would silently block another
-   *  file's lazy load. */
-  const _deadStubs = new Set<string>();
   /** Max distinct lazy files fetched per round-trip (bounds how long the backend
    *  holds the app mutex for one call). */
   const REQUEST_FILE_BATCH = 12;
@@ -893,54 +906,73 @@
   // (not the whole `AppSnapshot`), which we merge in place. This keeps the
   // viewport-driven lazy round-trip cheap on large diffs — a fast-scroll burst
   // that reveals several stubs is one call, not N full-snapshot serializations.
+  /** The view a lazy request was issued from. */
+  interface LazyRequestView {
+    tabKey: string | null;
+    tab: AppSnapshot["active_tab"] | undefined;
+    mode: AppSnapshot["mode"] | undefined;
+    base: AppSnapshot["base"] | undefined;
+    branch: AppSnapshot["branch"] | undefined;
+  }
+
+  function lazyRequestView(snap: AppSnapshot | null): LazyRequestView {
+    return {
+      tabKey: snap ? tabSnapshotCacheKey(snap) : null,
+      tab: snap?.active_tab,
+      mode: snap?.mode,
+      base: snap?.base,
+      branch: snap?.branch,
+    };
+  }
+
+  function viewChangedSince(req: LazyRequestView, snap: AppSnapshot): boolean {
+    return (
+      (req.tabKey !== null && tabSnapshotCacheKey(snap) !== req.tabKey) ||
+      snap.active_tab !== req.tab ||
+      snap.mode !== req.mode ||
+      snap.base !== req.base ||
+      snap.branch !== req.branch
+    );
+  }
+
+  function mergeLazyFile(snap: AppSnapshot, newFile: FileSnapshot): void {
+    const oldFile = snap.files.find((f) => f.source_index === newFile.source_index);
+    if (!oldFile) return;
+    const prevCacheKey = oldFile.cache_key;
+    oldFile.hunks = newFile.hunks;
+    oldFile.is_lazy_stub = newFile.is_lazy_stub;
+    oldFile.compacted = newFile.compacted;
+    oldFile.additions = newFile.additions;
+    oldFile.deletions = newFile.deletions;
+    oldFile.cache_key = newFile.cache_key;
+    // Keep delta_key in sync so later differential snapshots can omit
+    // this file's hunks against the content we just received.
+    oldFile.delta_key = newFile.delta_key;
+    // Parsed but still a stub → no hunks will ever come from this file; don't
+    // ask again until the context changes.
+    if (newFile.is_lazy_stub) _deadStubs.add(`${newFile.source_index}:${newFile.path}`);
+    // Only evict highlight spans when the hunks actually changed (cache_key
+    // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
+    if (prevCacheKey !== newFile.cache_key) {
+      evictSpanKeysForPath(oldFile.path);
+    }
+  }
+
   async function requestLazyFiles(sourceIndices: number[]): Promise<void> {
     if (app.pendingTabSwitch) return;
     const fresh = sourceIndices.filter((i) => !_requestingFiles.has(i));
     if (fresh.length === 0) return;
     for (const i of fresh) _requestingFiles.add(i);
-    const reqSnap = app.snapshot;
-    const reqTabKey = reqSnap ? tabSnapshotCacheKey(reqSnap) : null;
-    const reqTab = reqSnap?.active_tab;
-    const reqMode = reqSnap?.mode;
-    const reqBase = reqSnap?.base;
-    const reqBranch = reqSnap?.branch;
+    const reqView = lazyRequestView(app.snapshot);
     try {
-      const files = await invoke<FileSnapshot[]>("request_file_content", {
+      const loaded = await invoke<FileSnapshot[]>("request_file_content", {
         sourceIndices: fresh,
       });
-      if (!files || !app.snapshot) return;
+      if (!loaded || !app.snapshot) return;
       if (app.pendingTabSwitch) return;
       // Drop stale responses: the view changed while the round-trip was in flight.
-      if (
-        (reqTabKey !== null && tabSnapshotCacheKey(app.snapshot) !== reqTabKey) ||
-        app.snapshot.active_tab !== reqTab ||
-        app.snapshot.mode !== reqMode ||
-        app.snapshot.base !== reqBase ||
-        app.snapshot.branch !== reqBranch
-      )
-        return;
-      for (const newFile of files) {
-        const oldFile = app.snapshot.files.find((f) => f.source_index === newFile.source_index);
-        if (!oldFile) continue;
-        const prevCacheKey = oldFile.cache_key;
-        oldFile.hunks = newFile.hunks;
-        oldFile.is_lazy_stub = newFile.is_lazy_stub;
-        oldFile.compacted = newFile.compacted;
-        oldFile.additions = newFile.additions;
-        oldFile.deletions = newFile.deletions;
-        oldFile.cache_key = newFile.cache_key;
-        // Keep delta_key in sync so later differential snapshots can omit
-        // this file's hunks against the content we just received.
-        oldFile.delta_key = newFile.delta_key;
-        // Parsed but still a stub → no hunks will ever come from this file; don't
-        // ask again until the context changes.
-        if (newFile.is_lazy_stub) _deadStubs.add(`${newFile.source_index}:${newFile.path}`);
-        // Only evict highlight spans when the hunks actually changed (cache_key
-        // changed) — skipping eviction on unchanged hunks avoids a redundant flush.
-        if (prevCacheKey !== newFile.cache_key) {
-          evictSpanKeysForPath(oldFile.path);
-        }
-      }
+      if (viewChangedSince(reqView, app.snapshot)) return;
+      for (const newFile of loaded) mergeLazyFile(app.snapshot, newFile);
       scheduleHighlightDrain();
     } finally {
       for (const i of fresh) _requestingFiles.delete(i);
@@ -973,8 +1005,9 @@
         _requestingFiles.has(row.sourceIndex) ||
         _deadStubs.has(`${row.sourceIndex}:${row.filePath ?? ""}`) ||
         seen.has(row.sourceIndex)
-      )
+      ) {
         continue;
+      }
       seen.add(row.sourceIndex);
       into.push(row.sourceIndex);
     }
@@ -1024,10 +1057,12 @@
   // completions or lazy-file loads. Normal viewport/file changes remain direct deps.
   let _highlightQueuePulse = $state(0);
   let _highlightDrainScheduled = false;
+  /* eslint-disable svelte/prefer-svelte-reactivity -- highlight queue bookkeeping that is non-reactive on purpose; making it reactive would bring back the effect loops it exists to prevent */
   const _highlightQueued = new Set<string>();
   const _highlightInFlight = new Set<string>();
   const _highlightCompletedKeys = new Set<string>();
   const _highlightFailedKeys = new Set<string>();
+  /* eslint-enable svelte/prefer-svelte-reactivity */
   let _lastSnapshotRef: AppSnapshot | null = null;
   let _visibleFilePaths = $state(new Set<string>());
   /** Bumped when client-side syntax spans land on live hunks (invalidates virtual row lookups). */
@@ -1117,6 +1152,7 @@
     let evicted = 0;
     const previousThemeId = _lastSyntaxThemeId;
     _lastSyntaxThemeId = themeId;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- snapshot for the next run, stored in the plain `_lastFileCacheKeys` bookkeeping; never read reactively
     const nextKeys = new Map<string, string>();
     for (const f of list) {
       nextKeys.set(f.path, f.cache_key);
@@ -1132,9 +1168,8 @@
         if (_spansAppliedKeys.delete(key)) evicted += 1;
       }
     }
-    for (const path of _lastFileCacheKeys.keys()) {
+    for (const [path, prevKey] of _lastFileCacheKeys) {
       if (!nextKeys.has(path)) {
-        const prevKey = _lastFileCacheKeys.get(path)!;
         const key = highlightCache.key(path, prevKey, previousThemeId);
         highlightCache.delete(key);
         if (_spansAppliedKeys.delete(key)) evicted += 1;
@@ -1145,6 +1180,13 @@
       profileLog("span_keys_evicted", { evicted_count: evicted });
     }
   });
+
+  /** A visible file with parsed hunks to highlight, or undefined. */
+  function highlightTarget(filePath: string): FileSnapshot | undefined {
+    const file = files.find((f) => f.path === filePath);
+    if (!file || file.is_lazy_stub || file.hunks.length === 0) return undefined;
+    return file;
+  }
 
   // Drop per-key highlight state when files leave the snapshot, cache_key changes, or theme changes.
   $effect(() => {
@@ -1180,8 +1222,8 @@
     let dedupeSkipped = 0;
     let concurrencySkipped = 0;
     for (const filePath of visiblePaths) {
-      const file = files.find((f) => f.path === filePath);
-      if (!file || file.is_lazy_stub || file.hunks.length === 0) continue;
+      const file = highlightTarget(filePath);
+      if (!file) continue;
       const spanKey = highlightCache.key(file.path, file.cache_key, syntaxTheme.id);
       const snapFile = app.snapshot?.files?.find((f) => f.path === file.path);
       if (!snapFile) continue;
@@ -1407,6 +1449,7 @@
     // Map each rendered line's LineSnapshot to its current row index. Using
     // object identity covers both unified rows and split rows (whose left/right
     // sides reuse the same LineSnapshot objects from the hunk).
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local lookup table built and read inside this function; never escapes it
     const lineToRow = new Map<LineSnapshot, number>();
     const byPath = new Map(files.map((f) => [f.path, f]));
     const rows = crossFileModel.rows;
@@ -1444,16 +1487,6 @@
     return out;
   }
 
-  /** Current render-model row for a usage, re-resolved from its stable anchor
-   *  (filePath, hunkIdx, lineIdx). -1 when the line still has no rendered row
-   *  (file collapsed or not yet loaded). */
-  function resolveUsageRow(u: Pick<UsageSource, "filePath" | "hunkIdx" | "lineIdx">): number {
-    const match = usageSourcesAll.find(
-      (s) => s.filePath === u.filePath && s.hunkIdx === u.hunkIdx && s.lineIdx === u.lineIdx,
-    );
-    return match?.rowIdx ?? -1;
-  }
-
   /** Upper bound on collected matches — a one-letter Cmd+F query over a huge
    *  diff must not build an unbounded match list. */
   const SEARCH_MATCH_CAP = 5000;
@@ -1464,6 +1497,16 @@
   const usageSourcesAll = $derived.by((): UsageSource[] =>
     refHighlight.identifier ? collectUsageSources() : [],
   );
+
+  /** Current render-model row for a usage, re-resolved from its stable anchor
+   *  (filePath, hunkIdx, lineIdx). -1 when the line still has no rendered row
+   *  (file collapsed or not yet loaded). */
+  function resolveUsageRow(u: Pick<UsageSource, "filePath" | "hunkIdx" | "lineIdx">): number {
+    const match = usageSourcesAll.find(
+      (s) => s.filePath === u.filePath && s.hunkIdx === u.hunkIdx && s.lineIdx === u.lineIdx,
+    );
+    return match?.rowIdx ?? -1;
+  }
   // Rendered subset — drives the overview ruler and Cmd+F search, both of which
   // can only scroll to a row that exists in the live render model. Sorted by
   // rowIdx because both consumers require ascending render order: the ruler's
@@ -1603,7 +1646,7 @@
     if (!refHighlight.searchOpen) return [];
     const out: number[] = [];
     for (const u of usageLines) {
-      for (let i = 0; i < u.ranges.length; i++) out.push(u.rowIdx);
+      for (const _range of u.ranges) out.push(u.rowIdx);
     }
     return out;
   });
@@ -1631,7 +1674,7 @@
     }
   });
 
-  function scrollToFileHeader(path: string): boolean {
+  function _scrollToFileHeader(path: string): boolean {
     const rowIdx = crossFileModel.fileStartRow.get(path);
     if (rowIdx === undefined) return false;
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
@@ -1688,13 +1731,14 @@
   let pendingDragEvent: MouseEvent | null = null;
   let dragRafId: number | null = null;
 
-  function ensureDragGeometry() {
-    if (dragGeometry !== null) return;
+  function ensureDragGeometry(): EffectiveGeometry {
+    if (dragGeometry !== null) return dragGeometry;
     dragGeometry = {
       cumulativeOffsets: effectiveGeometry.cumulativeOffsets.slice(),
       totalHeight: effectiveGeometry.totalHeight,
       rowCount: effectiveGeometry.rowCount,
     };
+    return dragGeometry;
   }
 
   function anchorFileBounds(): { start: number; end: number } | null {
@@ -1727,6 +1771,10 @@
     return line === null ? null : { line, side: diffSel.side };
   }
 
+  function splitSideLineNum(line: LineSnapshot | null | undefined): number | null {
+    return line ? (line.new_num ?? line.old_num ?? null) : null;
+  }
+
   function lineInfoAtRow(idx: number) {
     if (idx < 0 || idx >= crossFileModel.rows.length) return null;
     const row = crossFileModel.rows[idx];
@@ -1745,8 +1793,8 @@
     if (row.type === "content-split") {
       const splitRowsByHunk = crossFileModel.splitRowsByFile.get(row.filePath);
       const splitRow = splitRowsByHunk?.[row.hunkIdx]?.[row.splitRowIdx];
-      const left = splitRow?.left ? (splitRow.left.new_num ?? splitRow.left.old_num ?? null) : null;
-      const right = splitRow?.right ? (splitRow.right.new_num ?? splitRow.right.old_num ?? null) : null;
+      const left = splitSideLineNum(splitRow?.left);
+      const right = splitSideLineNum(splitRow?.right);
       return {
         rowIdx: idx,
         rowType: row.type,
@@ -1790,13 +1838,20 @@
       mouseover_side: args.mouseover?.side ?? "none",
       target_line: args.target?.line ?? -1,
       target_side: args.target?.side ?? "none",
+      ...selectionLogFields(),
+    });
+  }
+
+  function selectionLogFields() {
+    const hasRange = diffSel.start !== null && diffSel.end !== null;
+    return {
       selected_file: diffSel.file ?? "none",
       selected_side: diffSel.side ?? "none",
       selected_start: diffSel.start ?? -1,
       selected_end: diffSel.end ?? -1,
-      selected_first: diffSel.start === null || diffSel.end === null ? -1 : diffSel.first(),
-      selected_last: diffSel.start === null || diffSel.end === null ? -1 : diffSel.last(),
-    });
+      selected_first: hasRange ? diffSel.first() : -1,
+      selected_last: hasRange ? diffSel.last() : -1,
+    };
   }
 
   function firstSelectableInAnchorFile(bounds: { start: number; end: number }) {
@@ -1842,8 +1897,7 @@
   function processDragMove(e: MouseEvent) {
     if (!diffSel.dragging || !hscrollEl) return;
     if (!diffSel.exceededDragSlop(e)) return;
-    ensureDragGeometry();
-    const geom = dragGeometry!;
+    const geom = ensureDragGeometry();
     const rect = hscrollEl.getBoundingClientRect();
     const rawY = rowOffsetFromContentTopY(e.clientY, rect.top);
     const yPx = Math.max(0, Math.min(rawY, geom.totalHeight - 1));
@@ -1891,7 +1945,7 @@
     void vw.start;
     void vw.end;
     heightRo?.disconnect();
-    heightRo = new ResizeObserver((entries) => {
+    const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const el = entry.target as HTMLElement;
         const identity = el.dataset.rowIdentity;
@@ -1899,8 +1953,9 @@
         onHeightChange(identity, Math.round(entry.contentRect.height));
       }
     });
+    heightRo = ro;
     scrollEl.querySelectorAll<HTMLElement>("[data-row-identity]").forEach((el) => {
-      heightRo!.observe(el);
+      ro.observe(el);
     });
     return () => heightRo?.disconnect();
   });
@@ -1913,7 +1968,7 @@
     void vw.start;
     void vw.end;
     devRo?.disconnect();
-    devRo = new ResizeObserver((entries) => {
+    const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const el = entry.target as HTMLElement;
         const identity = el.dataset.rowIdentity;
@@ -1936,9 +1991,10 @@
         }
       }
     });
-    if (!scrollEl || !devRo) return () => devRo?.disconnect();
+    devRo = ro;
+    if (!scrollEl) return () => devRo?.disconnect();
     scrollEl.querySelectorAll<HTMLElement>("[data-row-identity]").forEach((el) => {
-      devRo!.observe(el);
+      ro.observe(el);
     });
     return () => devRo?.disconnect();
   });
@@ -2016,7 +2072,7 @@
   {#if treeHidden || files.length > 0}
     <div class="h-10 px-4 border-b border-hairline bg-ink-870 flex items-center gap-3 shrink-0 text-muted">
       {#if treeHidden}
-        <button
+        <button type="button"
           class="p-1 hover:text-fg-2 hover:bg-hover rounded shrink-0"
           onclick={() => app.togglePanel("tree")}
           title="Show file tree"
@@ -2029,7 +2085,7 @@
       <div class="ml-auto flex items-center gap-1">
         {#if tourAvailable && !tourFresh}
           <!-- New changes landed since the guide was generated — offer a re-run. -->
-          <button
+          <button type="button"
             class="flex items-center gap-1 h-[22px] px-2 mr-1 rounded text-[11px] font-medium border border-risk-med/40 text-risk-med hover:bg-risk-med/10 transition-colors shrink-0"
             onclick={() => { app.showToast("info", "Regenerating guide…"); void app.cmd("generate_tour"); }}
             title="The diff changed since this guide was generated — regenerate it"
@@ -2040,7 +2096,7 @@
         {/if}
         {#if tourAvailable}
           <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
-            <button
+            <button type="button"
               role="tab"
               aria-selected={mode !== "tour"}
               onclick={exitGuideToDiff}
@@ -2048,7 +2104,7 @@
             >
               Diff
             </button>
-            <button
+            <button type="button"
               role="tab"
               aria-selected={mode === "tour"}
               onclick={() => { if (mode !== "tour") void app.cmd("set_mode", { mode: "tour" }); }}
@@ -2082,7 +2138,7 @@
           </svg>
         </button>
         <div class="relative">
-          <button
+          <button type="button"
             class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded flex items-center"
             onclick={() => (settingsOpen = !settingsOpen)}
             title="View settings"
@@ -2099,7 +2155,7 @@
             <div class="fixed inset-0 z-40" onclick={() => (settingsOpen = false)}></div>
             <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-52 py-1">
               <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Layout</div>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => { app.setDiffViewMode("unified"); settingsOpen = false; }}
               >
@@ -2110,7 +2166,7 @@
                 </span>
                 Unified
               </button>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => { app.setDiffViewMode("split"); settingsOpen = false; }}
               >
@@ -2121,7 +2177,7 @@
                 </span>
                 Split
               </button>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => app.toggleWrapLines()}
                 title="Wrap long lines instead of scrolling them horizontally inside each panel"
@@ -2135,7 +2191,7 @@
               </button>
               <div class="border-t border-ink-600 my-1"></div>
               <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => app.setCommentVisibility({ hideComments: !app.commentVisibility.hideComments })}
               >
@@ -2146,7 +2202,7 @@
                 </span>
                 Comments
               </button>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => app.setCommentVisibility({ hideFindings: !app.commentVisibility.hideFindings })}
               >
@@ -2157,7 +2213,7 @@
                 </span>
                 Findings
               </button>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => app.setCommentVisibility({ hideQuestions: !app.commentVisibility.hideQuestions })}
               >
@@ -2168,7 +2224,7 @@
                 </span>
                 Questions
               </button>
-              <button
+              <button type="button"
                 class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
                 onclick={() => findingsVisibility.toggleResolved()}
                 title="Session-only, like the other layer toggles"
@@ -2183,7 +2239,7 @@
             </div>
           {/if}
         </div>
-        <button
+        <button type="button"
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
           onclick={async () => {
             const res = await invoke<{ kind: string; target: string }>("open_source");
@@ -2200,7 +2256,6 @@
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
   <div class="flex-1 min-h-0 relative flex flex-col">
-  <!-- svelte-ignore a11y_no_static_element_interactions -->
   <div
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"

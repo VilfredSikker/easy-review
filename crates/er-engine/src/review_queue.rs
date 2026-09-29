@@ -318,7 +318,7 @@ pub fn is_review_debt(pr: &QueuePr) -> bool {
         .map(|s| s.to_ascii_uppercase())
         .as_deref()
     {
-        Some("APPROVED") | Some("CHANGES_REQUESTED") | Some("DISMISSED") => false,
+        Some("APPROVED" | "CHANGES_REQUESTED" | "DISMISSED") => false,
         _ => pr.review_requested_of_me,
     }
 }
@@ -444,7 +444,7 @@ pub fn is_blocked(pr: &QueuePr) -> bool {
             .as_deref()
             .map(|s| s.to_ascii_lowercase())
             .as_deref(),
-        Some("failing") | Some("fail")
+        Some("failing" | "fail")
     )
 }
 
@@ -465,7 +465,7 @@ pub fn filter_failing_ci(prs: &[QueuePr], limit: usize) -> Vec<RankedPr> {
                         .as_deref()
                         .map(|s| s.to_ascii_lowercase())
                         .as_deref(),
-                    Some("failing") | Some("fail")
+                    Some("failing" | "fail")
                 )
         })
         .map(score_pr)

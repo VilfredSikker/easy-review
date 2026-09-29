@@ -184,6 +184,7 @@ describe("findMatchRanges (substring mode)", () => {
 
   it("matches a full path query inside a line", () => {
     const line =
+      // eslint-disable-next-line no-template-curly-in-string -- a source line under test, not a template
       '  await fetch(`/experiments/${experimentId}/quality-control/wells`);';
     const query = "/quality-control/wells";
     const start = line.indexOf(query);

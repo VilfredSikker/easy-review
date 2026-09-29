@@ -36,9 +36,7 @@
 
   function onCardClick(id: string) {
     if (expandedCardIds.has(id)) {
-      const next = new Set(expandedCardIds);
-      next.delete(id);
-      expandedCardIds = next;
+      expandedCardIds = new Set([...expandedCardIds].filter((k) => k !== id));
       return;
     }
     expandedCardIds = new Set([...expandedCardIds, id]);
@@ -75,7 +73,7 @@
           <p class="mono truncate text-[9px] text-[var(--arena-fg-faint)]">{basename(f.file)}</p>
           {#if ballots.length > 0}
             <ul class="mt-1 space-y-1">
-              {#each ballots as b}
+              {#each ballots as b, bi (bi)}
                 {@const agent = reviewerMap[b.reviewer]}
                 <li class="flex gap-1.5 text-[10px] text-[var(--arena-fg-muted)]">
                   <span class="mono mt-0.5 w-3 shrink-0 text-center">{voteGlyph(b.vote)}</span>
@@ -104,7 +102,7 @@
     </div>
   </section>
 
-  {#each crossCheckRounds as roundNum}
+  {#each crossCheckRounds as roundNum (roundNum)}
     <section
       class="flex min-w-[200px] flex-1 flex-col rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)]"
     >
@@ -127,7 +125,7 @@
               <p class="text-[11px] font-medium text-[var(--arena-fg)]">{f.title}</p>
               <p class="mono truncate text-[9px] text-[var(--arena-fg-faint)]">{basename(f.file)}</p>
               <ul class="mt-1 space-y-1">
-                {#each ballots as b}
+                {#each ballots as b, bi (bi)}
                   {@const agent = reviewerMap[b.reviewer]}
                   <li class="flex gap-1.5 text-[10px] text-[var(--arena-fg-muted)]">
                     <span class="mono mt-0.5 w-3 shrink-0 text-center">{voteGlyph(b.vote)}</span>

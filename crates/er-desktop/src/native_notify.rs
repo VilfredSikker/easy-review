@@ -94,6 +94,8 @@ mod imp {
 
     impl ErInboxNotificationDelegate {
         fn new() -> Retained<Self> {
+            // SAFETY: `init` is NSObject's designated initializer, sent once to a
+            // fresh allocation whose ivars are already set.
             unsafe { msg_send![super(Self::alloc().set_ivars(())), init] }
         }
     }
@@ -115,6 +117,8 @@ mod imp {
 
         let options = UNAuthorizationOptions::Alert | UNAuthorizationOptions::Sound;
         let handler = RcBlock::new(|granted: Bool, err: *mut NSError| {
+            // SAFETY: the completion handler receives either null or an NSError
+            // that stays alive for the duration of the call.
             if let Some(err) = unsafe { err.as_ref() } {
                 log::error!(
                     "macOS notifications: authorization failed: {}",
@@ -153,6 +157,8 @@ mod imp {
         );
 
         let handler = RcBlock::new(|err: *mut NSError| {
+            // SAFETY: the completion handler receives either null or an NSError
+            // that stays alive for the duration of the call.
             if let Some(err) = unsafe { err.as_ref() } {
                 log::error!(
                     "macOS notifications: could not deliver banner: {}",

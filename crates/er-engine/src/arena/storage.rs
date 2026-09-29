@@ -83,7 +83,6 @@ pub fn save_diff_patch(paths: &ArenaPaths, patch: &str) -> Result<()> {
     write_atomic(&paths.diff_patch(), patch.as_bytes())
 }
 
-#[allow(dead_code)]
 pub fn save_round_output(
     paths: &ArenaPaths,
     round: u8,
@@ -238,7 +237,6 @@ pub fn list_run_ids(er_dir: &Path) -> Result<Vec<String>> {
 }
 
 /// Latest mtime under `.er/arena/` for poll fallback.
-#[allow(dead_code)]
 pub fn latest_arena_mtime(er_dir: &Path) -> Option<std::time::SystemTime> {
     let arena_root = er_dir.join("arena");
     if !arena_root.is_dir() {

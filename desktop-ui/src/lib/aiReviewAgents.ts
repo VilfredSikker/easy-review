@@ -104,7 +104,7 @@ export function coerceAgentFilter(
   current: AgentFilter,
 ): AgentFilter {
   if (labels.length === 0) return ALL_REVIEWERS;
-  if (labels.length === 1) return labels[0]!;
+  if (labels.length === 1) return labels[0] ?? ALL_REVIEWERS;
   if (current !== ALL_REVIEWERS && labels.includes(current)) return current;
   if (current === ALL_REVIEWERS) return ALL_REVIEWERS;
   return defaultAgentFilter(labels);
@@ -166,9 +166,7 @@ export function resolveAgentSummary(
   ai: ReviewSummarySource,
   agentFilter: AgentFilter,
   counts: { high: number; med: number; low: number },
-  fileCount: number,
-  isEmpty: boolean,
-  fileRiskCount = 0,
+  { fileCount, isEmpty, fileRiskCount = 0 }: { fileCount: number; isEmpty: boolean; fileRiskCount?: number },
 ): ResolvedSummary {
   if (useAgentScopedSummary(agentFilter)) {
     const scoped = ai.agent_summaries?.[agentFilter]?.trim();

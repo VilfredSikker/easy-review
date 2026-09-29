@@ -10,23 +10,18 @@
 
   const { vote, size = 16, class: className = "", title = "" }: Props = $props();
 
-  const tone = $derived(
-    vote === "keep"
-      ? "text-[var(--arena-ok)]"
-      : vote === "drop"
-        ? "text-[var(--arena-fg-faint)]"
-        : vote === "escalate"
-          ? "text-[var(--arena-err)]"
-          : vote === "merge"
-            ? "text-[var(--arena-periwinkle)]"
-            : vote === "lower"
-              ? "text-[var(--arena-warn)]"
-              : vote === "flag"
-                ? "text-[var(--arena-warn)]"
-                : vote === "propose"
-                  ? "text-[var(--arena-orange)]"
-                  : "text-[var(--arena-fg-muted)]",
-  );
+  const VOTE_TONE: Record<Vote, string> = {
+    keep: "text-[var(--arena-ok)]",
+    drop: "text-[var(--arena-fg-faint)]",
+    escalate: "text-[var(--arena-err)]",
+    merge: "text-[var(--arena-periwinkle)]",
+    lower: "text-[var(--arena-warn)]",
+    flag: "text-[var(--arena-warn)]",
+    propose: "text-[var(--arena-orange)]",
+    abstain: "text-[var(--arena-fg-muted)]",
+  };
+
+  const tone = $derived(VOTE_TONE[vote] ?? "text-[var(--arena-fg-muted)]");
 </script>
 
 <span

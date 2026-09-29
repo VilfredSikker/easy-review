@@ -412,13 +412,7 @@ fn extract_anchor_from_diff_hunk(diff_hunk: &str) -> (String, Vec<String>) {
         .lines()
         .skip(1) // skip @@ header
         .filter(|l| !l.starts_with('-'))
-        .map(|l| {
-            if l.starts_with('+') || l.starts_with(' ') {
-                &l[1..]
-            } else {
-                l
-            }
-        })
+        .map(|l| l.strip_prefix(['+', ' ']).unwrap_or(l))
         .collect();
     let line_content = new_side.last().copied().unwrap_or("").to_string();
     let ctx_start = new_side.len().saturating_sub(4);
@@ -454,13 +448,7 @@ pub fn find_local_line_for_diff_hunk(
     // Strip the +/-/space prefix to get raw content (matching DiffLine.content which is pre-stripped).
     let stripped: Vec<&str> = content_lines
         .iter()
-        .map(|l| {
-            if l.starts_with('+') || l.starts_with('-') || l.starts_with(' ') {
-                &l[1..]
-            } else {
-                l
-            }
-        })
+        .map(|l| l.strip_prefix(['+', '-', ' ']).unwrap_or(l))
         .collect();
 
     // Use the last N lines as a sliding-window fingerprint.
@@ -622,7 +610,7 @@ mod tests {
         assert_eq!(bytes[13], b':');
         assert_eq!(bytes[16], b':');
         // Year is at least the project's lifetime — sanity that the math isn't wildly off.
-        let year: i64 = now[0..4].parse().unwrap();
+        let year: i64 = now.get(..4).unwrap().parse().unwrap();
         assert!(year >= 2024, "got year {year}");
     }
 
