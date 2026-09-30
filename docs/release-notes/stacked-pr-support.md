@@ -34,10 +34,30 @@ name whenever the viewed branch is a local checkout that belongs to a stack:
   so the control can be opened at all. Once a lookup lands, a branch that isn't
   in a stack (or a machine without the extension) drops the control, so the
   header stays quiet; branches without a PR never show it.
-- `gh stack view` reads the **checked-out** branch, so the control only appears
-  when the branch the tab is showing is actually checked out: a remote-PR tab, or
-  a local PR view whose head lives only in a fetched ref, has nothing to read and
-  shows no control.
+- `gh stack view` reads the **checked-out** branch, so it's used when the
+  branch the tab is showing is checked out. A **remote PR tab**, or a local PR
+  view whose head isn't checked out, rebuilds the stack from the repo's open
+  PRs instead (a PR based on another PR's branch sits above it). That view
+  shows open layers only, without `needs rebase` or merged layers.
+
+## Desktop: stacks in My PRs
+
+- **Every open PR shows up.** The sidebar's PR list used to be the newest 100
+  PRs across all states, so in a busy repo the oldest open PRs — often a stack's
+  lower layers — dropped out of **My PRs**. It now fetches every open PR plus
+  the 50 most recent closed/merged ones.
+- **Layers are grouped.** **My PRs** lists each stack together, bottom layer
+  first, each layer indented under the PR it's based on. Built from the base
+  and head branches already in the PR list, so it costs no extra `gh` call.
+
+### Fixes
+
+- Desktop: opening a PR the sidebar had no cached details for (a saved or
+  recent PR outside the PR list, an old stack layer) no longer sits on
+  **Loading diff…** forever. The tab starts on a `pr/<N>` placeholder branch
+  and is renamed once GitHub reports the head; the frontend keyed tabs by
+  branch, so it took the loaded diff for another tab's and dropped it. PR tabs
+  now key on the PR number.
 
 ## What changed
 
@@ -91,11 +111,11 @@ None of these is an error state:
 - **Extension not installed** → the row reads `gh stack extension not installed`.
 - **Branch not in a stack** → the row carries `gh`'s own explanation
   (`current branch "x" is not part of a stack`).
-- **Remote-PR tabs** → the section says it isn't available, since a remote tab's
-  checkout isn't the PR's branch.
-- **Branch not checked out** → a local PR/branch view whose head lives only in a
-  fetched ref says the branch isn't checked out, rather than showing the stack of
-  whatever the working tree happens to have.
+- **Remote PR tabs** → the stack comes from the repo's open PRs; a PR with no
+  open PR above or below it reads `<branch> is not part of a stack`.
+- **Branch view not checked out** → a local branch view (not a PR) whose branch
+  isn't checked out says so, rather than showing the stack of whatever the
+  working tree happens to have.
 
 A `gh stack view` that fails for some other reason (no `gh`, auth, network) is a
 real error: it's logged with the repo and branch, and the control stays put

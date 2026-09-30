@@ -173,6 +173,141 @@ pub struct StackRow {
     pub pr_url: Option<String>,
 }
 
+/// Where a tab's stack can be read from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StackSource {
+    /// The viewed branch is checked out here: ask `gh stack view`, which owns
+    /// membership, order and per-layer state.
+    Checkout(String),
+    /// No checkout to run `gh stack view` in (a remote PR, or a PR view whose
+    /// head isn't checked out): rebuild the chain from the repo's open PRs.
+    PrChain {
+        /// `owner/repo`.
+        repo: String,
+        /// Head branch of the tab's PR.
+        head: String,
+    },
+}
+
+impl StackSource {
+    /// Short description for logs.
+    pub fn describe(&self) -> String {
+        match self {
+            Self::Checkout(root) => format!("gh stack view in {root}"),
+            Self::PrChain { repo, head } => format!("PR chain {repo} @ {head}"),
+        }
+    }
+}
+
+/// Look up a stack from either source. Blocking — run on a worker thread.
+pub fn load_from(source: &StackSource) -> StackInfo {
+    match source {
+        StackSource::Checkout(root) => load(root),
+        StackSource::PrChain { repo, head } => match crate::github::gh_open_pr_refs_json(repo) {
+            Ok(json) => match parse_pr_refs_json(&json) {
+                Ok(prs) => match stack_from_pr_chain(&prs, head) {
+                    Some(stack) => StackInfo::Stack(stack),
+                    None => StackInfo::Unavailable(format!("{head} is not part of a stack")),
+                },
+                Err(e) => StackInfo::Failed(compact_reason(&format!("unexpected PR list: {e}"))),
+            },
+            Err(e) => StackInfo::Failed(compact_reason(&e.to_string())),
+        },
+    }
+}
+
+/// One open PR's refs, the input to [`stack_from_pr_chain`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct ChainPr {
+    pub number: u64,
+    #[serde(default)]
+    pub url: String,
+    #[serde(rename = "headRefName")]
+    pub head: String,
+    #[serde(rename = "baseRefName")]
+    pub base: String,
+}
+
+/// Parse `gh pr list --json number,url,headRefName,baseRefName`.
+pub fn parse_pr_refs_json(json: &str) -> Result<Vec<ChainPr>> {
+    serde_json::from_str(json).map_err(|e| anyhow!("invalid PR list JSON: {e}"))
+}
+
+/// Trunk names a stack is based on. A PR *from* one (a main → production
+/// release PR) is not a stack layer, or every main-based PR would chain to it.
+const TRUNK_BRANCHES: [&str; 4] = ["main", "master", "develop", "dev"];
+
+/// Rebuild the stack containing `head` from open PRs: a PR whose base is
+/// another PR's head sits directly above it. Walks down to the trunk and up
+/// to the top; where a layer has several PRs based on it, the oldest one
+/// continues the chain. `None` when `head` has no open PR or the chain is that
+/// one PR alone (not a stack).
+///
+/// Only open PRs are visible here, so merged lower layers don't appear and
+/// per-layer flags like `needs rebase` are unknown — `gh stack view` stays the
+/// source when the branch is checked out.
+pub fn stack_from_pr_chain(prs: &[ChainPr], head: &str) -> Option<Stack> {
+    let by_head = |branch: &str| {
+        prs.iter()
+            .filter(|p| p.head == branch && !TRUNK_BRANCHES.contains(&p.head.as_str()))
+            .min_by_key(|p| p.number)
+    };
+    let current = by_head(head)?;
+
+    let mut seen = vec![current.number];
+    // Trunk-first while walking down, then reversed.
+    let mut below: Vec<&ChainPr> = Vec::new();
+    let mut cursor = current;
+    while let Some(parent) = by_head(&cursor.base).filter(|p| !seen.contains(&p.number)) {
+        seen.push(parent.number);
+        below.push(parent);
+        cursor = parent;
+    }
+    let trunk = cursor.base.clone();
+
+    let mut above: Vec<&ChainPr> = Vec::new();
+    let mut cursor = current;
+    while let Some(child) = prs
+        .iter()
+        .filter(|p| p.base == cursor.head && !seen.contains(&p.number))
+        .min_by_key(|p| p.number)
+    {
+        seen.push(child.number);
+        above.push(child);
+        cursor = child;
+    }
+
+    if below.is_empty() && above.is_empty() {
+        return None;
+    }
+
+    let entry = |pr: &ChainPr| StackEntry {
+        branch: pr.head.clone(),
+        pr_number: Some(pr.number),
+        pr_url: Some(pr.url.clone()).filter(|u| !u.is_empty()),
+        pr_state: Some("OPEN".into()),
+        is_current: pr.number == current.number,
+        is_merged: false,
+        is_queued: false,
+        needs_rebase: false,
+    };
+    // Top of the stack first, matching `parse_view_json`.
+    let entries = above
+        .iter()
+        .rev()
+        .copied()
+        .chain(std::iter::once(current))
+        .chain(below.iter().copied())
+        .map(entry)
+        .collect();
+
+    Some(Stack {
+        trunk,
+        current_branch: Some(head.to_string()),
+        entries,
+    })
+}
+
 /// Look up the stack that contains the checked-out branch in `repo_root`.
 ///
 /// Blocking: shells out to `gh stack view --json`, which is why callers run it
@@ -563,5 +698,86 @@ mod tests {
     #[test]
     fn empty_reason_falls_back() {
         assert_eq!(compact_reason("   \n  "), "unavailable");
+    }
+
+    fn chain_pr(number: u64, head: &str, base: &str) -> ChainPr {
+        ChainPr {
+            number,
+            url: format!("https://github.com/o/r/pull/{number}"),
+            head: head.into(),
+            base: base.into(),
+        }
+    }
+
+    /// The reported stack: #1506 on main, then #1507, #1511, #1512 on top,
+    /// plus an unrelated main-based PR and a release PR from main.
+    fn discovery_prs() -> Vec<ChainPr> {
+        vec![
+            chain_pr(1573, "data-export", "main"),
+            chain_pr(1512, "plate-designer", "dev-7332"),
+            chain_pr(1511, "dev-7332", "dev-7331"),
+            chain_pr(1507, "dev-7331", "dev-7330"),
+            chain_pr(1506, "dev-7330", "main"),
+            chain_pr(1400, "main", "production"),
+        ]
+    }
+
+    fn numbers(stack: &Stack) -> Vec<u64> {
+        stack.entries.iter().filter_map(|e| e.pr_number).collect()
+    }
+
+    #[test]
+    fn pr_chain_from_the_top_layer_walks_down_to_the_trunk() {
+        let stack = stack_from_pr_chain(&discovery_prs(), "plate-designer").expect("stack");
+        assert_eq!(numbers(&stack), vec![1512, 1511, 1507, 1506]);
+        assert_eq!(stack.trunk, "main");
+        assert!(stack.entries[0].is_current);
+        assert!(stack.entries[1..].iter().all(|e| !e.is_current));
+        assert!(stack.entries.iter().all(|e| e.is_openable()));
+    }
+
+    #[test]
+    fn pr_chain_from_a_middle_layer_walks_both_ways() {
+        let stack = stack_from_pr_chain(&discovery_prs(), "dev-7331").expect("stack");
+        assert_eq!(numbers(&stack), vec![1512, 1511, 1507, 1506]);
+        assert!(stack.entries[2].is_current);
+    }
+
+    #[test]
+    fn pr_chain_for_a_lone_pr_is_not_a_stack() {
+        // Based on main, where a release PR *from* main must not count as its parent.
+        assert!(stack_from_pr_chain(&discovery_prs(), "data-export").is_none());
+        assert!(stack_from_pr_chain(&discovery_prs(), "no-such-branch").is_none());
+    }
+
+    #[test]
+    fn pr_chain_follows_the_oldest_child_and_survives_cycles() {
+        let prs = vec![
+            chain_pr(1, "base", "main"),
+            chain_pr(3, "right", "base"),
+            chain_pr(2, "left", "base"),
+        ];
+        let stack = stack_from_pr_chain(&prs, "base").expect("stack");
+        assert_eq!(numbers(&stack), vec![2, 1]);
+
+        let cycle = vec![chain_pr(1, "a", "b"), chain_pr(2, "b", "a")];
+        let stack = stack_from_pr_chain(&cycle, "a").expect("stack");
+        assert_eq!(numbers(&stack).len(), 2);
+    }
+
+    #[test]
+    fn parse_pr_refs_reads_gh_json() {
+        let json = r#"[{"number":1506,"url":"https://x/1506","headRefName":"dev-7330","baseRefName":"main"}]"#;
+        let prs = parse_pr_refs_json(json).expect("parses");
+        assert_eq!(
+            prs,
+            vec![ChainPr {
+                number: 1506,
+                url: "https://x/1506".into(),
+                head: "dev-7330".into(),
+                base: "main".into()
+            }]
+        );
+        assert!(parse_pr_refs_json("nope").is_err());
     }
 }

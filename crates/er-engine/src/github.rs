@@ -1632,6 +1632,34 @@ pub fn gh_stack_view_json(repo_root: &str) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
+/// Open PRs of `owner/repo` with just the refs needed to walk a stack chain
+/// (`gh pr list --json number,url,headRefName,baseRefName`). Blocking; callers
+/// run it on a worker thread.
+pub fn gh_open_pr_refs_json(repo_slug: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "list",
+            "--repo",
+            repo_slug,
+            "--state",
+            "open",
+            "--limit",
+            "200",
+            "--json",
+            "number,url,headRefName,baseRefName",
+        ])
+        .env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .output()
+        .map_err(gh_spawn_context)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("gh pr list failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
 /// Fetch PR overview data for a remote repo (no local clone needed).
 pub fn gh_pr_overview_remote(owner: &str, repo: &str, number: u64) -> Option<PrOverviewData> {
     let repo_slug = format!("{}/{}", owner, repo);

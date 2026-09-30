@@ -1385,7 +1385,7 @@ pub struct StackLayerSnapshot {
 /// to be reachable to trigger that lazy `refresh_stack` lookup in the first
 /// place.
 fn snapshot_stack(tab: &TabState) -> Option<StackSnapshot> {
-    snapshot_stack_state(tab.local_checkout_root().is_some(), &tab.stack)
+    snapshot_stack_state(tab.stack_source().is_some(), &tab.stack)
 }
 
 /// [`snapshot_stack`] over the two inputs that decide the shape, so the

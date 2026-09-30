@@ -8,6 +8,7 @@
   import { buildPrHint, createPrPrefetch, remoteParts, shouldReplaceTab, yieldForPendingPaint } from "$lib/prOpen";
   import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
   import { orderedByIds } from "$lib/projectOrder";
+  import { orderPrsByStack } from "$lib/prStacks";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
 
   interface PinnedItem {
@@ -1058,7 +1059,7 @@
                 </div>
               {/snippet}
 
-              {#snippet prRow(pr: PrInfo)}
+              {#snippet prRow(pr: PrInfo, depth = 0)}
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
@@ -1080,7 +1081,11 @@
                       }
                     }}
                     class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-left pr-7 {(isActivePr || prPending) ? 'bg-accent/15 text-fg font-medium' : 'hover:bg-hover text-fg-3'}"
+                    style={depth > 0 ? `padding-left: ${8 + depth * 12}px` : undefined}
                   >
+                    {#if depth > 0}
+                      <span class="shrink-0 text-[10px] text-muted -mr-1" aria-hidden="true">└</span>
+                    {/if}
                     <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="{prIconColor(pr)} shrink-0">
                       <line x1="6" y1="3" x2="6" y2="15"/>
                       <circle cx="18" cy="6" r="3"/>
@@ -1210,8 +1215,8 @@
                 {:else if sectionKey === "my_prs" && (visibleMyPrs(project).length > 0 || (loadingPrList && project.my_prs?.length === 0 && !searchActive))}
                   {@render collapsibleSectionHeader("my_prs", meta.label, visibleMyPrs(project).length, sectionIdx, true)}
                   {#if isSectionOpen(project.id, "my_prs")}
-                  {#each visibleMyPrs(project) as pr (pr.number)}
-                    {@render prRow(pr)}
+                  {#each orderPrsByStack(visibleMyPrs(project)) as row (row.pr.number)}
+                    {@render prRow(row.pr, row.depth)}
                   {/each}
                   {/if}
 

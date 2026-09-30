@@ -274,7 +274,38 @@ pub async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtM
     failed_remotes
 }
 
+/// Every open PR is fetched, however old. A stack's lower layers are often
+/// the oldest open PRs, and a single `--state all` window of the newest PRs
+/// dropped them from My PRs.
+const OPEN_PR_LIMIT: usize = 200;
+/// Closed/merged PRs only feed Recently merged and the inbox transitions, so
+/// the newest few are enough.
+const CLOSED_PR_LIMIT: usize = 50;
+
 pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
+    let (open, closed) = tokio::join!(
+        run_pr_list(remote, "open", OPEN_PR_LIMIT),
+        run_pr_list(remote, "closed", CLOSED_PR_LIMIT),
+    );
+    Some(merge_open_and_closed(open?, closed?))
+}
+
+/// Union of the open and closed lists, one entry per PR number. A PR that
+/// changed state between the two calls shows up in both; keep the entry
+/// GitHub touched last.
+fn merge_open_and_closed(open: Vec<PrInfo>, closed: Vec<PrInfo>) -> Vec<PrInfo> {
+    let mut out: Vec<PrInfo> = Vec::with_capacity(open.len() + closed.len());
+    for pr in open.into_iter().chain(closed) {
+        match out.iter_mut().find(|p| p.number == pr.number) {
+            Some(existing) if pr.updated_at > existing.updated_at => *existing = pr,
+            Some(_) => {}
+            None => out.push(pr),
+        }
+    }
+    out
+}
+
+async fn run_pr_list(remote: &str, state: &str, limit: usize) -> Option<Vec<PrInfo>> {
     // statusCheckRollup is intentionally excluded — it forces GitHub to aggregate
     // CI checks for every PR and is the dominant cause of latency (adds ~5s per fetch).
     // Icon colors use reviewDecision instead, which is cheap.
@@ -285,11 +316,11 @@ pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
             "--repo",
             remote,
             "--state",
-            "all",
+            state,
             "--json",
             "number,title,headRefName,baseRefName,headRefOid,updatedAt,state,isDraft,author,assignees,reviewRequests,reviewDecision,mergedAt,latestReviews",
             "--limit",
-            "100",
+            &limit.to_string(),
         ])
         .output()
         .await
@@ -297,6 +328,10 @@ pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
     if !out.status.success() {
         return None;
     }
+    parse_pr_list(&out.stdout)
+}
+
+fn parse_pr_list(stdout: &[u8]) -> Option<Vec<PrInfo>> {
     #[derive(serde::Deserialize)]
     struct Raw {
         number: u64,
@@ -343,7 +378,7 @@ pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
         state: String,
     }
 
-    let raw: Vec<Raw> = serde_json::from_slice(&out.stdout).ok()?;
+    let raw: Vec<Raw> = serde_json::from_slice(stdout).ok()?;
     Some(
         raw.into_iter()
             .map(|r| {
@@ -402,6 +437,67 @@ mod tests {
             updated_at: String::new(),
             latest_reviewer_states: vec![],
         }
+    }
+
+    fn with_state(mut pr: PrInfo, state: &str, updated_at: &str) -> PrInfo {
+        pr.state = state.to_string();
+        pr.updated_at = updated_at.to_string();
+        pr
+    }
+
+    #[test]
+    fn merge_keeps_old_open_prs_next_to_recent_closed_ones() {
+        // #1506 is far older than every closed PR, which is exactly the
+        // stack layer a single newest-100 window used to drop.
+        let open = vec![make_pr(1506, "stack-bottom"), make_pr(1512, "stack-top")];
+        let closed = vec![
+            with_state(make_pr(1609, "merged"), "MERGED", "2026-09-30T08:00:00Z"),
+            with_state(make_pr(1600, "closed"), "CLOSED", "2026-09-29T08:00:00Z"),
+        ];
+        let merged = merge_open_and_closed(open, closed);
+        let numbers: Vec<u64> = merged.iter().map(|p| p.number).collect();
+        assert_eq!(numbers, vec![1506, 1512, 1609, 1600]);
+    }
+
+    #[test]
+    fn merge_dedupes_a_pr_that_changed_state_between_calls() {
+        let open = vec![with_state(make_pr(7, "f"), "OPEN", "2026-09-30T08:00:00Z")];
+        let closed = vec![with_state(
+            make_pr(7, "f"),
+            "MERGED",
+            "2026-09-30T08:00:05Z",
+        )];
+        let merged = merge_open_and_closed(open, closed);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].state, "MERGED", "the later update wins");
+
+        let open = vec![with_state(make_pr(8, "g"), "OPEN", "2026-09-30T09:00:00Z")];
+        let closed = vec![with_state(
+            make_pr(8, "g"),
+            "CLOSED",
+            "2026-09-30T08:00:00Z",
+        )];
+        let merged = merge_open_and_closed(open, closed);
+        assert_eq!(merged.len(), 1);
+        assert_eq!(
+            merged[0].state, "OPEN",
+            "a reopened PR keeps its newer open entry"
+        );
+    }
+
+    #[test]
+    fn parse_pr_list_reads_gh_json() {
+        let json = br#"[{"number":1506,"title":"Stack bottom","headRefName":"a","baseRefName":"main","headRefOid":"abc","updatedAt":"2026-09-10T12:30:43Z","state":"OPEN","isDraft":false,"author":{"login":"will"},"assignees":[],"reviewRequests":[],"reviewDecision":null,"mergedAt":null,"latestReviews":[{"author":{"login":"bo"},"state":"APPROVED"}]}]"#;
+        let prs = parse_pr_list(json).expect("parses");
+        assert_eq!(prs.len(), 1);
+        assert_eq!(prs[0].head_ref, "a");
+        assert_eq!(prs[0].base_ref, "main");
+        assert_eq!(prs[0].author, "will");
+        assert_eq!(
+            prs[0].latest_reviewer_states,
+            vec![("bo".to_string(), "APPROVED".to_string())]
+        );
+        assert!(parse_pr_list(b"not json").is_none());
     }
 
     #[test]

@@ -15,9 +15,13 @@ type TabCacheIdentity = Pick<TabSummary, "idx" | "repo_root" | "kind" | "branch"
  * Stable per-tab key. Includes kind + branch so closing tab 0 cannot make the
  * remaining local-branch tab reuse the closed slot (idx is compacted).
  * Mode lives on the snapshot, not the key — last visit of that tab wins.
+ * A PR tab keys on its number alone: its branch starts as the `pr/<N>`
+ * placeholder and is renamed once GitHub reports the head, and a key that
+ * moved with it made every later poll look like it came from another tab.
  */
 export function tabSnapshotCacheKeyFromTab(tab: TabCacheIdentity): string {
-  return `${tab.idx}|${tab.repo_root}|${tab.kind}|${tab.branch ?? ""}|${tab.pr_number ?? ""}`;
+  const branch = tab.pr_number != null ? "" : (tab.branch ?? "");
+  return `${tab.idx}|${tab.repo_root}|${tab.kind}|${branch}|${tab.pr_number ?? ""}`;
 }
 
 function activeTab(snap: AppSnapshot): TabSummary | undefined {

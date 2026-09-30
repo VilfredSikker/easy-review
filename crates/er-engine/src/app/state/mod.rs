@@ -2100,6 +2100,31 @@ impl TabState {
         Some(self.repo_root.as_str())
     }
 
+    /// Where this tab's stack can be read from, or `None` when it has none.
+    ///
+    /// `gh stack view` reads the checked-out branch, so it's used only when the
+    /// viewed branch is that checkout. A PR tab without one (a remote PR, or a
+    /// local PR view whose head isn't checked out) rebuilds the chain from the
+    /// repo's open PRs instead, keyed by the PR's head branch.
+    pub fn stack_source(&self) -> Option<crate::gh_stack::StackSource> {
+        if let Some(root) = self.local_checkout_root() {
+            return Some(crate::gh_stack::StackSource::Checkout(root.to_string()));
+        }
+        self.pr_number?;
+        let repo = self.remote_repo.clone().filter(|r| !r.is_empty())?;
+        let head = self
+            .pr_data
+            .as_ref()
+            .map(|p| p.head_branch.clone())
+            .filter(|h| !h.is_empty())
+            .or_else(|| {
+                self.local_branch_view
+                    .clone()
+                    .filter(|b| !crate::storage::is_pr_placeholder_branch(b))
+            })?;
+        Some(crate::gh_stack::StackSource::PrChain { repo, head })
+    }
+
     /// Whether the active diff is a local branch-vs-base diff (the "Local Diff"):
     /// the main checked-out branch OR a read-only branch view, in Branch mode,
     /// not a PR. These are the tabs whose `origin/<base>` can go stale ("behind
@@ -7605,20 +7630,10 @@ impl App {
     pub fn stack_hub_items(&self) -> Vec<HubItem> {
         let tab = self.tab();
 
-        // `gh stack view` reads the checked-out branch's stack, so it's only
-        // meaningful when the branch this tab views is the checkout: a remote-PR
-        // tab has no local branch, and a local PR/branch view whose head isn't
-        // checked out would describe some unrelated branch.
-        if tab.is_remote() {
-            return vec![Self::hub_row(
-                "Stacked PRs",
-                "",
-                "Not available for remote PRs",
-                HubAction::Noop,
-                false,
-            )];
-        }
-        if tab.local_checkout_root().is_none() {
+        // A checkout reads `gh stack view`; a PR tab without one rebuilds the
+        // chain from open PRs. Only a branch view that is neither has nothing to
+        // read — `gh stack view` would describe some other branch.
+        if tab.stack_source().is_none() {
             return vec![Self::hub_row(
                 "Stacked PRs",
                 "",
@@ -7632,7 +7647,7 @@ impl App {
             return vec![Self::hub_row(
                 "Loading stacked PRs…",
                 "",
-                "Reading gh stack view",
+                "Looking up the stack",
                 HubAction::Noop,
                 false,
             )];
@@ -7660,7 +7675,7 @@ impl App {
         items.push(Self::hub_row(
             "Refresh stack",
             "",
-            "Re-run gh stack view",
+            "Look up the stack again",
             HubAction::RefreshStack,
             true,
         ));
@@ -7671,12 +7686,11 @@ impl App {
     ///
     /// Cheap and idempotent: it never shells out (the TUI does that off the UI
     /// thread after [`App::take_stack_load_request`]), and a warm cache or an
-    /// in-flight request is left alone. Tabs whose viewed branch isn't checked
-    /// out (remote PRs, local PR views without a checkout) have no stack to read
-    /// — `gh stack view` would describe some other branch — so they're skipped.
+    /// in-flight request is left alone. Tabs with no [`TabState::stack_source`]
+    /// (not a checkout and not a PR) have no stack to read, so they're skipped.
     pub fn request_stack_load(&mut self) {
         let tab = self.tab_mut();
-        if tab.local_checkout_root().is_none() {
+        if tab.stack_source().is_none() {
             return;
         }
         if tab.stack.info.is_none() && !tab.stack.loading && tab.stack.request_seq == 0 {
@@ -7684,21 +7698,23 @@ impl App {
         }
     }
 
-    /// Claim the next pending stack lookup, returning the tab index, the
-    /// checkout to run `gh stack view --json` in, and the lookup id.
+    /// Claim the next pending stack lookup, returning the tab index, where
+    /// to read the stack from, and the lookup id.
     ///
     /// `None` in the common case (nothing pending, or already in flight). The TUI
     /// spawns a worker thread for the returned request and hands the result back
     /// to [`App::apply_stack_result`] with the id.
-    pub fn take_stack_load_request(&mut self) -> Option<(usize, String, u64)> {
+    pub fn take_stack_load_request(
+        &mut self,
+    ) -> Option<(usize, crate::gh_stack::StackSource, u64)> {
         let idx = self.tabs.iter().position(|tab| {
-            tab.stack.loading && tab.stack.request_seq == 0 && tab.local_checkout_root().is_some()
+            tab.stack.loading && tab.stack.request_seq == 0 && tab.stack_source().is_some()
         })?;
         let seq = STACK_LOOKUP_SEQ.fetch_add(1, Ordering::Relaxed);
         let tab = &mut self.tabs[idx];
-        let root = tab.local_checkout_root()?.to_string();
+        let source = tab.stack_source()?;
         tab.stack.request_seq = seq;
-        Some((idx, root, seq))
+        Some((idx, source, seq))
     }
 
     /// Apply a finished stack lookup, identified by its `lookup_seq`.
@@ -14625,7 +14641,7 @@ mod tests {
 
     #[test]
     fn stack_lookup_applies_only_to_its_own_request() {
-        use crate::gh_stack::StackInfo;
+        use crate::gh_stack::{StackInfo, StackSource};
 
         let mut app = make_app_with_n_tabs(2);
         app.active_tab = 0;
@@ -14633,7 +14649,7 @@ mod tests {
 
         let (idx, root, seq) = app.take_stack_load_request().expect("claim pending lookup");
         assert_eq!(idx, 0);
-        assert_eq!(root, "tab0");
+        assert_eq!(root, StackSource::Checkout("tab0".into()));
         assert_ne!(app.tabs[0].stack.request_seq, 0);
 
         // A superseded/orphaned id must not be cached.
@@ -14721,6 +14737,8 @@ mod tests {
 
     #[test]
     fn stack_lookup_is_skipped_when_the_viewed_branch_is_not_checked_out() {
+        use crate::gh_stack::StackSource;
+
         let mut app = make_app_with_n_tabs(1);
         let tab = app.tab_mut();
         tab.remote_repo = Some("o/r".into());
@@ -14738,7 +14756,41 @@ mod tests {
         assert!(app.tabs[0].stack.loading);
         let (idx, root, _seq) = app.take_stack_load_request().expect("claim");
         assert_eq!(idx, 0);
-        assert_eq!(root, "/wt");
+        assert_eq!(root, StackSource::Checkout("/wt".into()));
+    }
+
+    #[test]
+    fn pr_tab_without_a_checkout_reads_the_stack_from_its_pr_chain() {
+        use crate::gh_stack::StackSource;
+
+        // A remote PR tab (the reported case: `discovery#1512 [remote]`).
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("o/r".into());
+        tab.pr_number = Some(1512);
+        tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1512));
+        // The placeholder is not a head branch: nothing to look up yet.
+        assert_eq!(tab.stack_source(), None);
+
+        tab.local_branch_view = Some("plate-designer".into());
+        app.request_stack_load();
+        assert!(app.tabs[0].stack.loading);
+        let (idx, source, _seq) = app.take_stack_load_request().expect("claim");
+        assert_eq!(idx, 0);
+        assert_eq!(
+            source,
+            StackSource::PrChain {
+                repo: "o/r".into(),
+                head: "plate-designer".into(),
+            }
+        );
+
+        // A checkout, when there is one, still wins.
+        app.tabs[0].local_branch_checkout_root = Some("/wt".into());
+        assert_eq!(
+            app.tabs[0].stack_source(),
+            Some(StackSource::Checkout("/wt".into()))
+        );
     }
 
     #[test]

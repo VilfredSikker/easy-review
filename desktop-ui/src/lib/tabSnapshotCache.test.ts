@@ -5,6 +5,7 @@ import {
   TabSnapshotCache,
   applyCachedTabSnapshot,
   shouldDropCommandSnapshot,
+  snapshotsShareTabCacheKey,
   tabSnapshotCacheKey,
   tabSnapshotCacheKeyFromTab,
 } from "./tabSnapshotCache";
@@ -106,6 +107,20 @@ describe("tabSnapshotCacheKey", () => {
     expect(closed).toBe("0|/repo|local_branch|feat-a|");
     expect(reused).toBe("0|/repo|local_branch|feat-b|");
     expect(closed).not.toBe(reused);
+  });
+
+  it("keeps a PR tab's key when its placeholder branch is renamed to the head", () => {
+    // An uncached PR opens as a stub on `pr/<N>`; the background load renames
+    // the branch to the real head. Every later poll must still match the tab.
+    const stub = tab({ idx: 1, label: "#1506", kind: "local_branch", branch: "pr/1506", pr_number: 1506 });
+    const loaded = { ...stub, branch: "vilfred/dev-7330-csv" };
+    expect(tabSnapshotCacheKeyFromTab(loaded)).toBe(tabSnapshotCacheKeyFromTab(stub));
+    expect(
+      snapshotsShareTabCacheKey(
+        snap({ active_tab: 1, tabs: [tab({ idx: 0, label: "a" }), { ...stub, is_active: true }] }),
+        snap({ active_tab: 1, tabs: [tab({ idx: 0, label: "a" }), { ...loaded, is_active: true }] }),
+      ),
+    ).toBe(true);
   });
 });
 
