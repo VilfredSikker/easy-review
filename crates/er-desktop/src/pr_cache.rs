@@ -172,7 +172,7 @@ pub async fn refresh_pr_cache_for_remote(
     fetched_at: &PrCacheFetchedAtMap,
 ) -> bool {
     let t = std::time::Instant::now();
-    let result = fetch_prs_for_remote(remote).await;
+    let result = fetch_prs_for_remote(remote, cache).await;
     let ms = t.elapsed().as_millis();
     let success = result.is_some();
     if let Some(ref prs) = result {
@@ -223,9 +223,10 @@ pub async fn refresh_pr_cache(cache: &PrCacheMap, fetched_at: &PrCacheFetchedAtM
         .iter()
         .map(|remote| {
             let remote = remote.clone();
+            let cache = Arc::clone(cache);
             tokio::spawn(async move {
                 let rt = std::time::Instant::now();
-                let result = fetch_prs_for_remote(&remote).await;
+                let result = fetch_prs_for_remote(&remote, &cache).await;
                 (remote, result, rt.elapsed().as_millis())
             })
         })
@@ -281,13 +282,77 @@ const OPEN_PR_LIMIT: usize = 200;
 /// Closed/merged PRs only feed Recently merged and the inbox transitions, so
 /// the newest few are enough.
 const CLOSED_PR_LIMIT: usize = 50;
+/// Upper bound on how stale the closed list may get when no open PR has left
+/// the open list (a PR closed elsewhere that was never cached as open).
+const CLOSED_PR_MAX_AGE_MS: u64 = 15 * 60 * 1000;
 
-pub async fn fetch_prs_for_remote(remote: &str) -> Option<Vec<PrInfo>> {
-    let (open, closed) = tokio::join!(
-        run_pr_list(remote, "open", OPEN_PR_LIMIT),
-        run_pr_list(remote, "closed", CLOSED_PR_LIMIT),
-    );
-    Some(merge_open_and_closed(open?, closed?))
+/// When each remote's closed list was last fetched. In memory only: after a
+/// restart the first refresh fetches it again.
+static CLOSED_FETCHED_AT: std::sync::LazyLock<Mutex<HashMap<String, u64>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Refresh one remote's PR list. The open list is fetched every time; the
+/// closed list only when it can have changed, so a routine refresh costs one
+/// `gh` call. When the closed call is skipped or fails, the cached closed
+/// entries are kept, so only a failed open call fails the refresh.
+pub async fn fetch_prs_for_remote(remote: &str, cache: &PrCacheMap) -> Option<Vec<PrInfo>> {
+    let previous: Vec<PrInfo> = cache
+        .lock()
+        .ok()
+        .and_then(|g| g.get(remote).cloned())
+        .unwrap_or_default();
+    let open = run_pr_list(remote, "open", OPEN_PR_LIMIT).await?;
+
+    let last_closed = CLOSED_FETCHED_AT
+        .lock()
+        .ok()
+        .and_then(|g| g.get(remote).copied());
+    let now = now_epoch_ms();
+    let fetched_closed = if closed_fetch_needed(&previous, &open, last_closed, now) {
+        run_pr_list(remote, "closed", CLOSED_PR_LIMIT).await
+    } else {
+        None
+    };
+    let closed = match fetched_closed {
+        Some(closed) => {
+            if let Ok(mut g) = CLOSED_FETCHED_AT.lock() {
+                g.insert(remote.to_string(), now);
+            }
+            closed
+        }
+        None => cached_closed(previous, &open),
+    };
+    Some(merge_open_and_closed(open, closed))
+}
+
+/// Whether the closed list must be re-fetched: never fetched, older than
+/// [`CLOSED_PR_MAX_AGE_MS`], or a PR cached as open has left the open list —
+/// it was merged or closed, and Recently merged and the inbox transition need
+/// its new state now rather than at the next timed fetch.
+fn closed_fetch_needed(
+    previous: &[PrInfo],
+    open: &[PrInfo],
+    last_closed_ms: Option<u64>,
+    now_ms: u64,
+) -> bool {
+    let Some(last) = last_closed_ms else {
+        return true;
+    };
+    if now_ms.saturating_sub(last) >= CLOSED_PR_MAX_AGE_MS {
+        return true;
+    }
+    previous
+        .iter()
+        .filter(|p| p.state == "OPEN")
+        .any(|p| !open.iter().any(|o| o.number == p.number))
+}
+
+/// The closed entries from the previous cache, minus any PR that is open again.
+fn cached_closed(previous: Vec<PrInfo>, open: &[PrInfo]) -> Vec<PrInfo> {
+    previous
+        .into_iter()
+        .filter(|p| p.state != "OPEN" && !open.iter().any(|o| o.number == p.number))
+        .collect()
 }
 
 /// Union of the open and closed lists, one entry per PR number. A PR that
@@ -482,6 +547,57 @@ mod tests {
         assert_eq!(
             merged[0].state, "OPEN",
             "a reopened PR keeps its newer open entry"
+        );
+    }
+
+    #[test]
+    fn closed_list_is_skipped_while_nothing_left_the_open_list() {
+        let previous = vec![
+            make_pr(1, "a"),
+            with_state(make_pr(9, "m"), "MERGED", "2026-09-30T08:00:00Z"),
+        ];
+        let open = vec![make_pr(1, "a"), make_pr(2, "new")];
+        let now = 10 * 60 * 1000;
+
+        assert!(
+            closed_fetch_needed(&previous, &open, None, now),
+            "first fetch"
+        );
+        assert!(!closed_fetch_needed(
+            &previous,
+            &open,
+            Some(now - 1000),
+            now
+        ));
+        assert!(
+            closed_fetch_needed(&previous, &open, Some(0), now + CLOSED_PR_MAX_AGE_MS),
+            "a stale closed list is re-fetched"
+        );
+        // #1 merged: it left the open list, so its new state is needed now.
+        assert!(closed_fetch_needed(
+            &previous,
+            &[make_pr(2, "new")],
+            Some(now - 1000),
+            now
+        ));
+    }
+
+    #[test]
+    fn cached_closed_keeps_closed_entries_but_not_reopened_ones() {
+        let previous = vec![
+            make_pr(1, "a"),
+            with_state(make_pr(9, "m"), "MERGED", ""),
+            with_state(make_pr(8, "c"), "CLOSED", ""),
+        ];
+        let open = vec![make_pr(1, "a"), make_pr(8, "c")];
+        let kept: Vec<u64> = cached_closed(previous, &open)
+            .iter()
+            .map(|p| p.number)
+            .collect();
+        assert_eq!(
+            kept,
+            vec![9],
+            "open entries come from the fresh list; #8 reopened"
         );
     }
 
