@@ -2765,15 +2765,15 @@ fn refresh_stack_impl(state: &AppState) -> Result<AppSnapshot, String> {
         app.take_stack_load_request()
     };
 
-    // Lock released: `gh stack view` hits the network.
-    let result = request.map(|(tab_index, repo_root, lookup_seq)| {
-        let info = er_engine::gh_stack::load(&repo_root);
-        (tab_index, repo_root, lookup_seq, info)
+    // Lock released: the lookup hits the network.
+    let result = request.map(|(tab_index, source, lookup_seq)| {
+        let info = er_engine::gh_stack::load_from(&source);
+        (tab_index, source, lookup_seq, info)
     });
 
     let snapshot = {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some((tab_index, repo_root, lookup_seq, info)) = result {
+        if let Some((tab_index, source, lookup_seq, info)) = result {
             // The expected steady states (not in a stack, extension missing) are
             // not errors. Anything else is a real failure — the control surfaces
             // the reason so the user can retry, and this leaves a durable record
@@ -2785,7 +2785,8 @@ fn refresh_stack_impl(state: &AppState) -> Result<AppSnapshot, String> {
                     .map(|t| t.current_branch.as_str())
                     .unwrap_or("");
                 log::error!(
-                    "er-desktop: `gh stack view` failed repo={repo_root} branch={branch}: {reason}"
+                    "er-desktop: stack lookup failed ({}) branch={branch}: {reason}",
+                    source.describe()
                 );
             }
             app.apply_stack_result(tab_index, lookup_seq, info);

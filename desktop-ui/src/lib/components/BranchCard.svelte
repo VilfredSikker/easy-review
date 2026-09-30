@@ -241,7 +241,16 @@
    */
   async function switchToLayer(row: StackRow, e: MouseEvent) {
     const prNumber = selectablePrNumber(row);
-    if (prNumber === null || !activeProject) return;
+    if (prNumber === null) return;
+    // A remote PR tab has no local project; open the layer the same remote way.
+    const tab = app.snapshot?.tabs.find((t) => t.is_active);
+    const [owner, repo] = tab?.kind === "remote_pr" ? (tab.remote ?? "").split("/") : [];
+    if (owner && repo) {
+      stackOpen = false;
+      await app.cmd("open_remote_pr", { owner, repo, number: prNumber, replace: shouldReplaceView(e) });
+      return;
+    }
+    if (!activeProject) return;
     stackOpen = false;
     await app.cmd("open_pr_branch", {
       projectId: activeProject.id,
@@ -311,7 +320,7 @@
                     onclick={refreshStack}
                     disabled={stackFetching}
                     aria-label="Refresh stack"
-                    title="Re-run gh stack view"
+                    title="Look up the stack again"
                     class="ml-auto p-0.5 rounded text-muted hover:text-fg-2 disabled:opacity-50"
                   >
                     <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class:animate-spin={stackFetching} aria-hidden="true">
@@ -347,7 +356,7 @@
                   <div class="px-3 py-2 text-[11px] text-muted">
                     {stack?.unavailable ??
                       (stackFetching
-                        ? "Reading gh stack view…"
+                        ? "Looking up the stack…"
                         : "Couldn't read the stack — refresh to retry")}
                   </div>
                 {/if}

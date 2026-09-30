@@ -553,13 +553,13 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             }
         }
 
-        // Run a requested stacked-PR lookup off the UI thread. `gh stack view`
+        // Run a requested stacked-PR lookup off the UI thread. Either source
         // talks to GitHub, so it must never run inline: the Open hub shows a
         // loading row and the rows fill in when the result lands below.
-        if let Some((tab_index, repo_root, lookup_seq)) = app.take_stack_load_request() {
+        if let Some((tab_index, source, lookup_seq)) = app.take_stack_load_request() {
             let tx = stack_tx.clone();
             std::thread::spawn(move || {
-                let info = er_engine::gh_stack::load(&repo_root);
+                let info = er_engine::gh_stack::load_from(&source);
                 let _ = tx.send((tab_index, lookup_seq, info));
             });
         }
