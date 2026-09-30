@@ -55,3 +55,7 @@ per-repo config file; do not add one back.
   lands on a later tick, applied only while the tab still carries the
   `request_seq` it was requested under. A lookup that finished after the tab
   moved, closed or was re-requested is dropped.
+- **`gh stack view` only describes the checked-out branch.** Run it only when
+  the tab views that checkout; a PR tab without one rebuilds its stack from the
+  repo's open PRs instead. Running it anywhere else shows some other branch's
+  stack.
