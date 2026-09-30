@@ -1,3 +1,26 @@
+# Easy Review v0.5.2
+
+## In plain terms
+
+- **What changed.** Stacked PRs show up where they were missing. My PRs lists every open layer of a stack, grouped and indented, and a remote PR tab shows its stack in both the TUI and the desktop. Saved and recent PRs that never finished loading now open. PR-list refreshes go back to one `gh` call in the common case.
+- **TL;DR.** Stack fixes for My PRs and remote PR tabs, no more stuck "Loading diff…", and less pressure on the GitHub rate limit.
+
+## Highlights
+
+- **Every stack layer in My PRs.** The PR list was the newest 100 PRs in any state, so in a busy repo the oldest open PRs, often a stack's lower layers, dropped out. It now fetches every open PR (up to 200) plus the 50 newest closed or merged ones. My PRs groups stacks bottom layer first, each layer indented under the PR it is based on, built from refs the list already carries.
+- **Stacks on remote PR tabs.** `gh stack view` only reads the checked-out branch, so a tab without a checkout showed no stack, and in the TUI hub the section vanished. Such a tab now rebuilds its stack from the repo's open PRs by following base and head links, feeding the same rows as `gh stack view`. With a checkout, `gh stack view` stays the source, since it knows merged layers and `needs rebase`.
+- **Fewer `gh` calls per refresh.** The closed list is re-fetched only when an open PR has left the open list, when it has never been fetched, or after 15 minutes. A failed closed call keeps the cached entries, so only a failed open call fails a repo's refresh.
+
+## What's Changed
+
+### Fixes
+- Desktop: saved and recent PRs opened as `pr/<N>` placeholder tabs stayed on "Loading diff…", because tabs were keyed by branch and the rename dropped every later poll. PR tabs are now keyed by PR number.
+- Desktop: open stack layers missing from My PRs in repos with more than 100 recent PRs.
+- TUI and desktop: remote PR tabs show their stack, and picking a layer on a remote tab opens it as a remote PR.
+- TUI: pressing `o` on a remote PR tab before its head branch loaded showed "Not available" and never retried. The hub now shows "Loading stacked PRs…" and fills in once the head lands.
+- A PR from `main`, `master`, `develop` or `dev` is never treated as a stack parent, so main-based PRs do not nest under a release PR.
+- PR-list refreshes run one `gh pr list` per repo in the common case.
+
 # Easy Review v0.5.1
 
 ## In plain terms
