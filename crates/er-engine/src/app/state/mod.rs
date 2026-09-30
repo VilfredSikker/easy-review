@@ -2125,6 +2125,15 @@ impl TabState {
         Some(crate::gh_stack::StackSource::PrChain { repo, head })
     }
 
+    /// Whether this tab will have a [`Self::stack_source`] once its PR details
+    /// land: a PR tab with a repo but no head branch yet. Its lookup waits
+    /// instead of reading as unavailable.
+    pub fn stack_source_pending(&self) -> bool {
+        self.stack_source().is_none()
+            && self.pr_number.is_some()
+            && self.remote_repo.as_deref().is_some_and(|r| !r.is_empty())
+    }
+
     /// Whether the active diff is a local branch-vs-base diff (the "Local Diff"):
     /// the main checked-out branch OR a read-only branch view, in Branch mode,
     /// not a PR. These are the tabs whose `origin/<base>` can go stale ("behind
@@ -7632,8 +7641,9 @@ impl App {
 
         // A checkout reads `gh stack view`; a PR tab without one rebuilds the
         // chain from open PRs. Only a branch view that is neither has nothing to
-        // read — `gh stack view` would describe some other branch.
-        if tab.stack_source().is_none() {
+        // read — `gh stack view` would describe some other branch. A PR tab still
+        // waiting on its head branch falls through to the loading row.
+        if tab.stack_source().is_none() && !tab.stack_source_pending() {
             return vec![Self::hub_row(
                 "Stacked PRs",
                 "",
@@ -7687,10 +7697,11 @@ impl App {
     /// Cheap and idempotent: it never shells out (the TUI does that off the UI
     /// thread after [`App::take_stack_load_request`]), and a warm cache or an
     /// in-flight request is left alone. Tabs with no [`TabState::stack_source`]
-    /// (not a checkout and not a PR) have no stack to read, so they're skipped.
+    /// (not a checkout and not a PR) have no stack to read, so they're skipped. A
+    /// PR tab whose head isn't known yet stays requested; the claim waits for it.
     pub fn request_stack_load(&mut self) {
         let tab = self.tab_mut();
-        if tab.stack_source().is_none() {
+        if tab.stack_source().is_none() && !tab.stack_source_pending() {
             return;
         }
         if tab.stack.info.is_none() && !tab.stack.loading && tab.stack.request_seq == 0 {
@@ -14757,6 +14768,33 @@ mod tests {
         let (idx, root, _seq) = app.take_stack_load_request().expect("claim");
         assert_eq!(idx, 0);
         assert_eq!(root, StackSource::Checkout("/wt".into()));
+    }
+
+    #[test]
+    fn stack_lookup_waits_for_a_pr_tabs_head_branch() {
+        // Opening the hub on a remote PR tab before its details (and so its
+        // head branch) have landed: the lookup stays requested instead of the
+        // section reading "not checked out", and runs once the head is known.
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.remote_repo = Some("o/r".into());
+        tab.pr_number = Some(1512);
+        tab.local_branch_view = Some(crate::storage::pr_placeholder_branch(1512));
+
+        app.request_stack_load();
+        assert!(app.tabs[0].stack.loading, "lookup stays requested");
+        assert!(
+            app.take_stack_load_request().is_none(),
+            "nothing to query yet"
+        );
+        let labels: Vec<String> = app.stack_hub_items().into_iter().map(|i| i.label).collect();
+        assert_eq!(labels, vec!["Loading stacked PRs…".to_string()]);
+
+        app.tab_mut().local_branch_view = Some("plate-designer".into());
+        assert!(
+            app.take_stack_load_request().is_some(),
+            "claimed once the head lands"
+        );
     }
 
     #[test]
