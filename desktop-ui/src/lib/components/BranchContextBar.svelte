@@ -8,6 +8,7 @@
   import { resolveContextIdentity } from "$lib/contextIdentity";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
+  import { nextCodeFilter } from "$lib/codeFilter";
 
   const snapshot = $derived(app.snapshot);
   const tabs = $derived(snapshot?.tabs ?? []);
@@ -25,6 +26,13 @@
   const showCode = $derived(
     codeStat.additions !== additions || codeStat.deletions !== deletions,
   );
+  const codeFilterActive = $derived(nextCodeFilter(snapshot?.filter) === null);
+
+  function toggleCodeFilter() {
+    const next = nextCodeFilter(snapshot?.filter);
+    if (next) app.cmd("set_filter", { query: next });
+    else app.cmd("clear_filter");
+  }
 
   // Resolve the PR number for the badge.
   const prNumber = $derived(resolveActivePrNumber(snapshot));
@@ -179,15 +187,21 @@
       <span class="font-mono text-[10px] text-add-fg shrink-0">+{additions}</span>
       <span class="font-mono text-[10px] text-del-fg shrink-0">−{deletions}</span>
       {#if showCode}
-        <span
-          class="flex items-center gap-1 font-mono text-[10px] shrink-0"
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded px-1 font-mono text-[10px] shrink-0 transition-colors hover:bg-ink-700
+            {codeFilterActive ? 'bg-ink-700 ring-1 ring-hairline' : ''}"
           data-testid="context-code-stat"
-          title="Code only: tests, Storybook, generated files and docs left out"
+          aria-pressed={codeFilterActive}
+          title={codeFilterActive
+            ? "Showing code files only — click to clear the filter"
+            : "Code only: tests, Storybook, generated files and docs left out — click to show only these files"}
+          onclick={toggleCodeFilter}
         >
           <span class="text-muted">· code</span>
           <span class="text-add-fg">+{codeStat.additions}</span>
           <span class="text-del-fg">−{codeStat.deletions}</span>
-        </span>
+        </button>
       {/if}
     {/if}
   </div>

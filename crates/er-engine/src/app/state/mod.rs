@@ -4447,11 +4447,12 @@ impl TabState {
         if !self.filter_rules.is_empty() {
             let review = self.ai.review.as_ref();
             visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_context(
+                super::filter::apply_filter_with_kinds(
                     &self.filter_rules,
                     f,
                     review,
                     Some(&self.importance),
+                    Some(&self.file_kinds),
                 )
             });
         }
@@ -5001,11 +5002,12 @@ impl TabState {
         let (mut total, mut reviewed) = (0, 0);
         let review = self.ai.review.as_ref();
         for f in &self.files {
-            if super::filter::apply_filter_with_context(
+            if super::filter::apply_filter_with_kinds(
                 &self.filter_rules,
                 f,
                 review,
                 Some(&self.importance),
+                Some(&self.file_kinds),
             ) {
                 total += 1;
                 if self.reviewed.contains_key(&f.path) {
@@ -9644,6 +9646,34 @@ mod tests {
             )]),
         };
         assert_eq!(tab.diff_line_stats().production.additions, 10);
+    }
+
+    /// Clicking the header's code pair filters to `kind:code`; the list must
+    /// then hold the same files the code count sums, overrides included.
+    #[test]
+    fn kind_code_filter_matches_the_code_count() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 0),
+            make_file("src/api/schema.ts", vec![], 500, 0),
+            make_file("src/lib.test.ts", vec![], 30, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.file_kinds = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]),
+        };
+        tab.filter_rules = crate::app::filter::parse_filter_expr("kind:code");
+
+        let visible: Vec<&str> = tab
+            .visible_files()
+            .iter()
+            .map(|(_, f)| f.path.as_str())
+            .collect();
+        assert_eq!(visible, vec!["src/lib.rs"]);
+        let shown: usize = tab.visible_files().iter().map(|(_, f)| f.adds).sum();
+        assert_eq!(shown, tab.diff_line_stats().production.additions);
     }
 
     /// A tab is handed its repo's `[file_kinds]` table, keyed by repo slug,

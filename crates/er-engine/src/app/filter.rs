@@ -1,6 +1,6 @@
 use crate::ai::{ErReview, RiskLevel};
-use crate::config::{ImportanceRepoConfig, ImportanceTier};
-use crate::git::{DiffFile, FileStatus};
+use crate::config::{FileKindRepoConfig, ImportanceRepoConfig, ImportanceTier};
+use crate::git::{classify_path, DiffFile, FileKind, FileStatus};
 use glob::{MatchOptions, Pattern};
 
 // ── Types ──
@@ -52,6 +52,12 @@ pub enum FilterRule {
         include: bool,
         tiers: Vec<ImportanceTier>,
     },
+    /// File kind (`kind:production` is the header's code count), after the
+    /// repo's `[file_kinds]` overrides.
+    Kind {
+        include: bool,
+        kinds: Vec<FileKind>,
+    },
 }
 
 pub struct FilterPreset {
@@ -99,6 +105,7 @@ impl FilterRule {
             Self::Size { include, .. } => *include,
             Self::Risk { include, .. } => *include,
             Self::Importance { include, .. } => *include,
+            Self::Kind { include, .. } => *include,
         }
     }
 }
@@ -142,6 +149,12 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
 
         // Try importance: importance:foundational
         if let Some(rule) = try_parse_importance(include, body) {
+            rules.push(rule);
+            continue;
+        }
+
+        // Try kind: kind:production (alias kind:code)
+        if let Some(rule) = try_parse_kind(include, body) {
             rules.push(rule);
             continue;
         }
@@ -197,6 +210,22 @@ fn try_parse_importance(include: bool, body: &str) -> Option<FilterRule> {
         return None;
     }
     Some(FilterRule::Importance { include, tiers })
+}
+
+fn try_parse_kind(include: bool, body: &str) -> Option<FilterRule> {
+    let rest = body.strip_prefix("kind:")?;
+    let kinds: Vec<FileKind> = rest
+        .split(',')
+        .filter_map(|s| match s.trim().to_ascii_lowercase().as_str() {
+            // The header labels production lines "code".
+            "code" => Some(FileKind::Production),
+            other => FileKind::parse(other),
+        })
+        .collect();
+    if kinds.is_empty() {
+        return None;
+    }
+    Some(FilterRule::Kind { include, kinds })
 }
 
 fn try_parse_size(include: bool, body: &str) -> Option<FilterRule> {
@@ -261,6 +290,19 @@ pub fn apply_filter_with_context(
     review: Option<&ErReview>,
     importance: Option<&ImportanceRepoConfig>,
 ) -> bool {
+    apply_filter_with_kinds(rules, file, review, importance, None)
+}
+
+/// [`apply_filter_with_context`] plus the repo's `[file_kinds]` overrides, so
+/// `kind:` agrees with the header's code count. Without them `kind:` falls
+/// back to the built-in conventions.
+pub fn apply_filter_with_kinds(
+    rules: &[FilterRule],
+    file: &DiffFile,
+    review: Option<&ErReview>,
+    importance: Option<&ImportanceRepoConfig>,
+    file_kinds: Option<&FileKindRepoConfig>,
+) -> bool {
     if rules.is_empty() {
         return true;
     }
@@ -271,7 +313,7 @@ pub fn apply_filter_with_context(
     let included = if has_includes {
         rules
             .iter()
-            .any(|r| r.is_include() && matches_rule_with_context(r, file, review, importance))
+            .any(|r| r.is_include() && matches_rule_with_context(r, file, review, importance, file_kinds))
     } else {
         // No include rules → start with all files
         true
@@ -284,7 +326,7 @@ pub fn apply_filter_with_context(
     // Phase 2: Check exclude rules (any match removes the file)
     let excluded = rules
         .iter()
-        .any(|r| !r.is_include() && matches_rule_with_context(r, file, review, importance));
+        .any(|r| !r.is_include() && matches_rule_with_context(r, file, review, importance, file_kinds));
 
     !excluded
 }
@@ -294,6 +336,7 @@ fn matches_rule_with_context(
     file: &DiffFile,
     review: Option<&ErReview>,
     importance: Option<&ImportanceRepoConfig>,
+    file_kinds: Option<&FileKindRepoConfig>,
 ) -> bool {
     match rule {
         FilterRule::Risk { levels, .. } => {
@@ -307,6 +350,10 @@ fn matches_rule_with_context(
         FilterRule::Importance { tiers, .. } => {
             let tier = importance.map_or(ImportanceTier::Normal, |rules| rules.resolve(&file.path));
             tiers.contains(&tier)
+        }
+        FilterRule::Kind { kinds, .. } => {
+            let kind = file_kinds.map_or_else(|| classify_path(&file.path), |k| k.classify(&file.path));
+            kinds.contains(&kind)
         }
         _ => matches_rule(rule, file),
     }
@@ -334,6 +381,7 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
         // Nothing to resolve a tier against here, which is the case a repo with
         // no declared rules is in anyway: every path reads as `Normal`.
         FilterRule::Importance { tiers, .. } => tiers.contains(&ImportanceTier::Normal),
+        FilterRule::Kind { kinds, .. } => kinds.contains(&classify_path(&file.path)),
     }
 }
 
@@ -1057,5 +1105,56 @@ mod tests {
         assert!(apply_filter(&api_rules, &route));
         assert!(apply_filter(&api_rules, &proto));
         assert!(!apply_filter(&api_rules, &docs));
+    }
+
+    // ── Kind filter tests ──
+
+    #[test]
+    fn kind_code_is_an_alias_for_production() {
+        let rules = parse_filter_expr("kind:code");
+        assert!(matches!(
+            rules.as_slice(),
+            [FilterRule::Kind { include: true, kinds }] if kinds == &[FileKind::Production]
+        ));
+        assert!(matches!(
+            parse_filter_expr("-kind:test").as_slice(),
+            [FilterRule::Kind { include: false, kinds }] if kinds == &[FileKind::Test]
+        ));
+    }
+
+    /// An unknown kind must not fall through to a substring rule matching
+    /// paths that contain "kind:".
+    #[test]
+    fn unknown_kind_parses_to_nothing_kind_shaped() {
+        let rules = parse_filter_expr("kind:sources");
+        assert!(!rules.iter().any(|r| matches!(r, FilterRule::Kind { .. })));
+    }
+
+    #[test]
+    fn kind_code_keeps_only_production_files() {
+        let rules = parse_filter_expr("kind:code");
+        let src = make_file("src/lib.rs", FileStatus::Modified, 5, 0);
+        let test = make_file("src/lib.test.ts", FileStatus::Added, 5, 0);
+        let lock = make_file("Cargo.lock", FileStatus::Modified, 5, 0);
+        let doc = make_file("README.md", FileStatus::Modified, 5, 0);
+        assert!(apply_filter(&rules, &src));
+        assert!(!apply_filter(&rules, &test));
+        assert!(!apply_filter(&rules, &lock));
+        assert!(!apply_filter(&rules, &doc));
+    }
+
+    /// Same files the header's code count sums, so the repo's overrides apply.
+    #[test]
+    fn kind_filter_applies_file_kind_overrides() {
+        let rules = parse_filter_expr("kind:code");
+        let schema = make_file("src/api/schema.ts", FileStatus::Modified, 900, 0);
+        let overrides = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]),
+        };
+        assert!(apply_filter(&rules, &schema));
+        assert!(!apply_filter_with_kinds(&rules, &schema, None, None, Some(&overrides)));
     }
 }
