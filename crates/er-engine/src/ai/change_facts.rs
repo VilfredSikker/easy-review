@@ -122,7 +122,10 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
         .count();
 
     let _ = writeln!(out, "## Code (production files only)\n");
-    let _ = writeln!(out, "- New files: {new_n} (+{new_a}). Nothing existing calls into these except through the edits below.");
+    // Whether anything reaches the new files is the agent's call: file-based
+    // routing, autoload and plugin directories make a new file live with no
+    // edit to existing code, which the diff alone cannot show.
+    let _ = writeln!(out, "- New files: {new_n} (+{new_a}).");
     let _ = writeln!(
         out,
         "- Existing files edited, renamed or deleted: {ex_n} (+{ex_a} −{ex_d}), {deleted} deleted."
@@ -134,7 +137,11 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
             .iter()
             .map(|(kind, (n, a, d))| format!("{kind} {n} (+{a} −{d})"))
             .collect();
-        let _ = writeln!(out, "- Non-code files, left out above: {}.", parts.join(", "));
+        let _ = writeln!(
+            out,
+            "- Non-code files, left out above: {}.",
+            parts.join(", ")
+        );
     }
     let _ = writeln!(
         out,
@@ -157,7 +164,10 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
                 .then_with(|| churn(b).cmp(&churn(a)))
                 .then_with(|| a.header.path.cmp(&b.header.path))
         });
-        let _ = writeln!(out, "| path | change | lines | importance |\n|---|---|---|---|");
+        let _ = writeln!(
+            out,
+            "| path | change | lines | importance |\n|---|---|---|---|"
+        );
         for e in existing.iter().take(MAX_EXISTING_ROWS) {
             let _ = writeln!(
                 out,
@@ -192,7 +202,11 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
             let _ = writeln!(out, "- `{dir}/` — {n} files, +{a}");
         }
         if dirs.len() > MAX_NEW_DIRS {
-            let _ = writeln!(out, "- …and {} more directories.", dirs.len() - MAX_NEW_DIRS);
+            let _ = writeln!(
+                out,
+                "- …and {} more directories.",
+                dirs.len() - MAX_NEW_DIRS
+            );
         }
     }
     out
@@ -269,8 +283,13 @@ mod tests {
                 importance: None,
             },
         );
-        assert!(facts.contains("- New files: 2 (+380)"), "{facts}");
-        assert!(facts.contains("None — every code change is in a new file."), "{facts}");
+        assert!(facts.contains("- New files: 2 (+380)."), "{facts}");
+        // Reach is the agent's call; the facts must not assert it.
+        assert!(!facts.contains("Nothing existing calls into"), "{facts}");
+        assert!(
+            facts.contains("None — every code change is in a new file."),
+            "{facts}"
+        );
         assert!(facts.contains("test 1 (+200 −0)"), "{facts}");
         assert!(facts.contains("- `src/plates/` — 2 files, +380"), "{facts}");
     }
@@ -290,10 +309,22 @@ mod tests {
                 importance: None,
             },
         );
-        assert!(facts.contains("Existing files edited, renamed or deleted: 2 (+2 −40), 1 deleted."), "{facts}");
-        assert!(facts.contains("| `src/router.ts` | edited | +2 −0 | undeclared |"), "{facts}");
-        assert!(facts.contains("| `src/legacy.ts` | deleted | +0 −40 | undeclared |"), "{facts}");
-        assert!(facts.contains("do not read `undeclared` as `normal`"), "{facts}");
+        assert!(
+            facts.contains("Existing files edited, renamed or deleted: 2 (+2 −40), 1 deleted."),
+            "{facts}"
+        );
+        assert!(
+            facts.contains("| `src/router.ts` | edited | +2 −0 | undeclared |"),
+            "{facts}"
+        );
+        assert!(
+            facts.contains("| `src/legacy.ts` | deleted | +0 −40 | undeclared |"),
+            "{facts}"
+        );
+        assert!(
+            facts.contains("do not read `undeclared` as `normal`"),
+            "{facts}"
+        );
     }
 
     /// No table means undeclared; a table whose rules miss a path means its
@@ -316,8 +347,14 @@ mod tests {
                 importance: Some(&importance),
             },
         );
-        assert!(facts.contains("| `src/router.ts` | edited | +2 −0 | foundational |"), "{facts}");
-        assert!(facts.contains("| `src/util.ts` | edited | +9 −0 | normal (default) |"), "{facts}");
+        assert!(
+            facts.contains("| `src/router.ts` | edited | +2 −0 | foundational |"),
+            "{facts}"
+        );
+        assert!(
+            facts.contains("| `src/util.ts` | edited | +9 −0 | normal (default) |"),
+            "{facts}"
+        );
         // Foundational sorts first even with less churn.
         let router = facts.find("src/router.ts").unwrap();
         let util = facts.find("src/util.ts").unwrap();
@@ -327,9 +364,10 @@ mod tests {
     #[test]
     fn file_kind_overrides_move_lines_out_of_code() {
         let headers = [header("src/api/schema.ts", FileStatus::Modified, 900, 10)];
-        let kinds = FileKindRepoConfig {
-            rules: BTreeMap::from([("src/api/schema.ts".to_string(), "generated".to_string())]),
-        };
+        let kinds = FileKindRepoConfig::new(BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
         let facts = render_change_facts(
             &headers,
             RepoRules {
@@ -338,7 +376,10 @@ mod tests {
             },
         );
         assert!(facts.contains("generated 1 (+900 −10)"), "{facts}");
-        assert!(facts.contains("None — every code change is in a new file."), "{facts}");
+        assert!(
+            facts.contains("None — every code change is in a new file."),
+            "{facts}"
+        );
     }
 
     /// The tab path and the config path must agree on what "declared" means:
@@ -350,7 +391,10 @@ mod tests {
         assert!(RepoRules::new(&kinds, &empty).importance.is_none());
 
         let mut config = crate::config::ErConfig::default();
-        config.importance.items.insert("svc".to_string(), ImportanceRepoConfig::default());
+        config
+            .importance
+            .items
+            .insert("svc".to_string(), ImportanceRepoConfig::default());
         let owned = OwnedRepoRules::from_config(&config, "svc");
         assert!(owned.as_rules().importance.is_none());
 
@@ -371,7 +415,15 @@ mod tests {
         let er_dir = dir.path().to_str().unwrap();
         let raw = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1,1 +1,2 @@\n a\n+b\n";
         let kinds = no_rules();
-        write_change_facts(er_dir, raw, RepoRules { file_kinds: &kinds, importance: None }).unwrap();
+        write_change_facts(
+            er_dir,
+            raw,
+            RepoRules {
+                file_kinds: &kinds,
+                importance: None,
+            },
+        )
+        .unwrap();
         let first = std::fs::read_to_string(dir.path().join(CHANGE_FACTS_FILE)).unwrap();
         assert!(first.contains("undeclared"));
 

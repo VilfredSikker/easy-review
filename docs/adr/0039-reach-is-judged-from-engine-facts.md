@@ -29,24 +29,20 @@ Three ways to produce reach were weighed:
 
 Engine facts, agent judgement.
 
-Every review-shaped command prepares its diff through `ensure_review_inputs`, which
-writes `change-facts.md` next to `diff-tmp`. The file lists:
-
-- the new code files;
-- the existing code files that are edited, renamed or deleted;
-- each file's **file kind**, after the repo's `[file_kinds]` overrides;
-- each edited file's declared **importance**. When the repo declares no table, the
-  file says "undeclared", which is distinct from a table's default tier.
+Triage and review prepare their diff through `ensure_review_inputs`, which writes
+`change-facts.md` next to `diff-tmp`. It separates new code from edits to
+existing code, because that split is what reach turns on, and it carries the
+repo's declared importance for each edit. A repo that declares none is reported
+as "undeclared" rather than at a default tier, so the agent does not read silence
+as "normal".
 
 The facts are rewritten on every call, because they depend on the rule tables as
 well as the diff.
 
-Triage records a `reach` block in `triage.json`:
-
-- `level`: `isolated`, `contained` or `broad`;
-- `reason`;
-- `touch_points`: the edits through which new code is wired into existing code;
-- an optional `guard`.
+Triage records a `reach` block in `triage.json` with a level, the touch points
+through which new code is wired into existing code, and an optional guard. The
+touch points are their own field because wiring is where isolated code meets
+everything else, and averaged into a level it disappears.
 
 The general review folds reach into each file's `risk_reason`. That needs no schema
 change.

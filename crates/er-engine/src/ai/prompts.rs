@@ -1136,8 +1136,9 @@ Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs
     )
 }
 
-/// How reach and guards are judged. Shared by triage (which records them) and
-/// the general review (which folds them into each file's `risk`).
+/// How triage judges reach and guards. The general review carries a one-line
+/// version in its `risk_reason` instruction; a rule changed here does not
+/// reach it.
 fn reach_instructions() -> String {
     format!(
         r#"### Reach: how much existing code this change touches
@@ -1148,7 +1149,7 @@ If `{CHANGE_FACTS_FILE}` exists in the output directory, read it first. It lists
 - `contained` — it edits existing code, but code few other places depend on.
 - `broad` — it edits or deletes code much of the repo depends on: shared modules, base classes, schemas or migrations that alter existing tables, auth, routing, build or config files. An edit to a `foundational` file is broad.
 
-**Wiring is the touch surface.** Ten new files plus one line in a central router, DI container, schema index or migration list is not "nothing existing changed": name each such edit in `touch_points` as `path:line — what it does`, and judge it on what breaks if that line is wrong. A new migration that only creates new tables is isolated; one that alters an existing table is broad.
+**Wiring is the touch surface.** Ten new files plus one line in a central router, DI container, schema index or migration list is not "nothing existing changed": name each such edit in `touch_points` as `path:line — what it does`, and judge it on what breaks if that line is wrong. A new file can also be live with no edit at all when the framework picks it up by location (file-based routes, autoloaded classes, plugin or migration directories): check for that before calling new code unreached. A new migration that only creates new tables is isolated; one that alters an existing table is broad.
 
 **Guards shrink reach.** New code behind a feature flag, a permission check, a config switch, or a route nobody links to yet cannot run until someone turns it on. Record it as `guard` with `kind`, `name` and `evidence` — the `path:line` where the guard is checked. A guard with no evidence counts for nothing: do not lower risk on a guess. A guard covers only the code it wraps; the touch points usually run whether or not it is on.
 
@@ -2542,6 +2543,7 @@ mod tests {
         assert!(triage.contains("change-facts.md"));
         assert!(triage.contains("isolated` | `contained` | `broad"));
         assert!(triage.contains("A guard with no evidence counts for nothing"));
+        assert!(triage.contains("picks it up by location"));
         assert!(triage.contains(r#""reach": {"#));
         assert!(!triage.contains("blast radius"));
 

@@ -237,7 +237,11 @@ mod tests {
                 r#"{{ "version": 1, "diff_hash": "abc", "verdict": {{ "primary": "skip" }}, "reach": {reach} }}"#
             );
             let triage: TriageReview = serde_json::from_str(&json).unwrap();
-            assert_eq!(triage.verdict.primary, TriageVerdictPrimary::Skip, "{reach}");
+            assert_eq!(
+                triage.verdict.primary,
+                TriageVerdictPrimary::Skip,
+                "{reach}"
+            );
         }
         let json = r#"{ "version": 1, "diff_hash": "abc", "reach": { "level": "sprawling", "reason": "r" } }"#;
         let triage: TriageReview = serde_json::from_str(json).unwrap();

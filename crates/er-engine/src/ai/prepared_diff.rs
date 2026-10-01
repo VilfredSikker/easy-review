@@ -65,8 +65,8 @@ fn ensure_diff_artifacts_locked(er_dir: &str, raw: &str) -> Result<String, Strin
 }
 
 /// [`ensure_diff_artifacts`], plus the `change-facts.md` triage and review read
-/// to judge reach. Every review-shaped command prepares through this one, so
-/// no agent sees a diff without its facts.
+/// to judge reach. Triage and review prepare through this one, so neither sees
+/// a diff without its facts.
 pub fn ensure_review_inputs(
     er_dir: &str,
     raw: &str,
