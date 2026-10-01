@@ -30,6 +30,13 @@
     } as Record<string, string>)[triage.verdict_primary] ?? triage.verdict_primary,
   );
 
+  /** Triage from before reach existed reads as `unknown` and shows nothing. */
+  const reach = $derived(triage.reach ?? "unknown");
+  const reachClass = $derived(
+    ({ broad: "text-warning", contained: "text-fg-2", isolated: "text-success" } as Record<string, string>)[reach]
+      ?? "text-muted",
+  );
+
   const verdictSummary = $derived.by(() => {
     const parts = [`Next: ${verdictLabel}`];
     if (triage.confidence) parts.push(`(${triage.confidence} confidence)`);
@@ -131,6 +138,33 @@
           <span>{triage.domains.join(", ")}</span>
         {/if}
       </div>
+
+      {#if reach !== "unknown"}
+        <div class="min-w-0 space-y-1" data-testid="triage-reach">
+          <p class="text-[10px] uppercase tracking-wide text-muted">
+            Reach: <span class={reachClass}>{reach}</span>
+            {#if triage.guard}
+              · <span class="text-success">guarded</span>
+            {/if}
+          </p>
+          {#if triage.reach_reason}
+            <p class="text-fg-2">{triage.reach_reason}</p>
+          {/if}
+          {#if triage.guard}
+            <p class="text-[11px] text-muted">
+              {triage.guard.kind}{triage.guard.name ? ` ${triage.guard.name}` : ""} ·
+              <span class="font-mono">{triage.guard.evidence}</span>
+            </p>
+          {/if}
+          {#if (triage.touch_points ?? []).length > 0}
+            <ul class="space-y-0.5 font-mono text-[11px] text-fg-2">
+              {#each triage.touch_points ?? [] as tp, i (i)}
+                <li class="truncate" title={tp}>{tp}</li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
 
       <div class="space-y-1.5 rounded-md border border-info/20 bg-info/5 px-3 py-2.5">
         <SectionLabel size="sm">Verdict</SectionLabel>

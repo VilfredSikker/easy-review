@@ -1021,7 +1021,7 @@ pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)
             return None;
         }
     };
-    match er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw) {
+    match er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, app.tab().repo_rules()) {
         Ok(hash) => Some((er_dir, hash)),
         Err(e) => {
             app.notify(&format!("action skipped: {e}"));

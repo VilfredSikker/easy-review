@@ -162,7 +162,11 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
 
     let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw_diff)?;
+    let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+        &er_dir,
+        &raw_diff,
+        &er_engine::storage::slug_repo(&req.repo_root),
+    )?;
 
     let base_branch = if req.base_ref.is_empty() {
         "main".to_string()
@@ -265,7 +269,11 @@ fn run_branch_triage_once(
         return Err("Failed to resolve branch storage".to_string());
     }
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
-    let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw_diff)?;
+    let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+        &er_dir,
+        &raw_diff,
+        &er_engine::storage::slug_repo(repo_root),
+    )?;
 
     let target = BackgroundTaskTarget {
         repo_root: repo_root.to_string(),

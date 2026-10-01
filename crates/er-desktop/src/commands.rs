@@ -3636,7 +3636,11 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+            &er_dir,
+            &raw,
+            &er_engine::storage::slug_repo(&repo_root),
+        )?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -3979,7 +3983,11 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+            &er_dir,
+            &raw,
+            &er_engine::storage::slug_repo(&repo_root),
+        )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
             &scope, &er_dir, &expert_id, &diff_hash,
@@ -4114,7 +4122,11 @@ pub async fn run_ai_scoped_review(
             }
         };
 
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+            &er_dir,
+            &diff_body,
+            &er_engine::storage::slug_repo(&repo_root),
+        )?;
 
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,

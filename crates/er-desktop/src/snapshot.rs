@@ -1297,6 +1297,21 @@ pub struct TriageSnapshot {
     pub files_changed: u32,
     pub approx_risk: String,
     pub domains: Vec<String>,
+    /// `isolated` / `contained` / `broad`, or `unknown` for triage from before
+    /// reach existed.
+    pub reach: String,
+    pub reach_reason: String,
+    pub touch_points: Vec<String>,
+    /// Present only when the agent pointed at where the guard is checked;
+    /// an unevidenced guard claim is dropped here (`TriageGuard::is_evidenced`).
+    pub guard: Option<TriageGuardSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageGuardSnapshot {
+    pub kind: String,
+    pub name: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -4167,6 +4182,19 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             files_changed: t.diff_stats.files_changed,
             approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
+            reach: t.reach.level.as_str().to_string(),
+            reach_reason: t.reach.reason.clone(),
+            touch_points: t.reach.touch_points.clone(),
+            guard: t
+                .reach
+                .guard
+                .as_ref()
+                .filter(|g| g.is_evidenced())
+                .map(|g| TriageGuardSnapshot {
+                    kind: g.kind.clone(),
+                    name: g.name.clone(),
+                    evidence: g.evidence.clone(),
+                }),
         }
     });
 

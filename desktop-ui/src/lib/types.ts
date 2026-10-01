@@ -225,6 +225,12 @@ export interface TriageSnapshot {
   files_changed: number;
   approx_risk: string;
   domains: string[];
+  /** `isolated` | `contained` | `broad` | `unknown`. Optional for fixtures. */
+  reach?: string;
+  reach_reason?: string;
+  touch_points?: string[];
+  /** Only sent when the agent cited where the guard is checked. */
+  guard?: { kind: string; name: string; evidence: string } | null;
 }
 
 export interface ChecklistItemSnapshot {

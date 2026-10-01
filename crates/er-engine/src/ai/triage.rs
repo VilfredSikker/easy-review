@@ -36,6 +36,10 @@ pub struct TriageReview {
     pub verdict: TriageVerdict,
     #[serde(default)]
     pub priority_files: Vec<TriagePriorityFile>,
+    /// How much existing code the change touches, and what keeps new code off.
+    /// Absent in triage written before reach existed; see `TriageReach`.
+    #[serde(default, deserialize_with = "lenient_reach")]
+    pub reach: TriageReach,
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -67,6 +71,93 @@ pub struct TriagePriorityFile {
     pub reason: String,
     #[serde(default, deserialize_with = "super::review::lenient_risk_level")]
     pub risk: RiskLevel,
+}
+
+/// How far a change reaches into code that existed before it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReachLevel {
+    /// New code that nothing existing calls into, apart from wiring.
+    Isolated,
+    /// Edits existing code, but code few other places depend on.
+    Contained,
+    /// Edits code much of the repo depends on: shared modules, schemas, routing.
+    Broad,
+    /// Not judged — triage from before reach existed, or a word that did not read.
+    #[default]
+    Unknown,
+}
+
+impl ReachLevel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Isolated => "isolated",
+            Self::Contained => "contained",
+            Self::Broad => "broad",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Triage's reach call. Engine facts (`change-facts.md`) feed it; the agent
+/// judges it. `docs/adr/0039-reach-is-judged-from-engine-facts.md`.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TriageReach {
+    #[serde(default, deserialize_with = "lenient_reach_level")]
+    pub level: ReachLevel,
+    #[serde(default)]
+    pub reason: String,
+    /// Edits to existing code the new code is wired in through, as
+    /// `path:line — what it does` (a route table, a DI registration).
+    #[serde(default)]
+    pub touch_points: Vec<String>,
+    #[serde(default)]
+    pub guard: Option<TriageGuard>,
+}
+
+/// A switch that keeps the new code off until someone turns it on.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TriageGuard {
+    /// `feature_flag`, `permission`, `config`, `unrouted`, or another word.
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub name: String,
+    /// `path:line` where the guard is checked.
+    #[serde(default)]
+    pub evidence: String,
+}
+
+impl TriageGuard {
+    /// A guard claim only counts with a place in the code to check it.
+    pub fn is_evidenced(&self) -> bool {
+        !self.evidence.trim().is_empty()
+    }
+}
+
+fn lenient_reach_level<'de, D>(deserializer: D) -> Result<ReachLevel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<ReachLevel>(v).ok())
+        .unwrap_or_default())
+}
+
+/// A malformed `reach` block degrades to unknown rather than failing the parse:
+/// `load_triage_review` drops the whole file on any error, and losing the
+/// verdict over one optional block is the worse trade.
+fn lenient_reach<'de, D>(deserializer: D) -> Result<TriageReach, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<TriageReach>(v).ok())
+        .unwrap_or_default())
 }
 
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
@@ -106,6 +197,63 @@ pub const fn verdict_primary_str(v: &TriageVerdictPrimary) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triage_without_reach_loads_as_unknown() {
+        let json = r#"{ "version": 1, "diff_hash": "abc" }"#;
+        let triage: TriageReview = serde_json::from_str(json).unwrap();
+        assert_eq!(triage.reach.level, ReachLevel::Unknown);
+        assert!(triage.reach.guard.is_none());
+    }
+
+    #[test]
+    fn reach_with_evidenced_guard_reads() {
+        let json = r#"{
+            "version": 1,
+            "diff_hash": "abc",
+            "reach": {
+                "level": "isolated",
+                "reason": "New plates service; only the router line touches existing code",
+                "touch_points": ["src/router.ts:42 — registers /plates/move"],
+                "guard": { "kind": "feature_flag", "name": "plates.move", "evidence": "src/plates/routes.ts:8" }
+            }
+        }"#;
+        let triage: TriageReview = serde_json::from_str(json).unwrap();
+        assert_eq!(triage.reach.level, ReachLevel::Isolated);
+        assert_eq!(triage.reach.touch_points.len(), 1);
+        assert!(triage.reach.guard.as_ref().unwrap().is_evidenced());
+    }
+
+    /// `load_triage_review` drops the whole file on a parse error, so a model
+    /// writing an odd reach must cost the reach block and nothing else.
+    #[test]
+    fn malformed_reach_keeps_the_rest_of_the_triage() {
+        for reach in [
+            r#""broad""#,
+            r#"{ "level": "sprawling" }"#,
+            r#"{ "level": "broad", "touch_points": "src/a.rs" }"#,
+        ] {
+            let json = format!(
+                r#"{{ "version": 1, "diff_hash": "abc", "verdict": {{ "primary": "skip" }}, "reach": {reach} }}"#
+            );
+            let triage: TriageReview = serde_json::from_str(&json).unwrap();
+            assert_eq!(triage.verdict.primary, TriageVerdictPrimary::Skip, "{reach}");
+        }
+        let json = r#"{ "version": 1, "diff_hash": "abc", "reach": { "level": "sprawling", "reason": "r" } }"#;
+        let triage: TriageReview = serde_json::from_str(json).unwrap();
+        assert_eq!(triage.reach.level, ReachLevel::Unknown);
+        assert_eq!(triage.reach.reason, "r");
+    }
+
+    #[test]
+    fn guard_without_evidence_does_not_count() {
+        let guard = TriageGuard {
+            kind: "feature_flag".into(),
+            name: "plates.move".into(),
+            evidence: " ".into(),
+        };
+        assert!(!guard.is_evidenced());
+    }
 
     #[test]
     fn deserialize_sample_triage_json() {

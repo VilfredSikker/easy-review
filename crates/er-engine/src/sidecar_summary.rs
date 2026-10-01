@@ -347,6 +347,7 @@ mod tests {
                 reason: "core".into(),
                 risk: RiskLevel::Low,
             }],
+            reach: Default::default(),
         };
         std::fs::write(
             bucket.join("triage.json"),
@@ -452,6 +453,7 @@ mod tests {
                 confidence: "high".into(),
             },
             priority_files: vec![],
+            reach: Default::default(),
         };
         std::fs::write(
             with_triage.join("triage.json"),

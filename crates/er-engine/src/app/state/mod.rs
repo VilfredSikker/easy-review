@@ -4426,6 +4426,17 @@ impl TabState {
         )
     }
 
+    /// The rule tables `change-facts.md` resolves against. An empty importance
+    /// table is no declaration at all — the tab holds an empty one when the
+    /// repo has none, and the facts must say "undeclared" rather than "normal".
+    pub fn repo_rules(&self) -> crate::ai::change_facts::RepoRules<'_> {
+        let declared = self.importance.default.is_some() || !self.importance.rules.is_empty();
+        crate::ai::change_facts::RepoRules {
+            file_kinds: &self.file_kinds,
+            importance: declared.then_some(&self.importance),
+        }
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {

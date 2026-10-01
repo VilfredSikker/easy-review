@@ -203,6 +203,12 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
     resolve_managed_root_for_pr_bucket(&slug, pr).er_dir()
 }
 
+/// The `[importance]` / `[file_kinds]` key for a remote repo: what
+/// `storage::slug_repo` returns for a clone whose origin is `owner/repo`.
+fn rules_key_for_remote(repo: &str) -> String {
+    crate::storage::slugify(repo.trim_end_matches(".git"))
+}
+
 /// Resolve managed PR bucket and write `diff-tmp` for a remote PR.
 pub fn prepare_pr_diff_tmp(
     owner: &str,
@@ -224,7 +230,9 @@ pub fn prepare_pr_diff_tmp(
         bail!("failed to resolve managed PR storage for {owner}/{repo}#{pr}");
     }
     std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
-    crate::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)
+    // Rule tables are keyed the way `storage::slug_repo` names a clone of this
+    // repo (the origin URL's basename), not by the owner/repo storage slug.
+    crate::ai::prepared_diff::ensure_review_inputs_from_config(&er_dir, &raw, &rules_key_for_remote(repo))
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let diff_path = format!("{er_dir}/diff-tmp");
     Ok((er_dir, diff_path))
@@ -374,6 +382,25 @@ mod tests {
     };
     use crate::storage::STORAGE_TEST_ENV_LOCK;
     use std::collections::HashMap;
+
+    /// A remote PR must find the same `[importance]` / `[file_kinds]` table a
+    /// clone of that repo would, or the facts silently say "undeclared".
+    #[test]
+    fn rules_key_for_remote_matches_a_clones_slug_repo() {
+        let dir = tempfile::tempdir().unwrap();
+        let run = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        run(&["init", "-q"]);
+        run(&["remote", "add", "origin", "git@github.com:Acme/My_Service.git"]);
+        let clone_key = crate::storage::slug_repo(dir.path().to_str().unwrap());
+        assert_eq!(rules_key_for_remote("My_Service"), clone_key);
+        assert_ne!(owner_repo_storage_slug("Acme", "My_Service"), clone_key);
+    }
 
     fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
         let _guard = STORAGE_TEST_ENV_LOCK
@@ -533,6 +560,7 @@ mod tests {
                 diff_stats: Default::default(),
                 verdict: Default::default(),
                 priority_files: vec![],
+                reach: Default::default(),
             };
             let mut files = BTreeMap::new();
             files.insert(
