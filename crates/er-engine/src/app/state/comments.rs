@@ -2783,6 +2783,12 @@ impl App {
     /// nobody can read back before it lands is worse than no table.
     pub fn spawn_background_importance(&mut self) -> Result<()> {
         let scope = "branch".to_string();
+        // Ranking reads the tree. A remote-only tab has none: its `repo_root`
+        // is the process's working directory, so the agent would rank an
+        // unrelated checkout and file the rules under the PR's repo.
+        if self.tab().is_remote() {
+            anyhow::bail!("Ranking importance needs a local clone of this repo");
+        }
         let (repo_root, branch_label, base_branch, er_dir, pr_number, remote_repo, is_remote) = {
             let tab = self.tab();
             (
@@ -2801,7 +2807,8 @@ impl App {
             anyhow::bail!("Open a repository first — there is nothing to rank");
         }
 
-        let repo = crate::storage::slug_repo(&repo_root);
+        // The tab's key, so the table lands where its filter and header read.
+        let repo = self.tab().rules_key();
         let prompt = crate::ai::prompts::build_importance_prompt(&repo, &repo_root);
         let target = super::background::BackgroundTaskTarget {
             repo_root,
@@ -3040,7 +3047,9 @@ impl App {
         // its own kind to know whose reply it is parsing, and which repo that
         // reply's table belongs to.
         let task_kind = task.kind.clone();
-        let repo_for_worker = crate::storage::slug_repo(&target.repo_root);
+        // Ranking is refused on remote-only tabs, so the clone names the repo
+        // here as it does in the prompt (`TabState::rules_key`).
+        let repo_for_worker = crate::storage::rules_key(&target.repo_root, None);
         // The task may have waited in the queue; report runtime from launch.
         // The id (assigned at enqueue) stays stable so UI pills don't jump.
         task.started_at_ms = super::background::unix_now_ms();

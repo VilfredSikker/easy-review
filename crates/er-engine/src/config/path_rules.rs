@@ -26,9 +26,9 @@ pub(crate) fn is_pattern(key: &str) -> bool {
 const PATTERN_CACHE_CAP: usize = 512;
 
 thread_local! {
-    /// Compiled form of each rule key, `None` when it does not compile. The
-    /// header's code count classifies every file on every TUI frame and
-    /// desktop snapshot, and compiling each key per file per call was the cost.
+    /// Compiled form of each rule key, `None` when it does not compile. A key
+    /// is matched against every changed file whenever a filter or the line
+    /// counts are rebuilt, so it is compiled once instead of once per file.
     static PATTERNS: std::cell::RefCell<std::collections::HashMap<String, Option<Pattern>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     #[cfg(test)]

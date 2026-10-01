@@ -169,9 +169,7 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
         er_engine::storage::rules_key(&req.repo_root, None)
     };
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
-        &er_dir,
-        &raw_diff,
-        &rules_key,
+        &er_dir, &raw_diff, &rules_key,
     )?;
 
     let base_branch = if req.base_ref.is_empty() {

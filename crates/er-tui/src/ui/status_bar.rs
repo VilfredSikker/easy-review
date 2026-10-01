@@ -14,7 +14,6 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
-
 /// `+N -M` for the whole diff, then `· code +a -b` when tests, Storybook,
 /// generated files or docs moved the number. Empty for an empty diff.
 fn line_stat_spans(stats: &er_engine::git::ProdDiffStats) -> Vec<Span<'static>> {
@@ -38,6 +37,7 @@ fn line_stat_spans(stats: &er_engine::git::ProdDiffStats) -> Vec<Span<'static>> 
     }
     spans
 }
+
 /// Calculate how many rows the top bar needs
 pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
     if app.tabs.len() > 1 {
@@ -1164,7 +1164,9 @@ mod tests {
             .draw(|f| render_top_bar(f, f.area(), &app))
             .unwrap();
         let buffer = terminal.backend().buffer();
-        let row: String = (0..200).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+        let row: String = (0..200)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
 
         let merge = row.find("[merge in progress]").expect(&row);
         let counts = row.find("+40 -0").expect(&row);

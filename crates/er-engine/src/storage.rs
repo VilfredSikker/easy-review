@@ -44,10 +44,10 @@ pub fn slugify(s: &str) -> String {
 
 /// The key a repo's `[importance]` / `[file_kinds]` tables live under.
 ///
-/// A remote-only target (`remote_repo` = `owner/repo`) has no clone to ask, and
-/// its `repo_root` is whatever directory the process runs in, so the key comes
-/// from the repo name: what [`slug_repo`] returns for a clone of it. Anything
-/// else asks the clone.
+/// Pass `remote_repo` (`owner/repo`) only for a target with no clone: its
+/// `repo_root` is whatever directory the process runs in, so the key comes from
+/// the repo name, which is what [`slug_repo`] returns for a clone of it. With
+/// `None` the clone is asked, so every view of one clone shares a key.
 pub fn rules_key(repo_root: &str, remote_repo: Option<&str>) -> String {
     match remote_repo.map(str::trim).filter(|r| !r.is_empty()) {
         Some(remote) => {

@@ -5479,6 +5479,9 @@ pub fn place_tab(
         }
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
+        // Replacing in place skips `push_tab`, where a tab gets its repo's rule
+        // tables.
+        app.install_repo_rules(&mut tab);
         app.tabs[idx] = tab;
         app.active_tab = idx;
         app.sync_config_from_active_tab();
@@ -11534,6 +11537,31 @@ mod tests {
         assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
         assert_eq!(app.tabs[1].repo_root, "new", "active slot got new tab");
         assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
+    }
+
+    /// Replacing a slot skips `push_tab`; the incoming tab must still get its
+    /// repo's `[file_kinds]`, or the header count ignores the overrides.
+    #[test]
+    fn place_tab_replace_hands_the_tab_its_repo_rules() {
+        use er_engine::app::TabState;
+        use er_engine::config::FileKindRepoConfig;
+
+        let mut app = make_app_with_n_tabs(1);
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        app.config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
+
+        let mut incoming = TabState::new_for_test(vec![]);
+        incoming.repo_root = "/".into();
+        incoming.remote_repo = Some("acme/my-service".into());
+        place_tab(&mut app, incoming, true, true);
+
+        assert_eq!(app.tabs[0].file_kinds, table);
     }
 
     #[test]

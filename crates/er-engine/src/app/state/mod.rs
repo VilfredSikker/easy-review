@@ -4451,6 +4451,19 @@ impl TabState {
             .collect()
     }
 
+    /// The key this tab's `[importance]` / `[file_kinds]` tables live under.
+    /// Anything that reads or writes those tables for the tab goes through
+    /// this, so Settings, the importance agent and the filter name one table.
+    pub fn rules_key(&self) -> String {
+        // A local PR tab carries `remote_repo` too, but has a clone to ask; only
+        // a remote-only tab is named by the PR's repo.
+        let remote_only = self
+            .is_remote()
+            .then_some(self.remote_repo.as_deref())
+            .flatten();
+        crate::storage::rules_key(&self.repo_root, remote_only)
+    }
+
     /// The rule tables `change-facts.md` resolves against. An empty importance
     /// table is no declaration at all — the tab holds an empty one when the
     /// repo has none, and the facts must say "undeclared" rather than "normal".
@@ -5631,6 +5644,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        // These tabs were built before the config loaded, so `push_tab` never
+        // saw them.
+        app.sync_repo_rules_to_tabs();
         app.drain_storage_notices();
         app.overlay_cached_discovered_models();
         app.reconcile_arena_runs();
@@ -5675,6 +5691,7 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
         Ok(app)
     }
@@ -5713,6 +5730,7 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
         app
     }
@@ -6188,9 +6206,15 @@ impl App {
     /// Takes the config rather than `&self` so a caller holding `self.tabs`
     /// mutably can still resolve a tab's rules.
     fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
-        let repo = crate::storage::rules_key(&tab.repo_root, tab.remote_repo.as_deref());
+        let repo = tab.rules_key();
         tab.importance = config.importance.repo(&repo).cloned().unwrap_or_default();
         tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
+    }
+
+    /// Hand `tab` its repo's rule tables, for a front end that installs a tab
+    /// without `push_tab` (replacing one in place).
+    pub fn install_repo_rules(&self, tab: &mut TabState) {
+        Self::copy_repo_rules(&self.config, tab);
     }
 
     /// Copy each repo's declared rule tables onto its open tabs.
@@ -9658,7 +9682,10 @@ mod tests {
 
         let stats = tab.diff_line_stats();
         assert_eq!((stats.total.additions, stats.total.deletions), (140, 52));
-        assert_eq!((stats.production.additions, stats.production.deletions), (10, 2));
+        assert_eq!(
+            (stats.production.additions, stats.production.deletions),
+            (10, 2)
+        );
     }
 
     #[test]
@@ -9670,12 +9697,10 @@ mod tests {
         let mut tab = make_test_tab(files);
         assert_eq!(tab.diff_line_stats().production.additions, 510);
 
-        tab.file_kinds = FileKindRepoConfig {
-            rules: std::collections::BTreeMap::from([(
-                "src/api/schema.ts".to_string(),
-                "generated".to_string(),
-            )]),
-        };
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
         assert_eq!(tab.diff_line_stats().production.additions, 10);
     }
 
@@ -9689,12 +9714,10 @@ mod tests {
             make_file("src/lib.test.ts", vec![], 30, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.file_kinds = FileKindRepoConfig {
-            rules: std::collections::BTreeMap::from([(
-                "src/api/schema.ts".to_string(),
-                "generated".to_string(),
-            )]),
-        };
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
         tab.filter_rules = crate::app::filter::parse_filter_expr("kind:code");
 
         let visible: Vec<&str> = tab
@@ -9717,12 +9740,10 @@ mod tests {
             make_file("src/api/schema.ts", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.file_kinds = FileKindRepoConfig {
-            rules: std::collections::BTreeMap::from([(
-                "src/api/schema.ts".to_string(),
-                "generated".to_string(),
-            )]),
-        };
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
         use crate::git::FileKind;
         assert_eq!(
             tab.kind_file_counts(),
@@ -9740,10 +9761,14 @@ mod tests {
     #[test]
     fn copy_repo_rules_hands_a_tab_only_its_repos_file_kinds() {
         let mut config = ErConfig::default();
-        let table = FileKindRepoConfig {
-            rules: std::collections::BTreeMap::from([("e2e/**".to_string(), "test".to_string())]),
-        };
-        config.file_kinds.items.insert("my-service".to_string(), table.clone());
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
 
         let mut tab = make_test_tab(vec![]);
         tab.repo_root = "/nonexistent-er-test/my-service".to_string();
@@ -9755,15 +9780,86 @@ mod tests {
         assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
     }
 
+    /// A local PR tab carries the PR's `remote_repo` but has a clone; it must
+    /// share the clone's key, or its branch tab and PR tab read two tables.
+    #[test]
+    fn local_pr_tab_shares_its_clones_rules_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:me/my-fork.git"]);
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = dir.path().to_str().unwrap().to_string();
+        let clone_key = tab.rules_key();
+        assert_eq!(clone_key, "my-fork");
+
+        tab.remote_repo = Some("acme/upstream".to_string());
+        tab.local_branch_view = Some("feature".to_string());
+        assert_eq!(tab.rules_key(), clone_key);
+
+        tab.local_branch_view = None;
+        assert_eq!(tab.rules_key(), "upstream");
+    }
+
+    /// A remote-only tab has no tree to rank, so the importance agent is
+    /// refused there rather than surveying the process's working directory.
+    #[test]
+    fn importance_agent_refuses_a_remote_only_tab() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().repo_root = "/".to_string();
+        app.tab_mut().remote_repo = Some("acme/my-service".to_string());
+        let err = app.spawn_background_importance().unwrap_err().to_string();
+        assert!(err.contains("local clone"), "{err}");
+    }
+
+    /// `er --remote` builds its tab before the config loads, outside `push_tab`.
+    /// The header count and `kind:` filter must still see the repo's overrides.
+    #[test]
+    fn new_remote_hands_its_tab_the_repos_file_kinds() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[file_kinds.my-service]\n\"e2e/**\" = \"test\"\n",
+        )
+        .unwrap();
+        std::env::set_var("ER_CONFIG_PATH", &config_path);
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = make_test_tab(vec![make_file("e2e/login.ts", vec![], 4, 0)]);
+        tab.repo_root = "/".to_string();
+        tab.remote_repo = Some("acme/my-service".to_string());
+        let app = App::new_remote(tab, None);
+
+        std::env::remove_var("ER_CONFIG_PATH");
+        std::env::remove_var("ER_STORAGE_ROOT");
+        assert_eq!(app.tab().diff_line_stats().test.additions, 4);
+        assert_eq!(app.tab().diff_line_stats().production.additions, 0);
+    }
+
     /// A remote-only tab's `repo_root` is the process's working directory, so
     /// its tables must come from the PR's repo name instead.
     #[test]
     fn copy_repo_rules_keys_a_remote_tab_by_its_repo_name() {
         let mut config = ErConfig::default();
-        let table = FileKindRepoConfig {
-            rules: std::collections::BTreeMap::from([("e2e/**".to_string(), "test".to_string())]),
-        };
-        config.file_kinds.items.insert("my-service".to_string(), table.clone());
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
 
         let mut tab = make_test_tab(vec![]);
         tab.repo_root = "/".to_string();

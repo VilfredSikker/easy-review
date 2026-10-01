@@ -101,8 +101,12 @@ fn family_options() -> Vec<String> {
 #[tauri::command]
 pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
-    let repo_root = app.tab().repo_root.clone();
-    let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(&app));
+    let settings = desktop_settings_snapshot(
+        &app.config,
+        &app.tab().repo_root,
+        &app.tab().rules_key(),
+        &changed_paths(&app),
+    );
     let providers = list_providers_inner(&app);
     let default_selection = app
         .config
@@ -129,6 +133,7 @@ pub async fn apply_config_patch(
     crate::commands::run_blocking(move || {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         let repo_root = app.tab().repo_root.clone();
+        let repo_key = app.tab().rules_key();
         let watched_changed = apply_config_field(&mut app.config, &patch.key, patch.value);
         save_config(&app.config).map_err(|e| e.to_string())?;
         apply_config_side_effects(&mut app, watched_changed);
@@ -140,7 +145,8 @@ pub async fn apply_config_patch(
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(&app));
+        let settings =
+            desktop_settings_snapshot(&app.config, &repo_root, &repo_key, &changed_paths(&app));
         let providers = list_providers_inner(&app);
         let default_selection = app
             .config
@@ -361,8 +367,12 @@ fn hub_response_with_warnings(
     app: &er_engine::app::App,
     warnings: Vec<String>,
 ) -> GetConfigHubResponse {
-    let repo_root = app.tab().repo_root.clone();
-    let settings = desktop_settings_snapshot(&app.config, &repo_root, &changed_paths(app));
+    let settings = desktop_settings_snapshot(
+        &app.config,
+        &app.tab().repo_root,
+        &app.tab().rules_key(),
+        &changed_paths(app),
+    );
     let providers = list_providers_inner(app);
     let default_selection = app
         .config

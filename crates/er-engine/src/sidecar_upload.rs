@@ -391,11 +391,25 @@ mod tests {
                 .unwrap()
         };
         run(&["init", "-q"]);
-        run(&["remote", "add", "origin", "git@github.com:Acme/My_Service.git"]);
+        run(&[
+            "remote",
+            "add",
+            "origin",
+            "git@github.com:Acme/My_Service.git",
+        ]);
         let clone_key = crate::storage::slug_repo(dir.path().to_str().unwrap());
-        assert_eq!(crate::storage::rules_key("", Some("Acme/My_Service")), clone_key);
-        assert_eq!(crate::storage::rules_key("/", Some("Acme/My_Service")), clone_key);
-        assert_eq!(crate::storage::rules_key(dir.path().to_str().unwrap(), None), clone_key);
+        assert_eq!(
+            crate::storage::rules_key("", Some("Acme/My_Service")),
+            clone_key
+        );
+        assert_eq!(
+            crate::storage::rules_key("/", Some("Acme/My_Service")),
+            clone_key
+        );
+        assert_eq!(
+            crate::storage::rules_key(dir.path().to_str().unwrap(), None),
+            clone_key
+        );
         assert_ne!(owner_repo_storage_slug("Acme", "My_Service"), clone_key);
     }
 

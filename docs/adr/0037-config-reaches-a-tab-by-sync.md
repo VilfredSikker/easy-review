@@ -23,17 +23,17 @@ A tab carries the config it resolves against, copied on the way in.
 
 - `TabState.importance` holds this repo's `ImportanceRepoConfig`, and
   `TabState.file_kinds` its `FileKindRepoConfig`, by the same path.
-- `App::push_tab` fills it when a tab opens, keyed by
-  `storage::slug_repo(repo_root)` — the same key managed storage uses, so the
-  rule table and the bucket agree on what a repo is called.
-- `App::sync_repo_rules_to_tabs` refreshes every open tab, and is called where
-  the config changes: the desktop's `apply_config_side_effects`, the TUI's
-  `config_hub_persist_live`.
+- `App::push_tab` fills it when a tab opens, keyed by `storage::rules_key`: the
+  name a clone's origin gives the repo. A remote-only tab has no clone, so its
+  key comes from the PR's repo name, which is the name a clone would get.
+- Every path that installs a tab copies the tables, and every config change
+  refreshes them on every open tab (`App::sync_repo_rules_to_tabs`). A tab that
+  skips both shows counts and filters from someone else's rules, or none.
 - `watched_config` is copied onto tabs the same way, so this follows a shape the
-  engine already uses. It differs in reach: watched config is pushed to the
-  active tab when that tab's settings change, while importance goes to every tab,
-  because a filter in a background tab still has to agree with the reviewer's
-  rules.
+  engine already uses. It differs in which tabs get it: watched config is pushed
+  to the active tab when that tab's settings change, while the rule tables go to
+  every tab, because a filter in a background tab still has to agree with the
+  reviewer's rules.
 
 ## Consequences
 
