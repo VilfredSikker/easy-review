@@ -144,8 +144,27 @@
     }, DEBOUNCE_MS);
   }
 
+  // Blur hides the list after a delay so a suggestion's mousedown lands first.
+  // Refocusing inside that window must cancel it, or the list vanishes while
+  // the input still has focus and the arrows move a highlight nobody can see.
+  let blurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function onFilterFocus() {
+    if (blurTimer !== null) clearTimeout(blurTimer);
+    blurTimer = null;
+    inputFocused = true;
+    highlight = -1;
+  }
+
+  function onFilterBlur() {
+    blurTimer = setTimeout(() => {
+      blurTimer = null;
+      inputFocused = false;
+    }, 150);
+  }
+
   function onFilterKeydown(e: KeyboardEvent) {
-    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && suggestions.length > 0) {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && inputFocused && suggestions.length > 0) {
       e.preventDefault();
       highlight = moveHighlight(highlight, suggestions.length, e.key === "ArrowDown" ? 1 : -1);
     } else if (e.key === "Enter") {
@@ -176,7 +195,10 @@
     applyFilter(expr);
   }
 
-  onDestroy(clearTimer);
+  onDestroy(() => {
+    clearTimer();
+    if (blurTimer !== null) clearTimeout(blurTimer);
+  });
 
   // ── Virtualization ────────────────────────────────────────────────────────
   const VIRTUALIZE_THRESHOLD = 1000;
@@ -381,15 +403,15 @@
         value={filterDraft}
         oninput={onFilterInput}
         onkeydown={onFilterKeydown}
-        onfocus={() => { inputFocused = true; highlight = -1; }}
-        onblur={() => setTimeout(() => (inputFocused = false), 150)}
+        onfocus={onFilterFocus}
+        onblur={onFilterBlur}
       />
       <span class="kbd">/</span>
     </div>
     <!-- Quick filters render in normal flow ABOVE the results: all of them
          while the query is empty, only matching kinds while typing `kind:`,
-         none otherwise — so the live matching files below stay visible (they
-         used to be covered by an absolutely-positioned dropdown). -->
+         none otherwise — so the live matching files below stay visible rather
+         than sitting under a dropdown. -->
     {#if !pickerMode && inputFocused && suggestions.length > 0}
       <div class="border-t border-hairline max-h-40 overflow-y-auto" bind:this={suggestionsEl}>
         {#each suggestions as sug, i (i)}
