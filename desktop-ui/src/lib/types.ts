@@ -549,6 +549,12 @@ export interface AppSnapshot {
   filter: string | null;
   reviewed_count: number;
   total_count: number;
+  /** Whole-diff line counts, independent of the file filter. `code` leaves out
+   *  tests, Storybook, generated files and docs. Optional only for fixtures. */
+  diff_stats?: {
+    total: { additions: number; deletions: number };
+    code: { additions: number; deletions: number };
+  };
   ai: AiSnapshot;
   pr: PrSnapshot | null;
   panels: Panels;

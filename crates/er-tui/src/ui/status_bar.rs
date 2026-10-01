@@ -14,6 +14,30 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
+
+/// `+N -M` for the whole diff, then `· code +a -b` when tests, Storybook,
+/// generated files or docs moved the number. Empty for an empty diff.
+fn line_stat_spans(stats: &er_engine::git::ProdDiffStats) -> Vec<Span<'static>> {
+    let (total, code) = (&stats.total, &stats.production);
+    if total.additions == 0 && total.deletions == 0 {
+        return Vec::new();
+    }
+    let add = ratatui::style::Style::default().fg(styles::GREEN());
+    let del = ratatui::style::Style::default().fg(styles::RED());
+    let mut spans = vec![
+        Span::styled(format!("  +{}", total.additions), add),
+        Span::styled(format!(" -{}", total.deletions), del),
+    ];
+    if code.additions != total.additions || code.deletions != total.deletions {
+        spans.push(Span::styled(
+            " · code",
+            ratatui::style::Style::default().fg(styles::DIM()),
+        ));
+        spans.push(Span::styled(format!(" +{}", code.additions), add));
+        spans.push(Span::styled(format!(" -{}", code.deletions), del));
+    }
+    spans
+}
 /// Calculate how many rows the top bar needs
 pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
     if app.tabs.len() > 1 {
@@ -137,6 +161,7 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
+    info_spans.extend(line_stat_spans(&tab.diff_line_stats()));
     if tab.mode == DiffMode::Conflicts && tab.merge_active {
         info_spans.push(Span::styled(
             " [merge in progress]",
@@ -1109,6 +1134,36 @@ mod tests {
     fn spans_width_empty() {
         let spans: Vec<Span> = vec![];
         assert_eq!(spans_width(&spans), 0);
+    }
+
+    // ── line_stat_spans ──
+
+    fn stats_of(files: &[(&'static str, usize, usize)]) -> er_engine::git::ProdDiffStats {
+        er_engine::git::ProdDiffStats::summarize(
+            files.iter().copied(),
+            er_engine::git::classify_path,
+        )
+    }
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn line_stats_show_code_pair_when_tests_moved_the_number() {
+        let stats = stats_of(&[("src/lib.rs", 10, 2), ("src/lib.test.ts", 30, 0)]);
+        assert_eq!(text_of(&line_stat_spans(&stats)), "  +40 -2 · code +10 -2");
+    }
+
+    #[test]
+    fn line_stats_skip_code_pair_when_everything_is_code() {
+        let stats = stats_of(&[("src/lib.rs", 10, 2)]);
+        assert_eq!(text_of(&line_stat_spans(&stats)), "  +10 -2");
+    }
+
+    #[test]
+    fn line_stats_empty_for_empty_diff() {
+        assert!(line_stat_spans(&stats_of(&[])).is_empty());
     }
 
     // ── pack_hint_lines ──

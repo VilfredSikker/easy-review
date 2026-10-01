@@ -390,6 +390,28 @@ pub struct ScopeStat {
     pub deletions: usize,
 }
 
+/// Line counts for the whole active diff, independent of the file filter.
+/// `code` leaves out tests, Storybook, generated files and docs (`FileKind`),
+/// after the repo's `[file_kinds]` overrides.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DiffLineStatsSnapshot {
+    pub total: ScopeStat,
+    pub code: ScopeStat,
+}
+
+impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
+    fn from(stats: &er_engine::git::ProdDiffStats) -> Self {
+        let stat = |k: &er_engine::git::DiffKindStats| ScopeStat {
+            additions: k.additions,
+            deletions: k.deletions,
+        };
+        Self {
+            total: stat(&stats.total),
+            code: stat(&stats.production),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub mode: String,
@@ -402,6 +424,8 @@ pub struct AppSnapshot {
     pub filter: Option<String>,
     pub reviewed_count: usize,
     pub total_count: usize,
+    /// Whole-diff line counts for the header; see `DiffLineStatsSnapshot`.
+    pub diff_stats: DiffLineStatsSnapshot,
     pub ai: AiSnapshot,
     pub pr: Option<PrSnapshot>,
     pub panels: Panels,
@@ -2579,6 +2603,7 @@ fn build_snapshot_inner(
         filter,
         reviewed_count,
         total_count,
+        diff_stats: DiffLineStatsSnapshot::from(&tab.diff_line_stats()),
         ai,
         pr,
         panels: Panels {

@@ -16,9 +16,15 @@
   const activeTab = $derived(tabs.find((t) => t.is_active) ?? tabs[active]);
   const layout = $derived(browser.layout);
 
-  // Derive additions and deletions by summing across all files.
-  const additions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.additions, 0));
-  const deletions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.deletions, 0));
+  // Whole-diff counts from the engine, so a file filter never shrinks them.
+  const totalStat = $derived(snapshot?.diff_stats?.total ?? { additions: 0, deletions: 0 });
+  const codeStat = $derived(snapshot?.diff_stats?.code ?? totalStat);
+  const additions = $derived(totalStat.additions);
+  const deletions = $derived(totalStat.deletions);
+  /** Only worth a second pair when tests/generated/docs actually moved the number. */
+  const showCode = $derived(
+    codeStat.additions !== additions || codeStat.deletions !== deletions,
+  );
 
   // Resolve the PR number for the badge.
   const prNumber = $derived(resolveActivePrNumber(snapshot));
@@ -172,6 +178,17 @@
     {#if additions > 0 || deletions > 0}
       <span class="font-mono text-[10px] text-add-fg shrink-0">+{additions}</span>
       <span class="font-mono text-[10px] text-del-fg shrink-0">−{deletions}</span>
+      {#if showCode}
+        <span
+          class="flex items-center gap-1 font-mono text-[10px] shrink-0"
+          data-testid="context-code-stat"
+          title="Code only: tests, Storybook, generated files and docs left out"
+        >
+          <span class="text-muted">· code</span>
+          <span class="text-add-fg">+{codeStat.additions}</span>
+          <span class="text-del-fg">−{codeStat.deletions}</span>
+        </span>
+      {/if}
     {/if}
   </div>
 
