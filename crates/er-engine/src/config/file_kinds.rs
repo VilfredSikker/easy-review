@@ -105,4 +105,19 @@ mod tests {
         let table = config.repo("my-service").unwrap();
         assert_eq!(table.classify("e2e/a.ts"), FileKind::Test);
     }
+
+    /// The desktop rewrites the whole config on every settings save, and the
+    /// overrides are hand-written, so a save must carry them through intact.
+    #[test]
+    fn overrides_survive_a_config_save_round_trip() {
+        let text = "[file_kinds.my-service]\n\"src/api/schema/**\" = \"generated\"\n\"*.gen.ts\" = \"generated\"\n\n[display]\ntheme = \"slate\"\n";
+        let config: crate::config::ErConfig = toml::from_str(text).unwrap();
+        // Same serializer `save_config` uses.
+        let saved = toml::to_string_pretty(&config).unwrap();
+        let reloaded: crate::config::ErConfig = toml::from_str(&saved).unwrap();
+        let table = reloaded.file_kinds.repo("my-service").unwrap();
+        assert_eq!(table, config.file_kinds.repo("my-service").unwrap());
+        assert_eq!(table.classify("src/api/schema/a.ts"), FileKind::Generated);
+        assert_eq!(table.classify("lib/x.gen.ts"), FileKind::Generated);
+    }
 }
