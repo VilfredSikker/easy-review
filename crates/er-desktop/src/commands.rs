@@ -3605,6 +3605,7 @@ pub async fn run_ai_review(
             remote_repo,
             is_remote,
             mut raw,
+            rules,
         ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
@@ -3624,6 +3625,7 @@ pub async fn run_ai_review(
                 tab.remote_repo.clone(),
                 tab.remote_repo.is_some(),
                 raw,
+                tab.owned_repo_rules(),
             )
         };
 
@@ -3636,11 +3638,8 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
-            &er_dir,
-            &raw,
-            &er_engine::storage::slug_repo(&repo_root),
-        )?;
+        let diff_hash =
+            er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, rules.as_rules())?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -3983,10 +3982,10 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &raw,
-            &er_engine::storage::slug_repo(&repo_root),
+            app.tab().repo_rules(),
         )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
@@ -4122,10 +4121,10 @@ pub async fn run_ai_scoped_review(
             }
         };
 
-        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &diff_body,
-            &er_engine::storage::slug_repo(&repo_root),
+            app.tab().repo_rules(),
         )?;
 
         let target = er_engine::app::BackgroundTaskTarget {

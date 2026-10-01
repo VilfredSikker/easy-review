@@ -80,23 +80,18 @@ pub fn ensure_review_inputs(
     Ok(hash)
 }
 
-/// [`ensure_review_inputs`] for callers holding no tab: the rules come off the
-/// global config, keyed by `repo_key` (a `storage::slug_repo`-shaped name).
+/// [`ensure_review_inputs`] for callers holding no tab (MCP, background
+/// auto-triage): the rules come off the global config on disk, keyed by
+/// `repo_key` from `storage::rules_key`. A caller with a tab passes the tab's
+/// rules instead, so the facts agree with its header and filter.
 pub fn ensure_review_inputs_from_config(
     er_dir: &str,
     raw: &str,
     repo_key: &str,
 ) -> Result<String, String> {
     let config = crate::config::load_global_config();
-    let file_kinds = config.file_kinds.repo(repo_key).cloned().unwrap_or_default();
-    ensure_review_inputs(
-        er_dir,
-        raw,
-        crate::ai::change_facts::RepoRules {
-            file_kinds: &file_kinds,
-            importance: config.importance.repo(repo_key),
-        },
-    )
+    let rules = crate::ai::change_facts::OwnedRepoRules::from_config(&config, repo_key);
+    ensure_review_inputs(er_dir, raw, rules.as_rules())
 }
 
 /// Whether both artifacts on disk were already derived from `hash`.

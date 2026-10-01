@@ -203,12 +203,6 @@ fn resolve_er_dir(owner: &str, repo: &str, pr: u64) -> String {
     resolve_managed_root_for_pr_bucket(&slug, pr).er_dir()
 }
 
-/// The `[importance]` / `[file_kinds]` key for a remote repo: what
-/// `storage::slug_repo` returns for a clone whose origin is `owner/repo`.
-fn rules_key_for_remote(repo: &str) -> String {
-    crate::storage::slugify(repo.trim_end_matches(".git"))
-}
-
 /// Resolve managed PR bucket and write `diff-tmp` for a remote PR.
 pub fn prepare_pr_diff_tmp(
     owner: &str,
@@ -232,7 +226,8 @@ pub fn prepare_pr_diff_tmp(
     std::fs::create_dir_all(&er_dir).with_context(|| format!("mkdir {er_dir}"))?;
     // Rule tables are keyed the way `storage::slug_repo` names a clone of this
     // repo (the origin URL's basename), not by the owner/repo storage slug.
-    crate::ai::prepared_diff::ensure_review_inputs_from_config(&er_dir, &raw, &rules_key_for_remote(repo))
+    let key = crate::storage::rules_key("", Some(&format!("{owner}/{repo}")));
+    crate::ai::prepared_diff::ensure_review_inputs_from_config(&er_dir, &raw, &key)
         .map_err(|e| anyhow::anyhow!("{e}"))?;
     let diff_path = format!("{er_dir}/diff-tmp");
     Ok((er_dir, diff_path))
@@ -386,7 +381,7 @@ mod tests {
     /// A remote PR must find the same `[importance]` / `[file_kinds]` table a
     /// clone of that repo would, or the facts silently say "undeclared".
     #[test]
-    fn rules_key_for_remote_matches_a_clones_slug_repo() {
+    fn rules_key_for_a_remote_matches_a_clones_slug_repo() {
         let dir = tempfile::tempdir().unwrap();
         let run = |args: &[&str]| {
             std::process::Command::new("git")
@@ -398,7 +393,9 @@ mod tests {
         run(&["init", "-q"]);
         run(&["remote", "add", "origin", "git@github.com:Acme/My_Service.git"]);
         let clone_key = crate::storage::slug_repo(dir.path().to_str().unwrap());
-        assert_eq!(rules_key_for_remote("My_Service"), clone_key);
+        assert_eq!(crate::storage::rules_key("", Some("Acme/My_Service")), clone_key);
+        assert_eq!(crate::storage::rules_key("/", Some("Acme/My_Service")), clone_key);
+        assert_eq!(crate::storage::rules_key(dir.path().to_str().unwrap(), None), clone_key);
         assert_ne!(owner_repo_storage_slug("Acme", "My_Service"), clone_key);
     }
 

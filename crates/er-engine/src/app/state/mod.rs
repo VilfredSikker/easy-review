@@ -4430,10 +4430,16 @@ impl TabState {
     /// table is no declaration at all — the tab holds an empty one when the
     /// repo has none, and the facts must say "undeclared" rather than "normal".
     pub fn repo_rules(&self) -> crate::ai::change_facts::RepoRules<'_> {
-        let declared = self.importance.default.is_some() || !self.importance.rules.is_empty();
-        crate::ai::change_facts::RepoRules {
-            file_kinds: &self.file_kinds,
-            importance: declared.then_some(&self.importance),
+        crate::ai::change_facts::RepoRules::new(&self.file_kinds, &self.importance)
+    }
+
+    /// [`Self::repo_rules`] as an owned copy, for a command that releases the
+    /// app lock before it prepares the diff. The facts must come from the same
+    /// tables the header and filter use, never a fresh read of the config.
+    pub fn owned_repo_rules(&self) -> crate::ai::change_facts::OwnedRepoRules {
+        crate::ai::change_facts::OwnedRepoRules {
+            file_kinds: self.file_kinds.clone(),
+            importance: self.importance.clone(),
         }
     }
 
@@ -6157,7 +6163,7 @@ impl App {
     /// Takes the config rather than `&self` so a caller holding `self.tabs`
     /// mutably can still resolve a tab's rules.
     fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
-        let repo = crate::storage::slug_repo(&tab.repo_root);
+        let repo = crate::storage::rules_key(&tab.repo_root, tab.remote_repo.as_deref());
         tab.importance = config.importance.repo(&repo).cloned().unwrap_or_default();
         tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
     }
@@ -9694,6 +9700,23 @@ mod tests {
         tab.repo_root = "/nonexistent-er-test/other".to_string();
         App::copy_repo_rules(&config, &mut tab);
         assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
+    }
+
+    /// A remote-only tab's `repo_root` is the process's working directory, so
+    /// its tables must come from the PR's repo name instead.
+    #[test]
+    fn copy_repo_rules_keys_a_remote_tab_by_its_repo_name() {
+        let mut config = ErConfig::default();
+        let table = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([("e2e/**".to_string(), "test".to_string())]),
+        };
+        config.file_kinds.items.insert("my-service".to_string(), table.clone());
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/".to_string();
+        tab.remote_repo = Some("acme/my-service".to_string());
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, table);
     }
 
     #[test]

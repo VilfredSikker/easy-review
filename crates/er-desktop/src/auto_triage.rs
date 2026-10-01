@@ -162,10 +162,16 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
 
     let er_dir = resolve_er_dir(&req.remote, &req.repo_root, req.pr_number)?;
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
+    // A remote-only project has no clone to name the repo, so key off `owner/repo`.
+    let rules_key = if req.repo_root.is_empty() {
+        er_engine::storage::rules_key("", Some(&req.remote))
+    } else {
+        er_engine::storage::rules_key(&req.repo_root, None)
+    };
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
-        &er_engine::storage::slug_repo(&req.repo_root),
+        &rules_key,
     )?;
 
     let base_branch = if req.base_ref.is_empty() {
@@ -272,7 +278,7 @@ fn run_branch_triage_once(
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
-        &er_engine::storage::slug_repo(repo_root),
+        &er_engine::storage::rules_key(repo_root, None),
     )?;
 
     let target = BackgroundTaskTarget {

@@ -30,6 +30,40 @@ pub struct RepoRules<'a> {
     pub importance: Option<&'a ImportanceRepoConfig>,
 }
 
+impl<'a> RepoRules<'a> {
+    /// An empty importance table is no declaration at all: a repo with none
+    /// gets an empty one, and the facts must say "undeclared", not "normal".
+    pub fn new(file_kinds: &'a FileKindRepoConfig, importance: &'a ImportanceRepoConfig) -> Self {
+        let declared = importance.default.is_some() || !importance.rules.is_empty();
+        Self {
+            file_kinds,
+            importance: declared.then_some(importance),
+        }
+    }
+}
+
+/// A repo's tables held by value, for callers that cannot keep a borrow of a
+/// tab or config across the diff preparation.
+#[derive(Debug, Clone, Default)]
+pub struct OwnedRepoRules {
+    pub file_kinds: FileKindRepoConfig,
+    pub importance: ImportanceRepoConfig,
+}
+
+impl OwnedRepoRules {
+    /// The tables `config` declares under `key` (see `storage::rules_key`).
+    pub fn from_config(config: &crate::config::ErConfig, key: &str) -> Self {
+        Self {
+            file_kinds: config.file_kinds.repo(key).cloned().unwrap_or_default(),
+            importance: config.importance.repo(key).cloned().unwrap_or_default(),
+        }
+    }
+
+    pub fn as_rules(&self) -> RepoRules<'_> {
+        RepoRules::new(&self.file_kinds, &self.importance)
+    }
+}
+
 /// Write `change-facts.md` under `er_dir` for `raw`.
 ///
 /// Written on every call, unlike `diff-tmp`: the facts depend on the repo's
@@ -305,6 +339,30 @@ mod tests {
         );
         assert!(facts.contains("generated 1 (+900 −10)"), "{facts}");
         assert!(facts.contains("None — every code change is in a new file."), "{facts}");
+    }
+
+    /// The tab path and the config path must agree on what "declared" means:
+    /// an empty `[importance.<repo>]` table declares nothing.
+    #[test]
+    fn empty_importance_table_is_undeclared_on_every_path() {
+        let kinds = no_rules();
+        let empty = ImportanceRepoConfig::default();
+        assert!(RepoRules::new(&kinds, &empty).importance.is_none());
+
+        let mut config = crate::config::ErConfig::default();
+        config.importance.items.insert("svc".to_string(), ImportanceRepoConfig::default());
+        let owned = OwnedRepoRules::from_config(&config, "svc");
+        assert!(owned.as_rules().importance.is_none());
+
+        config.importance.items.insert(
+            "svc".to_string(),
+            ImportanceRepoConfig {
+                default: Some("isolated".to_string()),
+                rules: BTreeMap::new(),
+            },
+        );
+        let owned = OwnedRepoRules::from_config(&config, "svc");
+        assert!(owned.as_rules().importance.is_some());
     }
 
     #[test]
