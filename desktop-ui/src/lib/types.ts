@@ -151,9 +151,11 @@ export interface TourSnapshot {
 }
 
 export interface FilterSuggestionSnapshot {
-  kind: "preset" | "history";
+  kind: "kind" | "preset" | "history";
   name: string;
   expr: string;
+  /** Files the suggestion selects; set for `kind` suggestions. */
+  files?: number;
 }
 
 export interface ExpertInfo {

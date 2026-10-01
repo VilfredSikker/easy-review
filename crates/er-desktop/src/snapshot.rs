@@ -1020,10 +1020,13 @@ pub struct CommitSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilterSuggestionSnapshot {
-    /// "preset" | "history"
+    /// "kind" | "preset" | "history"
     pub kind: String,
     pub name: String,
     pub expr: String,
+    /// Files in the diff the suggestion selects; set for `kind` suggestions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2368,19 +2371,36 @@ fn build_snapshot_inner(
 
     let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
         use er_engine::app::filter::FILTER_PRESETS;
-        let mut out: Vec<FilterSuggestionSnapshot> = FILTER_PRESETS
-            .iter()
-            .map(|p| FilterSuggestionSnapshot {
-                kind: "preset".to_string(),
-                name: p.name.to_string(),
-                expr: p.expr.to_string(),
+        // One `kind:` entry per kind the diff has, counted with the repo's
+        // overrides so the number matches what the filter will show.
+        let mut out: Vec<FilterSuggestionSnapshot> = tab
+            .kind_file_counts()
+            .into_iter()
+            .map(|(kind, files)| {
+                let name = match kind {
+                    er_engine::git::FileKind::Production => "code",
+                    other => other.as_str(),
+                };
+                FilterSuggestionSnapshot {
+                    kind: "kind".to_string(),
+                    name: name.to_string(),
+                    expr: format!("kind:{name}"),
+                    files: Some(files),
+                }
             })
             .collect();
+        out.extend(FILTER_PRESETS.iter().map(|p| FilterSuggestionSnapshot {
+            kind: "preset".to_string(),
+            name: p.name.to_string(),
+            expr: p.expr.to_string(),
+            files: None,
+        }));
         for expr in &tab.filter_history {
             out.push(FilterSuggestionSnapshot {
                 kind: "history".to_string(),
                 name: expr.clone(),
                 expr: expr.clone(),
+                files: None,
             });
         }
         out

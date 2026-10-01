@@ -4426,6 +4426,31 @@ impl TabState {
         )
     }
 
+    /// Files per kind in the whole active diff, for the `kind:` quick filters.
+    /// Only kinds the diff has, in a fixed order with code first.
+    pub fn kind_file_counts(&self) -> Vec<(crate::git::FileKind, usize)> {
+        use crate::git::FileKind;
+        const ORDER: [FileKind; 5] = [
+            FileKind::Production,
+            FileKind::Test,
+            FileKind::Storybook,
+            FileKind::Generated,
+            FileKind::Docs,
+        ];
+        let mut counts = [0usize; ORDER.len()];
+        for f in self.active_diff_files() {
+            let kind = self.file_kinds.classify(&f.path);
+            if let Some(i) = ORDER.iter().position(|k| *k == kind) {
+                counts[i] += 1;
+            }
+        }
+        ORDER
+            .into_iter()
+            .zip(counts)
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
     /// The rule tables `change-facts.md` resolves against. An empty importance
     /// table is no declaration at all — the tab holds an empty one when the
     /// repo has none, and the facts must say "undeclared" rather than "normal".
@@ -9680,6 +9705,34 @@ mod tests {
         assert_eq!(visible, vec!["src/lib.rs"]);
         let shown: usize = tab.visible_files().iter().map(|(_, f)| f.adds).sum();
         assert_eq!(shown, tab.diff_line_stats().production.additions);
+    }
+
+    #[test]
+    fn kind_file_counts_list_only_present_kinds_code_first() {
+        let files = vec![
+            make_file("README.md", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("src/a.test.ts", vec![], 1, 0),
+            make_file("src/b.test.ts", vec![], 1, 0),
+            make_file("src/api/schema.ts", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.file_kinds = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]),
+        };
+        use crate::git::FileKind;
+        assert_eq!(
+            tab.kind_file_counts(),
+            vec![
+                (FileKind::Production, 1),
+                (FileKind::Test, 2),
+                (FileKind::Generated, 1),
+                (FileKind::Docs, 1),
+            ]
+        );
     }
 
     /// A tab is handed its repo's `[file_kinds]` table, keyed by repo slug,
