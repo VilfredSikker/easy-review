@@ -161,7 +161,6 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
-    info_spans.extend(line_stat_spans(&tab.diff_line_stats()));
     if tab.mode == DiffMode::Conflicts && tab.merge_active {
         info_spans.push(Span::styled(
             " [merge in progress]",
@@ -179,6 +178,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
+    // Last, so a narrow terminal truncates the counts before the merge warning
+    // or the selected commit.
+    info_spans.extend(line_stat_spans(&tab.diff_line_stats()));
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
     row_idx += 1;
@@ -1137,6 +1139,38 @@ mod tests {
     }
 
     // ── line_stat_spans ──
+
+    /// The counts render last on the branch row, so a narrow terminal cuts
+    /// them before the merge warning.
+    #[test]
+    fn top_bar_puts_line_counts_after_the_merge_warning() {
+        use er_engine::git::{DiffFile, FileStatus};
+        let file = |path: &str, adds| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            adds,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        };
+        let mut app = App::new_for_test(vec![file("src/lib.rs", 10), file("src/lib.test.ts", 30)]);
+        app.tab_mut().mode = DiffMode::Conflicts;
+        app.tab_mut().merge_active = true;
+
+        let backend = ratatui::backend::TestBackend::new(200, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_top_bar(f, f.area(), &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..200).map(|x| buffer[(x, 0)].symbol().to_string()).collect();
+
+        let merge = row.find("[merge in progress]").expect(&row);
+        let counts = row.find("+40 -0").expect(&row);
+        assert!(merge < counts, "{row}");
+        assert!(row.contains("code +10 -0"), "{row}");
+    }
 
     fn stats_of(files: &[(&'static str, usize, usize)]) -> er_engine::git::ProdDiffStats {
         er_engine::git::ProdDiffStats::summarize(
