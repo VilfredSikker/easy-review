@@ -21,11 +21,12 @@ does not express gets an explicit field.
 
 A tab carries the config it resolves against, copied on the way in.
 
-- `TabState.importance` holds this repo's `ImportanceRepoConfig`.
+- `TabState.importance` holds this repo's `ImportanceRepoConfig`, and
+  `TabState.file_kinds` its `FileKindRepoConfig`, by the same path.
 - `App::push_tab` fills it when a tab opens, keyed by
   `storage::slug_repo(repo_root)` — the same key managed storage uses, so the
   rule table and the bucket agree on what a repo is called.
-- `App::sync_importance_to_tabs` refreshes every open tab, and is called where
+- `App::sync_repo_rules_to_tabs` refreshes every open tab, and is called where
   the config changes: the desktop's `apply_config_side_effects`, the TUI's
   `config_hub_persist_live`.
 - `watched_config` is copied onto tabs the same way, so this follows a shape the

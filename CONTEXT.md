@@ -147,6 +147,13 @@ _Avoid_: risk, priority, weight, blast radius
 A file's importance: `foundational`, `normal`, or `isolated`.
 _Avoid_: level, rank, class
 
+**File kind**:
+What a changed file is for review accounting: `production`, `test`,
+`storybook`, `generated`, or `docs`. Built-in conventions decide it unless the
+repo's `[file_kinds]` table says otherwise. The **code** line count is the
+`production` lines alone.
+_Avoid_: category, file type (a file type is an extension)
+
 **Checklist**:
 A list of outcomes a reviewer works through for one view — the schema changed,
 the tests cover it, the public surface did not move — rather than a list of

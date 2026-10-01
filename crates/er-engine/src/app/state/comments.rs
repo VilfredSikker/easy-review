@@ -3618,7 +3618,7 @@ impl App {
                 // silently reverted in-flight settings before — see the note on
                 // `sync_config_from_active_tab`, and `docs/adr/0005`.
                 self.config.importance = crate::config::load_global_config().importance;
-                self.sync_importance_to_tabs();
+                self.sync_repo_rules_to_tabs();
                 // The agent's own one-line distribution — the share each tier
                 // covers — is what tells a reader whether the table is
                 // over-broad, and it is in this task's log. Point at it rather

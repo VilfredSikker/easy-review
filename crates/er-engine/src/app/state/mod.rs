@@ -7,7 +7,7 @@ pub(super) mod preload;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use crate::config::{self, ErConfig, ImportanceRepoConfig, WatchedConfig};
+use crate::config::{self, ErConfig, FileKindRepoConfig, ImportanceRepoConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
 };
@@ -860,6 +860,10 @@ pub struct TabState {
     /// which lives on `App` — same shape as `watched_config`.
     pub importance: ImportanceRepoConfig,
 
+    /// This repo's `[file_kinds]` overrides, copied off the app's config the
+    /// same way as `importance`.
+    pub file_kinds: FileKindRepoConfig,
+
     /// Git-ignored files opted into visibility
     pub watched_files: Vec<WatchedFile>,
 
@@ -1536,6 +1540,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1666,6 +1671,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1790,6 +1796,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1914,6 +1921,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -4404,6 +4412,20 @@ impl TabState {
         self.selected_file
     }
 
+    /// Line counts for the whole active diff, split by file kind.
+    ///
+    /// Reads every file rather than `visible_files`: the header reports what
+    /// the branch changes, and a filter or search narrowing the list must not
+    /// shrink it.
+    pub fn diff_line_stats(&self) -> crate::git::ProdDiffStats {
+        crate::git::ProdDiffStats::summarize(
+            self.active_diff_files()
+                .iter()
+                .map(|f| (f.path.as_str(), f.adds, f.dels)),
+            |path| self.file_kinds.classify(path),
+        )
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
@@ -6112,33 +6134,29 @@ impl App {
     /// tab opened after a config change filters the same way as one that was
     /// already open.
     fn push_tab(&mut self, mut tab: TabState) {
-        tab.importance = Self::importance_for(&self.config.importance, &tab.repo_root);
+        Self::copy_repo_rules(&self.config, &mut tab);
         self.tabs.push(tab);
     }
 
-    /// The rules `repo_root` declares, or an empty table.
+    /// Copy the per-repo tables `tab`'s repo declares (`[importance]`,
+    /// `[file_kinds]`), or empty ones.
     ///
-    /// Takes the table rather than `&self` so a caller holding `self.tabs`
+    /// Takes the config rather than `&self` so a caller holding `self.tabs`
     /// mutably can still resolve a tab's rules.
-    fn importance_for(
-        importance: &config::ImportanceConfig,
-        repo_root: &str,
-    ) -> ImportanceRepoConfig {
-        importance
-            .repo(&crate::storage::slug_repo(repo_root))
-            .cloned()
-            .unwrap_or_default()
+    fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
+        let repo = crate::storage::slug_repo(&tab.repo_root);
+        tab.importance = config.importance.repo(&repo).cloned().unwrap_or_default();
+        tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
     }
 
-    /// Copy each repo's declared importance rules onto its open tabs.
+    /// Copy each repo's declared rule tables onto its open tabs.
     ///
-    /// The filter resolves a tier off the tab and the config lives on the app,
-    /// so this is where the two meet. Call it after the config changes, the way
-    /// `watched_config` is pushed.
-    pub fn sync_importance_to_tabs(&mut self) {
-        let importance = self.config.importance.clone();
+    /// The filter and the line-count header resolve off the tab and the config
+    /// lives on the app, so this is where the two meet. Call it after the
+    /// config changes, the way `watched_config` is pushed.
+    pub fn sync_repo_rules_to_tabs(&mut self) {
         for tab in self.tabs.iter_mut() {
-            tab.importance = Self::importance_for(&importance, &tab.repo_root);
+            Self::copy_repo_rules(&self.config, tab);
         }
     }
 
@@ -7893,8 +7911,8 @@ impl App {
         // Watched paths are mirrored onto the active tab so `W` sees updates
         // without requiring an explicit Save.
         self.tab_mut().watched_config = self.config.watched.clone();
-        // Same for the importance rules the file filter resolves against.
-        self.sync_importance_to_tabs();
+        // Same for the per-repo rule tables the filter and header resolve against.
+        self.sync_repo_rules_to_tabs();
     }
 
     /// Toggle/cycle/activate the currently selected config hub item
@@ -8917,6 +8935,7 @@ mod tests {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -9577,6 +9596,63 @@ mod tests {
         tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
 
         assert!(tab.visible_files().is_empty());
+    }
+
+    /// The header reports what the branch changes, so narrowing the file list
+    /// must not shrink it.
+    #[test]
+    fn diff_line_stats_ignore_filter_and_search() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 2),
+            make_file("src/lib.test.ts", vec![], 30, 0),
+            make_file("Cargo.lock", vec![], 100, 50),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "lib.rs".to_string();
+        tab.search_query_lower = "lib.rs".to_string();
+        assert_eq!(tab.visible_files().len(), 1);
+
+        let stats = tab.diff_line_stats();
+        assert_eq!((stats.total.additions, stats.total.deletions), (140, 52));
+        assert_eq!((stats.production.additions, stats.production.deletions), (10, 2));
+    }
+
+    #[test]
+    fn diff_line_stats_apply_the_tabs_file_kind_overrides() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 0),
+            make_file("src/api/schema.ts", vec![], 500, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        assert_eq!(tab.diff_line_stats().production.additions, 510);
+
+        tab.file_kinds = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]),
+        };
+        assert_eq!(tab.diff_line_stats().production.additions, 10);
+    }
+
+    /// A tab is handed its repo's `[file_kinds]` table, keyed by repo slug,
+    /// and no other repo's.
+    #[test]
+    fn copy_repo_rules_hands_a_tab_only_its_repos_file_kinds() {
+        let mut config = ErConfig::default();
+        let table = FileKindRepoConfig {
+            rules: std::collections::BTreeMap::from([("e2e/**".to_string(), "test".to_string())]),
+        };
+        config.file_kinds.items.insert("my-service".to_string(), table.clone());
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/nonexistent-er-test/my-service".to_string();
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, table);
+
+        tab.repo_root = "/nonexistent-er-test/other".to_string();
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
     }
 
     #[test]
