@@ -86,6 +86,27 @@ fn triage_schema() -> Value {
                         "risk": { "type": "string", "enum": ["high", "medium", "low", "info"] }
                     }
                 }
+            },
+            "reach": {
+                "type": "object",
+                "description": "How much existing code the change touches. Read change-facts.md first.",
+                "properties": {
+                    "level": { "type": "string", "enum": ["isolated", "contained", "broad", "unknown"] },
+                    "reason": { "type": "string" },
+                    "touch_points": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "path:line — how the new code is wired into existing code"
+                    },
+                    "guard": {
+                        "type": "object",
+                        "properties": {
+                            "kind": { "type": "string", "description": "feature_flag | permission | config | unrouted" },
+                            "name": { "type": "string" },
+                            "evidence": { "type": "string", "description": "path:line where the guard is checked" }
+                        }
+                    }
+                }
             }
         }
     })

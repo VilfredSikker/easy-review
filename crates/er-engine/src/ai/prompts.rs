@@ -176,7 +176,7 @@ Short-circuit obvious issues. Read source files to verify, not to expand scope."
 const fn general_review_instructions_read_analyze() -> &'static str {
     r#"4. Analyse every changed file. **Findings target only `+` or `-` lines** — context is for comprehension. Per file:
    - `risk`: "high" | "medium" | "low" | "info"
-   - `risk_reason`: why this risk level
+   - `risk_reason`: why this risk level. Weigh reach as well as correctness: an edit to existing code much of the repo depends on outranks the same edit in new code nothing calls yet, and new code behind a guard you can point to (feature flag, permission check — cite `path:line`) ranks lower still. `change-facts.md` in the output directory, when present, lists which files are new, which existing files are edited, and their declared importance
    - `summary`: one-line description of changes
    - `findings`: array of issues (within caps). On each finding set `line_content` to the exact text of the line it anchors to, copied from the diff; omit it for hunk-level findings (`line_start` unset)
 5. **Verify findings agentically** when significance depends on code outside the diff — read/grep sibling files, callers, tests; append `evidence` entries; mark `tentative` if budget runs out.
@@ -1110,25 +1110,52 @@ pub fn append_file_scope_if_present(mut prompt: String, output_dir: &str) -> Str
 }
 
 fn triage_lens_instructions() -> String {
-    r#"## Triage lens: breadth over depth
+    format!(
+        r#"## Triage lens: breadth over depth
 
 Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs line-by-line.
 
+{reach}
+
 **Deliver:**
-1. `first_impression` — 2–4 short paragraphs: what changed, blast radius, gut feel.
-2. `diff_stats` — file count, `approx_risk`, `domains` touched (e.g. auth, api, tests). `approx_risk` must be exactly one of `high`, `medium`, `low`, `info` — no other words.
-3. `verdict` — route the human to the next review:
+1. `first_impression` — 2–4 short paragraphs: what changed, how far it reaches into existing code, gut feel.
+2. `diff_stats` — file count, `approx_risk`, `domains` touched (e.g. auth, api, tests). `approx_risk` must be exactly one of `high`, `medium`, `low`, `info` — no other words. It weighs how wrong the change could be **and** its `reach`.
+3. `reach` — `level` (`isolated` | `contained` | `broad`), `reason`, `touch_points`, and `guard` when one exists (see above).
+4. `verdict` — route the human to the next review:
    - `skip` — cosmetic/docs/lockfiles only; no logic to review.
    - `general` — mixed concerns; run full `/er-review`.
    - `expert` — dominant lens; set `experts` to one or more ids: security, performance, reliability, testing, api, patterns, simplifying, mentorship.
    - `arena` — large/high-stakes diff or needs multi-model second opinion.
    - `professor` — novel subsystem the reader should learn first.
-4. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`). `risk` uses the same four values as `approx_risk`, and is what that file's change deserves on its own — not the branch-level `approx_risk` repeated.
+5. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`). `risk` uses the same four values as `approx_risk`, and is what that file's change deserves on its own — not the branch-level `approx_risk` repeated. List the touch points among them.
 
 **Speed budget:** ≤8 tool calls, <60 seconds. Read diff once in context; write only `triage.json`.
 
-**Do not write** `review.json`, `order.json`, `checklist.json`, or `summary.md."#
-        .to_string()
+**Do not write** `review.json`, `order.json`, `checklist.json`, or `summary.md."#,
+        reach = reach_instructions(),
+    )
+}
+
+/// How triage judges reach and guards. The general review carries a one-line
+/// version in its `risk_reason` instruction; a rule changed here does not
+/// reach it.
+fn reach_instructions() -> String {
+    format!(
+        r#"### Reach: how much existing code this change touches
+
+If `{CHANGE_FACTS_FILE}` exists in the output directory, read it first. It lists, computed from the diff and the repo's config, which code files are new, which existing files are edited or deleted, and each edited file's declared importance. Trust its counts over your own skim.
+
+- `isolated` — the change is new code (new services, endpoints, tables, UI) that nothing existing calls into, apart from the wiring that registers it.
+- `contained` — it edits existing code, but code few other places depend on.
+- `broad` — it edits or deletes code much of the repo depends on: shared modules, base classes, schemas or migrations that alter existing tables, auth, routing, build or config files. An edit to a `foundational` file is broad.
+
+**Wiring is the touch surface.** Ten new files plus one line in a central router, DI container, schema index or migration list is not "nothing existing changed": name each such edit in `touch_points` as `path:line — what it does`, and judge it on what breaks if that line is wrong. A new file can also be live with no edit at all when the framework picks it up by location (file-based routes, autoloaded classes, plugin or migration directories): check for that before calling new code unreached. A new migration that only creates new tables is isolated; one that alters an existing table is broad.
+
+**Guards shrink reach.** New code behind a feature flag, a permission check, a config switch, or a route nobody links to yet cannot run until someone turns it on. Record it as `guard` with `kind`, `name` and `evidence` — the `path:line` where the guard is checked. A guard with no evidence counts for nothing: do not lower risk on a guess. A guard covers only the code it wraps; the touch points usually run whether or not it is on.
+
+Isolated, guarded, new code is low risk unless it moves money, handles credentials or personal data, or can corrupt existing data — say so if it does."#,
+        CHANGE_FACTS_FILE = super::change_facts::CHANGE_FACTS_FILE,
+    )
 }
 
 fn triage_output_section(output_dir: &str) -> String {
@@ -1158,7 +1185,13 @@ fn triage_output_section(output_dir: &str) -> String {
   }},
   "priority_files": [
     {{ "path": "src/lib.rs", "reason": "Core logic change", "risk": "high" }}
-  ]
+  ],
+  "reach": {{
+    "level": "isolated|contained|broad",
+    "reason": "Why, citing change-facts.md",
+    "touch_points": ["src/router.ts:42 — registers the new route"],
+    "guard": {{ "kind": "feature_flag", "name": "plates.move", "evidence": "src/plates/routes.ts:8" }}
+  }}
 }}
 ```
 
@@ -2500,5 +2533,22 @@ mod tests {
         let prompt = build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH);
         assert!(prompt.contains("general|expert|arena|professor|skip"));
         assert!(prompt.contains("triage.json"));
+    }
+
+    /// Triage and review both get pointed at the engine's facts and told what
+    /// a guard has to show before it lowers risk.
+    #[test]
+    fn triage_and_review_prompts_carry_reach_rules() {
+        let triage = build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH);
+        assert!(triage.contains("change-facts.md"));
+        assert!(triage.contains("isolated` | `contained` | `broad"));
+        assert!(triage.contains("A guard with no evidence counts for nothing"));
+        assert!(triage.contains("picks it up by location"));
+        assert!(triage.contains(r#""reach": {"#));
+        assert!(!triage.contains("blast radius"));
+
+        let review = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH);
+        assert!(review.contains("change-facts.md"));
+        assert!(review.contains("Weigh reach as well as correctness"));
     }
 }

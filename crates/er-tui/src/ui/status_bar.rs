@@ -14,6 +14,30 @@ fn spans_width(spans: &[Span]) -> usize {
     spans.iter().map(|s| s.content.chars().count()).sum()
 }
 
+/// `+N -M` for the whole diff, then `· code +a -b` when tests, Storybook,
+/// generated files or docs moved the number. Empty for an empty diff.
+fn line_stat_spans(stats: &er_engine::git::ProdDiffStats) -> Vec<Span<'static>> {
+    let (total, code) = (&stats.total, &stats.production);
+    if total.additions == 0 && total.deletions == 0 {
+        return Vec::new();
+    }
+    let add = ratatui::style::Style::default().fg(styles::GREEN());
+    let del = ratatui::style::Style::default().fg(styles::RED());
+    let mut spans = vec![
+        Span::styled(format!("  +{}", total.additions), add),
+        Span::styled(format!(" -{}", total.deletions), del),
+    ];
+    if code.additions != total.additions || code.deletions != total.deletions {
+        spans.push(Span::styled(
+            " · code",
+            ratatui::style::Style::default().fg(styles::DIM()),
+        ));
+        spans.push(Span::styled(format!(" +{}", code.additions), add));
+        spans.push(Span::styled(format!(" -{}", code.deletions), del));
+    }
+    spans
+}
+
 /// Calculate how many rows the top bar needs
 pub const fn top_bar_height(app: &App, _width: u16) -> u16 {
     if app.tabs.len() > 1 {
@@ -154,6 +178,9 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
             }
         }
     }
+    // Last, so a narrow terminal truncates the counts before the merge warning
+    // or the selected commit.
+    info_spans.extend(line_stat_spans(&tab.diff_line_stats()));
     let info_bar = Paragraph::new(Line::from(info_spans)).style(panel_bg);
     f.render_widget(info_bar, rows[row_idx]);
     row_idx += 1;
@@ -1109,6 +1136,70 @@ mod tests {
     fn spans_width_empty() {
         let spans: Vec<Span> = vec![];
         assert_eq!(spans_width(&spans), 0);
+    }
+
+    // ── line_stat_spans ──
+
+    /// The counts render last on the branch row, so a narrow terminal cuts
+    /// them before the merge warning.
+    #[test]
+    fn top_bar_puts_line_counts_after_the_merge_warning() {
+        use er_engine::git::{DiffFile, FileStatus};
+        let file = |path: &str, adds| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: vec![],
+            adds,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+        };
+        let mut app = App::new_for_test(vec![file("src/lib.rs", 10), file("src/lib.test.ts", 30)]);
+        app.tab_mut().mode = DiffMode::Conflicts;
+        app.tab_mut().merge_active = true;
+
+        let backend = ratatui::backend::TestBackend::new(200, 2);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| render_top_bar(f, f.area(), &app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: String = (0..200)
+            .map(|x| buffer[(x, 0)].symbol().to_string())
+            .collect();
+
+        let merge = row.find("[merge in progress]").expect(&row);
+        let counts = row.find("+40 -0").expect(&row);
+        assert!(merge < counts, "{row}");
+        assert!(row.contains("code +10 -0"), "{row}");
+    }
+
+    fn stats_of(files: &[(&'static str, usize, usize)]) -> er_engine::git::ProdDiffStats {
+        er_engine::git::ProdDiffStats::summarize(
+            files.iter().copied(),
+            er_engine::git::classify_path,
+        )
+    }
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn line_stats_show_code_pair_when_tests_moved_the_number() {
+        let stats = stats_of(&[("src/lib.rs", 10, 2), ("src/lib.test.ts", 30, 0)]);
+        assert_eq!(text_of(&line_stat_spans(&stats)), "  +40 -2 · code +10 -2");
+    }
+
+    #[test]
+    fn line_stats_skip_code_pair_when_everything_is_code() {
+        let stats = stats_of(&[("src/lib.rs", 10, 2)]);
+        assert_eq!(text_of(&line_stat_spans(&stats)), "  +10 -2");
+    }
+
+    #[test]
+    fn line_stats_empty_for_empty_diff() {
+        assert!(line_stat_spans(&stats_of(&[])).is_empty());
     }
 
     // ── pack_hint_lines ──

@@ -42,6 +42,22 @@ pub fn slugify(s: &str) -> String {
         .to_string()
 }
 
+/// The key a repo's `[importance]` / `[file_kinds]` tables live under.
+///
+/// Pass `remote_repo` (`owner/repo`) only for a target with no clone: its
+/// `repo_root` is whatever directory the process runs in, so the key comes from
+/// the repo name, which is what [`slug_repo`] returns for a clone of it. With
+/// `None` the clone is asked, so every view of one clone shares a key.
+pub fn rules_key(repo_root: &str, remote_repo: Option<&str>) -> String {
+    match remote_repo.map(str::trim).filter(|r| !r.is_empty()) {
+        Some(remote) => {
+            let name = remote.rsplit('/').next().unwrap_or(remote);
+            slugify(name.trim_end_matches(".git"))
+        }
+        None => slug_repo(repo_root),
+    }
+}
+
 /// Derive a stable repo slug. Prefer the basename of the git remote origin URL;
 /// fall back to the basename of `repo_root`.
 pub fn slug_repo(repo_root: &str) -> String {

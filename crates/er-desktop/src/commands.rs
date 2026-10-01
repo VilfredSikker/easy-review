@@ -3605,6 +3605,7 @@ pub async fn run_ai_review(
             remote_repo,
             is_remote,
             mut raw,
+            rules,
         ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
@@ -3624,6 +3625,7 @@ pub async fn run_ai_review(
                 tab.remote_repo.clone(),
                 tab.remote_repo.is_some(),
                 raw,
+                tab.owned_repo_rules(),
             )
         };
 
@@ -3636,7 +3638,8 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash =
+            er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, rules.as_rules())?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -3979,7 +3982,11 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &raw,
+            app.tab().repo_rules(),
+        )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
             &scope, &er_dir, &expert_id, &diff_hash,
@@ -4114,7 +4121,11 @@ pub async fn run_ai_scoped_review(
             }
         };
 
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &diff_body,
+            app.tab().repo_rules(),
+        )?;
 
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
@@ -5468,6 +5479,9 @@ pub fn place_tab(
         }
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
+        // Replacing in place skips `push_tab`, where a tab gets its repo's rule
+        // tables.
+        app.install_repo_rules(&mut tab);
         app.tabs[idx] = tab;
         app.active_tab = idx;
         app.sync_config_from_active_tab();
@@ -11523,6 +11537,31 @@ mod tests {
         assert_eq!(app.active_tab, 1, "active stays on the replaced slot");
         assert_eq!(app.tabs[1].repo_root, "new", "active slot got new tab");
         assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
+    }
+
+    /// Replacing a slot skips `push_tab`; the incoming tab must still get its
+    /// repo's `[file_kinds]`, or the header count ignores the overrides.
+    #[test]
+    fn place_tab_replace_hands_the_tab_its_repo_rules() {
+        use er_engine::app::TabState;
+        use er_engine::config::FileKindRepoConfig;
+
+        let mut app = make_app_with_n_tabs(1);
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        app.config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
+
+        let mut incoming = TabState::new_for_test(vec![]);
+        incoming.repo_root = "/".into();
+        incoming.remote_repo = Some("acme/my-service".into());
+        place_tab(&mut app, incoming, true, true);
+
+        assert_eq!(app.tabs[0].file_kinds, table);
     }
 
     #[test]

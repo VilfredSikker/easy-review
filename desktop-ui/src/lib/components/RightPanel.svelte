@@ -111,12 +111,9 @@
     return "success";
   });
 
-  const totalAdds = $derived(
-    app.snapshot?.files.reduce((sum, f) => sum + f.additions, 0) ?? 0
-  );
-  const totalDels = $derived(
-    app.snapshot?.files.reduce((sum, f) => sum + f.deletions, 0) ?? 0
-  );
+  // Whole-diff counts from the engine, so a file filter never shrinks them.
+  const totalAdds = $derived(app.snapshot?.diff_stats?.total.additions ?? 0);
+  const totalDels = $derived(app.snapshot?.diff_stats?.total.deletions ?? 0);
 
   // ── Tab definitions ─────────────────────────────────────────────────────────
   interface TabDef {

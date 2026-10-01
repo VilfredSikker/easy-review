@@ -1,6 +1,6 @@
 use crate::ai::{ErReview, RiskLevel};
-use crate::config::{ImportanceRepoConfig, ImportanceTier};
-use crate::git::{DiffFile, FileStatus};
+use crate::config::{FileKindRepoConfig, ImportanceRepoConfig, ImportanceTier};
+use crate::git::{classify_path, DiffFile, FileKind, FileStatus};
 use glob::{MatchOptions, Pattern};
 
 // ── Types ──
@@ -52,6 +52,12 @@ pub enum FilterRule {
         include: bool,
         tiers: Vec<ImportanceTier>,
     },
+    /// File kind (`kind:production` is the header's code count), after the
+    /// repo's `[file_kinds]` overrides.
+    Kind {
+        include: bool,
+        kinds: Vec<FileKind>,
+    },
 }
 
 pub struct FilterPreset {
@@ -99,6 +105,7 @@ impl FilterRule {
             Self::Size { include, .. } => *include,
             Self::Risk { include, .. } => *include,
             Self::Importance { include, .. } => *include,
+            Self::Kind { include, .. } => *include,
         }
     }
 }
@@ -107,8 +114,26 @@ impl FilterRule {
 
 /// Parse a comma-separated filter expression into a list of rules.
 /// Invalid globs are silently skipped.
+///
+/// The comma separates rules and also the values of a `risk:`, `importance:`
+/// or `kind:` list, so `-kind:test,docs` excludes both kinds. A bare segment
+/// right after such a rule joins it when it reads as one of its values;
+/// anything else starts a new rule with its own sign. Prefixes match in any
+/// case.
 pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
-    let mut rules = Vec::new();
+    const LIST_PREFIXES: [&str; 3] = ["risk:", "importance:", "kind:"];
+
+    /// The value list a bare segment may still join: its prefix and sign, and
+    /// the rule it built — `None` while every value so far failed to read, so
+    /// `kind:bogus,test` still selects tests.
+    struct OpenList {
+        prefix: &'static str,
+        include: bool,
+        rule: Option<usize>,
+    }
+
+    let mut rules: Vec<FilterRule> = Vec::new();
+    let mut open: Option<OpenList> = None;
     for segment in expr.split(',') {
         let segment = segment.trim();
         if segment.is_empty() {
@@ -116,32 +141,55 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
         }
 
         // Extract +/- prefix
-        let (include, body) = if let Some(rest) = segment.strip_prefix('-') {
-            (false, rest.trim())
+        let (include, body, signed) = if let Some(rest) = segment.strip_prefix('-') {
+            (false, rest.trim(), true)
         } else if let Some(rest) = segment.strip_prefix('+') {
-            (true, rest.trim())
+            (true, rest.trim(), true)
         } else {
-            (true, segment)
+            (true, segment, false)
         };
 
         if body.is_empty() {
             continue;
         }
 
+        if let Some(list) = open.as_mut().filter(|_| !signed) {
+            let joined = match list.rule {
+                Some(idx) => extend_value_list(&mut rules[idx], body),
+                None => match parse_list_rule(list.include, &format!("{}{body}", list.prefix)) {
+                    Some(rule) => {
+                        rules.push(rule);
+                        list.rule = Some(rules.len() - 1);
+                        true
+                    }
+                    None => false,
+                },
+            };
+            if joined {
+                continue;
+            }
+        }
+        open = None;
+
+        // A list prefix with no value that reads stays out of the rule set. As
+        // a substring it would match no path and empty the list without saying
+        // why.
+        let lower = body.to_ascii_lowercase();
+        if let Some(prefix) = LIST_PREFIXES.iter().find(|p| lower.starts_with(**p)) {
+            let rule = parse_list_rule(include, &lower).map(|rule| {
+                rules.push(rule);
+                rules.len() - 1
+            });
+            open = Some(OpenList {
+                prefix,
+                include,
+                rule,
+            });
+            continue;
+        }
+
         // Try size: >N or <N
         if let Some(rule) = try_parse_size(include, body) {
-            rules.push(rule);
-            continue;
-        }
-
-        // Try risk: risk:high,medium,low,info
-        if let Some(rule) = try_parse_risk(include, body) {
-            rules.push(rule);
-            continue;
-        }
-
-        // Try importance: importance:foundational
-        if let Some(rule) = try_parse_importance(include, body) {
             rules.push(rule);
             continue;
         }
@@ -172,31 +220,70 @@ pub fn parse_filter_expr(expr: &str) -> Vec<FilterRule> {
     rules
 }
 
-fn try_parse_risk(include: bool, body: &str) -> Option<FilterRule> {
-    let rest = body.strip_prefix("risk:")?;
-    let levels: Vec<RiskLevel> = rest
-        .split(',')
-        .filter_map(|s| match s.trim().to_lowercase().as_str() {
-            "high" => Some(RiskLevel::High),
-            "medium" | "med" => Some(RiskLevel::Medium),
-            "low" => Some(RiskLevel::Low),
-            "info" => Some(RiskLevel::Info),
-            _ => None,
-        })
-        .collect();
-    if levels.is_empty() {
-        return None;
+fn risk_value(value: &str) -> Option<RiskLevel> {
+    match value.trim().to_lowercase().as_str() {
+        "high" => Some(RiskLevel::High),
+        "medium" | "med" => Some(RiskLevel::Medium),
+        "low" => Some(RiskLevel::Low),
+        "info" => Some(RiskLevel::Info),
+        _ => None,
     }
-    Some(FilterRule::Risk { include, levels })
+}
+
+fn kind_value(value: &str) -> Option<FileKind> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        // The header labels production lines "code".
+        "code" => Some(FileKind::Production),
+        "tests" => Some(FileKind::Test),
+        "doc" => Some(FileKind::Docs),
+        "story" | "stories" => Some(FileKind::Storybook),
+        other => FileKind::parse(other),
+    }
+}
+
+fn try_parse_risk(include: bool, body: &str) -> Option<FilterRule> {
+    let level = risk_value(body.strip_prefix("risk:")?)?;
+    Some(FilterRule::Risk {
+        include,
+        levels: vec![level],
+    })
 }
 
 fn try_parse_importance(include: bool, body: &str) -> Option<FilterRule> {
-    let rest = body.strip_prefix("importance:")?;
-    let tiers: Vec<ImportanceTier> = rest.split(',').filter_map(ImportanceTier::parse).collect();
-    if tiers.is_empty() {
-        return None;
+    let tier = ImportanceTier::parse(body.strip_prefix("importance:")?)?;
+    Some(FilterRule::Importance {
+        include,
+        tiers: vec![tier],
+    })
+}
+
+fn try_parse_kind(include: bool, body: &str) -> Option<FilterRule> {
+    let kind = kind_value(body.strip_prefix("kind:")?)?;
+    Some(FilterRule::Kind {
+        include,
+        kinds: vec![kind],
+    })
+}
+
+/// A `risk:` / `importance:` / `kind:` segment with one value, or `None` when
+/// the value does not read.
+fn parse_list_rule(include: bool, body: &str) -> Option<FilterRule> {
+    try_parse_risk(include, body)
+        .or_else(|| try_parse_importance(include, body))
+        .or_else(|| try_parse_kind(include, body))
+}
+
+/// Add `value` to a value-list rule when it reads as one of that rule's
+/// values. False leaves the rule untouched and the segment to parse on its own.
+fn extend_value_list(rule: &mut FilterRule, value: &str) -> bool {
+    match rule {
+        FilterRule::Risk { levels, .. } => risk_value(value).map(|l| levels.push(l)).is_some(),
+        FilterRule::Importance { tiers, .. } => ImportanceTier::parse(value)
+            .map(|t| tiers.push(t))
+            .is_some(),
+        FilterRule::Kind { kinds, .. } => kind_value(value).map(|k| kinds.push(k)).is_some(),
+        _ => false,
     }
-    Some(FilterRule::Importance { include, tiers })
 }
 
 fn try_parse_size(include: bool, body: &str) -> Option<FilterRule> {
@@ -261,6 +348,19 @@ pub fn apply_filter_with_context(
     review: Option<&ErReview>,
     importance: Option<&ImportanceRepoConfig>,
 ) -> bool {
+    apply_filter_with_kinds(rules, file, review, importance, None)
+}
+
+/// [`apply_filter_with_context`] plus the repo's `[file_kinds]` overrides, so
+/// `kind:` agrees with the header's code count. Without them `kind:` falls
+/// back to the built-in conventions.
+pub fn apply_filter_with_kinds(
+    rules: &[FilterRule],
+    file: &DiffFile,
+    review: Option<&ErReview>,
+    importance: Option<&ImportanceRepoConfig>,
+    file_kinds: Option<&FileKindRepoConfig>,
+) -> bool {
     if rules.is_empty() {
         return true;
     }
@@ -269,9 +369,9 @@ pub fn apply_filter_with_context(
 
     // Phase 1: Check include rules (OR logic)
     let included = if has_includes {
-        rules
-            .iter()
-            .any(|r| r.is_include() && matches_rule_with_context(r, file, review, importance))
+        rules.iter().any(|r| {
+            r.is_include() && matches_rule_with_context(r, file, review, importance, file_kinds)
+        })
     } else {
         // No include rules → start with all files
         true
@@ -282,9 +382,9 @@ pub fn apply_filter_with_context(
     }
 
     // Phase 2: Check exclude rules (any match removes the file)
-    let excluded = rules
-        .iter()
-        .any(|r| !r.is_include() && matches_rule_with_context(r, file, review, importance));
+    let excluded = rules.iter().any(|r| {
+        !r.is_include() && matches_rule_with_context(r, file, review, importance, file_kinds)
+    });
 
     !excluded
 }
@@ -294,6 +394,7 @@ fn matches_rule_with_context(
     file: &DiffFile,
     review: Option<&ErReview>,
     importance: Option<&ImportanceRepoConfig>,
+    file_kinds: Option<&FileKindRepoConfig>,
 ) -> bool {
     match rule {
         FilterRule::Risk { levels, .. } => {
@@ -307,6 +408,11 @@ fn matches_rule_with_context(
         FilterRule::Importance { tiers, .. } => {
             let tier = importance.map_or(ImportanceTier::Normal, |rules| rules.resolve(&file.path));
             tiers.contains(&tier)
+        }
+        FilterRule::Kind { kinds, .. } => {
+            let kind =
+                file_kinds.map_or_else(|| classify_path(&file.path), |k| k.classify(&file.path));
+            kinds.contains(&kind)
         }
         _ => matches_rule(rule, file),
     }
@@ -334,6 +440,7 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
         // Nothing to resolve a tier against here, which is the case a repo with
         // no declared rules is in anyway: every path reads as `Normal`.
         FilterRule::Importance { tiers, .. } => tiers.contains(&ImportanceTier::Normal),
+        FilterRule::Kind { kinds, .. } => kinds.contains(&classify_path(&file.path)),
     }
 }
 
@@ -864,17 +971,10 @@ mod tests {
 
     #[test]
     fn test_parse_risk_unknown_level_skipped() {
-        // "risk:critical" strips the prefix to "critical" but that's not a known level →
-        // try_parse_risk returns None (empty levels), falls through to glob pattern "risk:critical"
-        // which is a valid (if unusual) glob. The rule count will be 1 as a Glob, not Risk.
+        // "critical" is not a level. The segment is dropped: as a substring
+        // "risk:critical" would match no path and empty the list.
         let rules = parse_filter_expr("+risk:critical");
-        // The important check: no Risk rule is produced
-        for rule in &rules {
-            assert!(
-                !matches!(rule, FilterRule::Risk { .. }),
-                "should not produce a Risk rule for unknown level"
-            );
-        }
+        assert!(rules.is_empty(), "{rules:?}");
     }
 
     // ── Importance filter tests ──
@@ -934,14 +1034,9 @@ mod tests {
     #[test]
     fn parse_importance_unknown_tier_produces_no_rule() {
         // Parallel to the risk case: "importance:critical" is not a tier, so the
-        // segment falls through to the plain-text path instead of filtering.
+        // segment is dropped rather than becoming a substring nothing matches.
         let rules = parse_filter_expr("+importance:critical");
-        for rule in &rules {
-            assert!(
-                !matches!(rule, FilterRule::Importance { .. }),
-                "should not produce an Importance rule for an unknown tier"
-            );
-        }
+        assert!(rules.is_empty(), "{rules:?}");
     }
 
     #[test]
@@ -1057,5 +1152,173 @@ mod tests {
         assert!(apply_filter(&api_rules, &route));
         assert!(apply_filter(&api_rules, &proto));
         assert!(!apply_filter(&api_rules, &docs));
+    }
+
+    // ── Kind filter tests ──
+
+    #[test]
+    fn kind_code_is_an_alias_for_production() {
+        let rules = parse_filter_expr("kind:code");
+        assert!(matches!(
+            rules.as_slice(),
+            [FilterRule::Kind { include: true, kinds }] if kinds == &[FileKind::Production]
+        ));
+        assert!(matches!(
+            parse_filter_expr("-kind:test").as_slice(),
+            [FilterRule::Kind { include: false, kinds }] if kinds == &[FileKind::Test]
+        ));
+    }
+
+    /// An unknown kind must not fall through to a substring rule: "kind:sources"
+    /// matches no path, so the list would go empty without saying why.
+    #[test]
+    fn unknown_kind_parses_to_no_rule() {
+        let rules = parse_filter_expr("kind:sources");
+        assert!(rules.is_empty(), "{rules:?}");
+        let file = make_file("src/lib.rs", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &file));
+    }
+
+    #[test]
+    fn kind_accepts_plural_and_short_spellings() {
+        assert!(matches!(
+            parse_filter_expr("kind:tests").as_slice(),
+            [FilterRule::Kind { kinds, .. }] if kinds == &[FileKind::Test]
+        ));
+        assert!(matches!(
+            parse_filter_expr("kind:stories").as_slice(),
+            [FilterRule::Kind { kinds, .. }] if kinds == &[FileKind::Storybook]
+        ));
+    }
+
+    /// `-kind:test,docs` excludes both kinds. Read as "exclude tests" plus an
+    /// include substring `docs`, it would hide every code file.
+    #[test]
+    fn comma_list_values_join_the_rule_before_them() {
+        let rules = parse_filter_expr("-kind:test,docs");
+        assert!(matches!(
+            rules.as_slice(),
+            [FilterRule::Kind { include: false, kinds }]
+                if kinds == &[FileKind::Test, FileKind::Docs]
+        ));
+        let src = make_file("src/lib.rs", FileStatus::Modified, 1, 0);
+        let doc = make_file("README.md", FileStatus::Modified, 1, 0);
+        assert!(apply_filter(&rules, &src));
+        assert!(!apply_filter(&rules, &doc));
+
+        assert!(matches!(
+            parse_filter_expr("risk:high,medium").as_slice(),
+            [FilterRule::Risk { levels, .. }] if levels == &[RiskLevel::High, RiskLevel::Medium]
+        ));
+        assert!(matches!(
+            parse_filter_expr("importance:foundational,isolated").as_slice(),
+            [FilterRule::Importance { tiers, .. }]
+                if tiers == &[ImportanceTier::Foundational, ImportanceTier::Isolated]
+        ));
+    }
+
+    /// A first value that does not read must not strand the ones after it as
+    /// substrings: `kind:bogus,test` still selects tests.
+    #[test]
+    fn values_after_an_unknown_first_value_still_join_the_list() {
+        assert!(matches!(
+            parse_filter_expr("kind:bogus,test").as_slice(),
+            [FilterRule::Kind { include: true, kinds }] if kinds == &[FileKind::Test]
+        ));
+        assert!(matches!(
+            parse_filter_expr("-kind:bogus,test,docs").as_slice(),
+            [FilterRule::Kind { include: false, kinds }]
+                if kinds == &[FileKind::Test, FileKind::Docs]
+        ));
+    }
+
+    /// `Kind:code` as a substring would match no path and empty the list.
+    #[test]
+    fn list_prefixes_match_in_any_case() {
+        assert!(matches!(
+            parse_filter_expr("Kind:Code").as_slice(),
+            [FilterRule::Kind { kinds, .. }] if kinds == &[FileKind::Production]
+        ));
+        assert!(matches!(
+            parse_filter_expr("RISK:high").as_slice(),
+            [FilterRule::Risk { levels, .. }] if levels == &[RiskLevel::High]
+        ));
+    }
+
+    /// After an exclude list, a word that is not one of its values is an
+    /// include: `-risk:info,auth` hides info-risk files and keeps the paths
+    /// containing `auth`. A new rule keeps its own sign.
+    #[test]
+    fn non_values_after_an_exclude_list_keep_their_meaning() {
+        assert!(matches!(
+            parse_filter_expr("-risk:info,auth").as_slice(),
+            [
+                FilterRule::Risk { include: false, .. },
+                FilterRule::Substring { include: true, needle },
+            ] if needle == "auth"
+        ));
+        assert!(matches!(
+            parse_filter_expr("-kind:test,risk:high").as_slice(),
+            [
+                FilterRule::Kind { include: false, .. },
+                FilterRule::Risk { include: true, .. },
+            ]
+        ));
+        assert!(matches!(
+            parse_filter_expr("-risk:low,src/api").as_slice(),
+            [
+                FilterRule::Risk { include: false, .. },
+                FilterRule::Substring { include: true, needle },
+            ] if needle == "src/api"
+        ));
+    }
+
+    /// A bare segment that is not a value of the list before it, or a signed
+    /// one, starts its own rule.
+    #[test]
+    fn non_values_after_a_list_start_new_rules() {
+        let rules = parse_filter_expr("kind:code,src/api");
+        assert!(matches!(
+            rules.as_slice(),
+            [FilterRule::Kind { .. }, FilterRule::Substring { needle, .. }] if needle == "src/api"
+        ));
+        let rules = parse_filter_expr("kind:code,-docs");
+        assert!(matches!(
+            rules.as_slice(),
+            [FilterRule::Kind { kinds, .. }, FilterRule::Substring { include: false, .. }]
+                if kinds == &[FileKind::Production]
+        ));
+    }
+
+    #[test]
+    fn kind_code_keeps_only_production_files() {
+        let rules = parse_filter_expr("kind:code");
+        let src = make_file("src/lib.rs", FileStatus::Modified, 5, 0);
+        let test = make_file("src/lib.test.ts", FileStatus::Added, 5, 0);
+        let lock = make_file("Cargo.lock", FileStatus::Modified, 5, 0);
+        let doc = make_file("README.md", FileStatus::Modified, 5, 0);
+        assert!(apply_filter(&rules, &src));
+        assert!(!apply_filter(&rules, &test));
+        assert!(!apply_filter(&rules, &lock));
+        assert!(!apply_filter(&rules, &doc));
+    }
+
+    /// Same files the header's code count sums, so the repo's overrides apply.
+    #[test]
+    fn kind_filter_applies_file_kind_overrides() {
+        let rules = parse_filter_expr("kind:code");
+        let schema = make_file("src/api/schema.ts", FileStatus::Modified, 900, 0);
+        let overrides = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
+        assert!(apply_filter(&rules, &schema));
+        assert!(!apply_filter_with_kinds(
+            &rules,
+            &schema,
+            None,
+            None,
+            Some(&overrides)
+        ));
     }
 }

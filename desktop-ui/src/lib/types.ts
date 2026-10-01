@@ -151,9 +151,11 @@ export interface TourSnapshot {
 }
 
 export interface FilterSuggestionSnapshot {
-  kind: "preset" | "history";
+  kind: "kind" | "preset" | "history";
   name: string;
   expr: string;
+  /** Files the suggestion selects; set for `kind` suggestions. */
+  files?: number;
 }
 
 export interface ExpertInfo {
@@ -225,6 +227,12 @@ export interface TriageSnapshot {
   files_changed: number;
   approx_risk: string;
   domains: string[];
+  /** `isolated` | `contained` | `broad` | `unknown`. Optional for fixtures. */
+  reach?: string;
+  reach_reason?: string;
+  touch_points?: string[];
+  /** Only sent when the agent cited where the guard is checked. */
+  guard?: { kind: string; name: string; evidence: string } | null;
 }
 
 export interface ChecklistItemSnapshot {
@@ -549,6 +557,12 @@ export interface AppSnapshot {
   filter: string | null;
   reviewed_count: number;
   total_count: number;
+  /** Whole-diff line counts, independent of the file filter. `code` leaves out
+   *  tests, Storybook, generated files and docs. Optional only for fixtures. */
+  diff_stats?: {
+    total: { additions: number; deletions: number };
+    code: { additions: number; deletions: number };
+  };
   ai: AiSnapshot;
   pr: PrSnapshot | null;
   panels: Panels;

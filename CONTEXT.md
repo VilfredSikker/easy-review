@@ -147,6 +147,28 @@ _Avoid_: risk, priority, weight, blast radius
 A file's importance: `foundational`, `normal`, or `isolated`.
 _Avoid_: level, rank, class
 
+**Reach**:
+How much existing code a change touches: `isolated` (new code that nothing
+existing calls into, apart from its wiring), `contained`, or `broad`. Judged
+by triage from the engine's change facts, and weighed into risk. Importance is
+a standing property of a path; reach is a property of one diff. See
+[`docs/adr/0039`](./docs/adr/0039-reach-is-judged-from-engine-facts.md).
+_Avoid_: blast radius, impact, scope
+
+**Guard**:
+A switch that keeps new code from running until someone turns it on: a
+feature flag, a permission check, a config switch, a route nothing links to
+yet. It counts toward reach only with evidence, meaning the `path:line` where
+it is checked. Distinct from a **Gate**, which is a confidence policy.
+_Avoid_: gate, flag (a flag is one kind of guard)
+
+**File kind**:
+What a changed file is for review accounting: `production`, `test`,
+`storybook`, `generated`, or `docs`. Built-in conventions decide it unless the
+repo's `[file_kinds]` table says otherwise. The **code** line count is the
+`production` lines alone.
+_Avoid_: category, file type (a file type is an extension)
+
 **Checklist**:
 A list of outcomes a reviewer works through for one view — the schema changed,
 the tests cover it, the public surface did not move — rather than a list of

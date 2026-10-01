@@ -390,6 +390,28 @@ pub struct ScopeStat {
     pub deletions: usize,
 }
 
+/// Line counts for the whole active diff, independent of the file filter.
+/// `code` leaves out tests, Storybook, generated files and docs (`FileKind`),
+/// after the repo's `[file_kinds]` overrides.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DiffLineStatsSnapshot {
+    pub total: ScopeStat,
+    pub code: ScopeStat,
+}
+
+impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
+    fn from(stats: &er_engine::git::ProdDiffStats) -> Self {
+        let stat = |k: &er_engine::git::DiffKindStats| ScopeStat {
+            additions: k.additions,
+            deletions: k.deletions,
+        };
+        Self {
+            total: stat(&stats.total),
+            code: stat(&stats.production),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub mode: String,
@@ -402,6 +424,8 @@ pub struct AppSnapshot {
     pub filter: Option<String>,
     pub reviewed_count: usize,
     pub total_count: usize,
+    /// Whole-diff line counts for the header; see `DiffLineStatsSnapshot`.
+    pub diff_stats: DiffLineStatsSnapshot,
     pub ai: AiSnapshot,
     pub pr: Option<PrSnapshot>,
     pub panels: Panels,
@@ -996,10 +1020,13 @@ pub struct CommitSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilterSuggestionSnapshot {
-    /// "preset" | "history"
+    /// "kind" | "preset" | "history"
     pub kind: String,
     pub name: String,
     pub expr: String,
+    /// Files in the diff the suggestion selects; set for `kind` suggestions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1273,6 +1300,21 @@ pub struct TriageSnapshot {
     pub files_changed: u32,
     pub approx_risk: String,
     pub domains: Vec<String>,
+    /// `isolated` / `contained` / `broad`, or `unknown` for triage from before
+    /// reach existed.
+    pub reach: String,
+    pub reach_reason: String,
+    pub touch_points: Vec<String>,
+    /// Present only when the agent pointed at where the guard is checked;
+    /// an unevidenced guard claim is dropped here (`TriageGuard::is_evidenced`).
+    pub guard: Option<TriageGuardSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageGuardSnapshot {
+    pub kind: String,
+    pub name: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2329,19 +2371,36 @@ fn build_snapshot_inner(
 
     let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
         use er_engine::app::filter::FILTER_PRESETS;
-        let mut out: Vec<FilterSuggestionSnapshot> = FILTER_PRESETS
-            .iter()
-            .map(|p| FilterSuggestionSnapshot {
-                kind: "preset".to_string(),
-                name: p.name.to_string(),
-                expr: p.expr.to_string(),
+        // One `kind:` entry per kind the diff has, counted with the repo's
+        // overrides so the number matches what the filter will show.
+        let mut out: Vec<FilterSuggestionSnapshot> = tab
+            .kind_file_counts()
+            .into_iter()
+            .map(|(kind, files)| {
+                let name = match kind {
+                    er_engine::git::FileKind::Production => "code",
+                    other => other.as_str(),
+                };
+                FilterSuggestionSnapshot {
+                    kind: "kind".to_string(),
+                    name: name.to_string(),
+                    expr: format!("kind:{name}"),
+                    files: Some(files),
+                }
             })
             .collect();
+        out.extend(FILTER_PRESETS.iter().map(|p| FilterSuggestionSnapshot {
+            kind: "preset".to_string(),
+            name: p.name.to_string(),
+            expr: p.expr.to_string(),
+            files: None,
+        }));
         for expr in &tab.filter_history {
             out.push(FilterSuggestionSnapshot {
                 kind: "history".to_string(),
                 name: expr.clone(),
                 expr: expr.clone(),
+                files: None,
             });
         }
         out
@@ -2579,6 +2638,7 @@ fn build_snapshot_inner(
         filter,
         reviewed_count,
         total_count,
+        diff_stats: DiffLineStatsSnapshot::from(&tab.diff_line_stats()),
         ai,
         pr,
         panels: Panels {
@@ -4142,6 +4202,19 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             files_changed: t.diff_stats.files_changed,
             approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
+            reach: t.reach.level.as_str().to_string(),
+            reach_reason: t.reach.reason.clone(),
+            touch_points: t.reach.touch_points.clone(),
+            guard: t
+                .reach
+                .guard
+                .as_ref()
+                .filter(|g| g.is_evidenced())
+                .map(|g| TriageGuardSnapshot {
+                    kind: g.kind.clone(),
+                    name: g.name.clone(),
+                    evidence: g.evidence.clone(),
+                }),
         }
     });
 

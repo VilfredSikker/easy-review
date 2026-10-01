@@ -10,6 +10,7 @@
   import type { FileSnapshot } from "$lib/types";
   import { extChip, hiddenFindingCounts, toggledPath, toggledPaths } from "$lib/fileTreeModel";
   import { riskDotClass } from "$lib/fileStatus";
+  import { moveHighlight, visibleSuggestions } from "$lib/filterSuggestions";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
 
   interface Props {
@@ -116,7 +117,23 @@
     else app.cmd("clear_filter");
   }
 
+  /** Quick filters listed under the box for the current draft. */
+  const suggestions = $derived(
+    pickerMode ? [] : visibleSuggestions(snapshot?.filter_suggestions ?? [], filterDraft),
+  );
+  /** Row the arrow keys have moved to; -1 while the caret is in the input. */
+  let highlight = $state(-1);
+  let suggestionsEl: HTMLDivElement | null = $state(null);
+
+  $effect(() => {
+    if (highlight < 0 || !suggestionsEl) return;
+    suggestionsEl
+      .querySelector(`[data-sugg-idx="${highlight}"]`)
+      ?.scrollIntoView({ block: "nearest" });
+  });
+
   function onFilterInput(e: Event) {
+    highlight = -1;
     filterDraft = (e.target as HTMLInputElement).value;
     if (pickerMode) return;
     clearTimer();
@@ -127,12 +144,41 @@
     }, DEBOUNCE_MS);
   }
 
+  // Blur hides the list after a delay so a suggestion's mousedown lands first.
+  // Refocusing inside that window must cancel it, or the list vanishes while
+  // the input still has focus and the arrows move a highlight nobody can see.
+  let blurTimer: ReturnType<typeof setTimeout> | null = null;
+
+  function onFilterFocus() {
+    if (blurTimer !== null) clearTimeout(blurTimer);
+    blurTimer = null;
+    inputFocused = true;
+    highlight = -1;
+  }
+
+  function onFilterBlur() {
+    blurTimer = setTimeout(() => {
+      blurTimer = null;
+      inputFocused = false;
+    }, 150);
+  }
+
   function onFilterKeydown(e: KeyboardEvent) {
-    if (e.key === "Enter") {
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && inputFocused && suggestions.length > 0) {
+      e.preventDefault();
+      highlight = moveHighlight(highlight, suggestions.length, e.key === "ArrowDown" ? 1 : -1);
+    } else if (e.key === "Enter") {
       e.preventDefault();
       if (pickerMode) return;
-      applyFilter(filterDraft);
+      const picked = highlight >= 0 ? suggestions[highlight] : undefined;
+      highlight = -1;
+      if (picked) pickSuggestion(picked.expr);
+      else applyFilter(filterDraft);
       inputEl?.blur();
+    } else if (e.key === "Escape" && highlight >= 0) {
+      // First Escape leaves the list; the next one clears the filter.
+      e.preventDefault();
+      highlight = -1;
     } else if (e.key === "Escape") {
       e.preventDefault();
       filterDraft = "";
@@ -144,11 +190,15 @@
   }
 
   function pickSuggestion(expr: string) {
+    highlight = -1;
     filterDraft = expr;
     applyFilter(expr);
   }
 
-  onDestroy(clearTimer);
+  onDestroy(() => {
+    clearTimer();
+    if (blurTimer !== null) clearTimeout(blurTimer);
+  });
 
   // ── Virtualization ────────────────────────────────────────────────────────
   const VIRTUALIZE_THRESHOLD = 1000;
@@ -353,25 +403,31 @@
         value={filterDraft}
         oninput={onFilterInput}
         onkeydown={onFilterKeydown}
-        onfocus={() => (inputFocused = true)}
-        onblur={() => setTimeout(() => (inputFocused = false), 150)}
+        onfocus={onFilterFocus}
+        onblur={onFilterBlur}
       />
       <span class="kbd">/</span>
     </div>
-    <!-- Preset/recent suggestions render in normal flow ABOVE the results and
-         only while the query is empty — once the user types, they collapse so
-         the live matching files below stay visible (they used to be covered
-         by an absolutely-positioned dropdown). -->
-    {#if !pickerMode && inputFocused && filterDraft.trim().length === 0 && (snapshot?.filter_suggestions?.length ?? 0) > 0}
-      <div class="border-t border-hairline max-h-40 overflow-y-auto">
-        {#each snapshot?.filter_suggestions ?? [] as sug, i (i)}
+    <!-- Quick filters render in normal flow ABOVE the results: all of them
+         while the query is empty, only matching kinds while typing `kind:`,
+         none otherwise — so the live matching files below stay visible rather
+         than sitting under a dropdown. -->
+    {#if !pickerMode && inputFocused && suggestions.length > 0}
+      <div class="border-t border-hairline max-h-40 overflow-y-auto" bind:this={suggestionsEl}>
+        {#each suggestions as sug, i (i)}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div
-            class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover"
+            class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover
+              {i === highlight ? 'bg-hover' : ''}"
+            data-sugg-idx={i}
+            aria-selected={i === highlight}
             onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
           >
-            <span class="text-[10px] mono uppercase shrink-0 {sug.kind === 'preset' ? 'text-accent' : 'text-muted'}">{sug.kind === 'preset' ? 'preset' : 'recent'}</span>
-            {#if sug.kind === 'preset'}
+            <span class="text-[10px] mono uppercase shrink-0 {sug.kind === 'history' ? 'text-muted' : 'text-accent'}">{sug.kind === 'history' ? 'recent' : sug.kind}</span>
+            {#if sug.kind === 'kind'}
+              <span class="text-fg-2 mono shrink-0">{sug.expr}</span>
+              <span class="text-muted mono text-[11px] ml-auto shrink-0">{sug.files} {sug.files === 1 ? 'file' : 'files'}</span>
+            {:else if sug.kind === 'preset'}
               <span class="text-fg-2 shrink-0">{sug.name}</span>
               <span class="text-muted mono truncate text-[11px]">{sug.expr}</span>
             {:else}

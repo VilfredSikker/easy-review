@@ -123,17 +123,17 @@ fn importance_file_rows(
         .collect()
 }
 
+/// `repo_key` is the active tab's `TabState::rules_key`, so Settings shows the
+/// table the tab's filter and header resolve against.
 pub fn desktop_settings_snapshot(
     config: &ErConfig,
     repo_root: &str,
+    repo_key: &str,
     changed_paths: &[String],
 ) -> DesktopSettingsSnapshot {
     let grouped = settings_fields_grouped(config);
 
-    // Keyed the way managed storage keys a repo, so the table the agent writes
-    // and the bucket a review lands in agree on the repo's name.
-    let repo_slug = crate::storage::slug_repo(repo_root);
-    let rules = config.importance.repo(&repo_slug);
+    let rules = config.importance.repo(repo_key);
     let importance_rules = rules
         .map(|table| {
             table
@@ -539,6 +539,21 @@ mod tests {
     fn validate_agent_args_requires_prompt_placeholder() {
         assert!(validate_config_text_field("agent.args", "--print").is_some());
         assert!(validate_config_text_field("agent.args", "-p {prompt}").is_none());
+    }
+
+    /// A remote-only tab's `repo_root` is the process's working directory;
+    /// Settings must list the table under the tab's key, not one derived from
+    /// that directory.
+    #[test]
+    fn settings_read_importance_under_the_tabs_key() {
+        let mut config = ErConfig::default();
+        config.importance.items.insert(
+            "my-service".to_string(),
+            importance_rules(&[("src/**", "foundational")], "normal"),
+        );
+        let snap = desktop_settings_snapshot(&config, "/", "my-service", &[]);
+        assert_eq!(snap.importance_rules.len(), 1);
+        assert_eq!(snap.repo_root, "/");
     }
 
     #[test]

@@ -1,14 +1,17 @@
 pub mod desktop_settings;
+mod file_kinds;
 pub mod inbox;
+mod path_rules;
 pub mod settings;
 
 use anyhow::Result;
-use glob::{MatchOptions, Pattern};
+use glob::Pattern;
 
 pub use desktop_settings::{
     apply_config_field, desktop_settings_snapshot, validate_config_text_field, ConfigFieldValue,
     ConfigHubFieldDto, DesktopSettingsSnapshot,
 };
+pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
 pub use inbox::{InboxConfig, InboxKindToggles};
 use serde::{Deserialize, Serialize};
 pub use settings::{
@@ -39,6 +42,8 @@ pub struct ErConfig {
     pub packages: PackagesConfig,
     #[serde(default)]
     pub importance: ImportanceConfig,
+    #[serde(default)]
+    pub file_kinds: FileKindsConfig,
     #[serde(default)]
     pub inbox: InboxConfig,
 }
@@ -180,7 +185,7 @@ impl ImportanceProposal {
                 // the settings table, and matched against nothing — a rule
                 // that reads as active and can never fire. Exact keys are
                 // looked up rather than compiled, so only patterns are built.
-                let usable = !is_pattern(key) || Pattern::new(key).is_ok();
+                let usable = !path_rules::is_pattern(key) || Pattern::new(key).is_ok();
                 if !readable || !usable {
                     dropped += 1;
                 }
@@ -237,25 +242,6 @@ impl ImportanceTier {
     }
 }
 
-/// Path-shaped rules match separator by separator, so `src/*` names the files
-/// directly under `src`. A bare extension pattern never reaches here — the
-/// file-type level matches those against the basename.
-const IMPORTANCE_MATCH_OPTIONS: MatchOptions = MatchOptions {
-    case_sensitive: true,
-    require_literal_separator: true,
-    require_literal_leading_dot: false,
-};
-
-/// Whether a rule key is a pattern rather than the name of one path.
-fn is_pattern(key: &str) -> bool {
-    key.contains(['*', '?', '['])
-}
-
-fn matches_pattern(pattern: &str, target: &str) -> bool {
-    Pattern::new(pattern)
-        .is_ok_and(|pattern| pattern.matches_with(target, IMPORTANCE_MATCH_OPTIONS))
-}
-
 impl ImportanceConfig {
     /// The rule table generated for `repo`, if there is one.
     pub fn repo(&self, repo: &str) -> Option<&ImportanceRepoConfig> {
@@ -270,12 +256,8 @@ impl ImportanceConfig {
 }
 
 impl ImportanceRepoConfig {
-    /// Resolve a repo-relative path to its tier.
-    ///
-    /// Precedence runs most-specific-first: exact path, then glob, then file
-    /// type, then `default`. Within the pattern levels the longest matching key
-    /// wins, so a narrow rule can carve an exception out of a broader one that
-    /// would otherwise claim the same path.
+    /// Resolve a repo-relative path to its tier: the rule that claims it, else
+    /// `default`. Precedence is [`path_rules::matching_rule`]'s.
     pub fn resolve(&self, path: &str) -> ImportanceTier {
         self.matching_rule(path)
             .map_or_else(|| self.default_tier(), |(_, tier)| tier)
@@ -289,9 +271,7 @@ impl ImportanceRepoConfig {
     /// levels again to recover the key is a second copy of the precedence
     /// order, free to disagree with this one.
     pub fn matching_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
-        self.exact_rule(path)
-            .or_else(|| self.glob_rule(path))
-            .or_else(|| self.file_type_rule(path))
+        path_rules::matching_rule(&self.rules, path, ImportanceTier::parse)
     }
 
     /// The tier a path no rule claims resolves to.
@@ -300,39 +280,6 @@ impl ImportanceRepoConfig {
             .as_deref()
             .and_then(ImportanceTier::parse)
             .unwrap_or_default()
-    }
-
-    /// A key with no metacharacters names one path.
-    fn exact_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
-        let (key, tier) = self.rules.get_key_value(path)?;
-        Some((key.as_str(), ImportanceTier::parse(tier)?))
-    }
-
-    fn glob_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
-        self.pattern_rule(path, true)
-    }
-
-    fn file_type_rule(&self, path: &str) -> Option<(&str, ImportanceTier)> {
-        let basename = path.rsplit(['/', '\\']).next().unwrap_or(path);
-        self.pattern_rule(basename, false)
-    }
-
-    /// A key carrying a separator names a place in the tree and is matched
-    /// against the whole path; one without names a kind of file and is matched
-    /// against the basename.
-    ///
-    /// A winning key whose tier does not read resolves to nothing, the same as
-    /// no match at all: the fall-through goes to the next level, never to the
-    /// next-shortest matching key, so a typo cannot silently promote a broader
-    /// rule into the answer.
-    fn pattern_rule(&self, target: &str, path_shaped: bool) -> Option<(&str, ImportanceTier)> {
-        let (key, tier) = self
-            .rules
-            .iter()
-            .filter(|(key, _)| is_pattern(key) && key.contains('/') == path_shaped)
-            .filter(|(key, _)| matches_pattern(key, target))
-            .max_by_key(|(key, _)| key.len())?;
-        Some((key.as_str(), ImportanceTier::parse(tier)?))
     }
 }
 
