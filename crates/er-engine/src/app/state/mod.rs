@@ -2534,8 +2534,9 @@ impl TabState {
             log_branch_profile_phase(self, "enter_pr_diff.fetch_pr_head", t);
             let base = self.base_branch.clone();
             let t = Instant::now();
-            let base_ref = crate::github::fetch_base_branch_ref(
+            let base_ref = crate::github::fetch_pr_base_ref(
                 &self.repo_root,
+                pr_number,
                 base.trim_start_matches("origin/"),
             )?;
             log_branch_profile_phase(self, "enter_pr_diff.fetch_base_branch_ref", t);
@@ -2677,7 +2678,7 @@ impl TabState {
             ),
         };
 
-        let resolved_base = crate::github::fetch_base_branch_ref(repo_root, &base_branch)?;
+        let resolved_base = crate::github::fetch_pr_base_ref(repo_root, pr_number, &base_branch)?;
         // The oid the diff is about to be computed against, so the desktop
         // freshness check can compare it to the latest PR head_oid.
         let last_diff_head_oid = crate::github::rev_parse_oid(repo_root, &head_ref);
@@ -2755,14 +2756,18 @@ impl TabState {
             // it so the comparison reflects current origin (e.g. main advanced).
             // Best-effort: if the fetch fails (e.g. offline), keep the existing
             // base ref and still recompute the diff rather than erroring out.
+            // A base pinned under `refs/er/` is a deleted branch's last commit
+            // (see `fetch_pr_base_ref`): there is nothing on origin to re-fetch.
             let base = self.base_branch.clone();
             let base_short = base.strip_prefix("origin/").unwrap_or(&base);
-            let t = Instant::now();
-            match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
-                Ok(resolved_base) => self.base_branch = resolved_base,
-                Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
+            if !crate::github::is_pinned_pr_base(base_short) {
+                let t = Instant::now();
+                match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
+                    Ok(resolved_base) => self.base_branch = resolved_base,
+                    Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
+                }
+                log_branch_profile_phase(self, "fetch_branch_base_ref", t);
             }
-            log_branch_profile_phase(self, "fetch_branch_base_ref", t);
         }
 
         let t = Instant::now();

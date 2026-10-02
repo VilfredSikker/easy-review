@@ -9,6 +9,7 @@
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import { nextCodeFilter } from "$lib/codeFilter";
+  import { sourceToggleState } from "$lib/sourceToggle";
 
   const snapshot = $derived(app.snapshot);
   const tabs = $derived(snapshot?.tabs ?? []);
@@ -47,15 +48,12 @@
   const prActive = $derived(
     mode === "pr" || (mode === "tour" && snapshot?.tour?.scope === "pr"),
   );
-  /** Show the [Local Branch | PR Diff] toggle when the branch has a PR, the
-   *  tab is local (remote-only tabs are implicitly PR Diff), AND the head
-   *  branch is checked out. Without a checkout there's no working-tree "Local
-   *  Branch" view distinct from PR Diff (both would be `gh pr diff`), so the
-   *  toggle is hidden and the tab is PR Diff only. */
-  const showSourceToggle = $derived(
-    prNumber != null
-      && activeTab?.kind !== "remote_pr"
-      && snapshot?.local_branch_checked_out === true,
+  const sourceToggle = $derived(
+    sourceToggleState({
+      prNumber,
+      tabKind: activeTab?.kind,
+      localBranchCheckedOut: snapshot?.local_branch_checked_out,
+    }),
   );
 
   /** Set when the open diff is behind origin (PR head or base advanced). */
@@ -313,21 +311,25 @@
   {/if}
 
   <!-- Local Branch | PR Diff segmented toggle (right side) -->
-  {#if showSourceToggle}
+  {#if activeTab}
     <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0">
       <button type="button"
         role="tab"
         aria-selected={!prActive}
-        onclick={() => void app.cmd("set_mode", { mode: "branch" })}
-        class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+        aria-disabled={!sourceToggle.localAvailable}
+        title={sourceToggle.localReason ?? undefined}
+        onclick={() => sourceToggle.localAvailable && void app.cmd("set_mode", { mode: "branch" })}
+        class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2 aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:text-muted'}"
       >
         Local Branch
       </button>
       <button type="button"
         role="tab"
         aria-selected={prActive}
-        onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber })}
-        class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+        aria-disabled={!sourceToggle.prAvailable}
+        title={sourceToggle.prReason ?? undefined}
+        onclick={() => sourceToggle.prAvailable && void app.cmd("set_mode", { mode: "pr_diff", prNumber })}
+        class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2 aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:text-muted'}"
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
         PR Diff

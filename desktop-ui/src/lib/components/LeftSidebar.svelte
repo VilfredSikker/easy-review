@@ -95,6 +95,7 @@
   let prRevealCountByProject = $state<Record<string, number>>({});
   let prSavedRevealCountByProject = $state<Record<string, number>>({});
   let prRecentRevealCountByProject = $state<Record<string, number>>({});
+  let prMergedRevealCountByProject = $state<Record<string, number>>({});
   let sidebarSearch = $state("");
   // Per-project 3-dot menu open state
   let projectMenuOpen = $state<string | null>(null);
@@ -1259,9 +1260,19 @@
                 {:else if sectionKey === "recently_merged" && (visibleRecentlyMergedPrs(project).length > 0 || (loadingPrList && project.recently_merged?.length === 0 && !searchActive))}
                   {@render collapsibleSectionHeader("recently_merged", meta.label, visibleRecentlyMergedPrs(project).length, sectionIdx, true)}
                   {#if isSectionOpen(project.id, "recently_merged")}
-                  {#each visibleRecentlyMergedPrs(project) as pr (pr.number)}
+                  {@const mergedVisible = visibleRecentlyMergedPrs(project).slice(0, revealCount(prMergedRevealCountByProject, project.id))}
+                  {#each mergedVisible as pr (pr.number)}
                     {@render prRow(pr)}
                   {/each}
+                  {#if visibleRecentlyMergedPrs(project).length > mergedVisible.length}
+                    <button
+                      type="button"
+                      onclick={() => (prMergedRevealCountByProject = revealMore(prMergedRevealCountByProject, project.id))}
+                      class="w-full text-left px-2 py-1 rounded-md text-[12px] text-fg-3 hover:bg-hover"
+                    >
+                      Show more
+                    </button>
+                  {/if}
                   {/if}
                 {/if}
 

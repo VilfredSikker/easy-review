@@ -402,7 +402,7 @@ export interface ProjectSnapshot {
   prs_to_review: PrInfo[];
   /** PRs opened for review recently. */
   recent_prs: PrInfo[];
-  /** Most recently merged PRs (max 5). */
+  /** Most recently merged PRs, newest first (max 25; the sidebar pages them). */
   recently_merged: PrInfo[];
   /** True when cached PR data is older than TTL. */
   pr_cache_stale?: boolean;

@@ -6129,6 +6129,9 @@ fn kick_background_branch_refresh(
     branch_name: String,
     base_branch: String,
 ) {
+    if er_engine::github::is_pinned_pr_base(&base_branch) {
+        return; // a deleted base's commit: nothing on origin to fetch
+    }
     let flight_key = (repo_root.clone(), branch_name.clone());
     {
         let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() else {
