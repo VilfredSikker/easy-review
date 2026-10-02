@@ -82,3 +82,13 @@ describe("resolveOmittedHunks", () => {
     expect(next.files[0].hunks).toBe(freshHunks);
   });
 });
+
+it("retains fresh complete-content keys while reusing unchanged hunks", () => {
+  const prev = snap([file("README.md", { preview_key: "old-document" })]);
+  const next = snap([file("README.md", { preview_key: "new-document", hunks: [], hunks_omitted: true })]);
+  next.preview_context_key = "new-context";
+  resolveOmittedHunks(prev, next);
+  expect(next.files[0].hunks).toBe(prev.files[0].hunks);
+  expect(next.files[0].preview_key).toBe("new-document");
+  expect(next.preview_context_key).toBe("new-context");
+});

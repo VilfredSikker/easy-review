@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   COMPACTED_STUB_HEIGHT,
+  DOCUMENT_PREVIEW_HEIGHT,
   FILE_HEADER_HEIGHT,
   HUNK_HEADER_HEIGHT,
   LINE_HEIGHT,
@@ -18,6 +19,7 @@ import {
   type RenderModelInputs,
 } from "./diffRenderModel";
 import { splitRows } from "./splitRows";
+import { rowIndexAtOffset, windowFromScrollVariable } from "./virtualWindow";
 import {
   buildAnnotationIndex,
   type CommentVisibility,
@@ -79,6 +81,7 @@ function file(opts: Partial<FileSnapshot> & { path: string; hunks: HunkSnapshot[
     is_lazy_stub: opts.is_lazy_stub,
     source_index: opts.source_index ?? 0,
     cache_key: opts.cache_key ?? `${opts.path}#0`,
+    preview_key: opts.preview_key,
   };
 }
 
@@ -732,6 +735,7 @@ function mkCross(
     vis?: CommentVisibility;
     mode?: string;
     snapshotKey?: string;
+    previewPaths?: ReadonlySet<string>;
   } = {},
 ) {
   const viewMode = opts.viewMode ?? "unified";
@@ -745,6 +749,7 @@ function mkCross(
     annotationIndex: _build(ai, files, mode, vis),
     commentVisibility: vis,
     snapshotKey,
+    previewPaths: opts.previewPaths,
   });
 }
 
@@ -755,6 +760,73 @@ function makeSimpleFile(path: string, ctxLines = 2): FileSnapshot {
   }
   return file({ path, hunks: [hunk({ lines })] });
 }
+
+describe("document preview rows", () => {
+  for (const viewMode of ["unified", "split"] as const) {
+    it(`replaces only the selected file body in ${viewMode}`, () => {
+      const doc = makeSimpleFile("readme.md");
+      const raw = makeSimpleFile("code.ts");
+      const model = mkCross([doc, raw], emptyAi(), {
+        viewMode,
+        previewPaths: new Set([doc.path]),
+      });
+      expect(model.rows.filter((r) => r.filePath === doc.path).map((r) => r.type))
+        .toEqual(["file-header", "document-preview"]);
+      expect(model.rows.filter((r) => r.filePath === raw.path).map((r) => r.type))
+        .toEqual(["file-header", "hunk-header", `content-${viewMode}`, `content-${viewMode}`]);
+      expect(model.maxColsByFile.get(doc.path)).toEqual({ all: 0, left: 0, right: 0 });
+      expect(model.maxColsByFile.get(raw.path)?.all).toBeGreaterThan(0);
+      expect(model.hunkStartRow.get(doc.path)).toEqual([]);
+      expect(rowLineOnSide(model.rows[1], doc, undefined, "new")).toBeNull();
+    });
+  }
+
+  it("keeps the preview header when collapsed and restores its body when expanded", () => {
+    const doc = makeSimpleFile("collapse.md");
+    const raw = makeSimpleFile("collapse.ts");
+    const model = mkCross([doc, raw], emptyAi(), { previewPaths: new Set([doc.path]) });
+    const collapsed = applyCollapsedFiles(model, new Set([doc.path]));
+    expect(collapsed.rows.filter((r) => r.filePath === doc.path).map((r) => r.type))
+      .toEqual(["file-header"]);
+    expect(collapsed.totalHeight).toBe(model.totalHeight - DOCUMENT_PREVIEW_HEIGHT);
+    expect(collapsed.fileStartRow.get(raw.path)).toBe(1);
+    expect(applyCollapsedFiles(model, new Set()).rows[1].type).toBe("document-preview");
+  });
+
+  it("uses the preview row in cumulative offsets and virtual window geometry", () => {
+    const doc = makeSimpleFile("geometry.md");
+    const raw = makeSimpleFile("geometry.ts");
+    const model = mkCross([doc, raw], emptyAi(), { previewPaths: new Set([doc.path]) });
+    const nextHeader = FILE_HEADER_HEIGHT + DOCUMENT_PREVIEW_HEIGHT;
+    expect(model.cumulativeOffsets.slice(0, 3)).toEqual([0, FILE_HEADER_HEIGHT, nextHeader]);
+    expect(rowIndexAtOffset({ ...model, rowCount: model.rows.length }, nextHeader - 1)).toBe(1);
+    expect(rowIndexAtOffset({ ...model, rowCount: model.rows.length }, nextHeader)).toBe(2);
+    expect(windowFromScrollVariable(model.cumulativeOffsets, model.totalHeight,
+      FILE_HEADER_HEIGHT, DOCUMENT_PREVIEW_HEIGHT, { overscan: 0 })).toEqual({
+      start: 1, end: 2, paddingTop: FILE_HEADER_HEIGHT,
+      paddingBottom: model.totalHeight - nextHeader,
+    });
+    expect(model.rowFile.slice(0, 3)).toEqual(new Uint32Array([0, 0, 1]));
+  });
+
+  it("invalidates preview geometry when complete content changes with unchanged hunks", () => {
+    const doc = file({ ...makeSimpleFile("content.md"), preview_key: "blob-a" });
+    const opts = { previewPaths: new Set([doc.path]) };
+    const first = mkCross([doc], emptyAi(), opts);
+    const refreshed = mkCross([{ ...doc, preview_key: "blob-b" }], emptyAi(), opts);
+    expect(refreshed.identity).not.toBe(first.identity);
+    expect(refreshed.rows[1].identity).not.toBe(first.rows[1].identity);
+    expect(mkCross([doc], emptyAi()).rows.some((r) => r.type === "document-preview")).toBe(false);
+  });
+
+  it("replaces unloaded and compacted bodies without loading hunks", () => {
+    for (const extra of [{ is_lazy_stub: true }, { compacted: true }]) {
+      const doc = file({ path: `stub-${JSON.stringify(extra)}.md`, hunks: [], ...extra });
+      const model = mkCross([doc], emptyAi(), { previewPaths: new Set([doc.path]) });
+      expect(model.rows.map((r) => r.type)).toEqual(["file-header", "document-preview"]);
+    }
+  });
+});
 
 describe("getCrossFileModel — concatenation & layout", () => {
   it("rows = file0 ++ file1 ++ file2 in order", () => {

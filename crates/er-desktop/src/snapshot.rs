@@ -414,6 +414,7 @@ impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
+    pub preview_context_key: String,
     pub mode: String,
     pub branch: String,
     pub base: String,
@@ -973,6 +974,7 @@ pub fn resolve_github_status_key(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileSnapshot {
+    pub preview_key: String,
     pub path: String,
     pub status: String,
     pub additions: usize,
@@ -2015,6 +2017,7 @@ fn build_file_snapshot_with_keys(
     };
 
     FileSnapshot {
+        preview_key: tab.file_preview_key(&f.path),
         path: f.path.clone(),
         status: status_str(&f.status),
         additions: f.adds,
@@ -2628,6 +2631,7 @@ fn build_snapshot_inner(
     let stack = snapshot_stack(tab);
 
     let out = AppSnapshot {
+        preview_context_key: tab.preview_context_key(),
         mode: mode.to_string(),
         branch,
         base,

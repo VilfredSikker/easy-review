@@ -69,6 +69,8 @@ export interface HunkSnapshot {
 }
 
 export interface FileSnapshot {
+  /** Complete document identity, independent of visible hunks. */
+  preview_key?: string;
   path: string;
   status: "added" | "modified" | "deleted" | "renamed" | "copied" | "unmerged";
   additions: number;
@@ -536,6 +538,8 @@ export interface GithubStatusSnapshot {
 }
 
 export interface AppSnapshot {
+  /** Retained source context for read-only document requests. */
+  preview_context_key?: string;
   mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
   /** Optional — populated by the engine when in history mode or branch-mode scope. */
   commits?: CommitSummary[];

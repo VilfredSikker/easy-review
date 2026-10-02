@@ -1900,6 +1900,7 @@ fn main() {
             commands::get_snapshot,
             commands::toggle_panel,
             commands::request_file_content,
+            commands::request_file_preview,
             commands::select_file,
             commands::next_file,
             commands::prev_file,

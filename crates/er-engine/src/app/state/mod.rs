@@ -4,6 +4,7 @@ pub(super) mod comments;
 pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
+pub mod preview;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
@@ -749,6 +750,7 @@ pub struct TabState {
 
     /// Cached mtime per file path, populated on refresh (avoids per-frame fs::metadata calls)
     pub mtime_cache: HashMap<String, std::time::SystemTime>,
+    pub preview_blob_ids: HashMap<String, String>,
 
     /// Pre-lowercased search query for use in visible_files() (avoids per-call allocation)
     pub search_query_lower: String,
@@ -977,6 +979,8 @@ pub struct TabState {
     /// latest head_oid in pr_cache; equal ⇒ skip the network round-trip. None
     /// means "force fetch".
     pub last_diff_head_oid: Option<String>,
+    /// Immutable PR head paired with the retained diff, independent of freshness probes.
+    pub preview_head_oid: Option<String>,
 
     /// Desktop-only: branch-scope raw diff prefetched in the background while
     /// the tab is on another view (e.g. PR Diff). The first Branch-view load
@@ -1341,6 +1345,7 @@ impl TabState {
         self.pr_data = pr_data;
         self.pr_commits = pr_commits;
         self.last_diff_head_oid = head_oid;
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         // Lazy local-PR stubs start in Branch. This payload is `gh pr diff`,
         // so land in PR Diff. Leaving Branch selected made the header toggle
         // look stuck (clicking Local Branch was a no-op on already-branch).
@@ -1444,7 +1449,7 @@ impl TabState {
         tab.clamp_hunk();
         tab.ensure_file_parsed();
         tab.rebuild_hunk_offsets();
-        tab.mtime_cache.clear();
+        tab.refresh_mtime_cache();
         tab.update_mem_budget();
         // Light sync only: the open path immediately follows with
         // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
@@ -1462,11 +1467,23 @@ impl TabState {
             crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
 
         // Get the diff from GitHub
+        let preview_head_oid =
+            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
         let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+        let confirmed_preview_head =
+            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
+        let preview_head_oid = if preview_head_oid == confirmed_preview_head {
+            preview_head_oid
+        } else {
+            None
+        };
 
         let pr_commits =
             crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
-        Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)
+        let mut tab =
+            Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)?;
+        tab.preview_head_oid = preview_head_oid;
+        Ok(tab)
     }
 
     /// Build a remote PR tab from already-fetched data — no network, no
@@ -1514,7 +1531,7 @@ impl TabState {
             }
             headers
         } else {
-            Vec::new()
+            crate::git::parse_diff_headers(&raw)
         };
 
         let er_config = crate::config::ErConfig::default();
@@ -1561,6 +1578,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: diff_hash.clone(),
@@ -1629,6 +1647,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
 
@@ -1692,6 +1711,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -1758,6 +1778,7 @@ impl TabState {
             needs_initial_refresh: true,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
         tab.finish_storage_setup();
@@ -1817,6 +1838,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -1883,6 +1905,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
 
@@ -1942,6 +1965,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -2007,6 +2031,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
             stack: StackState::default(),
         }
@@ -2544,6 +2569,7 @@ impl TabState {
             // after a manual sync). The ref oid is stable until re-fetched.
             let t = Instant::now();
             self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
+            self.preview_head_oid = self.last_diff_head_oid.clone();
             log_branch_profile_phase(self, "enter_pr_diff.rev_parse_oid", t);
             self.pr_head_ref = Some(head_ref);
             self.base_branch = base_ref;
@@ -2599,6 +2625,7 @@ impl TabState {
             .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
 
         self.last_diff_head_oid = Some(cache_head_oid);
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         self.pr_refs_fetched = true;
 
         self.mode = DiffMode::PrDiff;
@@ -2699,6 +2726,7 @@ impl TabState {
         self.pr_head_ref = Some(result.head_ref);
         self.base_branch = result.resolved_base;
         self.last_diff_head_oid = result.last_diff_head_oid;
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         // Refresh the PR commit list so the COMMITS panel follows the synced
         // head. Best-effort: a fetch error keeps the existing list; an empty
         // result (the failure signal for a real PR, which always has ≥1 commit)
@@ -3162,15 +3190,10 @@ impl TabState {
             // branch-scope views: in PrDiff mode the fetch below returns the
             // PR parity diff, and consuming the branch raw here would swap
             // wrong-scope content into the PrDiff view.
-            let raw = if scope == "branch" && matches!(self.mode, DiffMode::Branch | DiffMode::Tour)
-            {
-                match self.take_preloaded_branch_raw() {
-                    Some(raw) => raw,
-                    None => self.fetch_tab_raw_diff(scope)?,
-                }
-            } else {
-                self.fetch_tab_raw_diff(scope)?
-            };
+            let (raw, fetched_preview_head_oid) = self.load_diff_with_preview_head(
+                scope,
+                scope == "branch" && matches!(self.mode, DiffMode::Branch | DiffMode::Tour),
+            )?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -3188,10 +3211,12 @@ impl TabState {
                 self.files = files;
                 self.file_headers = headers;
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
                 self.lazy_mode = true;
             } else {
                 self.file_headers = crate::git::parse_diff_headers(&raw);
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
                 self.files = crate::git::parse_diff(&raw);
                 self.lazy_mode = false;
                 crate::git::compact_files(&mut self.files, &self.compaction_config);
@@ -3236,7 +3261,7 @@ impl TabState {
             self.clamp_hunk();
             self.ensure_file_parsed();
             self.rebuild_hunk_offsets();
-            self.mtime_cache.clear();
+            self.refresh_mtime_cache();
             self.update_mem_budget();
             // Reload AI sidecar for this branch's comment directory. Gated so a
             // watch event that changed neither the sidecars nor `branch_diff_hash`
@@ -3262,10 +3287,8 @@ impl TabState {
         // Remote mode: fetch diff from GitHub API instead of local git
         if let (Some(repo_slug), Some(_pr_number)) = (&self.remote_repo, self.pr_number) {
             if repo_slug.split('/').count() == 2 {
-                let raw = match self.take_preloaded_branch_raw() {
-                    Some(raw) => raw,
-                    None => self.fetch_tab_raw_diff("branch")?,
-                };
+                let (raw, fetched_preview_head_oid) =
+                    self.load_diff_with_preview_head("branch", true)?;
 
                 let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
@@ -3283,13 +3306,14 @@ impl TabState {
                     self.lazy_mode = true;
                 } else {
                     self.files = crate::git::parse_diff(&raw);
-                    self.file_headers.clear();
+                    self.file_headers = crate::git::parse_diff_headers(&raw);
                     self.lazy_mode = false;
                     crate::git::compact_files(&mut self.files, &self.compaction_config);
                 }
                 // Same as local-branch refresh: keep the bytes so AI review can
                 // prepare diff-tmp without the sandboxed agent calling `gh`.
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
 
                 if recompute_branch_hash {
                     self.diff_hash = crate::ai::compute_diff_hash(&raw);
@@ -3347,29 +3371,30 @@ impl TabState {
         let prev_scroll = self.diff_scroll;
 
         let head_ref_owned = self.pr_head_ref.clone();
-        let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
-            let staged_raw = git::git_diff_raw(
-                self.mode.fetch_scope(),
-                &self.base_branch,
-                &self.repo_root,
-                head_ref_owned.as_deref(),
-            )?;
-            if !staged_raw.is_empty() {
-                // New staged changes exist — resume normal staged view
-                self.committed_unpushed = false;
-                staged_raw
-            } else {
-                match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
-                    Ok(raw) => raw,
-                    Err(_) => {
-                        self.committed_unpushed = false;
-                        String::new()
+        let (raw, fetched_preview_head_oid) =
+            if self.mode == DiffMode::Staged && self.committed_unpushed {
+                let staged_raw = git::git_diff_raw(
+                    self.mode.fetch_scope(),
+                    &self.base_branch,
+                    &self.repo_root,
+                    head_ref_owned.as_deref(),
+                )?;
+                if !staged_raw.is_empty() {
+                    // New staged changes exist — resume normal staged view
+                    self.committed_unpushed = false;
+                    (staged_raw, None)
+                } else {
+                    match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                        Ok(raw) => (raw, None),
+                        Err(_) => {
+                            self.committed_unpushed = false;
+                            (String::new(), None)
+                        }
                     }
                 }
-            }
-        } else {
-            self.fetch_tab_raw_diff(self.mode.fetch_scope())?
-        };
+            } else {
+                self.load_diff_with_preview_head(self.mode.fetch_scope(), false)?
+            };
 
         // Decide parsing strategy based on diff size.
         // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
@@ -3386,17 +3411,19 @@ impl TabState {
             self.files = files;
             self.file_headers = headers;
             self.raw_diff = Some(raw.clone());
+            self.preview_head_oid = fetched_preview_head_oid.clone();
             self.lazy_mode = true;
         } else {
             // Eager mode: full parse (fast enough for smaller diffs)
             self.files = git::parse_diff(&raw);
-            self.file_headers.clear();
+            self.file_headers = crate::git::parse_diff_headers(&raw);
             // Retained even though eager parsing has no re-parse use for it:
             // `per_file_hash` resolves a file's hash from here whenever the
             // cached map misses, which is every newly-marked file. Dropping it
             // silently disabled auto-unmark for files marked after a refresh.
             // Bounded by the lazy threshold that selected this branch.
             self.raw_diff = Some(raw.clone());
+            self.preview_head_oid = fetched_preview_head_oid.clone();
             self.lazy_mode = false;
 
             // Apply auto-compaction to low-value files
@@ -4964,12 +4991,18 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
         self.mtime_cache.clear();
+        self.preview_blob_ids.clear();
         for file in &self.files {
-            let mtime = fs::metadata(format!("{}/{}", self.repo_root, file.path))
+            let root = self
+                .local_branch_checkout_root
+                .as_deref()
+                .unwrap_or(&self.repo_root);
+            let mtime = fs::metadata(format!("{}/{}", root, file.path))
                 .and_then(|m| m.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             self.mtime_cache.insert(file.path.clone(), mtime);
         }
+        self.capture_preview_rename_blobs();
     }
 
     fn clamp_hunk(&mut self) {
@@ -8982,7 +9015,7 @@ mod tests {
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::collections::{HashMap, HashSet};
 
-    fn make_test_tab(files: Vec<DiffFile>) -> TabState {
+    pub(super) fn make_test_tab(files: Vec<DiffFile>) -> TabState {
         use crate::ai::{InlineLayers, ReviewFocus};
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         TabState {
@@ -9024,6 +9057,7 @@ mod tests {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -9089,6 +9123,7 @@ mod tests {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
             stack: StackState::default(),
         }

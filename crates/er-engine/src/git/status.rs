@@ -1152,6 +1152,36 @@ pub fn diff_watched_file_snapshot(
     Ok(Some(raw))
 }
 
+/// Resolve a retained file version without reading its contents.
+pub fn git_blob_oid(root: &str, spec: &str) -> Result<String> {
+    let output = crate::proc::run_with_bounded_stdout(
+        Command::new("git")
+            .current_dir(root)
+            .args(["rev-parse", "--verify", spec]),
+        std::time::Duration::from_secs(5),
+        128,
+    )?;
+    if !output.status.success() {
+        anyhow::bail!("Document source could not be resolved");
+    }
+    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+}
+
+/// Read a Git blob without buffering beyond the caller's content limit.
+pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>> {
+    let output = crate::proc::run_with_bounded_stdout(
+        Command::new("git")
+            .current_dir(root)
+            .args(["cat-file", "blob", spec]),
+        std::time::Duration::from_secs(5),
+        max_bytes,
+    )?;
+    if !output.status.success() {
+        anyhow::bail!("Document source could not be read");
+    }
+    Ok(output.stdout)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -6,8 +6,10 @@
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
     /** When the global sticky header overlay is active, ignore in-flow header clicks. */
     pointerEventsNone?: boolean;
+    previewPaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, preview: boolean) => void;
   }
-  const { row, pointerEventsNone = false }: Props = $props();
+  const { row, pointerEventsNone = false, previewPaths, onpreviewchange }: Props = $props();
 </script>
 
 <div
@@ -16,5 +18,5 @@
     : ''}"
   data-row-identity={row.identity}
 >
-  <FileHeaderContent {row} />
+  <FileHeaderContent {row} {previewPaths} {onpreviewchange} />
 </div>
