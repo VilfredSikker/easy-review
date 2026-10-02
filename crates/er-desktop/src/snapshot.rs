@@ -873,8 +873,15 @@ pub fn resolve_context_identity(
         github.map(|g| g.head_ref.as_str()).unwrap_or(""),
         cached_pr.map(|p| p.head_ref.as_str()).unwrap_or(""),
     ]);
+    // A base pinned under `refs/er/` (a deleted branch's commit) is not a name
+    // to show; the PR still carries the branch name.
+    let tab_base = if er_engine::github::is_pinned_pr_base(&tab.base_branch) {
+        ""
+    } else {
+        tab.base_branch.as_str()
+    };
     let base = first_non_empty([
-        tab.base_branch.as_str(),
+        tab_base,
         pr_data.map(|p| p.base_branch.as_str()).unwrap_or(""),
         github.map(|g| g.base_ref.as_str()).unwrap_or(""),
         cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
@@ -4510,6 +4517,16 @@ mod tests {
         let (branch, base) = resolve_context_identity(&tab, None, Some(&pr));
         assert_eq!(branch, "feat/from-fork");
         assert_eq!(base, "main");
+    }
+
+    #[test]
+    fn context_identity_names_a_pinned_base_by_its_pr_branch() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.base_branch = "refs/er/pr/1507/base".into();
+        let mut pr = minimal_pr_info(1507, "t");
+        pr.base_ref = "stack-base".into();
+        let (_, base) = resolve_context_identity(&tab, None, Some(&pr));
+        assert_eq!(base, "stack-base");
     }
 
     #[test]

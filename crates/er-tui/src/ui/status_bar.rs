@@ -156,8 +156,15 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
         tab.mode,
         DiffMode::Branch | DiffMode::History | DiffMode::Tour
     ) {
+        let base = if er_engine::github::is_pinned_pr_base(&tab.base_branch) {
+            tab.pr_data
+                .as_ref()
+                .map_or("PR base", |pr| pr.base_branch.as_str())
+        } else {
+            tab.base_branch.as_str()
+        };
         info_spans.push(Span::styled(
-            format!(" (vs {})", tab.base_branch),
+            format!(" (vs {base})"),
             ratatui::style::Style::default().fg(styles::DIM()),
         ));
     }
