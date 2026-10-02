@@ -740,7 +740,7 @@ pub struct ProjectSnapshot {
     /// PRs opened for review recently (sorted by viewed_at desc).
     #[serde(default)]
     pub recent_prs: Vec<PrInfo>,
-    /// Most recently merged PRs (max 5, sorted by merged_at desc).
+    /// Most recently merged PRs (max [`RECENTLY_MERGED_LIMIT`], sorted by merged_at desc).
     pub recently_merged: Vec<PrInfo>,
     #[serde(default)]
     pub pr_cache_stale: bool,
@@ -3417,6 +3417,17 @@ fn resolve_recent_prs(
     out
 }
 
+/// The sidebar shows five and reveals the rest with "Show more"; the PR cache
+/// keeps 50 closed PRs, so this bounds the snapshot payload, not the fetch.
+const RECENTLY_MERGED_LIMIT: usize = 25;
+
+fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
+    prs.retain(|pr| pr.state == "MERGED");
+    prs.sort_by_key(|pr| std::cmp::Reverse(pr.merged_at.clone()));
+    prs.truncate(RECENTLY_MERGED_LIMIT);
+    prs
+}
+
 fn build_projects(
     tab: &TabState,
     pr_cache: Option<&PrCache>,
@@ -3621,7 +3632,7 @@ fn build_projects_from_file(
                 if remote_only {
                     (Vec::new(), Vec::new(), Vec::new(), false, None)
                 } else if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
-                    let mut all: Vec<PrInfo> = cache
+                    let all: Vec<PrInfo> = cache
                         .get(remote)
                         .cloned()
                         .unwrap_or_default()
@@ -3670,9 +3681,7 @@ fn build_projects_from_file(
                         .cloned()
                         .collect();
 
-                    all.retain(|pr| pr.state == "MERGED");
-                    all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
-                    all.truncate(5);
+                    let all = recently_merged_prs(all);
 
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -4540,6 +4549,26 @@ mod tests {
         p.head_ref = head_ref.to_string();
         p.state = state.to_string();
         p
+    }
+
+    #[test]
+    fn recently_merged_keeps_more_than_the_first_page_newest_first() {
+        let mut prs: Vec<PrInfo> = (1..=30)
+            .map(|n| {
+                let mut p = pr_with(n, "b", "MERGED");
+                p.merged_at = Some(format!("2026-09-{n:02}T00:00:00Z"));
+                p
+            })
+            .collect();
+        prs.push(pr_with(99, "open", "OPEN"));
+        prs.push(pr_with(98, "closed", "CLOSED"));
+
+        let merged = recently_merged_prs(prs);
+        let numbers: Vec<u64> = merged.iter().map(|p| p.number).collect();
+        assert_eq!(numbers.len(), RECENTLY_MERGED_LIMIT);
+        assert!(numbers.len() > 5, "Show more needs more than one page");
+        assert_eq!(numbers[0], 30);
+        assert!(numbers.windows(2).all(|w| w[0] > w[1]));
     }
 
     /// Guide↔Diff toggles must reuse the differential map: Tour mode displays
