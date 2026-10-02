@@ -1388,6 +1388,7 @@ dependencies = [
  "anyhow",
  "dirs",
  "glob",
+ "libc",
  "notify",
  "notify-debouncer-mini",
  "serde",

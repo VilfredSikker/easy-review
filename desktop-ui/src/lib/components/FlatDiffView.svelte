@@ -6,6 +6,8 @@
   import { tabSnapshotCacheKey } from "$lib/tabSnapshotCache";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
+  import { diffPreview } from "$lib/stores/diffPreview.svelte";
+  import DocumentPreviewRow from "./DocumentPreviewRow.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { aiFindingFilter } from "$lib/stores/aiFindingFilter.svelte";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
@@ -27,6 +29,7 @@
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
   import DiffSearchBar from "./DiffSearchBar.svelte";
+  import { collectDiffUsageSources } from "$lib/diffUsageSources";
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import {
     buildRulerMarks,
@@ -134,6 +137,7 @@
   const { viewModeOverride = null }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
+  $effect(() => { diffPreview.sync(snapshot); });
   // Order files to match the tree (folders-first, alphabetical, single-child
   // folder chains collapsed). Reuses the memoized buildTree + flattenForNav
   // already used by keyboard nav (`j`/`k`), so tree and diff render in lockstep.
@@ -280,6 +284,10 @@
   });
 
   // ── Cross-file model ───────────────────────────────────────────────────────
+  const previewPaths = $derived.by(() => {
+    diffPreview.revision;
+    return snapshot ? diffPreview.paths(snapshot) : new Set<string>();
+  });
   const baseCrossFileModel = $derived(
     getCrossFileModel({
       files,
@@ -289,6 +297,7 @@
       commentVisibility: app.commentVisibility,
       snapshotKey,
       wrapCols: committedWrapCols,
+      previewPaths,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -623,7 +632,7 @@
     let left = 0;
     let right = 0;
     for (const [path, m] of baseCrossFileModel.maxColsByFile) {
-      if (diffFileCollapse.collapsed.has(path)) continue;
+      if (diffFileCollapse.collapsed.has(path) || previewPaths.has(path)) continue;
       if (viewMode === "split") {
         if (m.left > left) left = m.left;
         if (m.right > right) right = m.right;
@@ -738,6 +747,21 @@
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
+
+  async function changePreviewMode(path: string, preview: boolean): Promise<void> {
+    if (!snapshot || !scrollEl) return;
+    const rowIdx = crossFileModel.fileStartRow.get(path);
+    if (rowIdx === undefined) return;
+    const headerTop = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
+    const anchor = Math.max(0, headerTop - scrollEl.scrollTop);
+    diffPreview.setMode(snapshot, path, preview);
+    await tick();
+    const nextIdx = crossFileModel.fileStartRow.get(path);
+    if (nextIdx !== undefined) {
+      applyScrollTop((effectiveGeometry.cumulativeOffsets[nextIdx] ?? 0) - anchor);
+    }
+  }
+
 
   // ── Visible file (for sticky header) ─────────────────────────────────────
   const visibleFilePath = $derived(
@@ -1446,45 +1470,7 @@
   // (and thus has no rendered row); the (filePath, hunkIdx, lineIdx) anchor
   // lets `jumpToUsageLine` expand the file and re-resolve the row on click.
   function collectUsageSources(): UsageSource[] {
-    // Map each rendered line's LineSnapshot to its current row index. Using
-    // object identity covers both unified rows and split rows (whose left/right
-    // sides reuse the same LineSnapshot objects from the hunk).
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local lookup table built and read inside this function; never escapes it
-    const lineToRow = new Map<LineSnapshot, number>();
-    const byPath = new Map(files.map((f) => [f.path, f]));
-    const rows = crossFileModel.rows;
-    for (let i = 0; i < rows.length; i++) {
-      const row = rows[i];
-      if (row.type === "content-unified") {
-        const line = byPath.get(row.filePath)?.hunks[row.hunkIdx]?.lines[row.lineIdx];
-        if (line) lineToRow.set(line, i);
-      } else if (row.type === "content-split") {
-        const sr =
-          crossFileModel.splitRowsByFile.get(row.filePath)?.[row.hunkIdx]?.[row.splitRowIdx];
-        if (sr?.left) lineToRow.set(sr.left, i);
-        if (sr?.right) lineToRow.set(sr.right, i);
-      }
-    }
-
-    const out: UsageSource[] = [];
-    for (const file of files) {
-      for (let h = 0; h < file.hunks.length; h++) {
-        const lines = file.hunks[h].lines;
-        for (let l = 0; l < lines.length; l++) {
-          const line = lines[l];
-          if (line.kind === "fold") continue;
-          out.push({
-            rowIdx: lineToRow.get(line) ?? -1,
-            filePath: file.path,
-            lineNum: line.new_num ?? line.old_num,
-            text: line.text,
-            hunkIdx: h,
-            lineIdx: l,
-          });
-        }
-      }
-    }
-    return out;
+    return collectDiffUsageSources(files, crossFileModel);
   }
 
   /** Upper bound on collected matches — a one-letter Cmd+F query over a huge
@@ -1617,7 +1603,7 @@
    * route through the shared `jumpToUsage` so the scroll + flash are identical.
    */
   async function jumpToUsageLine(u: UsageLine): Promise<void> {
-    let rebuilt = false;
+    let rebuilt = snapshot ? diffPreview.ensureRaw(snapshot, u.filePath) : false;
     if (diffFileCollapse.isCollapsed(u.filePath)) {
       diffFileCollapse.expand(u.filePath);
       rebuilt = true;
@@ -1639,14 +1625,29 @@
     await jumpToUsage(rowIdx);
   }
 
+  // Preview does not use hunks, but diff-text search still needs them.
+  $effect(() => {
+    if (!refHighlight.searchOpen) return;
+    const indices = files.filter((f) => f.is_lazy_stub && previewPaths.has(f.path)).map((f) => f.source_index);
+    if (indices.length) untrack(() => { void requestLazyFiles(indices); });
+  });
+
   // ── Cmd+F search navigation ───────────────────────────────────────────────
   // Flat list of match row indices, one entry per range (a line with three
   // matches contributes three stops). Only materialized while the bar is open.
-  const searchMatches = $derived.by((): number[] => {
-    if (!refHighlight.searchOpen) return [];
-    const out: number[] = [];
-    for (const u of usageLines) {
-      for (const _range of u.ranges) out.push(u.rowIdx);
+  const searchResult = $derived.by((): MatchResult => {
+    if (!refHighlight.searchOpen || !refHighlight.identifier) return { lines: [], total: 0, capped: false };
+    // Diff-text matches retain source anchors while a document hides its rows.
+    // Use file/hunk/line order so revealing Raw does not reorder the stops.
+    const sources = usageSourcesAll.filter((s) =>
+      s.rowIdx >= 0 || (previewPaths.has(s.filePath) && !diffFileCollapse.isCollapsed(s.filePath)),
+    );
+    return collectMatches(sources, refHighlight.identifier, refHighlight.matchOptions, SEARCH_MATCH_CAP);
+  });
+  const searchMatches = $derived.by((): UsageLine[] => {
+    const out: UsageLine[] = [];
+    for (const u of searchResult.lines) {
+      for (const _range of u.ranges) out.push(u);
     }
     return out;
   });
@@ -1663,7 +1664,7 @@
       next = (cur + dir + matches.length) % matches.length;
     }
     refHighlight.searchActiveIdx = next;
-    void jumpToUsage(matches[next]);
+    void jumpToUsageLine(matches[next]);
   }
 
   // Clamp the active index when the match list shrinks (query edits, diff refresh).
@@ -1722,6 +1723,10 @@
       requestFileContent: (src) => requestLazyFiles([src]),
       getModel: () => crossFileModel,
       getFiles: () => files,
+      getFindingPath: (id) => getFinding(id)?.file,
+      ensureRaw: async (path) => {
+        if (snapshot && diffPreview.ensureRaw(snapshot, path)) await tick();
+      },
     });
     return () => diffNav.unregister();
   });
@@ -1944,6 +1949,7 @@
     if (!scrollEl) return;
     void vw.start;
     void vw.end;
+    void windowedRows;
     heightRo?.disconnect();
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
@@ -2280,6 +2286,8 @@
         row={visibleFileHeaderRow}
         hidden={stickyHeaderHidden}
         offsetLeftPx={tourActive ? RAIL_W : 0}
+        {previewPaths}
+        onpreviewchange={changePreviewMode}
       />
 
       {#if tourActive}
@@ -2326,8 +2334,17 @@
             {#if row.type === "file-header"}
               <FileHeaderRow
                 {row}
+                {previewPaths}
+                onpreviewchange={changePreviewMode}
                 pointerEventsNone={stickyHeaderClicksOverlay && row.filePath === visibleFilePath}
               />
+            {:else if row.type === "document-preview"}
+              {@const file = files.find((f) => f.path === row.filePath)}
+              <div data-row-identity={row.identity} data-row-idx={rowIdx}>
+                {#if snapshot && file && !app.pendingTabSwitch}
+                  <DocumentPreviewRow {snapshot} {file} />
+                {/if}
+              </div>
             {:else if row.type === "hunk-header"}
               <HunkHeaderRow {row} />
             {:else if row.type === "content-fold"}
@@ -2457,8 +2474,8 @@
 
   {#if refHighlight.searchOpen}
     <DiffSearchBar
-      total={usageResult.total}
-      capped={usageResult.capped}
+      total={searchResult.total}
+      capped={searchResult.capped}
       activeIdx={refHighlight.searchActiveIdx}
       onNavigate={navigateSearch}
     />

@@ -5,11 +5,14 @@
   import { app } from "$lib/stores/app.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
+  import { documentPreviewKind } from "$lib/documentPreview";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
+    previewPaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, preview: boolean) => void;
   }
-  const { row }: Props = $props();
+  const { row, previewPaths = new Set<string>(), onpreviewchange }: Props = $props();
 
   // Read reviewed live from the snapshot, not from the baked-in row: the diff
   // render model intentionally ignores `reviewed` so toggling it is a cache hit.
@@ -109,10 +112,21 @@
       <span class="truncate-start-inner">{pathParts.dir}</span>
     </span>
   {/if}
-  <span class="text-fg font-medium shrink-0">{pathParts.name}</span>
+  <span class="text-fg font-medium min-w-0 truncate">{pathParts.name}</span>
 </div>
 
 <!-- +N/−N totals -->
+{#if documentPreviewKind(row.filePath)}
+  <div class="flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
+    {#each [false, true] as preview (preview)}
+      <button type="button" aria-pressed={previewPaths.has(row.filePath) === preview}
+        class="rounded px-1.5 py-1 hover:bg-hover {previewPaths.has(row.filePath) === preview ? 'bg-hover text-fg' : 'text-fg-3'}"
+        onclick={(event) => { event.stopPropagation(); onpreviewchange?.(row.filePath, preview); }}>
+        {preview ? 'Preview' : 'Raw'}
+      </button>
+    {/each}
+  </div>
+{/if}
 <span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
 <span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
 

@@ -11,6 +11,8 @@ import type { FileSnapshot } from "$lib/types";
  * back to `document.getElementById(...)`, keeping both modes working.
  */
 export interface DiffNavigator {
+  ensureRaw?(path: string): boolean | Promise<void>;
+  getFindingPath?(findingId: string): string | undefined;
   scrollToRow(rowIdx: number, align?: "start" | "center"): void;
   scrollToEdge(to: "top" | "bottom"): void;
   scrollAfterCollapse(collapsedPath: string): Promise<void>;
@@ -76,6 +78,8 @@ class DiffNavStore {
       domFlash(flashId);
       return typeof document !== "undefined" && document.getElementById(flashId) !== null;
     }
+    const file = this.nav.getFiles().find(f => f.hunks.some(h => h.threads.some(t => t.id === threadId)));
+    if (file) { await this.nav.ensureRaw?.(file.path); await tick(); }
     const model = this.nav.getModel();
     if (model) {
       const idx = model.threadRowIndex(threadId);
@@ -106,8 +110,10 @@ class DiffNavStore {
    * scroll position. `scrollTopPx` should be the raw scrollTop of the diff
    * container (before subtracting the sticky header offset).
    */
-  scrollToAdjacentHunk(path: string, direction: "prev" | "next", scrollTopPx: number): void {
+  async scrollToAdjacentHunk(path: string, direction: "prev" | "next", scrollTopPx: number): Promise<void> {
     if (!this.nav) return;
+    await this.nav.ensureRaw?.(path);
+    await tick();
     const model = this.nav.getModel();
     if (!model) return;
     const hunkRows = model.hunkStartRow.get(path);
@@ -141,8 +147,10 @@ class DiffNavStore {
     }
   }
 
-  scrollToHunk(path: string, hunkIdx: number): void {
+  async scrollToHunk(path: string, hunkIdx: number): Promise<void> {
     if (!this.nav) return;
+    await this.nav.ensureRaw?.(path);
+    await tick();
     const model = this.nav.getModel();
     if (!model) return;
     const hunks = model.hunkStartRow.get(path);
@@ -167,6 +175,8 @@ class DiffNavStore {
       domFlash(flashId);
       return;
     }
+    const path = this.nav.getFindingPath?.(findingId);
+    if (path) { await this.nav.ensureRaw?.(path); await tick(); }
     const model = this.nav.getModel();
     if (model) {
       const idx = model.findingRowIndex(findingId);

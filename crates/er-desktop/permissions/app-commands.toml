@@ -9,6 +9,7 @@ commands.allow = [
   "get_snapshot",
   "toggle_panel",
   "request_file_content",
+  "request_file_preview",
   "select_file",
   "next_file",
   "prev_file",

@@ -56,6 +56,7 @@ export function mergeChromeSnapshot(
     base: prev.base.trim() ? prev.base : next.base,
     input_mode: prev.input_mode,
     files: prev.files,
+    preview_context_key: prev.preview_context_key,
     selected_file: prev.selected_file,
     current_hunk: prev.current_hunk,
     filter: prev.filter,

@@ -97,6 +97,84 @@ pub fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> std::io::Result
     })
 }
 
+/// Capture stdout with both a byte ceiling and a deadline. Stderr is discarded.
+/// The reader reads at most `max_bytes + 1`, including the overflow sentinel.
+/// A descendant holding the pipe open cannot extend the caller's deadline.
+pub fn run_with_bounded_stdout(
+    cmd: &mut Command,
+    timeout: Duration,
+    max_bytes: usize,
+) -> std::io::Result<Output> {
+    cmd.env("GH_PROMPT_DISABLED", "1")
+        .env("GH_NO_UPDATE_NOTIFIER", "1")
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    let mut child = cmd.spawn()?;
+    let Some(pipe) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(std::io::Error::other("command stdout is unavailable"));
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        let result = pipe
+            .take(max_bytes.saturating_add(1) as u64)
+            .read_to_end(&mut bytes)
+            .and_then(|_| {
+                if bytes.len() > max_bytes {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "command output exceeds byte limit",
+                    ))
+                } else {
+                    Ok(bytes)
+                }
+            });
+        let _ = sender.send(result);
+    });
+    let start = Instant::now();
+    let result = (|| {
+        let mut stdout = None;
+        let mut status = None;
+        loop {
+            if stdout.is_none() {
+                match receiver.try_recv() {
+                    Ok(bytes) => stdout = Some(bytes?),
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        return Err(std::io::Error::other("command output reader failed"));
+                    }
+                }
+            }
+            if status.is_none() {
+                status = child.try_wait()?;
+            }
+            if let (Some(stdout), Some(status)) = (stdout.as_mut(), status) {
+                return Ok(Output {
+                    status,
+                    stdout: std::mem::take(stdout),
+                    stderr: Vec::new(),
+                });
+            }
+            if start.elapsed() >= timeout {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("command timed out after {}s", timeout.as_secs()),
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    })();
+    if result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    result
+}
+
 fn drain<R: Read>(pipe: Option<R>) -> Vec<u8> {
     let mut buf = Vec::new();
     if let Some(mut pipe) = pipe {
@@ -124,6 +202,55 @@ impl CommandTimeoutExt for Command {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_stdout_accepts_the_limit_and_rejects_overflow() {
+        let output = run_with_bounded_stdout(
+            Command::new("sh").args(["-c", "head -c 200000 /dev/zero"]),
+            GH_TIMEOUT,
+            200_000,
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout.len(), 200_000);
+        let start = Instant::now();
+        let error = run_with_bounded_stdout(
+            Command::new("sh").args(["-c", "exec cat /dev/zero"]),
+            GH_TIMEOUT,
+            200_000,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert!(start.elapsed() < Duration::from_secs(2));
+    }
+
+    #[test]
+    fn bounded_stdout_times_out_during_read_and_after_stdout_closes() {
+        for script in ["exec sleep 30", "exec 1>&-; exec sleep 30"] {
+            let start = Instant::now();
+            let error = run_with_bounded_stdout(
+                Command::new("sh").args(["-c", script]),
+                Duration::from_millis(100),
+                1024,
+            )
+            .unwrap_err();
+            assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+            assert!(start.elapsed() < Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn bounded_stdout_times_out_if_descendant_keeps_the_pipe_open() {
+        let start = Instant::now();
+        let error = run_with_bounded_stdout(
+            Command::new("sh").args(["-c", "sleep 1 & exit 0"]),
+            Duration::from_millis(100),
+            1024,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < Duration::from_millis(800));
+    }
 
     #[test]
     fn returns_output_of_a_successful_command() {

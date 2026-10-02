@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import type { FlatFinding, ThreadSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
@@ -14,6 +15,7 @@
   }
 
   const { finding, thread = null }: Props = $props();
+  const draft = $derived(annotationDrafts.get(app.snapshot, "finding", finding.id));
 
   function severityColorFor(severity: FlatFinding["severity"]): string {
     if (severity === "high") return "var(--color-risk-high)";
@@ -45,7 +47,6 @@
     return `background: color-mix(in srgb, ${color} 15%, transparent); color: ${color}; border-color: color-mix(in srgb, ${color} 25%, transparent)`;
   });
 
-  let replyText = $state("");
   let showPromote = $state(false);
   let editMessageId = $state<string | null>(null);
   let editOrigin = $state<"finding_response" | "thread_reply" | null>(null);
@@ -62,11 +63,11 @@
     void app.cmd("dismiss_finding", { findingId: finding.id });
   }
   function reply() {
-    const body = replyText.trim();
+    const body = draft.replyText.trim();
     if (!body) return;
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked("reply_to_finding");
     void app.cmd("reply_to_finding", { findingId: finding.id, body, aiAssist: false });
-    replyText = "";
+    draft.replyText = "";
   }
   async function askAi() {
     if (thread) {
@@ -303,10 +304,10 @@
   <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">
     <input
       bind:this={replyInputEl}
-      bind:value={replyText}
+      bind:value={draft.replyText}
       onkeydown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); reply(); }
-        else if (e.key === "Escape") { replyText = ""; }
+        else if (e.key === "Escape") { draft.replyText = ""; }
       }}
       placeholder="Reply to this finding…"
       class="bg-transparent flex-1 text-[13px] outline-none placeholder:text-muted"

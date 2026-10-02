@@ -457,3 +457,9 @@ describe("shouldDeferChromeIdentityChange", () => {
     ).toBe(false);
   });
 });
+
+it("chrome merges preserve the content preview context", () => {
+  const prev = snap({ preview_context_key: "held-document-source" });
+  const next = snap({ preview_context_key: "chrome-stub" });
+  expect(mergeChromeSnapshot(prev, next).preview_context_key).toBe("held-document-source");
+});

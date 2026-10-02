@@ -201,3 +201,27 @@ describe("diffNav store", () => {
     expect(doc.getElementById).not.toHaveBeenCalled();
   });
 });
+
+it("reveals Raw before resolving hunk and finding positions, but preserves file-only mode", async () => {
+  installDocStub();
+  let raw = false;
+  const ensureRaw = mock(() => { raw = true; return true; });
+  const scrollToRow = mock(() => {});
+  const preview = makeModel({ fileStartRow: new Map([["README.md", 0]]), hunkStartRow: new Map() });
+  const source = makeModel({
+    fileStartRow: new Map([["README.md", 0]]),
+    hunkStartRow: new Map([["README.md", [1]]]),
+    cumulativeOffsets: [0,40,62],
+    findingRowIndex: () => 2,
+  });
+  diffNav.register({ ensureRaw, getFindingPath: () => "README.md", scrollToRow,
+    scrollToEdge: () => {}, scrollAfterCollapse: async () => {}, requestFileContent: async () => {},
+    getFiles: () => [makeFile("README.md")], getModel: () => raw ? source : preview });
+  await diffNav.scrollToFile("README.md");
+  expect(ensureRaw).not.toHaveBeenCalled();
+  await diffNav.scrollToHunk("README.md", 0);
+  expect(scrollToRow.mock.calls.at(-1)).toEqual([1,"start"]);
+  raw = false;
+  await diffNav.scrollToFinding("finding-one");
+  expect(scrollToRow.mock.calls.at(-1)).toEqual([2,"center"]);
+});
