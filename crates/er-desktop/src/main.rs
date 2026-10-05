@@ -852,33 +852,30 @@ fn main() {
     let cwd_repo_root = er_engine::git::get_repo_root().ok();
 
     let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
-        (true, Some(root)) => App::new_unloaded(root).unwrap_or_else(|e| {
-            eprintln!("er-desktop: failed to init engine: {e}");
-            std::process::exit(1);
-        }),
+        (true, Some(root)) => App::new_unloaded(root)
+            .unwrap_or_else(|e| abort_startup(&format!("er-desktop: failed to init engine: {e}"))),
         (true, None) => {
-            // No CWD repo but we have tabs to restore: open against the last
-            // active project so the engine has a valid root.
-            let fallback = active_root_from_projects();
+            // No CWD repo but we have tabs to restore: open against a saved
+            // project so the engine has a valid root.
+            let fallback = startup_root_from_projects(&projects::load());
             match fallback
                 .as_deref()
                 .map(|p| App::new_unloaded(p.to_string()))
             {
                 Some(Ok(a)) => a,
-                Some(Err(e)) => {
-                    eprintln!("er-desktop: failed to init engine for last active project: {e}");
-                    std::process::exit(1);
-                }
-                None => {
-                    eprintln!("er-desktop: cwd not a repo and no active project on disk; aborting");
-                    std::process::exit(1);
-                }
+                Some(Err(e)) => abort_startup(&format!(
+                    "er-desktop: failed to init engine for {}: {e}",
+                    fallback.as_deref().unwrap_or("?")
+                )),
+                None => abort_startup(
+                    "er-desktop: not started from a git repo, and no saved project folder still exists",
+                ),
             }
         }
         (false, _) => match App::new_with_args(&[]) {
             Ok(a) => a,
             Err(cwd_err) => {
-                let fallback = active_root_from_projects();
+                let fallback = startup_root_from_projects(&projects::load());
                 match fallback
                     .as_deref()
                     .map(|p| App::new_with_args(&[p.to_string()]))
@@ -890,10 +887,7 @@ fn main() {
                         );
                         a
                     }
-                    _ => {
-                        eprintln!("er-desktop: failed to init engine: {cwd_err}");
-                        std::process::exit(1);
-                    }
+                    _ => abort_startup(&format!("er-desktop: failed to init engine: {cwd_err}")),
                 }
             }
         },
@@ -2168,6 +2162,30 @@ fn active_root_from_projects() -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// Root to open when the CWD is not a repo, which is every Finder launch.
+///
+/// The active project comes first, but only while its folder still exists:
+/// a repo that was moved or deleted would otherwise abort startup before any
+/// window appears. Falls back to the first saved project that is still on disk.
+fn startup_root_from_projects(file: &projects::ProjectsFile) -> Option<String> {
+    let on_disk = |p: &&projects::ProjectRecord| {
+        !p.root_path.is_empty() && std::path::Path::new(&p.root_path).is_dir()
+    };
+    let active = file
+        .active_id
+        .as_ref()
+        .and_then(|id| file.projects.iter().find(|p| &p.id == id))
+        .filter(on_disk);
+    active
+        .or_else(|| file.projects.iter().find(on_disk))
+        .map(|p| p.root_path.clone())
+}
+
+fn abort_startup(msg: &str) -> ! {
+    eprintln!("{msg}");
+    std::process::exit(1);
+}
+
 /// Base cadence for the branch-base staleness probe: one `git ls-remote` a
 /// minute while origin's tip is moving.
 const PROBE_INTERVAL_SECS: u64 = 60;
@@ -2553,5 +2571,43 @@ mod tests {
             PROBE_INTERVAL_SECS,
             "a tip that moved snaps back to the fast cadence"
         );
+    }
+
+    // ── startup_root_from_projects ──
+
+    fn projects_file(active: &str, roots: &[(&str, &str)]) -> projects::ProjectsFile {
+        let projects: Vec<_> = roots
+            .iter()
+            .map(|(id, root)| serde_json::json!({ "id": id, "name": id, "root_path": root }))
+            .collect();
+        serde_json::from_value(serde_json::json!({ "active_id": active, "projects": projects }))
+            .expect("projects file")
+    }
+
+    #[test]
+    fn startup_root_prefers_active_project_on_disk() {
+        let a = tempfile::tempdir().expect("tempdir");
+        let b = tempfile::tempdir().expect("tempdir");
+        let (a, b) = (a.path().to_str().unwrap(), b.path().to_str().unwrap());
+        let file = projects_file("b", &[("a", a), ("b", b)]);
+        assert_eq!(startup_root_from_projects(&file).as_deref(), Some(b));
+    }
+
+    #[test]
+    fn startup_root_skips_active_project_whose_folder_is_gone() {
+        // A moved repo left the active project pointing at a missing folder,
+        // and the Finder launch exited before any window appeared.
+        let live = tempfile::tempdir().expect("tempdir");
+        let live = live.path().to_str().unwrap();
+        let gone = std::env::temp_dir().join("er-startup-root-missing-repo");
+        let file = projects_file("gone", &[("gone", gone.to_str().unwrap()), ("live", live)]);
+        assert_eq!(startup_root_from_projects(&file).as_deref(), Some(live));
+    }
+
+    #[test]
+    fn startup_root_is_none_when_no_project_folder_exists() {
+        let gone = std::env::temp_dir().join("er-startup-root-missing-repo");
+        let file = projects_file("gone", &[("gone", gone.to_str().unwrap()), ("empty", "")]);
+        assert_eq!(startup_root_from_projects(&file), None);
     }
 }
