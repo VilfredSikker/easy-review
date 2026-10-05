@@ -1,3 +1,27 @@
+# Easy Review v0.5.3
+
+## In plain terms
+
+- **What changed.** The line count separates code from tests, lockfiles, generated files and docs, and stays the same when you filter the file list. Triage now says how far a change reaches into existing code, and whether a feature flag or config switch guards it. Markdown and text files in the desktop can switch from the diff to a preview of the whole document, mermaid diagrams included. Recently Merged pages past five PRs, the Local Branch | PR Diff switcher is always visible, and PR Diff works on a stacked PR whose base branch was deleted.
+- **TL;DR.** A code-only line count, reach in the risk assessment, document previews with diagrams, and PR Diff on a deleted base.
+
+## Highlights
+
+- **Code-only line count.** The desktop header and the TUI top bar show `+1232 −324 · code +610 −140`. The `code` pair is hidden when it equals the total. The engine sums the whole diff, so a filter or search no longer shrinks the totals. Clicking the `code` pair filters the list to `kind:code`, the files the count sums. `kind:` is a new filter rule (`kind:test`, `-kind:generated`). A new per-repo `[file_kinds.<repo>]` table in the global config corrects the built-in classification for a project's own paths, with kinds `production`, `test`, `storybook`, `generated` and `docs`.
+- **Reach in the risk assessment.** Review and triage runs write `change-facts.md`: new code files, edited or deleted existing files, and each one's declared importance. Triage records `reach` (`isolated`, `contained` or `broad`), the touch points in existing code, and an optional guard. A guard counts only when it comes with the `path:line` where it is checked. The general review weighs reach into each file's risk reason. The TUI triage panel and the desktop Triage card both show it. Older `triage.json` files load without a Reach block (ADR 0039).
+- **Document previews.** Markdown and text files switch between Raw and Preview from the file header or the sticky header. Preview shows the complete resulting document, or the old one for a deleted file, in unified, split and Guide layouts. Each review remembers your choice per file through refreshes. Markdown renders with GFM and is sanitized: only HTTP(S) links and HTTPS images are kept. Reads are capped at 1 MiB, must be valid UTF-8, and stay inside the checkout.
+- **Mermaid diagrams in previews.** A top-level ` ```mermaid ` block in a Markdown preview is drawn as a diagram in the app theme, using the same strict renderer as review diagrams. A block nested in a list or a quote stays code.
+
+## What's Changed
+
+### Features
+- Desktop: Recently Merged shows five PRs and adds "Show more", up to 25.
+- Desktop: the Local Branch | PR Diff switcher is always shown. A side you can't use is greyed out with the reason as a tooltip, and the active side stays highlighted.
+
+### Fixes
+- PR Diff failed on a stacked PR whose base branch was deleted after it merged (`couldn't find remote ref`). It now asks GitHub for the PR's base commit and pins it under `refs/er/pr/<n>/base`, and the base label still shows the branch name.
+- Desktop and TUI: the line count no longer changes with the file filter.
+
 # Easy Review v0.5.2
 
 ## In plain terms
