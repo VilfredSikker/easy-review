@@ -8,6 +8,8 @@
   import { resolveContextIdentity } from "$lib/contextIdentity";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { openExternalUrl } from "$lib/openExternalUrl";
+  import { nextCodeFilter } from "$lib/codeFilter";
+  import { sourceToggleState } from "$lib/sourceToggle";
 
   const snapshot = $derived(app.snapshot);
   const tabs = $derived(snapshot?.tabs ?? []);
@@ -16,9 +18,22 @@
   const activeTab = $derived(tabs.find((t) => t.is_active) ?? tabs[active]);
   const layout = $derived(browser.layout);
 
-  // Derive additions and deletions by summing across all files.
-  const additions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.additions, 0));
-  const deletions = $derived((snapshot?.files ?? []).reduce((s, f) => s + f.deletions, 0));
+  // Whole-diff counts from the engine, so a file filter never shrinks them.
+  const totalStat = $derived(snapshot?.diff_stats?.total ?? { additions: 0, deletions: 0 });
+  const codeStat = $derived(snapshot?.diff_stats?.code ?? totalStat);
+  const additions = $derived(totalStat.additions);
+  const deletions = $derived(totalStat.deletions);
+  /** Only worth a second pair when tests/generated/docs actually moved the number. */
+  const showCode = $derived(
+    codeStat.additions !== additions || codeStat.deletions !== deletions,
+  );
+  const codeFilterActive = $derived(nextCodeFilter(snapshot?.filter) === null);
+
+  function toggleCodeFilter() {
+    const next = nextCodeFilter(snapshot?.filter);
+    if (next) app.cmd("set_filter", { query: next });
+    else app.cmd("clear_filter");
+  }
 
   // Resolve the PR number for the badge.
   const prNumber = $derived(resolveActivePrNumber(snapshot));
@@ -33,15 +48,12 @@
   const prActive = $derived(
     mode === "pr" || (mode === "tour" && snapshot?.tour?.scope === "pr"),
   );
-  /** Show the [Local Branch | PR Diff] toggle when the branch has a PR, the
-   *  tab is local (remote-only tabs are implicitly PR Diff), AND the head
-   *  branch is checked out. Without a checkout there's no working-tree "Local
-   *  Branch" view distinct from PR Diff (both would be `gh pr diff`), so the
-   *  toggle is hidden and the tab is PR Diff only. */
-  const showSourceToggle = $derived(
-    prNumber != null
-      && activeTab?.kind !== "remote_pr"
-      && snapshot?.local_branch_checked_out === true,
+  const sourceToggle = $derived(
+    sourceToggleState({
+      prNumber,
+      tabKind: activeTab?.kind,
+      localBranchCheckedOut: snapshot?.local_branch_checked_out,
+    }),
   );
 
   /** Set when the open diff is behind origin (PR head or base advanced). */
@@ -172,6 +184,23 @@
     {#if additions > 0 || deletions > 0}
       <span class="font-mono text-[10px] text-add-fg shrink-0">+{additions}</span>
       <span class="font-mono text-[10px] text-del-fg shrink-0">−{deletions}</span>
+      {#if showCode}
+        <button
+          type="button"
+          class="flex items-center gap-1 rounded px-1 font-mono text-[10px] shrink-0 transition-colors hover:bg-ink-700
+            {codeFilterActive ? 'bg-ink-700 ring-1 ring-hairline' : ''}"
+          data-testid="context-code-stat"
+          aria-pressed={codeFilterActive}
+          title={codeFilterActive
+            ? "Showing code files only — click to clear the filter"
+            : "Code only: tests, Storybook, generated files and docs left out — click to show only these files"}
+          onclick={toggleCodeFilter}
+        >
+          <span class="text-muted">· code</span>
+          <span class="text-add-fg">+{codeStat.additions}</span>
+          <span class="text-del-fg">−{codeStat.deletions}</span>
+        </button>
+      {/if}
     {/if}
   </div>
 
@@ -282,21 +311,25 @@
   {/if}
 
   <!-- Local Branch | PR Diff segmented toggle (right side) -->
-  {#if showSourceToggle}
+  {#if activeTab}
     <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 shrink-0">
       <button type="button"
         role="tab"
         aria-selected={!prActive}
-        onclick={() => void app.cmd("set_mode", { mode: "branch" })}
-        class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+        aria-disabled={!sourceToggle.localAvailable}
+        title={sourceToggle.localReason ?? undefined}
+        onclick={() => sourceToggle.localAvailable && void app.cmd("set_mode", { mode: "branch" })}
+        class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {!prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2 aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:text-muted'}"
       >
         Local Branch
       </button>
       <button type="button"
         role="tab"
         aria-selected={prActive}
-        onclick={() => void app.cmd("set_mode", { mode: "pr_diff", prNumber })}
-        class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
+        aria-disabled={!sourceToggle.prAvailable}
+        title={sourceToggle.prReason ?? undefined}
+        onclick={() => sourceToggle.prAvailable && void app.cmd("set_mode", { mode: "pr_diff", prNumber })}
+        class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {prActive ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2 aria-disabled:opacity-40 aria-disabled:cursor-not-allowed aria-disabled:hover:text-muted'}"
       >
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><line x1="6" y1="9" x2="6" y2="21"/></svg>
         PR Diff

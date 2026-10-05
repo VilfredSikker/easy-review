@@ -935,6 +935,8 @@ fn main() {
         if !rebuilt.is_empty() {
             app.tabs = rebuilt;
             app.active_tab = active_idx.min(app.tabs.len() - 1);
+            // Restored tabs bypass `push_tab`, so hand them their rule tables.
+            app.sync_repo_rules_to_tabs();
         }
     }
 
@@ -1898,6 +1900,7 @@ fn main() {
             commands::get_snapshot,
             commands::toggle_panel,
             commands::request_file_content,
+            commands::request_file_preview,
             commands::select_file,
             commands::next_file,
             commands::prev_file,

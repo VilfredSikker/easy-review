@@ -28,6 +28,7 @@ use super::TabState;
 #[derive(Debug, Clone)]
 pub struct PreloadedBranchRaw {
     pub raw: String,
+    pub preview_head_oid: Option<String>,
     pub base_branch: String,
     pub pr_number: Option<u64>,
     pub local_branch_view: Option<String>,
@@ -156,6 +157,7 @@ impl TabState {
             && pre.checkout_root == self.local_branch_checkout_root
             && pre.remote_repo == self.remote_repo;
         if valid {
+            self.preview_head_oid = pre.preview_head_oid;
             Some(pre.raw)
         } else {
             None
@@ -214,6 +216,7 @@ mod tests {
             checkout_root: None,
             remote_repo: None,
             pr_head_ref: Some("refs/er/pr/42/head".to_string()),
+            preview_head_oid: None,
             parity: true,
         }
     }
@@ -428,6 +431,7 @@ mod tests {
             checkout_root: None,
             remote_repo: None,
             pr_head_ref: Some("refs/er/pr/42/head".to_string()),
+            preview_head_oid: None,
             parity: true,
         });
         tab.refresh_diff_mode_switch().unwrap();
@@ -457,6 +461,7 @@ mod tests {
             checkout_root: None,
             remote_repo: None,
             pr_head_ref: Some("refs/er/pr/42/head".to_string()),
+            preview_head_oid: None,
             parity: true,
         });
         // The refresh will try `gh pr diff` (unavailable in tests) and fail —
@@ -487,6 +492,7 @@ mod tests {
             checkout_root: None,
             remote_repo: Some("owner/repo".to_string()),
             pr_head_ref: None,
+            preview_head_oid: None,
             parity: true,
         });
         let _ = tab.refresh_diff();

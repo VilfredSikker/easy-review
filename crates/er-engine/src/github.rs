@@ -523,6 +523,104 @@ pub fn fetch_base_branch_ref(repo_root: &str, base_branch: &str) -> Result<Strin
     Ok(remote_ref)
 }
 
+/// Whether a fetch failed because origin no longer has the branch. A stacked
+/// PR's base is usually deleted once it merges, and only this case may fall
+/// back to the PR's recorded base commit — a network failure must still fail.
+pub fn is_missing_remote_ref(err: &anyhow::Error) -> bool {
+    err.chain()
+        .any(|cause| cause.to_string().contains("couldn't find remote ref"))
+}
+
+/// Whether a base ref is a commit pinned by [`fetch_pr_base_ref`] rather than a
+/// branch: there is nothing on origin to re-fetch, and it is not a name to show.
+pub fn is_pinned_pr_base(base: &str) -> bool {
+    base.starts_with("refs/er/")
+}
+
+/// [`fetch_base_branch_ref`] for a PR whose base branch may be gone from
+/// origin. Falls back to the PR's `baseRefOid`, which GitHub keeps after the
+/// branch is deleted. The extra `gh` call happens only on that failure.
+pub fn fetch_pr_base_ref(repo_root: &str, pr_number: u64, base_branch: &str) -> Result<String> {
+    fetch_pr_base_ref_with(repo_root, pr_number, base_branch, || {
+        gh_pr_base_oid(pr_number, repo_root)
+    })
+}
+
+fn fetch_pr_base_ref_with(
+    repo_root: &str,
+    pr_number: u64,
+    base_branch: &str,
+    base_oid: impl FnOnce() -> Result<String>,
+) -> Result<String> {
+    match fetch_base_branch_ref(repo_root, base_branch) {
+        Err(err) if is_missing_remote_ref(&err) => {
+            let sha = base_oid()?;
+            pin_pr_base_commit(repo_root, pr_number, &sha).with_context(|| {
+                format!("Base branch '{base_branch}' is gone from origin and its commit could not be fetched")
+            })
+        }
+        other => other,
+    }
+}
+
+fn gh_pr_base_oid(pr_number: u64, repo_root: &str) -> Result<String> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "pr",
+        "view",
+        &pr_number.to_string(),
+        "--json",
+        "baseRefOid",
+        "--jq",
+        ".baseRefOid",
+    ])
+    .current_dir(repo_root);
+    let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GH_TIMEOUT)
+        .context("Failed to get PR base commit")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Failed to get PR #{pr_number} base commit: {}",
+            stderr.trim()
+        );
+    }
+    let sha = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    // Hex-only, so the value can never parse as a git option below.
+    if sha.is_empty() || !sha.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("PR #{pr_number} has no usable base commit: '{sha}'");
+    }
+    Ok(sha)
+}
+
+/// Point `refs/er/pr/<n>/base` at `sha`, fetching it from origin only when the
+/// commit is not already local (it usually is: the base was fetched before it
+/// was deleted). Returns the ref name.
+fn pin_pr_base_commit(repo_root: &str, pr_number: u64, sha: &str) -> Result<String> {
+    let ref_name = format!("refs/er/pr/{pr_number}/base");
+    if !ref_exists_locally(repo_root, &format!("{sha}^{{commit}}")) {
+        let mut cmd = Command::new("git");
+        cmd.args(["fetch", "origin", &format!("+{sha}:{ref_name}")])
+            .current_dir(repo_root);
+        let output = crate::proc::run_with_timeout(&mut cmd, crate::proc::GIT_FETCH_TIMEOUT)
+            .context("failed to run git fetch for PR base commit")?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("git fetch PR base commit failed: {}", stderr.trim());
+        }
+        return Ok(ref_name);
+    }
+    let output = Command::new("git")
+        .args(["update-ref", &ref_name, sha])
+        .current_dir(repo_root)
+        .output()
+        .context("failed to run git update-ref for PR base commit")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("git update-ref PR base commit failed: {}", stderr.trim());
+    }
+    Ok(ref_name)
+}
+
 /// Get the head branch name of a PR via gh CLI
 pub fn gh_pr_head_branch_name(number: u64, root: &str) -> Result<String> {
     let output = std::process::Command::new("gh")
@@ -3825,6 +3923,120 @@ mod tests {
             .unwrap();
         let slug = canonical_owner_repo_slug(root.to_str().unwrap()).expect("slug from origin");
         assert_eq!(slug, "acme-my-repo");
+    }
+
+    fn git(root: &std::path::Path, args: &[&str]) -> String {
+        let out = std::process::Command::new("git")
+            .args([
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    /// A clone whose origin had a `stack-base` branch that was then deleted —
+    /// a stacked PR's base after it merged. Returns (tempdir, clone, base sha).
+    fn clone_with_deleted_base() -> (tempfile::TempDir, std::path::PathBuf, String) {
+        let dir = tempfile::tempdir().unwrap();
+        let origin = dir.path().join("origin.git");
+        let clone = dir.path().join("clone");
+        git(
+            dir.path(),
+            &["init", "--bare", "-b", "main", origin.to_str().unwrap()],
+        );
+        git(
+            dir.path(),
+            &["clone", origin.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        git(&clone, &["commit", "--allow-empty", "-m", "root"]);
+        git(&clone, &["push", "origin", "HEAD:main"]);
+        git(&clone, &["checkout", "-b", "stack-base"]);
+        git(&clone, &["commit", "--allow-empty", "-m", "base"]);
+        let sha = git(&clone, &["rev-parse", "HEAD"]);
+        git(&clone, &["push", "origin", "stack-base"]);
+        git(&clone, &["checkout", "main"]);
+        git(&clone, &["push", "origin", "--delete", "stack-base"]);
+        (dir, clone, sha)
+    }
+
+    #[test]
+    fn deleted_base_branch_is_a_missing_remote_ref() {
+        let (_dir, clone, _) = clone_with_deleted_base();
+        let err = fetch_base_branch_ref(clone.to_str().unwrap(), "stack-base").unwrap_err();
+        assert!(is_missing_remote_ref(&err), "{err:#}");
+        assert!(!is_missing_remote_ref(&anyhow::anyhow!(
+            "Could not resolve host: github.com"
+        )));
+    }
+
+    #[test]
+    fn pr_base_falls_back_to_the_pr_base_commit_when_the_branch_is_deleted() {
+        let (_dir, clone, sha) = clone_with_deleted_base();
+        let root = clone.to_str().unwrap();
+        // Before: the plain base fetch is the error the user saw in set_mode.
+        assert!(fetch_base_branch_ref(root, "stack-base").is_err());
+
+        let base = fetch_pr_base_ref_with(root, 7, "stack-base", || Ok(sha.clone())).unwrap();
+        assert!(is_pinned_pr_base(&base));
+        assert_eq!(rev_parse_oid(root, &base).as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn pr_base_fetch_of_a_live_branch_never_looks_up_the_commit() {
+        let (_dir, clone, _) = clone_with_deleted_base();
+        let base = fetch_pr_base_ref_with(clone.to_str().unwrap(), 7, "main", || {
+            panic!("the fallback must not run for a branch origin still has")
+        })
+        .unwrap();
+        assert_eq!(base, "origin/main");
+    }
+
+    #[test]
+    fn deleted_base_pins_to_its_local_commit() {
+        let (_dir, clone, sha) = clone_with_deleted_base();
+        let root = clone.to_str().unwrap();
+        let pinned = pin_pr_base_commit(root, 7, &sha).unwrap();
+        assert_eq!(pinned, "refs/er/pr/7/base");
+        assert_eq!(rev_parse_oid(root, &pinned).as_deref(), Some(sha.as_str()));
+    }
+
+    #[test]
+    fn deleted_base_commit_missing_locally_is_fetched_by_sha() {
+        let (dir, _clone, sha) = clone_with_deleted_base();
+        let origin = dir.path().join("origin.git");
+        // GitHub serves any commit by SHA; a bare repo only does with this set.
+        git(
+            &origin,
+            &["config", "uploadpack.allowAnySHA1InWant", "true"],
+        );
+        let fresh = dir.path().join("fresh");
+        git(
+            dir.path(),
+            &[
+                "clone",
+                "--no-local",
+                origin.to_str().unwrap(),
+                fresh.to_str().unwrap(),
+            ],
+        );
+        let root = fresh.to_str().unwrap();
+        assert!(!ref_exists_locally(root, &format!("{sha}^{{commit}}")));
+
+        let pinned = pin_pr_base_commit(root, 7, &sha).unwrap();
+        assert_eq!(rev_parse_oid(root, &pinned).as_deref(), Some(sha.as_str()));
     }
 
     #[test]

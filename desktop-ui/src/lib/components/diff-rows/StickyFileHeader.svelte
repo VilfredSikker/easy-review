@@ -9,8 +9,10 @@
     /** Left inset in px. Guide mode passes the pillar rail width so the overlay
         aligns with the diff column instead of spanning across the rail lane. */
     offsetLeftPx?: number;
+    previewPaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, preview: boolean) => void;
   }
-  const { row, hidden = false, offsetLeftPx = 0 }: Props = $props();
+  const { row, hidden = false, offsetLeftPx = 0, previewPaths, onpreviewchange }: Props = $props();
 </script>
 
 <!-- Always in DOM so it doesn't shift .hscroll layout when toggling visibility. -->
@@ -23,6 +25,6 @@
     : "width:100%;"}
 >
   {#if row}
-    <FileHeaderContent {row} />
+    <FileHeaderContent {row} {previewPaths} {onpreviewchange} />
   {/if}
 </div>

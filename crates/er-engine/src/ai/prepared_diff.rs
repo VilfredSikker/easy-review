@@ -37,6 +37,11 @@ static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 /// into the prompt, a torn read would silently mismatch the pinned hash.
 pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> {
     let _guard = ARTIFACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    ensure_diff_artifacts_locked(er_dir, raw)
+}
+
+/// The body of [`ensure_diff_artifacts`]; the caller holds `ARTIFACT_LOCK`.
+fn ensure_diff_artifacts_locked(er_dir: &str, raw: &str) -> Result<String, String> {
     let dir = Path::new(er_dir);
     let hash = crate::ai::compute_diff_hash(raw);
 
@@ -59,6 +64,36 @@ pub fn ensure_diff_artifacts(er_dir: &str, raw: &str) -> Result<String, String> 
     Ok(hash)
 }
 
+/// [`ensure_diff_artifacts`], plus the `change-facts.md` triage and review read
+/// to judge reach. Triage and review prepare through this one, so neither sees
+/// a diff without its facts.
+pub fn ensure_review_inputs(
+    er_dir: &str,
+    raw: &str,
+    rules: crate::ai::change_facts::RepoRules<'_>,
+) -> Result<String, String> {
+    // One lock for both, so a concurrent command on the same bucket cannot
+    // leave one diff's facts beside the other's `diff-tmp`.
+    let _guard = ARTIFACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let hash = ensure_diff_artifacts_locked(er_dir, raw)?;
+    crate::ai::change_facts::write_change_facts(er_dir, raw, rules)?;
+    Ok(hash)
+}
+
+/// [`ensure_review_inputs`] for callers holding no tab (MCP, background
+/// auto-triage): the rules come off the global config on disk, keyed by
+/// `repo_key` from `storage::rules_key`. A caller with a tab passes the tab's
+/// rules instead, so the facts agree with its header and filter.
+pub fn ensure_review_inputs_from_config(
+    er_dir: &str,
+    raw: &str,
+    repo_key: &str,
+) -> Result<String, String> {
+    let config = crate::config::load_global_config();
+    let rules = crate::ai::change_facts::OwnedRepoRules::from_config(&config, repo_key);
+    ensure_review_inputs(er_dir, raw, rules.as_rules())
+}
+
 /// Whether both artifacts on disk were already derived from `hash`.
 ///
 /// The content files must exist as well as the markers: a surviving marker
@@ -77,7 +112,7 @@ fn marker_matches(dir: &Path, marker: &str, hash: &str) -> bool {
 }
 
 /// tmp+rename write (same pattern as the durable sidecar writers).
-fn atomic_write(dir: &Path, name: &str, content: &str) -> Result<(), String> {
+pub(crate) fn atomic_write(dir: &Path, name: &str, content: &str) -> Result<(), String> {
     let path = dir.join(name);
     let tmp = dir.join(format!("{name}.tmp"));
     std::fs::write(&tmp, content).map_err(|e| format!("Failed to write {name}: {e}"))?;

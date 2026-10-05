@@ -47,6 +47,7 @@ export const HUNK_HEADER_HEIGHT = 22;
 export const FILE_HEADER_HEIGHT = 40;
 export const COMPACTED_STUB_HEIGHT = 44;
 export const NO_CHANGES_HEIGHT = 44;
+export const DOCUMENT_PREVIEW_HEIGHT = 120;
 
 const LEGACY_CACHE_LIMIT = 100;
 const _legacyCache = new Map<string, FileRenderModel>();
@@ -150,6 +151,12 @@ export interface PillarHeaderInfo {
 }
 
 export type CrossFileFlatRow =
+  | {
+      type: "document-preview";
+      filePath: string;
+      height: number;
+      identity: string;
+    }
   | {
       type: "file-header";
       filePath: string;
@@ -323,6 +330,7 @@ export interface RenderModelInputs {
   /** Column capacity of a code cell when word wrap is on; null = no wrapping
    *  (all content rows are one LINE_HEIGHT tall). */
   wrapCols?: number | null;
+  previewPaths?: ReadonlySet<string>;
 }
 
 export function estimateLazyStubHeight(file: FileSnapshot): number {
@@ -693,12 +701,18 @@ function pushHunkFallbacks(b: HunkBuild, hunk: HunkSnapshot): void {
   pushThreadRows(b, fallbackThreadsForHunk(b.q, b.renderedLineNums), "fallback-thread", "ft");
 }
 
+function documentPreviewKey(file: FileSnapshot, previewPaths?: ReadonlySet<string>): string | null {
+  return previewPaths?.has(file.path) ? file.preview_key ?? file.cache_key : null;
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
   const wrapCols = input.wrapCols ?? null;
   const bodyCols = annotationBodyCols(wrapCols, viewMode);
   const annFp = fileAnnotationFingerprint(file, annotationIndex);
-  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}`;
+  const previewKey = documentPreviewKey(file, input.previewPaths);
+  const preview = previewKey !== null;
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -725,7 +739,14 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   });
 
   const stub = stubRow(file, fileIndex);
-  if (stub) {
+  if (preview) {
+    rows.push({
+      type: "document-preview",
+      filePath: file.path,
+      height: DOCUMENT_PREVIEW_HEIGHT,
+      identity: `dp:${file.path}:${previewKey}`,
+    });
+  } else if (stub) {
     rows.push(stub);
   } else {
     const placedThreadIds = new Set<string>();
@@ -789,7 +810,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     totalHeight,
     unifiedPairsByHunk,
     splitRowsByHunk,
-    maxCols: computeMaxCols(file),
+    maxCols: preview ? { all: 0, left: 0, right: 0 } : computeMaxCols(file),
   };
   // Insertion-order eviction: oldest render variant goes first (typically a
   // stale annotation version or the other view mode).
@@ -831,6 +852,7 @@ export interface CrossFileInputs {
   snapshotKey: string;
   /** See {@link RenderModelInputs.wrapCols}. */
   wrapCols?: number | null;
+  previewPaths?: ReadonlySet<string>;
 }
 
 const CROSS_FILE_LRU_LIMIT = 4;
@@ -860,7 +882,10 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   for (const f of files) {
     annFp = (annFp * 31 + fileAnnotationFingerprint(f, annotationIndex)) | 0;
   }
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}`;
+  const previewFingerprint = JSON.stringify(
+    files.filter((f) => input.previewPaths?.has(f.path)).map((f) => [f.path, f.preview_key ?? f.cache_key]),
+  );
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {
@@ -888,6 +913,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
       annotationIndex,
       commentVisibility,
       wrapCols,
+      previewPaths: input.previewPaths,
     });
     totalRowCount += blocks[i].rows.length;
   }

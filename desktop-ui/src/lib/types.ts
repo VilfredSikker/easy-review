@@ -69,6 +69,8 @@ export interface HunkSnapshot {
 }
 
 export interface FileSnapshot {
+  /** Complete document identity, independent of visible hunks. */
+  preview_key?: string;
   path: string;
   status: "added" | "modified" | "deleted" | "renamed" | "copied" | "unmerged";
   additions: number;
@@ -151,9 +153,11 @@ export interface TourSnapshot {
 }
 
 export interface FilterSuggestionSnapshot {
-  kind: "preset" | "history";
+  kind: "kind" | "preset" | "history";
   name: string;
   expr: string;
+  /** Files the suggestion selects; set for `kind` suggestions. */
+  files?: number;
 }
 
 export interface ExpertInfo {
@@ -225,6 +229,12 @@ export interface TriageSnapshot {
   files_changed: number;
   approx_risk: string;
   domains: string[];
+  /** `isolated` | `contained` | `broad` | `unknown`. Optional for fixtures. */
+  reach?: string;
+  reach_reason?: string;
+  touch_points?: string[];
+  /** Only sent when the agent cited where the guard is checked. */
+  guard?: { kind: string; name: string; evidence: string } | null;
 }
 
 export interface ChecklistItemSnapshot {
@@ -394,7 +404,7 @@ export interface ProjectSnapshot {
   prs_to_review: PrInfo[];
   /** PRs opened for review recently. */
   recent_prs: PrInfo[];
-  /** Most recently merged PRs (max 5). */
+  /** Most recently merged PRs, newest first (max 25; the sidebar pages them). */
   recently_merged: PrInfo[];
   /** True when cached PR data is older than TTL. */
   pr_cache_stale?: boolean;
@@ -528,6 +538,8 @@ export interface GithubStatusSnapshot {
 }
 
 export interface AppSnapshot {
+  /** Retained source context for read-only document requests. */
+  preview_context_key?: string;
   mode: "branch" | "unstaged" | "staged" | "history" | "pr" | "conflicts" | "hidden" | "tour";
   /** Optional — populated by the engine when in history mode or branch-mode scope. */
   commits?: CommitSummary[];
@@ -549,6 +561,12 @@ export interface AppSnapshot {
   filter: string | null;
   reviewed_count: number;
   total_count: number;
+  /** Whole-diff line counts, independent of the file filter. `code` leaves out
+   *  tests, Storybook, generated files and docs. Optional only for fixtures. */
+  diff_stats?: {
+    total: { additions: number; deletions: number };
+    code: { additions: number; deletions: number };
+  };
   ai: AiSnapshot;
   pr: PrSnapshot | null;
   panels: Panels;

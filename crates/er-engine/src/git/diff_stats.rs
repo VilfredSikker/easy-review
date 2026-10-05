@@ -61,8 +61,32 @@ impl ProdDiffStats {
         Self::from_headers(&super::parse_diff_headers(raw))
     }
 
+    /// Totals only, no per-file list, with the caller's classifier — the
+    /// header path, where a repo's `[file_kinds]` overrides apply and the
+    /// per-file breakdown would be an allocation per refresh nobody reads.
+    pub fn summarize<'a>(
+        files: impl IntoIterator<Item = (&'a str, usize, usize)>,
+        classify: impl Fn(&str) -> FileKind,
+    ) -> Self {
+        let mut out = Self::default();
+        for (path, adds, dels) in files {
+            out.tally(classify(path), adds, dels);
+        }
+        out
+    }
+
     fn push_file(&mut self, path: &str, adds: usize, dels: usize) {
         let kind = classify_path(path);
+        self.tally(kind, adds, dels);
+        self.files.push(FileDiffStat {
+            path: path.to_string(),
+            kind,
+            additions: adds,
+            deletions: dels,
+        });
+    }
+
+    fn tally(&mut self, kind: FileKind, adds: usize, dels: usize) {
         self.total.absorb(adds, dels);
         match kind {
             FileKind::Production => self.production.absorb(adds, dels),
@@ -71,12 +95,6 @@ impl ProdDiffStats {
             FileKind::Generated => self.generated.absorb(adds, dels),
             FileKind::Docs => self.docs.absorb(adds, dels),
         }
-        self.files.push(FileDiffStat {
-            path: path.to_string(),
-            kind,
-            additions: adds,
-            deletions: dels,
-        });
     }
 
     /// Compact summary without the per-file list (cheaper over MCP).

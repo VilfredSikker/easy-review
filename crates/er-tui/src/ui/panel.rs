@@ -712,6 +712,9 @@ fn render_ai_summary<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engi
                 )]));
             }
         }
+        if let Some(line) = reach_line(&triage.reach) {
+            lines.push(line);
+        }
         if !triage.priority_files.is_empty() {
             lines.push(Line::from(""));
             lines.push(Line::from(vec![Span::styled(
@@ -1437,9 +1440,66 @@ fn render_agent_log<'a>(lines: &mut Vec<Line<'a>>, area: Rect, tab: &'a er_engin
     }
 }
 
+/// ` Reach: broad · guarded: feature_flag plates.move (src/x.ts:8)`, or
+/// nothing for triage from before reach existed. An unevidenced guard claim
+/// is left off, same as on the desktop.
+fn reach_line(reach: &er_engine::ai::TriageReach) -> Option<Line<'static>> {
+    use er_engine::ai::ReachLevel;
+    let color = match reach.level {
+        ReachLevel::Unknown => return None,
+        ReachLevel::Broad => styles::YELLOW(),
+        ReachLevel::Contained => styles::TEXT(),
+        ReachLevel::Isolated => styles::GREEN(),
+    };
+    let mut spans = vec![
+        Span::styled(" Reach: ", Style::default().fg(styles::BORDER())),
+        Span::styled(reach.level.as_str(), Style::default().fg(color)),
+    ];
+    if let Some(guard) = reach.guard.as_ref().filter(|g| g.is_evidenced()) {
+        let name = if guard.name.is_empty() {
+            String::new()
+        } else {
+            format!(" {}", guard.name)
+        };
+        spans.push(Span::styled(
+            format!(" · guarded: {}{name} ({})", guard.kind, guard.evidence),
+            Style::default().fg(styles::DIM()),
+        ));
+    }
+    Some(Line::from(spans))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reach_text(reach: &er_engine::ai::TriageReach) -> Option<String> {
+        reach_line(reach).map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
+    }
+
+    #[test]
+    fn reach_line_hidden_for_triage_without_reach() {
+        assert!(reach_text(&er_engine::ai::TriageReach::default()).is_none());
+    }
+
+    #[test]
+    fn reach_line_shows_only_evidenced_guards() {
+        let mut reach = er_engine::ai::TriageReach {
+            level: er_engine::ai::ReachLevel::Isolated,
+            guard: Some(er_engine::ai::TriageGuard {
+                kind: "feature_flag".into(),
+                name: "plates.move".into(),
+                evidence: "src/plates/routes.ts:8".into(),
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            reach_text(&reach).unwrap(),
+            " Reach: isolated · guarded: feature_flag plates.move (src/plates/routes.ts:8)"
+        );
+        reach.guard.as_mut().unwrap().evidence.clear();
+        assert_eq!(reach_text(&reach).unwrap(), " Reach: isolated");
+    }
 
     #[test]
     fn check_icon_success() {

@@ -2,6 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { error as logError, warn as logWarn, info as logInfo } from "@tauri-apps/plugin-log";
 import { tick } from "svelte";
+import { diffPreview } from "./diffPreview.svelte";
+import { annotationDrafts } from "./annotationDrafts.svelte";
 import {
   DEFAULT_COMMENT_VISIBILITY,
   type CommentVisibility,
@@ -616,6 +618,8 @@ class AppStore {
   }
 
   private rememberSnapshot(snapshot: AppSnapshot | null): void {
+    diffPreview.sync(snapshot);
+    annotationDrafts.sync(snapshot);
     if (!snapshot) return;
     this.tabCache.put(snapshot);
     this.tabCache.retain(openTabCacheKeys(snapshot));

@@ -390,8 +390,31 @@ pub struct ScopeStat {
     pub deletions: usize,
 }
 
+/// Line counts for the whole active diff, independent of the file filter.
+/// `code` leaves out tests, Storybook, generated files and docs (`FileKind`),
+/// after the repo's `[file_kinds]` overrides.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct DiffLineStatsSnapshot {
+    pub total: ScopeStat,
+    pub code: ScopeStat,
+}
+
+impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
+    fn from(stats: &er_engine::git::ProdDiffStats) -> Self {
+        let stat = |k: &er_engine::git::DiffKindStats| ScopeStat {
+            additions: k.additions,
+            deletions: k.deletions,
+        };
+        Self {
+            total: stat(&stats.total),
+            code: stat(&stats.production),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
+    pub preview_context_key: String,
     pub mode: String,
     pub branch: String,
     pub base: String,
@@ -402,6 +425,8 @@ pub struct AppSnapshot {
     pub filter: Option<String>,
     pub reviewed_count: usize,
     pub total_count: usize,
+    /// Whole-diff line counts for the header; see `DiffLineStatsSnapshot`.
+    pub diff_stats: DiffLineStatsSnapshot,
     pub ai: AiSnapshot,
     pub pr: Option<PrSnapshot>,
     pub panels: Panels,
@@ -716,7 +741,7 @@ pub struct ProjectSnapshot {
     /// PRs opened for review recently (sorted by viewed_at desc).
     #[serde(default)]
     pub recent_prs: Vec<PrInfo>,
-    /// Most recently merged PRs (max 5, sorted by merged_at desc).
+    /// Most recently merged PRs (max [`RECENTLY_MERGED_LIMIT`], sorted by merged_at desc).
     pub recently_merged: Vec<PrInfo>,
     #[serde(default)]
     pub pr_cache_stale: bool,
@@ -849,8 +874,15 @@ pub fn resolve_context_identity(
         github.map(|g| g.head_ref.as_str()).unwrap_or(""),
         cached_pr.map(|p| p.head_ref.as_str()).unwrap_or(""),
     ]);
+    // A base pinned under `refs/er/` (a deleted branch's commit) is not a name
+    // to show; the PR still carries the branch name.
+    let tab_base = if er_engine::github::is_pinned_pr_base(&tab.base_branch) {
+        ""
+    } else {
+        tab.base_branch.as_str()
+    };
     let base = first_non_empty([
-        tab.base_branch.as_str(),
+        tab_base,
         pr_data.map(|p| p.base_branch.as_str()).unwrap_or(""),
         github.map(|g| g.base_ref.as_str()).unwrap_or(""),
         cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
@@ -949,6 +981,7 @@ pub fn resolve_github_status_key(
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FileSnapshot {
+    pub preview_key: String,
     pub path: String,
     pub status: String,
     pub additions: usize,
@@ -996,10 +1029,13 @@ pub struct CommitSummary {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct FilterSuggestionSnapshot {
-    /// "preset" | "history"
+    /// "kind" | "preset" | "history"
     pub kind: String,
     pub name: String,
     pub expr: String,
+    /// Files in the diff the suggestion selects; set for `kind` suggestions.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub files: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1273,6 +1309,21 @@ pub struct TriageSnapshot {
     pub files_changed: u32,
     pub approx_risk: String,
     pub domains: Vec<String>,
+    /// `isolated` / `contained` / `broad`, or `unknown` for triage from before
+    /// reach existed.
+    pub reach: String,
+    pub reach_reason: String,
+    pub touch_points: Vec<String>,
+    /// Present only when the agent pointed at where the guard is checked;
+    /// an unevidenced guard claim is dropped here (`TriageGuard::is_evidenced`).
+    pub guard: Option<TriageGuardSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageGuardSnapshot {
+    pub kind: String,
+    pub name: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1973,6 +2024,7 @@ fn build_file_snapshot_with_keys(
     };
 
     FileSnapshot {
+        preview_key: tab.file_preview_key(&f.path),
         path: f.path.clone(),
         status: status_str(&f.status),
         additions: f.adds,
@@ -2329,19 +2381,36 @@ fn build_snapshot_inner(
 
     let filter_suggestions: Vec<FilterSuggestionSnapshot> = {
         use er_engine::app::filter::FILTER_PRESETS;
-        let mut out: Vec<FilterSuggestionSnapshot> = FILTER_PRESETS
-            .iter()
-            .map(|p| FilterSuggestionSnapshot {
-                kind: "preset".to_string(),
-                name: p.name.to_string(),
-                expr: p.expr.to_string(),
+        // One `kind:` entry per kind the diff has, counted with the repo's
+        // overrides so the number matches what the filter will show.
+        let mut out: Vec<FilterSuggestionSnapshot> = tab
+            .kind_file_counts()
+            .into_iter()
+            .map(|(kind, files)| {
+                let name = match kind {
+                    er_engine::git::FileKind::Production => "code",
+                    other => other.as_str(),
+                };
+                FilterSuggestionSnapshot {
+                    kind: "kind".to_string(),
+                    name: name.to_string(),
+                    expr: format!("kind:{name}"),
+                    files: Some(files),
+                }
             })
             .collect();
+        out.extend(FILTER_PRESETS.iter().map(|p| FilterSuggestionSnapshot {
+            kind: "preset".to_string(),
+            name: p.name.to_string(),
+            expr: p.expr.to_string(),
+            files: None,
+        }));
         for expr in &tab.filter_history {
             out.push(FilterSuggestionSnapshot {
                 kind: "history".to_string(),
                 name: expr.clone(),
                 expr: expr.clone(),
+                files: None,
             });
         }
         out
@@ -2569,6 +2638,7 @@ fn build_snapshot_inner(
     let stack = snapshot_stack(tab);
 
     let out = AppSnapshot {
+        preview_context_key: tab.preview_context_key(),
         mode: mode.to_string(),
         branch,
         base,
@@ -2579,6 +2649,7 @@ fn build_snapshot_inner(
         filter,
         reviewed_count,
         total_count,
+        diff_stats: DiffLineStatsSnapshot::from(&tab.diff_line_stats()),
         ai,
         pr,
         panels: Panels {
@@ -3357,6 +3428,17 @@ fn resolve_recent_prs(
     out
 }
 
+/// The sidebar shows five and reveals the rest with "Show more"; the PR cache
+/// keeps 50 closed PRs, so this bounds the snapshot payload, not the fetch.
+const RECENTLY_MERGED_LIMIT: usize = 25;
+
+fn recently_merged_prs(mut prs: Vec<PrInfo>) -> Vec<PrInfo> {
+    prs.retain(|pr| pr.state == "MERGED");
+    prs.sort_by_key(|pr| std::cmp::Reverse(pr.merged_at.clone()));
+    prs.truncate(RECENTLY_MERGED_LIMIT);
+    prs
+}
+
 fn build_projects(
     tab: &TabState,
     pr_cache: Option<&PrCache>,
@@ -3561,7 +3643,7 @@ fn build_projects_from_file(
                 if remote_only {
                     (Vec::new(), Vec::new(), Vec::new(), false, None)
                 } else if let (Some(remote), Some(ref cache)) = (&p.remote, &pr_map) {
-                    let mut all: Vec<PrInfo> = cache
+                    let all: Vec<PrInfo> = cache
                         .get(remote)
                         .cloned()
                         .unwrap_or_default()
@@ -3610,9 +3692,7 @@ fn build_projects_from_file(
                         .cloned()
                         .collect();
 
-                    all.retain(|pr| pr.state == "MERGED");
-                    all.sort_by_key(|run| std::cmp::Reverse(run.merged_at.clone()));
-                    all.truncate(5);
+                    let all = recently_merged_prs(all);
 
                     let now_ms = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -4142,6 +4222,19 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             files_changed: t.diff_stats.files_changed,
             approx_risk: t.diff_stats.approx_risk.as_str().to_string(),
             domains: t.diff_stats.domains.clone(),
+            reach: t.reach.level.as_str().to_string(),
+            reach_reason: t.reach.reason.clone(),
+            touch_points: t.reach.touch_points.clone(),
+            guard: t
+                .reach
+                .guard
+                .as_ref()
+                .filter(|g| g.is_evidenced())
+                .map(|g| TriageGuardSnapshot {
+                    kind: g.kind.clone(),
+                    name: g.name.clone(),
+                    evidence: g.evidence.clone(),
+                }),
         }
     });
 
@@ -4431,6 +4524,16 @@ mod tests {
     }
 
     #[test]
+    fn context_identity_names_a_pinned_base_by_its_pr_branch() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.base_branch = "refs/er/pr/1507/base".into();
+        let mut pr = minimal_pr_info(1507, "t");
+        pr.base_ref = "stack-base".into();
+        let (_, base) = resolve_context_identity(&tab, None, Some(&pr));
+        assert_eq!(base, "stack-base");
+    }
+
+    #[test]
     fn pr_info_for_tab_prefers_matching_remote_slug() {
         let mut cache: HashMap<String, Vec<PrInfo>> = HashMap::new();
         let mut own = minimal_pr_info(1425, "own");
@@ -4467,6 +4570,26 @@ mod tests {
         p.head_ref = head_ref.to_string();
         p.state = state.to_string();
         p
+    }
+
+    #[test]
+    fn recently_merged_keeps_more_than_the_first_page_newest_first() {
+        let mut prs: Vec<PrInfo> = (1..=30)
+            .map(|n| {
+                let mut p = pr_with(n, "b", "MERGED");
+                p.merged_at = Some(format!("2026-09-{n:02}T00:00:00Z"));
+                p
+            })
+            .collect();
+        prs.push(pr_with(99, "open", "OPEN"));
+        prs.push(pr_with(98, "closed", "CLOSED"));
+
+        let merged = recently_merged_prs(prs);
+        let numbers: Vec<u64> = merged.iter().map(|p| p.number).collect();
+        assert_eq!(numbers.len(), RECENTLY_MERGED_LIMIT);
+        assert!(numbers.len() > 5, "Show more needs more than one page");
+        assert_eq!(numbers[0], 30);
+        assert!(numbers.windows(2).all(|w| w[0] > w[1]));
     }
 
     /// Guide↔Diff toggles must reuse the differential map: Tour mode displays

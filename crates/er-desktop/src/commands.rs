@@ -919,6 +919,54 @@ pub async fn select_file(idx: usize, state: State<'_, AppState>) -> Result<AppSn
     .await
 }
 
+#[derive(serde::Serialize)]
+pub struct FilePreviewResponse {
+    path: String,
+    text: String,
+    preview_context_key: String,
+    preview_key: String,
+}
+
+#[tauri::command]
+pub async fn request_file_preview(
+    path: String,
+    expected_preview_context_key: String,
+    state: State<'_, AppState>,
+) -> Result<FilePreviewResponse, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let (active_tab, request) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if app.tab().preview_context_key() != expected_preview_context_key {
+                return Err("Document preview context changed".to_string());
+            }
+            (
+                app.active_tab,
+                app.tab()
+                    .capture_file_preview(&path)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        let text = request.read().map_err(|e| e.to_string())?;
+        {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if app.active_tab != active_tab
+                || app.tab().preview_context_key() != request.preview_context_key
+                || app.tab().file_preview_key(&path) != request.preview_key
+            {
+                return Err("Document preview context changed".to_string());
+            }
+        }
+        Ok(FilePreviewResponse {
+            path,
+            text,
+            preview_context_key: request.preview_context_key,
+            preview_key: request.preview_key,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn next_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -3605,6 +3653,7 @@ pub async fn run_ai_review(
             remote_repo,
             is_remote,
             mut raw,
+            rules,
         ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
@@ -3624,6 +3673,7 @@ pub async fn run_ai_review(
                 tab.remote_repo.clone(),
                 tab.remote_repo.is_some(),
                 raw,
+                tab.owned_repo_rules(),
             )
         };
 
@@ -3636,7 +3686,8 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash =
+            er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, rules.as_rules())?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -3979,7 +4030,11 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &raw,
+            app.tab().repo_rules(),
+        )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
             &scope, &er_dir, &expert_id, &diff_hash,
@@ -4114,7 +4169,11 @@ pub async fn run_ai_scoped_review(
             }
         };
 
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &diff_body)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &diff_body,
+            app.tab().repo_rules(),
+        )?;
 
         let target = er_engine::app::BackgroundTaskTarget {
             repo_root,
@@ -5468,6 +5527,9 @@ pub fn place_tab(
         }
         let idx = app.active_tab.min(app.tabs.len() - 1);
         let name = tab.tab_name();
+        // Replacing in place skips `push_tab`, where a tab gets its repo's rule
+        // tables.
+        app.install_repo_rules(&mut tab);
         app.tabs[idx] = tab;
         app.active_tab = idx;
         app.sync_config_from_active_tab();
@@ -5497,9 +5559,9 @@ fn fetch_remote_pr_open_inputs(
     repo: &str,
     number: u64,
 ) -> Result<RemotePrOpenInputs, String> {
-    // Five independent gh calls — run them in parallel (same pattern as the
-    // local PR-open prefetch) so hover-warm latency ≈ one call, not five.
-    let (metadata, diff, commits, overview, head_oid) = std::thread::scope(|s| {
+    let preview_head_before = er_engine::github::gh_pr_head_oid_remote(owner, repo, number).ok();
+    // Fetch the payloads together, then confirm that their source did not move.
+    let (metadata, diff, commits, overview) = std::thread::scope(|s| {
         let (owner_a, repo_a) = (owner.to_string(), repo.to_string());
         let metadata_h = s.spawn(move || {
             er_engine::github::gh_pr_metadata_remote(&owner_a, &repo_a, number)
@@ -5515,11 +5577,6 @@ fn fetch_remote_pr_open_inputs(
             .spawn(move || er_engine::github::gh_pr_commits_remote(&owner_c, &repo_c, number, 250));
         let overview_h =
             s.spawn(move || er_engine::github::gh_pr_overview_remote(owner, repo, number));
-        let (owner_d, repo_d) = (owner.to_string(), repo.to_string());
-        let oid_h = s.spawn(move || {
-            er_engine::github::gh_pr_head_oid_remote(&owner_d, &repo_d, number)
-                .map_err(|e| e.to_string())
-        });
         (
             metadata_h
                 .join()
@@ -5529,11 +5586,16 @@ fn fetch_remote_pr_open_inputs(
                 .unwrap_or_else(|_| Err("gh pr diff thread panicked".to_string())),
             commits_h.join().unwrap_or_default(),
             overview_h.join().unwrap_or_default(),
-            oid_h.join().ok().and_then(|r| r.ok()),
         )
     });
     let (base_branch, head_branch) = metadata?;
     let raw_diff = diff?;
+    let confirmed_head = er_engine::github::gh_pr_head_oid_remote(owner, repo, number).ok();
+    let head_oid = if preview_head_before == confirmed_head {
+        preview_head_before
+    } else {
+        None
+    };
     Ok(RemotePrOpenInputs {
         base_branch,
         head_branch,
@@ -5567,8 +5629,10 @@ fn remote_pr_tab_from_entry(
     // `build_remote_pr_tab` falls back to the PR-list cache when the entry has
     // no oid (pre-upgrade / failed fetch).
     tab.last_diff_head_oid = entry.head_oid.clone();
+    tab.preview_head_oid = entry.head_oid.clone();
     tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
         raw: entry.raw_diff,
+        preview_head_oid: entry.head_oid.clone(),
         base_branch: tab.base_branch.clone(),
         pr_number: Some(pr_ref.number),
         local_branch_view: tab.local_branch_view.clone(),
@@ -5641,6 +5705,7 @@ fn build_remote_pr_tab(
     // raw_diff for remote tabs) so `kick_branch_preload` skips its refetch.
     tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
         raw: inputs.raw_diff.clone(),
+        preview_head_oid: inputs.head_oid.clone(),
         base_branch: tab.base_branch.clone(),
         pr_number: Some(number),
         local_branch_view: tab.local_branch_view.clone(),
@@ -5653,6 +5718,7 @@ fn build_remote_pr_tab(
     // Seed the staleness baseline with the oid the freshly fetched diff was
     // computed at.
     tab.last_diff_head_oid = inputs.head_oid.clone();
+    tab.preview_head_oid = inputs.head_oid.clone();
     crate::remote_pr_open_cache::insert_remote_pr_open_entry(
         &state.remote_pr_open_cache,
         owner,
@@ -6115,6 +6181,9 @@ fn kick_background_branch_refresh(
     branch_name: String,
     base_branch: String,
 ) {
+    if er_engine::github::is_pinned_pr_base(&base_branch) {
+        return; // a deleted base's commit: nothing on origin to fetch
+    }
     let flight_key = (repo_root.clone(), branch_name.clone());
     {
         let Ok(mut g) = BRANCH_REFRESH_IN_FLIGHT.lock() else {
@@ -7155,6 +7224,7 @@ fn open_pr_review_impl(
             let tab = app.tab_mut();
             tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
                 raw,
+                preview_head_oid: tab.preview_head_oid.clone(),
                 base_branch: tab.base_branch.clone(),
                 pr_number: tab.pr_number,
                 local_branch_view: tab.local_branch_view.clone(),
@@ -7371,6 +7441,7 @@ fn kick_miss_open_offload(
                         if tab.local_branch_checkout_root.is_none() {
                             tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
                                 raw: inputs.raw_diff,
+                                preview_head_oid: tab.preview_head_oid.clone(),
                                 base_branch: inputs.resolved_base,
                                 pr_number: Some(pr_number),
                                 local_branch_view: tab.local_branch_view.clone(),
@@ -9593,20 +9664,38 @@ pub fn kick_branch_preload(app: &App, state: &AppState) {
                         && t.local_branch_view == inputs.local_branch_view
                         && t.local_branch_checkout_root == inputs.checkout_root
                 })
-                .and_then(|t| t.preloaded_branch_raw.as_ref().map(|p| p.raw.clone()))
+                .and_then(|t| {
+                    t.preloaded_branch_raw
+                        .as_ref()
+                        .map(|p| (p.raw.clone(), p.preview_head_oid.clone()))
+                })
         });
-        let raw = match seeded_raw {
-            Some(raw) => Some(raw),
-            None => match er_engine::app::fetch_branch_scope_raw("branch", &inputs) {
-                Ok(raw) => Some(raw),
-                Err(e) => {
-                    log::warn!(
-                        "er-desktop: branch preload failed for pr={:?}: {e}",
-                        inputs.pr_number
-                    );
-                    None
-                }
-            },
+        let fetch_preview_head = || {
+            let slug = inputs.remote_repo.clone().or_else(|| {
+                er_engine::github::get_repo_info(&inputs.repo_root)
+                    .ok()
+                    .map(|(owner, repo)| format!("{owner}/{repo}"))
+            })?;
+            let (owner, repo) = slug.split_once('/')?;
+            er_engine::github::gh_pr_head_oid_remote(owner, repo, inputs.pr_number?).ok()
+        };
+        let (raw, preview_head_oid) = match seeded_raw {
+            Some((raw, oid)) => (Some(raw), oid),
+            None => {
+                let head = fetch_preview_head();
+                let raw = match er_engine::app::fetch_branch_scope_raw("branch", &inputs) {
+                    Ok(raw) => Some(raw),
+                    Err(e) => {
+                        log::warn!(
+                            "er-desktop: branch preload failed for pr={:?}: {e}",
+                            inputs.pr_number
+                        );
+                        None
+                    }
+                };
+                let confirmed = fetch_preview_head();
+                (raw, if head == confirmed { head } else { None })
+            }
         };
         // Branch-view AI sidecar preload (local PR tabs — their Branch view is
         // reachable; remote tabs are PrDiff-only and their bucket is the PR
@@ -9685,6 +9774,7 @@ pub fn kick_branch_preload(app: &App, state: &AppState) {
                     if tab.preloaded_branch_raw.is_none() {
                         tab.preloaded_branch_raw = Some(er_engine::app::PreloadedBranchRaw {
                             raw,
+                            preview_head_oid: preview_head_oid.clone(),
                             base_branch: inputs.base_branch.clone(),
                             pr_number: inputs.pr_number,
                             local_branch_view: inputs.local_branch_view.clone(),
@@ -10456,6 +10546,10 @@ fn compute_content_revision(app: &App) -> u64 {
     let tab = app.tab();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
+    tab.preview_context_key().hash(&mut h);
+    for (_, file) in tab.visible_files() {
+        tab.file_preview_key(&file.path).hash(&mut h);
+    }
     tab.diff_hash.hash(&mut h);
     tab.branch_diff_hash.hash(&mut h);
     tab.current_branch.hash(&mut h);
@@ -11525,6 +11619,31 @@ mod tests {
         assert_eq!(app.tabs[0].repo_root, "tab0", "other tab is untouched");
     }
 
+    /// Replacing a slot skips `push_tab`; the incoming tab must still get its
+    /// repo's `[file_kinds]`, or the header count ignores the overrides.
+    #[test]
+    fn place_tab_replace_hands_the_tab_its_repo_rules() {
+        use er_engine::app::TabState;
+        use er_engine::config::FileKindRepoConfig;
+
+        let mut app = make_app_with_n_tabs(1);
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        app.config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
+
+        let mut incoming = TabState::new_for_test(vec![]);
+        incoming.repo_root = "/".into();
+        incoming.remote_repo = Some("acme/my-service".into());
+        place_tab(&mut app, incoming, true, true);
+
+        assert_eq!(app.tabs[0].file_kinds, table);
+    }
+
     #[test]
     fn place_tab_append_pushes_and_focuses() {
         use er_engine::app::TabState;
@@ -11625,7 +11744,7 @@ mod tests {
             number: 9,
         };
         const DIFF: &str = "diff --git a/f.rs b/f.rs\nindex 0000000..1111111 100644\n--- a/f.rs\n+++ b/f.rs\n@@ -1 +1,2 @@\n fn f() {}\n+fn f2() {}\n";
-        let tab = remote_pr_tab_from_entry(
+        let mut tab = remote_pr_tab_from_entry(
             &pr_ref,
             RemotePrOpenEntry {
                 base_branch: "main".into(),
@@ -11647,12 +11766,44 @@ mod tests {
             "staleness baseline = the oid the cached diff was fetched at"
         );
         assert_eq!(tab.files.len(), 1);
+        assert_eq!(tab.preview_head_oid.as_deref(), Some("oid-1"));
+        assert_eq!(
+            tab.preloaded_branch_raw
+                .as_ref()
+                .unwrap()
+                .preview_head_oid
+                .as_deref(),
+            Some("oid-1")
+        );
+        let preview_context = tab.preview_context_key();
+        tab.last_diff_head_oid = Some("newer-freshness-baseline".into());
+        assert_eq!(tab.preview_context_key(), preview_context);
         assert_eq!(tab.files[0].path, "f.rs");
         assert!(!tab.needs_initial_refresh, "cache-opened tab is not a stub");
         assert!(
             tab.preloaded_branch_raw.is_some(),
             "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
         );
+    }
+
+    #[test]
+    fn preview_file_keys_invalidate_content_revision_without_hunk_changes() {
+        let mut app = make_app_with_n_tabs(1);
+        let raw = "diff --git a/readme.md b/readme.md\nindex abcdef0..0000000 100644\n--- a/readme.md\n+++ b/readme.md\n@@ -1 +1 @@\n-old\n+new\n";
+        let tab = app.tab_mut();
+        tab.set_raw_diff_for_test(raw);
+        tab.files = er_engine::git::parse_diff(raw);
+        tab.file_headers = er_engine::git::parse_diff_headers(raw);
+        tab.mtime_cache
+            .insert("readme.md".into(), std::time::SystemTime::UNIX_EPOCH);
+        let context = tab.preview_context_key();
+        let revision = compute_content_revision(&app);
+        app.tab_mut().mtime_cache.insert(
+            "readme.md".into(),
+            std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1),
+        );
+        assert_eq!(context, app.tab().preview_context_key());
+        assert_ne!(revision, compute_content_revision(&app));
     }
 
     #[test]
@@ -11664,6 +11815,7 @@ mod tests {
         tab.pr_number = Some(7);
         tab.preloaded_branch_raw = Some(PreloadedBranchRaw {
             raw: "diff".into(),
+            preview_head_oid: None,
             base_branch: "main".into(),
             pr_number: Some(7),
             local_branch_view: None,

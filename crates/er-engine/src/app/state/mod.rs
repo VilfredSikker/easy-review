@@ -4,10 +4,11 @@ pub(super) mod comments;
 pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
+pub mod preview;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use crate::config::{self, ErConfig, ImportanceRepoConfig, WatchedConfig};
+use crate::config::{self, ErConfig, FileKindRepoConfig, ImportanceRepoConfig, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
 };
@@ -749,6 +750,7 @@ pub struct TabState {
 
     /// Cached mtime per file path, populated on refresh (avoids per-frame fs::metadata calls)
     pub mtime_cache: HashMap<String, std::time::SystemTime>,
+    pub preview_blob_ids: HashMap<String, String>,
 
     /// Pre-lowercased search query for use in visible_files() (avoids per-call allocation)
     pub search_query_lower: String,
@@ -859,6 +861,10 @@ pub struct TabState {
     /// The filter resolves a tier from here rather than reaching for `ErConfig`,
     /// which lives on `App` — same shape as `watched_config`.
     pub importance: ImportanceRepoConfig,
+
+    /// This repo's `[file_kinds]` overrides, copied off the app's config the
+    /// same way as `importance`.
+    pub file_kinds: FileKindRepoConfig,
 
     /// Git-ignored files opted into visibility
     pub watched_files: Vec<WatchedFile>,
@@ -973,6 +979,8 @@ pub struct TabState {
     /// latest head_oid in pr_cache; equal ⇒ skip the network round-trip. None
     /// means "force fetch".
     pub last_diff_head_oid: Option<String>,
+    /// Immutable PR head paired with the retained diff, independent of freshness probes.
+    pub preview_head_oid: Option<String>,
 
     /// Desktop-only: branch-scope raw diff prefetched in the background while
     /// the tab is on another view (e.g. PR Diff). The first Branch-view load
@@ -1337,6 +1345,7 @@ impl TabState {
         self.pr_data = pr_data;
         self.pr_commits = pr_commits;
         self.last_diff_head_oid = head_oid;
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         // Lazy local-PR stubs start in Branch. This payload is `gh pr diff`,
         // so land in PR Diff. Leaving Branch selected made the header toggle
         // look stuck (clicking Local Branch was a no-op on already-branch).
@@ -1440,7 +1449,7 @@ impl TabState {
         tab.clamp_hunk();
         tab.ensure_file_parsed();
         tab.rebuild_hunk_offsets();
-        tab.mtime_cache.clear();
+        tab.refresh_mtime_cache();
         tab.update_mem_budget();
         // Light sync only: the open path immediately follows with
         // `enter_pr_diff_preloaded`/`enter_pr_diff_freshly_loaded`, whose
@@ -1458,11 +1467,23 @@ impl TabState {
             crate::github::gh_pr_metadata_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
 
         // Get the diff from GitHub
+        let preview_head_oid =
+            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
         let raw = crate::github::gh_pr_diff_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number)?;
+        let confirmed_preview_head =
+            crate::github::gh_pr_head_oid_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number).ok();
+        let preview_head_oid = if preview_head_oid == confirmed_preview_head {
+            preview_head_oid
+        } else {
+            None
+        };
 
         let pr_commits =
             crate::github::gh_pr_commits_remote(&pr_ref.owner, &pr_ref.repo, pr_ref.number, 250);
-        Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)
+        let mut tab =
+            Self::new_remote_with_data(pr_ref, base_branch, head_branch, raw, pr_commits)?;
+        tab.preview_head_oid = preview_head_oid;
+        Ok(tab)
     }
 
     /// Build a remote PR tab from already-fetched data — no network, no
@@ -1510,7 +1531,7 @@ impl TabState {
             }
             headers
         } else {
-            Vec::new()
+            crate::git::parse_diff_headers(&raw)
         };
 
         let er_config = crate::config::ErConfig::default();
@@ -1536,6 +1557,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1556,6 +1578,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: diff_hash.clone(),
@@ -1624,6 +1647,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
 
@@ -1666,6 +1690,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1686,6 +1711,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -1752,6 +1778,7 @@ impl TabState {
             needs_initial_refresh: true,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
         tab.finish_storage_setup();
@@ -1790,6 +1817,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1810,6 +1838,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -1876,6 +1905,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
         };
 
@@ -1914,6 +1944,7 @@ impl TabState {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -1934,6 +1965,7 @@ impl TabState {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -1999,6 +2031,7 @@ impl TabState {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
             stack: StackState::default(),
         }
@@ -2526,8 +2559,9 @@ impl TabState {
             log_branch_profile_phase(self, "enter_pr_diff.fetch_pr_head", t);
             let base = self.base_branch.clone();
             let t = Instant::now();
-            let base_ref = crate::github::fetch_base_branch_ref(
+            let base_ref = crate::github::fetch_pr_base_ref(
                 &self.repo_root,
+                pr_number,
                 base.trim_start_matches("origin/"),
             )?;
             log_branch_profile_phase(self, "enter_pr_diff.fetch_base_branch_ref", t);
@@ -2536,6 +2570,7 @@ impl TabState {
             // after a manual sync). The ref oid is stable until re-fetched.
             let t = Instant::now();
             self.last_diff_head_oid = crate::github::rev_parse_oid(&self.repo_root, &head_ref);
+            self.preview_head_oid = self.last_diff_head_oid.clone();
             log_branch_profile_phase(self, "enter_pr_diff.rev_parse_oid", t);
             self.pr_head_ref = Some(head_ref);
             self.base_branch = base_ref;
@@ -2591,6 +2626,7 @@ impl TabState {
             .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
 
         self.last_diff_head_oid = Some(cache_head_oid);
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         self.pr_refs_fetched = true;
 
         self.mode = DiffMode::PrDiff;
@@ -2669,7 +2705,7 @@ impl TabState {
             ),
         };
 
-        let resolved_base = crate::github::fetch_base_branch_ref(repo_root, &base_branch)?;
+        let resolved_base = crate::github::fetch_pr_base_ref(repo_root, pr_number, &base_branch)?;
         // The oid the diff is about to be computed against, so the desktop
         // freshness check can compare it to the latest PR head_oid.
         let last_diff_head_oid = crate::github::rev_parse_oid(repo_root, &head_ref);
@@ -2691,6 +2727,7 @@ impl TabState {
         self.pr_head_ref = Some(result.head_ref);
         self.base_branch = result.resolved_base;
         self.last_diff_head_oid = result.last_diff_head_oid;
+        self.preview_head_oid = self.last_diff_head_oid.clone();
         // Refresh the PR commit list so the COMMITS panel follows the synced
         // head. Best-effort: a fetch error keeps the existing list; an empty
         // result (the failure signal for a real PR, which always has ≥1 commit)
@@ -2747,14 +2784,18 @@ impl TabState {
             // it so the comparison reflects current origin (e.g. main advanced).
             // Best-effort: if the fetch fails (e.g. offline), keep the existing
             // base ref and still recompute the diff rather than erroring out.
+            // A base pinned under `refs/er/` is a deleted branch's last commit
+            // (see `fetch_pr_base_ref`): there is nothing on origin to re-fetch.
             let base = self.base_branch.clone();
             let base_short = base.strip_prefix("origin/").unwrap_or(&base);
-            let t = Instant::now();
-            match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
-                Ok(resolved_base) => self.base_branch = resolved_base,
-                Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
+            if !crate::github::is_pinned_pr_base(base_short) {
+                let t = Instant::now();
+                match crate::github::fetch_base_branch_ref(&self.repo_root, base_short) {
+                    Ok(resolved_base) => self.base_branch = resolved_base,
+                    Err(e) => eprintln!("sync: base re-fetch failed for '{base_short}': {e}"),
+                }
+                log_branch_profile_phase(self, "fetch_branch_base_ref", t);
             }
-            log_branch_profile_phase(self, "fetch_branch_base_ref", t);
         }
 
         let t = Instant::now();
@@ -3154,15 +3195,10 @@ impl TabState {
             // branch-scope views: in PrDiff mode the fetch below returns the
             // PR parity diff, and consuming the branch raw here would swap
             // wrong-scope content into the PrDiff view.
-            let raw = if scope == "branch" && matches!(self.mode, DiffMode::Branch | DiffMode::Tour)
-            {
-                match self.take_preloaded_branch_raw() {
-                    Some(raw) => raw,
-                    None => self.fetch_tab_raw_diff(scope)?,
-                }
-            } else {
-                self.fetch_tab_raw_diff(scope)?
-            };
+            let (raw, fetched_preview_head_oid) = self.load_diff_with_preview_head(
+                scope,
+                scope == "branch" && matches!(self.mode, DiffMode::Branch | DiffMode::Tour),
+            )?;
             log_branch_profile_phase(self, "local_branch_raw_diff", t_raw_diff);
 
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
@@ -3180,10 +3216,12 @@ impl TabState {
                 self.files = files;
                 self.file_headers = headers;
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
                 self.lazy_mode = true;
             } else {
                 self.file_headers = crate::git::parse_diff_headers(&raw);
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
                 self.files = crate::git::parse_diff(&raw);
                 self.lazy_mode = false;
                 crate::git::compact_files(&mut self.files, &self.compaction_config);
@@ -3228,7 +3266,7 @@ impl TabState {
             self.clamp_hunk();
             self.ensure_file_parsed();
             self.rebuild_hunk_offsets();
-            self.mtime_cache.clear();
+            self.refresh_mtime_cache();
             self.update_mem_budget();
             // Reload AI sidecar for this branch's comment directory. Gated so a
             // watch event that changed neither the sidecars nor `branch_diff_hash`
@@ -3254,10 +3292,8 @@ impl TabState {
         // Remote mode: fetch diff from GitHub API instead of local git
         if let (Some(repo_slug), Some(_pr_number)) = (&self.remote_repo, self.pr_number) {
             if repo_slug.split('/').count() == 2 {
-                let raw = match self.take_preloaded_branch_raw() {
-                    Some(raw) => raw,
-                    None => self.fetch_tab_raw_diff("branch")?,
-                };
+                let (raw, fetched_preview_head_oid) =
+                    self.load_diff_with_preview_head("branch", true)?;
 
                 let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
 
@@ -3275,13 +3311,14 @@ impl TabState {
                     self.lazy_mode = true;
                 } else {
                     self.files = crate::git::parse_diff(&raw);
-                    self.file_headers.clear();
+                    self.file_headers = crate::git::parse_diff_headers(&raw);
                     self.lazy_mode = false;
                     crate::git::compact_files(&mut self.files, &self.compaction_config);
                 }
                 // Same as local-branch refresh: keep the bytes so AI review can
                 // prepare diff-tmp without the sandboxed agent calling `gh`.
                 self.raw_diff = Some(raw.clone());
+                self.preview_head_oid = fetched_preview_head_oid.clone();
 
                 if recompute_branch_hash {
                     self.diff_hash = crate::ai::compute_diff_hash(&raw);
@@ -3339,29 +3376,30 @@ impl TabState {
         let prev_scroll = self.diff_scroll;
 
         let head_ref_owned = self.pr_head_ref.clone();
-        let raw = if self.mode == DiffMode::Staged && self.committed_unpushed {
-            let staged_raw = git::git_diff_raw(
-                self.mode.fetch_scope(),
-                &self.base_branch,
-                &self.repo_root,
-                head_ref_owned.as_deref(),
-            )?;
-            if !staged_raw.is_empty() {
-                // New staged changes exist — resume normal staged view
-                self.committed_unpushed = false;
-                staged_raw
-            } else {
-                match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
-                    Ok(raw) => raw,
-                    Err(_) => {
-                        self.committed_unpushed = false;
-                        String::new()
+        let (raw, fetched_preview_head_oid) =
+            if self.mode == DiffMode::Staged && self.committed_unpushed {
+                let staged_raw = git::git_diff_raw(
+                    self.mode.fetch_scope(),
+                    &self.base_branch,
+                    &self.repo_root,
+                    head_ref_owned.as_deref(),
+                )?;
+                if !staged_raw.is_empty() {
+                    // New staged changes exist — resume normal staged view
+                    self.committed_unpushed = false;
+                    (staged_raw, None)
+                } else {
+                    match git::git_diff_raw_range("HEAD~1", "HEAD", &self.repo_root) {
+                        Ok(raw) => (raw, None),
+                        Err(_) => {
+                            self.committed_unpushed = false;
+                            (String::new(), None)
+                        }
                     }
                 }
-            }
-        } else {
-            self.fetch_tab_raw_diff(self.mode.fetch_scope())?
-        };
+            } else {
+                self.load_diff_with_preview_head(self.mode.fetch_scope(), false)?
+            };
 
         // Decide parsing strategy based on diff size.
         // Use byte-length heuristic (O(1)) instead of counting newlines (O(n)).
@@ -3378,17 +3416,19 @@ impl TabState {
             self.files = files;
             self.file_headers = headers;
             self.raw_diff = Some(raw.clone());
+            self.preview_head_oid = fetched_preview_head_oid.clone();
             self.lazy_mode = true;
         } else {
             // Eager mode: full parse (fast enough for smaller diffs)
             self.files = git::parse_diff(&raw);
-            self.file_headers.clear();
+            self.file_headers = crate::git::parse_diff_headers(&raw);
             // Retained even though eager parsing has no re-parse use for it:
             // `per_file_hash` resolves a file's hash from here whenever the
             // cached map misses, which is every newly-marked file. Dropping it
             // silently disabled auto-unmark for files marked after a refresh.
             // Bounded by the lazy threshold that selected this branch.
             self.raw_diff = Some(raw.clone());
+            self.preview_head_oid = fetched_preview_head_oid.clone();
             self.lazy_mode = false;
 
             // Apply auto-compaction to low-value files
@@ -4404,6 +4444,75 @@ impl TabState {
         self.selected_file
     }
 
+    /// Line counts for the whole active diff, split by file kind.
+    ///
+    /// Reads every file rather than `visible_files`: the header reports what
+    /// the branch changes, and a filter or search narrowing the list must not
+    /// shrink it.
+    pub fn diff_line_stats(&self) -> crate::git::ProdDiffStats {
+        crate::git::ProdDiffStats::summarize(
+            self.active_diff_files()
+                .iter()
+                .map(|f| (f.path.as_str(), f.adds, f.dels)),
+            |path| self.file_kinds.classify(path),
+        )
+    }
+
+    /// Files per kind in the whole active diff, for the `kind:` quick filters.
+    /// Only kinds the diff has, in a fixed order with code first.
+    pub fn kind_file_counts(&self) -> Vec<(crate::git::FileKind, usize)> {
+        use crate::git::FileKind;
+        const ORDER: [FileKind; 5] = [
+            FileKind::Production,
+            FileKind::Test,
+            FileKind::Storybook,
+            FileKind::Generated,
+            FileKind::Docs,
+        ];
+        let mut counts = [0usize; ORDER.len()];
+        for f in self.active_diff_files() {
+            let kind = self.file_kinds.classify(&f.path);
+            if let Some(i) = ORDER.iter().position(|k| *k == kind) {
+                counts[i] += 1;
+            }
+        }
+        ORDER
+            .into_iter()
+            .zip(counts)
+            .filter(|(_, n)| *n > 0)
+            .collect()
+    }
+
+    /// The key this tab's `[importance]` / `[file_kinds]` tables live under.
+    /// Anything that reads or writes those tables for the tab goes through
+    /// this, so Settings, the importance agent and the filter name one table.
+    pub fn rules_key(&self) -> String {
+        // A local PR tab carries `remote_repo` too, but has a clone to ask; only
+        // a remote-only tab is named by the PR's repo.
+        let remote_only = self
+            .is_remote()
+            .then_some(self.remote_repo.as_deref())
+            .flatten();
+        crate::storage::rules_key(&self.repo_root, remote_only)
+    }
+
+    /// The rule tables `change-facts.md` resolves against. An empty importance
+    /// table is no declaration at all — the tab holds an empty one when the
+    /// repo has none, and the facts must say "undeclared" rather than "normal".
+    pub fn repo_rules(&self) -> crate::ai::change_facts::RepoRules<'_> {
+        crate::ai::change_facts::RepoRules::new(&self.file_kinds, &self.importance)
+    }
+
+    /// [`Self::repo_rules`] as an owned copy, for a command that releases the
+    /// app lock before it prepares the diff. The facts must come from the same
+    /// tables the header and filter use, never a fresh read of the config.
+    pub fn owned_repo_rules(&self) -> crate::ai::change_facts::OwnedRepoRules {
+        crate::ai::change_facts::OwnedRepoRules {
+            file_kinds: self.file_kinds.clone(),
+            importance: self.importance.clone(),
+        }
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
@@ -4414,11 +4523,12 @@ impl TabState {
         if !self.filter_rules.is_empty() {
             let review = self.ai.review.as_ref();
             visible.retain(|(_, f)| {
-                super::filter::apply_filter_with_context(
+                super::filter::apply_filter_with_kinds(
                     &self.filter_rules,
                     f,
                     review,
                     Some(&self.importance),
+                    Some(&self.file_kinds),
                 )
             });
         }
@@ -4886,12 +4996,18 @@ impl TabState {
         use std::fs;
         use std::time::SystemTime;
         self.mtime_cache.clear();
+        self.preview_blob_ids.clear();
         for file in &self.files {
-            let mtime = fs::metadata(format!("{}/{}", self.repo_root, file.path))
+            let root = self
+                .local_branch_checkout_root
+                .as_deref()
+                .unwrap_or(&self.repo_root);
+            let mtime = fs::metadata(format!("{}/{}", root, file.path))
                 .and_then(|m| m.modified())
                 .unwrap_or(SystemTime::UNIX_EPOCH);
             self.mtime_cache.insert(file.path.clone(), mtime);
         }
+        self.capture_preview_rename_blobs();
     }
 
     fn clamp_hunk(&mut self) {
@@ -4968,11 +5084,12 @@ impl TabState {
         let (mut total, mut reviewed) = (0, 0);
         let review = self.ai.review.as_ref();
         for f in &self.files {
-            if super::filter::apply_filter_with_context(
+            if super::filter::apply_filter_with_kinds(
                 &self.filter_rules,
                 f,
                 review,
                 Some(&self.importance),
+                Some(&self.file_kinds),
             ) {
                 total += 1;
                 if self.reviewed.contains_key(&f.path) {
@@ -5565,6 +5682,9 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        // These tabs were built before the config loaded, so `push_tab` never
+        // saw them.
+        app.sync_repo_rules_to_tabs();
         app.drain_storage_notices();
         app.overlay_cached_discovered_models();
         app.reconcile_arena_runs();
@@ -5609,6 +5729,7 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
         Ok(app)
     }
@@ -5647,6 +5768,7 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             pending_model_discovery: None,
         };
+        app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
         app
     }
@@ -6112,33 +6234,35 @@ impl App {
     /// tab opened after a config change filters the same way as one that was
     /// already open.
     fn push_tab(&mut self, mut tab: TabState) {
-        tab.importance = Self::importance_for(&self.config.importance, &tab.repo_root);
+        Self::copy_repo_rules(&self.config, &mut tab);
         self.tabs.push(tab);
     }
 
-    /// The rules `repo_root` declares, or an empty table.
+    /// Copy the per-repo tables `tab`'s repo declares (`[importance]`,
+    /// `[file_kinds]`), or empty ones.
     ///
-    /// Takes the table rather than `&self` so a caller holding `self.tabs`
+    /// Takes the config rather than `&self` so a caller holding `self.tabs`
     /// mutably can still resolve a tab's rules.
-    fn importance_for(
-        importance: &config::ImportanceConfig,
-        repo_root: &str,
-    ) -> ImportanceRepoConfig {
-        importance
-            .repo(&crate::storage::slug_repo(repo_root))
-            .cloned()
-            .unwrap_or_default()
+    fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
+        let repo = tab.rules_key();
+        tab.importance = config.importance.repo(&repo).cloned().unwrap_or_default();
+        tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
     }
 
-    /// Copy each repo's declared importance rules onto its open tabs.
+    /// Hand `tab` its repo's rule tables, for a front end that installs a tab
+    /// without `push_tab` (replacing one in place).
+    pub fn install_repo_rules(&self, tab: &mut TabState) {
+        Self::copy_repo_rules(&self.config, tab);
+    }
+
+    /// Copy each repo's declared rule tables onto its open tabs.
     ///
-    /// The filter resolves a tier off the tab and the config lives on the app,
-    /// so this is where the two meet. Call it after the config changes, the way
-    /// `watched_config` is pushed.
-    pub fn sync_importance_to_tabs(&mut self) {
-        let importance = self.config.importance.clone();
+    /// The filter and the line-count header resolve off the tab and the config
+    /// lives on the app, so this is where the two meet. Call it after the
+    /// config changes, the way `watched_config` is pushed.
+    pub fn sync_repo_rules_to_tabs(&mut self) {
         for tab in self.tabs.iter_mut() {
-            tab.importance = Self::importance_for(&importance, &tab.repo_root);
+            Self::copy_repo_rules(&self.config, tab);
         }
     }
 
@@ -7893,8 +8017,8 @@ impl App {
         // Watched paths are mirrored onto the active tab so `W` sees updates
         // without requiring an explicit Save.
         self.tab_mut().watched_config = self.config.watched.clone();
-        // Same for the importance rules the file filter resolves against.
-        self.sync_importance_to_tabs();
+        // Same for the per-repo rule tables the filter and header resolve against.
+        self.sync_repo_rules_to_tabs();
     }
 
     /// Toggle/cycle/activate the currently selected config hub item
@@ -8896,7 +9020,7 @@ mod tests {
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::collections::{HashMap, HashSet};
 
-    fn make_test_tab(files: Vec<DiffFile>) -> TabState {
+    pub(super) fn make_test_tab(files: Vec<DiffFile>) -> TabState {
         use crate::ai::{InlineLayers, ReviewFocus};
         let (agent_log_tx, agent_log_rx) = std::sync::mpsc::channel();
         TabState {
@@ -8917,6 +9041,7 @@ mod tests {
             h_scroll_new: 0,
             layers: InlineLayers::default(),
             importance: ImportanceRepoConfig::default(),
+            file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
             panel_focus: false,
@@ -8937,6 +9062,7 @@ mod tests {
             show_unreviewed_only: false,
             sort_by_mtime: false,
             mtime_cache: HashMap::new(),
+            preview_blob_ids: HashMap::new(),
             search_query_lower: String::new(),
             ai: AiState::default(),
             diff_hash: String::new(),
@@ -9002,6 +9128,7 @@ mod tests {
             needs_initial_refresh: false,
             storage_notice: None,
             last_diff_head_oid: None,
+            preview_head_oid: None,
             pr_refs_fetched: false,
             stack: StackState::default(),
         }
@@ -9577,6 +9704,208 @@ mod tests {
         tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
 
         assert!(tab.visible_files().is_empty());
+    }
+
+    /// The header reports what the branch changes, so narrowing the file list
+    /// must not shrink it.
+    #[test]
+    fn diff_line_stats_ignore_filter_and_search() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 2),
+            make_file("src/lib.test.ts", vec![], 30, 0),
+            make_file("Cargo.lock", vec![], 100, 50),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.search_query = "lib.rs".to_string();
+        tab.search_query_lower = "lib.rs".to_string();
+        assert_eq!(tab.visible_files().len(), 1);
+
+        let stats = tab.diff_line_stats();
+        assert_eq!((stats.total.additions, stats.total.deletions), (140, 52));
+        assert_eq!(
+            (stats.production.additions, stats.production.deletions),
+            (10, 2)
+        );
+    }
+
+    #[test]
+    fn diff_line_stats_apply_the_tabs_file_kind_overrides() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 0),
+            make_file("src/api/schema.ts", vec![], 500, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        assert_eq!(tab.diff_line_stats().production.additions, 510);
+
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
+        assert_eq!(tab.diff_line_stats().production.additions, 10);
+    }
+
+    /// Clicking the header's code pair filters to `kind:code`; the list must
+    /// then hold the same files the code count sums, overrides included.
+    #[test]
+    fn kind_code_filter_matches_the_code_count() {
+        let files = vec![
+            make_file("src/lib.rs", vec![], 10, 0),
+            make_file("src/api/schema.ts", vec![], 500, 0),
+            make_file("src/lib.test.ts", vec![], 30, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
+        tab.filter_rules = crate::app::filter::parse_filter_expr("kind:code");
+
+        let visible: Vec<&str> = tab
+            .visible_files()
+            .iter()
+            .map(|(_, f)| f.path.as_str())
+            .collect();
+        assert_eq!(visible, vec!["src/lib.rs"]);
+        let shown: usize = tab.visible_files().iter().map(|(_, f)| f.adds).sum();
+        assert_eq!(shown, tab.diff_line_stats().production.additions);
+    }
+
+    #[test]
+    fn kind_file_counts_list_only_present_kinds_code_first() {
+        let files = vec![
+            make_file("README.md", vec![], 1, 0),
+            make_file("src/lib.rs", vec![], 1, 0),
+            make_file("src/a.test.ts", vec![], 1, 0),
+            make_file("src/b.test.ts", vec![], 1, 0),
+            make_file("src/api/schema.ts", vec![], 1, 0),
+        ];
+        let mut tab = make_test_tab(files);
+        tab.file_kinds = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "src/api/schema.ts".to_string(),
+            "generated".to_string(),
+        )]));
+        use crate::git::FileKind;
+        assert_eq!(
+            tab.kind_file_counts(),
+            vec![
+                (FileKind::Production, 1),
+                (FileKind::Test, 2),
+                (FileKind::Generated, 1),
+                (FileKind::Docs, 1),
+            ]
+        );
+    }
+
+    /// A tab is handed its repo's `[file_kinds]` table, keyed by repo slug,
+    /// and no other repo's.
+    #[test]
+    fn copy_repo_rules_hands_a_tab_only_its_repos_file_kinds() {
+        let mut config = ErConfig::default();
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/nonexistent-er-test/my-service".to_string();
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, table);
+
+        tab.repo_root = "/nonexistent-er-test/other".to_string();
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, FileKindRepoConfig::default());
+    }
+
+    /// A local PR tab carries the PR's `remote_repo` but has a clone; it must
+    /// share the clone's key, or its branch tab and PR tab read two tables.
+    #[test]
+    fn local_pr_tab_shares_its_clones_rules_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            std::process::Command::new("git")
+                .args(args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:me/my-fork.git"]);
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = dir.path().to_str().unwrap().to_string();
+        let clone_key = tab.rules_key();
+        assert_eq!(clone_key, "my-fork");
+
+        tab.remote_repo = Some("acme/upstream".to_string());
+        tab.local_branch_view = Some("feature".to_string());
+        assert_eq!(tab.rules_key(), clone_key);
+
+        tab.local_branch_view = None;
+        assert_eq!(tab.rules_key(), "upstream");
+    }
+
+    /// A remote-only tab has no tree to rank, so the importance agent is
+    /// refused there rather than surveying the process's working directory.
+    #[test]
+    fn importance_agent_refuses_a_remote_only_tab() {
+        let mut app = App::new_for_test(vec![]);
+        app.tab_mut().repo_root = "/".to_string();
+        app.tab_mut().remote_repo = Some("acme/my-service".to_string());
+        let err = app.spawn_background_importance().unwrap_err().to_string();
+        assert!(err.contains("local clone"), "{err}");
+    }
+
+    /// `er --remote` builds its tab before the config loads, outside `push_tab`.
+    /// The header count and `kind:` filter must still see the repo's overrides.
+    #[test]
+    fn new_remote_hands_its_tab_the_repos_file_kinds() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let config_path = tmp.path().join("config.toml");
+        std::fs::write(
+            &config_path,
+            "[file_kinds.my-service]\n\"e2e/**\" = \"test\"\n",
+        )
+        .unwrap();
+        std::env::set_var("ER_CONFIG_PATH", &config_path);
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+
+        let mut tab = make_test_tab(vec![make_file("e2e/login.ts", vec![], 4, 0)]);
+        tab.repo_root = "/".to_string();
+        tab.remote_repo = Some("acme/my-service".to_string());
+        let app = App::new_remote(tab, None);
+
+        std::env::remove_var("ER_CONFIG_PATH");
+        std::env::remove_var("ER_STORAGE_ROOT");
+        assert_eq!(app.tab().diff_line_stats().test.additions, 4);
+        assert_eq!(app.tab().diff_line_stats().production.additions, 0);
+    }
+
+    /// A remote-only tab's `repo_root` is the process's working directory, so
+    /// its tables must come from the PR's repo name instead.
+    #[test]
+    fn copy_repo_rules_keys_a_remote_tab_by_its_repo_name() {
+        let mut config = ErConfig::default();
+        let table = FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+            "e2e/**".to_string(),
+            "test".to_string(),
+        )]));
+        config
+            .file_kinds
+            .items
+            .insert("my-service".to_string(), table.clone());
+
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/".to_string();
+        tab.remote_repo = Some("acme/my-service".to_string());
+        App::copy_repo_rules(&config, &mut tab);
+        assert_eq!(tab.file_kinds, table);
     }
 
     #[test]

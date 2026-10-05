@@ -2,6 +2,7 @@ import { tick } from "svelte";
 import { app } from "$lib/stores/app.svelte";
 import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
+import { diffPreview } from "$lib/stores/diffPreview.svelte";
 import type { FlatFinding, ThreadSnapshot } from "$lib/types";
 
 /**
@@ -45,6 +46,8 @@ export async function navigateToThread(thread: ThreadSnapshot): Promise<void> {
     }
   }
   if (thread.file) {
+    if (app.snapshot) diffPreview.ensureRaw(app.snapshot, thread.file);
+    await tick();
     diffFileCollapse.expand(thread.file);
     const latest = app.snapshot;
     const fileSnap = latest?.files.find((f) => f.path === thread.file);
@@ -77,6 +80,8 @@ export async function navigateToFinding(finding: FlatFinding): Promise<void> {
     }
   }
   if (finding.file) {
+    if (app.snapshot) diffPreview.ensureRaw(app.snapshot, finding.file);
+    await tick();
     diffFileCollapse.expand(finding.file);
     const latest = app.snapshot;
     const fileSnap = latest?.files.find((f) => f.path === finding.file);

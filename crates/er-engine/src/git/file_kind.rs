@@ -1,7 +1,7 @@
 //! Classify diff file paths into review-relevant buckets.
 //!
-//! Used by MCP/review-queue tooling to separate production churn from tests,
-//! Storybook, generated/lock files, and docs.
+//! Separates production churn from tests, Storybook, generated/lock files and
+//! docs, for the code-only line count and MCP queue tooling.
 
 /// Coarse file category for production-vs-noise diff accounting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -27,6 +27,18 @@ impl FileKind {
             Self::Storybook => "storybook",
             Self::Generated => "generated",
             Self::Docs => "docs",
+        }
+    }
+
+    /// Read a kind out of a config value; the spellings `as_str` produces.
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "production" => Some(Self::Production),
+            "test" => Some(Self::Test),
+            "storybook" => Some(Self::Storybook),
+            "generated" => Some(Self::Generated),
+            "docs" => Some(Self::Docs),
+            _ => None,
         }
     }
 }

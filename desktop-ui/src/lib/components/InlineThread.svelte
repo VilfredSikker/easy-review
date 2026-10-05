@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { annotationDrafts } from "$lib/stores/annotationDrafts.svelte";
   import { app } from "$lib/stores/app.svelte";
   import type { ThreadSnapshot } from "$lib/types";
   import PromoteModal from "$lib/components/PromoteModal.svelte";
@@ -16,6 +17,7 @@
   }
 
   const { thread, variant = "inline" }: Props = $props();
+  const draft = $derived(annotationDrafts.get(app.snapshot, "thread", thread.id));
 
   const isQuestion = $derived(thread.kind === "question");
   const isNote = $derived(thread.kind === "note");
@@ -23,41 +25,43 @@
   const isLocal = $derived(isQuestion || isNote);
   const isPromoted = $derived(thread.promoted_to != null);
 
-  let replyText = $state("");
-  let showReply = $state(false);
   let replyTextarea: HTMLTextAreaElement | null = $state(null);
+  let replyFocusPending = $state(false);
   let showPromote = $state(false);
   let editMessageId = $state<string | null>(null);
   let editInitialBody = $state("");
 
-  let askAiText = $state("");
-  let showAskAi = $state(false);
   let askAiTextarea: HTMLTextAreaElement | null = $state(null);
+  let askAiFocusPending = $state(false);
 
   let justCopied = $state(false);
   let pushing = $state(false);
 
   // Auto-focus the textarea when a composer opens. Opening one closes the other.
   $effect(() => {
-    if (showReply && replyTextarea) {
+    if (replyFocusPending && draft.showReply && replyTextarea) {
+      replyFocusPending = false;
       queueMicrotask(() => replyTextarea?.focus());
     }
   });
   $effect(() => {
-    if (showAskAi && askAiTextarea) {
+    if (askAiFocusPending && draft.showAskAi && askAiTextarea) {
+      askAiFocusPending = false;
       queueMicrotask(() => askAiTextarea?.focus());
     }
   });
 
   function openReply() {
-    showAskAi = false;
-    askAiText = "";
-    showReply = true;
+    draft.showAskAi = false;
+    draft.askAiText = "";
+    draft.showReply = true;
+    replyFocusPending = true;
   }
   function openAskAi() {
-    showReply = false;
-    replyText = "";
-    showAskAi = true;
+    draft.showReply = false;
+    draft.replyText = "";
+    draft.showAskAi = true;
+    askAiFocusPending = true;
   }
 
   function formatTimestamp(ts: string): string {
@@ -116,12 +120,12 @@
   }
 
   function submitReply() {
-    const text = replyText.trim();
+    const text = draft.replyText.trim();
     if (!text) return;
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("reply_to_thread", { parentId: thread.id, text });
-    replyText = "";
-    showReply = false;
+    draft.replyText = "";
+    draft.showReply = false;
   }
 
   function buildPromoteBody(): string {
@@ -147,9 +151,9 @@
   }
 
   async function submitAskAi() {
-    const prompt = askAiText.trim();
-    showAskAi = false;
-    askAiText = "";
+    const prompt = draft.askAiText.trim();
+    draft.showAskAi = false;
+    draft.askAiText = "";
     await app.cmd("ask_ai", { threadId: thread.id, prompt });
   }
 
@@ -334,11 +338,11 @@
   {/if}
 
   <!-- Ask AI composer -->
-  {#if showAskAi}
+  {#if draft.showAskAi}
     <div class="px-3 py-2 border-t border-hairline">
       <textarea
         bind:this={askAiTextarea}
-        bind:value={askAiText}
+        bind:value={draft.askAiText}
         placeholder="Add context for the AI… (leave empty for default · ⌘+Enter to send)"
         rows="3"
         class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-ai resize-y font-mono"
@@ -348,15 +352,15 @@
             submitAskAi();
           } else if (e.key === "Escape") {
             e.preventDefault();
-            showAskAi = false;
-            askAiText = "";
+            draft.showAskAi = false;
+            draft.askAiText = "";
           }
         }}
       ></textarea>
       <div class="mt-1 flex items-center gap-2">
         <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel · empty = default prompt</span>
         <button type="button"
-          onclick={() => { showAskAi = false; askAiText = ""; }}
+          onclick={() => { draft.showAskAi = false; draft.askAiText = ""; }}
           class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
         >Cancel</button>
         <button type="button" onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-ai hover:bg-hover border border-border">
@@ -367,11 +371,11 @@
   {/if}
 
   <!-- Inline reply composer -->
-  {#if showReply}
+  {#if draft.showReply}
     <div class="px-3 py-2 border-t border-hairline">
       <textarea
         bind:this={replyTextarea}
-        bind:value={replyText}
+        bind:value={draft.replyText}
         placeholder={isQuestion ? "Follow-up… (⌘+Enter to send)" : "Reply… (⌘+Enter to send)"}
         rows="3"
         class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-accent resize-y font-mono"
@@ -381,18 +385,18 @@
             submitReply();
           } else if (e.key === "Escape") {
             e.preventDefault();
-            showReply = false;
-            replyText = "";
+            draft.showReply = false;
+            draft.replyText = "";
           }
         }}
       ></textarea>
       <div class="mt-1 flex items-center gap-2">
         <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel</span>
         <button type="button"
-          onclick={() => { showReply = false; replyText = ""; }}
+          onclick={() => { draft.showReply = false; draft.replyText = ""; }}
           class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
         >Cancel</button>
-        <button type="button" onclick={submitReply} disabled={!replyText.trim()} class="px-2 py-1 rounded-md text-[11px] text-fg-2 hover:bg-hover disabled:opacity-40 border border-border">
+        <button type="button" onclick={submitReply} disabled={!draft.replyText.trim()} class="px-2 py-1 rounded-md text-[11px] text-fg-2 hover:bg-hover disabled:opacity-40 border border-border">
           Reply
         </button>
       </div>
@@ -401,10 +405,10 @@
 
   <!-- Footer actions -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap text-[11px]">
-    {#if !showReply}
+    {#if !draft.showReply}
       <button type="button" onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
     {/if}
-    {#if !showAskAi}
+    {#if !draft.showAskAi}
       <button type="button" onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
     {/if}
     {#if isQuestion}
