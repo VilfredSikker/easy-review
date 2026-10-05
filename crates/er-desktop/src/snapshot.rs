@@ -5146,6 +5146,17 @@ mod tests {
         assert!(diff_stale_for(&app, &pr_cache).is_none());
     }
 
+    /// The welcome screen (`naturalEmpty` in App.svelte) shows only for a
+    /// snapshot with an empty branch and no files. If the placeholder app's
+    /// snapshot misses either, a fresh install opens an empty review shell.
+    #[test]
+    fn empty_app_snapshot_matches_the_welcome_condition() {
+        let app = App::new_empty();
+        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+        assert_eq!(snap.branch, "");
+        assert!(snap.files.is_empty());
+    }
+
     /// pr_cache has no entry for this PR → None. Preserves the "don't guess"
     /// rule in `compute_oid_staleness` (an unknown latest oid never wedges stale).
     #[test]
