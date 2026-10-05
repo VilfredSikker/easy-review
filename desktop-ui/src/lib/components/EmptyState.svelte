@@ -261,7 +261,6 @@
           <div class="text-xs uppercase tracking-wider text-muted mb-3">Tips</div>
           <ul class="space-y-1.5 text-sm text-fg-3">
             <li class="flex items-start gap-2"><span class="kbd mt-0.5">⌘K</span><span>Command palette — every action is reachable with the keyboard.</span></li>
-            <li class="flex items-start gap-2"><span class="kbd mt-0.5">b</span><span>Open a browser tab and annotate any DOM element to attach to a review.</span></li>
             <li class="flex items-start gap-2"><span class="kbd mt-0.5">⌘E</span><span>Export a review as a markdown prompt to hand off to your coding agent.</span></li>
           </ul>
         </div>
