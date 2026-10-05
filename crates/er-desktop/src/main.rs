@@ -853,7 +853,7 @@ fn main() {
 
     let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
         (true, Some(root)) => App::new_unloaded(root)
-            .unwrap_or_else(|e| abort_startup(&format!("er-desktop: failed to init engine: {e}"))),
+            .unwrap_or_else(|e| empty_app(&format!("er-desktop: failed to init engine: {e}"))),
         (true, None) => {
             // No CWD repo but we have tabs to restore: open against a saved
             // project so the engine has a valid root.
@@ -863,11 +863,11 @@ fn main() {
                 .map(|p| App::new_unloaded(p.to_string()))
             {
                 Some(Ok(a)) => a,
-                Some(Err(e)) => abort_startup(&format!(
+                Some(Err(e)) => empty_app(&format!(
                     "er-desktop: failed to init engine for {}: {e}",
                     fallback.as_deref().unwrap_or("?")
                 )),
-                None => abort_startup(
+                None => empty_app(
                     "er-desktop: not started from a git repo, and no saved project folder still exists",
                 ),
             }
@@ -887,7 +887,7 @@ fn main() {
                         );
                         a
                     }
-                    _ => abort_startup(&format!("er-desktop: failed to init engine: {cwd_err}")),
+                    _ => empty_app(&format!("er-desktop: failed to init engine: {cwd_err}")),
                 }
             }
         },
@@ -2181,9 +2181,11 @@ fn startup_root_from_projects(file: &projects::ProjectsFile) -> Option<String> {
         .map(|p| p.root_path.clone())
 }
 
-fn abort_startup(msg: &str) -> ! {
-    eprintln!("{msg}");
-    std::process::exit(1);
+/// Start with no repo open instead of exiting. A Finder launch with nothing to
+/// open lands here, and the front end shows its welcome so a repo can be picked.
+fn empty_app(msg: &str) -> App {
+    eprintln!("{msg}; opening with no repo");
+    App::new_empty()
 }
 
 /// Base cadence for the branch-base staleness probe: one `git ls-remote` a

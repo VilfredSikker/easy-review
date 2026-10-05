@@ -75,9 +75,28 @@ pub fn save_tabs(tabs: &[TabDescriptor], active_idx: usize) -> Result<()> {
 
 /// Serialize the live tab list and active index to disk.
 pub fn save_app_tabs(app: &er_engine::app::App) -> Result<()> {
-    let descriptors: Vec<TabDescriptor> = app.tabs.iter().map(descriptor_from_tab).collect();
-    let active = app.active_tab.min(app.tabs.len().saturating_sub(1));
+    let (descriptors, active) = persisted_tabs(app);
     save_tabs(&descriptors, active)
+}
+
+/// The tabs worth restoring, and the active one's index among them. The
+/// placeholder has no repo to reopen, so it is left out.
+fn persisted_tabs(app: &er_engine::app::App) -> (Vec<TabDescriptor>, usize) {
+    let kept: Vec<(usize, &er_engine::app::TabState)> = app
+        .tabs
+        .iter()
+        .enumerate()
+        .filter(|(_, t)| !t.placeholder)
+        .collect();
+    let active = kept
+        .iter()
+        .position(|(i, _)| *i == app.active_tab)
+        .unwrap_or(kept.len().saturating_sub(1));
+    let descriptors = kept
+        .into_iter()
+        .map(|(_, t)| descriptor_from_tab(t))
+        .collect();
+    (descriptors, active)
 }
 
 /// Best-effort [`save_app_tabs`]; logs a warning on failure.
@@ -583,9 +602,17 @@ mod tests {
         let root = tmp.path().to_string_lossy().to_string();
         let mut app = er_engine::app::App::new_unloaded(root).expect("app");
         app.active_tab = 99;
-        let descriptors: Vec<_> = app.tabs.iter().map(descriptor_from_tab).collect();
-        let active = app.active_tab.min(app.tabs.len().saturating_sub(1));
+        let (descriptors, active) = persisted_tabs(&app);
         assert_eq!(active, 0);
         assert_eq!(descriptors.len(), 1);
+    }
+
+    #[test]
+    fn placeholder_tab_is_not_persisted() {
+        // Saving it would make the next launch try to restore a tab with no repo.
+        let app = er_engine::app::App::new_empty();
+        let (descriptors, active) = persisted_tabs(&app);
+        assert!(descriptors.is_empty());
+        assert_eq!(active, 0);
     }
 }
