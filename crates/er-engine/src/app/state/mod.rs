@@ -973,6 +973,10 @@ pub struct TabState {
     /// to true. On subsequent entries (true), we skip the network round-trip and
     /// go straight to apply_managed_root + reload + refresh.
     pub pr_refs_fetched: bool,
+    /// Stands in for a review when the app started with no repo to open, so a
+    /// front end can show its welcome. `open_tab` replaces it with the first
+    /// real tab, and nothing persists it.
+    pub placeholder: bool,
 
     /// For remote PR tabs: the head_oid the current `files`/`raw_diff` were
     /// fetched against. The desktop staleness probe compares this against the
@@ -1649,6 +1653,7 @@ impl TabState {
             last_diff_head_oid: None,
             preview_head_oid: None,
             pr_refs_fetched: false,
+            placeholder: false,
         };
 
         tab.finish_storage_setup();
@@ -1780,6 +1785,7 @@ impl TabState {
             last_diff_head_oid: None,
             preview_head_oid: None,
             pr_refs_fetched: false,
+            placeholder: false,
         };
         tab.finish_storage_setup();
         tab.reload_ai_state();
@@ -1907,6 +1913,7 @@ impl TabState {
             last_diff_head_oid: None,
             preview_head_oid: None,
             pr_refs_fetched: false,
+            placeholder: false,
         };
 
         tab.finish_storage_setup();
@@ -1916,6 +1923,19 @@ impl TabState {
         }
         tab.refresh_watched_files();
         Ok(tab)
+    }
+
+    /// The tab `App::new_empty` holds. No repo, no git and no storage setup:
+    /// the empty root makes any git call aimed at it fail to spawn instead of
+    /// running in the launch directory, which is `/` from Finder.
+    pub fn new_placeholder() -> Self {
+        let mut tab = Self::new_for_test(Vec::new());
+        tab.repo_root = String::new();
+        tab.er_root = ErRoot::RepoLocal(String::new());
+        tab.base_branch = String::new();
+        tab.current_branch = String::new();
+        tab.placeholder = true;
+        tab
     }
 
     /// Create a minimal TabState for unit tests.
@@ -2033,6 +2053,7 @@ impl TabState {
             last_diff_head_oid: None,
             preview_head_oid: None,
             pr_refs_fetched: false,
+            placeholder: false,
             stack: StackState::default(),
         }
     }
@@ -5773,6 +5794,12 @@ impl App {
         app
     }
 
+    /// An App with no repo open: one placeholder tab, replaced by the first
+    /// `open_tab`. For a launch that has no repo CWD and no saved project.
+    pub fn new_empty() -> Self {
+        Self::new_remote(TabState::new_placeholder(), None)
+    }
+
     /// Construct an App with a single test tab. Intended for unit tests
     /// that need to exercise input handlers without spinning up git.
     pub fn new_for_test(files: Vec<crate::git::DiffFile>) -> Self {
@@ -6327,6 +6354,9 @@ impl App {
             self.notify(&msg);
         }
         let name = tab.tab_name();
+        if self.tabs.len() == 1 && self.tabs[0].placeholder {
+            self.tabs.clear();
+        }
         self.push_tab(tab);
         let idx = self.tabs.len() - 1;
         self.active_tab = idx;
@@ -9130,6 +9160,7 @@ mod tests {
             last_diff_head_oid: None,
             preview_head_oid: None,
             pr_refs_fetched: false,
+            placeholder: false,
             stack: StackState::default(),
         }
     }
@@ -15182,5 +15213,51 @@ mod tests {
 
         assert_eq!(tab.current_branch, "feat/b");
         assert!(tab.stack.info.is_none());
+    }
+
+    // ── placeholder tab (no repo at launch) ──
+
+    fn with_storage_root<T>(f: impl FnOnce() -> T) -> T {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let root = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", root.path());
+        let out = f();
+        std::env::remove_var("ER_STORAGE_ROOT");
+        out
+    }
+
+    #[test]
+    fn new_empty_holds_one_placeholder_with_no_repo() {
+        let app = App::new_empty();
+        assert_eq!(app.tabs.len(), 1);
+        let tab = app.tab();
+        assert!(tab.placeholder);
+        assert_eq!(tab.repo_root, "");
+        assert_eq!(tab.current_branch, "");
+        assert!(tab.files.is_empty());
+    }
+
+    #[test]
+    fn open_tab_replaces_a_lone_placeholder() {
+        with_storage_root(|| {
+            let mut app = App::new_empty();
+            let idx = app.open_tab(TabState::new_for_test(Vec::new()));
+            assert_eq!(idx, 0);
+            assert_eq!(app.tabs.len(), 1);
+            assert!(!app.tabs[0].placeholder);
+            assert_eq!(app.active_tab, 0);
+        });
+    }
+
+    #[test]
+    fn open_tab_appends_beside_a_real_tab() {
+        with_storage_root(|| {
+            let mut app = App::new_for_test(Vec::new());
+            let idx = app.open_tab(TabState::new_for_test(Vec::new()));
+            assert_eq!(idx, 1);
+            assert_eq!(app.tabs.len(), 2);
+        });
     }
 }
