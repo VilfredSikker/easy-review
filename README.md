@@ -35,7 +35,7 @@ Requires Rust 1.88+.
 
 A graphical front end for the same review engine — split diffs, an embedded terminal and browser, a multi-model review arena, and point-and-click settings. It reads and writes the same review data as the terminal, so you can use both side by side.
 
-As of **v0.4.0**, prebuilt Apple Silicon `.dmg` bundles are published on the [Releases page](https://github.com/VilfredSikker/easy-review/releases). Download it, open it, and drag **Easy Review** into Applications. Unsigned builds need right-click → **Open** the first time; Developer ID signed + notarized builds open normally.
+Each release on the [Releases page](https://github.com/VilfredSikker/easy-review/releases) carries a signed and notarized `.dmg` for Apple Silicon. Download it, open it, and drag **Easy Review** into Applications.
 
 Intel Macs, Linux, and Windows aren't packaged yet — build from source instead.
 
@@ -45,11 +45,10 @@ Intel Macs, Linux, and Windows aren't packaged yet — build from source instead
 git clone https://github.com/VilfredSikker/easy-review.git
 cd easy-review
 ./scripts/tauri-dev.sh           # dev shell with hot reload
-./scripts/tauri-build.sh         # local release bundle (ad-hoc sign)
-just sign                        # Developer ID + notarized .dmg (see docs/DEVELOPMENT.md)
+./scripts/tauri-build.sh         # release bundle for your machine
 ```
 
-See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for install details, and [DEVELOPMENT.md — macOS signed release](docs/DEVELOPMENT.md#macos-signed-release-developer-id--notarization) for signing/notarization.
+See [Installation](https://vilfredsikker.github.io/easy-review/guide/installation.html#desktop-app) for install details.
 
 ## MCP server (`er-mcp`)
 
