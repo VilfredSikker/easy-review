@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { chromium, type Browser, type Page } from "playwright";
+import type { DocumentSegment } from "../src/lib/documentPreview";
 
 let browser: Browser;
 let page: Page;
@@ -16,7 +17,7 @@ beforeAll(async () => {
     if (new URL(request.url).pathname === "/renderer.js") {
       return new Response(bundle, { headers: { "Content-Type": "text/javascript" } });
     }
-    return new Response('<script type="module">import {renderDocumentMarkdown} from "/renderer.js"; window.renderDocumentMarkdown=renderDocumentMarkdown;</script>', {
+    return new Response('<script type="module">import {renderDocumentMarkdown, documentMarkdownSegments} from "/renderer.js"; window.renderDocumentMarkdown=renderDocumentMarkdown; window.documentMarkdownSegments=documentMarkdownSegments;</script>', {
       headers: { "Content-Type": "text/html" },
     });
   } });
@@ -73,5 +74,31 @@ describe("document Markdown browser sanitization", () => {
     expect(html).toContain("local (./local.md)");
     expect(html).toContain("insecure (http://example.com/a.png)");
     expect(html).toContain("relative (//example.com/a.png)");
+  });
+});
+
+async function segments(text: string): Promise<DocumentSegment[]> {
+  return page.evaluate((source) => {
+    const split = Reflect.get(window, "documentMarkdownSegments") as (source: string) => DocumentSegment[];
+    return split(source);
+  }, text);
+}
+
+describe("document Markdown mermaid segments", () => {
+  it("splits top-level mermaid fences out of the surrounding Markdown", async () => {
+    const result = await segments("# Flow\n\nSee [docs][ref].\n\n```Mermaid title\nflowchart TB\n  A --> B\n```\n\n```js\nconst x = 1;\n```\n\n[ref]: https://example.com/docs");
+    expect(result.map((segment) => segment.kind)).toEqual(["html", "mermaid", "html"]);
+    expect(result[1]).toEqual({ kind: "mermaid", source: "flowchart TB\n  A --> B" });
+    const [before, , after] = result.map((segment) => segment.kind === "html" ? segment.html : "");
+    expect(before).toContain('<a href="https://example.com/docs"');
+    expect(after).toContain("<pre><code");
+  });
+
+  it("keeps nested fences as code and sanitizes every HTML segment", async () => {
+    const result = await segments("- item\n\n  ```mermaid\n  graph LR\n  ```\n\n```mermaid\ngraph LR\n```\n\n<script>alert(1)</script><img src=x onerror=alert(1)>");
+    expect(result.map((segment) => segment.kind)).toEqual(["html", "mermaid", "html"]);
+    const html = result.flatMap((segment) => segment.kind === "html" ? [segment.html] : []).join("");
+    expect(html).toContain("<pre><code>graph LR\n</code></pre>");
+    for (const forbidden of ["<script", "onerror=", "<img"]) expect(html).not.toContain(forbidden);
   });
 });

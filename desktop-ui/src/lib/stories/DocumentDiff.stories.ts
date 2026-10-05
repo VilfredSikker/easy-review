@@ -27,6 +27,16 @@ This is the complete document. **Strong text**, *emphasis*, and ~~removed text~~
 
 ![Remote image](https://images.unsplash.com/photo-1441974231531-c6227db76b6e?w=800)
 
+\`\`\`mermaid
+sequenceDiagram
+  actor Dev as Developer
+  participant A as Agent
+  participant R as Reviewer
+  Dev->>A: Describe the change
+  A->>R: Push the diff
+  R-->>Dev: Review notes
+\`\`\`
+
 ${Array.from({ length: 16 }, (_, i) => `## Section ${i + 1}\n\nA paragraph in the resulting document. The diff only contains the changed lines.`).join("\n\n")}
 `;
 const text = "Plain text preserves whitespace.\n\n    Indented text\n\tTabbed text\n\n" + "A long line wraps within the full diff column. ".repeat(18);

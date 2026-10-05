@@ -1,6 +1,7 @@
 <script lang="ts">
-  import { documentPreviewKind, renderDocumentMarkdown, type DocumentPreviewState } from "$lib/documentPreview";
+  import { documentMarkdownSegments, documentPreviewKind, type DocumentPreviewState } from "$lib/documentPreview";
   import { onExternalLinkClick } from "$lib/openExternalUrl";
+  import MermaidDiagram from "./MermaidDiagram.svelte";
 
   interface Props {
     path: string;
@@ -8,8 +9,8 @@
     onretry?: () => void;
   }
   const { path, state, onretry }: Props = $props();
-  const html = $derived(state.status === "ready" && documentPreviewKind(path) === "markdown"
-    ? renderDocumentMarkdown(state.text) : "");
+  const segments = $derived(state.status === "ready" && documentPreviewKind(path) === "markdown"
+    ? documentMarkdownSegments(state.text) : []);
 </script>
 
 <div class="document-preview" data-document-preview={path}>
@@ -26,8 +27,16 @@
   {:else if documentPreviewKind(path) === "markdown"}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
-    <!-- eslint-disable-next-line svelte/no-at-html-tags -- HTML passes through DOMPurify and a strict document formatting allowlist. -->
-    <div class="document-markdown" onclick={onExternalLinkClick}>{@html html}</div>
+    <div class="document-markdown" onclick={onExternalLinkClick}>
+      {#each segments as segment, index (index)}
+        {#if segment.kind === "mermaid"}
+          <MermaidDiagram source={segment.source} class="document-mermaid" />
+        {:else}
+          <!-- eslint-disable-next-line svelte/no-at-html-tags -- HTML passes through DOMPurify and a strict document formatting allowlist. -->
+          {@html segment.html}
+        {/if}
+      {/each}
+    </div>
   {:else}
     <pre class="document-text">{state.text}</pre>
   {/if}
@@ -60,4 +69,5 @@
   .document-markdown :global(img) { max-width: 100%; height: auto; }
   .document-markdown :global(hr) { border: 0; border-top: 1px solid var(--color-border); margin: 1rem 0; }
   .document-markdown :global(summary) { cursor: pointer; }
+  .document-markdown :global(.document-mermaid) { margin: 0 0 0.8rem; padding: 0.75rem; border: 1px solid var(--color-border); border-radius: 4px; }
 </style>

@@ -1,5 +1,5 @@
 import DOMPurify from "dompurify";
-import { Marked } from "marked";
+import { Marked, type Token, type Tokens } from "marked";
 
 export type DocumentPreviewState =
   | { status: "loading" }
@@ -49,10 +49,49 @@ const parser = new Marked({
   },
 });
 
-/** Sanitize first, then constrain even raw HTML links and images to external URLs. */
+export type DocumentSegment =
+  | { kind: "html"; html: string }
+  | { kind: "mermaid"; source: string };
+
+function isMermaidFence(token: Token): token is Tokens.Code {
+  return token.type === "code" && (token as Tokens.Code).lang?.trim().split(/\s+/)[0]?.toLowerCase() === "mermaid";
+}
+
+/**
+ * Split a document at its top-level ```mermaid fences so the preview can draw
+ * them as diagrams. Fences nested in lists or quotes stay code blocks.
+ */
+export function documentMarkdownSegments(text: string): DocumentSegment[] {
+  if (typeof document === "undefined") return [{ kind: "html", html: escapeHtml(text) }];
+  const segments: DocumentSegment[] = [];
+  let pending: Token[] = [];
+  const flush = () => {
+    if (pending.length === 0) return;
+    // Inline tokens, reference links included, are resolved during lexing.
+    const html = sanitizeDocumentHtml(parser.parser(pending));
+    if (html.trim()) segments.push({ kind: "html", html });
+    pending = [];
+  };
+  for (const token of parser.lexer(text)) {
+    if (isMermaidFence(token)) {
+      flush();
+      segments.push({ kind: "mermaid", source: token.text });
+    } else {
+      pending.push(token);
+    }
+  }
+  flush();
+  return segments;
+}
+
 export function renderDocumentMarkdown(text: string): string {
   if (typeof document === "undefined") return escapeHtml(text);
-  const fragment = DOMPurify.sanitize(parser.parse(text, { async: false }), {
+  return sanitizeDocumentHtml(parser.parse(text, { async: false }));
+}
+
+/** Sanitize first, then constrain even raw HTML links and images to external URLs. */
+function sanitizeDocumentHtml(markup: string): string {
+  const fragment = DOMPurify.sanitize(markup, {
     ALLOWED_TAGS: [
       "p", "br", "hr", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote",
       "ul", "ol", "li", "pre", "code", "strong", "em", "del", "s", "a", "img",
