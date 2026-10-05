@@ -324,7 +324,7 @@ Unused-on-purpose names start with `_` in TypeScript.
 
 ## Releasing the TUI (`er`)
 
-Published releases are **terminal `er`**, **er-mcp**, and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. The CI DMG is ad-hoc signed (right-click → Open the first time). For a Developer ID signed + notarized build, use [`just sign`](#macos-signed-release-developer-id--notarization) locally and upload the DMG to the GitHub release if needed.
+Published releases are **terminal `er`**, **er-mcp**, and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. CI builds the signed + notarized DMG only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are set ([Signing in CI](#signing-in-ci)); without them the DMG job skips its build and still reports success, and the release ships without a DMG. In that case build it with [`just sign`](#macos-signed-release-developer-id--notarization) and attach it with `gh release upload <tag> target/desktop/release/bundle/dmg/*.dmg`.
 
 **Maintainer flow:**
 
