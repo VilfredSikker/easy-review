@@ -1,3 +1,16 @@
+# Easy Review v0.5.4
+
+## In plain terms
+
+- **What changed.** The desktop app opens from Finder again when the repo it last had open has been moved or deleted. Before, it quit at once with no window and no error.
+- **TL;DR.** A hotfix for the desktop app not opening from /Applications.
+
+## What's Changed
+
+### Fixes
+- Desktop: a launch from Finder or the Dock starts outside any repo, so the app opens the active saved project. When that project's folder no longer existed, startup exited before a window appeared. It now uses the first saved project whose folder is still on disk.
+- Docs: the install guide and README no longer describe self-signing or right-click opening, since the DMG ships notarized.
+
 # Easy Review v0.5.3
 
 ## In plain terms
