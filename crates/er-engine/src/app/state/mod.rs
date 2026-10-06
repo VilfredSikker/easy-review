@@ -834,6 +834,11 @@ pub struct TabState {
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
 
+    /// Transient: a document-line anchor for the next question or note, set by
+    /// `submit_document_comment` when the line sits outside every hunk.
+    /// Consumed by submit_question / submit_note.
+    pub comment_document_anchor: Option<LineAnchor>,
+
     /// Transient: client-minted id for the next comment/question/note. Consumed
     /// by submit. Lets the desktop paint a thread and persist the same id so a
     /// follow-up reply/delete before ingest still hits the backend row.
@@ -1601,6 +1606,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_document_anchor: None,
             comment_id_override: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1735,6 +1741,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_document_anchor: None,
             comment_id_override: None,
             pr_data: None,
             stack: StackState::default(),
@@ -1863,6 +1870,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_document_anchor: None,
             comment_id_override: None,
             pr_data: None,
             stack: StackState::default(),
@@ -2004,6 +2012,7 @@ impl TabState {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_document_anchor: None,
             comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -3893,8 +3902,8 @@ impl TabState {
                 if q.relocated_at_hash == current_hash {
                     continue;
                 }
-                // File-level questions have no anchor to relocate — skip
-                if q.hunk_index.is_none() && q.line_start.is_none() && q.hunk_header.is_empty() {
+                // File-level and document-line questions have no hunk anchor to relocate — skip
+                if q.is_file_level() || q.is_document_anchor() {
                     q.relocated_at_hash = current_hash.clone();
                     continue;
                 }
@@ -3952,7 +3961,7 @@ impl TabState {
                 if n.relocated_at_hash == current_hash {
                     continue;
                 }
-                if n.hunk_index.is_none() && n.line_start.is_none() && n.hunk_header.is_empty() {
+                if n.is_file_level() || n.is_document_anchor() {
                     n.relocated_at_hash = current_hash.clone();
                     continue;
                 }
@@ -9111,6 +9120,7 @@ mod tests {
             comment_finding_ref: None,
             comment_author_override: None,
             comment_side: None,
+            comment_document_anchor: None,
             comment_id_override: None,
             pr_data: None,
             pr_commits: Vec::new(),
@@ -12098,6 +12108,232 @@ mod tests {
         // The reloaded state reflects the note in the per-file count (counts.2).
         assert_eq!(app.tab().ai.file_note_count("src/main.rs"), 1);
         assert!(app.tab().ai.has_notes());
+    }
+
+    /// An app writing sidecars into `tmp`, reviewing a markdown file whose
+    /// only hunk holds line 1.
+    fn document_app(tmp: &tempfile::TempDir) -> App {
+        let root = tmp.path().to_string_lossy().into_owned();
+        let files = vec![make_file(
+            "README.md",
+            vec![make_hunk(vec![make_line(
+                LineType::Add,
+                "# Title",
+                Some(1),
+            )])],
+            1,
+            0,
+        )];
+        let mut tab = make_test_tab(files);
+        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.repo_root = root;
+        make_test_app(tab)
+    }
+
+    const DOCUMENT: &str = "# Title\n\nalpha\nbeta\ngamma\ndelta\nepsilon\nzeta\n";
+
+    fn document_target(line: usize) -> CommentTarget {
+        CommentTarget {
+            file: "README.md".to_string(),
+            hunk_idx: 0,
+            line_num: Some(line),
+            line_num_end: None,
+        }
+    }
+
+    #[test]
+    fn document_question_off_the_diff_keeps_its_line_and_context() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+
+        app.submit_document_comment(
+            document_target(6),
+            "Why delta?".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+
+        let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
+        assert_eq!(q.hunk_index, None, "no hunk holds line 6");
+        assert_eq!(q.line_start, Some(6));
+        assert_eq!(q.line_content, "delta");
+        assert_eq!(q.context_before, vec!["alpha", "beta", "gamma"]);
+        assert_eq!(q.context_after, vec!["epsilon", "zeta"]);
+        assert!(q.is_document_anchor());
+        assert!(
+            app.tab().comment_document_anchor.is_none(),
+            "the anchor is consumed by the submit"
+        );
+    }
+
+    #[test]
+    fn document_note_survives_relocation() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(3),
+            "Rename alpha".to_string(),
+            CommentType::Note,
+            DOCUMENT,
+        )
+        .unwrap();
+
+        app.tab_mut().diff_hash = "a-later-diff".to_string();
+        app.tab_mut().relocate_all_comments();
+
+        let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
+        assert!(
+            !n.stale,
+            "line 3 is off the diff, which is where it was put"
+        );
+        assert_eq!(n.anchor_status, "original");
+        assert_eq!(n.line_start, Some(3));
+    }
+
+    #[test]
+    fn document_comment_refuses_github_comments_and_lines_past_the_end() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+
+        let github = app.submit_document_comment(
+            document_target(3),
+            "body".to_string(),
+            CommentType::GitHubComment,
+            DOCUMENT,
+        );
+        assert!(github.is_err(), "GitHub takes comments on diff lines only");
+
+        let past_end = app.submit_document_comment(
+            document_target(99),
+            "body".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        );
+        assert!(past_end.is_err());
+        assert!(app.tab().ai.questions.is_none(), "nothing was written");
+    }
+
+    #[test]
+    fn empty_document_comment_does_not_leak_its_anchor_into_the_next_submit() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(6),
+            String::new(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+
+        app.submit_comment_text(
+            document_target(1),
+            "On the title".to_string(),
+            CommentType::Question,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let q = &app.tab().ai.questions.as_ref().unwrap().questions[0];
+        assert_eq!(q.hunk_index, Some(0), "a diff-line question keeps its hunk");
+        assert_eq!(q.line_content, "# Title");
+    }
+
+    #[test]
+    fn reply_to_document_question_stays_on_its_line() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(6),
+            "Why delta?".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+        let parent = app.tab().ai.questions.as_ref().unwrap().questions[0]
+            .id
+            .clone();
+
+        // The desktop reply path: the parent's hunk, or 0 when it has none.
+        app.submit_comment_text(
+            document_target(6),
+            "Because.".to_string(),
+            CommentType::Question,
+            Some(parent),
+            None,
+        )
+        .unwrap();
+
+        let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
+        assert_eq!(reply.hunk_index, None, "hunk 0 does not hold line 6");
+        assert_eq!(reply.line_content, "delta");
+        assert!(reply.is_document_anchor());
+
+        app.tab_mut().diff_hash = "a-later-diff".to_string();
+        app.tab_mut().relocate_all_comments();
+        let reply = &app.tab().ai.questions.as_ref().unwrap().questions[1];
+        assert!(!reply.stale, "relocation leaves the reply on its line");
+    }
+
+    #[test]
+    fn document_anchor_of_names_only_document_anchored_threads() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(3),
+            "Off the diff".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+        app.submit_comment_text(
+            document_target(1),
+            "On the diff".to_string(),
+            CommentType::Question,
+            None,
+            None,
+        )
+        .unwrap();
+        let qs = &app.tab().ai.questions.as_ref().unwrap().questions;
+        let (off, on) = (qs[0].id.clone(), qs[1].id.clone());
+
+        assert!(app.document_anchor_of(&off).is_some());
+        assert!(app.document_anchor_of(&on).is_none());
+        assert!(app.document_anchor_of("q-missing").is_none());
+    }
+
+    #[test]
+    fn document_question_promoted_to_note_keeps_its_line() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_document_comment(
+            document_target(6),
+            "Why delta?".to_string(),
+            CommentType::Question,
+            DOCUMENT,
+        )
+        .unwrap();
+        let id = app.tab().ai.questions.as_ref().unwrap().questions[0]
+            .id
+            .clone();
+
+        // What `promote_to_note` does before it submits the note.
+        app.tab_mut().comment_document_anchor = app.document_anchor_of(&id);
+        app.submit_comment_text(
+            document_target(6),
+            "Rename delta".to_string(),
+            CommentType::Note,
+            None,
+            None,
+        )
+        .unwrap();
+
+        let n = &app.tab().ai.notes.as_ref().unwrap().notes[0];
+        assert_eq!(n.hunk_index, None);
+        assert_eq!(n.line_start, Some(6));
+        assert_eq!(n.line_content, "delta");
+        assert_eq!(n.context_before, vec!["alpha", "beta", "gamma"]);
     }
 
     #[test]
