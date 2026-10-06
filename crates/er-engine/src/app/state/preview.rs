@@ -403,7 +403,10 @@ fn is_binary(section: &str) -> bool {
 }
 
 fn too_large(limit: usize) -> anyhow::Error {
-    anyhow::anyhow!("File exceeds the {} MiB preview limit", limit / (1024 * 1024))
+    anyhow::anyhow!(
+        "File exceeds the {} MiB preview limit",
+        limit / (1024 * 1024)
+    )
 }
 
 #[cfg(unix)]
@@ -449,9 +452,7 @@ fn open_checkout_file(root: &str, path: &str) -> Result<std::fs::File> {
 
 fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
-    reader
-        .take((limit + 1) as u64)
-        .read_to_end(&mut bytes)?;
+    reader.take((limit + 1) as u64).read_to_end(&mut bytes)?;
     if bytes.len() > limit {
         return Err(too_large(limit));
     }
@@ -596,12 +597,15 @@ impl FilePreviewRequest {
                         }
                     })
                     .collect::<String>();
-                let bytes = read_command(Command::new("gh").args([
-                    "api",
-                    "-H",
-                    "Accept: application/vnd.github.raw+json",
-                    &format!("repos/{repo}/contents/{path}?ref={commit}"),
-                ]), limit)?;
+                let bytes = read_command(
+                    Command::new("gh").args([
+                        "api",
+                        "-H",
+                        "Accept: application/vnd.github.raw+json",
+                        &format!("repos/{repo}/contents/{path}?ref={commit}"),
+                    ]),
+                    limit,
+                )?;
                 if let Some(expected) = expected_blob {
                     verify_blob(&bytes, expected)?;
                 }
@@ -701,9 +705,22 @@ mod tests {
             .unwrap(),
             b"one\r\ntwo"
         );
-        assert_eq!(reconstruct("new file mode 100644\n", false, MAX_PREVIEW_BYTES).unwrap(), b"");
-        assert!(reconstruct("Binary files a/a.md and b/a.md differ\n", false, MAX_PREVIEW_BYTES).is_err());
-        assert!(reconstruct("@@ -0,0 +1 @@\n+invalid \u{fffd}\n", false, MAX_PREVIEW_BYTES).is_err());
+        assert_eq!(
+            reconstruct("new file mode 100644\n", false, MAX_PREVIEW_BYTES).unwrap(),
+            b""
+        );
+        assert!(reconstruct(
+            "Binary files a/a.md and b/a.md differ\n",
+            false,
+            MAX_PREVIEW_BYTES
+        )
+        .is_err());
+        assert!(reconstruct(
+            "@@ -0,0 +1 @@\n+invalid \u{fffd}\n",
+            false,
+            MAX_PREVIEW_BYTES
+        )
+        .is_err());
     }
 
     #[test]
@@ -997,7 +1014,10 @@ mod tests {
         assert!(request.before.is_none());
         let after = request.after.unwrap();
         assert!(matches!(after.source, Source::Diff(_, false)));
-        assert_eq!(after.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(), svg.as_bytes());
+        assert_eq!(
+            after.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(),
+            svg.as_bytes()
+        );
     }
 
     #[test]

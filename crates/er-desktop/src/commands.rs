@@ -1100,9 +1100,11 @@ pub async fn request_image_preview(
             }
             Err(e) => return Err(e.to_string()),
         };
-        let keys = request.after.as_ref().or(request.before.as_ref()).ok_or(
-            "Image has no side to show",
-        )?;
+        let keys = request
+            .after
+            .as_ref()
+            .or(request.before.as_ref())
+            .ok_or("Image has no side to show")?;
         let (preview_context_key, preview_key) =
             (keys.preview_context_key.clone(), keys.preview_key.clone());
         {
