@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Result;
@@ -7,8 +8,39 @@ use serde::{Deserialize, Serialize};
 
 use crate::snapshot::GithubStatusSnapshot;
 
-/// Live GitHub status cache: keyed by `(repo slug, branch, pr number)`.
+/// Live GitHub status cache: keyed by `(owner, repo, pr number)`.
 type GithubStatusCache = HashMap<(String, String, u64), GithubStatusSnapshot>;
+
+/// Ticket for a status fetch, taken when the fetch starts. Tickets only grow;
+/// they number fetches within this process, so they are never persisted.
+static NEXT_FETCH_TICKET: AtomicU64 = AtomicU64::new(1);
+
+/// Take a ticket before fetching, so [`store_fetched`] can tell which of two
+/// overlapping fetches started later.
+pub fn begin_fetch() -> u64 {
+    NEXT_FETCH_TICKET.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Store a fetched status unless the entry already holds one from a fetch
+/// that started later. Without this, a background fetch that began before a
+/// PR action and finished after it would put the pre-action state back on
+/// the card. Returns whether the entry was stored.
+pub fn store_fetched(
+    cache: &Mutex<GithubStatusCache>,
+    key: (String, String, u64),
+    ticket: u64,
+    mut snap: GithubStatusSnapshot,
+) -> bool {
+    let Ok(mut g) = cache.lock() else {
+        return false;
+    };
+    if g.get(&key).is_some_and(|held| held.fetch_ticket > ticket) {
+        return false;
+    }
+    snap.fetch_ticket = ticket;
+    g.insert(key, snap);
+    true
+}
 
 const GH_STATUS_CACHE_SCHEMA_VERSION: u32 = 1;
 
@@ -206,7 +238,38 @@ mod tests {
             }],
             last_updated: Some("2024-01-02T11:00:00Z".to_string()),
             is_authored_by_me: false,
+            merge_state_status: Some("CLEAN".to_string()),
+            head_oid: "abc123".to_string(),
+            is_cross_repository: false,
+            auto_merge_method: None,
+            head_branch_exists: None,
+            repo_merge: None,
+            in_merge_queue: false,
+            base_has_merge_queue: false,
+            fetch_ticket: 0,
         }
+    }
+
+    #[test]
+    fn a_fetch_that_started_earlier_cannot_overwrite_a_later_one() {
+        // A background fetch begins, then a PR action refreshes and stores the
+        // post-action state; the background fetch finishing last must not win.
+        let cache = Mutex::new(GithubStatusCache::new());
+        let key = ("race-owner".to_string(), "race-repo".to_string(), 1);
+        let background = begin_fetch();
+        let after_action = begin_fetch();
+
+        let mut merged = make_snapshot("race-owner", "race-repo", 1);
+        merged.state = "MERGED".to_string();
+        assert!(store_fetched(&cache, key.clone(), after_action, merged));
+        let stale = make_snapshot("race-owner", "race-repo", 1);
+        assert!(!store_fetched(&cache, key.clone(), background, stale));
+        assert_eq!(cache.lock().unwrap()[&key].state, "MERGED");
+
+        // A fetch started after that is stored as usual.
+        let next = make_snapshot("race-owner", "race-repo", 1);
+        assert!(store_fetched(&cache, key.clone(), begin_fetch(), next));
+        assert_eq!(cache.lock().unwrap()[&key].state, "OPEN");
     }
 
     #[test]

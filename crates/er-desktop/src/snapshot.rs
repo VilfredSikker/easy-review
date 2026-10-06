@@ -473,6 +473,12 @@ pub struct AppSnapshot {
     /// pill + manual Sync. None = up to date / unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_stale: Option<DiffStaleSnapshot>,
+    /// Head commit the on-screen PR diff was built from. Set only while the
+    /// view shows the PR's own head (PR Diff, remote PR); a local-branch view
+    /// shows the working tree, which a PR head cannot be compared to. The merge
+    /// box pins merges to it and compares it to the live PR head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_diff_head_oid: Option<String>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -888,6 +894,20 @@ pub fn resolve_context_identity(
         cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
     ]);
     (branch, base)
+}
+
+/// See `AppSnapshot::pr_diff_head_oid`. Reads `preview_head_oid`, the head
+/// confirmed on both sides of the diff fetch; `last_diff_head_oid` is the
+/// stale pill's baseline, which a Sync realigns to the PR-list cache, so it can
+/// name a head the diff was not built from. The value survives a switch to
+/// the local branch view, so the mode gates it. `preview_context_key` carries
+/// both into the content revision, so the poll repaints when either changes.
+fn pr_diff_head_oid(tab: &TabState) -> Option<String> {
+    if tab.mode == DiffMode::PrDiff || tab.is_remote() {
+        tab.preview_head_oid.clone().filter(|s| !s.is_empty())
+    } else {
+        None
+    }
 }
 
 /// Resolve the `(owner, repo, pr_number)` GitHub-status key for a tab.
@@ -1374,6 +1394,62 @@ pub struct GithubStatusSnapshot {
     pub last_updated: Option<String>,
     #[serde(default)]
     pub is_authored_by_me: bool,
+    /// GitHub's merge-box verdict (`CLEAN`, `BEHIND`, `BLOCKED`, `DIRTY`, …).
+    #[serde(default)]
+    pub merge_state_status: Option<String>,
+    #[serde(default)]
+    pub head_oid: String,
+    #[serde(default)]
+    pub is_cross_repository: bool,
+    /// Method of a pending auto-merge; `None` when auto-merge is off.
+    #[serde(default)]
+    pub auto_merge_method: Option<String>,
+    /// Whether the head branch still exists. Looked up only once a same-repo
+    /// PR is merged or closed; `None` while open, for a fork PR, or when
+    /// GitHub could not answer.
+    #[serde(default)]
+    pub head_branch_exists: Option<bool>,
+    #[serde(default)]
+    pub repo_merge: Option<RepoMergeSnapshot>,
+    /// Queued on a merge-queue branch: `gh pr merge` there only enqueues, and
+    /// the PR stays open until the queue merges it. Looked up only for bases
+    /// that have a queue.
+    #[serde(default)]
+    pub in_merge_queue: bool,
+    /// The base branch has a merge queue, so merging enqueues and the queue,
+    /// not this PR, picks the method. Looked up only for open PRs.
+    #[serde(default)]
+    pub base_has_merge_queue: bool,
+    /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
+    /// Process-local, so never sent or persisted.
+    #[serde(skip)]
+    pub fetch_ticket: u64,
+}
+
+/// Repository merge settings the merge box needs. Cached per repo in the
+/// engine, so this costs a `gh` call once per TTL, not once per poll.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RepoMergeSnapshot {
+    pub merge_commit_allowed: bool,
+    pub squash_merge_allowed: bool,
+    pub rebase_merge_allowed: bool,
+    pub delete_branch_on_merge: bool,
+    #[serde(default)]
+    pub auto_merge_allowed: bool,
+    pub viewer_permission: Option<String>,
+}
+
+impl From<er_engine::gh_pr_actions::RepoMergeSettings> for RepoMergeSnapshot {
+    fn from(s: er_engine::gh_pr_actions::RepoMergeSettings) -> Self {
+        Self {
+            merge_commit_allowed: s.merge_commit_allowed,
+            squash_merge_allowed: s.squash_merge_allowed,
+            rebase_merge_allowed: s.rebase_merge_allowed,
+            delete_branch_on_merge: s.delete_branch_on_merge,
+            auto_merge_allowed: s.auto_merge_allowed,
+            viewer_permission: s.viewer_permission,
+        }
+    }
 }
 
 /// `gh stack` (github/gh-stack) state for the active tab's branch — what the
@@ -2688,6 +2764,7 @@ fn build_snapshot_inner(
         stack,
         detected_pr_number,
         diff_stale,
+        pr_diff_head_oid: pr_diff_head_oid(tab),
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -4475,6 +4552,26 @@ mod tests {
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
             .expect("differing oids must be stale");
         assert_eq!(pr_stale.kind, "pr_head");
+    }
+
+    #[test]
+    fn pr_diff_head_oid_is_reported_only_while_the_pr_head_is_on_screen() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.preview_head_oid = Some("abc".into());
+        // A Sync realigns the stale pill's baseline to the PR-list cache; the
+        // merge must still pin the head the diff was actually built from.
+        tab.last_diff_head_oid = Some("pr-cache-head".into());
+        tab.mode = DiffMode::PrDiff;
+        assert_eq!(pr_diff_head_oid(&tab).as_deref(), Some("abc"));
+
+        // Switched to the local branch: the oid is left over from PR Diff and
+        // says nothing about the working tree now on screen.
+        tab.mode = DiffMode::Branch;
+        assert_eq!(pr_diff_head_oid(&tab), None);
+
+        tab.remote_repo = Some("o/r".into());
+        tab.pr_number = Some(1);
+        assert_eq!(pr_diff_head_oid(&tab).as_deref(), Some("abc"));
     }
 
     #[test]

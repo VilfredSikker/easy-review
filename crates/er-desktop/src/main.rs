@@ -11,8 +11,8 @@ use er_desktop::snapshot::{
 };
 use er_desktop::{
     arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
-    gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache, pr_open_cache,
-    profile_log, projects, snapshot, tabs, terminal, window_placement,
+    gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
+    pr_open_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
@@ -1357,12 +1357,13 @@ fn main() {
             if let Ok(mut f) = gh_status_loading.lock() {
                 f.gh_status = true;
             }
-            if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
-                if let Ok(mut g) = gh_status_bg.lock() {
-                    g.insert((owner.clone(), repo.clone(), number), snap);
-                }
-                profile_log::bump_desktop_revision(&gh_status_desktop_rev, "gh_status_cache");
-            }
+            commands::fetch_and_store_github_status(
+                &gh_status_bg,
+                &gh_status_desktop_rev,
+                &owner,
+                &repo,
+                number,
+            );
             if let Ok(mut f) = gh_status_loading.lock() {
                 f.gh_status = false;
             }
@@ -1940,6 +1941,7 @@ fn main() {
             commands::submit_github_review,
             commands::submit_github_pr_decision,
             commands::post_github_pr_comment,
+            gh_pr_actions::run_github_pr_action,
             commands::run_ai_review,
             commands::run_ai_expert_review,
             commands::run_ai_professor_review,

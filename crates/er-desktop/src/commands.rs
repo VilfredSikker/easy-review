@@ -481,6 +481,31 @@ fn maybe_send_native_notification(
     }
 }
 
+/// Fetch a PR's status and store it, bumping the revision when stored. Blocks
+/// on `gh`, so call it off the main thread. Every writer of the status cache
+/// goes through here: the ticket taken before the fetch is what keeps an
+/// older fetch from overwriting a newer one, and a writer that inserted
+/// directly would bring that race back. Persisting is left to the caller.
+/// Returns whether the entry was stored.
+pub fn fetch_and_store_github_status(
+    cache: &Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>,
+    desktop_revision: &AtomicU64,
+    owner: &str,
+    repo: &str,
+    number: u64,
+) -> bool {
+    let ticket = crate::gh_status_cache::begin_fetch();
+    let Some(snap) = fetch_github_status(owner, repo, number) else {
+        return false;
+    };
+    let key = (owner.to_string(), repo.to_string(), number);
+    let stored = crate::gh_status_cache::store_fetched(cache, key, ticket, snap);
+    if stored {
+        crate::profile_log::bump_desktop_revision(desktop_revision, "gh_status_cache");
+    }
+    stored
+}
+
 /// Spawn a background fetch of the GitHub status for the given (owner, repo, number).
 ///
 /// Returns immediately. The cache is updated on success; failures are logged.
@@ -507,14 +532,9 @@ pub fn kick_github_status_refresh(
     }
     let in_flight_clone = Arc::clone(&in_flight);
     std::thread::spawn(move || {
-        let snap = fetch_github_status(&owner, &repo, number);
-        if let Some(snap) = snap {
-            if let Ok(mut g) = cache.lock() {
-                g.insert((owner.clone(), repo.clone(), number), snap);
-            }
+        if fetch_and_store_github_status(&cache, &desktop_revision, &owner, &repo, number) {
             // Persist after the lock is released (the save helper re-locks).
             crate::gh_status_cache::save_persisted_gh_status_cache(&cache);
-            crate::profile_log::bump_desktop_revision(&desktop_revision, "gh_status_cache");
         }
         if let Some(loading) = &loading {
             if let Ok(mut flags) = loading.lock() {
@@ -527,7 +547,7 @@ pub fn kick_github_status_refresh(
     });
 }
 
-fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64)> {
+pub(crate) fn active_github_key(app: &App, state: &AppState) -> Option<(String, String, u64)> {
     let tab = app.tab();
     // Prefer the tab's own PR number (remote or local PR tab) so the background
     // gh-status fetch targets the PR that was actually opened, not an arbitrary
@@ -676,17 +696,26 @@ fn process_ai_task_inbox(app: &App, state: &AppState) {
 /// non-fatal; checks failures are non-fatal — the snapshot still populates.
 pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<GithubStatusSnapshot> {
     let t = std::time::Instant::now();
-    // Run 2 independent gh calls concurrently — cuts wall time and gh
-    // subprocess count from 4 to 2.
-    let (bundle_res, checks) = std::thread::scope(|s| {
+    // The independent lookups run concurrently. The branch and merge-queue
+    // lookups after this need the PR state, so they wait for the bundle.
+    let (bundle_res, checks, repo_merge) = std::thread::scope(|s| {
         let b = s.spawn(|| er_engine::github::gh_pr_status_remote(owner, repo, number));
         let c = s.spawn(|| {
             er_engine::github::gh_pr_checks_remote(owner, repo, number).unwrap_or_default()
         });
-        (b.join().ok(), c.join().unwrap_or_default())
+        // Cached per repo, so this is usually no subprocess at all.
+        let r = s.spawn(|| er_engine::gh_pr_actions::cached_repo_merge_settings(owner, repo));
+        (
+            b.join().ok(),
+            c.join().unwrap_or_default(),
+            r.join().ok().flatten(),
+        )
     });
     let bundle = bundle_res?.ok()?;
     let overview = bundle.overview;
+    let head_branch_exists =
+        head_branch_exists_after_close(owner, repo, &overview, repo_merge.as_ref());
+    let (base_has_merge_queue, in_merge_queue) = merge_queue_status(owner, repo, number, &overview);
     let comments = bundle.comments;
     let reviews = bundle.reviews;
     crate::profile_log::profile_log(
@@ -762,7 +791,57 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         recent_reviews,
         last_updated,
         is_authored_by_me: false,
+        merge_state_status: overview.merge_state_status,
+        head_oid: overview.head_ref_oid,
+        is_cross_repository: overview.is_cross_repository,
+        auto_merge_method: overview.auto_merge_method,
+        head_branch_exists,
+        repo_merge: repo_merge.map(Into::into),
+        in_merge_queue,
+        base_has_merge_queue,
+        fetch_ticket: 0,
     })
+}
+
+/// Delete/Restore branch only make sense once a same-repo PR is merged or
+/// closed, so the extra `gh api` lookup runs only then. A fork's branch is
+/// never looked up in the base repo: a same-named branch there is a different
+/// branch (ADR 0040).
+fn head_branch_exists_after_close(
+    owner: &str,
+    repo: &str,
+    overview: &er_engine::github::PrOverviewFull,
+    repo_merge: Option<&er_engine::gh_pr_actions::RepoMergeSettings>,
+) -> Option<bool> {
+    if overview.state == "OPEN" || overview.head_ref_name.is_empty() || overview.is_cross_repository
+    {
+        return None;
+    }
+    // GitHub deletes the branch a moment after the merge on such repos.
+    let deleting_itself =
+        overview.state == "MERGED" && repo_merge.is_some_and(|s| s.delete_branch_on_merge);
+    er_engine::gh_pr_actions::cached_remote_branch_exists(
+        owner,
+        repo,
+        &overview.head_ref_name,
+        deleting_itself,
+    )
+}
+
+/// `(base has a merge queue, PR is in it)` for an open PR. Queue presence is
+/// cached per repo and base; the membership lookup costs a `gh` call, so it
+/// runs only on a base that has a queue.
+fn merge_queue_status(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    overview: &er_engine::github::PrOverviewFull,
+) -> (bool, bool) {
+    use er_engine::gh_pr_actions::{cached_base_has_merge_queue, gh_pr_in_merge_queue};
+    let has_queue = overview.state == "OPEN"
+        && cached_base_has_merge_queue(owner, repo, &overview.base_ref_name) == Some(true);
+    let queued = has_queue && gh_pr_in_merge_queue(owner, repo, number).unwrap_or(false);
+    (has_queue, queued)
 }
 
 /// Kick a background refresh of the active tab's GitHub status.
@@ -2908,9 +2987,34 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapsho
             repo_root
         };
         kick_meta_refresh(&state, root);
+        refresh_active_status_after_sync(&state);
         snap!(state)
     })
     .await
+}
+
+/// A Sync moves the diff on screen to a newer PR head, but the cached status
+/// can be up to a poll older. The merge box compares the two and blocks a
+/// merge when they differ, so a Sync with no status refresh would leave the
+/// merge blocked, telling the user to sync again. Ignores the freshness skip
+/// for that reason.
+fn refresh_active_status_after_sync(state: &AppState) {
+    let key = state
+        .app
+        .lock()
+        .ok()
+        .and_then(|app| active_github_key(&app, state));
+    if let Some((owner, repo, number)) = key {
+        kick_github_status_refresh(
+            state.gh_status_cache.clone(),
+            Arc::clone(&state.gh_status_in_flight),
+            Arc::clone(&state.desktop_revision),
+            Some(Arc::clone(&state.loading)),
+            owner,
+            repo,
+            number,
+        );
+    }
 }
 
 /// Trigger an immediate background refresh of the GitHub status for the active tab.
@@ -8534,6 +8638,7 @@ pub async fn sync_pr(
             }
         }
 
+        refresh_active_status_after_sync(&state);
         state
             .desktop_revision
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -10526,6 +10631,15 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
                 v.mergeable.hash(&mut h);
                 v.checks.len().hash(&mut h);
                 v.state.hash(&mut h);
+                v.is_draft.hash(&mut h);
+                v.is_cross_repository.hash(&mut h);
+                v.merge_state_status.hash(&mut h);
+                v.head_oid.hash(&mut h);
+                v.auto_merge_method.hash(&mut h);
+                v.head_branch_exists.hash(&mut h);
+                v.repo_merge.hash(&mut h);
+                v.in_merge_queue.hash(&mut h);
+                v.base_has_merge_queue.hash(&mut h);
             }
         }
     }
@@ -12334,6 +12448,22 @@ mod tests {
             !body.contains("snap_from"),
             "toggle_panel must not rebuild a snapshot"
         );
+    }
+
+    #[test]
+    fn diff_syncs_refresh_the_github_status() {
+        // The merge box blocks a merge when the synced diff's head and the
+        // cached PR head differ; without a refresh it stays blocked after a
+        // Sync and tells the user to sync again.
+        let src = include_str!("commands.rs");
+        for command in ["pub async fn force_refresh_diff", "pub async fn sync_pr"] {
+            let (_, from) = src.split_once(command).expect(command);
+            let (body, _) = from.split_once("\n}\n").expect("function end");
+            assert!(
+                body.contains("refresh_active_status_after_sync(&state);"),
+                "{command} must refresh the GitHub status"
+            );
+        }
     }
 
     fn cached_pr(number: u64) -> crate::snapshot::PrInfo {
