@@ -8,7 +8,7 @@
 </script>
 
 <div
-  class="grid grid-cols-[40px_minmax(0,1fr)] diff-row text-muted"
+  class="grid grid-cols-[var(--er-split-gutter)_minmax(0,1fr)] diff-row text-muted"
   style="height:{row.height}px"
   data-row-identity={row.identity}
 >

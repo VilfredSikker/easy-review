@@ -79,7 +79,7 @@
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
-  import { SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
+  import { gutterWidthPx, maxLineNumber } from "$lib/splitDiffLayout";
   import { findComposerAnchorRow, foldRowExtras } from "$lib/composerPlacement";
   import { DocumentSideView } from "$lib/documentSideView.svelte";
   import { sideBlockPadding } from "$lib/documentSideLayout";
@@ -244,14 +244,15 @@
   // The .band is always viewport-width (no min-width:max-content), so split
   // panels are a fixed 50/50. Long lines either word-wrap (app.wrapLines, the
   // default) or pan horizontally inside their own panel via --dx-l/--dx-r.
-  /** Line-number gutter width per panel (grid col 40px). */
-  const GUTTER_PX = SPLIT_GUTTER_PX;
   /** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
   const CELL_HPAD_PX = 24;
 
   const wrapEnabled = $derived(app.wrapLines);
   /** Measured monospace character width (px). 0 until the probe runs. */
   let charWPx = $state(0);
+  /** Line-number gutter width per panel, wide enough for the diff's largest
+   *  line number. Published to the rows as `--er-split-gutter`. */
+  const GUTTER_PX = $derived(gutterWidthPx(maxLineNumber(files), charWPx));
   /** Measured .hscroll (band) width (px). 0 until the observer fires. */
   let bandWidthPx = $state(0);
 
@@ -2312,7 +2313,7 @@
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
-  <div class="flex-1 min-h-0 relative flex flex-col">
+  <div class="flex-1 min-h-0 relative flex flex-col" style="--er-split-gutter:{GUTTER_PX}px">
   <div
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"
