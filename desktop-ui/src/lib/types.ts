@@ -535,6 +535,32 @@ export interface GithubStatusSnapshot {
   /** Unix seconds of last successful fetch, as a string. */
   last_updated: string | null;
   is_authored_by_me: boolean;
+  /** GitHub's merge-box verdict: "CLEAN" | "BEHIND" | "BLOCKED" | "DIRTY" | "UNSTABLE" | "HAS_HOOKS" | "DRAFT" | "UNKNOWN". */
+  merge_state_status?: string | null;
+  /** Head commit the PR points at now. A merge pins `pr_diff_head_oid` when set, else this. */
+  head_oid?: string;
+  /** Head branch lives in a fork; branch delete/restore is not offered. */
+  is_cross_repository?: boolean;
+  /** "MERGE" | "SQUASH" | "REBASE" while auto-merge is pending, else null. */
+  auto_merge_method?: string | null;
+  /** Looked up only once merged or closed; null while open or unknown. */
+  head_branch_exists?: boolean | null;
+  repo_merge?: RepoMergeSnapshot | null;
+  /** Queued on a merge-queue branch; the PR stays open until the queue merges it. */
+  in_merge_queue?: boolean;
+  /** The base has a merge queue: merging enqueues and the queue picks the method. */
+  base_has_merge_queue?: boolean;
+}
+
+export interface RepoMergeSnapshot {
+  merge_commit_allowed: boolean;
+  squash_merge_allowed: boolean;
+  rebase_merge_allowed: boolean;
+  delete_branch_on_merge: boolean;
+  /** Off by default on GitHub; auto-merge is offered only when on. */
+  auto_merge_allowed?: boolean;
+  /** "ADMIN" | "MAINTAIN" | "WRITE" | "TRIAGE" | "READ" */
+  viewer_permission: string | null;
 }
 
 export interface AppSnapshot {
@@ -552,6 +578,11 @@ export interface AppSnapshot {
   detected_pr_number?: number | null;
   /** Set when the active diff is behind origin. Drives the "stale" pill + Sync. */
   diff_stale?: { kind: string; message: string } | null;
+  /**
+   * Head commit the on-screen PR diff was built from. Set only on PR Diff and
+   * remote PR views; absent on a local-branch view.
+   */
+  pr_diff_head_oid?: string | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";

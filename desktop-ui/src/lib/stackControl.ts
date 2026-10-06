@@ -136,24 +136,3 @@ export function stackRowTitle(row: StackRow): string {
   if (row.state === "trunk") return "Trunk the stack is based on";
   return "No PR yet";
 }
-
-/** Width of the stack dropdown, in px (`w-64`). */
-export const STACK_MENU_WIDTH = 256;
-
-/** Gap kept between the dropdown and the window edge, in px. */
-const STACK_MENU_EDGE_GAP = 8;
-
-/**
- * Where the stack dropdown sits, in viewport coordinates. It is drawn `fixed`
- * because the right panel clips overflow: anchored inside it, a menu wider than
- * the space left of the button was cut off at the panel's edge. Right-aligned
- * under the button, then kept inside the window.
- */
-export function stackMenuPosition(
-  button: { right: number; bottom: number },
-  viewportWidth: number,
-): { top: number; left: number } {
-  const maxLeft = viewportWidth - STACK_MENU_WIDTH - STACK_MENU_EDGE_GAP;
-  const left = Math.max(STACK_MENU_EDGE_GAP, Math.min(button.right - STACK_MENU_WIDTH, maxLeft));
-  return { top: button.bottom + 4, left };
-}
