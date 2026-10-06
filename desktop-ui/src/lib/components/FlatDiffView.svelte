@@ -2004,7 +2004,10 @@
         const el = entry.target as HTMLElement;
         const identity = el.dataset.rowIdentity;
         if (!identity) continue;
-        onHeightChange(identity, Math.round(entry.contentRect.height));
+        // Border box: the space the row takes in the flow. contentRect drops
+        // padding and borders, so padded rows (file and hunk headers) read short.
+        const box = entry.borderBoxSize?.[0]?.blockSize ?? el.offsetHeight;
+        onHeightChange(identity, Math.round(box));
       }
     });
     heightRo = ro;
