@@ -90,6 +90,12 @@ directions. Distinct from a question or a note, which are private by
 construction.
 _Avoid_: PR comment, review comment, thread
 
+**Document anchor**:
+Where a question or note made from the desktop Preview sits when its line is
+outside the diff: a line of the whole file, with no hunk. It never follows
+edits and is never stale. See ADR 0041.
+_Avoid_: preview comment, off-diff comment
+
 **Promote**:
 To turn a private question or note into a GitHub comment. The move is
 deliberate, one-way, and always an explicit act by the reviewer.

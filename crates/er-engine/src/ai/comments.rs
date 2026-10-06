@@ -293,6 +293,20 @@ pub struct ReviewQuestion {
     pub finding_ref: Option<String>,
 }
 
+impl ReviewQuestion {
+    /// Anchored to a line of the document rather than a hunk: written from the
+    /// desktop preview on a line the diff does not show. Relocation searches
+    /// hunks, so it would mark these lost on every pass; it leaves them alone.
+    pub fn is_document_anchor(&self) -> bool {
+        self.hunk_index.is_none() && self.line_start.is_some()
+    }
+
+    /// No anchor at all: neither a hunk nor a line.
+    pub fn is_file_level(&self) -> bool {
+        self.hunk_index.is_none() && self.line_start.is_none() && self.hunk_header.is_empty()
+    }
+}
+
 // ── .er-github-comments.json — GitHub PR comments ──
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

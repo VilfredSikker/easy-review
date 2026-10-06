@@ -40,6 +40,7 @@ commands.allow = [
   "add_comment",
   "add_question",
   "add_note",
+  "add_document_thread",
   "reply_to_thread",
   "delete_thread",
   "resolve_thread",

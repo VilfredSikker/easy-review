@@ -1,14 +1,27 @@
 <script lang="ts">
-  import { documentMarkdownSegments, documentPreviewKind, type DocumentPreviewState } from "$lib/documentPreview";
+  import { documentBlocks, documentMarkdownSegments, documentPreviewKind, documentTextBlocks, type DocumentPreviewState } from "$lib/documentPreview";
+  import type { FileSnapshot } from "$lib/types";
   import DocumentMarkdown from "./DocumentMarkdown.svelte";
+  import DocumentPreviewBlocks from "./DocumentPreviewBlocks.svelte";
 
   interface Props {
     path: string;
     state: DocumentPreviewState;
+    /** The reviewed file. With it, highlighting a passage opens a composer
+     *  and saved questions, notes and comments show under their blocks. */
+    file?: FileSnapshot;
     onretry?: () => void;
   }
-  const { path, state, onretry }: Props = $props();
-  const segments = $derived(state.status === "ready" && documentPreviewKind(path) === "markdown"
+  const { path, state, file, onretry }: Props = $props();
+  const kind = $derived(documentPreviewKind(path));
+  // Read as a boolean: every snapshot brings a new `file` object, and depending
+  // on it directly would re-parse the whole document each time.
+  const annotatable = $derived(file !== undefined);
+  const blocks = $derived.by(() => {
+    if (state.status !== "ready" || !annotatable) return [];
+    return kind === "markdown" ? documentBlocks(state.text) : documentTextBlocks(state.text);
+  });
+  const segments = $derived(state.status === "ready" && !annotatable && kind === "markdown"
     ? documentMarkdownSegments(state.text) : []);
 </script>
 
@@ -23,7 +36,9 @@
     </div>
   {:else if state.text.length === 0}
     <p class="preview-state">Empty file</p>
-  {:else if documentPreviewKind(path) === "markdown"}
+  {:else if file}
+    <DocumentPreviewBlocks source={state.text} {blocks} {file} />
+  {:else if kind === "markdown"}
     <DocumentMarkdown {segments} />
   {:else}
     <pre class="document-text">{state.text}</pre>

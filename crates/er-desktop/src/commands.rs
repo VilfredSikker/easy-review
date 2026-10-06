@@ -2545,6 +2545,63 @@ pub async fn add_note(
     .await
 }
 
+/// A question or note on a document line the diff does not show, written from
+/// the preview. The file text is read outside the lock, as the preview does,
+/// since a remote review fetches it over the network. `preview_key` names the
+/// text the line was picked in; a document that changed since would put the
+/// line on different text, so the save is refused.
+#[tauri::command]
+pub async fn add_document_thread(
+    file: String,
+    kind: String,
+    line_num: usize,
+    line_num_end: Option<usize>,
+    text: String,
+    preview_key: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let comment_type = match kind.as_str() {
+        "question" => CommentType::Question,
+        "note" => CommentType::Note,
+        other => return Err(format!("A document anchor cannot hold a {other}")),
+    };
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let (active_tab, request) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            (
+                app.active_tab,
+                app.tab()
+                    .capture_file_preview(&file)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        if request.preview_key != preview_key {
+            return Err("The document changed before the comment was saved".to_string());
+        }
+        let source = request.read().map_err(|e| e.to_string())?;
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if app.active_tab != active_tab || app.tab().file_preview_key(&file) != request.preview_key
+        {
+            return Err("The document changed before the comment was saved".to_string());
+        }
+        app.submit_document_comment(
+            CommentTarget {
+                file,
+                hunk_idx: 0,
+                line_num: Some(line_num),
+                line_num_end,
+            },
+            text,
+            comment_type,
+            &source,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(snap_from_confirmed(&app, &state))
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn reply_to_thread(
     parent_id: String,
@@ -4767,6 +4824,13 @@ pub async fn promote_to_comment(
         if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
             return early;
         }
+        // GitHub takes comments on diff lines only. Refuse before anything is
+        // written, so the source question or note is kept.
+        if app.document_anchor_of(&id).is_some() {
+            return Err(
+                "This line is not in the diff, so it cannot become a GitHub comment".to_string(),
+            );
+        }
 
         // 1. Resolve the source question or note + already-promoted guard.
         let (file, hunk_idx, line_start, default_body, side) = {
@@ -4925,7 +4989,9 @@ pub async fn promote_to_note(
         };
 
         app.tab_mut().comment_side = Some(side);
-        app.submit_comment_text(
+        // A question on a document line keeps that line as a note.
+        app.tab_mut().comment_document_anchor = app.document_anchor_of(&id);
+        let submitted = app.submit_comment_text(
             CommentTarget {
                 file,
                 hunk_idx,
@@ -4936,8 +5002,9 @@ pub async fn promote_to_note(
             CommentType::Note,
             None,
             None,
-        )
-        .map_err(|e| e.to_string())?;
+        );
+        app.tab_mut().comment_document_anchor = None;
+        submitted.map_err(|e| e.to_string())?;
 
         let new_id: Option<String> = {
             let tab = app.tab();

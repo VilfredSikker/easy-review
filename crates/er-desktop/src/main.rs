@@ -1927,6 +1927,7 @@ fn main() {
             commands::add_comment,
             commands::add_question,
             commands::add_note,
+            commands::add_document_thread,
             commands::reply_to_thread,
             commands::delete_thread,
             commands::resolve_thread,
