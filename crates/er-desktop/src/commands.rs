@@ -1046,6 +1046,85 @@ pub async fn request_file_preview(
     .await
 }
 
+#[derive(serde::Serialize)]
+pub struct ImagePreviewResponse {
+    path: String,
+    /// `data:` URLs, so the webview needs no file access to show them.
+    before: Option<String>,
+    after: Option<String>,
+    preview_context_key: String,
+    preview_key: String,
+}
+
+fn image_data_url(mime: &str, bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    format!(
+        "data:{mime};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    )
+}
+
+#[tauri::command]
+pub async fn request_image_preview(
+    path: String,
+    expected_preview_context_key: String,
+    state: State<'_, AppState>,
+) -> Result<ImagePreviewResponse, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mime = er_engine::app::image_mime(&path).ok_or("This file is not an image")?;
+        let (active_tab, request) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if app.tab().preview_context_key() != expected_preview_context_key {
+                return Err("Image preview context changed".to_string());
+            }
+            (
+                app.active_tab,
+                app.tab()
+                    .capture_image_preview(&path)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        let read = |side: &Option<er_engine::app::FilePreviewRequest>| {
+            side.as_ref()
+                .map(|r| r.read_bytes(er_engine::app::MAX_IMAGE_PREVIEW_BYTES))
+                .transpose()
+        };
+        let after = read(&request.after).map_err(|e| e.to_string())?;
+        // The earlier side is context. A failed read leaves the current side alone.
+        let before = match read(&request.before) {
+            Ok(bytes) => bytes,
+            Err(e) if after.is_some() => {
+                log::debug!("image preview: earlier side of {path} unreadable: {e}");
+                None
+            }
+            Err(e) => return Err(e.to_string()),
+        };
+        let keys = request.after.as_ref().or(request.before.as_ref()).ok_or(
+            "Image has no side to show",
+        )?;
+        let (preview_context_key, preview_key) =
+            (keys.preview_context_key.clone(), keys.preview_key.clone());
+        {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if app.active_tab != active_tab
+                || app.tab().preview_context_key() != preview_context_key
+                || app.tab().file_preview_key(&path) != preview_key
+            {
+                return Err("Image preview context changed".to_string());
+            }
+        }
+        Ok(ImagePreviewResponse {
+            before: before.map(|b| image_data_url(mime, &b)),
+            after: after.map(|b| image_data_url(mime, &b)),
+            path,
+            preview_context_key,
+            preview_key,
+        })
+    })
+    .await
+}
+
 #[tauri::command]
 pub fn next_file(state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
@@ -11964,6 +12043,18 @@ mod tests {
         assert!(
             tab.preloaded_branch_raw.is_some(),
             "cache entry seeds the branch preload (branch scope == raw_diff for remote tabs)"
+        );
+    }
+
+    #[test]
+    fn image_data_url_carries_mime_and_exact_bytes() {
+        assert_eq!(
+            image_data_url("image/png", b"\x89PNG\0"),
+            "data:image/png;base64,iVBORwA="
+        );
+        assert_eq!(
+            image_data_url("image/svg+xml", b"<svg/>"),
+            "data:image/svg+xml;base64,PHN2Zy8+"
         );
     }
 

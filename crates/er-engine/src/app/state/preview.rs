@@ -8,6 +8,8 @@ use std::path::{Component, Path};
 use std::process::Command;
 
 pub const MAX_PREVIEW_BYTES: usize = 1024 * 1024;
+/// Screenshots and diagrams routinely pass the 1 MiB text cap.
+pub const MAX_IMAGE_PREVIEW_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone)]
 enum Source {
@@ -41,6 +43,26 @@ pub fn supports_preview(path: &str) -> bool {
                 "md" | "markdown" | "mdown" | "mkd" | "mkdn" | "txt" | "text"
             )
         })
+}
+
+/// The MIME type an image file is rendered as, or `None` when it is not an image.
+pub fn image_mime(path: &str) -> Option<&'static str> {
+    let extension = Path::new(path).extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "avif" => "image/avif",
+        "bmp" => "image/bmp",
+        "ico" => "image/x-icon",
+        "svg" => "image/svg+xml",
+        _ => return None,
+    })
+}
+
+fn has_preview(path: &str) -> bool {
+    supports_preview(path) || image_mime(path).is_some()
 }
 
 impl TabState {
@@ -98,7 +120,7 @@ impl TabState {
             let FileStatus::Renamed(old_path) = &file.status else {
                 continue;
             };
-            if !supports_preview(&file.path) {
+            if !has_preview(&file.path) {
                 continue;
             }
             let root = self
@@ -163,7 +185,7 @@ impl TabState {
     }
 
     pub fn file_preview_key(&self, path: &str) -> String {
-        if !supports_preview(path) {
+        if !has_preview(path) {
             return String::new();
         }
         let commit = self
@@ -201,14 +223,63 @@ impl TabState {
         if !supports_preview(path) {
             bail!("This file does not support document preview");
         }
+        self.capture_preview(path).map(|(request, _)| request)
+    }
+
+    /// Both sides of an image change. A modified image's earlier side is read
+    /// from the old blob, which a remote review cannot reach locally.
+    pub fn capture_image_preview(&self, path: &str) -> Result<ImagePreviewRequest> {
+        if image_mime(path).is_none() {
+            bail!("This file is not an image");
+        }
+        let (request, status) = self.capture_preview(path)?;
+        if status == FileStatus::Deleted {
+            return Ok(ImagePreviewRequest {
+                before: Some(request),
+                after: None,
+            });
+        }
+        let before = if status == FileStatus::Added || self.is_remote() {
+            None
+        } else if self.mode == DiffMode::History {
+            let h = self.history.as_ref().context("History is unavailable")?;
+            let commit = &h
+                .commits
+                .get(h.selected_commit)
+                .context("Commit is unavailable")?
+                .hash;
+            let old_path = match &status {
+                FileStatus::Renamed(old) => old.as_str(),
+                _ => path,
+            };
+            Some(format!("{commit}^1:{old_path}"))
+        } else {
+            self.preview_section(path)
+                .and_then(|section| index_oids(section).map(|(old, _)| old.to_string()))
+                .filter(|oid| valid_oid(oid))
+        }
+        .map(|spec| FilePreviewRequest {
+            source: Source::Blob(self.repo_root.clone(), spec),
+            ..request.clone()
+        });
+        Ok(ImagePreviewRequest {
+            before,
+            after: Some(request),
+        })
+    }
+
+    fn preview_file_status(&self, path: &str) -> Result<FileStatus> {
         validate_path(path)?;
-        let file = self
-            .visible_files()
+        self.visible_files()
             .into_iter()
             .find(|(_, f)| f.path == path)
-            .map(|(_, f)| f)
-            .context("File is no longer in this review")?;
-        let deleted = file.status == FileStatus::Deleted;
+            .map(|(_, f)| f.status.clone())
+            .context("File is no longer in this review")
+    }
+
+    fn capture_preview(&self, path: &str) -> Result<(FilePreviewRequest, FileStatus)> {
+        let status = self.preview_file_status(path)?;
+        let deleted = status == FileStatus::Deleted;
         let source = if self.mode == DiffMode::History {
             let h = self.history.as_ref().context("History is unavailable")?;
             let commit = &h
@@ -236,8 +307,17 @@ impl TabState {
             let section = self
                 .preview_section(path)
                 .context("Document source is unavailable")?;
-            if matches!(file.status, FileStatus::Added | FileStatus::Deleted) {
+            let blob = index_oids(section)
+                .map(|(old, new)| if deleted { old } else { new })
+                .filter(|oid| valid_oid(oid));
+            // A binary image section carries no lines to rebuild the file from.
+            if matches!(status, FileStatus::Added | FileStatus::Deleted)
+                && (image_mime(path).is_none() || !is_binary(section))
+            {
                 Source::Diff(section.to_string(), deleted)
+            } else if let (true, false, Some(oid)) = (deleted, self.is_remote(), blob) {
+                // The PR head's parent need not hold a file the PR deleted.
+                Source::Blob(self.repo_root.clone(), oid.to_string())
             } else if let Some(repo) = self.remote_repo.as_ref().filter(|_| {
                 self.is_remote()
                     || self.mode == DiffMode::PrDiff
@@ -251,43 +331,23 @@ impl TabState {
                     self.preview_head_oid
                         .clone()
                         .context("PR commit is unavailable")?,
-                    false,
-                    section
-                        .lines()
-                        .find_map(|line| line.strip_prefix("index "))
-                        .and_then(|line| line.split_whitespace().next())
-                        .and_then(|line| line.split_once(".."))
-                        .map(|(_, new)| new.to_string()),
+                    deleted,
+                    blob.map(str::to_string),
                 )
-            } else {
-                if self.mode == DiffMode::Unstaged
+            } else if !deleted
+                && (self.mode == DiffMode::Unstaged
                     || (self.local_branch_checkout_root.is_some()
                         && (self.mode == DiffMode::Branch
-                            || (self.mode == DiffMode::Tour && !self.tour_is_pr)))
-                {
-                    return Ok(FilePreviewRequest {
-                        path: path.to_string(),
-                        preview_context_key: self.preview_context_key(),
-                        preview_key: self.file_preview_key(path),
-                        source: Source::Checkout(
-                            self.local_branch_checkout_root
-                                .clone()
-                                .unwrap_or_else(|| self.repo_root.clone()),
-                            self.mtime_cache.get(path).copied(),
-                        ),
-                    });
-                }
-                let oid = section
-                    .lines()
-                    .find_map(|l| l.strip_prefix("index "))
-                    .and_then(|s| s.split_whitespace().next())
-                    .and_then(|s| s.split_once(".."))
-                    .map(|(old, new)| if deleted { old } else { new });
-                match oid.filter(|s| {
-                    !s.is_empty()
-                        && s.bytes().all(|b| b.is_ascii_hexdigit())
-                        && !s.bytes().all(|b| b == b'0')
-                }) {
+                            || (self.mode == DiffMode::Tour && !self.tour_is_pr))))
+            {
+                Source::Checkout(
+                    self.local_branch_checkout_root
+                        .clone()
+                        .unwrap_or_else(|| self.repo_root.clone()),
+                    self.mtime_cache.get(path).copied(),
+                )
+            } else {
+                match blob {
                     Some(oid) => Source::Blob(self.repo_root.clone(), oid.to_string()),
                     None if self.preview_blob_ids.contains_key(path) => {
                         Source::Blob(self.repo_root.clone(), self.preview_blob_ids[path].clone())
@@ -301,12 +361,13 @@ impl TabState {
                 }
             }
         };
-        Ok(FilePreviewRequest {
+        let request = FilePreviewRequest {
             path: path.to_string(),
             preview_context_key: self.preview_context_key(),
             preview_key: self.file_preview_key(path),
             source,
-        })
+        };
+        Ok((request, status))
     }
 }
 
@@ -319,6 +380,30 @@ fn validate_path(path: &str) -> Result<()> {
         bail!("Document path must stay inside the reviewed checkout");
     }
     Ok(())
+}
+
+/// The old and new blob ids from a diff section's `index` line.
+fn index_oids(section: &str) -> Option<(&str, &str)> {
+    section
+        .lines()
+        .find_map(|line| line.strip_prefix("index "))
+        .and_then(|line| line.split_whitespace().next())
+        .and_then(|line| line.split_once(".."))
+}
+
+/// False for the all-zero id git writes on the missing side of an add or delete.
+fn valid_oid(oid: &str) -> bool {
+    !oid.is_empty() && oid.bytes().all(|b| b.is_ascii_hexdigit()) && !oid.bytes().all(|b| b == b'0')
+}
+
+fn is_binary(section: &str) -> bool {
+    section
+        .lines()
+        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch")
+}
+
+fn too_large(limit: usize) -> anyhow::Error {
+    anyhow::anyhow!("File exceeds the {} MiB preview limit", limit / (1024 * 1024))
 }
 
 #[cfg(unix)]
@@ -362,27 +447,26 @@ fn open_checkout_file(root: &str, path: &str) -> Result<std::fs::File> {
     Ok(std::fs::File::open(path)?)
 }
 
-fn bounded_read(reader: impl Read) -> Result<Vec<u8>> {
+fn bounded_read(reader: impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     reader
-        .take((MAX_PREVIEW_BYTES + 1) as u64)
+        .take((limit + 1) as u64)
         .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PREVIEW_BYTES {
-        bail!("Document exceeds the 1 MiB preview limit");
+    if bytes.len() > limit {
+        return Err(too_large(limit));
     }
     Ok(bytes)
 }
 
-fn read_command(command: &mut Command) -> Result<Vec<u8>> {
-    let output =
-        crate::proc::run_with_bounded_stdout(command, crate::proc::GH_TIMEOUT, MAX_PREVIEW_BYTES)?;
+fn read_command(command: &mut Command, limit: usize) -> Result<Vec<u8>> {
+    let output = crate::proc::run_with_bounded_stdout(command, crate::proc::GH_TIMEOUT, limit)?;
     if !output.status.success() {
         bail!("Document source could not be read");
     }
     Ok(output.stdout)
 }
 
-fn reconstruct(section: &str, deleted: bool) -> Result<Vec<u8>> {
+fn reconstruct(section: &str, deleted: bool, limit: usize) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let prefix = if deleted { b'-' } else { b'+' };
     let mut in_hunk = false;
@@ -400,26 +484,17 @@ fn reconstruct(section: &str, deleted: bool) -> Result<Vec<u8>> {
             }
         } else if line.as_bytes().first() == Some(&prefix) {
             bytes.extend_from_slice(&line.as_bytes()[1..]);
-            if bytes.len() > MAX_PREVIEW_BYTES {
-                bail!("Document exceeds the 1 MiB preview limit");
+            if bytes.len() > limit {
+                return Err(too_large(limit));
             }
         }
     }
-    if section
-        .lines()
-        .any(|line| line.starts_with("Binary files ") || line == "GIT binary patch")
-    {
+    if is_binary(section) {
         bail!("Binary document cannot be previewed");
     }
-    let expected = section
-        .lines()
-        .find_map(|line| line.strip_prefix("index "))
-        .and_then(|line| line.split_whitespace().next())
-        .and_then(|line| line.split_once(".."))
+    let expected = index_oids(section)
         .map(|(old, new)| if deleted { old } else { new })
-        .filter(|oid| {
-            oid.bytes().all(|b| b.is_ascii_hexdigit()) && !oid.bytes().all(|b| b == b'0')
-        });
+        .filter(|oid| valid_oid(oid));
     if let Some(expected) = expected {
         verify_blob(&bytes, expected)?;
     } else if section.contains('\u{fffd}') {
@@ -460,22 +535,30 @@ fn verify_blob(bytes: &[u8], expected: &str) -> Result<()> {
 
 impl FilePreviewRequest {
     pub fn read(&self) -> Result<String> {
-        let bytes = match &self.source {
-            Source::Diff(section, deleted) => reconstruct(section, *deleted)?,
-            Source::Blob(root, oid) => crate::git::git_read_blob(root, oid, MAX_PREVIEW_BYTES)?,
+        let bytes = self.read_bytes(MAX_PREVIEW_BYTES)?;
+        if bytes.contains(&0) {
+            bail!("Binary document cannot be previewed");
+        }
+        String::from_utf8(bytes).context("Document is not UTF-8 text")
+    }
+
+    pub fn read_bytes(&self, limit: usize) -> Result<Vec<u8>> {
+        Ok(match &self.source {
+            Source::Diff(section, deleted) => reconstruct(section, *deleted, limit)?,
+            Source::Blob(root, oid) => crate::git::git_read_blob(root, oid, limit)?,
             Source::Checkout(root, expected_mtime) => {
                 let file = open_checkout_file(root, &self.path)?;
                 let before = file.metadata()?;
                 if !before.is_file() {
                     bail!("Document is not a regular file");
                 }
-                if before.len() > MAX_PREVIEW_BYTES as u64 {
-                    bail!("Document exceeds the 1 MiB preview limit");
+                if before.len() > limit as u64 {
+                    return Err(too_large(limit));
                 }
                 if expected_mtime.is_some_and(|m| before.modified().ok() != Some(m)) {
                     bail!("Document changed. Refresh the diff before previewing");
                 }
-                let bytes = bounded_read(&file)?;
+                let bytes = bounded_read(&file, limit)?;
                 let after = file.metadata()?;
                 if before.modified().ok() != after.modified().ok() || before.len() != after.len() {
                     bail!("Document changed while reading");
@@ -491,6 +574,7 @@ impl FilePreviewRequest {
                     let bytes = read_command(
                         Command::new("gh")
                             .args(["api", &format!("repos/{repo}/git/commits/{commit}")]),
+                        MAX_PREVIEW_BYTES,
                     )?;
                     let metadata: serde_json::Value = serde_json::from_slice(&bytes)?;
                     parent = metadata["parents"][0]["sha"]
@@ -517,18 +601,22 @@ impl FilePreviewRequest {
                     "-H",
                     "Accept: application/vnd.github.raw+json",
                     &format!("repos/{repo}/contents/{path}?ref={commit}"),
-                ]))?;
+                ]), limit)?;
                 if let Some(expected) = expected_blob {
                     verify_blob(&bytes, expected)?;
                 }
                 bytes
             }
-        };
-        if bytes.contains(&0) {
-            bail!("Binary document cannot be previewed");
-        }
-        String::from_utf8(bytes).context("Document is not UTF-8 text")
+        })
     }
+}
+
+/// Both sides of an image change. Each is `None` when that side does not exist
+/// or cannot be read locally.
+#[derive(Debug, Clone)]
+pub struct ImagePreviewRequest {
+    pub before: Option<FilePreviewRequest>,
+    pub after: Option<FilePreviewRequest>,
 }
 
 #[cfg(test)]
@@ -598,7 +686,8 @@ mod tests {
         assert_eq!(
             reconstruct(
                 "@@ -0,0 +1,2 @@\n+one\r\n+two\n\\ No newline at end of file\n",
-                false
+                false,
+                MAX_PREVIEW_BYTES
             )
             .unwrap(),
             b"one\r\ntwo"
@@ -606,14 +695,15 @@ mod tests {
         assert_eq!(
             reconstruct(
                 "@@ -1,2 +0,0 @@\n-one\r\n-two\n\\ No newline at end of file\n",
-                true
+                true,
+                MAX_PREVIEW_BYTES
             )
             .unwrap(),
             b"one\r\ntwo"
         );
-        assert_eq!(reconstruct("new file mode 100644\n", false).unwrap(), b"");
-        assert!(reconstruct("Binary files a/a.md and b/a.md differ\n", false).is_err());
-        assert!(reconstruct("@@ -0,0 +1 @@\n+invalid \u{fffd}\n", false).is_err());
+        assert_eq!(reconstruct("new file mode 100644\n", false, MAX_PREVIEW_BYTES).unwrap(), b"");
+        assert!(reconstruct("Binary files a/a.md and b/a.md differ\n", false, MAX_PREVIEW_BYTES).is_err());
+        assert!(reconstruct("@@ -0,0 +1 @@\n+invalid \u{fffd}\n", false, MAX_PREVIEW_BYTES).is_err());
     }
 
     #[test]
@@ -807,6 +897,156 @@ mod tests {
         );
         t.preview_head_oid = Some("b".repeat(40));
         assert_ne!(request.preview_context_key, t.preview_context_key());
+    }
+
+    fn image_sides(t: &TabState, path: &str) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        let request = t.capture_image_preview(path).unwrap();
+        let read = |side: Option<FilePreviewRequest>| {
+            side.map(|r| r.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap())
+        };
+        (read(request.before), read(request.after))
+    }
+
+    #[test]
+    fn image_preview_reads_both_sides_of_binary_changes_in_each_mode() {
+        let old = b"\x89PNG\r\n\x1a\n\0old".to_vec();
+        let new = b"\x89PNG\r\n\x1a\n\0new".to_vec();
+        let dir = repo();
+        std::fs::write(dir.path().join("logo.png"), &old).unwrap();
+        git(dir.path(), &["add", "."]);
+        git(
+            dir.path(),
+            &["-c", "commit.gpgsign=false", "commit", "-m", "logo"],
+        );
+        std::fs::write(dir.path().join("logo.png"), &new).unwrap();
+
+        let t = tab(&git(dir.path(), &["diff"]), dir.path(), DiffMode::Unstaged);
+        assert!(t.files[0].hunks.is_empty());
+        assert!(!t.file_preview_key("logo.png").is_empty());
+        assert_eq!(
+            image_sides(&t, "logo.png"),
+            (Some(old.clone()), Some(new.clone()))
+        );
+        assert!(t.capture_file_preview("logo.png").is_err());
+
+        git(dir.path(), &["add", "."]);
+        let t = tab(
+            &git(dir.path(), &["diff", "--cached"]),
+            dir.path(),
+            DiffMode::Staged,
+        );
+        assert_eq!(
+            image_sides(&t, "logo.png"),
+            (Some(old.clone()), Some(new.clone()))
+        );
+
+        git(
+            dir.path(),
+            &["-c", "commit.gpgsign=false", "commit", "-m", "new logo"],
+        );
+        let t = tab(
+            &git(dir.path(), &["diff", "HEAD~1", "HEAD"]),
+            dir.path(),
+            DiffMode::Branch,
+        );
+        assert_eq!(
+            image_sides(&t, "logo.png"),
+            (Some(old.clone()), Some(new.clone()))
+        );
+        // The text reader still refuses image bytes.
+        let request = t.capture_image_preview("logo.png").unwrap();
+        assert!(request.after.unwrap().read().is_err());
+    }
+
+    #[test]
+    fn image_preview_reads_added_and_deleted_binaries_from_their_blobs() {
+        let bytes = b"GIF89a\0\x01\x02".to_vec();
+        let dir = repo();
+        std::fs::write(dir.path().join("added.gif"), &bytes).unwrap();
+        git(dir.path(), &["add", "."]);
+        let t = tab(
+            &git(dir.path(), &["diff", "--cached"]),
+            dir.path(),
+            DiffMode::Staged,
+        );
+        // The checkout copy differs, so a match proves the read came from the staged blob.
+        std::fs::write(dir.path().join("added.gif"), b"GIF89a\0changed").unwrap();
+        assert_eq!(image_sides(&t, "added.gif"), (None, Some(bytes.clone())));
+
+        git(
+            dir.path(),
+            &["-c", "commit.gpgsign=false", "commit", "-m", "gif"],
+        );
+        std::fs::remove_file(dir.path().join("added.gif")).unwrap();
+        let t = tab(&git(dir.path(), &["diff"]), dir.path(), DiffMode::Unstaged);
+        assert_eq!(image_sides(&t, "added.gif"), (Some(bytes), None));
+    }
+
+    #[test]
+    fn image_preview_rebuilds_an_added_svg_from_its_text_diff() {
+        let svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"><rect/></svg>\n";
+        let dir = repo();
+        std::fs::write(dir.path().join("icon.svg"), svg).unwrap();
+        git(dir.path(), &["add", "."]);
+        let t = tab(
+            &git(dir.path(), &["diff", "--cached"]),
+            dir.path(),
+            DiffMode::Staged,
+        );
+        let request = t.capture_image_preview("icon.svg").unwrap();
+        assert!(request.before.is_none());
+        let after = request.after.unwrap();
+        assert!(matches!(after.source, Source::Diff(_, false)));
+        assert_eq!(after.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(), svg.as_bytes());
+    }
+
+    #[test]
+    fn image_preview_reads_a_pr_deleted_image_from_the_local_old_blob() {
+        let bytes = b"\x89PNG\r\n\x1a\n\0gone".to_vec();
+        let dir = repo();
+        std::fs::write(dir.path().join("logo.png"), &bytes).unwrap();
+        git(dir.path(), &["add", "."]);
+        git(
+            dir.path(),
+            &["-c", "commit.gpgsign=false", "commit", "-m", "logo"],
+        );
+        git(dir.path(), &["rm", "-q", "logo.png"]);
+        let mut t = tab(
+            &git(dir.path(), &["diff", "--cached"]),
+            dir.path(),
+            DiffMode::PrDiff,
+        );
+        t.remote_repo = Some("owner/repo".into());
+        t.local_branch_view = Some("feature".into());
+        t.preview_head_oid = Some("a".repeat(40));
+        let request = t.capture_image_preview("logo.png").unwrap();
+        let before = request.before.unwrap();
+        assert!(matches!(before.source, Source::Blob(..)));
+        assert_eq!(before.read_bytes(MAX_IMAGE_PREVIEW_BYTES).unwrap(), bytes);
+    }
+
+    #[test]
+    fn preview_still_rejects_an_added_binary_document() {
+        let dir = repo();
+        std::fs::write(dir.path().join("notes.md"), b"text\0more\n").unwrap();
+        git(dir.path(), &["add", "."]);
+        let t = tab(
+            &git(dir.path(), &["diff", "--cached"]),
+            dir.path(),
+            DiffMode::Staged,
+        );
+        let request = t.capture_file_preview("notes.md").unwrap();
+        assert!(matches!(request.source, Source::Diff(..)));
+        assert!(request.read().is_err());
+    }
+
+    #[test]
+    fn image_mime_is_case_insensitive_and_limited_to_images() {
+        assert_eq!(image_mime("a/Logo.PNG"), Some("image/png"));
+        assert_eq!(image_mime("photo.jpeg"), Some("image/jpeg"));
+        assert_eq!(image_mime("icon.svg"), Some("image/svg+xml"));
+        assert_eq!(image_mime("readme.md"), None);
+        assert_eq!(image_mime("png"), None);
     }
 
     #[test]

@@ -1359,6 +1359,7 @@ name = "er-desktop"
 version = "0.5.5"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "block2",
  "dirs",
  "er-engine",
