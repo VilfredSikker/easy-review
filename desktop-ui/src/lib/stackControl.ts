@@ -104,22 +104,19 @@ export function stackUnknown(stack: StackSnapshot | null | undefined): boolean {
 /**
  * Whether the control should render at all.
  *
- * `isPr` is true when the viewed branch has a PR. A stack layer always does, so
- * a plain branch header stays quiet: the placeholder that lets the user trigger
- * the lazy first lookup only appears where a stack could plausibly exist. Once a
- * lookup lands, the layer count (`isPr` or not) decides.
+ * Before the lazy `gh stack view` lookup has run, the placeholder that lets the
+ * user trigger it appears only where the PR list already shows a stack
+ * (`likely_stacked`), so a PR with no stack never grows one. Once a lookup
+ * lands, the layer count decides.
  */
-export function shouldShowStackControl(
-  stack: StackSnapshot | null | undefined,
-  isPr = true,
-): boolean {
+export function shouldShowStackControl(stack: StackSnapshot | null | undefined): boolean {
   if (!stack) return false;
   // A definitive "not in a stack" (or missing extension) has nothing to show —
   // hiding the control keeps the branch header quiet. A *failed* lookup keeps it
   // so the reason and the refresh button stay reachable.
   if (stack.unavailable) return stack.retryable;
   if (stack.layers.length > 0) return true;
-  return isPr;
+  return stack.loading || stack.likely_stacked === true;
 }
 
 /** Whether a row can be switched to, and the PR number to open for it. */

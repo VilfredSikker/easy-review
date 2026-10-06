@@ -207,11 +207,11 @@ describe("shouldShowStackControl", () => {
     expect(shouldShowStackControl(stack())).toBe(true);
   });
 
-  it("offers the control on a PR branch before the first lookup lands", () => {
+  it("offers the control before the first lookup only where the PR list shows a stack", () => {
     const unknown = stack({ layers: [], size: 0, position: null });
-    expect(shouldShowStackControl(unknown, true)).toBe(true);
-    // A plain branch (no PR) keeps its header quiet until something is known.
-    expect(shouldShowStackControl(unknown, false)).toBe(false);
+    // A PR with no stack keeps its header quiet: no placeholder to click away.
+    expect(shouldShowStackControl(unknown)).toBe(false);
+    expect(shouldShowStackControl({ ...unknown, likely_stacked: true })).toBe(true);
   });
 
   it("shows it while the first lookup is in flight", () => {
@@ -236,7 +236,6 @@ describe("shouldShowStackControl", () => {
       retryable: true,
     });
     expect(shouldShowStackControl(failed)).toBe(true);
-    expect(shouldShowStackControl(failed, false)).toBe(true);
     expect(stackSummary(failed)).toBe("Stack");
   });
 });

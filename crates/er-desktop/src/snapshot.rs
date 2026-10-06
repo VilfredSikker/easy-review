@@ -1484,6 +1484,42 @@ pub struct StackSnapshot {
     /// True while a lookup is in flight, so the control can show a pending state.
     #[serde(default)]
     pub loading: bool,
+    /// The PR list already shows this branch in a stack. Before the lazy
+    /// `gh stack view` lookup has run, the control is shown only when this is
+    /// set, so a PR with no stack never grows a placeholder.
+    #[serde(default)]
+    pub likely_stacked: bool,
+}
+
+/// Trunk names a stack is based on. A PR *from* one (a main → production
+/// release PR) is not a stack layer, or every main-based PR would read as
+/// stacked on it. Matches `TRUNK_BRANCHES` in `desktop-ui/src/lib/prStacks.ts`.
+const TRUNK_BRANCHES: [&str; 4] = ["main", "master", "develop", "dev"];
+
+/// Whether the open PRs put `branch` in a stack: its PR is based on another
+/// open PR's branch, or another open PR is based on it. The PR list holds
+/// every open PR of the repo, so this costs no `gh` call. `remote` limits the
+/// search to the tab's own repo when it is known.
+fn branch_in_pr_stack(
+    branch: &str,
+    remote: Option<&str>,
+    cache: &HashMap<String, Vec<PrInfo>>,
+) -> bool {
+    if branch.is_empty() || TRUNK_BRANCHES.contains(&branch) {
+        return false;
+    }
+    cache
+        .iter()
+        .filter(|(slug, _)| remote.is_none_or(|r| r.eq_ignore_ascii_case(slug)))
+        .any(|(_, prs)| {
+            let open = || prs.iter().filter(|p| p.state == "OPEN");
+            let based_on_this = open().any(|p| p.base_ref == branch);
+            let this_on_a_pr = open().filter(|p| p.head_ref == branch).any(|own| {
+                !TRUNK_BRANCHES.contains(&own.base_ref.as_str())
+                    && open().any(|p| p.head_ref == own.base_ref)
+            });
+            based_on_this || this_on_a_pr
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1532,6 +1568,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: None,
             retryable: false,
             loading,
+            likely_stacked: false,
         });
     };
 
@@ -1546,6 +1583,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: Some(reason.clone()),
             retryable: false,
             loading,
+            likely_stacked: false,
         }),
         er_engine::gh_stack::StackInfo::Failed(reason) => Some(StackSnapshot {
             trunk: String::new(),
@@ -1555,6 +1593,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: Some(reason.clone()),
             retryable: true,
             loading,
+            likely_stacked: false,
         }),
         er_engine::gh_stack::StackInfo::Stack(stack) => Some(StackSnapshot {
             trunk: stack.trunk.clone(),
@@ -1581,6 +1620,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: None,
             retryable: false,
             loading,
+            likely_stacked: false,
         }),
     }
 }
@@ -2711,7 +2751,16 @@ fn build_snapshot_inner(
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
 
-    let stack = snapshot_stack(tab);
+    let stack = snapshot_stack(tab).map(|mut s| {
+        let branch = tab
+            .local_branch_view
+            .as_deref()
+            .unwrap_or(&tab.current_branch);
+        s.likely_stacked = pr_cache
+            .and_then(|pc| pc.lock().ok())
+            .is_some_and(|cache| branch_in_pr_stack(branch, tab.remote_repo.as_deref(), &cache));
+        s
+    });
 
     let out = AppSnapshot {
         preview_context_key: tab.preview_context_key(),
@@ -5795,6 +5844,60 @@ mod tests {
         assert!(!unknown.retryable);
         assert!(!unknown.loading);
         assert!(unknown.trunk.is_empty());
+    }
+
+    fn open_pr(number: u64, head: &str, base: &str) -> PrInfo {
+        let mut pr = minimal_pr_info(number, "t");
+        pr.head_ref = head.to_string();
+        pr.base_ref = base.to_string();
+        pr.state = "OPEN".to_string();
+        pr
+    }
+
+    fn pr_list(prs: Vec<PrInfo>) -> HashMap<String, Vec<PrInfo>> {
+        HashMap::from([("o/r".to_string(), prs)])
+    }
+
+    #[test]
+    fn a_pr_with_no_stack_is_not_likely_stacked() {
+        // The reported bug: every PR showed the Stack placeholder.
+        let cache = pr_list(vec![
+            open_pr(1, "feat/a", "main"),
+            open_pr(2, "feat/b", "main"),
+        ]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &cache));
+    }
+
+    #[test]
+    fn every_layer_of_a_pr_stack_is_likely_stacked() {
+        let cache = pr_list(vec![
+            open_pr(1, "layer-1", "main"),
+            open_pr(2, "layer-2", "layer-1"),
+            open_pr(3, "layer-3", "layer-2"),
+        ]);
+        for branch in ["layer-1", "layer-2", "layer-3"] {
+            assert!(branch_in_pr_stack(branch, Some("o/r"), &cache), "{branch}");
+        }
+    }
+
+    #[test]
+    fn closed_prs_trunks_and_other_repos_do_not_make_a_stack() {
+        let mut merged_child = open_pr(2, "feat/b", "feat/a");
+        merged_child.state = "MERGED".to_string();
+        let cache = pr_list(vec![open_pr(1, "feat/a", "main"), merged_child]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &cache));
+
+        // A release PR from main is not a stack root for main-based PRs.
+        let release = pr_list(vec![
+            open_pr(1, "main", "production"),
+            open_pr(2, "feat/a", "main"),
+        ]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &release));
+        assert!(!branch_in_pr_stack("main", Some("o/r"), &release));
+
+        let stacked = pr_list(vec![open_pr(1, "a", "main"), open_pr(2, "b", "a")]);
+        assert!(!branch_in_pr_stack("a", Some("other/repo"), &stacked));
+        assert!(branch_in_pr_stack("a", None, &stacked));
     }
 
     #[test]

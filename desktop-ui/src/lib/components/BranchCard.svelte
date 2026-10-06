@@ -30,7 +30,6 @@
     additions: number;
     deletions: number;
     checks_status: "success" | "pending" | "failure" | null;
-    is_pr?: boolean;
     pr_number?: number | null;
     is_merged?: boolean;
     github_url?: string | null;
@@ -46,7 +45,6 @@
     additions,
     deletions,
     checks_status,
-    is_pr = false,
     pr_number = null,
     is_merged: _is_merged = false,
     github_url = null,
@@ -190,7 +188,7 @@
 
   const stack = $derived(app.snapshot?.stack ?? null);
   const stackControlVisible = $derived(
-    shouldShowStackControl(stack, is_pr) || stackFetching || stackOpen,
+    shouldShowStackControl(stack) || stackFetching || stackOpen,
   );
   const stackLabel = $derived(stackSummary(stack) ?? "Stack");
   const stackBadgeText = $derived(stackBadge(stack));

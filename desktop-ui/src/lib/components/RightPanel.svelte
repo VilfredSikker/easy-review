@@ -97,7 +97,6 @@
   const displayPrUrl = $derived(resolveActivePrUrl(app.snapshot));
   const githubForTab = $derived(githubStatusForActiveTab(app.snapshot));
   const tabOwnsPr = $derived(activeAppTab?.pr_number != null);
-  const isPr = $derived(displayPrNumber !== null);
   const isMerged = $derived(
     githubForTab?.state === "MERGED" ||
       (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
@@ -328,7 +327,6 @@
             additions={totalAdds}
             deletions={totalDels}
             checks_status={checksStatus}
-            is_pr={isPr}
             pr_number={displayPrNumber}
             is_merged={isMerged}
             github_url={displayPrUrl}

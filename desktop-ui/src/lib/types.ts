@@ -494,6 +494,8 @@ export interface StackSnapshot {
   retryable: boolean;
   /** A lookup is in flight. */
   loading: boolean;
+  /** The PR list already shows this branch in a stack; gates the pre-lookup placeholder. */
+  likely_stacked?: boolean;
 }
 
 export interface StackLayerSnapshot {
