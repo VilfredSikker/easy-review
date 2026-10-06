@@ -7,6 +7,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
+  import { imagePreview } from "$lib/stores/imagePreview.svelte";
   import DocumentPreviewRow from "./DocumentPreviewRow.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { aiFindingFilter } from "$lib/stores/aiFindingFilter.svelte";
@@ -22,6 +23,7 @@
   import CompactedStubRow from "./diff-rows/CompactedStubRow.svelte";
   import LazyStubRow from "./diff-rows/LazyStubRow.svelte";
   import NoChangesRow from "./diff-rows/NoChangesRow.svelte";
+  import ImagePreviewRow from "./diff-rows/ImagePreviewRow.svelte";
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
@@ -142,6 +144,7 @@
 
   const snapshot = $derived(app.snapshot);
   $effect(() => { diffPreview.sync(snapshot); });
+  $effect(() => { imagePreview.sync(snapshot); });
   // Order files to match the tree (folders-first, alphabetical, single-child
   // folder chains collapsed). Reuses the memoized buildTree + flattenForNav
   // already used by keyboard nav (`j`/`k`), so tree and diff render in lockstep.
@@ -2429,6 +2432,13 @@
               <div data-row-identity={row.identity} data-row-idx={rowIdx}>
                 {#if snapshot && file && !app.pendingTabSwitch}
                   <DocumentPreviewRow {snapshot} {file} />
+                {/if}
+              </div>
+            {:else if row.type === "image-preview"}
+              {@const file = files.find((f) => f.path === row.filePath)}
+              <div data-row-identity={row.identity} data-row-idx={rowIdx} style="min-height:{row.height}px">
+                {#if snapshot && file && !app.pendingTabSwitch}
+                  <ImagePreviewRow {snapshot} {file} height={row.height} />
                 {/if}
               </div>
             {:else if row.type === "hunk-header"}
