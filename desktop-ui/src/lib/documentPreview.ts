@@ -125,6 +125,26 @@ export function documentBlocks(text: string): DocumentBlock[] {
   return blocks;
 }
 
+/**
+ * Split a plain-text document into paragraphs at blank lines, tagged with
+ * their source lines like `documentBlocks`, so a highlight in the preview
+ * maps back to a line.
+ */
+export function documentTextBlocks(text: string): DocumentBlock[] {
+  const blocks: DocumentBlock[] = [];
+  const lines = text.split("\n");
+  let start = 0;
+  for (let i = 0; i <= lines.length; i++) {
+    if (i < lines.length && lines[i].trim() !== "") continue;
+    if (i > start) {
+      const html = `<pre class="document-text">${escapeHtml(lines.slice(start, i).join("\n"))}</pre>`;
+      blocks.push({ startLine: start + 1, endLine: i, segment: { kind: "html", html } });
+    }
+    start = i + 1;
+  }
+  return blocks;
+}
+
 export function renderDocumentMarkdown(text: string): string {
   if (typeof document === "undefined") return escapeHtml(text);
   return sanitizeDocumentHtml(parser.parse(text, { async: false }));

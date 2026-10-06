@@ -25,4 +25,4 @@
   });
 </script>
 
-<DocumentPreview path={file.path} state={previewState} onretry={() => { retry++; }} />
+<DocumentPreview path={file.path} state={previewState} {file} onretry={() => { retry++; }} />
