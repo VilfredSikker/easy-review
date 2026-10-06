@@ -3,13 +3,16 @@
   import { app } from "$lib/stores/app.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import PrMergeBox from "$lib/components/PrMergeBox.svelte";
+  import AnchoredMenu from "$lib/components/ui/AnchoredMenu.svelte";
+  import { anchoredMenuPosition } from "$lib/anchoredMenu";
+  import { countChecks } from "$lib/checkCounts";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import { resolveActivePrNumber } from "$lib/prUrl";
   import {
     selectablePrNumber,
     shouldShowStackControl,
     stackBadge,
-    stackMenuPosition,
     stackRowTitle,
     stackRows,
     stackSummary,
@@ -27,7 +30,6 @@
     additions: number;
     deletions: number;
     checks_status: "success" | "pending" | "failure" | null;
-    is_pr?: boolean;
     pr_number?: number | null;
     is_merged?: boolean;
     github_url?: string | null;
@@ -43,7 +45,6 @@
     additions,
     deletions,
     checks_status,
-    is_pr = false,
     pr_number = null,
     is_merged: _is_merged = false,
     github_url = null,
@@ -111,18 +112,7 @@
   let manualRefreshing = $state(false);
   const refreshing = $derived(manualRefreshing || (app.snapshot?.bg_loading?.gh_status ?? false));
 
-  const checkStats = $derived.by(() => {
-    if (!github) return { pass: 0, fail: 0, pending: 0, total: 0 };
-    let pass = 0;
-    let fail = 0;
-    let pending = 0;
-    for (const c of github.checks) {
-      if (c.status === "PENDING") pending += 1;
-      else if (c.conclusion === "SUCCESS" || c.conclusion === "pass") pass += 1;
-      else if (c.conclusion === "FAILURE" || c.conclusion === "fail") fail += 1;
-    }
-    return { pass, fail, pending, total: github.checks.length };
-  });
+  const checkStats = $derived(countChecks(github?.checks ?? []));
 
   function stateLabel(state: string, isDraft: boolean): { text: string; colorClass: string } {
     if (isDraft) return { text: "Draft", colorClass: "text-muted" };
@@ -198,7 +188,7 @@
 
   const stack = $derived(app.snapshot?.stack ?? null);
   const stackControlVisible = $derived(
-    shouldShowStackControl(stack, is_pr) || stackFetching || stackOpen,
+    shouldShowStackControl(stack) || stackFetching || stackOpen,
   );
   const stackLabel = $derived(stackSummary(stack) ?? "Stack");
   const stackBadgeText = $derived(stackBadge(stack));
@@ -229,7 +219,7 @@
       stackOpen = false;
       return;
     }
-    if (stackButton) stackMenuPos = stackMenuPosition(stackButton.getBoundingClientRect(), window.innerWidth);
+    if (stackButton) stackMenuPos = anchoredMenuPosition(stackButton.getBoundingClientRect(), window.innerWidth);
     stackOpen = true;
     if (stackUnknown(stack)) void loadStack();
   }
@@ -308,14 +298,7 @@
             </button>
 
             {#if stackOpen}
-              <!-- svelte-ignore a11y_click_events_have_key_events -->
-              <!-- svelte-ignore a11y_no_static_element_interactions -->
-              <div class="fixed inset-0 z-40" onclick={() => (stackOpen = false)}></div>
-              <div
-                class="fixed z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-64 py-1"
-                style="top: {stackMenuPos.top}px; left: {stackMenuPos.left}px;"
-                role="menu"
-              >
+              <AnchoredMenu pos={stackMenuPos} onClose={() => (stackOpen = false)}>
                 <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3 flex items-center gap-2">
                   <span>Stack</span>
                   {#if stackBadgeText}
@@ -366,7 +349,7 @@
                         : "Couldn't read the stack — refresh to retry")}
                   </div>
                 {/if}
-              </div>
+              </AnchoredMenu>
             {/if}
           </div>
         {/if}
@@ -560,6 +543,9 @@
               </ul>
             {/if}
           {/if}
+
+          <!-- Merge box: merge, update branch, delete/restore branch, … -->
+          <PrMergeBox {github} />
 
           <!-- Labels -->
           {#if github.labels.length > 0}

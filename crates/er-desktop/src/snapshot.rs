@@ -473,6 +473,12 @@ pub struct AppSnapshot {
     /// pill + manual Sync. None = up to date / unknown.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_stale: Option<DiffStaleSnapshot>,
+    /// Head commit the on-screen PR diff was built from. Set only while the
+    /// view shows the PR's own head (PR Diff, remote PR); a local-branch view
+    /// shows the working tree, which a PR head cannot be compared to. The merge
+    /// box pins merges to it and compares it to the live PR head.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pr_diff_head_oid: Option<String>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -888,6 +894,20 @@ pub fn resolve_context_identity(
         cached_pr.map(|p| p.base_ref.as_str()).unwrap_or(""),
     ]);
     (branch, base)
+}
+
+/// See `AppSnapshot::pr_diff_head_oid`. Reads `preview_head_oid`, the head
+/// confirmed on both sides of the diff fetch; `last_diff_head_oid` is the
+/// stale pill's baseline, which a Sync realigns to the PR-list cache, so it can
+/// name a head the diff was not built from. The value survives a switch to
+/// the local branch view, so the mode gates it. `preview_context_key` carries
+/// both into the content revision, so the poll repaints when either changes.
+fn pr_diff_head_oid(tab: &TabState) -> Option<String> {
+    if tab.mode == DiffMode::PrDiff || tab.is_remote() {
+        tab.preview_head_oid.clone().filter(|s| !s.is_empty())
+    } else {
+        None
+    }
 }
 
 /// Resolve the `(owner, repo, pr_number)` GitHub-status key for a tab.
@@ -1374,6 +1394,62 @@ pub struct GithubStatusSnapshot {
     pub last_updated: Option<String>,
     #[serde(default)]
     pub is_authored_by_me: bool,
+    /// GitHub's merge-box verdict (`CLEAN`, `BEHIND`, `BLOCKED`, `DIRTY`, …).
+    #[serde(default)]
+    pub merge_state_status: Option<String>,
+    #[serde(default)]
+    pub head_oid: String,
+    #[serde(default)]
+    pub is_cross_repository: bool,
+    /// Method of a pending auto-merge; `None` when auto-merge is off.
+    #[serde(default)]
+    pub auto_merge_method: Option<String>,
+    /// Whether the head branch still exists. Looked up only once a same-repo
+    /// PR is merged or closed; `None` while open, for a fork PR, or when
+    /// GitHub could not answer.
+    #[serde(default)]
+    pub head_branch_exists: Option<bool>,
+    #[serde(default)]
+    pub repo_merge: Option<RepoMergeSnapshot>,
+    /// Queued on a merge-queue branch: `gh pr merge` there only enqueues, and
+    /// the PR stays open until the queue merges it. Looked up only for bases
+    /// that have a queue.
+    #[serde(default)]
+    pub in_merge_queue: bool,
+    /// The base branch has a merge queue, so merging enqueues and the queue,
+    /// not this PR, picks the method. Looked up only for open PRs.
+    #[serde(default)]
+    pub base_has_merge_queue: bool,
+    /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
+    /// Process-local, so never sent or persisted.
+    #[serde(skip)]
+    pub fetch_ticket: u64,
+}
+
+/// Repository merge settings the merge box needs. Cached per repo in the
+/// engine, so this costs a `gh` call once per TTL, not once per poll.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub struct RepoMergeSnapshot {
+    pub merge_commit_allowed: bool,
+    pub squash_merge_allowed: bool,
+    pub rebase_merge_allowed: bool,
+    pub delete_branch_on_merge: bool,
+    #[serde(default)]
+    pub auto_merge_allowed: bool,
+    pub viewer_permission: Option<String>,
+}
+
+impl From<er_engine::gh_pr_actions::RepoMergeSettings> for RepoMergeSnapshot {
+    fn from(s: er_engine::gh_pr_actions::RepoMergeSettings) -> Self {
+        Self {
+            merge_commit_allowed: s.merge_commit_allowed,
+            squash_merge_allowed: s.squash_merge_allowed,
+            rebase_merge_allowed: s.rebase_merge_allowed,
+            delete_branch_on_merge: s.delete_branch_on_merge,
+            auto_merge_allowed: s.auto_merge_allowed,
+            viewer_permission: s.viewer_permission,
+        }
+    }
 }
 
 /// `gh stack` (github/gh-stack) state for the active tab's branch — what the
@@ -1408,6 +1484,42 @@ pub struct StackSnapshot {
     /// True while a lookup is in flight, so the control can show a pending state.
     #[serde(default)]
     pub loading: bool,
+    /// The PR list already shows this branch in a stack. Before the lazy
+    /// `gh stack view` lookup has run, the control is shown only when this is
+    /// set, so a PR with no stack never grows a placeholder.
+    #[serde(default)]
+    pub likely_stacked: bool,
+}
+
+/// Trunk names a stack is based on. A PR *from* one (a main → production
+/// release PR) is not a stack layer, or every main-based PR would read as
+/// stacked on it. Matches `TRUNK_BRANCHES` in `desktop-ui/src/lib/prStacks.ts`.
+const TRUNK_BRANCHES: [&str; 4] = ["main", "master", "develop", "dev"];
+
+/// Whether the open PRs put `branch` in a stack: its PR is based on another
+/// open PR's branch, or another open PR is based on it. The PR list holds
+/// every open PR of the repo, so this costs no `gh` call. `remote` limits the
+/// search to the tab's own repo when it is known.
+fn branch_in_pr_stack(
+    branch: &str,
+    remote: Option<&str>,
+    cache: &HashMap<String, Vec<PrInfo>>,
+) -> bool {
+    if branch.is_empty() || TRUNK_BRANCHES.contains(&branch) {
+        return false;
+    }
+    cache
+        .iter()
+        .filter(|(slug, _)| remote.is_none_or(|r| r.eq_ignore_ascii_case(slug)))
+        .any(|(_, prs)| {
+            let open = || prs.iter().filter(|p| p.state == "OPEN");
+            let based_on_this = open().any(|p| p.base_ref == branch);
+            let this_on_a_pr = open().filter(|p| p.head_ref == branch).any(|own| {
+                !TRUNK_BRANCHES.contains(&own.base_ref.as_str())
+                    && open().any(|p| p.head_ref == own.base_ref)
+            });
+            based_on_this || this_on_a_pr
+        })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1456,6 +1568,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: None,
             retryable: false,
             loading,
+            likely_stacked: false,
         });
     };
 
@@ -1470,6 +1583,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: Some(reason.clone()),
             retryable: false,
             loading,
+            likely_stacked: false,
         }),
         er_engine::gh_stack::StackInfo::Failed(reason) => Some(StackSnapshot {
             trunk: String::new(),
@@ -1479,6 +1593,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: Some(reason.clone()),
             retryable: true,
             loading,
+            likely_stacked: false,
         }),
         er_engine::gh_stack::StackInfo::Stack(stack) => Some(StackSnapshot {
             trunk: stack.trunk.clone(),
@@ -1505,6 +1620,7 @@ fn snapshot_stack_state(eligible: bool, state: &StackState) -> Option<StackSnaps
             unavailable: None,
             retryable: false,
             loading,
+            likely_stacked: false,
         }),
     }
 }
@@ -2635,7 +2751,16 @@ fn build_snapshot_inner(
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
 
-    let stack = snapshot_stack(tab);
+    let stack = snapshot_stack(tab).map(|mut s| {
+        let branch = tab
+            .local_branch_view
+            .as_deref()
+            .unwrap_or(&tab.current_branch);
+        s.likely_stacked = pr_cache
+            .and_then(|pc| pc.lock().ok())
+            .is_some_and(|cache| branch_in_pr_stack(branch, tab.remote_repo.as_deref(), &cache));
+        s
+    });
 
     let out = AppSnapshot {
         preview_context_key: tab.preview_context_key(),
@@ -2688,6 +2813,7 @@ fn build_snapshot_inner(
         stack,
         detected_pr_number,
         diff_stale,
+        pr_diff_head_oid: pr_diff_head_oid(tab),
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -4478,6 +4604,26 @@ mod tests {
     }
 
     #[test]
+    fn pr_diff_head_oid_is_reported_only_while_the_pr_head_is_on_screen() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.preview_head_oid = Some("abc".into());
+        // A Sync realigns the stale pill's baseline to the PR-list cache; the
+        // merge must still pin the head the diff was actually built from.
+        tab.last_diff_head_oid = Some("pr-cache-head".into());
+        tab.mode = DiffMode::PrDiff;
+        assert_eq!(pr_diff_head_oid(&tab).as_deref(), Some("abc"));
+
+        // Switched to the local branch: the oid is left over from PR Diff and
+        // says nothing about the working tree now on screen.
+        tab.mode = DiffMode::Branch;
+        assert_eq!(pr_diff_head_oid(&tab), None);
+
+        tab.remote_repo = Some("o/r".into());
+        tab.pr_number = Some(1);
+        assert_eq!(pr_diff_head_oid(&tab).as_deref(), Some("abc"));
+    }
+
+    #[test]
     fn context_identity_prefers_local_branch_view() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.local_branch_view = Some("feat/a".into());
@@ -5698,6 +5844,60 @@ mod tests {
         assert!(!unknown.retryable);
         assert!(!unknown.loading);
         assert!(unknown.trunk.is_empty());
+    }
+
+    fn open_pr(number: u64, head: &str, base: &str) -> PrInfo {
+        let mut pr = minimal_pr_info(number, "t");
+        pr.head_ref = head.to_string();
+        pr.base_ref = base.to_string();
+        pr.state = "OPEN".to_string();
+        pr
+    }
+
+    fn pr_list(prs: Vec<PrInfo>) -> HashMap<String, Vec<PrInfo>> {
+        HashMap::from([("o/r".to_string(), prs)])
+    }
+
+    #[test]
+    fn a_pr_with_no_stack_is_not_likely_stacked() {
+        // The reported bug: every PR showed the Stack placeholder.
+        let cache = pr_list(vec![
+            open_pr(1, "feat/a", "main"),
+            open_pr(2, "feat/b", "main"),
+        ]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &cache));
+    }
+
+    #[test]
+    fn every_layer_of_a_pr_stack_is_likely_stacked() {
+        let cache = pr_list(vec![
+            open_pr(1, "layer-1", "main"),
+            open_pr(2, "layer-2", "layer-1"),
+            open_pr(3, "layer-3", "layer-2"),
+        ]);
+        for branch in ["layer-1", "layer-2", "layer-3"] {
+            assert!(branch_in_pr_stack(branch, Some("o/r"), &cache), "{branch}");
+        }
+    }
+
+    #[test]
+    fn closed_prs_trunks_and_other_repos_do_not_make_a_stack() {
+        let mut merged_child = open_pr(2, "feat/b", "feat/a");
+        merged_child.state = "MERGED".to_string();
+        let cache = pr_list(vec![open_pr(1, "feat/a", "main"), merged_child]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &cache));
+
+        // A release PR from main is not a stack root for main-based PRs.
+        let release = pr_list(vec![
+            open_pr(1, "main", "production"),
+            open_pr(2, "feat/a", "main"),
+        ]);
+        assert!(!branch_in_pr_stack("feat/a", Some("o/r"), &release));
+        assert!(!branch_in_pr_stack("main", Some("o/r"), &release));
+
+        let stacked = pr_list(vec![open_pr(1, "a", "main"), open_pr(2, "b", "a")]);
+        assert!(!branch_in_pr_stack("a", Some("other/repo"), &stacked));
+        assert!(branch_in_pr_stack("a", None, &stacked));
     }
 
     #[test]

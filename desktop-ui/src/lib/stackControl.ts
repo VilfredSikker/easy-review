@@ -104,22 +104,19 @@ export function stackUnknown(stack: StackSnapshot | null | undefined): boolean {
 /**
  * Whether the control should render at all.
  *
- * `isPr` is true when the viewed branch has a PR. A stack layer always does, so
- * a plain branch header stays quiet: the placeholder that lets the user trigger
- * the lazy first lookup only appears where a stack could plausibly exist. Once a
- * lookup lands, the layer count (`isPr` or not) decides.
+ * Before the lazy `gh stack view` lookup has run, the placeholder that lets the
+ * user trigger it appears only where the PR list already shows a stack
+ * (`likely_stacked`), so a PR with no stack never grows one. Once a lookup
+ * lands, the layer count decides.
  */
-export function shouldShowStackControl(
-  stack: StackSnapshot | null | undefined,
-  isPr = true,
-): boolean {
+export function shouldShowStackControl(stack: StackSnapshot | null | undefined): boolean {
   if (!stack) return false;
   // A definitive "not in a stack" (or missing extension) has nothing to show —
   // hiding the control keeps the branch header quiet. A *failed* lookup keeps it
   // so the reason and the refresh button stay reachable.
   if (stack.unavailable) return stack.retryable;
   if (stack.layers.length > 0) return true;
-  return isPr;
+  return stack.loading || stack.likely_stacked === true;
 }
 
 /** Whether a row can be switched to, and the PR number to open for it. */
@@ -135,25 +132,4 @@ export function stackRowTitle(row: StackRow): string {
   if (row.is_current) return "Currently viewing";
   if (row.state === "trunk") return "Trunk the stack is based on";
   return "No PR yet";
-}
-
-/** Width of the stack dropdown, in px (`w-64`). */
-export const STACK_MENU_WIDTH = 256;
-
-/** Gap kept between the dropdown and the window edge, in px. */
-const STACK_MENU_EDGE_GAP = 8;
-
-/**
- * Where the stack dropdown sits, in viewport coordinates. It is drawn `fixed`
- * because the right panel clips overflow: anchored inside it, a menu wider than
- * the space left of the button was cut off at the panel's edge. Right-aligned
- * under the button, then kept inside the window.
- */
-export function stackMenuPosition(
-  button: { right: number; bottom: number },
-  viewportWidth: number,
-): { top: number; left: number } {
-  const maxLeft = viewportWidth - STACK_MENU_WIDTH - STACK_MENU_EDGE_GAP;
-  const left = Math.max(STACK_MENU_EDGE_GAP, Math.min(button.right - STACK_MENU_WIDTH, maxLeft));
-  return { top: button.bottom + 4, left };
 }

@@ -125,3 +125,95 @@ export const WithGitHub_ChecksFailing: Story = {
     }),
   },
 };
+
+// ── Merge box states ─────────────────────────────────────────────────────────
+
+const mergeBoxArgs = {
+  branch: "feat/sources-live",
+  base: "main",
+  pr: null,
+  reviewed_count: 5,
+  total_count: 5,
+  additions: 200,
+  deletions: 40,
+  checks_status: null,
+} as const;
+
+const repoMerge = {
+  merge_commit_allowed: true,
+  squash_merge_allowed: true,
+  rebase_merge_allowed: true,
+  delete_branch_on_merge: false,
+  viewer_permission: "WRITE",
+};
+
+function mergeBoxGithub(overrides: Partial<GithubStatusSnapshot>): GithubStatusSnapshot {
+  return baseGithub({ head_oid: "abc123", repo_merge: repoMerge, ...overrides });
+}
+
+export const MergeBox_Ready: Story = {
+  args: { ...mergeBoxArgs, github: mergeBoxGithub({ merge_state_status: "CLEAN" }) },
+};
+
+export const MergeBox_Behind: Story = {
+  args: { ...mergeBoxArgs, github: mergeBoxGithub({ merge_state_status: "BEHIND" }) },
+};
+
+export const MergeBox_Conflicts: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ merge_state_status: "DIRTY", mergeable: "CONFLICTING" }),
+  },
+};
+
+export const MergeBox_BlockedOnReview: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ merge_state_status: "BLOCKED", review_decision: "REVIEW_REQUIRED" }),
+  },
+};
+
+export const MergeBox_AutoMergePending: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ merge_state_status: "BLOCKED", auto_merge_method: "SQUASH" }),
+  },
+};
+
+export const MergeBox_Draft: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ is_draft: true, merge_state_status: "DRAFT" }),
+  },
+};
+
+export const MergeBox_MergedBranchExists: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ state: "MERGED", head_branch_exists: true }),
+  },
+};
+
+export const MergeBox_MergedBranchDeleted: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ state: "MERGED", head_branch_exists: false }),
+  },
+};
+
+export const MergeBox_Closed: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({ state: "CLOSED", head_branch_exists: true }),
+  },
+};
+
+export const MergeBox_ReadOnly: Story = {
+  args: {
+    ...mergeBoxArgs,
+    github: mergeBoxGithub({
+      merge_state_status: "CLEAN",
+      repo_merge: { ...repoMerge, viewer_permission: "READ" },
+    }),
+  },
+};

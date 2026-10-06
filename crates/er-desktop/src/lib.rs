@@ -7,6 +7,7 @@ pub mod config_commands;
 pub mod dev_log;
 pub mod export;
 pub mod frame_script;
+pub mod gh_pr_actions;
 pub mod gh_status_cache;
 pub mod inbox;
 pub mod main_webview_policy;

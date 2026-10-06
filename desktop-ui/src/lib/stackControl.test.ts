@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import {
   shouldShowStackControl,
-  STACK_MENU_WIDTH,
-  stackMenuPosition,
   stackBadge,
   stackRowTitle,
   stackRows,
@@ -209,11 +207,11 @@ describe("shouldShowStackControl", () => {
     expect(shouldShowStackControl(stack())).toBe(true);
   });
 
-  it("offers the control on a PR branch before the first lookup lands", () => {
+  it("offers the control before the first lookup only where the PR list shows a stack", () => {
     const unknown = stack({ layers: [], size: 0, position: null });
-    expect(shouldShowStackControl(unknown, true)).toBe(true);
-    // A plain branch (no PR) keeps its header quiet until something is known.
-    expect(shouldShowStackControl(unknown, false)).toBe(false);
+    // A PR with no stack keeps its header quiet: no placeholder to click away.
+    expect(shouldShowStackControl(unknown)).toBe(false);
+    expect(shouldShowStackControl({ ...unknown, likely_stacked: true })).toBe(true);
   });
 
   it("shows it while the first lookup is in flight", () => {
@@ -238,27 +236,6 @@ describe("shouldShowStackControl", () => {
       retryable: true,
     });
     expect(shouldShowStackControl(failed)).toBe(true);
-    expect(shouldShowStackControl(failed, false)).toBe(true);
     expect(stackSummary(failed)).toBe("Stack");
-  });
-});
-
-describe("stackMenuPosition", () => {
-  it("right-aligns under the button when there is room", () => {
-    expect(stackMenuPosition({ right: 900, bottom: 100 }, 1200)).toEqual({
-      top: 104,
-      left: 900 - STACK_MENU_WIDTH,
-    });
-  });
-
-  it("stays inside the window when the button is near the left edge", () => {
-    // A narrow panel near the window's left edge: right-aligning would start
-    // the menu off-screen.
-    expect(stackMenuPosition({ right: 120, bottom: 100 }, 1200).left).toBe(8);
-  });
-
-  it("stays inside the window on the right", () => {
-    const { left } = stackMenuPosition({ right: 1300, bottom: 100 }, 1200);
-    expect(left + STACK_MENU_WIDTH).toBe(1192);
   });
 });
