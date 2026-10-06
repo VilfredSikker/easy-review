@@ -331,6 +331,10 @@ export interface RenderModelInputs {
    *  (all content rows are one LINE_HEIGHT tall). */
   wrapCols?: number | null;
   previewPaths?: ReadonlySet<string>;
+  /** Document files shown side by side: raw unified rows in the left half. */
+  sidePaths?: ReadonlySet<string>;
+  /** Wrap capacity of that left half; null = no wrapping. */
+  sideWrapCols?: number | null;
 }
 
 export function estimateLazyStubHeight(file: FileSnapshot): number {
@@ -705,14 +709,25 @@ function documentPreviewKey(file: FileSnapshot, previewPaths?: ReadonlySet<strin
   return previewPaths?.has(file.path) ? file.preview_key ?? file.cache_key : null;
 }
 
+/** Side by side reads raw rows top to bottom beside the rendered document, so
+ *  it is always unified, at the width of its half. */
+function fileLayout(input: RenderModelInputs) {
+  const sideBySide = input.sidePaths?.has(input.file.path) ?? false;
+  return {
+    sideBySide,
+    viewMode: sideBySide ? "unified" as const : input.viewMode,
+    wrapCols: (sideBySide ? input.sideWrapCols : input.wrapCols) ?? null,
+  };
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
-  const { file, fileIndex, viewMode, mode, annotationIndex, commentVisibility } = input;
-  const wrapCols = input.wrapCols ?? null;
+  const { file, fileIndex, mode, annotationIndex, commentVisibility } = input;
+  const { sideBySide, viewMode, wrapCols } = fileLayout(input);
   const bodyCols = annotationBodyCols(wrapCols, viewMode);
   const annFp = fileAnnotationFingerprint(file, annotationIndex);
   const previewKey = documentPreviewKey(file, input.previewPaths);
   const preview = previewKey !== null;
-  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}`;
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|s${sideBySide ? 1 : 0}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -853,6 +868,9 @@ export interface CrossFileInputs {
   /** See {@link RenderModelInputs.wrapCols}. */
   wrapCols?: number | null;
   previewPaths?: ReadonlySet<string>;
+  /** See {@link RenderModelInputs.sidePaths}. */
+  sidePaths?: ReadonlySet<string>;
+  sideWrapCols?: number | null;
 }
 
 const CROSS_FILE_LRU_LIMIT = 4;
@@ -885,7 +903,8 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const previewFingerprint = JSON.stringify(
     files.filter((f) => input.previewPaths?.has(f.path)).map((f) => [f.path, f.preview_key ?? f.cache_key]),
   );
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}`;
+  const sideFingerprint = JSON.stringify(files.filter((f) => input.sidePaths?.has(f.path)).map((f) => f.path));
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}|s${sideFingerprint}|sw${input.sideWrapCols ?? 0}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {
@@ -914,6 +933,8 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
       commentVisibility,
       wrapCols,
       previewPaths: input.previewPaths,
+      sidePaths: input.sidePaths,
+      sideWrapCols: input.sideWrapCols,
     });
     totalRowCount += blocks[i].rows.length;
   }

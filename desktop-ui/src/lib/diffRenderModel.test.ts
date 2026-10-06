@@ -736,6 +736,8 @@ function mkCross(
     mode?: string;
     snapshotKey?: string;
     previewPaths?: ReadonlySet<string>;
+    sidePaths?: ReadonlySet<string>;
+    sideWrapCols?: number | null;
   } = {},
 ) {
   const viewMode = opts.viewMode ?? "unified";
@@ -750,6 +752,8 @@ function mkCross(
     commentVisibility: vis,
     snapshotKey,
     previewPaths: opts.previewPaths,
+    sidePaths: opts.sidePaths,
+    sideWrapCols: opts.sideWrapCols,
   });
 }
 
@@ -1277,5 +1281,29 @@ describe("estimateFindingHeight", () => {
     const wide = estimateFindingHeight(f, 80);
     const narrow = estimateFindingHeight(f, 40);
     expect(narrow).toBeGreaterThan(wide);
+  });
+});
+
+describe("side-by-side document rows", () => {
+  it("keeps raw unified rows for the document even in split view", () => {
+    const doc = makeSimpleFile("side.md");
+    const raw = makeSimpleFile("side.ts");
+    const model = mkCross([doc, raw], emptyAi(), { viewMode: "split", sidePaths: new Set([doc.path]) });
+    expect(model.rows.filter((r) => r.filePath === doc.path).map((r) => r.type))
+      .toEqual(["file-header", "hunk-header", "content-unified", "content-unified"]);
+    expect(model.rows.filter((r) => r.filePath === raw.path).map((r) => r.type))
+      .toEqual(["file-header", "hunk-header", "content-split", "content-split"]);
+    expect(rowLineOnSide(model.rows[3], doc, undefined, "new")).toBe(2);
+  });
+
+  it("rebuilds when a file enters side by side and wraps at the half width", () => {
+    const doc = makeSimpleFile("wrap.md", 1);
+    doc.hunks[0].lines[0].text = "x".repeat(50);
+    const plain = mkCross([doc], emptyAi(), { snapshotKey: "side-wrap" });
+    const side = mkCross([doc], emptyAi(), {
+      snapshotKey: "side-wrap", sidePaths: new Set([doc.path]), sideWrapCols: 20,
+    });
+    expect(side.identity).not.toBe(plain.identity);
+    expect(side.rows[2].height).toBeGreaterThan(plain.rows[2].height);
   });
 });
