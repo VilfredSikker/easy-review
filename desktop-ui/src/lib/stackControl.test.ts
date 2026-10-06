@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import {
   shouldShowStackControl,
+  STACK_MENU_WIDTH,
+  stackMenuPosition,
   stackBadge,
   stackRowTitle,
   stackRows,
@@ -238,5 +240,25 @@ describe("shouldShowStackControl", () => {
     expect(shouldShowStackControl(failed)).toBe(true);
     expect(shouldShowStackControl(failed, false)).toBe(true);
     expect(stackSummary(failed)).toBe("Stack");
+  });
+});
+
+describe("stackMenuPosition", () => {
+  it("right-aligns under the button when there is room", () => {
+    expect(stackMenuPosition({ right: 900, bottom: 100 }, 1200)).toEqual({
+      top: 104,
+      left: 900 - STACK_MENU_WIDTH,
+    });
+  });
+
+  it("stays inside the window when the button is near the left edge", () => {
+    // A narrow panel near the window's left edge: right-aligning would start
+    // the menu off-screen.
+    expect(stackMenuPosition({ right: 120, bottom: 100 }, 1200).left).toBe(8);
+  });
+
+  it("stays inside the window on the right", () => {
+    const { left } = stackMenuPosition({ right: 1300, bottom: 100 }, 1200);
+    expect(left + STACK_MENU_WIDTH).toBe(1192);
   });
 });

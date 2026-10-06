@@ -9,6 +9,7 @@
     selectablePrNumber,
     shouldShowStackControl,
     stackBadge,
+    stackMenuPosition,
     stackRowTitle,
     stackRows,
     stackSummary,
@@ -191,6 +192,8 @@
   // current layer, and one row per layer to switch the view to. Rows come from
   // `stackControl`, so ordering/labels are unit-tested away from the DOM.
   let stackOpen = $state(false);
+  let stackButton: HTMLButtonElement | null = $state(null);
+  let stackMenuPos = $state({ top: 0, left: 0 });
   let stackFetching = $state(false);
 
   const stack = $derived(app.snapshot?.stack ?? null);
@@ -226,6 +229,7 @@
       stackOpen = false;
       return;
     }
+    if (stackButton) stackMenuPos = stackMenuPosition(stackButton.getBoundingClientRect(), window.innerWidth);
     stackOpen = true;
     if (stackUnknown(stack)) void loadStack();
   }
@@ -285,6 +289,7 @@
           <div class="relative">
             <button
               type="button"
+              bind:this={stackButton}
               onclick={toggleStackMenu}
               disabled={stackFetching}
               aria-expanded={stackOpen}
@@ -307,7 +312,8 @@
               <!-- svelte-ignore a11y_no_static_element_interactions -->
               <div class="fixed inset-0 z-40" onclick={() => (stackOpen = false)}></div>
               <div
-                class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-64 py-1"
+                class="fixed z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-64 py-1"
+                style="top: {stackMenuPos.top}px; left: {stackMenuPos.left}px;"
                 role="menu"
               >
                 <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3 flex items-center gap-2">
