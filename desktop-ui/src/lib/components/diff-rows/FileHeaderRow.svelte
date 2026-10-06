@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { DocumentViewMode } from "$lib/documentPreviewCache";
   import FileHeaderContent from "./FileHeaderContent.svelte";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
 
@@ -7,9 +8,10 @@
     /** When the global sticky header overlay is active, ignore in-flow header clicks. */
     pointerEventsNone?: boolean;
     previewPaths?: ReadonlySet<string>;
-    onpreviewchange?: (path: string, preview: boolean) => void;
+    sidePaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, mode: DocumentViewMode) => void;
   }
-  const { row, pointerEventsNone = false, previewPaths, onpreviewchange }: Props = $props();
+  const { row, pointerEventsNone = false, previewPaths, sidePaths, onpreviewchange }: Props = $props();
 </script>
 
 <div
@@ -18,5 +20,5 @@
     : ''}"
   data-row-identity={row.identity}
 >
-  <FileHeaderContent {row} {previewPaths} {onpreviewchange} />
+  <FileHeaderContent {row} {previewPaths} {sidePaths} {onpreviewchange} />
 </div>

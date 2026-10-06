@@ -18,7 +18,7 @@ describe('complete document preview cache', () => {
     const {snap,file} = fixture();
     const cache = new DocumentPreviewCache(async () => response(snap,file));
     cache.sync(snap);
-    cache.setMode(snap,file.path,true);
+    cache.setMode(snap,file.path,'preview');
     const refreshed = {...snap, preview_context_key:'two'};
     cache.sync(refreshed);
     expect(cache.paths(refreshed).has(file.path)).toBe(true);
@@ -62,7 +62,7 @@ describe('complete document preview cache', () => {
     const earlier = {...active,idx:0,is_active:false,repo_root:'/other'};
     const before = {...snap,tabs:[earlier,active],active_tab:1};
     cache.sync(before);
-    cache.setMode(before,file.path,true);
+    cache.setMode(before,file.path,'preview');
     const after = {...snap,tabs:[{...active,idx:0}],active_tab:0};
     cache.sync(after);
     expect(cache.paths(after).has(file.path)).toBe(true);
@@ -75,9 +75,9 @@ describe('complete document preview cache', () => {
     const other = {...before,tabs:[{...first,is_active:false},{...second,is_active:true}],active_tab:1};
     const cache = new DocumentPreviewCache(async () => response(snap,file));
     cache.sync(before);
-    cache.setMode(before,file.path,true);
+    cache.setMode(before,file.path,'preview');
     expect(cache.paths(other).has(file.path)).toBe(false);
-    cache.setMode(other,file.path,true);
+    cache.setMode(other,file.path,'preview');
     const closed = {...other,tabs:[{...second,idx:0,is_active:true}],active_tab:0};
     cache.sync(closed);
     expect(cache.paths(closed).has(file.path)).toBe(true);
@@ -134,8 +134,23 @@ describe('complete document preview cache', () => {
     for(const f of snap.files) await cache.load(snap,f);
     expect(cache.state('key-0').status).toBe('loading');
     expect(cache.state('key-16').status).toBe('ready');
-    cache.setMode(snap,file.path,true);
+    cache.setMode(snap,file.path,'preview');
     expect(cache.ensureRaw(snap,file.path)).toBe(true);
+    expect(cache.paths(snap).size).toBe(0);
+  });
+  test('side by side keeps raw rows, so ensureRaw leaves it alone', () => {
+    const {snap,file}=fixture();
+    const cache=new DocumentPreviewCache(async () => response(snap,file));
+    cache.sync(snap);
+    cache.setMode(snap,file.path,'side');
+    expect(cache.sidePaths(snap).has(file.path)).toBe(true);
+    expect(cache.paths(snap).has(file.path)).toBe(false);
+    expect(cache.ensureRaw(snap,file.path)).toBe(false);
+    expect(cache.sidePaths(snap).has(file.path)).toBe(true);
+    cache.setMode(snap,file.path,'preview');
+    expect(cache.sidePaths(snap).size).toBe(0);
+    expect(cache.paths(snap).has(file.path)).toBe(true);
+    cache.setMode(snap,file.path,'raw');
     expect(cache.paths(snap).size).toBe(0);
   });
 });
