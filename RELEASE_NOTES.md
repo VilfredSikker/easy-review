@@ -9,6 +9,7 @@
 
 - **GitHub actions in the Branch panel.** The GitHub card gains the actions from GitHub's PR page: merge, update branch, delete or restore the head branch, close/reopen, and ready/draft. Merge, close and delete ask twice. A merge is pinned to the head commit of the diff you reviewed, so commits pushed after you loaded it are never merged unseen. The head branch is deleted through `git/refs`, and only while it still points at the PR head. An action is refused if the active tab moved to another PR while a confirm was open. Repo merge settings, merge-queue presence and branch existence are cached, so the 30s status poll does not multiply `gh` calls (ADR 0040).
 - **Side by side Markdown.** Markdown files switch between Raw, Preview and Side by side from the file header. Side by side keeps the raw diff rows on the left and places each rendered block beside the lines it came from.
+- **Highlight to comment in Preview.** In Preview, highlight words in a Markdown or text file to open a composer under that passage. The highlighted words are saved as a quote at the top. A question or note can go on any line, including lines the diff does not show. A GitHub comment is offered only when the passage is on diff lines. Saved questions, notes and comments show under the blocks they refer to (ADR 0041).
 
 ## What's Changed
 
