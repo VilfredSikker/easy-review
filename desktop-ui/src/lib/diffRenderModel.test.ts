@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   COMPACTED_STUB_HEIGHT,
   DOCUMENT_PREVIEW_HEIGHT,
+  IMAGE_PREVIEW_HEIGHT,
   FILE_HEADER_HEIGHT,
   HUNK_HEADER_HEIGHT,
   LINE_HEIGHT,
@@ -829,6 +830,50 @@ describe("document preview rows", () => {
       const model = mkCross([doc], emptyAi(), { previewPaths: new Set([doc.path]) });
       expect(model.rows.map((r) => r.type)).toEqual(["file-header", "document-preview"]);
     }
+  });
+});
+
+describe("image preview rows", () => {
+  const types = (f: FileSnapshot) => mkCross([f], emptyAi()).rows.map((r) => r.type);
+
+  it("replaces no-changes for a hunkless image the backend can serve", () => {
+    const png = file({ path: "assets/logo.PNG", hunks: [], preview_key: "blob-a" });
+    const block = getFileBlock(mkInputs(png, [png], emptyAi()));
+    expect(block.rows.map((r) => r.type)).toEqual(["file-header", "image-preview"]);
+    expect(block.totalHeight).toBe(FILE_HEADER_HEIGHT + IMAGE_PREVIEW_HEIGHT);
+    expect(types({ ...png, preview_key: undefined })).toEqual(["file-header", "no-changes"]);
+    expect(types({ ...png, preview_key: "" })).toEqual(["file-header", "no-changes"]);
+  });
+
+  it("puts the image above an SVG's text hunks", () => {
+    const svg = file({ ...makeSimpleFile("icon.svg"), preview_key: "blob-a" });
+    const model = mkCross([svg], emptyAi());
+    expect(model.rows.map((r) => r.type))
+      .toEqual(["file-header", "image-preview", "hunk-header", "content-unified", "content-unified"]);
+    expect(model.hunkStartRow.get(svg.path)).toEqual([2]);
+  });
+
+  it("keeps lazy and compacted stubs for images", () => {
+    const loaded = file({ path: "loaded.png", hunks: [], preview_key: "blob-a" });
+    expect(types(loaded)).toEqual(["file-header", "image-preview"]);
+    expect(types({ ...loaded, path: "lazy.png", is_lazy_stub: true })).toEqual(["file-header", "lazy-stub"]);
+    expect(types({ ...loaded, path: "packed.png", compacted: true })).toEqual(["file-header", "compacted-stub"]);
+  });
+
+  it("never gives a document an image row", () => {
+    const svg = file({ ...makeSimpleFile("doc.svg"), preview_key: "blob-a" });
+    const md = file({ ...makeSimpleFile("readme.md"), preview_key: "blob-a" });
+    const model = mkCross([svg, md], emptyAi());
+    expect(model.rows.filter((r) => r.type === "image-preview").map((r) => r.filePath)).toEqual([svg.path]);
+    const previewed = mkCross([md], emptyAi(), { previewPaths: new Set([md.path]) });
+    expect(previewed.rows.map((r) => r.type)).toEqual(["file-header", "document-preview"]);
+  });
+
+  it("remounts the image when its content changes under the same cache key", () => {
+    const png = file({ path: "content.png", hunks: [], preview_key: "blob-a" });
+    const first = mkCross([png], emptyAi());
+    const refreshed = mkCross([{ ...png, preview_key: "blob-b" }], emptyAi());
+    expect(refreshed.rows[1].identity).not.toBe(first.rows[1].identity);
   });
 });
 

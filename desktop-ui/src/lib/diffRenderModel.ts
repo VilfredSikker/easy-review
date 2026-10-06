@@ -1,6 +1,7 @@
 import { splitRows } from "$lib/splitRows";
 import { lineTotalCols, wrappedLineCount } from "$lib/lineWrap";
 import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
+import { imagePreviewKey, isImagePreview } from "$lib/imagePreview";
 import type { SplitRow } from "$lib/splitRows";
 import {
   fallbackFindings,
@@ -48,6 +49,8 @@ export const FILE_HEADER_HEIGHT = 40;
 export const COMPACTED_STUB_HEIGHT = 44;
 export const NO_CHANGES_HEIGHT = 44;
 export const DOCUMENT_PREVIEW_HEIGHT = 120;
+/** The image row renders at exactly this height in every state. */
+export const IMAGE_PREVIEW_HEIGHT = 300;
 
 const LEGACY_CACHE_LIMIT = 100;
 const _legacyCache = new Map<string, FileRenderModel>();
@@ -153,6 +156,12 @@ export interface PillarHeaderInfo {
 export type CrossFileFlatRow =
   | {
       type: "document-preview";
+      filePath: string;
+      height: number;
+      identity: string;
+    }
+  | {
+      type: "image-preview";
       filePath: string;
       height: number;
       identity: string;
@@ -720,6 +729,42 @@ function fileLayout(input: RenderModelInputs) {
   };
 }
 
+/** The row that opens a file's body after its header, and whether the hunk
+ *  rows follow it. A binary image has no hunks, so the image stands in for
+ *  "No changes"; an SVG keeps its text hunks below the image. */
+function leadRow(
+  file: FileSnapshot,
+  fileIndex: number,
+  previewKey: string | null,
+  imageKey: string | null,
+): { row: CrossFileFlatRow | null; hunks: boolean } {
+  if (previewKey !== null) {
+    return {
+      row: {
+        type: "document-preview",
+        filePath: file.path,
+        height: DOCUMENT_PREVIEW_HEIGHT,
+        identity: `dp:${file.path}:${previewKey}`,
+      },
+      hunks: false,
+    };
+  }
+  const stub = stubRow(file, fileIndex);
+  if (stub && stub.type !== "no-changes") return { row: stub, hunks: false };
+  if (imageKey !== null) {
+    return {
+      row: {
+        type: "image-preview",
+        filePath: file.path,
+        height: IMAGE_PREVIEW_HEIGHT,
+        identity: `img:${file.path}:${imageKey}`,
+      },
+      hunks: true,
+    };
+  }
+  return { row: stub, hunks: stub === null };
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, mode, annotationIndex, commentVisibility } = input;
   const { sideBySide, viewMode, wrapCols } = fileLayout(input);
@@ -727,7 +772,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   const annFp = fileAnnotationFingerprint(file, annotationIndex);
   const previewKey = documentPreviewKey(file, input.previewPaths);
   const preview = previewKey !== null;
-  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|s${sideBySide ? 1 : 0}`;
+  const imageKey = imagePreviewKey(file);
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|i${JSON.stringify(imageKey)}|s${sideBySide ? 1 : 0}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -753,17 +799,9 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     deletions: file.deletions,
   });
 
-  const stub = stubRow(file, fileIndex);
-  if (preview) {
-    rows.push({
-      type: "document-preview",
-      filePath: file.path,
-      height: DOCUMENT_PREVIEW_HEIGHT,
-      identity: `dp:${file.path}:${previewKey}`,
-    });
-  } else if (stub) {
-    rows.push(stub);
-  } else {
+  const lead = leadRow(file, fileIndex, previewKey, imageKey);
+  if (lead.row) rows.push(lead.row);
+  if (lead.hunks) {
     const placedThreadIds = new Set<string>();
     const side: "unified" | "split" = viewMode === "split" ? "split" : "unified";
     for (let hunkIdx = 0; hunkIdx < file.hunks.length; hunkIdx++) {
@@ -904,7 +942,8 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     files.filter((f) => input.previewPaths?.has(f.path)).map((f) => [f.path, f.preview_key ?? f.cache_key]),
   );
   const sideFingerprint = JSON.stringify(files.filter((f) => input.sidePaths?.has(f.path)).map((f) => f.path));
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}|s${sideFingerprint}|sw${input.sideWrapCols ?? 0}`;
+  const imageFingerprint = JSON.stringify(files.filter(isImagePreview).map((f) => [f.path, f.preview_key]));
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}|i${imageFingerprint}|s${sideFingerprint}|sw${input.sideWrapCols ?? 0}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {
