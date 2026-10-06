@@ -1,12 +1,14 @@
 import type { AppSnapshot, FileSnapshot } from './types';
 import type { TabSummary } from './types';
 
+/** How a document file shows in the diff. `side` keeps the raw rows and renders the document beside them. */
+export type DocumentViewMode = 'raw' | 'preview' | 'side';
 export type PreviewState = { status: 'loading' } | { status: 'ready'; text: string } | { status: 'error'; message: string };
 export interface PreviewResponse { path: string; text: string; preview_context_key: string; preview_key: string }
 export type PreviewLoader = (path: string, context: string) => Promise<PreviewResponse>;
 
 export class DocumentPreviewCache {
-  private choices = new Map<string, Set<string>>();
+  private choices = new Map<string, Map<string, Exclude<DocumentViewMode, 'raw'>>>();
   private documents = new Map<string, PreviewState>();
   private pending = new Map<string, { token: object; result: Promise<PreviewState | null> }>();
   private current: AppSnapshot | null = null;
@@ -38,19 +40,22 @@ export class DocumentPreviewCache {
     }
     if (!snap || open.size === 0) { this.documents.clear(); this.pending.clear(); }
   }
-  paths(snap: AppSnapshot | null): ReadonlySet<string> {
-    return snap ? this.choices.get(this.choiceKey(snap)) ?? new Set() : new Set();
+  paths(snap: AppSnapshot | null): ReadonlySet<string> { return this.pathsIn(snap, 'preview'); }
+  sidePaths(snap: AppSnapshot | null): ReadonlySet<string> { return this.pathsIn(snap, 'side'); }
+  private pathsIn(snap: AppSnapshot | null, mode: DocumentViewMode): ReadonlySet<string> {
+    const modes = snap ? this.choices.get(this.choiceKey(snap)) : undefined;
+    return new Set([...modes ?? []].filter(([, m]) => m === mode).map(([path]) => path));
   }
-  setMode(snap: AppSnapshot, path: string, preview: boolean): void {
+  setMode(snap: AppSnapshot, path: string, mode: DocumentViewMode): void {
     const key = this.choiceKey(snap);
-    const paths = new Set(this.choices.get(key));
-    if (preview) paths.add(path); else paths.delete(path);
-    this.choices.set(key, paths);
+    const modes = new Map(this.choices.get(key));
+    if (mode === 'raw') modes.delete(path); else modes.set(path, mode);
+    this.choices.set(key, modes);
     this.changed();
   }
   ensureRaw(snap: AppSnapshot, path: string): boolean {
     if (!this.paths(snap).has(path)) return false;
-    this.setMode(snap, path, false);
+    this.setMode(snap, path, 'raw');
     return true;
   }
   requestKey(snap: AppSnapshot, file: FileSnapshot): string {

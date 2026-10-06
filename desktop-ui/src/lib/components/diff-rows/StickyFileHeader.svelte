@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { DocumentViewMode } from "$lib/documentPreviewCache";
   import FileHeaderContent from "./FileHeaderContent.svelte";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
 
@@ -10,9 +11,10 @@
         aligns with the diff column instead of spanning across the rail lane. */
     offsetLeftPx?: number;
     previewPaths?: ReadonlySet<string>;
-    onpreviewchange?: (path: string, preview: boolean) => void;
+    sidePaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, mode: DocumentViewMode) => void;
   }
-  const { row, hidden = false, offsetLeftPx = 0, previewPaths, onpreviewchange }: Props = $props();
+  const { row, hidden = false, offsetLeftPx = 0, previewPaths, sidePaths, onpreviewchange }: Props = $props();
 </script>
 
 <!-- Always in DOM so it doesn't shift .hscroll layout when toggling visibility. -->
@@ -25,6 +27,6 @@
     : "width:100%;"}
 >
   {#if row}
-    <FileHeaderContent {row} {previewPaths} {onpreviewchange} />
+    <FileHeaderContent {row} {previewPaths} {sidePaths} {onpreviewchange} />
   {/if}
 </div>
