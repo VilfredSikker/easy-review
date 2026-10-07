@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { ImagePreviewCache, imagePanes, isImagePath, isImagePreview, type ImagePreviewResponse } from './imagePreview';
+import { ImagePreviewCache, imagePanes, isImagePath, isImagePreview, stepPane, type ImagePreviewResponse } from './imagePreview';
 import type { AppSnapshot, FileSnapshot } from './types';
 import { richSnapshot } from './stories/fixtures';
 
@@ -153,5 +153,18 @@ describe('image panes', () => {
     expect(summary('a', 'b', 'modified')).toEqual([['Before', ''], ['After', '']]);
     expect(summary('a', null, 'deleted')).toEqual([['Deleted', '']]);
     expect(summary(null, null, 'modified')).toEqual([]);
+  });
+});
+
+describe('full-screen pane stepping', () => {
+  test('arrows move between Before and After and stop at the ends', () => {
+    expect(stepPane(0, 'ArrowRight', 2)).toBe(1);
+    expect(stepPane(1, 'ArrowRight', 2)).toBe(1);
+    expect(stepPane(1, 'ArrowLeft', 2)).toBe(0);
+    expect(stepPane(0, 'ArrowLeft', 2)).toBe(0);
+  });
+  test('a single pane and other keys leave the index alone', () => {
+    expect(stepPane(0, 'ArrowRight', 1)).toBe(0);
+    expect(stepPane(1, 'j', 2)).toBe(1);
   });
 });
