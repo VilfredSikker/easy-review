@@ -266,7 +266,7 @@ pub fn parse_github_pr_url(url: &str) -> Option<PrRef> {
     })
 }
 
-fn gh_spawn_context(err: std::io::Error) -> anyhow::Error {
+pub(crate) fn gh_spawn_context(err: std::io::Error) -> anyhow::Error {
     if err.kind() == std::io::ErrorKind::NotFound {
         anyhow::anyhow!(
             "GitHub CLI (`gh`) not found on PATH. Install it (https://cli.github.com) \
@@ -2553,6 +2553,17 @@ pub struct PrOverviewFull {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub labels: Vec<String>,
+    /// GitHub's merge-box verdict: `CLEAN`, `BEHIND`, `BLOCKED`, `DIRTY`,
+    /// `UNSTABLE`, `HAS_HOOKS`, `DRAFT`, `UNKNOWN`.
+    pub merge_state_status: Option<String>,
+    /// Head commit the PR points at now. The desktop merge pins to the reviewed
+    /// diff's head when one is on screen, and to this only otherwise (ADR 0040).
+    pub head_ref_oid: String,
+    /// Head branch lives in a fork. Branch delete/restore is offered only for
+    /// same-repo PRs (ADR 0040).
+    pub is_cross_repository: bool,
+    /// Merge method of a pending auto-merge (`MERGE`, `SQUASH`, `REBASE`).
+    pub auto_merge_method: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2608,7 +2619,16 @@ pub fn parse_pr_overview(json: &str) -> Result<PrOverviewFull> {
                     .collect()
             })
             .unwrap_or_default(),
+        merge_state_status: non_empty_str(&v["mergeStateStatus"]),
+        head_ref_oid: v["headRefOid"].as_str().unwrap_or("").to_string(),
+        is_cross_repository: v["isCrossRepository"].as_bool().unwrap_or(false),
+        // `autoMergeRequest` is null when auto-merge is off.
+        auto_merge_method: non_empty_str(&v["autoMergeRequest"]["mergeMethod"]),
     })
+}
+
+fn non_empty_str(v: &serde_json::Value) -> Option<String> {
+    v.as_str().filter(|s| !s.is_empty()).map(|s| s.to_string())
 }
 
 /// Pure parser for `gh pr view --json comments` output (the wrapping object).
@@ -2746,7 +2766,7 @@ pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrSta
             "--repo",
             &repo_slug,
             "--json",
-            "number,title,body,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url,comments,reviews",
+            "number,title,body,state,isDraft,author,reviewDecision,mergeable,mergeStateStatus,headRefName,headRefOid,isCrossRepository,autoMergeRequest,baseRefName,labels,url,comments,reviews",
         ])
         .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr view (status bundle)")?;
@@ -3743,6 +3763,34 @@ mod tests {
         assert!(pr.labels.is_empty());
         assert!(pr.review_decision.is_none());
         assert!(pr.mergeable.is_none());
+        assert!(pr.merge_state_status.is_none());
+        assert!(pr.auto_merge_method.is_none());
+        assert_eq!(pr.head_ref_oid, "");
+        assert!(!pr.is_cross_repository);
+    }
+
+    #[test]
+    fn parse_pr_overview_reads_merge_box_fields() {
+        let json = r#"{
+            "number": 9,
+            "state": "OPEN",
+            "mergeStateStatus": "BEHIND",
+            "headRefOid": "abc123",
+            "isCrossRepository": true,
+            "autoMergeRequest": {"mergeMethod": "SQUASH"}
+        }"#;
+        let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.merge_state_status.as_deref(), Some("BEHIND"));
+        assert_eq!(pr.head_ref_oid, "abc123");
+        assert!(pr.is_cross_repository);
+        assert_eq!(pr.auto_merge_method.as_deref(), Some("SQUASH"));
+    }
+
+    #[test]
+    fn parse_pr_overview_null_auto_merge_is_none() {
+        let json = r#"{"number": 9, "autoMergeRequest": null}"#;
+        let pr = parse_pr_overview(json).unwrap();
+        assert!(pr.auto_merge_method.is_none());
     }
 
     #[test]

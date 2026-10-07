@@ -1,3 +1,27 @@
+# Easy Review v0.5.5
+
+## In plain terms
+
+- **What changed.** The desktop Branch panel can merge a PR, update its branch, close or reopen it, mark it ready or draft, and delete or restore its branch, without opening GitHub. Markdown files get a Side by side view: the raw lines on the left, where line comments still work, and the rendered document beside them. A changed image file now shows the image instead of "No changes". The desktop also opens on a fresh install with no repo, and the line-number gutter widens for long files.
+- **TL;DR.** GitHub merge actions in the Branch panel, side by side Markdown, image diffs, and a desktop that opens with no repo.
+
+## Highlights
+
+- **GitHub actions in the Branch panel.** The GitHub card gains the actions from GitHub's PR page: merge, update branch, delete or restore the head branch, close/reopen, and ready/draft. Merge, close and delete ask twice. A merge is pinned to the head commit of the diff you reviewed, so commits pushed after you loaded it are never merged unseen. The head branch is deleted through `git/refs`, and only while it still points at the PR head. An action is refused if the active tab moved to another PR while a confirm was open. Repo merge settings, merge-queue presence and branch existence are cached, so the 30s status poll does not multiply `gh` calls (ADR 0040).
+- **Side by side Markdown.** Markdown files switch between Raw, Preview and Side by side from the file header. Side by side keeps the raw diff rows on the left and places each rendered block beside the lines it came from.
+- **Highlight to comment in Preview.** In Preview, highlight words in a Markdown or text file to open a composer under that passage. The highlighted words are saved as a quote at the top. A question or note can go on any line, including lines the diff does not show. A GitHub comment is offered only when the passage is on diff lines. Saved questions, notes and comments show under the blocks they refer to (ADR 0041).
+- **Image files render in the diff.** The desktop shows png, jpg, gif, webp, avif, bmp, ico and svg files as images. A changed image used to show "+0 -0" and "No changes". A modified image shows Before and After panes, an added one shows the new file, and a deleted one the old file. An SVG keeps its text diff, with the rendered image above it, and is drawn through an `<img>` element so scripts inside it never run. Images over 8 MiB show an error. In a remote PR review only the new side shows, because the old file is not available locally. The TUI is unchanged.
+
+## What's Changed
+
+### Fixes
+- Desktop: a fresh install launched from Finder, with no repo and no saved project, exited before any window appeared. It now opens the welcome screen. The placeholder tab is never saved, so the next launch does not restore it.
+- Desktop: App settings and Uninstall, opened from the welcome screen, were hidden behind it. The welcome screen now closes when you open them.
+- Desktop: the line-number gutter was a fixed width, so four- and five-digit line numbers ran into the add/delete bar. It now widens to fit the largest line number in the diff.
+- Desktop: the stack dropdown was cut off in a narrow right panel. It is now positioned to the button and kept inside the window, and it is hidden on PRs that are not in a stack.
+- Desktop: file and hunk headers were measured a few pixels short, which put anything placed from row positions up to 11px off near the top of a file.
+- Desktop: the welcome screen no longer shows the `b` annotate tip.
+
 # Easy Review v0.5.4
 
 ## In plain terms

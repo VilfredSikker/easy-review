@@ -244,7 +244,8 @@ body {
   box-sizing: border-box;
 }
 /* Split 50/50 tracks. Used by SplitContentRow, posted annotation cards, and
- * the comment composer. --er-split-gutter matches SPLIT_GUTTER_PX. */
+ * the comment composer. FlatDiffView widens --er-split-gutter to fit the
+ * largest line number (gutterWidthPx); 40px is the three-digit default. */
 :root {
   --er-split-gutter: 40px;
 }

@@ -7,6 +7,7 @@
   import { diffSel } from "$lib/stores/diffSelection.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { diffPreview } from "$lib/stores/diffPreview.svelte";
+  import { imagePreview } from "$lib/stores/imagePreview.svelte";
   import DocumentPreviewRow from "./DocumentPreviewRow.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { aiFindingFilter } from "$lib/stores/aiFindingFilter.svelte";
@@ -22,6 +23,7 @@
   import CompactedStubRow from "./diff-rows/CompactedStubRow.svelte";
   import LazyStubRow from "./diff-rows/LazyStubRow.svelte";
   import NoChangesRow from "./diff-rows/NoChangesRow.svelte";
+  import ImagePreviewRow from "./diff-rows/ImagePreviewRow.svelte";
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
@@ -79,8 +81,12 @@
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
-  import { SPLIT_GUTTER_PX } from "$lib/splitDiffLayout";
+  import { gutterWidthPx, maxLineNumber } from "$lib/splitDiffLayout";
   import { findComposerAnchorRow, foldRowExtras } from "$lib/composerPlacement";
+  import { DocumentSideView } from "$lib/documentSideView.svelte";
+  import { sideBlockPadding } from "$lib/documentSideLayout";
+  import type { DocumentViewMode } from "$lib/documentPreviewCache";
+  import DocumentSideColumn from "./DocumentSideColumn.svelte";
 
   /** Prevents highlight $effect from re-applying spans in a reactive loop. */
   /* eslint-disable svelte/prefer-svelte-reactivity -- span/stub memo bookkeeping that is non-reactive on purpose; making it reactive would bring back the effect loops it exists to prevent */
@@ -138,6 +144,7 @@
 
   const snapshot = $derived(app.snapshot);
   $effect(() => { diffPreview.sync(snapshot); });
+  $effect(() => { imagePreview.sync(snapshot); });
   // Order files to match the tree (folders-first, alphabetical, single-child
   // folder chains collapsed). Reuses the memoized buildTree + flattenForNav
   // already used by keyboard nav (`j`/`k`), so tree and diff render in lockstep.
@@ -240,14 +247,15 @@
   // The .band is always viewport-width (no min-width:max-content), so split
   // panels are a fixed 50/50. Long lines either word-wrap (app.wrapLines, the
   // default) or pan horizontally inside their own panel via --dx-l/--dx-r.
-  /** Line-number gutter width per panel (grid col 40px). */
-  const GUTTER_PX = SPLIT_GUTTER_PX;
   /** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
   const CELL_HPAD_PX = 24;
 
   const wrapEnabled = $derived(app.wrapLines);
   /** Measured monospace character width (px). 0 until the probe runs. */
   let charWPx = $state(0);
+  /** Line-number gutter width per panel, wide enough for the diff's largest
+   *  line number. Published to the rows as `--er-split-gutter`. */
+  const GUTTER_PX = $derived(gutterWidthPx(maxLineNumber(files), charWPx));
   /** Measured .hscroll (band) width (px). 0 until the observer fires. */
   let bandWidthPx = $state(0);
 
@@ -288,6 +296,16 @@
     diffPreview.revision;
     return snapshot ? diffPreview.paths(snapshot) : new Set<string>();
   });
+  const sidePaths = $derived.by(() => {
+    diffPreview.revision;
+    return snapshot ? diffPreview.sidePaths(snapshot) : new Set<string>();
+  });
+  /** Wrap capacity of the raw half of a side-by-side document. */
+  const sideWrapCols = $derived.by(() => {
+    if (!wrapEnabled || bandWidthPx <= 0 || charWPx <= 0) return null;
+    const cellW = Math.max(0, bandWidthPx / 2 - GUTTER_PX - CELL_HPAD_PX);
+    return Math.max(MIN_WRAP_COLS, Math.floor(cellW / charWPx));
+  });
   const baseCrossFileModel = $derived(
     getCrossFileModel({
       files,
@@ -298,6 +316,8 @@
       snapshotKey,
       wrapCols: committedWrapCols,
       previewPaths,
+      sidePaths,
+      sideWrapCols,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -372,6 +392,19 @@
     if (_lastWrapCols === cols) return;
     const first = _lastWrapCols === undefined;
     _lastWrapCols = cols;
+    if (first) return;
+    overlayHeights = new Map();
+    overlaySerial++;
+  });
+
+  // Side by side halves the width of thread and finding cards under the same
+  // row identities, so heights measured in the other mode would stick.
+  let _lastSideKey: string | undefined = undefined;
+  $effect(() => {
+    const key = [...sidePaths].sort().join("\0");
+    if (_lastSideKey === key) return;
+    const first = _lastSideKey === undefined;
+    _lastSideKey = key;
     if (first) return;
     overlayHeights = new Map();
     overlaySerial++;
@@ -494,6 +527,13 @@
     };
   });
 
+  const sideView = new DocumentSideView(() => ({ snapshot, files, model: crossFileModel, sidePaths }));
+  // Space after a side-by-side block whose rendering is taller than its raw
+  // lines. Read from baseGeometry so it cannot feed back into itself.
+  const sidePadByRow = $derived(
+    sideBlockPadding(sideView.spans, baseGeometry.cumulativeOffsets, (key) => sideView.height(key)),
+  );
+
   const tourActive = $derived(snapshot?.mode === "tour");
 
   // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
@@ -539,12 +579,14 @@
     const pad = pillarPadByRowIdentity;
     const composerAnchor = composerAnchorIdentity;
     const composerPx = composerReservePx;
-    if (pad.size === 0 && composerPx === 0) return base;
+    const sidePad = sidePadByRow;
+    if (pad.size === 0 && composerPx === 0 && sidePad.size === 0) return base;
     const rows = crossFileModel.rows;
     const offsets = foldRowExtras(base.cumulativeOffsets, (i) => {
       const identity = rows[i].identity;
       return (
         (pad.get(identity) ?? 0) +
+        (sidePad.get(i) ?? 0) +
         (composerPx !== 0 && identity === composerAnchor ? composerPx : 0)
       );
     });
@@ -633,7 +675,8 @@
     let right = 0;
     for (const [path, m] of baseCrossFileModel.maxColsByFile) {
       if (diffFileCollapse.collapsed.has(path) || previewPaths.has(path)) continue;
-      if (viewMode === "split") {
+      // Side-by-side documents are unified rows panning with the left panel.
+      if (viewMode === "split" && !sidePaths.has(path)) {
         if (m.left > left) left = m.left;
         if (m.right > right) right = m.right;
       } else if (m.all > left) {
@@ -747,14 +790,23 @@
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
+  // Rendered side-by-side blocks overlapping the rendered rows, at their row top.
+  const sideBlocksInWindow = $derived.by(() => {
+    const offsets = effectiveGeometry.cumulativeOffsets;
+    const top = offsets[vw.start] ?? 0;
+    const bottom = offsets[vw.end] ?? 0;
+    return sideView.spans
+      .filter((span) => offsets[span.lastRow + 1] > top && offsets[span.firstRow] < bottom)
+      .map((span) => ({ span, topPx: offsets[span.firstRow] }));
+  });
 
-  async function changePreviewMode(path: string, preview: boolean): Promise<void> {
+  async function changePreviewMode(path: string, documentMode: DocumentViewMode): Promise<void> {
     if (!snapshot || !scrollEl) return;
     const rowIdx = crossFileModel.fileStartRow.get(path);
     if (rowIdx === undefined) return;
     const headerTop = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
     const anchor = Math.max(0, headerTop - scrollEl.scrollTop);
-    diffPreview.setMode(snapshot, path, preview);
+    diffPreview.setMode(snapshot, path, documentMode);
     await tick();
     const nextIdx = crossFileModel.fileStartRow.get(path);
     if (nextIdx !== undefined) {
@@ -1402,7 +1454,7 @@
 
   /** Split pane for the composer. Same `.split-diff-grid` as posted cards. */
   const composerSplitPane = $derived(
-    viewMode === "split" && diffSel.side !== null ? diffSel.side : null,
+    viewMode === "split" && diffSel.side !== null && !sidePaths.has(diffSel.file ?? "") ? diffSel.side : null,
   );
 
   // ── Composer scroll: one-shot into view on open; free scroll afterward ───
@@ -1956,7 +2008,10 @@
         const el = entry.target as HTMLElement;
         const identity = el.dataset.rowIdentity;
         if (!identity) continue;
-        onHeightChange(identity, Math.round(entry.contentRect.height));
+        // Border box: the space the row takes in the flow. contentRect drops
+        // padding and borders, so padded rows (file and hunk headers) read short.
+        const box = entry.borderBoxSize?.[0]?.blockSize ?? el.offsetHeight;
+        onHeightChange(identity, Math.round(box));
       }
     });
     heightRo = ro;
@@ -2261,7 +2316,7 @@
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
-  <div class="flex-1 min-h-0 relative flex flex-col">
+  <div class="flex-1 min-h-0 relative flex flex-col" style="--er-split-gutter:{GUTTER_PX}px">
   <div
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"
@@ -2287,6 +2342,7 @@
         hidden={stickyHeaderHidden}
         offsetLeftPx={tourActive ? RAIL_W : 0}
         {previewPaths}
+        {sidePaths}
         onpreviewchange={changePreviewMode}
       />
 
@@ -2329,12 +2385,45 @@
           class="band"
           style="position:absolute;top:{vw.paddingTop}px;left:0;right:0;--dx-l:{panLPx}px;--dx-r:{panRPx}px"
         >
+          {#snippet composerFlow()}
+            <!-- In flow, immediately below the last selected line: the composer
+                 takes real space so it never covers the lines it comments on or
+                 the code that follows them. flow-root keeps the card's own
+                 margins inside the measured height. -->
+            <div class="composer-flow-row" use:measureHeight={onComposerHeight}>
+              <DiffComposer placement={{ kind: "flow" }} splitPane={composerSplitPane} />
+            </div>
+          {/snippet}
           {#each windowedRows as row, localIdx (row.identity)}
             {@const rowIdx = vw.start + localIdx}
+            {@const sideRaw = sidePaths.has(row.filePath) && row.type !== "file-header"}
+            {@const composerHere = diffSel.composerOpen && composerInWindow && rowIdx === composerAnchorRowIdx}
+            {#if sideRaw}
+              <!-- Side by side: raw rows and their cards take the left half; the
+                   rendered document is drawn beside them by DocumentSideColumn. -->
+              <div class="doc-side-raw">
+                {@render rowBody(row, rowIdx, true)}
+                {#if composerHere}{@render composerFlow()}{/if}
+              </div>
+            {:else}
+              {@render rowBody(row, rowIdx, false)}
+            {/if}
+            {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
+              <!-- Guide mode: pad the pillar's last row down to the rail height so
+                   the next pillar's files start below the (taller) rail. -->
+              <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
+            {/if}
+            {#if sidePadByRow.get(rowIdx)}
+              <div style="height:{sidePadByRow.get(rowIdx)}px"></div>
+            {/if}
+            {#if composerHere && !sideRaw}{@render composerFlow()}{/if}
+          {/each}
+          {#snippet rowBody(row: CrossFileFlatRow, rowIdx: number, sideRaw: boolean)}
             {#if row.type === "file-header"}
               <FileHeaderRow
                 {row}
                 {previewPaths}
+                {sidePaths}
                 onpreviewchange={changePreviewMode}
                 pointerEventsNone={stickyHeaderClicksOverlay && row.filePath === visibleFilePath}
               />
@@ -2343,6 +2432,13 @@
               <div data-row-identity={row.identity} data-row-idx={rowIdx}>
                 {#if snapshot && file && !app.pendingTabSwitch}
                   <DocumentPreviewRow {snapshot} {file} />
+                {/if}
+              </div>
+            {:else if row.type === "image-preview"}
+              {@const file = files.find((f) => f.path === row.filePath)}
+              <div data-row-identity={row.identity} data-row-idx={rowIdx} style="min-height:{row.height}px">
+                {#if snapshot && file && !app.pendingTabSwitch}
+                  <ImagePreviewRow {snapshot} {file} height={row.height} />
                 {/if}
               </div>
             {:else if row.type === "hunk-header"}
@@ -2361,7 +2457,7 @@
                   {rowIdx}
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
-                  wrapCols={committedWrapCols}
+                  wrapCols={sideRaw ? sideWrapCols : committedWrapCols}
                 />
               {/if}
             {:else if row.type === "content-split"}
@@ -2386,7 +2482,7 @@
             {:else if row.type === "inline-thread" || row.type === "fallback-thread"}
               {@const thread = getThread(row.threadId)}
               {#if thread}
-                <ThreadRow {row} {thread} split={viewMode === "split"} />
+                <ThreadRow {row} {thread} split={viewMode === "split" && !sideRaw} />
               {/if}
             {:else if row.type === "inline-finding" || row.type === "fallback-finding"}
               {@const finding = getFinding(row.findingId)}
@@ -2396,27 +2492,16 @@
                   {row}
                   {finding}
                   {thread}
-                  split={viewMode === "split"}
+                  split={viewMode === "split" && !sideRaw}
                   hunkLines={getHunkLines(row.filePath, row.hunkIdx)}
                 />
               {/if}
             {/if}
-            {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
-              <!-- Guide mode: pad the pillar's last row down to the rail height so
-                   the next pillar's files start below the (taller) rail. -->
-              <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
-            {/if}
-            {#if diffSel.composerOpen && composerInWindow && rowIdx === composerAnchorRowIdx}
-              <!-- In flow, immediately below the last selected line: the composer
-                   takes real space so it never covers the lines it comments on or
-                   the code that follows them. flow-root keeps the card's own
-                   margins inside the measured height. -->
-              <div class="composer-flow-row" use:measureHeight={onComposerHeight}>
-                <DiffComposer placement={{ kind: "flow" }} splitPane={composerSplitPane} />
-              </div>
-            {/if}
-          {/each}
+          {/snippet}
         </div>
+        {#if sideBlocksInWindow.length > 0}
+          <DocumentSideColumn blocks={sideBlocksInWindow} onheight={(key, px) => sideView.setHeight(key, px)} />
+        {/if}
       </div>
 
       {#if diffSel.composerOpen && !composerInWindow}
@@ -2516,6 +2601,12 @@
   /* The comment composer, in flow below its anchor row. flow-root keeps the
    * card's own margins inside the box, so the height measured here is exactly
    * the space the row list gives up to it. */
+  /* Side-by-side raw half. Its own size container, so cards sized with cqw
+   * fit the half instead of the whole band. */
+  .doc-side-raw {
+    width: 50%;
+    container-type: inline-size;
+  }
   .composer-flow-row {
     display: flow-root;
   }

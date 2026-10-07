@@ -1343,7 +1343,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 
 [[package]]
 name = "er-crap"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -1356,9 +1356,10 @@ dependencies = [
 
 [[package]]
 name = "er-desktop"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "block2",
  "dirs",
  "er-engine",
@@ -1383,7 +1384,7 @@ dependencies = [
 
 [[package]]
 name = "er-engine"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1404,7 +1405,7 @@ dependencies = [
 
 [[package]]
 name = "er-lint-gate"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "proc-macro2",
@@ -1416,7 +1417,7 @@ dependencies = [
 
 [[package]]
 name = "er-mcp"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "dirs",
@@ -1433,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "er-tui"
-version = "0.5.4"
+version = "0.5.5"
 dependencies = [
  "anyhow",
  "clap",

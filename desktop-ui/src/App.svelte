@@ -31,6 +31,7 @@
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
   import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
+  import { showFullWelcome as showFullWelcomeFor } from "$lib/welcomeVisibility";
   import { browser } from "$lib/stores/browser.svelte";
   import { resolveTabRoot } from "$lib/resolveTabRoot";
   import { browserHide } from "$lib/stores/browserHost";
@@ -58,7 +59,14 @@
   );
   const hasOpenTabs = $derived((app.snapshot?.tabs?.length ?? 0) > 0);
   const explicitFullWelcome = $derived(app.showEmptyState && app.snapshot !== null && !hasOpenTabs);
-  const showFullWelcome = $derived((naturalEmpty || explicitFullWelcome) && !app.loading);
+  const showFullWelcome = $derived(
+    showFullWelcomeFor({
+      naturalEmpty,
+      explicitFullWelcome,
+      loading: app.loading,
+      mainView: app.mainView,
+    }),
+  );
   const snapshotPending = $derived(app.snapshot === null && (!app.initialLoadDone || app.loading));
   const snapshotUnavailable = $derived(app.snapshot === null && app.initialLoadDone && !app.loading);
   /** "New review" while tabs are open — overlay on top of the review shell. */

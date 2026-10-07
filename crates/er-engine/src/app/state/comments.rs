@@ -68,6 +68,22 @@ fn mint_comment_id(prefix: &str) -> String {
     )
 }
 
+/// Anchor on 1-based `line` of a whole document, with the same three lines of
+/// context a hunk anchor keeps. `None` when the line is past the end.
+fn document_line_anchor(source: &str, line: usize) -> Option<LineAnchor> {
+    let lines: Vec<&str> = source.lines().collect();
+    let idx = line.checked_sub(1).filter(|&i| i < lines.len())?;
+    let owned = |range: &[&str]| range.iter().map(|l| (*l).to_string()).collect();
+    Some(LineAnchor {
+        line_start: Some(line),
+        line_content: lines[idx].to_string(),
+        context_before: owned(&lines[idx.saturating_sub(3)..idx]),
+        context_after: owned(&lines[idx + 1..(idx + 4).min(lines.len())]),
+        old_line_start: None,
+        hunk_header: String::new(),
+    })
+}
+
 fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
     let usable = tab
         .comment_id_override
@@ -332,7 +348,7 @@ impl App {
             }
         }
 
-        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
+        let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
 
         // Load or create questions.json
         let questions_path = format!("{}/questions.json", er_dir);
@@ -379,7 +395,7 @@ impl App {
             id,
             timestamp: chrono_now(),
             file: file_path,
-            hunk_index: Some(hunk_index),
+            hunk_index,
             line_start: anchor.line_start,
             line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
             line_content: anchor.line_content,
@@ -443,7 +459,7 @@ impl App {
             }
         }
 
-        let anchor = self.get_line_anchor(hunk_index, comment_line_num);
+        let (hunk_index, anchor) = self.take_comment_anchor(hunk_index, comment_line_num);
 
         // Load or create notes.json
         let notes_path = format!("{}/notes.json", er_dir);
@@ -488,7 +504,7 @@ impl App {
             id,
             timestamp: chrono_now(),
             file: file_path,
-            hunk_index: Some(hunk_index),
+            hunk_index,
             line_start: anchor.line_start,
             line_end: Self::normalize_line_end(anchor.line_start, comment_line_end),
             line_content: anchor.line_content,
@@ -628,6 +644,75 @@ impl App {
         let label = if is_reply { "Reply" } else { "Comment" };
         self.notify(&format!("{} added: {}", label, truncate(&text, 40)));
         Ok(())
+    }
+
+    /// Anchor for the question or note being submitted, with the hunk it is
+    /// stored under. A document anchor set by `submit_document_comment` wins
+    /// and stores no hunk; a reply to a document-anchored thread inherits its
+    /// parent's line, since the diff holds no line to re-anchor it on.
+    fn take_comment_anchor(
+        &mut self,
+        hunk_index: usize,
+        comment_line_num: Option<usize>,
+    ) -> (Option<usize>, LineAnchor) {
+        let explicit = self.tab_mut().comment_document_anchor.take();
+        let anchor = explicit.or_else(|| {
+            let parent = self.tab().comment_reply_to.as_deref()?;
+            self.document_anchor_of(parent)
+        });
+        match anchor {
+            Some(anchor) => (None, anchor),
+            None => (
+                Some(hunk_index),
+                self.get_line_anchor(hunk_index, comment_line_num),
+            ),
+        }
+    }
+
+    /// The stored line of a question or note anchored on the document rather
+    /// than a hunk, or `None` for any other id. Replies and promotions copy it
+    /// so they stay on that line.
+    pub fn document_anchor_of(&self, id: &str) -> Option<LineAnchor> {
+        let ai = &self.tab().ai;
+        ai.questions
+            .iter()
+            .flat_map(|qs| &qs.questions)
+            .chain(ai.notes.iter().flat_map(|ns| &ns.notes))
+            .find(|q| q.id == id && q.is_document_anchor())
+            .map(|q| LineAnchor {
+                line_start: q.line_start,
+                line_content: q.line_content.clone(),
+                context_before: q.context_before.clone(),
+                context_after: q.context_after.clone(),
+                old_line_start: None,
+                hunk_header: String::new(),
+            })
+    }
+
+    /// Anchor a question or note on a line of the document itself, which the
+    /// preview can show even when no hunk holds it. `source` is the file's
+    /// full new-side text; the caller reads it, since that can be a network
+    /// fetch and must not happen under the app lock. GitHub only takes
+    /// comments on diff lines, so a document anchor is private-only.
+    pub fn submit_document_comment(
+        &mut self,
+        target: CommentTarget,
+        text: String,
+        comment_type: CommentType,
+        source: &str,
+    ) -> Result<()> {
+        if comment_type == CommentType::GitHubComment {
+            anyhow::bail!("A GitHub comment must sit on a line in the diff");
+        }
+        let line = target.line_num.context("A document comment needs a line")?;
+        let anchor = document_line_anchor(source, line)
+            .with_context(|| format!("Line {line} is past the end of {}", target.file))?;
+        self.tab_mut().comment_document_anchor = Some(anchor);
+        let result = self.submit_comment_text_inner(target, text, comment_type, None, None, None);
+        // An empty body returns before the anchor is taken; never let it leak
+        // into the next submit.
+        self.tab_mut().comment_document_anchor = None;
+        result
     }
 
     /// Richer anchor data captured when placing a comment

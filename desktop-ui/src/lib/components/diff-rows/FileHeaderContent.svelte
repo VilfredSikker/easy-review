@@ -6,13 +6,25 @@
   import { invoke } from "@tauri-apps/api/core";
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import { documentPreviewKind } from "$lib/documentPreview";
+  import type { DocumentViewMode } from "$lib/documentPreviewCache";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
     previewPaths?: ReadonlySet<string>;
-    onpreviewchange?: (path: string, preview: boolean) => void;
+    sidePaths?: ReadonlySet<string>;
+    onpreviewchange?: (path: string, mode: DocumentViewMode) => void;
   }
-  const { row, previewPaths = new Set<string>(), onpreviewchange }: Props = $props();
+  const { row, previewPaths = new Set<string>(), sidePaths = new Set<string>(), onpreviewchange }: Props = $props();
+
+  const documentKind = $derived(documentPreviewKind(row.filePath));
+  const viewMode = $derived.by((): DocumentViewMode => {
+    if (previewPaths.has(row.filePath)) return "preview";
+    return sidePaths.has(row.filePath) ? "side" : "raw";
+  });
+  // Side by side only helps where rendering changes the text: markdown.
+  const viewModes = $derived<[DocumentViewMode, string][]>(documentKind === "markdown"
+    ? [["raw", "Raw"], ["preview", "Preview"], ["side", "Side by side"]]
+    : [["raw", "Raw"], ["preview", "Preview"]]);
 
   // Read reviewed live from the snapshot, not from the baked-in row: the diff
   // render model intentionally ignores `reviewed` so toggling it is a cache hit.
@@ -116,13 +128,13 @@
 </div>
 
 <!-- +N/−N totals -->
-{#if documentPreviewKind(row.filePath)}
+{#if documentKind}
   <div class="flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
-    {#each [false, true] as preview (preview)}
-      <button type="button" aria-pressed={previewPaths.has(row.filePath) === preview}
-        class="rounded px-1.5 py-1 hover:bg-hover {previewPaths.has(row.filePath) === preview ? 'bg-hover text-fg' : 'text-fg-3'}"
-        onclick={(event) => { event.stopPropagation(); onpreviewchange?.(row.filePath, preview); }}>
-        {preview ? 'Preview' : 'Raw'}
+    {#each viewModes as [mode, label] (mode)}
+      <button type="button" aria-pressed={viewMode === mode}
+        class="rounded px-1.5 py-1 hover:bg-hover {viewMode === mode ? 'bg-hover text-fg' : 'text-fg-3'}"
+        onclick={(event) => { event.stopPropagation(); onpreviewchange?.(row.filePath, mode); }}>
+        {label}
       </button>
     {/each}
   </div>

@@ -2,7 +2,9 @@ pub mod card_ai_context;
 pub mod card_ai_spawn;
 pub mod filter;
 mod state;
-pub use state::preview::{FilePreviewRequest, MAX_PREVIEW_BYTES};
+pub use state::preview::{
+    image_mime, FilePreviewRequest, ImagePreviewRequest, MAX_IMAGE_PREVIEW_BYTES, MAX_PREVIEW_BYTES,
+};
 
 pub use card_ai_context::{build_card_ai_system_context, CardAiContextParams};
 pub use card_ai_spawn::{plan_card_ai_invocation, run_card_ai_subprocess, CardAiInvocation};

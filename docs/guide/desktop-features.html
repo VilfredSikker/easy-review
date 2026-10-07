@@ -186,9 +186,9 @@
     <p>
       The list comes from the <code>gh stack</code> extension
       (<code>gh extension install github/gh-stack</code>). It's fetched on demand the first time you open the
-      control — never on tab load — and cached per tab. Until that first lookup a PR branch shows a quiet
-      <code>Stack</code> placeholder to open; a branch that isn't in a stack then drops the control, and a branch
-      without a PR never shows it. Because <code>gh stack view</code> reads the checked-out branch, the control
+      control — never on tab load — and cached per tab. Until that first lookup, a quiet <code>Stack</code>
+      placeholder appears only when the repo's open PRs already show the branch in a stack (its PR is based on
+      another PR's branch, or another PR is based on it); a branch that isn't in a stack never shows the control. Because <code>gh stack view</code> reads the checked-out branch, the control
       only appears when the branch the tab shows is actually checked out — a remote PR, or a local PR whose head
       lives only in a fetched ref, has nothing to read.
     </p>

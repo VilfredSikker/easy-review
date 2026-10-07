@@ -11,8 +11,8 @@ use er_desktop::snapshot::{
 };
 use er_desktop::{
     arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
-    gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache, pr_open_cache,
-    profile_log, projects, snapshot, tabs, terminal, window_placement,
+    gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
+    pr_open_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
@@ -853,7 +853,7 @@ fn main() {
 
     let mut app = match (has_persisted_tabs, cwd_repo_root.clone()) {
         (true, Some(root)) => App::new_unloaded(root)
-            .unwrap_or_else(|e| abort_startup(&format!("er-desktop: failed to init engine: {e}"))),
+            .unwrap_or_else(|e| empty_app(&format!("er-desktop: failed to init engine: {e}"))),
         (true, None) => {
             // No CWD repo but we have tabs to restore: open against a saved
             // project so the engine has a valid root.
@@ -863,11 +863,11 @@ fn main() {
                 .map(|p| App::new_unloaded(p.to_string()))
             {
                 Some(Ok(a)) => a,
-                Some(Err(e)) => abort_startup(&format!(
+                Some(Err(e)) => empty_app(&format!(
                     "er-desktop: failed to init engine for {}: {e}",
                     fallback.as_deref().unwrap_or("?")
                 )),
-                None => abort_startup(
+                None => empty_app(
                     "er-desktop: not started from a git repo, and no saved project folder still exists",
                 ),
             }
@@ -887,7 +887,7 @@ fn main() {
                         );
                         a
                     }
-                    _ => abort_startup(&format!("er-desktop: failed to init engine: {cwd_err}")),
+                    _ => empty_app(&format!("er-desktop: failed to init engine: {cwd_err}")),
                 }
             }
         },
@@ -1357,12 +1357,13 @@ fn main() {
             if let Ok(mut f) = gh_status_loading.lock() {
                 f.gh_status = true;
             }
-            if let Some(snap) = commands::fetch_github_status(&owner, &repo, number) {
-                if let Ok(mut g) = gh_status_bg.lock() {
-                    g.insert((owner.clone(), repo.clone(), number), snap);
-                }
-                profile_log::bump_desktop_revision(&gh_status_desktop_rev, "gh_status_cache");
-            }
+            commands::fetch_and_store_github_status(
+                &gh_status_bg,
+                &gh_status_desktop_rev,
+                &owner,
+                &repo,
+                number,
+            );
             if let Ok(mut f) = gh_status_loading.lock() {
                 f.gh_status = false;
             }
@@ -1895,6 +1896,7 @@ fn main() {
             commands::toggle_panel,
             commands::request_file_content,
             commands::request_file_preview,
+            commands::request_image_preview,
             commands::select_file,
             commands::next_file,
             commands::prev_file,
@@ -1926,6 +1928,7 @@ fn main() {
             commands::add_comment,
             commands::add_question,
             commands::add_note,
+            commands::add_document_thread,
             commands::reply_to_thread,
             commands::delete_thread,
             commands::resolve_thread,
@@ -1940,6 +1943,7 @@ fn main() {
             commands::submit_github_review,
             commands::submit_github_pr_decision,
             commands::post_github_pr_comment,
+            gh_pr_actions::run_github_pr_action,
             commands::run_ai_review,
             commands::run_ai_expert_review,
             commands::run_ai_professor_review,
@@ -2181,9 +2185,11 @@ fn startup_root_from_projects(file: &projects::ProjectsFile) -> Option<String> {
         .map(|p| p.root_path.clone())
 }
 
-fn abort_startup(msg: &str) -> ! {
-    eprintln!("{msg}");
-    std::process::exit(1);
+/// Start with no repo open instead of exiting. A Finder launch with nothing to
+/// open lands here, and the front end shows its welcome so a repo can be picked.
+fn empty_app(msg: &str) -> App {
+    eprintln!("{msg}; opening with no repo");
+    App::new_empty()
 }
 
 /// Base cadence for the branch-base staleness probe: one `git ls-remote` a

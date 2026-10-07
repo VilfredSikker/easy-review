@@ -8,13 +8,15 @@
   import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import type { AppSnapshot } from "$lib/types";
+  import type { DocumentViewMode } from "$lib/documentPreviewCache";
 
   interface Props {
     snapshot: AppSnapshot;
     documents: Record<string, string>;
     viewModeOverride?: DiffViewMode;
+    documentMode?: DocumentViewMode;
   }
-  const { snapshot, documents, viewModeOverride = "unified" }: Props = $props();
+  const { snapshot, documents, viewModeOverride = "unified", documentMode = "preview" }: Props = $props();
 
   onMount(() => {
     const previous = Reflect.get(window, "__TAURI_INTERNALS__");
@@ -36,7 +38,7 @@
     });
     app.snapshot = snapshot;
     diffPreview.sync(snapshot);
-    for (const path of Object.keys(documents)) diffPreview.setMode(snapshot, path, true);
+    for (const path of Object.keys(documents)) diffPreview.setMode(snapshot, path, documentMode);
     return () => {
       Reflect.set(window, "__TAURI_INTERNALS__", previous);
       app.snapshot = null;
