@@ -449,6 +449,7 @@ pub fn latest_er_mtime_skipping(
         "checklist.json",
         "feedback.json",
         "questions.json",
+        "notes.json",
         "github-comments.json",
         "triage.json",
         "professor.json",
@@ -505,6 +506,15 @@ pub fn latest_er_mtime_skipping(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn latest_er_mtime_sees_notes_json() {
+        // An agent that edits notes.json outside er (resolving a note it acted
+        // on) must trigger the reload poll, or the desktop keeps showing it.
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("notes.json"), r#"{"version":1,"notes":[]}"#).unwrap();
+        assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_some());
+    }
 
     #[test]
     fn storage_branches_match_compares_slugs() {
