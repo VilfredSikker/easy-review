@@ -138,3 +138,10 @@ export function imagePanes(
   const changed = status === 'modified' || status === 'renamed';
   return [{ label: 'After', src: after, note: changed ? 'Before unavailable' : '' }];
 }
+
+/** ←/→ in the full-screen view. Stops at the ends so the key never jumps from After back to Before. */
+export function stepPane(index: number, key: string, count: number): number {
+  if (key === 'ArrowLeft') return Math.max(0, index - 1);
+  if (key === 'ArrowRight') return Math.min(count - 1, index + 1);
+  return index;
+}

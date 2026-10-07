@@ -7,7 +7,7 @@ description: >
   branch.
 metadata:
   author: easy-review
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Easy Review — respond (`er-respond`)
@@ -82,7 +82,7 @@ When the user runs `er-respond local`:
 1. Call `pr_feedback_get` with `{ "bucket": "local", "include_resolved": false }`.
 2. The MCP tool resolves the current repository and checked-out branch. Do not
    pass `ref`, `repo`, `project_id`, or `number` with `bucket: "local"`.
-3. When replying, pass the same `bucket: "local"` to `pr_feedback_reply`.
+3. When replying or resolving, pass the same `bucket: "local"` to `pr_feedback_reply` and `pr_feedback_resolve`.
 
 The local bucket contains the questions and notes created while reviewing the
 local branch diff. A normal target such as a PR URL continues to use the PR
@@ -121,7 +121,20 @@ bucket and should not be mixed with the local workflow.
 
 `type`: `question` | `note` | `finding`
 
-4. **`pr_feedback_get`** again to confirm.
+4. **`pr_feedback_resolve`** on a note once its change is made, validated, and
+   replied to. Resolve a question only when the user says it is settled.
+
+```json
+{
+  "ref": "…",
+  "type": "note",
+  "id": "n-…"
+}
+```
+
+`type`: `question` | `note`. Pass the top-level thread id, not a reply id.
+
+5. **`pr_feedback_get`** again to confirm.
 
 ## Rules
 
@@ -131,5 +144,11 @@ bucket and should not be mixed with the local workflow.
   the reply. Do not claim completion if implementation or validation is blocked.
   A stale note is the exception — say what it now refers to and wait for the
   user to confirm before changing anything.
-- Do not resolve or delete items (not supported via MCP yet).
+- Resolving marks a thread done and hides it from `pr_feedback_get`; nothing is
+  deleted. Do not resolve a note whose change is blocked or unvalidated.
+- Findings cannot be resolved over MCP. Reply with your verdict; the reviewer
+  dismisses findings in Easy Review.
+- Never edit the sidecar JSON files (`notes.json`, `questions.json`, …) by hand.
+  If the Easy Review MCP tools are not available in the session, say so and
+  stop rather than writing the files directly.
 - Do not invent ids — use ids from `pr_feedback_get`.

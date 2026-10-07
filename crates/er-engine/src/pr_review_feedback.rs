@@ -56,6 +56,14 @@ pub struct PrFeedbackReply {
     pub parent_id: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrFeedbackResolve {
+    pub id: String,
+    pub kind: String,
+    /// True when the thread was already resolved and nothing was written.
+    pub already_resolved: bool,
+}
+
 fn resolve_pr_er_dir(owner: &str, repo: &str, pr: u64) -> Result<String> {
     let slug = owner_repo_storage_slug(owner, repo);
     let er_dir = resolve_managed_root_for_pr_bucket(&slug, pr).er_dir();
@@ -312,6 +320,29 @@ fn append_note_reply(
     Ok(id)
 }
 
+/// Resolve sets `resolved` on the root only, so a reply under a resolved root
+/// is dropped by its parent rather than by its own flag.
+fn open_threads(items: Vec<ReviewQuestion>, include_resolved: bool) -> Vec<ReviewQuestion> {
+    if include_resolved {
+        return items;
+    }
+    let resolved_roots: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|q| q.resolved && q.in_reply_to.is_none())
+        .map(|q| q.id.clone())
+        .collect();
+    items
+        .into_iter()
+        .filter(|q| {
+            !q.resolved
+                && !q
+                    .in_reply_to
+                    .as_deref()
+                    .is_some_and(|parent| resolved_roots.contains(parent))
+        })
+        .collect()
+}
+
 /// Read questions, notes, and merged AI findings from a review bucket.
 pub fn get_review_feedback_in_dir(
     owner: &str,
@@ -324,21 +355,14 @@ pub fn get_review_feedback_in_dir(
     let diff_hash = pr_diff_hash(er_dir);
     let ai = load_ai_state(er_dir, &diff_hash, branch_scope);
 
-    let questions = ai
-        .questions
-        .map(|qs| qs.questions)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|q| include_resolved || !q.resolved)
-        .collect();
-
-    let notes = ai
-        .notes
-        .map(|ns| ns.notes)
-        .unwrap_or_default()
-        .into_iter()
-        .filter(|n| include_resolved || !n.resolved)
-        .collect();
+    let questions = open_threads(
+        ai.questions.map(|qs| qs.questions).unwrap_or_default(),
+        include_resolved,
+    );
+    let notes = open_threads(
+        ai.notes.map(|ns| ns.notes).unwrap_or_default(),
+        include_resolved,
+    );
 
     let findings = ai
         .review
@@ -467,6 +491,49 @@ pub fn reply_to_pr_finding(
 ) -> Result<PrFeedbackReply> {
     let er_dir = resolve_pr_er_dir(owner, repo, number)?;
     reply_to_finding_in_dir(&er_dir, finding_id, text)
+}
+
+/// Mark the top-level thread `id` resolved. Returns whether it already was.
+fn mark_thread_resolved(items: &mut [ReviewQuestion], id: &str, kind: &str) -> Result<bool> {
+    let root = items
+        .iter_mut()
+        .find(|q| q.id == id)
+        .with_context(|| format!("{kind} not found: {id}"))?;
+    if root.in_reply_to.is_some() {
+        bail!("resolve the top-level {kind} id, not a reply (flat threads)");
+    }
+    let already_resolved = root.resolved;
+    root.resolved = true;
+    Ok(already_resolved)
+}
+
+/// Resolve a top-level question thread in a review bucket. Same write as the
+/// Resolve action in Desktop and the TUI: the root's `resolved` flag, nothing deleted.
+pub fn resolve_question_in_dir(er_dir: &str, question_id: &str) -> Result<PrFeedbackResolve> {
+    let mut questions = load_questions(er_dir)?;
+    let already_resolved = mark_thread_resolved(&mut questions.questions, question_id, "question")?;
+    if !already_resolved {
+        write_json_atomic(&Path::new(er_dir).join("questions.json"), &questions)?;
+    }
+    Ok(PrFeedbackResolve {
+        id: question_id.to_string(),
+        kind: "question".to_string(),
+        already_resolved,
+    })
+}
+
+/// Resolve a top-level note thread in a review bucket.
+pub fn resolve_note_in_dir(er_dir: &str, note_id: &str) -> Result<PrFeedbackResolve> {
+    let mut notes = load_notes(er_dir)?;
+    let already_resolved = mark_thread_resolved(&mut notes.notes, note_id, "note")?;
+    if !already_resolved {
+        write_json_atomic(&Path::new(er_dir).join("notes.json"), &notes)?;
+    }
+    Ok(PrFeedbackResolve {
+        id: note_id.to_string(),
+        kind: "note".to_string(),
+        already_resolved,
+    })
 }
 
 #[cfg(test)]
@@ -608,6 +675,81 @@ mod tests {
             assert_eq!(feedback.findings.len(), 1);
             assert_eq!(feedback.findings[0].responses[0].text, "Confirmed.");
         });
+    }
+
+    #[test]
+    fn resolve_note_hides_its_thread_from_default_feedback_and_keeps_replies() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let mut reply = sample_question("n-reply");
+        reply.in_reply_to = Some("n-root".into());
+        let notes = ErNotes {
+            version: 1,
+            diff_hash: "hash".into(),
+            notes: vec![sample_question("n-root"), reply, sample_question("n-other")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+
+        let resolved = resolve_note_in_dir(&er_dir, "n-root").unwrap();
+        assert!(!resolved.already_resolved);
+        assert!(
+            resolve_note_in_dir(&er_dir, "n-root")
+                .unwrap()
+                .already_resolved
+        );
+
+        let open = get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, false).unwrap();
+        let open_ids: Vec<_> = open.notes.iter().map(|n| n.id.as_str()).collect();
+        assert!(!open_ids.contains(&"n-root"));
+        assert!(
+            !open_ids.contains(&"n-reply"),
+            "a resolved thread's replies must not show as open"
+        );
+        assert!(open_ids.contains(&"n-other"));
+
+        let with_resolved =
+            get_review_feedback_in_dir("acme", "widgets", 9, &er_dir, None, true).unwrap();
+        assert_eq!(with_resolved.notes.len(), 3);
+
+        let all = load_notes(&er_dir).unwrap();
+        assert_eq!(all.notes.len(), 3, "resolve must not delete anything");
+    }
+
+    #[test]
+    fn resolve_question_marks_the_root_resolved() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let qs = ErQuestions {
+            version: 1,
+            diff_hash: "hash".into(),
+            questions: vec![sample_question("q-root")],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("questions.json"), &qs).unwrap();
+
+        resolve_question_in_dir(&er_dir, "q-root").unwrap();
+        assert!(load_questions(&er_dir).unwrap().questions[0].resolved);
+    }
+
+    #[test]
+    fn resolve_refuses_a_reply_id_and_an_unknown_id() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_string_lossy().to_string();
+        let mut reply = sample_question("n-reply");
+        reply.in_reply_to = Some("n-root".into());
+        let notes = ErNotes {
+            version: 1,
+            diff_hash: "hash".into(),
+            notes: vec![sample_question("n-root"), reply],
+        };
+        write_json_atomic(&Path::new(&er_dir).join("notes.json"), &notes).unwrap();
+
+        assert!(resolve_note_in_dir(&er_dir, "n-reply").is_err());
+        assert!(resolve_note_in_dir(&er_dir, "n-missing").is_err());
+        assert!(load_notes(&er_dir)
+            .unwrap()
+            .notes
+            .iter()
+            .all(|n| !n.resolved));
     }
 
     #[test]

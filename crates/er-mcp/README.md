@@ -18,6 +18,7 @@ Thin REST API over `er-engine` — use **skills** for workflows.
 | `pr_summarize` | Read triage/review/tour summary from managed storage |
 | `pr_feedback_get` | Questions, notes, AI findings |
 | `pr_feedback_reply` | Reply (`type`: question \| note \| finding) |
+| `pr_feedback_resolve` | Resolve a question or note thread (`type`: question \| note) |
 | `pr_saved` | Pin / unpin / list saved PRs and artifacts |
 
 ## Universal `ref` targeting

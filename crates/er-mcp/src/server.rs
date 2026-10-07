@@ -14,7 +14,7 @@ use er_engine::github::{
 };
 use er_engine::pr_review_feedback::{
     get_review_feedback_in_dir, reply_to_finding_in_dir, reply_to_note_in_dir,
-    reply_to_question_in_dir,
+    reply_to_question_in_dir, resolve_note_in_dir, resolve_question_in_dir,
 };
 use er_engine::projects_pins::{self, PinnedPr};
 use er_engine::review_queue::{
@@ -194,6 +194,19 @@ pub struct PrFeedbackReplyArgs {
     pub text: String,
     #[serde(default)]
     pub author: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrFeedbackResolveArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `pr` (default) or `local` for the current checked-out branch's branch bucket.
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// `question` | `note`. Findings are not resolvable here.
+    pub r#type: String,
+    /// Top-level thread id from `pr_feedback_get`, not a reply id.
+    pub id: String,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -1154,6 +1167,50 @@ impl ErMcp {
         }))
     }
 
+    #[tool(
+        description = "Resolve a question or note thread once it is answered or implemented. Marks it resolved (hidden from pr_feedback_get by default); nothing is deleted. Findings are not resolvable here. bucket=local resolves in the current checked-out branch's local branch bucket."
+    )]
+    async fn pr_feedback_resolve(
+        &self,
+        Parameters(args): Parameters<PrFeedbackResolveArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        let bucket = feedback_bucket(args.bucket.as_deref())?;
+        let pr = resolve_feedback_target(&args.target, bucket)?;
+        let er_dir = pr.bucket_path.clone();
+        let id = args.id;
+
+        let resolved = match args.r#type.to_ascii_lowercase().as_str() {
+            "question" => {
+                tokio::task::spawn_blocking(move || resolve_question_in_dir(&er_dir, &id))
+            }
+            "note" => tokio::task::spawn_blocking(move || resolve_note_in_dir(&er_dir, &id)),
+            // ADR 0009: findings are AI-owned and the reviewer removes them.
+            "finding" => {
+                return Err(tool_err(
+                    "findings cannot be resolved over MCP; reply with pr_feedback_reply and \
+                     leave dismissal to the reviewer",
+                ));
+            }
+            other => {
+                return Err(tool_err(format!(
+                    "type must be question or note (got '{other}')"
+                )));
+            }
+        }
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map_err(|e| tool_err(e.to_string()))?;
+
+        text_json(&json!({
+            "project": pr.project_name,
+            "repo": format!("{}/{}", pr.owner, pr.repo),
+            "number": pr.number,
+            "bucket": bucket,
+            "bucket_path": pr.bucket_path,
+            "resolved": resolved,
+        }))
+    }
+
     #[tool(description = "Pin, unpin, or list saved PRs and uploaded artifacts.")]
     async fn pr_saved(
         &self,
@@ -1345,7 +1402,7 @@ impl ServerHandler for ErMcp {
                  Query queues with prs_query. Review: pr_prepare → pr_upload. \
                  Guided tour: pr_guide (prepare → upload tour.json). \
                  Diagrams: pr_diagram (list | prepare → upload diagram JSON). \
-                 Feedback: pr_feedback_get / pr_feedback_reply. Saved: pr_saved. \
+                 Feedback: pr_feedback_get / pr_feedback_reply / pr_feedback_resolve. Saved: pr_saved. \
                  Skills: er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved.",
             )
     }
@@ -1391,7 +1448,11 @@ mod tests {
     fn feedback_tools_advertise_bucket_selector() {
         let server = ErMcp::new();
         let tools = server.tool_router.list_all();
-        for name in ["pr_feedback_get", "pr_feedback_reply"] {
+        for name in [
+            "pr_feedback_get",
+            "pr_feedback_reply",
+            "pr_feedback_resolve",
+        ] {
             let tool = tools
                 .iter()
                 .find(|tool| tool.name == name)
