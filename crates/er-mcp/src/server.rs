@@ -39,12 +39,6 @@ use crate::projects::{self, PrTargetInput, ResolvedPr};
 
 #[derive(Clone)]
 pub struct ErMcp {
-    // Tests read the router directly; the server only through the code
-    // #[tool_handler] generates, which dead-code analysis does not see.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "read only by #[tool_handler]-generated code")
-    )]
     tool_router: ToolRouter<Self>,
 }
 
@@ -1387,12 +1381,31 @@ impl ErMcp {
     }
 }
 
+impl ErMcp {
+    /// The macro-generated `list_tools` leaves `ttlMs` and `cacheScope` out,
+    /// though 2026-07-28 requires both. Defining `list_tools` stops the macro
+    /// generating one. Remove this once rmcp fills the fields itself.
+    fn tool_list(&self) -> ListToolsResult {
+        ListToolsResult::with_all_items(self.tool_router.list_all())
+            .with_ttl_ms(0)
+            .with_cache_scope(CacheScope::Private)
+    }
+}
+
 #[expect(
     clippy::unused_async_trait_impl,
     reason = "#[tool_handler] generates the async trait methods; there is nothing to await in them"
 )]
 #[tool_handler]
 impl ServerHandler for ErMcp {
+    async fn list_tools(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: rmcp::service::RequestContext<rmcp::RoleServer>,
+    ) -> Result<ListToolsResult, McpError> {
+        Ok(self.tool_list())
+    }
+
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
@@ -1424,6 +1437,16 @@ mod tests {
             ProtocolVersion::V_2026_07_28
         );
         assert!(server.get_info().capabilities.tools.is_some());
+    }
+
+    #[test]
+    fn tools_list_carries_the_2026_cache_fields() {
+        // Claude Code rejects a 2026-07-28 tools/list without both fields and
+        // then shows the server with no tools at all.
+        let value = serde_json::to_value(ErMcp::new().tool_list()).unwrap();
+        assert_eq!(value["ttlMs"], json!(0));
+        assert_eq!(value["cacheScope"], json!("private"));
+        assert!(value["tools"].as_array().is_some_and(|t| !t.is_empty()));
     }
 
     #[test]

@@ -1,3 +1,15 @@
+# Easy Review v0.5.6
+
+## In plain terms
+
+- **What changed.** Claude Code shows the Easy Review MCP tools again. Before, it connected to `easy-review-mcp` but listed no tools, with "tools fetch failed" and an error about `ttlMs` and `cacheScope`.
+- **TL;DR.** A hotfix for Claude Code seeing no Easy Review MCP tools.
+
+## What's Changed
+
+### Fixes
+- MCP: protocol 2026-07-28 requires `ttlMs` and `cacheScope` on a `tools/list` result, and the reply from `er-mcp` had neither, so Claude Code rejected the whole tool list. `er-mcp` now sends both (fresh for 0 ms, private scope).
+
 # Easy Review v0.5.5
 
 ## In plain terms
