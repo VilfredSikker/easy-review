@@ -858,7 +858,8 @@ pub fn ai_hub_catalog() -> AiHubConfig {
 /// successor keeps a retired default on the same tier rather than falling back
 /// to the catalog default.
 const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
-    ("claude", "sonnet-4.6", "sonnet-5"),
+    ("claude", "sonnet-4.6", "sonnet-5.5"),
+    ("claude", "sonnet-5", "sonnet-5.5"),
     ("claude", "opus-4.6", "opus-5.5"),
     ("claude", "opus-4.7", "opus-5.5"),
     ("claude", "opus-4.8", "opus-5.5"),
@@ -3277,7 +3278,7 @@ mod tests {
 
         let claude = hub.providers.get("claude").expect("claude provider");
         let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
-        assert!(ids.contains(&"sonnet-5"), "missing sonnet-5: {ids:?}");
+        assert!(ids.contains(&"sonnet-5.5"), "missing sonnet-5.5: {ids:?}");
         assert!(ids.contains(&"opus-5.5"), "missing opus-5.5: {ids:?}");
         assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
 
@@ -3350,6 +3351,37 @@ mod tests {
                 .as_deref(),
             Some("fable-5.1")
         );
+    }
+
+    #[test]
+    fn supplement_ai_hub_moves_a_saved_sonnet_5_default_to_sonnet_5_5() {
+        // Sonnet 5 was the catalog default, so most saved configs hold it.
+        let mut hub = AiHubConfig {
+            default_provider: Some("claude".into()),
+            default_model: Some("sonnet-5".into()),
+            providers: BTreeMap::from([(
+                "claude".into(),
+                AiProviderConfig {
+                    models: vec![AiModelConfig {
+                        id: "sonnet-5".into(),
+                        args: vec!["--model".into(), "claude-sonnet-5".into()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
+        let sonnet = hub.providers["claude"]
+            .models
+            .iter()
+            .find(|m| m.id == "sonnet-5.5")
+            .expect("sonnet-5.5 merged from the catalog");
+        assert_eq!(sonnet.args, ["--model", "claude-sonnet-5-5"]);
     }
 
     #[test]
