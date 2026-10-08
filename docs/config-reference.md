@@ -113,7 +113,7 @@ Top-level keys: `default_provider`, `default_model`, `default_effort` (optional)
 ```toml
 [ai_hub]
 default_provider = "claude"
-default_model = "sonnet-5"
+default_model = "sonnet-5.5"
 default_effort = "high"        # omit, or pick Auto in the UI, for the provider default
 max_concurrent_reviews = 3     # background reviews + arena reviewers
 
@@ -125,9 +125,9 @@ family = "claude"              # optional: adopt another family's arg convention
 models_command = []            # optional: CLI that lists model ids, e.g. ["agent", "--list-models"]
 
 [[ai_hub.providers.claude.models]]
-id = "sonnet-5"                # required
-label = "Sonnet 5"
-args = ["--model", "claude-sonnet-5"]
+id = "sonnet-5.5"              # required
+label = "Sonnet 5.5"
+args = ["--model", "claude-sonnet-5-5"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
 ```
 

@@ -1,7 +1,7 @@
 # Canonical [ai_hub] presets merged into user config at load time (missing models only).
 [ai_hub]
 default_provider = "claude"
-default_model = "sonnet-5"
+default_model = "sonnet-5.5"
 
 [ai_hub.providers.claude]
 label = "Claude"
@@ -30,10 +30,10 @@ cost_per_1k_out = 0.020
 avg_latency_ms = 22000
 
 [[ai_hub.providers.claude.models]]
-id = "sonnet-5"
-label = "Sonnet 5"
-description = "Best speed + intelligence · 1M context"
-args = ["--model", "claude-sonnet-5"]
+id = "sonnet-5.5"
+label = "Sonnet 5.5"
+description = "Latest Sonnet · speed + intelligence · 1M context"
+args = ["--model", "claude-sonnet-5-5"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.002
 cost_per_1k_out = 0.010

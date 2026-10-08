@@ -45,7 +45,7 @@ args    = ["--print", "--output-format", "stream-json", "-p", "{prompt}"]
 # If omitted, AI Hub falls back to the single [agent] config above.
 [ai_hub]
 default_provider = "claude"
-default_model = "sonnet-5"
+default_model = "sonnet-5.5"
 # Optional global effort/reasoning override; omit or use Auto in the UI for provider default.
 # default_effort = "high"
 
@@ -75,10 +75,10 @@ cost_per_1k_out = 0.020
 avg_latency_ms = 22000
 
 [[ai_hub.providers.claude.models]]
-id = "sonnet-5"
-label = "Sonnet 5"
-description = "Best speed + intelligence · 1M context"
-args = ["--model", "claude-sonnet-5"]
+id = "sonnet-5.5"
+label = "Sonnet 5.5"
+description = "Latest Sonnet · speed + intelligence · 1M context"
+args = ["--model", "claude-sonnet-5-5"]
 effort_levels = ["low", "medium", "high", "xhigh", "max"]
 cost_per_1k_in = 0.002
 cost_per_1k_out = 0.010

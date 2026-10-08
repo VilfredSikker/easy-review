@@ -1066,7 +1066,7 @@ mod tests {
             AgentInvocationRequest {
                 selection: AgentSelection::Runtime {
                     provider_id: Some("claude"),
-                    model_id: Some("sonnet-5"),
+                    model_id: Some("sonnet-5.5"),
                 },
                 task: &task,
                 effort: Some("high"),
