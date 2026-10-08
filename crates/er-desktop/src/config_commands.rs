@@ -609,6 +609,7 @@ pub async fn upsert_ai_model(
             avg_latency_ms: model.avg_latency_ms,
             effort_levels: model.effort_levels,
             discovered: false,
+            edited: true,
         });
 
         let warnings_provider = provider.clone();

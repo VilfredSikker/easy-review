@@ -132,11 +132,11 @@ effort_levels = ["low", "medium", "high", "xhigh", "max"]
 ```
 
 Provider keys: `label`, `command`, `args`, `family`, `models_command`, `models`, `removed_catalog_models`.
-Model keys: `id` (required), `label`, `description`, `args`, `effort_levels`, and the optional `cost_per_1k_in`, `cost_per_1k_out`, `avg_latency_ms` used for arena cost estimates.
+Model keys: `id` (required), `label`, `description`, `args`, `effort_levels`, `edited`, and the optional `cost_per_1k_in`, `cost_per_1k_out`, `avg_latency_ms` used for arena cost estimates.
 
 Rules:
 
-- A built-in catalog — claude, codex, cursor, opencode — is merged into the in-memory config on load, adding models it has and you do not. Deprecated Claude model ids are dropped, and a `default_model` naming one is replaced with the catalog default. The file itself is untouched until something saves, and models found by `models_command` discovery are never persisted.
+- A built-in catalog — claude, codex, cursor, opencode — owns its preset models. Each load builds them from the catalog, so a release's model changes reach every config, and saving never writes them back. A preset you save from Settings is marked `edited = true` and kept as you wrote it. Your own models are listed first, then the presets in catalog order. A `default_model` naming a retired preset moves to its successor. Models found by `models_command` discovery are never persisted. See ADR 0042.
 - Deleting a catalog provider or model in the UI records its id in `removed_catalog_providers` / `removed_catalog_models`, which is what stops the catalog re-adding it.
 - With no providers configured, `[ai_hub]` is inert and every action falls back to `[agent]`.
 - Provider `args` are the shared base for that CLI; model `args` are appended after them. OpenCode is the exception: its model and effort flags are inserted **before** `{prompt}`, which is a trailing positional argument there.
