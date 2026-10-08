@@ -212,7 +212,7 @@ Repository secrets (Settings → Secrets and variables → Actions):
 | `APPLE_SIGNING_IDENTITY` | optional, as locally |
 
 Without `APPLE_CERTIFICATE` the job skips the build and the release publishes
-the TUI and MCP binaries with no DMG — upload a locally signed one with
+the TUI binaries with no DMG — upload a locally signed one with
 `gh release upload v<version> "target/desktop/release/bundle/dmg/"*.dmg`.
 
 ### Verify
@@ -324,7 +324,7 @@ Unused-on-purpose names start with `_` in TypeScript.
 
 ## Releasing the TUI (`er`)
 
-Published releases are **terminal `er`**, **er-mcp**, and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. CI builds the signed + notarized DMG only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are set ([Signing in CI](#signing-in-ci)); without them the DMG job skips its build and still reports success, and the release ships without a DMG. In that case build it with [`just sign`](#macos-signed-release-developer-id--notarization) and attach it with `gh release upload <tag> target/desktop/release/bundle/dmg/*.dmg`.
+Published releases are **terminal `er`** archives and a **macOS desktop `.dmg`** (Apple Silicon), built by [`.github/workflows/release.yml`](../.github/workflows/release.yml) on tag push. `er-mcp` ships only to npm, as the `easy-review-mcp` platform packages. CI builds the signed + notarized DMG only when the `APPLE_CERTIFICATE` and `APPLE_CERTIFICATE_PASSWORD` secrets are set ([Signing in CI](#signing-in-ci)); without them the DMG job skips its build and still reports success, and the release ships without a DMG. In that case build it with [`just sign`](#macos-signed-release-developer-id--notarization) and attach it with `gh release upload <tag> target/desktop/release/bundle/dmg/*.dmg`.
 
 **Maintainer flow:**
 

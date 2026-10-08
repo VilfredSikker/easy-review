@@ -31,13 +31,13 @@
     <h3>npm</h3>
     <p>
       The <code>easy-review-mcp</code> package runs the MCP server. npm installs the prebuilt
-      <code>er-mcp</code> binary for your platform as an optional dependency, so a normal install
-      downloads nothing extra. If that package is unavailable, the launcher falls back to the
-      matching GitHub Release, caches it locally, and reuses the cached copy.
+      <code>er-mcp</code> binary for your platform as an optional dependency. An install that skips
+      optional dependencies (<code>--omit=optional</code>) leaves it out, and the launcher then stops
+      with an error that says so; there is no download fallback.
     </p>
     <pre><code>npx -y easy-review-mcp</code></pre>
     <p>Supported hosts: macOS arm64/x64, Linux x64.
-    Set <code>ER_MCP_PATH=/path/to/er-mcp</code> to use a specific binary instead of downloading.</p>
+    Set <code>ER_MCP_PATH=/path/to/er-mcp</code> to use a specific binary instead.</p>
 
     <h3>From source</h3>
     <pre><code>git clone https://github.com/VilfredSikker/easy-review.git
@@ -221,9 +221,7 @@ args = ["-y", "easy-review-mcp"]</code></pre>
 
     <h2>Troubleshooting</h2>
     <ul>
-      <li><strong>Claude stuck on “connecting…”</strong> — if the launcher had to download a binary, macOS Gatekeeper may block it. Clear quarantine and reconnect:
-        <pre><code>xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
-<span class="cmt"># then in Claude: /mcp → easy-review → Reconnect</span></code></pre>
+      <li><strong>Claude stuck on “connecting…”, or “not installed”</strong> — the platform package is missing. Reinstall without skipping optional dependencies, then in Claude: <code>/mcp → easy-review → Reconnect</code>.
         Or skip npx and point at a local binary:
         <pre><code>cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
 claude mcp add --scope user easy-review -- "$(command -v er-mcp)"</code></pre>

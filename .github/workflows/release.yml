@@ -42,17 +42,16 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf ../../../er-${{ matrix.target }}.tar.gz er
-          tar -czf ../../../er-mcp-${{ matrix.target }}.tar.gz er-mcp
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bins-${{ matrix.target }}
-          path: |
-            er-${{ matrix.target }}.tar.gz
-            er-mcp-${{ matrix.target }}.tar.gz
+          path: er-${{ matrix.target }}.tar.gz
 
+      # er-mcp ships only through npm (the platform packages below), so its
+      # binary is an artifact for the npm job and never a release asset.
       - name: Upload er-mcp binary
         uses: actions/upload-artifact@v4
         with:
@@ -147,7 +146,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download TUI/MCP artifacts
+      - name: Download TUI artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: bins-*
@@ -156,7 +155,7 @@ jobs:
       - name: Download desktop DMG
         # build-desktop is continue-on-error; the artifact may not exist if signing
         # failed or was skipped. Allow missing artifacts so the release still publishes
-        # the TUI/MCP binaries.
+        # the TUI binaries.
         uses: actions/download-artifact@v4
         with:
           name: desktop-dmg
@@ -170,7 +169,6 @@ jobs:
           files: |
             er-x86_64-*.tar.gz
             er-aarch64-*.tar.gz
-            er-mcp-*.tar.gz
             desktop/*.dmg
 
   npm:
@@ -223,7 +221,7 @@ jobs:
           done
           # The launcher's optionalDependencies pins must also match the tag, or
           # npm silently skips the (nonexistent) platform version and every user
-          # falls back to the GitHub download this change exists to avoid.
+          # gets no binary at all: the launcher has no download to fall back to.
           for pkg in easy-review-mcp-darwin-arm64 easy-review-mcp-darwin-x64 easy-review-mcp-linux-x64; do
             PIN=$(node -p "require('./npm/er-mcp/package.json').optionalDependencies['$pkg']")
             if [ "$TAG" != "$PIN" ]; then
