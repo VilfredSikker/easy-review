@@ -1,3 +1,16 @@
+# Easy Review v0.5.8
+
+## In plain terms
+
+- **What changed.** The Claude model list offers Haiku 5.5 in place of Haiku 4.5. The model lists in Settings and the ⌘K picker now always match the models Easy Review ships, in the shipped order, with current prices and labels. Before, each config kept a copy of the models from the release that first saved it.
+- **TL;DR.** Haiku 5.5 replaces Haiku 4.5, and the model list follows each release.
+
+## What's Changed
+
+### Fixes
+- AI: the Claude preset `haiku-4.5` (`claude-haiku-4-5-20251001`) is replaced by `haiku-5.5` (`claude-haiku-5-5`). v0.5.7 said Haiku 4.5 was still the newest Haiku; that was wrong. Like Haiku 4.5, the preset offers no effort levels.
+- AI: the shipped model catalog now owns its preset models (ADR 0042). Each load builds them from the catalog, and saving no longer writes them into `config.toml`, so new models, prices, labels and order reach existing configs. Your own models are kept and listed first. A preset you save from Settings is marked `edited` and kept as you wrote it. One-time effect: a preset you hand-edited before this release is reset to the shipped version, because old configs cannot tell an edit from an untouched copy.
+
 # Easy Review v0.5.7
 
 ## In plain terms
