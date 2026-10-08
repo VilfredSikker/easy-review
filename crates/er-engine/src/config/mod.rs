@@ -860,6 +860,7 @@ pub fn ai_hub_catalog() -> AiHubConfig {
 const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
     ("claude", "sonnet-4.6", "sonnet-5.5"),
     ("claude", "sonnet-5", "sonnet-5.5"),
+    ("claude", "haiku-4.5", "haiku-5.5"),
     ("claude", "opus-4.6", "opus-5.5"),
     ("claude", "opus-4.7", "opus-5.5"),
     ("claude", "opus-4.8", "opus-5.5"),
@@ -3280,7 +3281,7 @@ mod tests {
         let ids: Vec<&str> = claude.models.iter().map(|m| m.id.as_str()).collect();
         assert!(ids.contains(&"sonnet-5.5"), "missing sonnet-5.5: {ids:?}");
         assert!(ids.contains(&"opus-5.5"), "missing opus-5.5: {ids:?}");
-        assert!(ids.contains(&"haiku-4.5"), "missing haiku-4.5: {ids:?}");
+        assert!(ids.contains(&"haiku-5.5"), "missing haiku-5.5: {ids:?}");
 
         let opus_5 = claude
             .models
@@ -3382,6 +3383,37 @@ mod tests {
             .find(|m| m.id == "sonnet-5.5")
             .expect("sonnet-5.5 merged from the catalog");
         assert_eq!(sonnet.args, ["--model", "claude-sonnet-5-5"]);
+    }
+
+    #[test]
+    fn supplement_ai_hub_moves_a_saved_haiku_4_5_default_to_haiku_5_5() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("claude".into()),
+            default_model: Some("haiku-4.5".into()),
+            providers: BTreeMap::from([(
+                "claude".into(),
+                AiProviderConfig {
+                    models: vec![AiModelConfig {
+                        id: "haiku-4.5".into(),
+                        args: vec!["--model".into(), "claude-haiku-4-5-20251001".into()],
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_model.as_deref(), Some("haiku-5.5"));
+        let models = &hub.providers["claude"].models;
+        assert!(models.iter().all(|m| m.id != "haiku-4.5"));
+        let haiku = models
+            .iter()
+            .find(|m| m.id == "haiku-5.5")
+            .expect("haiku-5.5 merged from the catalog");
+        assert_eq!(haiku.args, ["--model", "claude-haiku-5-5"]);
     }
 
     #[test]
