@@ -1,3 +1,18 @@
+# Easy Review v0.5.7
+
+## In plain terms
+
+- **What changed.** The Claude model list offers Sonnet 5.5 in place of Sonnet 5, and it is the default model. Sonnet 5.5 costs the same as Sonnet 5. If your saved settings still pick Sonnet 5, they move to Sonnet 5.5 the next time the app loads.
+- **TL;DR.** Sonnet 5.5 replaces Sonnet 5.
+
+## What's Changed
+
+### Features
+- AI: the Claude preset `sonnet-5` (`claude-sonnet-5`) is replaced by `sonnet-5.5` (`claude-sonnet-5-5`), which is also the new catalog default. A saved default of `sonnet-5` or `sonnet-4.6` moves to `sonnet-5.5`. Haiku stays on Haiku 4.5, which is still the newest Haiku.
+
+### Fixes
+- Release: the release workflow uploaded each `er-mcp` archive twice in parallel, which could fail Create Release and skip the npm publish. Each archive is now uploaded once.
+
 # Easy Review v0.5.6
 
 ## In plain terms
