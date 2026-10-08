@@ -3,7 +3,7 @@
 
 /**
  * npx entrypoint for Easy Review MCP.
- * Resolves (or downloads) the native `er-mcp` binary, then execs it with
+ * Resolves the native `er-mcp` binary, then execs it with
  * inherited stdio so MCP clients can speak the protocol over stdin/stdout.
  */
 
