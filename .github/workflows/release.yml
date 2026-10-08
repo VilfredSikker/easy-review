@@ -168,7 +168,8 @@ jobs:
         with:
           generate_release_notes: true
           files: |
-            er-*.tar.gz
+            er-x86_64-*.tar.gz
+            er-aarch64-*.tar.gz
             er-mcp-*.tar.gz
             desktop/*.dmg
 
