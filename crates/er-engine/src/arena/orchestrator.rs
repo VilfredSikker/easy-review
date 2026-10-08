@@ -1593,6 +1593,7 @@ mod tests {
                         avg_latency_ms: Some(5_000),
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                     AiModelConfig {
                         id: "slow".into(),
@@ -1604,6 +1605,7 @@ mod tests {
                         avg_latency_ms: Some(20_000),
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                 ],
                 ..Default::default()
@@ -1643,6 +1645,7 @@ mod tests {
                     avg_latency_ms: None,
                     effort_levels: vec![],
                     discovered: false,
+                    edited: false,
                 }],
                 ..Default::default()
             },
@@ -1662,6 +1665,7 @@ mod tests {
                     avg_latency_ms: None,
                     effort_levels: vec![],
                     discovered: false,
+                    edited: false,
                 }],
                 ..Default::default()
             },
@@ -1700,6 +1704,7 @@ mod tests {
                         avg_latency_ms: None,
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                     AiModelConfig {
                         id: "dear".into(),
@@ -1711,6 +1716,7 @@ mod tests {
                         avg_latency_ms: None,
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                 ],
                 ..Default::default()

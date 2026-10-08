@@ -530,6 +530,10 @@ pub struct AiModelConfig {
     /// Runtime-only overlay marker for models from CLI discovery. Never persisted.
     #[serde(skip)]
     pub discovered: bool,
+    /// Set when the user saves this model from Settings. An unedited preset is
+    /// rebuilt from the catalog on load and never written to disk (ADR 0042).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub edited: bool,
 }
 
 /// [summary] section — configuration for diff summary / changelog generation
@@ -853,10 +857,11 @@ pub fn ai_hub_catalog() -> AiHubConfig {
 
 /// Presets dropped from the catalog: `(provider, retired id, successor id)`.
 ///
-/// A saved config keeps every preset it ever merged, and the merge below only
-/// adds, so a drop reaches existing configs through this list alone. The
-/// successor keeps a retired default on the same tier rather than falling back
-/// to the catalog default.
+/// Presets are no longer saved (ADR 0042), but configs written before that hold
+/// copies with no `edited` mark, and an unknown id there could equally be the
+/// user's own model, so only this list may drop one. The successor keeps a
+/// retired default on the same tier rather than falling back to the catalog
+/// default.
 const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
     ("claude", "sonnet-4.6", "sonnet-5.5"),
     ("claude", "sonnet-5", "sonnet-5.5"),
@@ -885,7 +890,27 @@ fn retire_preset_models(hub: &mut AiHubConfig) {
     }
 }
 
-/// Merge missing catalog providers/models into `hub` (in-memory only; does not write config files).
+/// The catalog owns its presets: each comes from the catalog, in catalog order,
+/// unless the user edited it. The user's own models stay first, in saved order.
+fn merge_catalog_models(
+    saved: Vec<AiModelConfig>,
+    presets: Vec<AiModelConfig>,
+    removed: &[String],
+) -> Vec<AiModelConfig> {
+    let (copies, mut models): (Vec<_>, Vec<_>) = saved
+        .into_iter()
+        .partition(|m| presets.iter().any(|p| p.id == m.id));
+    for preset in presets {
+        if removed.contains(&preset.id) {
+            continue;
+        }
+        let edited = copies.iter().find(|m| m.id == preset.id && m.edited);
+        models.push(edited.cloned().unwrap_or(preset));
+    }
+    models
+}
+
+/// Merge catalog providers and their presets into `hub` (in-memory only; does not write config files).
 ///
 /// Respects tombstones (`removed_catalog_providers` / `removed_catalog_models`) so
 /// user deletes stick across reloads. Backfills unset `family` / `models_command`
@@ -922,21 +947,11 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
                 {
                     existing.models_command = catalog_provider.models_command.clone();
                 }
-                let removed_models: HashSet<&str> = existing
-                    .removed_catalog_models
-                    .iter()
-                    .map(String::as_str)
-                    .collect();
-                let existing_ids: HashSet<String> =
-                    existing.models.iter().map(|m| m.id.clone()).collect();
-                for model in catalog_provider.models {
-                    if removed_models.contains(model.id.as_str()) {
-                        continue;
-                    }
-                    if !existing_ids.contains(&model.id) {
-                        existing.models.push(model);
-                    }
-                }
+                existing.models = merge_catalog_models(
+                    std::mem::take(&mut existing.models),
+                    catalog_provider.models,
+                    &existing.removed_catalog_models,
+                );
             }
             None => {
                 hub.providers.insert(id, catalog_provider);
@@ -1000,6 +1015,7 @@ pub fn overlay_discovered_models(
             cost_per_1k_out: None,
             avg_latency_ms: None,
             discovered: true,
+            edited: false,
         });
     }
 }
@@ -1833,10 +1849,24 @@ pub fn load_global_config() -> ErConfig {
     config
 }
 
+/// What `save_config` writes: discovered models and unedited catalog presets
+/// are rebuilt on load, so writing them would only freeze a copy that goes
+/// stale on the next release (ADR 0042).
+pub fn persisted_config(config: &ErConfig) -> ErConfig {
+    let catalog = ai_hub_catalog();
+    let mut to_save = config.clone();
+    for (id, provider) in &mut to_save.ai_hub.providers {
+        let presets = catalog.providers.get(id);
+        let is_preset =
+            |model_id: &str| presets.is_some_and(|p| p.models.iter().any(|m| m.id == model_id));
+        provider
+            .models
+            .retain(|m| !m.discovered && (m.edited || !is_preset(&m.id)));
+    }
+    to_save
+}
+
 /// Save config to managed storage (`<storage_root>/config.toml`).
-///
-/// Strips runtime-only discovered models before serializing so discovery
-/// overlays never leak into the persisted file.
 pub fn save_config(config: &ErConfig) -> Result<()> {
     let root = crate::storage::storage_root();
     std::fs::create_dir_all(&root)?;
@@ -1846,11 +1876,7 @@ pub fn save_config(config: &ErConfig) -> Result<()> {
     }
     let tmp_path = path.with_file_name(format!("config.toml.tmp.{}", std::process::id()));
 
-    let mut to_save = config.clone();
-    for provider in to_save.ai_hub.providers.values_mut() {
-        provider.models.retain(|m| !m.discovered);
-    }
-    let content = toml::to_string_pretty(&to_save)?;
+    let content = toml::to_string_pretty(&persisted_config(config))?;
     std::fs::write(&tmp_path, content)?;
     std::fs::rename(&tmp_path, &path)?;
     Ok(())
@@ -2527,6 +2553,7 @@ mod tests {
                         avg_latency_ms: None,
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                     AiModelConfig {
                         id: "gpt-5.3-codex".into(),
@@ -2538,6 +2565,7 @@ mod tests {
                         avg_latency_ms: None,
                         effort_levels: vec![],
                         discovered: false,
+                        edited: false,
                     },
                 ],
                 ..Default::default()
@@ -3296,6 +3324,136 @@ mod tests {
 
         // User-defined models and order are preserved.
         assert_eq!(claude.models[0].id, "custom-model");
+    }
+
+    fn claude_hub(models: Vec<AiModelConfig>) -> AiHubConfig {
+        AiHubConfig {
+            default_provider: Some("claude".into()),
+            providers: BTreeMap::from([(
+                "claude".into(),
+                AiProviderConfig {
+                    models,
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        }
+    }
+
+    fn claude_ids(hub: &AiHubConfig) -> Vec<&str> {
+        hub.providers["claude"]
+            .models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn supplement_ai_hub_rebuilds_saved_preset_copies_from_the_catalog() {
+        // A config saved by an older release: presets in first-merge order,
+        // one with a price the catalog has since changed.
+        let preset = |id: &str| AiModelConfig {
+            id: id.into(),
+            ..Default::default()
+        };
+        let mut hub = claude_hub(vec![
+            preset("haiku-4.5"),
+            preset("fable-5.1"),
+            AiModelConfig {
+                cost_per_1k_in: Some(0.5),
+                label: Some("Opus (old)".into()),
+                ..preset("opus-5.5")
+            },
+            preset("sonnet-5.5"),
+        ]);
+
+        supplement_ai_hub(&mut hub);
+
+        let catalog = ai_hub_catalog();
+        let catalog_ids: Vec<&str> = catalog.providers["claude"]
+            .models
+            .iter()
+            .map(|m| m.id.as_str())
+            .collect();
+        assert_eq!(claude_ids(&hub), catalog_ids);
+        let opus = hub.providers["claude"]
+            .models
+            .iter()
+            .find(|m| m.id == "opus-5.5")
+            .unwrap();
+        assert_eq!(opus.label.as_deref(), Some("Opus 5.5"));
+        assert_eq!(opus.cost_per_1k_in, Some(0.004));
+    }
+
+    #[test]
+    fn supplement_ai_hub_keeps_an_edited_preset() {
+        let mut hub = claude_hub(vec![AiModelConfig {
+            id: "opus-5.5".into(),
+            args: vec![
+                "--model".into(),
+                "claude-opus-5-5".into(),
+                "--verbose".into(),
+            ],
+            edited: true,
+            ..Default::default()
+        }]);
+
+        supplement_ai_hub(&mut hub);
+
+        let opus = hub.providers["claude"]
+            .models
+            .iter()
+            .find(|m| m.id == "opus-5.5")
+            .unwrap();
+        assert!(opus.args.iter().any(|a| a == "--verbose"));
+        assert_eq!(opus.label, None, "the edit is kept whole, not merged");
+    }
+
+    #[test]
+    fn persisted_config_writes_only_what_the_catalog_cannot_rebuild() {
+        let mut config = ErConfig {
+            ai_hub: claude_hub(vec![
+                AiModelConfig {
+                    id: "my-model".into(),
+                    ..Default::default()
+                },
+                AiModelConfig {
+                    id: "opus-5.5".into(),
+                    edited: true,
+                    ..Default::default()
+                },
+            ]),
+            ..Default::default()
+        };
+        supplement_ai_hub(&mut config.ai_hub);
+        config
+            .ai_hub
+            .providers
+            .get_mut("claude")
+            .unwrap()
+            .models
+            .push(AiModelConfig {
+                id: "found-by-cli".into(),
+                discovered: true,
+                ..Default::default()
+            });
+        let loaded = claude_ids(&config.ai_hub)
+            .into_iter()
+            .filter(|id| *id != "found-by-cli")
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+
+        let saved = persisted_config(&config);
+
+        assert_eq!(claude_ids(&saved.ai_hub), ["my-model", "opus-5.5"]);
+        let toml = toml::to_string_pretty(&saved).unwrap();
+        assert_eq!(toml.matches("edited = true").count(), 1);
+        assert!(!toml.contains("edited = false"));
+
+        // Loading what was written gives back the same list.
+        let mut reloaded: ErConfig = toml::from_str(&toml).unwrap();
+        supplement_ai_hub(&mut reloaded.ai_hub);
+        assert_eq!(claude_ids(&reloaded.ai_hub), loaded);
     }
 
     #[test]
