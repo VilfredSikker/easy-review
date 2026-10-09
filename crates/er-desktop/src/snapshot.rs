@@ -1420,6 +1420,10 @@ pub struct GithubStatusSnapshot {
     /// not this PR, picks the method. Looked up only for open PRs.
     #[serde(default)]
     pub base_has_merge_queue: bool,
+    /// The viewer may merge past the base branch's unmet requirements
+    /// (`gh pr merge --admin`). Looked up only while the PR is blocked.
+    #[serde(default)]
+    pub can_bypass_rules: bool,
     /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
     /// Process-local, so never sent or persisted.
     #[serde(skip)]
