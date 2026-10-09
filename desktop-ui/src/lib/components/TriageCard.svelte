@@ -5,9 +5,22 @@
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import Button from "$lib/components/ui/Button.svelte";
+  import Pill from "$lib/components/ui/Pill.svelte";
+  import Disclosure from "$lib/components/ui/Disclosure.svelte";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import {
+    evidencedGuard,
+    filesPreview,
+    followUpFor,
+    hasReachDetail,
+    previewLine,
+    priorityDotClass,
+    reachPreview,
+    summaryPills,
+    verdictLabel,
+  } from "$lib/triageCard";
   import { tick } from "svelte";
 
   interface Props {
@@ -18,27 +31,25 @@
 
   let open = $state(true);
 
+  // Every row starts collapsed: the pills and the row teasers are the first
+  // read, and a row opens only when the reader wants its reasoning.
+  let verdictOpen = $state(false);
+  let filesOpen = $state(false);
+  let reachOpen = $state(false);
+  let impressionOpen = $state(false);
+
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
+  const label = $derived(verdictLabel(triage.verdict_primary));
+  const pills = $derived(summaryPills(triage));
 
-  const verdictLabel = $derived(
-    ({
-      general: "General review",
-      expert: "Expert review",
-      arena: "Arena debate",
-      professor: "Professor",
-      skip: "Skip deep review",
-    } as Record<string, string>)[triage.verdict_primary] ?? triage.verdict_primary,
-  );
-
-  /** Triage from before reach existed reads as `unknown` and shows nothing. */
-  const reach = $derived(triage.reach ?? "unknown");
-  const reachClass = $derived(
-    ({ broad: "text-warning", contained: "text-fg-2", isolated: "text-success" } as Record<string, string>)[reach]
-      ?? "text-muted",
-  );
+  /** A guard counts only with the line where it is checked (ADR 0039). */
+  const guard = $derived(evidencedGuard(triage));
+  /** Triage from before reach existed, or a reach with nothing to say, gets no row. */
+  const showReach = $derived(hasReachDetail(triage));
+  const touchPoints = $derived(triage.touch_points ?? []);
 
   const verdictSummary = $derived.by(() => {
-    const parts = [`Next: ${verdictLabel}`];
+    const parts = [`Next: ${label}`];
     if (triage.confidence) parts.push(`(${triage.confidence} confidence)`);
     return parts.join(" ");
   });
@@ -60,32 +71,13 @@
 
   function runFollowUp() {
     if (!reviewScope) return;
-    const scope = reviewScope;
-    switch (triage.verdict_primary) {
-      case "general":
-        void app.cmd("run_ai_review", { scope });
-        break;
-      case "expert": {
-        const kinds =
-          triage.experts.length > 0
-            ? triage.experts.map((id) => `expert:${id}`)
-            : ["expert:security"];
-        void app.cmd("run_ai_scoped_review", {
-          scope,
-          paths: [],
-          reviewerKinds: kinds,
-        });
-        break;
-      }
-      case "professor":
-        void app.cmd("run_ai_professor_review", { scope, focusPrompt: null });
-        break;
-      case "arena":
-        arena.openLauncher();
-        break;
-      default:
-        break;
+    const next = followUpFor(triage, reviewScope);
+    if (!next) return;
+    if (next.kind === "arena") {
+      arena.openLauncher();
+      return;
     }
+    void app.cmd(next.command, next.args);
   }
 
   const showFollowUp = $derived(
@@ -110,105 +102,135 @@
     <button
       type="button"
       class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+      aria-expanded={open}
       onclick={() => (open = !open)}
     >
       <SectionLabel>Triage</SectionLabel>
       <span class="rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide
         {triage.fresh ? 'border-info/30 bg-info/10 text-info' : 'border-warning/30 bg-warning/10 text-warning'}">
-        {triage.fresh ? verdictLabel : "stale"}
+        {triage.fresh ? label : "stale"}
       </span>
     </button>
     <CardDeleteButton label="Discard triage" onDelete={discardTriage} />
   </div>
 
   {#if open}
-    <div class="mt-3 min-h-0 flex-1 space-y-3 overflow-y-auto overflow-x-hidden text-[12px] leading-relaxed">
-      {#if triage.first_impression}
-        <MarkdownText text={triage.first_impression} />
+    <div class="mt-2.5 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      {#if pills.length > 0}
+        <div class="flex flex-wrap gap-1" data-testid="triage-pills">
+          {#each pills as pill (pill.label)}
+            <Pill tone={pill.tone} title={pill.title}>{pill.label}</Pill>
+          {/each}
+        </div>
       {/if}
 
-      <div class="flex flex-wrap gap-2 text-[10px] text-muted">
-        {#if triage.files_changed > 0}
-          <span>{triage.files_changed} files</span>
-        {/if}
-        {#if triage.approx_risk}
-          <span>risk: {triage.approx_risk}</span>
-        {/if}
-        {#if triage.domains.length > 0}
-          <span>{triage.domains.join(", ")}</span>
-        {/if}
-      </div>
+      {#if triage.domains.length > 0}
+        <ul class="mt-1.5 flex flex-wrap gap-1" aria-label="Domains">
+          {#each triage.domains as domain (domain)}
+            <li class="rounded bg-hairline px-1 py-px font-mono text-[9px] text-fg-3">{domain}</li>
+          {/each}
+        </ul>
+      {/if}
 
-      {#if reach !== "unknown"}
-        <div class="min-w-0 space-y-1" data-testid="triage-reach">
-          <p class="text-[10px] uppercase tracking-wide text-muted">
-            Reach: <span class={reachClass}>{reach}</span>
-            {#if triage.guard}
-              · <span class="text-success">guarded</span>
-            {/if}
-          </p>
-          {#if triage.reach_reason}
-            <p class="text-fg-2">{triage.reach_reason}</p>
-          {/if}
-          {#if triage.guard}
-            <p class="text-[11px] text-muted">
-              {triage.guard.kind}{triage.guard.name ? ` ${triage.guard.name}` : ""} ·
-              <span class="font-mono">{triage.guard.evidence}</span>
+      <div class="mt-2.5 min-w-0">
+        <Disclosure
+          label="Verdict"
+          preview={previewLine(triage.rationale) || verdictSummary}
+          bind:open={verdictOpen}
+        >
+          <p class="text-[12px] font-medium text-fg">{verdictSummary}</p>
+          {#if triage.verdict_primary === "expert" && triage.experts.length > 0}
+            <p class="mt-0.5 text-[11px] text-muted">
+              Recommended experts: {triage.experts.join(", ")}
             </p>
           {/if}
-          {#if (triage.touch_points ?? []).length > 0}
-            <ul class="space-y-0.5 font-mono text-[11px] text-fg-2">
-              {#each triage.touch_points ?? [] as tp, i (i)}
-                <li class="truncate" title={tp}>{tp}</li>
+          {#if triage.rationale}
+            <p class="mt-1 text-[12px] leading-relaxed text-fg-2">{triage.rationale}</p>
+          {/if}
+        </Disclosure>
+
+        {#if triage.priority_files.length > 0}
+          <Disclosure
+            label="Priority files"
+            badge={triage.priority_files.length}
+            preview={filesPreview(triage.priority_files)}
+            bind:open={filesOpen}
+          >
+            <ul class="space-y-0.5">
+              {#each triage.priority_files as pf, i (i)}
+                <li class="min-w-0">
+                  <button
+                    type="button"
+                    class="flex w-full min-w-0 items-start gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-bg"
+                    title={pf.reason ? `${pf.path} · ${pf.reason}` : pf.path}
+                    onclick={() => navigateToPath(pf.path)}
+                  >
+                    <span
+                      class="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full {priorityDotClass(pf.risk)}"
+                      aria-hidden="true"
+                    ></span>
+                    <span class="sr-only">{pf.risk} risk</span>
+                    <span class="min-w-0 flex-1">
+                      <span class="truncate-start block font-mono text-[11px] text-fg-2">
+                        <span class="truncate-start-inner">{pf.path}</span>
+                      </span>
+                      {#if pf.reason}
+                        <span class="block truncate text-[10px] text-muted">{pf.reason}</span>
+                      {/if}
+                    </span>
+                  </button>
+                </li>
               {/each}
             </ul>
-          {/if}
-        </div>
-      {/if}
-
-      <div class="space-y-1.5 rounded-md border border-info/20 bg-info/5 px-3 py-2.5">
-        <SectionLabel size="sm">Verdict</SectionLabel>
-        <p class="font-medium text-fg-1">{verdictSummary}</p>
-        {#if triage.verdict_primary === "expert" && triage.experts.length > 0}
-          <p class="text-[11px] text-muted">
-            Recommended experts: {triage.experts.join(", ")}
-          </p>
+          </Disclosure>
         {/if}
-        {#if triage.rationale}
-          <p class="text-fg-2">{triage.rationale}</p>
+
+        {#if showReach}
+          <Disclosure
+            label="Reach"
+            preview={reachPreview(triage)}
+            bind:open={reachOpen}
+          >
+            {#if triage.reach_reason}
+              <p class="text-[12px] leading-relaxed text-fg-2">{triage.reach_reason}</p>
+            {/if}
+            {#if guard}
+              <p class="mt-1 text-[11px] text-muted">
+                <span class="text-success">Guard</span>
+                · {guard.kind}{guard.name ? ` ${guard.name}` : ""}
+                · <span class="font-mono">{guard.evidence}</span>
+              </p>
+            {/if}
+            {#if touchPoints.length > 0}
+              <p class="mt-1.5 mb-0.5 text-[10px] uppercase tracking-wide text-muted">Touch points</p>
+              <ul class="space-y-1 font-mono text-[10px] leading-snug text-fg-2">
+                {#each touchPoints as tp, i (i)}
+                  <li class="break-words">{tp}</li>
+                {/each}
+              </ul>
+            {/if}
+          </Disclosure>
+        {/if}
+
+        {#if triage.first_impression}
+          <Disclosure
+            label="First impression"
+            preview={previewLine(triage.first_impression)}
+            bind:open={impressionOpen}
+          >
+            <MarkdownText
+              text={triage.first_impression}
+              className="text-[12px] leading-relaxed text-fg-2"
+            />
+          </Disclosure>
         {/if}
       </div>
-
-      {#if triage.priority_files.length > 0}
-        <div class="min-w-0">
-          <p class="mb-1 text-[10px] uppercase tracking-wide text-muted">Priority files</p>
-          <ul class="space-y-1">
-            {#each triage.priority_files as pf (pf.path)}
-              <li class="min-w-0">
-                <button
-                  type="button"
-                  class="block w-full min-w-0 overflow-hidden text-left hover:text-accent transition-colors"
-                  title={pf.reason ? `${pf.path} · ${pf.reason}` : pf.path}
-                  onclick={() => navigateToPath(pf.path)}
-                >
-                  <span class="truncate-start block font-mono text-[11px]">
-                    <span class="truncate-start-inner">{pf.path}</span>
-                  </span>
-                  {#if pf.reason}
-                    <span class="block truncate text-muted">{pf.reason}</span>
-                  {/if}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        </div>
-      {/if}
     </div>
 
     <div class="flex shrink-0 flex-wrap gap-2 pt-3">
       {#if showFollowUp}
         <Button size="sm" variant="primary" onclick={runFollowUp}>
-          Run {verdictLabel}
+          Run {label}
         </Button>
       {/if}
       {#if reviewScope}
