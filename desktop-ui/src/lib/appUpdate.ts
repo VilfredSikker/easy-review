@@ -3,6 +3,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 
 export type UpdatePhase =
   | { kind: "idle" }
+  | { kind: "checking" }
   | { kind: "downloading"; percent: number | null }
   | { kind: "installing" }
   | { kind: "failed"; message: string };
@@ -26,16 +27,23 @@ const tauriDeps: UpdaterDeps = { check, relaunch };
 
 /**
  * Download, verify and install the latest release, then relaunch. Returns false
- * when the updater has nothing to install (e.g. the release carries no updater
- * manifest), so the caller can fall back to the release page.
+ * when the manifest names no newer version, so the caller can fall back to the
+ * release page. A release without `latest.json` is not that case: the plugin
+ * rejects the 404, and it surfaces as a `failed` phase.
  */
 export async function installAppUpdate(
   onPhase: (phase: UpdatePhase) => void,
   deps: UpdaterDeps = tauriDeps,
 ): Promise<boolean> {
   try {
+    // Reported before the network round trip, so the caller can lock the
+    // button and a second click cannot start a parallel install.
+    onPhase({ kind: "checking" });
     const update = await deps.check();
-    if (!update) return false;
+    if (!update) {
+      onPhase({ kind: "idle" });
+      return false;
+    }
     let total: number | null = null;
     let received = 0;
     onPhase({ kind: "downloading", percent: null });

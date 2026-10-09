@@ -64,10 +64,14 @@
 
   let updatePhase = $state<UpdatePhase>({ kind: "idle" });
   const updateBusy = $derived(
-    updatePhase.kind === "downloading" || updatePhase.kind === "installing",
+    updatePhase.kind === "checking" ||
+      updatePhase.kind === "downloading" ||
+      updatePhase.kind === "installing",
   );
   const updateLabel = $derived.by(() => {
     switch (updatePhase.kind) {
+      case "checking":
+        return "Checking…";
       case "downloading":
         return updatePhase.percent === null
           ? "Downloading…"

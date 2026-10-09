@@ -34,6 +34,7 @@ describe("installAppUpdate", () => {
 
     expect(handled).toBe(true);
     expect(phases).toEqual([
+      { kind: "checking" },
       { kind: "downloading", percent: null },
       { kind: "downloading", percent: 25 },
       { kind: "downloading", percent: 100 },
@@ -52,11 +53,34 @@ describe("installAppUpdate", () => {
     expect(phases.some((p) => p.kind === "downloading" && p.percent !== null)).toBe(false);
   });
 
-  it("returns false with nothing to install so the caller can open the release page", async () => {
+  it("reports checking before the manifest request settles", async () => {
+    let resolveCheck: (v: null) => void = () => {};
+    const { d } = deps({ check: () => new Promise((r) => (resolveCheck = r)) });
+    const phases: UpdatePhase[] = [];
+    const pending = installAppUpdate((p) => phases.push(p), d);
+
+    expect(phases).toEqual([{ kind: "checking" }]);
+    resolveCheck(null);
+    await pending;
+  });
+
+  it("returns false when the manifest names no newer version", async () => {
     const { d, calls } = deps({ check: async () => null });
     const phases: UpdatePhase[] = [];
     expect(await installAppUpdate((p) => phases.push(p), d)).toBe(false);
-    expect(phases).toEqual([]);
+    expect(phases).toEqual([{ kind: "checking" }, { kind: "idle" }]);
+    expect(calls.relaunched).toBe(0);
+  });
+
+  it("surfaces a release without latest.json as a failure", async () => {
+    const { d, calls } = deps({
+      check: async () => {
+        throw new Error("Could not fetch a valid release JSON from the remote");
+      },
+    });
+    const phases: UpdatePhase[] = [];
+    expect(await installAppUpdate((p) => phases.push(p), d)).toBe(true);
+    expect(phases.at(-1)?.kind).toBe("failed");
     expect(calls.relaunched).toBe(0);
   });
 

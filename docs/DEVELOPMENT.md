@@ -233,8 +233,9 @@ cargo tauri signer generate -w ~/.tauri/easy-review-updater.key
 
 Losing the private key strands every installed desktop: a new key needs a new
 pubkey, which only a manual download can deliver. Keep it in a password
-manager. Without the secret the release ships no `latest.json`, and the
-sidebar pill falls back to opening the release page.
+manager. Without the secret the release ships no `latest.json`: clicking the
+sidebar pill shows "Update failed — open release", and a second click opens the
+release page.
 
 The TUI needs no key: `er update` checks the archive against the release's
 `SHA256SUMS`, which the release job writes.
