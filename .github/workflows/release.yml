@@ -42,17 +42,16 @@ jobs:
         run: |
           cd target/${{ matrix.target }}/release
           tar -czf ../../../er-${{ matrix.target }}.tar.gz er
-          tar -czf ../../../er-mcp-${{ matrix.target }}.tar.gz er-mcp
           cd ../../..
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: bins-${{ matrix.target }}
-          path: |
-            er-${{ matrix.target }}.tar.gz
-            er-mcp-${{ matrix.target }}.tar.gz
+          path: er-${{ matrix.target }}.tar.gz
 
+      # er-mcp ships only through npm (the platform packages below), so its
+      # binary is an artifact for the npm job and never a release asset.
       - name: Upload er-mcp binary
         uses: actions/upload-artifact@v4
         with:
@@ -127,6 +126,12 @@ jobs:
         # burns ten minutes only to die at codesign. No certificate, no DMG, and
         # the upload below tolerates the absence.
         if: env.APPLE_CERTIFICATE != ''
+        # Step-level, unlike the Apple secrets: no `if:` reads it, and this keeps
+        # the updater key away from the other steps and actions in the job.
+        # Without it the release has no latest.json (DEVELOPMENT.md).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-sign-release.sh
 
       - name: Upload DMG
@@ -134,6 +139,13 @@ jobs:
         with:
           name: desktop-dmg
           path: target/desktop/release/bundle/dmg/*.dmg
+          if-no-files-found: ignore
+
+      - name: Upload updater archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-updater
+          path: target/desktop/release/bundle/updater/*
           if-no-files-found: ignore
 
       - name: Remove signing keychain
@@ -147,7 +159,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download TUI/MCP artifacts
+      # Both updaters compare the tag with the version compiled into the app. A
+      # missed bump would install the update and then offer it again forever.
+      - name: Verify app versions match tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          TAURI=$(jq -r .version crates/er-desktop/tauri.conf.json)
+          for pair in "Cargo.toml:$CARGO" "tauri.conf.json:$TAURI"; do
+            if [ "${pair#*:}" != "$TAG" ]; then
+              echo "Version mismatch in ${pair%%:*}: ${pair#*:} != tag $TAG"
+              exit 1
+            fi
+          done
+
+      - name: Download TUI artifacts
         uses: actions/download-artifact@v4
         with:
           pattern: bins-*
@@ -156,22 +183,57 @@ jobs:
       - name: Download desktop DMG
         # build-desktop is continue-on-error; the artifact may not exist if signing
         # failed or was skipped. Allow missing artifacts so the release still publishes
-        # the TUI/MCP binaries.
+        # the TUI binaries.
         uses: actions/download-artifact@v4
         with:
           name: desktop-dmg
           path: desktop
         continue-on-error: true
 
+      - name: Download updater archive
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-updater
+          path: updater
+        continue-on-error: true
+
+      # `er update` refuses an archive that is not listed here.
+      - name: Write SHA256SUMS
+        run: sha256sum er-*.tar.gz > SHA256SUMS
+
+      # Only when the signed archive exists: a manifest pointing at a missing
+      # file would fail every desktop update instead of falling back.
+      - name: Write updater manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(updater/*.app.tar.gz)
+          if [ ${#archives[@]} -eq 0 ] || [ ! -f "${archives[0]}.sig" ]; then
+            echo "No signed updater archive; skipping latest.json"
+            exit 0
+          fi
+          archive="${archives[0]}"
+          jq -n \
+            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat "$archive.sig")" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "$archive")" \
+            '{version: $version, pub_date: $pub_date, platforms: {"darwin-aarch64": {signature: $signature, url: $url}}}' \
+            > latest.json
+          cat latest.json
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             er-x86_64-*.tar.gz
             er-aarch64-*.tar.gz
-            er-mcp-*.tar.gz
+            SHA256SUMS
             desktop/*.dmg
+            updater/*.app.tar.gz
+            latest.json
 
   npm:
     name: Publish easy-review-mcp to npm
@@ -223,7 +285,7 @@ jobs:
           done
           # The launcher's optionalDependencies pins must also match the tag, or
           # npm silently skips the (nonexistent) platform version and every user
-          # falls back to the GitHub download this change exists to avoid.
+          # gets no binary at all: the launcher has no download to fall back to.
           for pkg in easy-review-mcp-darwin-arm64 easy-review-mcp-darwin-x64 easy-review-mcp-linux-x64; do
             PIN=$(node -p "require('./npm/er-mcp/package.json').optionalDependencies['$pkg']")
             if [ "$TAG" != "$PIN" ]; then

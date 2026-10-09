@@ -230,6 +230,14 @@ pub fn render_top_bar(f: &mut Frame, area: Rect, app: &App) {
 
     let mut right: Vec<Span> = Vec::new();
 
+    if let Some(version) = app.available_update.as_deref() {
+        right.push(Span::styled(
+            format!("↑ v{version} · er update"),
+            ratatui::style::Style::default().fg(styles::GREEN()),
+        ));
+        right.push(Span::raw("  "));
+    }
+
     // Agent command status badges (persistent while running)
     for (name, _label, _is_running) in tab.agent_statuses() {
         let display_name = match name {

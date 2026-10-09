@@ -33,6 +33,7 @@ pub mod pr_resolve;
 pub mod pr_review_feedback;
 pub mod proc;
 pub mod projects_pins;
+pub mod release_update;
 pub mod review_queue;
 pub mod sidecar_specs;
 pub mod sidecar_summary;
