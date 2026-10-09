@@ -41,6 +41,9 @@ pub enum PrAction {
     Merge {
         method: MergeMethod,
         auto: bool,
+        /// Merge now despite unmet requirements (`--admin`), for a viewer
+        /// GitHub lets bypass the base branch's rules.
+        admin: bool,
         head_oid: String,
     },
     DisableAutoMerge,
@@ -60,12 +63,16 @@ pub fn pr_action_args(repo_slug: &str, number: u64, action: &PrAction) -> Result
         PrAction::Merge {
             method,
             auto,
+            admin,
             head_oid,
         } => {
             if head_oid.trim().is_empty() {
                 anyhow::bail!(
                     "Refusing to merge: the PR head commit is unknown. Refresh and try again."
                 );
+            }
+            if *auto && *admin {
+                anyhow::bail!("A bypass merge lands now, so it cannot also wait for auto-merge.");
             }
             let mut a = vec![
                 "pr",
@@ -77,6 +84,9 @@ pub fn pr_action_args(repo_slug: &str, number: u64, action: &PrAction) -> Result
             ];
             if *auto {
                 a.push("--auto");
+            }
+            if *admin {
+                a.push("--admin");
             }
             a
         }
@@ -237,6 +247,84 @@ fn parse_in_merge_queue(json: &str) -> Result<bool> {
         .as_bool()
         .context("merge queue status missing")
 }
+
+// ── Rule bypass ─────────────────────────────────────────────────────────────
+
+const ADMIN_MERGE_QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) { \
+    repository(owner: $owner, name: $name) { pullRequest(number: $number) { viewerCanMergeAsAdmin } } }";
+
+/// Whether the viewer may merge a PR into `base` without its requirements
+/// met (`gh pr merge --admin`). `viewerCanMergeAsAdmin` covers classic branch
+/// protection only and reads false for a ruleset bypass actor, so the
+/// rulesets on `base` are asked too.
+pub fn gh_viewer_can_bypass(owner: &str, repo: &str, base: &str, number: u64) -> Result<bool> {
+    let n = number.to_string();
+    let out = graphql(
+        ADMIN_MERGE_QUERY,
+        &[("owner", owner), ("name", repo)],
+        &[("number", &n)],
+        "admin merge query failed",
+    )?;
+    if parse_can_merge_as_admin(&out)? {
+        return Ok(true);
+    }
+    let path = format!(
+        "repos/{owner}/{repo}/rules/branches/{}?per_page=100",
+        encode_ref(base)
+    );
+    let ids = parse_branch_ruleset_ids(&gh_ok(&["api", &path], "branch rules query failed")?)?;
+    if ids.is_empty() {
+        return Ok(false);
+    }
+    for id in ids {
+        let path = format!("repos/{owner}/{repo}/rulesets/{id}");
+        if !parse_ruleset_bypassable(&gh_ok(&["api", &path], "ruleset query failed")?)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+fn parse_can_merge_as_admin(json: &str) -> Result<bool> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid admin merge JSON")?;
+    v["data"]["repository"]["pullRequest"]["viewerCanMergeAsAdmin"]
+        .as_bool()
+        .context("viewerCanMergeAsAdmin missing")
+}
+
+/// Distinct rulesets behind the rules `rules/branches/{base}` lists.
+fn parse_branch_ruleset_ids(json: &str) -> Result<Vec<u64>> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid branch rules JSON")?;
+    let rules = v.as_array().context("branch rules response is not a list")?;
+    let mut ids: Vec<u64> = rules
+        .iter()
+        .filter_map(|r| r["ruleset_id"].as_u64())
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    Ok(ids)
+}
+
+/// `pull_requests_only` is enough: the bypass happens through a merge.
+fn parse_ruleset_bypassable(json: &str) -> Result<bool> {
+    let v: serde_json::Value = serde_json::from_str(json).context("invalid ruleset JSON")?;
+    match v["current_user_can_bypass"].as_str() {
+        Some("always" | "pull_requests_only") => Ok(true),
+        Some(_) => Ok(false),
+        None => anyhow::bail!("ruleset response has no current_user_can_bypass"),
+    }
+}
+
+/// Cached [`gh_viewer_can_bypass`]. Bypass rights depend on the viewer's role
+/// and the base branch's rules, so the answer is cached per base. `None` when
+/// GitHub could not answer, and the box then offers no bypass.
+pub fn cached_viewer_can_bypass(owner: &str, repo: &str, base: &str, number: u64) -> Option<bool> {
+    BYPASS_CACHE.get_or_fetch(branch_key(owner, repo, base), || {
+        gh_viewer_can_bypass(owner, repo, base, number).ok()
+    })
+}
+
+static BYPASS_CACHE: TtlCache<bool> = TtlCache::new(REPO_SETTINGS_TTL);
 
 /// Recreate `branch` at `sha` — GitHub's "Restore branch" after a merge.
 pub fn gh_restore_remote_branch(owner: &str, repo: &str, branch: &str, sha: &str) -> Result<()> {
@@ -514,6 +602,7 @@ mod tests {
         let a = args(PrAction::Merge {
             method: MergeMethod::Squash,
             auto: false,
+            admin: false,
             head_oid: "abc".into(),
         });
         assert_eq!(
@@ -540,6 +629,7 @@ mod tests {
                 let a = args(PrAction::Merge {
                     method,
                     auto,
+                    admin: false,
                     head_oid: "abc".into(),
                 });
                 assert!(
@@ -556,10 +646,83 @@ mod tests {
         let a = args(PrAction::Merge {
             method: MergeMethod::Rebase,
             auto: true,
+            admin: false,
             head_oid: "abc".into(),
         });
         assert!(a.contains(&"--rebase".to_string()));
         assert!(a.contains(&"--auto".to_string()));
+    }
+
+    #[test]
+    fn bypass_merge_adds_admin_flag_and_keeps_the_head_pin() {
+        let a = args(PrAction::Merge {
+            method: MergeMethod::Squash,
+            auto: false,
+            admin: true,
+            head_oid: "abc".into(),
+        });
+        assert_eq!(
+            a,
+            [
+                "pr",
+                "merge",
+                "7",
+                "--squash",
+                "--match-head-commit",
+                "abc",
+                "--admin",
+                "--repo",
+                "o/r"
+            ]
+        );
+    }
+
+    #[test]
+    fn bypass_merge_cannot_also_be_auto() {
+        let err = pr_action_args(
+            "o/r",
+            7,
+            &PrAction::Merge {
+                method: MergeMethod::Squash,
+                auto: true,
+                admin: true,
+                head_oid: "abc".into(),
+            },
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("auto-merge"));
+    }
+
+    #[test]
+    fn admin_merge_flag_is_read_from_the_pull_request() {
+        let yes = r#"{"data":{"repository":{"pullRequest":{"viewerCanMergeAsAdmin":true}}}}"#;
+        let no = r#"{"data":{"repository":{"pullRequest":{"viewerCanMergeAsAdmin":false}}}}"#;
+        assert!(parse_can_merge_as_admin(yes).unwrap());
+        assert!(!parse_can_merge_as_admin(no).unwrap());
+        assert!(parse_can_merge_as_admin(r#"{"data":{"repository":null}}"#).is_err());
+    }
+
+    #[test]
+    fn branch_rules_name_each_ruleset_once() {
+        let json = r#"[
+            {"type":"deletion","ruleset_id":13},
+            {"type":"pull_request","ruleset_id":13},
+            {"type":"required_status_checks","ruleset_id":4},
+            {"type":"update"}
+        ]"#;
+        assert_eq!(parse_branch_ruleset_ids(json).unwrap(), [4, 13]);
+        assert!(parse_branch_ruleset_ids("[]").unwrap().is_empty());
+        assert!(parse_branch_ruleset_ids(r#"{"message":"x"}"#).is_err());
+    }
+
+    #[test]
+    fn ruleset_bypass_counts_pull_request_bypass_actors() {
+        let mode = |m: &str| format!(r#"{{"id":1,"current_user_can_bypass":"{m}"}}"#);
+        assert!(parse_ruleset_bypassable(&mode("always")).unwrap());
+        assert!(parse_ruleset_bypassable(&mode("pull_requests_only")).unwrap());
+        assert!(!parse_ruleset_bypassable(&mode("never")).unwrap());
+        // Unknown means no answer, so the box offers no bypass.
+        assert!(parse_ruleset_bypassable(r#"{"id":1}"#).is_err());
     }
 
     #[test]
@@ -570,6 +733,7 @@ mod tests {
             &PrAction::Merge {
                 method: MergeMethod::Merge,
                 auto: false,
+                admin: false,
                 head_oid: " ".into(),
             },
         )

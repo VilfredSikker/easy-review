@@ -34,7 +34,9 @@ describe("PrMergeBox", () => {
   });
 
   it("pins merges to the reviewed diff and blocks one GitHub would refuse", () => {
-    expect(src).toContain("mergeRequest(github, confirming.method, confirming.auto, del, prDiffHead)");
+    expect(src).toMatch(
+      /mergeRequest\(github, confirming\.method, \{\s*auto: confirming\.auto,\s*deleteBranch: del,\s*prDiffHeadOid: prDiffHead,\s*bypass: confirming\.admin,\s*\}\)/,
+    );
     expect(src).toContain("disabled={busy !== null || mergeBlocked}");
     expect(src).toContain("if (!confirming || !confirmTarget || mergeBlocked) return;");
   });

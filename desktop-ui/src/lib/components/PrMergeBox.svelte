@@ -5,6 +5,7 @@
   import AnchoredMenu from "$lib/components/ui/AnchoredMenu.svelte";
   import {
     confirmLabel,
+    effectiveMerge,
     mergeBoxModel,
     mergeButtonLabel,
     mergeHeadNote,
@@ -68,6 +69,9 @@
   // the active tab's PR.
   let confirmTarget = $state<PrTarget | null>(null);
   let deleteAfterMerge = $state(true);
+  // "Merge without waiting for requirements": GitHub's bypass-rules checkbox.
+  let bypass = $state(false);
+  const merge = $derived(effectiveMerge(model, bypass));
   // GitHub would refuse a merge pinned to a head the PR has moved past.
   const mergeBlocked = $derived(confirming?.kind === "merge" && headNote?.blocksMerge === true);
 
@@ -95,8 +99,10 @@
   }
 
   function startMerge() {
-    if (!model.merge?.enabled) return;
-    ask(mergeRequest(github, method, model.merge.auto, model.offerDeleteOnMerge && deleteAfterMerge, prDiffHead));
+    if (!merge?.enabled) return;
+    const del = model.offerDeleteOnMerge && deleteAfterMerge;
+    const bypassNow = bypass && model.offerBypass;
+    ask(mergeRequest(github, method, { auto: merge.auto, deleteBranch: del, prDiffHeadOid: prDiffHead, bypass: bypassNow }));
   }
 
   function confirmNow() {
@@ -104,7 +110,12 @@
     const del = model.offerDeleteOnMerge && deleteAfterMerge;
     const action =
       confirming.kind === "merge"
-        ? mergeRequest(github, confirming.method, confirming.auto, del, prDiffHead)
+        ? mergeRequest(github, confirming.method, {
+            auto: confirming.auto,
+            deleteBranch: del,
+            prDiffHeadOid: prDiffHead,
+            bypass: confirming.admin,
+          })
         : confirming;
     void run(action, confirmTarget);
   }
@@ -118,6 +129,7 @@
   $effect(() => {
     void confirmKey;
     confirming = null;
+    bypass = false;
   });
 
   const TONE: Record<MergeBoxTone, { dot: string; text: string; border: string }> = {
@@ -128,6 +140,7 @@
     merged: { dot: "bg-periwinkle", text: "text-periwinkle", border: "border-periwinkle/40" },
   };
   const tone = $derived(TONE[model.tone]);
+  const mergeTone = $derived(bypass && model.offerBypass ? "bg-del-fg" : "bg-add-fg");
 
   const btn =
     "px-2 py-1 rounded text-[11px] font-medium disabled:opacity-50 disabled:cursor-not-allowed transition-opacity";
@@ -192,7 +205,7 @@
             type="button"
             onclick={confirmNow}
             disabled={busy !== null || mergeBlocked}
-            class="{btn} {confirming.kind === 'merge' ? 'bg-add-fg' : 'bg-del-fg'} text-on-accent hover:opacity-90"
+            class="{btn} {confirming.kind === 'merge' && !confirming.admin ? 'bg-add-fg' : 'bg-del-fg'} text-on-accent hover:opacity-90"
           >{confirming.kind === "merge" ? "Confirm merge" : "Confirm"}</button>
           <button
             type="button"
@@ -201,17 +214,17 @@
             class="text-[11px] text-muted hover:text-fg-2 px-2 py-1 rounded disabled:opacity-50"
           >Cancel</button>
         </div>
-      {:else if model.merge}
+      {:else if merge}
         <!-- Merge split button -->
         <div class="flex items-center gap-1.5 flex-wrap">
           <div class="inline-flex rounded overflow-hidden">
             <button
               type="button"
               onclick={startMerge}
-              disabled={!model.merge.enabled || busy !== null}
-              title={model.merge.reason ?? methodLabel(method)}
-              class="{btn} rounded-none bg-add-fg text-on-accent hover:opacity-90"
-            >{busy === "merge" ? "Merging…" : mergeButtonLabel(method, model.merge.auto, model.mergeQueue)}</button>
+              disabled={!merge.enabled || busy !== null}
+              title={merge.reason ?? methodLabel(method)}
+              class="{btn} rounded-none {mergeTone} text-on-accent hover:opacity-90"
+            >{busy === "merge" ? "Merging…" : mergeButtonLabel(method, merge.auto, model.mergeQueue)}</button>
             {#if model.methods.length > 1}
               <button
                 type="button"
@@ -220,7 +233,7 @@
                 aria-label="Choose merge method"
                 aria-haspopup="menu"
                 aria-expanded={methodMenu !== null}
-                class="{btn} rounded-none bg-add-fg text-on-accent hover:opacity-90 border-l border-black/20 px-1.5"
+                class="{btn} rounded-none {mergeTone} text-on-accent hover:opacity-90 border-l border-black/20 px-1.5"
               >
                 <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
               </button>
@@ -236,8 +249,14 @@
             >{busy === "update_branch" ? "Updating…" : "Update branch"}</button>
           {/if}
         </div>
-        {#if model.merge.reason}
-          <div class="text-[10px] text-muted">{model.merge.reason}</div>
+        {#if merge.reason}
+          <div class="text-[10px] text-muted">{merge.reason}</div>
+        {/if}
+        {#if model.offerBypass}
+          <label class="flex items-start gap-1.5 text-[11px] text-del-fg cursor-pointer">
+            <input type="checkbox" class="mt-[2px]" bind:checked={bypass} disabled={busy !== null} />
+            Merge without waiting for requirements to be met (bypass rules)
+          </label>
         {/if}
       {:else if model.readyPrimary}
         <div>

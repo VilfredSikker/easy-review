@@ -716,6 +716,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
     let head_branch_exists =
         head_branch_exists_after_close(owner, repo, &overview, repo_merge.as_ref());
     let (base_has_merge_queue, in_merge_queue) = merge_queue_status(owner, repo, number, &overview);
+    let can_bypass_rules = can_bypass_rules(owner, repo, number, &overview, base_has_merge_queue);
     let comments = bundle.comments;
     let reviews = bundle.reviews;
     crate::profile_log::profile_log(
@@ -799,6 +800,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         repo_merge: repo_merge.map(Into::into),
         in_merge_queue,
         base_has_merge_queue,
+        can_bypass_rules,
         fetch_ticket: 0,
     })
 }
@@ -842,6 +844,26 @@ fn merge_queue_status(
         && cached_base_has_merge_queue(owner, repo, &overview.base_ref_name) == Some(true);
     let queued = has_queue && gh_pr_in_merge_queue(owner, repo, number).unwrap_or(false);
     (has_queue, queued)
+}
+
+/// Only a blocked PR can use a bypass, so other states skip the lookup. A
+/// merge-queue base is skipped too: `--admin` there merges past the queue.
+fn can_bypass_rules(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    overview: &er_engine::github::PrOverviewFull,
+    base_has_merge_queue: bool,
+) -> bool {
+    overview.state == "OPEN"
+        && !base_has_merge_queue
+        && overview.merge_state_status.as_deref() == Some("BLOCKED")
+        && er_engine::gh_pr_actions::cached_viewer_can_bypass(
+            owner,
+            repo,
+            &overview.base_ref_name,
+            number,
+        ) == Some(true)
 }
 
 /// Kick a background refresh of the active tab's GitHub status.
@@ -10731,6 +10753,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
                 v.repo_merge.hash(&mut h);
                 v.in_merge_queue.hash(&mut h);
                 v.base_has_merge_queue.hash(&mut h);
+                v.can_bypass_rules.hash(&mut h);
             }
         }
     }

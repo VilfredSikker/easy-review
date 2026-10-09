@@ -19,6 +19,10 @@ pub enum PrActionRequest {
         method: MergeMethod,
         #[serde(default)]
         auto: bool,
+        /// Merge now past unmet requirements; offered only to a viewer GitHub
+        /// lets bypass the base branch's rules.
+        #[serde(default)]
+        admin: bool,
         /// The head commit the card showed; GitHub refuses the merge if the
         /// branch moved since.
         expected_head: String,
@@ -111,6 +115,7 @@ fn perform(
         PrActionRequest::Merge {
             method,
             auto,
+            admin,
             expected_head,
             delete_branch,
         } => {
@@ -126,6 +131,7 @@ fn perform(
             run(PrAction::Merge {
                 method: *method,
                 auto: *auto,
+                admin: *admin,
                 head_oid: expected_head.clone(),
             })?;
             if let Some(status) = status {
@@ -232,10 +238,16 @@ mod tests {
             PrActionRequest::Merge {
                 method: MergeMethod::Squash,
                 auto: false,
+                admin: false,
                 expected_head: "abc".into(),
                 delete_branch: true,
             }
         );
+        let bypass: PrActionRequest = serde_json::from_str(
+            r#"{"kind":"merge","method":"squash","admin":true,"expected_head":"abc"}"#,
+        )
+        .unwrap();
+        assert!(matches!(bypass, PrActionRequest::Merge { admin: true, auto: false, .. }));
         let update: PrActionRequest =
             serde_json::from_str(r#"{"kind":"update_branch","rebase":true}"#).unwrap();
         assert_eq!(update, PrActionRequest::UpdateBranch { rebase: true });
@@ -329,6 +341,7 @@ mod tests {
         let merge = PrActionRequest::Merge {
             method: MergeMethod::Merge,
             auto: false,
+            admin: false,
             expected_head: "abc".into(),
             delete_branch: true,
         };
