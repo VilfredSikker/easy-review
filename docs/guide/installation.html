@@ -101,7 +101,8 @@ cd easy-review
 
     <h2>Updating</h2>
     <ul>
-      <li><strong>Script install:</strong> re-run the install command to fetch the latest release.</li>
+      <li><strong>Script install:</strong> run <code>er update</code>. It downloads the latest release, checks it against the release's <code>SHA256SUMS</code>, and replaces the binary. The top bar shows <code>↑ vX.Y.Z · er update</code> when one is out.</li>
+      <li><strong>Desktop app:</strong> click <em>Update to vX.Y.Z</em> above Settings in the sidebar. The app downloads, verifies and installs the update, then relaunches.</li>
       <li><strong>Cargo install:</strong> re-run <code>cargo install --git … er-tui</code> (add <code>--force</code> if needed).</li>
       <li><strong>From a clone:</strong> <code>git pull</code> then rebuild.</li>
     </ul>

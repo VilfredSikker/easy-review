@@ -74,6 +74,10 @@ jobs:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      # Signs the in-app updater archive; without it the release has no
+      # latest.json and the desktop falls back to opening the release page.
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -135,6 +139,13 @@ jobs:
           path: target/desktop/release/bundle/dmg/*.dmg
           if-no-files-found: ignore
 
+      - name: Upload updater archive
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-updater
+          path: target/desktop/release/bundle/updater/*
+          if-no-files-found: ignore
+
       - name: Remove signing keychain
         if: always()
         run: rm -f "$RUNNER_TEMP/er-signing.keychain-db" "$RUNNER_TEMP/certificate.p12"
@@ -162,14 +173,50 @@ jobs:
           path: desktop
         continue-on-error: true
 
+      - name: Download updater archive
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-updater
+          path: updater
+        continue-on-error: true
+
+      # `er update` refuses an archive that is not listed here.
+      - name: Write SHA256SUMS
+        run: sha256sum er-*.tar.gz > SHA256SUMS
+
+      # Only when the signed archive exists: a manifest pointing at a missing
+      # file would fail every desktop update instead of falling back.
+      - name: Write updater manifest
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          archives=(updater/*.app.tar.gz)
+          if [ ${#archives[@]} -eq 0 ] || [ ! -f "${archives[0]}.sig" ]; then
+            echo "No signed updater archive; skipping latest.json"
+            exit 0
+          fi
+          archive="${archives[0]}"
+          jq -n \
+            --arg version "${GITHUB_REF_NAME#v}" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            --arg signature "$(cat "$archive.sig")" \
+            --arg url "https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME/$(basename "$archive")" \
+            '{version: $version, pub_date: $pub_date, platforms: {"darwin-aarch64": {signature: $signature, url: $url}}}' \
+            > latest.json
+          cat latest.json
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          fail_on_unmatched_files: false
           files: |
             er-x86_64-*.tar.gz
             er-aarch64-*.tar.gz
+            SHA256SUMS
             desktop/*.dmg
+            updater/*.app.tar.gz
+            latest.json
 
   npm:
     name: Publish easy-review-mcp to npm
