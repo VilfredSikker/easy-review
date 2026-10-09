@@ -74,10 +74,6 @@ jobs:
       APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
       APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
       APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-      # Signs the in-app updater archive; without it the release has no
-      # latest.json and the desktop falls back to opening the release page.
-      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
 
@@ -130,6 +126,12 @@ jobs:
         # burns ten minutes only to die at codesign. No certificate, no DMG, and
         # the upload below tolerates the absence.
         if: env.APPLE_CERTIFICATE != ''
+        # Step-level, unlike the Apple secrets: no `if:` reads it, and this keeps
+        # the updater key away from the other steps and actions in the job.
+        # Without it the release has no latest.json (DEVELOPMENT.md).
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: ER_SKIP_DMG=0 ER_SKIP_INSTALL=1 ./scripts/tauri-sign-release.sh
 
       - name: Upload DMG

@@ -47,6 +47,14 @@ if [[ -f "$SIGNING_ENV" ]]; then
   set +a
 fi
 
+# The updater key lets its holder ship an update every installed desktop
+# accepts, and it cannot be rotated (ADR 0043). Keep it out of the environment
+# of `cargo tauri build`, whose npm scripts and build.rs files would inherit it;
+# only the signer sees it again.
+UPDATER_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
+UPDATER_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+
 export CARGO_TARGET_DIR="$ROOT/target/desktop"
 CONF="$ROOT/crates/er-desktop/tauri.conf.json"
 BUNDLE_ROOT="$CARGO_TARGET_DIR/release/bundle"
@@ -263,7 +271,7 @@ bundle_dmg_hdiutil() {
 # before the plist re-sign and stapling above, so the update would ship a
 # bundle Gatekeeper has never seen notarized; this archives the final one.
 build_updater_archive() {
-  if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+  if [[ -z "$UPDATER_KEY" ]]; then
     echo "TAURI_SIGNING_PRIVATE_KEY unset — skipping updater archive" >&2
     return 0
   fi
@@ -280,7 +288,9 @@ build_updater_archive() {
   # Explicit returns: the caller runs this under `||`, which suspends errexit.
   # stdin is closed so a key missing its password fails instead of prompting.
   if ! COPYFILE_DISABLE=1 tar -czf "$archive" -C "$MACOS_BUNDLE_DIR" "Easy Review.app" \
-    || ! cargo tauri signer sign "$archive" </dev/null; then
+    || ! TAURI_SIGNING_PRIVATE_KEY="$UPDATER_KEY" \
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$UPDATER_KEY_PASSWORD" \
+      cargo tauri signer sign "$archive" </dev/null; then
     rm -rf "$out"
     return 1
   fi
