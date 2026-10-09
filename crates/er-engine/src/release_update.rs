@@ -128,7 +128,7 @@ pub fn is_cargo_install(exe: &Path) -> bool {
 pub fn self_update_blocker(exe: &Path, os: &str, arch: &str) -> Option<String> {
     if is_cargo_install(exe) {
         return Some(format!(
-            "{} was built with cargo; update it the same way:\n  git pull && cargo install --path crates/er-tui",
+            "{} was built with cargo; update it the same way:\n  cargo install --force --git https://github.com/VilfredSikker/easy-review er-tui\n  or, from a clone: git pull && cargo install --path crates/er-tui",
             exe.display()
         ));
     }
@@ -301,7 +301,9 @@ mod tests {
         assert_eq!(self_update_blocker(script, "linux", "x86_64"), None);
 
         let cargo = self_update_blocker(Path::new("/Users/a/.cargo/bin/er"), "macos", "aarch64");
-        assert!(cargo.is_some_and(|m| m.contains("built with cargo")));
+        assert!(cargo.is_some_and(
+            |m| m.contains("built with cargo") && m.contains("cargo install --force --git")
+        ));
         let dev = self_update_blocker(Path::new("/repo/target/tui/debug/er"), "macos", "aarch64");
         assert!(dev.is_some_and(|m| m.contains("built with cargo")));
         let arm_linux = self_update_blocker(script, "linux", "aarch64");
