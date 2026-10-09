@@ -157,6 +157,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Both updaters compare the tag with the version compiled into the app. A
+      # missed bump would install the update and then offer it again forever.
+      - name: Verify app versions match tag
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          TAURI=$(jq -r .version crates/er-desktop/tauri.conf.json)
+          for pair in "Cargo.toml:$CARGO" "tauri.conf.json:$TAURI"; do
+            if [ "${pair#*:}" != "$TAG" ]; then
+              echo "Version mismatch in ${pair%%:*}: ${pair#*:} != tag $TAG"
+              exit 1
+            fi
+          done
+
       - name: Download TUI artifacts
         uses: actions/download-artifact@v4
         with:
