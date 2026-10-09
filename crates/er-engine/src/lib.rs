@@ -30,6 +30,7 @@ pub mod highlight;
 pub mod model_discovery;
 pub mod paths;
 pub mod pr_resolve;
+pub mod release_update;
 pub mod pr_review_feedback;
 pub mod proc;
 pub mod projects_pins;
