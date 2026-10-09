@@ -12,6 +12,7 @@ import type {
   SpanSnapshot,
   TabSummary,
   ThreadSnapshot,
+  TriageSnapshot,
   WorktreeSnapshot,
 } from "$lib/types";
 
@@ -279,6 +280,144 @@ export const checklistFixture: ChecklistSnapshot = {
       related_files: [],
     },
   ],
+};
+
+// ─── triage ─────────────────────────────────────────────────────────────────
+
+/** A feature built as new code behind a flag, wired in through one shared loader. */
+export const triageBroadGuarded: TriageSnapshot = {
+  fresh: true,
+  first_impression:
+    "This PR adds a read-only Reports area to the app. It has a Postgres layer (`current_report_collection_id`, `get_report_summaries`, `get_report_overview`, with grants), a SvelteKit route tree under `/app/reports` (list, redirect, per-report page with a data loader and Zod schema), and a `reportsPage` PostHog flag that controls a new sidebar entry.\n\nReach is mostly new code, but two existing files are edited. The shared app layout loader now calls `getReportSummaries` on every `/app` load in place of the old helper. That helper was replaced rather than extended, so any failure in the new RPC now fails every app page. The flag guards only the sidebar link; the `/app/reports` routes can be opened by URL.\n\nGut feel: the SQL and tests look careful. One Svelte line in the per-report page has a stray `</output>` closing tag, which should stop the UI from compiling. Fix that first, then read the grants and the layout loader.",
+  verdict_primary: "general",
+  experts: [],
+  rationale:
+    "Mixed concerns: new SECURITY DEFINER SQL functions and grants, a shared app layout loader change, and new Svelte pages with one probable compile error. No single lens dominates, so the full review is the right next step. Security is the lens to weight most, given the definer functions and grants.",
+  confidence: "medium",
+  priority_files: [
+    {
+      path: "packages/ui/src/routes/app/reports/[id=reportType]/+page.svelte",
+      reason: "Line 89 has a stray `</output>` closing tag with no open element. Svelte fails to compile, which breaks the UI build.",
+      risk: "high",
+    },
+    {
+      path: "packages/ui/src/routes/app/+layout.server.ts",
+      reason: "Shared /app layout loader. It now awaits the new get_report_summaries RPC on every app request, and an RPC error throws.",
+      risk: "high",
+    },
+    {
+      path: "packages/db/pgschema/public/functions/reports/overview.sql",
+      reason: "New SECURITY DEFINER functions that read across batches, plates and readings. Scope is set by current_customer_id().",
+      risk: "medium",
+    },
+    {
+      path: "packages/db/pgschema/public/privileges.sql",
+      reason: "Grants for the new functions. Confirm the grants match the intended callers.",
+      risk: "medium",
+    },
+    {
+      path: "packages/ui/src/routes/app/data.server.ts",
+      reason: "Replaces getEnabledReportTypes with getReportSummaries, changing the return shape. The old helper has no remaining callers.",
+      risk: "medium",
+    },
+    {
+      path: "packages/ui/src/routes/app/reports/[id=reportType]/data.server.ts",
+      reason: "Zod parse of the overview RPC result. A schema mismatch with the SQL JSON throws and the page errors.",
+      risk: "low",
+    },
+    {
+      path: "packages/ui/src/routes/app/+layout.svelte",
+      reason: "Adds the reportsPage flag and the sidebar entry. The flag hides the link only; the routes are not gated server-side.",
+      risk: "low",
+    },
+    {
+      path: "packages/db/tests/report-overview.test.ts",
+      reason: "DB tests for scoping, queue counts and the anon denial. Good coverage of the SQL contract.",
+      risk: "info",
+    },
+  ],
+  files_changed: 17,
+  approx_risk: "medium",
+  domains: ["api", "database", "auth", "ui", "tests", "generated"],
+  reach: "broad",
+  reach_reason:
+    "6 existing files edited (+44 −8), 0 deleted, and 6 new production files (+509). The broad level comes from the edit to the shared app layout loader, which every /app route runs through. The rest of the new code is contained.",
+  touch_points: [
+    "packages/ui/src/routes/app/+layout.server.ts:45 — adds getReportSummaries to the layout Promise.all, so every /app load now calls the new RPC; an RPC error throws and fails the page",
+    "packages/ui/src/routes/app/data.server.ts:75 — replaces getEnabledReportTypes with getReportSummaries; no other callers on main",
+    "packages/ui/src/routes/app/+layout.svelte:182 — adds the Reports sidebar entry, shown only when the flag is on and the list is non-empty",
+    "packages/db/pgschema/public.sql:47 — includes overview.sql, so the schema load depends on this line",
+    "packages/db/pgschema/public/privileges.sql:499 — grants and revokes for the new functions; a wrong grant changes what authenticated and anon can call",
+  ],
+  guard: {
+    kind: "feature_flag",
+    name: "reportsPage",
+    evidence: "packages/ui/src/routes/app/+layout.svelte:182",
+  },
+};
+
+export const triageExpert: TriageSnapshot = {
+  ...triageBroadGuarded,
+  verdict_primary: "expert",
+  experts: ["security", "reliability"],
+  confidence: "high",
+  rationale:
+    "The grants and SECURITY DEFINER functions decide who can read whose data; that is a security read first. The layout loader change is a reliability question: one failing RPC now fails every app page.",
+};
+
+export const triageSkip: TriageSnapshot = {
+  fresh: true,
+  first_impression: "Renames one helper and updates its three callers. No behaviour change.",
+  verdict_primary: "skip",
+  experts: [],
+  rationale: "Mechanical rename with the compiler as the test. Nothing here needs a second reader.",
+  confidence: "high",
+  priority_files: [],
+  files_changed: 4,
+  approx_risk: "low",
+  domains: ["ui"],
+  reach: "contained",
+  reach_reason: "Three existing callers edited, all in one module.",
+  touch_points: [],
+  guard: null,
+};
+
+/** `triage.json` from before reach existed: no reach block, so no reach pill or row. */
+export const triageBeforeReach: TriageSnapshot = {
+  fresh: true,
+  first_impression: "Adds retry with backoff to the upload client.",
+  verdict_primary: "general",
+  experts: [],
+  rationale: "Retry logic is easy to get subtly wrong; worth one careful read.",
+  confidence: "medium",
+  priority_files: [
+    {
+      path: "src/upload/client.ts",
+      reason: "New retry loop; check the backoff cap and the abort path.",
+      risk: "medium",
+    },
+  ],
+  files_changed: 2,
+  approx_risk: "medium",
+  domains: ["api"],
+};
+
+/** The quiet case: info risk, a guard the agent could not point at, and a known reach with nothing to say. */
+export const triageLowSignal: TriageSnapshot = {
+  fresh: true,
+  first_impression: "Bumps the copyright year in the footer.",
+  verdict_primary: "skip",
+  experts: [],
+  rationale: "",
+  confidence: "high",
+  priority_files: [{ path: "src/lib/components/Footer.svelte", reason: "", risk: "info" }],
+  files_changed: 1,
+  approx_risk: "info",
+  domains: ["ui"],
+  reach: "contained",
+  reach_reason: "",
+  touch_points: [],
+  guard: { kind: "feature_flag", name: "footerYear", evidence: "" },
 };
 
 export const aiWithFindings: AiSnapshot = {
