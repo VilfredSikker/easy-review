@@ -37,6 +37,13 @@ fn download(url: &str) -> Result<Vec<u8>> {
 /// newer; offline or rate-limited stays silent.
 pub fn spawn_background_check() -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
+    let updatable = std::env::current_exe().and_then(|e| e.canonicalize()).is_ok_and(|exe| {
+        release_update::self_update_blocker(&exe, std::env::consts::OS, std::env::consts::ARCH)
+            .is_none()
+    });
+    if !updatable {
+        return rx;
+    }
     std::thread::spawn(move || {
         let cache = release_update::check_cache_path();
         let release = match release_update::load_cached_release(&cache, release_update::CHECK_TTL)
@@ -62,20 +69,12 @@ pub fn spawn_background_check() -> std::sync::mpsc::Receiver<String> {
 pub fn run() -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let exe = std::env::current_exe()?.canonicalize()?;
-    if release_update::is_cargo_install(&exe) {
-        bail!(
-            "{} was built with cargo; update it the same way:\n  git pull && cargo install --path crates/er-tui",
-            exe.display()
-        );
+    let (os, arch) = (std::env::consts::OS, std::env::consts::ARCH);
+    if let Some(reason) = release_update::self_update_blocker(&exe, os, arch) {
+        bail!(reason);
     }
-    let asset = release_update::tui_asset_name(std::env::consts::OS, std::env::consts::ARCH)
-        .ok_or_else(|| {
-            anyhow!(
-                "no prebuilt er for {}-{}; build from source instead",
-                std::env::consts::OS,
-                std::env::consts::ARCH
-            )
-        })?;
+    let asset = release_update::tui_asset_name(os, arch)
+        .ok_or_else(|| anyhow!("no prebuilt er for {os}-{arch}"))?;
 
     println!("Checking for updates…");
     let release = fetch_latest()?;

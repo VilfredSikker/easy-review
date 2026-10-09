@@ -123,6 +123,23 @@ pub fn is_cargo_install(exe: &Path) -> bool {
     s.contains("/.cargo/bin/") || s.contains("/target/")
 }
 
+/// Why `er update` cannot replace `exe`, or `None` when it can. The status-bar
+/// hint asks the same question, so it never names a command that would refuse.
+pub fn self_update_blocker(exe: &Path, os: &str, arch: &str) -> Option<String> {
+    if is_cargo_install(exe) {
+        return Some(format!(
+            "{} was built with cargo; update it the same way:\n  git pull && cargo install --path crates/er-tui",
+            exe.display()
+        ));
+    }
+    if tui_asset_name(os, arch).is_none() {
+        return Some(format!(
+            "no prebuilt er for {os}-{arch}; build from source instead"
+        ));
+    }
+    None
+}
+
 /// Atomically replace `target` with `new_bin`. The copy is staged next to the
 /// target so the final rename never crosses a filesystem; a running process
 /// keeps its old inode and picks up the new binary on its next launch.
@@ -141,6 +158,8 @@ pub fn replace_executable(target: &Path, new_bin: &Path) -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(staged.path(), std::fs::Permissions::from_mode(0o755))?;
     }
+    // Flushed before the rename, or a crash right after it can leave an empty `er`.
+    staged.as_file().sync_all()?;
     staged
         .persist(target)
         .map_err(|e| anyhow!("replace {}: {}", target.display(), e.error))?;
@@ -170,15 +189,24 @@ pub fn load_cached_release(path: &Path, ttl: Duration) -> Option<LatestRelease> 
     (unix_now().saturating_sub(cache.checked_at_unix) < ttl.as_secs()).then_some(cache.release)
 }
 
+/// Written through a uniquely named temp file: every worktree runs its own
+/// `er`, and they can all save at once on launch.
 pub fn save_cached_release(path: &Path, release: &LatestRelease) -> Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
+    let dir = path
+        .parent()
+        .ok_or_else(|| anyhow!("{} has no parent directory", path.display()))?;
+    std::fs::create_dir_all(dir)?;
     let body = serde_json::to_string(&CheckCache {
         checked_at_unix: unix_now(),
         release: release.clone(),
     })?;
-    std::fs::write(path, body)?;
+    let mut staged = tempfile::Builder::new()
+        .prefix(".update-check-")
+        .tempfile_in(dir)?;
+    std::io::Write::write_all(&mut staged, body.as_bytes())?;
+    staged
+        .persist(path)
+        .map_err(|e| anyhow!("write {}: {}", path.display(), e.error))?;
     Ok(())
 }
 
@@ -267,6 +295,20 @@ mod tests {
     }
 
     #[test]
+    fn self_update_blocked_for_cargo_builds_and_unsupported_platforms() {
+        let script = Path::new("/Users/a/.local/bin/er");
+        assert_eq!(self_update_blocker(script, "macos", "aarch64"), None);
+        assert_eq!(self_update_blocker(script, "linux", "x86_64"), None);
+
+        let cargo = self_update_blocker(Path::new("/Users/a/.cargo/bin/er"), "macos", "aarch64");
+        assert!(cargo.is_some_and(|m| m.contains("built with cargo")));
+        let dev = self_update_blocker(Path::new("/repo/target/tui/debug/er"), "macos", "aarch64");
+        assert!(dev.is_some_and(|m| m.contains("built with cargo")));
+        let arm_linux = self_update_blocker(script, "linux", "aarch64");
+        assert!(arm_linux.is_some_and(|m| m.contains("no prebuilt er for linux-aarch64")));
+    }
+
+    #[test]
     fn replace_swaps_contents_and_marks_executable() {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("er");
@@ -322,5 +364,38 @@ mod tests {
         save_cached_release(&path, &rel).unwrap();
         assert_eq!(load_cached_release(&path, CHECK_TTL), Some(rel));
         assert_eq!(load_cached_release(&path, Duration::ZERO), None);
+    }
+
+    #[test]
+    fn concurrent_cache_saves_never_leave_a_torn_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("update-check.json");
+        // A long tag makes each write big enough for a plain overwrite to be
+        // observed half-written.
+        let rel = LatestRelease {
+            tag: format!("v0.5.9-{}", "x".repeat(256 * 1024)),
+            html_url: "https://x".into(),
+        };
+        save_cached_release(&path, &rel).unwrap();
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let (path, rel, stop) = (path.clone(), rel.clone(), stop.clone());
+                std::thread::spawn(move || {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        save_cached_release(&path, &rel).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..200 {
+            assert_eq!(load_cached_release(&path, CHECK_TTL).as_ref(), Some(&rel));
+        }
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for w in writers {
+            w.join().unwrap();
+        }
+        let leftovers = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(leftovers, 1, "staged temp files left behind");
     }
 }
