@@ -241,10 +241,9 @@ mod tests {
             rel.asset_url("SHA256SUMS"),
             "https://github.com/VilfredSikker/easy-review/releases/download/v0.5.9/SHA256SUMS"
         );
-        assert!(parse_latest_release(
-            r#"{"tag_name":"v1","html_url":"u","prerelease":true}"#
-        )
-        .is_err());
+        assert!(
+            parse_latest_release(r#"{"tag_name":"v1","html_url":"u","prerelease":true}"#).is_err()
+        );
         assert!(parse_latest_release(r#"{"tag_name":"v1","html_url":"u","draft":true}"#).is_err());
         assert!(parse_latest_release(r#"{"tag_name":"  ","html_url":"u"}"#).is_err());
     }
@@ -265,7 +264,8 @@ mod tests {
 
     #[test]
     fn checksum_lookup_handles_text_and_binary_markers() {
-        let sums = "ABC123  er-aarch64-apple-darwin.tar.gz\ndef456 *er-x86_64-unknown-linux-gnu.tar.gz\n";
+        let sums =
+            "ABC123  er-aarch64-apple-darwin.tar.gz\ndef456 *er-x86_64-unknown-linux-gnu.tar.gz\n";
         assert_eq!(
             checksum_for(sums, "er-aarch64-apple-darwin.tar.gz").as_deref(),
             Some("abc123")

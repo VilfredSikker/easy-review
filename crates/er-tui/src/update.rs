@@ -37,17 +37,18 @@ fn download(url: &str) -> Result<Vec<u8>> {
 /// newer; offline or rate-limited stays silent.
 pub fn spawn_background_check() -> std::sync::mpsc::Receiver<String> {
     let (tx, rx) = std::sync::mpsc::channel();
-    let updatable = std::env::current_exe().and_then(|e| e.canonicalize()).is_ok_and(|exe| {
-        release_update::self_update_blocker(&exe, std::env::consts::OS, std::env::consts::ARCH)
-            .is_none()
-    });
+    let updatable = std::env::current_exe()
+        .and_then(|e| e.canonicalize())
+        .is_ok_and(|exe| {
+            release_update::self_update_blocker(&exe, std::env::consts::OS, std::env::consts::ARCH)
+                .is_none()
+        });
     if !updatable {
         return rx;
     }
     std::thread::spawn(move || {
         let cache = release_update::check_cache_path();
-        let release = match release_update::load_cached_release(&cache, release_update::CHECK_TTL)
-        {
+        let release = match release_update::load_cached_release(&cache, release_update::CHECK_TTL) {
             Some(r) => r,
             None => match fetch_latest() {
                 Ok(r) => {
@@ -84,8 +85,10 @@ pub fn run() -> Result<()> {
     }
 
     println!("Downloading er {} …", release.version());
-    let sums = String::from_utf8(download(&release.asset_url(release_update::CHECKSUMS_ASSET))?)
-        .context("SHA256SUMS is not text")?;
+    let sums = String::from_utf8(download(
+        &release.asset_url(release_update::CHECKSUMS_ASSET),
+    )?)
+    .context("SHA256SUMS is not text")?;
     let expected = release_update::checksum_for(&sums, &asset)
         .ok_or_else(|| anyhow!("{asset} is not listed in the release's SHA256SUMS"))?;
     let archive = download(&release.asset_url(&asset))?;
@@ -107,6 +110,10 @@ pub fn run() -> Result<()> {
     release_update::replace_executable(&exe, &work.path().join("er"))?;
     let _ = release_update::save_cached_release(&release_update::check_cache_path(), &release);
 
-    println!("Updated er {current} → {} at {}", release.version(), exe.display());
+    println!(
+        "Updated er {current} → {} at {}",
+        release.version(),
+        exe.display()
+    );
     Ok(())
 }

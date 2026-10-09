@@ -1599,8 +1599,7 @@ fn check_app_update_inner() -> AppUpdateInfo {
     match fetch_latest_release() {
         Ok(release) => {
             let latest = release.version().to_string();
-            let update_available =
-                er_engine::release_update::version_is_newer(&latest, &current);
+            let update_available = er_engine::release_update::version_is_newer(&latest, &current);
             AppUpdateInfo {
                 current,
                 latest: Some(latest),
