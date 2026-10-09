@@ -354,14 +354,16 @@ Published releases are **terminal `er`** archives and a **macOS desktop `.dmg`**
 **Maintainer flow:**
 
 ```bash
-# 1. Bump version in Cargo.toml ([workspace.package] version)
+# 1. Bump the version in Cargo.toml ([workspace.package] version) and
+#    crates/er-desktop/tauri.conf.json; the release job fails if either
+#    differs from the tag
 # 2. Commit, tag, push
 git tag v0.3.0
 git push origin main
 git push origin v0.3.0
 ```
 
-CI builds `er-tui` for `x86_64-apple-darwin`, `aarch64-apple-darwin`, and `x86_64-unknown-linux-gnu`, packages `er-<target>.tar.gz`, and creates a GitHub Release.
+CI builds `er-tui` for `x86_64-apple-darwin`, `aarch64-apple-darwin`, and `x86_64-unknown-linux-gnu`, packages `er-<target>.tar.gz`, and creates a GitHub Release with a `SHA256SUMS` for `er update`. When the updater key is set it also attaches the signed desktop archive and `latest.json` ([In-app updates](#in-app-updates)).
 
 **Local release smoke test:**
 
