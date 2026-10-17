@@ -137,14 +137,45 @@ pub fn bundle_data_dirs() -> Vec<PathBuf> {
     out
 }
 
-/// Legacy cache directory (`~/.cache/er`).
-pub fn cache_dir() -> Option<PathBuf> {
-    if let Ok(xdg) = std::env::var("XDG_CACHE_HOME") {
-        if !xdg.is_empty() {
-            return Some(PathBuf::from(xdg).join("er"));
+/// Cache roots the npm launcher wrote its binary under (`easy-review/er-mcp/`).
+pub fn launcher_cache_dirs() -> Vec<PathBuf> {
+    let xdg = std::env::var("XDG_CACHE_HOME")
+        .ok()
+        .filter(|value| !value.is_empty());
+    launcher_cache_dirs_from(xdg.as_deref().map(Path::new))
+}
+
+/// The launcher read `XDG_CACHE_HOME` on every platform, which
+/// `dirs::cache_dir()` does not on macOS, so both roots may exist.
+fn launcher_cache_dirs_from(xdg: Option<&Path>) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    // Only absolute roots: joining a relative `XDG_CACHE_HOME` would put an
+    // uninstall target inside whatever directory the command ran from.
+    if let Some(xdg) = xdg.filter(|dir| dir.is_absolute()) {
+        out.push(xdg.join("easy-review"));
+    }
+    if let Some(cache) = dirs::cache_dir() {
+        let dir = cache.join("easy-review");
+        if !out.contains(&dir) {
+            out.push(dir);
         }
     }
-    dirs::home_dir().map(|h| h.join(".cache").join("er"))
+    out
+}
+
+/// Legacy cache directory (`~/.cache/er`).
+pub fn cache_dir() -> Option<PathBuf> {
+    let xdg = std::env::var("XDG_CACHE_HOME").ok();
+    legacy_cache_dir_from(xdg.as_deref().map(Path::new), dirs::home_dir().as_deref())
+}
+
+/// A relative `XDG_CACHE_HOME` falls back to `~/.cache`, as `dirs` does: joined
+/// as-is it would put an uninstall target inside the working directory.
+fn legacy_cache_dir_from(xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
+    match xdg.filter(|dir| dir.is_absolute()) {
+        Some(xdg) => Some(xdg.join("er")),
+        None => home.map(|h| h.join(".cache").join("er")),
+    }
 }
 
 /// Build the uninstall plan for the given options (lists expected roots even when
@@ -165,6 +196,9 @@ pub fn plan(opts: &UninstallOptions) -> Vec<UninstallTarget> {
     }
     if opts.remove_cache {
         if let Some(dir) = cache_dir() {
+            push_unique(&mut targets, UninstallKind::Cache, dir);
+        }
+        for dir in launcher_cache_dirs() {
             push_unique(&mut targets, UninstallKind::Cache, dir);
         }
     }
@@ -589,5 +623,72 @@ mod tests {
         assert!(opts.remove_cache);
         assert!(opts.remove_binaries);
         assert!(opts.remove_desktop_app);
+    }
+
+    #[test]
+    fn legacy_cache_dir_ignores_a_relative_xdg_root() {
+        let home = Path::new("/home/u");
+
+        assert_eq!(
+            legacy_cache_dir_from(Some(Path::new("/xdg-cache")), Some(home)),
+            Some(PathBuf::from("/xdg-cache/er"))
+        );
+        assert_eq!(
+            legacy_cache_dir_from(Some(Path::new(".")), Some(home)),
+            Some(PathBuf::from("/home/u/.cache/er"))
+        );
+        assert_eq!(
+            legacy_cache_dir_from(None, Some(home)),
+            Some(PathBuf::from("/home/u/.cache/er"))
+        );
+    }
+
+    #[test]
+    fn launcher_cache_dirs_names_both_roots() {
+        let Some(cache) = dirs::cache_dir() else {
+            return;
+        };
+        let dirs = launcher_cache_dirs_from(Some(Path::new("/xdg-cache")));
+
+        assert!(dirs.contains(&PathBuf::from("/xdg-cache/easy-review")));
+        assert!(dirs.contains(&cache.join("easy-review")));
+
+        // A relative value must not become a target beside the working directory.
+        let relative = launcher_cache_dirs_from(Some(Path::new("cache")));
+        assert!(!relative.contains(&PathBuf::from("cache/easy-review")));
+    }
+
+    #[test]
+    fn plan_removes_launcher_caches_with_the_caches() {
+        let roots = launcher_cache_dirs();
+        assert!(!roots.is_empty(), "no launcher cache root to check");
+
+        // Caches go even when review data is kept, so the launcher's cache
+        // roots must be gated on remove_cache rather than remove_data.
+        let opts = UninstallOptions {
+            remove_data: false,
+            ..UninstallOptions::default()
+        };
+        let targets = plan(&opts);
+        for root in &roots {
+            assert!(
+                targets
+                    .iter()
+                    .any(|t| t.kind == UninstallKind::Cache && &t.path == root),
+                "{root:?} missing from {targets:?}"
+            );
+        }
+
+        // Gated on the cache flag: keeping caches must keep these too.
+        let kept = plan(&UninstallOptions {
+            remove_cache: false,
+            ..UninstallOptions::default()
+        });
+        for root in &roots {
+            assert!(
+                !kept.iter().any(|t| &t.path == root),
+                "{root:?} planned while caches are kept"
+            );
+        }
     }
 }
