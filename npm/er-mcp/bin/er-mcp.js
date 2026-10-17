@@ -10,6 +10,9 @@
 const { spawn } = require("node:child_process");
 const { ensureBinary } = require("../lib/ensure-binary.js");
 
+/** How many launchers deep this process is; see the check in main(). */
+const LAUNCH_DEPTH = Number(process.env.ER_MCP_LAUNCH_DEPTH || 0);
+
 function printTtyUsage() {
   console.error(`easy-review MCP server (stdio JSON-RPC).
 
@@ -66,10 +69,21 @@ async function main() {
     return;
   }
 
+  // A launcher spawns the real server exactly once. Two levels deep means the
+  // binary resolved back to this launcher through some shim that cannot be
+  // recognised by inspection, and spawning it again would never end.
+  if (LAUNCH_DEPTH >= 2) {
+    console.error(
+      `easy-review-mcp: er-mcp keeps resolving back to this launcher. ` +
+        `Set ER_MCP_PATH to the real binary, or install the platform package.`,
+    );
+    process.exit(1);
+  }
+
   const binary = await ensureBinary();
   const child = spawn(binary, args, {
     stdio: "inherit",
-    env: process.env,
+    env: { ...process.env, ER_MCP_LAUNCH_DEPTH: String(LAUNCH_DEPTH + 1) },
   });
 
   const forward = (signal) => {

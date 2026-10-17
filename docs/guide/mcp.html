@@ -32,8 +32,9 @@
     <p>
       The <code>easy-review-mcp</code> package runs the MCP server. npm installs the prebuilt
       <code>er-mcp</code> binary for your platform as an optional dependency. An install that skips
-      optional dependencies (<code>--omit=optional</code>) leaves it out, and the launcher then stops
-      with an error that says so; there is no download fallback.
+      optional dependencies (<code>--omit=optional</code>) leaves it out; the launcher then runs an
+      <code>er-mcp</code> already on your PATH, and stops with an error naming the package when there
+      is none. There is no download fallback.
     </p>
     <pre><code>npx -y easy-review-mcp</code></pre>
     <p>Supported hosts: macOS arm64/x64, Linux x64.
