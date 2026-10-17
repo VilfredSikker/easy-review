@@ -1,0 +1,22 @@
+name: Tauri Linux dependencies
+description: >
+  Install the system libraries er-desktop links against, restored from the
+  Actions cache. A plain apt-get install pulled 62 MB per job and stalled for
+  up to 17 minutes on a slow Ubuntu mirror. build-essential, curl, wget and
+  file ship with the runner image, so they are not listed.
+runs:
+  using: composite
+  steps:
+    - uses: awalsh128/cache-apt-pkgs-action@v1
+      with:
+        packages: >-
+          libwebkit2gtk-4.1-dev
+          libgtk-3-dev
+          libayatana-appindicator3-dev
+          librsvg2-dev
+          patchelf
+          libxdo-dev
+          libssl-dev
+          pkg-config
+        # Bump to force a fresh download.
+        version: 1
