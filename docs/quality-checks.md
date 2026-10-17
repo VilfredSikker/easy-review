@@ -59,8 +59,10 @@ fake risk. Test, bench and example code is excluded from the walk for the same
 reason.
 
 The failing gate is `just crap` locally: the baseline is not under the threshold
-yet. CI's `crap` job runs `cargo test -p er-crap` and publishes a `--summary`
-report that never fails on the threshold — see
+yet. CI's `crap` job runs only on a release branch's pull request into `main`,
+since it repeats the engine and TUI tests under instrumentation. It runs
+`cargo test -p er-crap` and publishes a `--summary` report that never fails on
+the threshold — see
 [ADR 0028](./adr/0028-crap-gate-is-local.md).
 
 ## Negative tests
