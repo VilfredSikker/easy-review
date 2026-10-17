@@ -6,62 +6,77 @@ on:
   pull_request:
     branches: [main, master, 'release/**', 'release-*']
 
+# Agent sessions push often; a run for a commit that has been superseded on the
+# same PR is wasted. Each push gets its own group: a shared one would drop
+# queued full runs on main when merges land close together.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  check:
-    name: Check
+  # A PR runs only the jobs whose inputs it touched. Pushes to main and release
+  # branches run everything, so a wrong filter shows up there rather than going
+  # unnoticed. No status check is required by the ruleset, so a skipped job
+  # does not hold a merge.
+  changes:
+    name: Changed areas
     runs-on: ubuntu-latest
+    # paths-filter lists a PR's files through the API.
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name == 'push' || steps.filter.outputs.rust == 'true' }}
+      ui: ${{ github.event_name == 'push' || steps.filter.outputs.ui == 'true' }}
+      herdr: ${{ github.event_name == 'push' || steps.filter.outputs.herdr == 'true' }}
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux dependencies (Tauri)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            pkg-config
-      - uses: dtolnay/rust-toolchain@1.98.0
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+        if: github.event_name == 'pull_request'
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'pull_request'
+        with:
+          filters: |
+            ci: &ci
+              - '.github/workflows/ci.yml'
+              - '.github/actions/**'
+            rust:
+              - *ci
+              - 'crates/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - 'clippy.toml'
+              - 'clippy-warning-budget.json'
+            ui:
+              - *ci
+              - 'desktop-ui/**'
+            herdr:
+              - *ci
+              - 'tools/herdr-easy-review/**'
 
   test:
     name: Test
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux dependencies (Tauri)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            pkg-config
+      - uses: ./.github/actions/tauri-linux-deps
+        # A stalled mirror should fail fast; a re-run usually gets a good one.
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@1.98.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test
 
   desktop-ui-lint:
     name: Desktop UI lint
+    needs: changes
+    if: needs.changes.outputs.ui == 'true'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -76,6 +91,8 @@ jobs:
 
   herdr-plugin:
     name: Herdr plugin
+    needs: changes
+    if: needs.changes.outputs.herdr == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -84,27 +101,17 @@ jobs:
           node-version: "20"
       - run: cd tools/herdr-easy-review && npm test
 
+  # Also the type check: the gate runs clippy with --workspace --all-targets,
+  # which covers everything `cargo check --all-targets` did.
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install Linux dependencies (Tauri)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            libwebkit2gtk-4.1-dev \
-            libgtk-3-dev \
-            libayatana-appindicator3-dev \
-            librsvg2-dev \
-            patchelf \
-            build-essential \
-            curl \
-            wget \
-            file \
-            libxdo-dev \
-            libssl-dev \
-            pkg-config
+      - uses: ./.github/actions/tauri-linux-deps
+        timeout-minutes: 5
       - uses: dtolnay/rust-toolchain@1.98.0
         with:
           components: clippy
@@ -115,6 +122,8 @@ jobs:
 
   fmt:
     name: Format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -125,6 +134,8 @@ jobs:
 
   headless:
     name: Engine (headless)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -135,8 +146,15 @@ jobs:
       - run: cargo build -p er-engine --no-default-features
       - run: cargo build -p er-engine --no-default-features --features highlight
 
+  # Runs only on the release PR into main. The report is not a gate, and it
+  # repeats the engine and TUI tests under instrumentation, so once per release
+  # is enough.
   crap:
     name: CRAP tooling + report
+    if: >-
+      github.event_name == 'pull_request'
+      && github.base_ref == 'main'
+      && startsWith(github.head_ref, 'release/')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
