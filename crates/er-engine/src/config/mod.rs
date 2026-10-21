@@ -1491,6 +1491,24 @@ pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
     args.insert(insert_at, "--ignore-user-config".to_string());
 }
 
+/// Skip the user's MCP servers and skill listing in app-launched Claude runs.
+///
+/// `er` agents use only built-in tools and self-contained prompts, yet each
+/// fresh process paid 2–4 s connecting MCP servers and ~20k tokens of cache
+/// write for the listings. User settings still load, so auth, env and an
+/// explicit `--mcp-config` in the provider args keep working. Every Claude
+/// argv builder calls this; one that skips it pays that startup again.
+pub fn inject_claude_startup_trim(family: CliFamily, args: &mut Vec<String>) {
+    if family != CliFamily::Claude {
+        return;
+    }
+    for flag in ["--disable-slash-commands", "--strict-mcp-config"] {
+        if !args.iter().any(|arg| arg == flag) {
+            args.insert(0, flag.to_string());
+        }
+    }
+}
+
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
 pub const AUTO_EFFORT: &str = "Auto";
 

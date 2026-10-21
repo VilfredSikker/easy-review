@@ -2555,6 +2555,7 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
+        crate::config::inject_claude_startup_trim(family, &mut config_args);
         crate::config::inject_agent_storage_access(
             family,
             &mut config_args,
@@ -3230,6 +3231,7 @@ impl App {
         if is_codex {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
+        crate::config::inject_claude_startup_trim(family, &mut config_args);
         // Diagrams: the host writes the sidecar, so the agent must not be able to
         // write anything — its prompt carries untrusted diff content. Claude's
         // `--allowedTools` allowlist and OpenCode's permission env deny edits
@@ -4337,6 +4339,174 @@ mod background_queue_tests {
         assert!(
             command_line.contains("exec") && command_line.contains("--ignore-user-config"),
             "debug log should show an isolated Codex invocation:\n{debug_log}"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    /// One spawn case for the startup-trim tests: a fake CLI whose basename
+    /// sets the family, the provider args it is configured with, and the file
+    /// it writes its argv to, one argument per line.
+    #[cfg(unix)]
+    struct ArgvCase {
+        provider_id: String,
+        argv_file: std::path::PathBuf,
+    }
+
+    /// Make `provider_id` a provider whose command is a script named `cli`
+    /// that records the argv it was given. The rename into place means a
+    /// reader never sees a half-written file.
+    #[cfg(unix)]
+    fn install_argv_recorder(
+        app: &mut App,
+        tmp: &std::path::Path,
+        provider_id: &str,
+        cli: &str,
+        args: &[&str],
+    ) -> ArgvCase {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tmp.join(format!("bin-{provider_id}"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let argv_file = tmp.join(format!("argv-{provider_id}.txt"));
+        let bin = dir.join(cli);
+        let out = argv_file.display();
+        std::fs::write(
+            &bin,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"{out}.tmp\" && mv \"{out}.tmp\" \"{out}\"\n"
+            ),
+        )
+        .unwrap();
+        let mut perms = std::fs::metadata(&bin).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&bin, perms).unwrap();
+        app.config.ai_hub.providers.insert(
+            provider_id.to_string(),
+            AiProviderConfig {
+                command: bin.to_string_lossy().to_string(),
+                args: args.iter().map(ToString::to_string).collect(),
+                models: vec![AiModelConfig {
+                    id: "m".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        ArgvCase {
+            provider_id: provider_id.to_string(),
+            argv_file,
+        }
+    }
+
+    #[cfg(unix)]
+    fn select(app: &mut App, case: &ArgvCase) {
+        app.set_ai_selection_override(AiSelection {
+            provider_id: Some(case.provider_id.clone()),
+            model_id: Some("m".to_string()),
+            effort: None,
+        });
+    }
+
+    /// The three startup-trim cases every Claude argv builder must satisfy:
+    /// both flags added for Claude, a flag the user already set not repeated,
+    /// and nothing added for Codex.
+    #[cfg(unix)]
+    fn startup_trim_cases(app: &mut App, tmp: &std::path::Path) -> [ArgvCase; 3] {
+        app.config.ai_hub.providers.clear();
+        [
+            install_argv_recorder(app, tmp, "claude", "claude", &["--print", "-p", "{prompt}"]),
+            install_argv_recorder(
+                app,
+                tmp,
+                "claude-strict",
+                "claude",
+                &["--strict-mcp-config", "--print", "-p", "{prompt}"],
+            ),
+            install_argv_recorder(app, tmp, "codex", "codex", &["exec", "{prompt}"]),
+        ]
+    }
+
+    /// Wait for each case's argv file, polling `poll` meanwhile, and return
+    /// how often each case saw `--strict-mcp-config` and
+    /// `--disable-slash-commands`.
+    #[cfg(unix)]
+    fn startup_flag_counts(cases: &[ArgvCase], mut poll: impl FnMut()) -> Vec<(usize, usize)> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !cases.iter().all(|c| c.argv_file.exists()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "a fake agent never recorded its argv"
+            );
+            poll();
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        cases
+            .iter()
+            .map(|case| {
+                let argv = std::fs::read_to_string(&case.argv_file).unwrap();
+                let count = |flag: &str| argv.lines().filter(|l| *l == flag).count();
+                (
+                    count("--strict-mcp-config"),
+                    count("--disable-slash-commands"),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn foreground_agent_prompt_trims_claude_startup_only() {
+        let _serial = serial();
+        // `spawn_agent_prompt` writes into the tab's managed bucket, so keep
+        // that bucket out of the user's real storage.
+        let _storage = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let Some((mut app, tmp)) = test_app(3) else {
+            return;
+        };
+        let cases = startup_trim_cases(&mut app, &tmp);
+
+        for case in &cases {
+            select(&mut app, case);
+            app.spawn_agent_prompt(&format!("trim-{}", case.provider_id), "p")
+                .unwrap();
+        }
+        app.clear_ai_selection_override();
+
+        assert_eq!(
+            startup_flag_counts(&cases, || {}),
+            vec![(1, 1), (1, 1), (0, 0)],
+            "per case (claude, claude with the flag preset, codex): \
+             (--strict-mcp-config, --disable-slash-commands) counts"
+        );
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn background_agent_task_trims_claude_startup_only() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(3) else {
+            return;
+        };
+        let cases = startup_trim_cases(&mut app, &tmp);
+
+        for case in &cases {
+            select(&mut app, case);
+            app.spawn_background_triage_review(target(&tmp, &case.provider_id), "p".into(), true)
+                .unwrap();
+        }
+        app.clear_ai_selection_override();
+
+        assert_eq!(
+            startup_flag_counts(&cases, || app.poll_background_tasks()),
+            vec![(1, 1), (1, 1), (0, 0)],
+            "per case (claude, claude with the flag preset, codex): \
+             (--strict-mcp-config, --disable-slash-commands) counts"
         );
 
         let _ = std::fs::remove_dir_all(&tmp);
