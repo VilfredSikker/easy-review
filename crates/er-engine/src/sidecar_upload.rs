@@ -572,6 +572,7 @@ mod tests {
                 verdict: Default::default(),
                 priority_files: vec![],
                 reach: Default::default(),
+                sensitive: Default::default(),
             };
             let mut files = BTreeMap::new();
             files.insert(

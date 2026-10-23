@@ -29,6 +29,14 @@ impl FindingCaps {
             is_expert: true,
         }
     }
+
+    pub const fn professor() -> Self {
+        Self {
+            per_file: 3,
+            total: 12,
+            is_expert: true,
+        }
+    }
 }
 
 /// One registered expert reviewer (v1 hardcoded list).
@@ -439,6 +447,7 @@ mod tests {
             lens: String::new(),
             category: "correctness".to_string(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
             title: "Test".to_string(),
             description: String::new(),
             hunk_index: Some(0),

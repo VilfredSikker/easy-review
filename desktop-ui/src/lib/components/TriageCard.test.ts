@@ -70,7 +70,7 @@ describe("TriageCard", () => {
     expect(src).toContain("followUpFor(triage, reviewScope)");
     expect(src).toContain('if (next.kind === "arena")');
     expect(src).toContain("arena.openLauncher()");
-    expect(src).toContain("void app.cmd(next.command, next.args)");
+    expect(src).toContain("await app.cmd(next.command, next.args)");
   });
 
   it("shows the reach row, and its guard, only with something to say", () => {
@@ -86,8 +86,11 @@ describe("TriageCard", () => {
     expect(src).not.toMatch(/<div[^>]*aria-label=/);
   });
 
-  it("marks a triage generated against another diff and withholds its follow-up", () => {
+  it("marks stale triage while routing its default follow-up through the review flow", () => {
     expect(src).toContain('{triage.fresh ? label : "stale"}');
-    expect(src).toMatch(/triage\.verdict_primary !== "skip" &&\s+triage\.fresh/);
+    expect(src).toContain('app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir })');
+    expect(src).toContain("flowControls.confirm");
+    expect(src).toContain("flowControls.busy");
+    expect(src).toContain("flowControls.openRunId");
   });
 });

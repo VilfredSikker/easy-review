@@ -10,6 +10,7 @@ use super::storage::{
 use super::voting::{apply_round3_verdicts, record_arbiter_ballots, severity_from_cross_check};
 use crate::agent_slots::Workload;
 use crate::ai::compute_diff_hash;
+use crate::ai::flow_providers::FlowProvider;
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, build_arena_round3_prompt,
 };
@@ -93,6 +94,170 @@ pub fn default_arbiter_from_hub(hub: &crate::config::AiHubConfig) -> Option<Revi
         }
     }
     best.map(|(_, r)| r)
+}
+
+/// Pick a review-flow arbiter only from the providers captured as eligible.
+///
+/// The provider that raised the most finder assignments is excluded when an
+/// alternative eligible provider has a configured model. Ties in finder count
+/// prefer the configured default, then provider ID order. Model-price ties use
+/// provider ID and model ID order.
+pub fn cross_provider_arbiter(
+    hub: &crate::config::AiHubConfig,
+    eligible_ids: &[String],
+    finder_provider_ids: &[String],
+) -> Result<ReviewerRef> {
+    use std::cmp::Ordering;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let eligible: BTreeSet<_> = eligible_ids.iter().cloned().collect();
+    if eligible.is_empty() {
+        anyhow::bail!("no eligible provider is available for the review-flow arbiter");
+    }
+    if eligible.iter().any(|id| id.trim().is_empty()) {
+        anyhow::bail!("eligible provider IDs must not be empty");
+    }
+
+    let mut counts = BTreeMap::<String, usize>::new();
+    for provider_id in finder_provider_ids {
+        if eligible.contains(provider_id) {
+            *counts.entry(provider_id.clone()).or_default() += 1;
+        }
+    }
+    let max_count = eligible
+        .iter()
+        .map(|id| counts.get(id).copied().unwrap_or_default())
+        .max()
+        .unwrap_or_default();
+    let tied: Vec<_> = eligible
+        .iter()
+        .filter(|id| counts.get(*id).copied().unwrap_or_default() == max_count)
+        .map(String::as_str)
+        .collect();
+    // `eligible` was checked above and every provider has a finder count, so
+    // the tied set cannot be empty. Keep a deterministic fallback if that
+    // invariant changes instead of panicking here.
+    let first_eligible = eligible
+        .iter()
+        .next()
+        .map(String::as_str)
+        .unwrap_or_default();
+    let most_common = hub
+        .default_provider
+        .as_deref()
+        .filter(|default| tied.contains(default))
+        .or_else(|| tied.first().copied())
+        .unwrap_or(first_eligible);
+
+    let has_alternative = eligible.len() > 1;
+    let mut candidates = Vec::new();
+    for provider_id in &eligible {
+        if has_alternative && provider_id.as_str() == most_common {
+            continue;
+        }
+        let Some(provider) = hub.providers.get(provider_id) else {
+            continue;
+        };
+        for model in &provider.models {
+            candidates.push((
+                model.cost_per_1k_in.unwrap_or(0.015) + model.cost_per_1k_out.unwrap_or(0.075),
+                provider_id.as_str(),
+                model.id.as_str(),
+            ));
+        }
+    }
+    let (_, provider_id, model_id) = candidates
+        .into_iter()
+        .max_by(|a, b| {
+            a.0.partial_cmp(&b.0)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| b.1.cmp(a.1))
+                .then_with(|| b.2.cmp(a.2))
+        })
+        .ok_or_else(|| {
+            anyhow::anyhow!("no eligible provider models are available for the review-flow arbiter")
+        })?;
+
+    Ok(ReviewerRef {
+        provider_id: provider_id.to_string(),
+        model_id: model_id.to_string(),
+        agent_kind: None,
+    })
+}
+
+/// Choose a review-flow arbiter from the captured Advanced model group only.
+/// Prefer a provider other than the most common finder provider when possible,
+/// then use the arena's existing cost and deterministic tie ordering.
+pub fn cross_model_arbiter(
+    hub: &crate::config::AiHubConfig,
+    advanced_models: &[FlowProvider],
+    finder_provider_ids: &[String],
+) -> Result<ReviewerRef> {
+    use std::collections::BTreeMap;
+
+    let mut counts = BTreeMap::<String, usize>::new();
+    for provider in finder_provider_ids {
+        *counts.entry(provider.clone()).or_default() += 1;
+    }
+    let max_count = counts.values().copied().max();
+    let most_common = max_count.and_then(|max_count| {
+        let default = hub
+            .default_provider
+            .as_ref()
+            .filter(|provider| counts.get(*provider) == Some(&max_count));
+        default
+            .or_else(|| {
+                counts
+                    .iter()
+                    .find(|(_, count)| **count == max_count)
+                    .map(|(provider, _)| provider)
+            })
+            .map(String::as_str)
+    });
+
+    let configured: Vec<_> = advanced_models
+        .iter()
+        .filter_map(|selection| {
+            let model = hub
+                .providers
+                .get(&selection.provider_id)?
+                .models
+                .iter()
+                .find(|model| model.id == selection.model_id)?;
+            let cost =
+                model.cost_per_1k_in.unwrap_or(0.015) + model.cost_per_1k_out.unwrap_or(0.075);
+            Some((cost, selection))
+        })
+        .collect();
+    if configured.is_empty() {
+        anyhow::bail!("no configured Advanced model is available for the review-flow arbiter");
+    }
+
+    let alternatives: Vec<_> = configured
+        .iter()
+        .copied()
+        .filter(|(_, selection)| Some(selection.provider_id.as_str()) != most_common)
+        .collect();
+    let candidates = if alternatives.is_empty() {
+        &configured
+    } else {
+        &alternatives
+    };
+    let (_, selection) = candidates
+        .iter()
+        .max_by(|(left_cost, left), (right_cost, right)| {
+            left_cost
+                .total_cmp(right_cost)
+                .then_with(|| right.provider_id.cmp(&left.provider_id))
+                .then_with(|| right.model_id.cmp(&left.model_id))
+        })
+        .copied()
+        .context("no configured Advanced model is available for the review-flow arbiter")?;
+    Ok(ReviewerRef {
+        provider_id: selection.provider_id.clone(),
+        model_id: selection.model_id.clone(),
+        agent_kind: None,
+    })
 }
 
 fn model_cost_rate(hub: &crate::config::AiHubConfig, rf: &ReviewerRef) -> f32 {
@@ -223,12 +388,23 @@ pub fn build_arena_diff_preview(
 }
 
 pub fn reconcile_stale_runs(er_dir: &Path) -> Result<()> {
+    reconcile_stale_runs_excluding(er_dir, |_| false)
+}
+
+/// Recover only this entered bucket. Registry membership owns the writer even
+/// after its status turns terminal, until the supervisor releases its entry.
+pub(crate) fn reconcile_stale_runs_excluding(
+    er_dir: &Path,
+    is_registered: impl Fn(&str) -> bool,
+) -> Result<()> {
     for run_id in super::storage::list_run_ids(er_dir)? {
-        let paths = ArenaPaths::for_run(er_dir, &run_id);
-        if !paths.run_json().is_file() {
+        if is_registered(&run_id) {
             continue;
         }
-        let mut run = load_run(&paths)?;
+        let paths = ArenaPaths::for_run(er_dir, &run_id);
+        let Some(mut run) = super::storage::load_historical_run(&paths)? else {
+            continue;
+        };
         if matches!(run.status, RunStatus::Running { .. } | RunStatus::Queued) {
             run.status = RunStatus::Failed;
             save_run(&paths, &run)?;
@@ -252,6 +428,31 @@ pub fn start_arena_run(
     config: ErConfig,
     inputs: ArenaRunInputs,
     params: ArenaStartParams,
+) -> Result<String> {
+    let run_kind = if params.agent_kind.is_some() {
+        ArenaRunKind::Agent
+    } else {
+        ArenaRunKind::Models
+    };
+    start_arena_run_with_kind(registry, config, inputs, params, run_kind)
+}
+
+/// Flow ownership is written with the first run record, before the supervisor starts.
+pub(crate) fn start_review_flow_run(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    inputs: ArenaRunInputs,
+    params: ArenaStartParams,
+) -> Result<String> {
+    start_arena_run_with_kind(registry, config, inputs, params, ArenaRunKind::ReviewFlow)
+}
+
+fn start_arena_run_with_kind(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    inputs: ArenaRunInputs,
+    params: ArenaStartParams,
+    run_kind: ArenaRunKind,
 ) -> Result<String> {
     let ArenaRunInputs {
         repo_root,
@@ -310,6 +511,7 @@ pub fn start_arena_run(
         );
     }
 
+    let reviewers = resolve_reviewers(&config, &params.reviewers)?;
     let run_id = new_run_id();
     crate::dev_log::arena_line(format!("run_id={run_id} spawning supervisor thread"));
     let paths = ArenaPaths::for_run(Path::new(&er_dir), &run_id);
@@ -317,7 +519,6 @@ pub fn start_arena_run(
     save_diff_patch(&paths, &raw_diff)?;
 
     let diff_hash = compute_diff_hash(&raw_diff);
-    let reviewers = resolve_reviewers(&config, &params.reviewers)?;
 
     let run = ArenaRun {
         id: run_id.clone(),
@@ -336,11 +537,7 @@ pub fn start_arena_run(
             auto_accept_threshold: 0.75,
             scope: params.scope,
             files: params.files.clone(),
-            run_kind: if params.agent_kind.is_some() {
-                ArenaRunKind::Agent
-            } else {
-                ArenaRunKind::Models
-            },
+            run_kind,
             agent_kind: params.agent_kind,
             effort: run_effort,
         },
@@ -430,6 +627,13 @@ pub struct SeededStartParams {
     pub raw_diff: String,
     /// Overrides the hub default arbiter when the caller picked one.
     pub arbiter: Option<ReviewerRef>,
+    /// Include the general review's producer findings.
+    pub include_general: bool,
+    /// Restrict default-flow runs to successful current-run lenses. `None`
+    /// keeps the Advanced action's historical all-experts behavior.
+    pub source_lenses: Option<Vec<String>>,
+    /// Captured provider/model selection for each lens selected by the flow.
+    pub lens_providers: std::collections::BTreeMap<String, ReviewerRef>,
 }
 
 /// Rule on the deduped expert findings, without running a debate.
@@ -451,11 +655,27 @@ pub fn start_seeded_run(
     repo_root: String,
     params: SeededStartParams,
 ) -> Result<Option<String>> {
-    let findings = super::seeded::dedupe_expert_findings(
-        &params.er_dir,
-        &params.diff_hash,
-        &params.review_hash,
-    );
+    let strict_provenance = params.source_lenses.is_some();
+    let findings = match params.source_lenses.as_deref() {
+        Some(source_lenses) => super::seeded::dedupe_flow_findings_filtered(
+            &params.er_dir,
+            &params.diff_hash,
+            &params.review_hash,
+            params.include_general,
+            Some(source_lenses),
+        ),
+        None if params.include_general => super::seeded::dedupe_flow_findings(
+            &params.er_dir,
+            &params.diff_hash,
+            &params.review_hash,
+            true,
+        ),
+        None => super::seeded::dedupe_expert_findings(
+            &params.er_dir,
+            &params.diff_hash,
+            &params.review_hash,
+        ),
+    };
     if findings.is_empty() {
         return Ok(None);
     }
@@ -477,6 +697,8 @@ pub fn start_seeded_run(
             branch_ref: params.branch_ref.clone(),
             scope: params.scope,
             arbiter,
+            lens_providers: params.lens_providers,
+            strict_provenance,
         },
         findings,
     )?;
@@ -512,6 +734,7 @@ pub fn start_seeded_run(
             Err(e) => {
                 crate::dev_log::arena_line(format!("seeded {run_id_thread}: load failed: {e:#}"));
                 registry_thread.release_run(&run_id_thread);
+                registry_thread.notify_progress();
                 return;
             }
         };
@@ -573,10 +796,9 @@ fn arbiter_review_from_run(
     run_id: &str,
     diff_hash: &str,
 ) -> crate::ai::ArbiterReview {
-    let verdicts = run
-        .findings
-        .iter()
-        .filter_map(|f| {
+    let mut verdicts = Vec::new();
+    for f in &run.findings {
+        let Some(canonical) = (|| {
             let verdict = match &f.verdict {
                 Verdict::Kept => crate::ai::ArbiterRuling::Kept,
                 Verdict::Escalated => crate::ai::ArbiterRuling::Escalated,
@@ -594,10 +816,23 @@ fn arbiter_review_from_run(
                     _ => None,
                 },
                 rationale: f.rationale.clone(),
-                raised_by: f.raised_by.clone(),
+                raised_by: super::provenance::normalized_raisers_for(
+                    f,
+                    &run.reviewers,
+                    run.config.agent_kind.as_deref(),
+                ),
+                providers: super::provenance::providers_for(f, &run.reviewers),
             })
-        })
-        .collect();
+        })() else {
+            continue;
+        };
+        // Seeded fuzzy grouping stores the other producer keys as children.
+        // Their source rows still exist in sidecars, so each needs a ruling.
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            append_seeded_alias_verdicts(&f.merged_children, &canonical, &mut verdicts);
+        }
+        verdicts.push(canonical);
+    }
 
     crate::ai::ArbiterReview {
         version: 1,
@@ -605,6 +840,26 @@ fn arbiter_review_from_run(
         created_at: crate::app::chrono_now(),
         run_id: run_id.to_string(),
         verdicts,
+    }
+}
+
+fn append_seeded_alias_verdicts(
+    children: &[ArenaFinding],
+    canonical: &crate::ai::ArbiterVerdict,
+    verdicts: &mut Vec<crate::ai::ArbiterVerdict>,
+) {
+    for child in children {
+        if child.id != canonical.id {
+            let mut alias = canonical.clone();
+            alias.id = child.id.clone();
+            alias.file = child.file.clone();
+            if canonical.verdict != crate::ai::ArbiterRuling::Dropped {
+                alias.verdict = crate::ai::ArbiterRuling::Merged;
+                alias.merged_into = Some(canonical.id.clone());
+            }
+            verdicts.push(alias);
+        }
+        append_seeded_alias_verdicts(&child.merged_children, canonical, verdicts);
     }
 }
 
@@ -716,6 +971,29 @@ fn emit(registry: &ArenaRegistry, paths: &ArenaPaths, event: &ProgressEvent) {
     registry.notify_progress();
 }
 
+fn record_reviewer_failure(
+    paths: &ArenaPaths,
+    failed: &Mutex<Vec<(String, String)>>,
+    notify_progress: &(dyn Fn() + Send + Sync),
+    reviewer_id: &str,
+    round: u8,
+    reason: String,
+) {
+    failed
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push((reviewer_id.to_string(), reason.clone()));
+    let _ = append_progress_event(
+        paths,
+        &ProgressEvent::ReviewerFailed {
+            reviewer_id: reviewer_id.to_string(),
+            round,
+            reason,
+        },
+    );
+    notify_progress();
+}
+
 struct Round1ParallelOutcome {
     ok: Vec<(String, super::schema::Round1Output)>,
     failed: Vec<(String, String)>,
@@ -741,17 +1019,6 @@ fn run_round1_parallel(
         children,
         ..
     } = *ctx;
-    for reviewer in reviewers {
-        emit(
-            registry,
-            paths,
-            &ProgressEvent::ReviewerThinking {
-                reviewer_id: reviewer.id.clone(),
-                round: 1,
-            },
-        );
-    }
-
     let config = Arc::new(config.clone());
     let effort = effort.map(|s| s.to_string());
     let repo_root = repo_root.to_string();
@@ -794,90 +1061,113 @@ fn run_round1_parallel(
         // `emit` needs the registry, which cannot move into a 'static thread;
         // its notify half can, and the file half comes from `paths`.
         let notify_progress = Arc::clone(&registry.notify);
-        handles.push(thread::spawn(move || loop {
-            if cancel.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-            // Taken one at a time: a worker holds a slot for the reviewer it
-            // is running and picks up the next when that finishes. Running out
-            // of queue is how a worker retires.
-            let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
-                return;
-            };
-            // Wait for an arena slot so several runs (or runs with many
-            // reviewers) can't spawn unbounded agent processes at once. The
-            // arena's own cap, charged against the shared ceiling, so a
-            // background review and an arena round do not take each
-            // other's slot.
-            let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
-            let ceiling = config.ai_hub.effective_max_concurrent_agents();
-            let Some(_slot) =
-                crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
-            else {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            };
-            let cmd = match resolve_provider_command(
-                &config.ai_hub,
-                &reviewer.provider_id,
-                &reviewer.model_id,
-                effort.as_deref(),
-                Some(storage_dir.as_str()),
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    failed
-                        .lock()
-                        .expect("arena lock poisoned")
-                        .push((reviewer.id.clone(), e.to_string()));
-                    // `continue`, not `return`: this worker still has the rest
-                    // of the queue to get through. Returning here would retire
-                    // the worker and silently drop every reviewer behind it.
-                    continue;
+        handles.push(thread::spawn(move || {
+            loop {
+                if cancel.load(Ordering::SeqCst) {
+                    cancelled.store(true, Ordering::SeqCst);
+                    return;
                 }
-            };
-            let prompt = build_arena_round1_prompt_agent(
-                &patch_path,
-                &reviewer.name,
-                reviewer.agent_kind.as_deref(),
-            );
-            match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
-                Ok(v) => match super::schema::validate_round1_output(&v) {
-                    Ok(out) => {
-                        let _ = save_round_output(&paths, 1, &reviewer.id, &v);
-                        // Announced here rather than after the join, so the UI
-                        // tracks the slowest reviewer instead of the batch —
-                        // emitting after the join would land every reviewer's
-                        // "done" in one burst once the last one finished.
-                        let _ = append_progress_event(
-                            &paths,
-                            &ProgressEvent::ReviewerDone {
-                                reviewer_id: reviewer.id.clone(),
-                                round: 1,
-                                findings_count: out.findings.len(),
-                            },
-                        );
-                        notify_progress();
-                        ok.lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), out));
-                    }
+                // Taken one at a time: a worker holds a slot for the reviewer it
+                // is running and picks up the next when that finishes. Running out
+                // of queue is how a worker retires.
+                let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+                else {
+                    return;
+                };
+                // Wait for an arena slot so several runs (or runs with many
+                // reviewers) can't spawn unbounded agent processes at once. The
+                // arena's own cap, charged against the shared ceiling, so a
+                // background review and an arena round do not take each
+                // other's slot.
+                let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+                let ceiling = config.ai_hub.effective_max_concurrent_agents();
+                let Some(_slot) =
+                    crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
+                else {
+                    cancelled.store(true, Ordering::SeqCst);
+                    return;
+                };
+                let cmd = match resolve_provider_command(
+                    &config.ai_hub,
+                    &reviewer.provider_id,
+                    &reviewer.model_id,
+                    effort.as_deref(),
+                    Some(storage_dir.as_str()),
+                ) {
+                    Ok(c) => c,
                     Err(e) => {
-                        failed
-                            .lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), e.to_string()));
+                        record_reviewer_failure(
+                            &paths,
+                            &failed,
+                            notify_progress.as_ref(),
+                            &reviewer.id,
+                            1,
+                            e.to_string(),
+                        );
+                        // `continue`, not `return`: this worker still has the rest
+                        // of the queue to get through. Returning here would retire
+                        // the worker and silently drop every reviewer behind it.
+                        continue;
                     }
-                },
-                Err(e) => {
-                    if is_cancelled_error(&e) {
-                        cancelled.store(true, Ordering::SeqCst);
-                    } else {
-                        failed
-                            .lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), e.to_string()));
+                };
+                let prompt = build_arena_round1_prompt_agent(
+                    &patch_path,
+                    &reviewer.name,
+                    reviewer.agent_kind.as_deref(),
+                );
+                let _ = append_progress_event(
+                    &paths,
+                    &ProgressEvent::ReviewerThinking {
+                        reviewer_id: reviewer.id.clone(),
+                        round: 1,
+                    },
+                );
+                notify_progress();
+                match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
+                    Ok(v) => match super::schema::validate_round1_output(&v) {
+                        Ok(out) => {
+                            let _ = save_round_output(&paths, 1, &reviewer.id, &v);
+                            // Announced here rather than after the join, so the UI
+                            // tracks the slowest reviewer instead of the batch —
+                            // emitting after the join would land every reviewer's
+                            // "done" in one burst once the last one finished.
+                            let _ = append_progress_event(
+                                &paths,
+                                &ProgressEvent::ReviewerDone {
+                                    reviewer_id: reviewer.id.clone(),
+                                    round: 1,
+                                    findings_count: out.findings.len(),
+                                },
+                            );
+                            notify_progress();
+                            ok.lock()
+                                .expect("arena lock poisoned")
+                                .push((reviewer.id.clone(), out));
+                        }
+                        Err(e) => {
+                            record_reviewer_failure(
+                                &paths,
+                                &failed,
+                                notify_progress.as_ref(),
+                                &reviewer.id,
+                                1,
+                                e.to_string(),
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        if is_cancelled_error(&e) {
+                            cancelled.store(true, Ordering::SeqCst);
+                        } else {
+                            record_reviewer_failure(
+                                &paths,
+                                &failed,
+                                notify_progress.as_ref(),
+                                &reviewer.id,
+                                1,
+                                e.to_string(),
+                            );
+                        }
                     }
                 }
             }
@@ -930,17 +1220,6 @@ fn run_round2_parallel(
         children,
         ..
     } = *ctx;
-    for reviewer in reviewers {
-        emit(
-            registry,
-            paths,
-            &ProgressEvent::ReviewerThinking {
-                reviewer_id: reviewer.id.clone(),
-                round,
-            },
-        );
-    }
-
     let config = Arc::new(config.clone());
     let effort = effort.map(|s| s.to_string());
     let repo_root = repo_root.to_string();
@@ -982,75 +1261,102 @@ fn run_round2_parallel(
         let ok = Arc::clone(&ok);
         let failed = Arc::clone(&failed);
         let cancelled = Arc::clone(&cancelled);
-        handles.push(thread::spawn(move || loop {
-            if cancel.load(Ordering::SeqCst) {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            }
-            let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front() else {
-                return;
-            };
-            let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
-            let ceiling = config.ai_hub.effective_max_concurrent_agents();
-            let Some(_slot) =
-                crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
-            else {
-                cancelled.store(true, Ordering::SeqCst);
-                return;
-            };
-            let cmd = match resolve_provider_command(
-                &config.ai_hub,
-                &reviewer.provider_id,
-                &reviewer.model_id,
-                effort.as_deref(),
-                Some(storage_dir.as_str()),
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    failed
-                        .lock()
-                        .expect("arena lock poisoned")
-                        .push((reviewer.id.clone(), e.to_string()));
-                    // `continue`, not `return` — see round 1: returning here
-                    // would retire the worker and drop the rest of the queue.
-                    continue;
+        handles.push(thread::spawn(move || {
+            loop {
+                if cancel.load(Ordering::SeqCst) {
+                    cancelled.store(true, Ordering::SeqCst);
+                    return;
                 }
-            };
-            let prompt =
-                build_arena_round2_prompt(&patch_path, &reviewer.id, round, findings_json.as_str());
-            match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
-                Ok(v) => match super::schema::validate_round2_output(&v) {
-                    Ok(out) => {
-                        let _ = save_round_output(&paths, round, &reviewer.id, &v);
-                        // Announced as it completes — see round 1.
-                        let _ = append_progress_event(
-                            &paths,
-                            &ProgressEvent::ReviewerDone {
-                                reviewer_id: reviewer.id.clone(),
-                                round,
-                                findings_count: out.ballots.len(),
-                            },
-                        );
-                        notify_progress();
-                        ok.lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), out));
-                    }
+                let Some(reviewer) = queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+                else {
+                    return;
+                };
+                let arena_cap = config.ai_hub.effective_max_concurrent_arena_reviews();
+                let ceiling = config.ai_hub.effective_max_concurrent_agents();
+                let Some(_slot) =
+                    crate::agent_slots::acquire(Workload::Arena, arena_cap, ceiling, &cancel)
+                else {
+                    cancelled.store(true, Ordering::SeqCst);
+                    return;
+                };
+                let cmd = match resolve_provider_command(
+                    &config.ai_hub,
+                    &reviewer.provider_id,
+                    &reviewer.model_id,
+                    effort.as_deref(),
+                    Some(storage_dir.as_str()),
+                ) {
+                    Ok(c) => c,
                     Err(e) => {
-                        failed
-                            .lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), e.to_string()));
+                        record_reviewer_failure(
+                            &paths,
+                            &failed,
+                            notify_progress.as_ref(),
+                            &reviewer.id,
+                            round,
+                            e.to_string(),
+                        );
+                        // `continue`, not `return` — see round 1: returning here
+                        // would retire the worker and drop the rest of the queue.
+                        continue;
                     }
-                },
-                Err(e) => {
-                    if is_cancelled_error(&e) {
-                        cancelled.store(true, Ordering::SeqCst);
-                    } else {
-                        failed
-                            .lock()
-                            .expect("arena lock poisoned")
-                            .push((reviewer.id.clone(), e.to_string()));
+                };
+                let prompt = build_arena_round2_prompt(
+                    &patch_path,
+                    &reviewer.id,
+                    round,
+                    findings_json.as_str(),
+                );
+                let _ = append_progress_event(
+                    &paths,
+                    &ProgressEvent::ReviewerThinking {
+                        reviewer_id: reviewer.id.clone(),
+                        round,
+                    },
+                );
+                notify_progress();
+                match run_provider_json(&cmd, &prompt, &repo_root, &cancel, &children) {
+                    Ok(v) => match super::schema::validate_round2_output(&v) {
+                        Ok(out) => {
+                            let _ = save_round_output(&paths, round, &reviewer.id, &v);
+                            // Announced as it completes — see round 1.
+                            let _ = append_progress_event(
+                                &paths,
+                                &ProgressEvent::ReviewerDone {
+                                    reviewer_id: reviewer.id.clone(),
+                                    round,
+                                    findings_count: out.ballots.len(),
+                                },
+                            );
+                            notify_progress();
+                            ok.lock()
+                                .expect("arena lock poisoned")
+                                .push((reviewer.id.clone(), out));
+                        }
+                        Err(e) => {
+                            record_reviewer_failure(
+                                &paths,
+                                &failed,
+                                notify_progress.as_ref(),
+                                &reviewer.id,
+                                round,
+                                e.to_string(),
+                            );
+                        }
+                    },
+                    Err(e) => {
+                        if is_cancelled_error(&e) {
+                            cancelled.store(true, Ordering::SeqCst);
+                        } else {
+                            record_reviewer_failure(
+                                &paths,
+                                &failed,
+                                notify_progress.as_ref(),
+                                &reviewer.id,
+                                round,
+                                e.to_string(),
+                            );
+                        }
                     }
                 }
             }
@@ -1345,21 +1651,27 @@ fn run_arbiter(
         })
         .unwrap_or_default();
     let prompt = build_arena_round3_prompt(&summary.to_string(), &anchored);
-    let cmd = resolve_provider_command(
+    let cmd = match resolve_provider_command(
         &config.ai_hub,
         &arbiter_ref.provider_id,
         &arbiter_ref.model_id,
         run_effort,
         Some(paths.root.to_string_lossy().as_ref()),
-    )?;
-    emit(
-        registry,
-        paths,
-        &ProgressEvent::ReviewerThinking {
-            reviewer_id: ARBITER_REVIEWER_ID.to_string(),
-            round,
-        },
-    );
+    ) {
+        Ok(cmd) => cmd,
+        Err(e) => {
+            emit(
+                registry,
+                paths,
+                &ProgressEvent::ReviewerFailed {
+                    reviewer_id: ARBITER_REVIEWER_ID.to_string(),
+                    round,
+                    reason: e.to_string(),
+                },
+            );
+            return Err(e);
+        }
+    };
     // The arbiter is an agent process like any reviewer, so it waits for a
     // global slot too. Without this an arena could fork one more provider CLI
     // than the cap allows — worst at the moment the cap is saturated — and N
@@ -1375,11 +1687,30 @@ fn run_arbiter(
     else {
         return cancel_run(ctx, run);
     };
+    emit(
+        registry,
+        paths,
+        &ProgressEvent::ReviewerThinking {
+            reviewer_id: ARBITER_REVIEWER_ID.to_string(),
+            round,
+        },
+    );
     let arbiter_started = std::time::Instant::now();
     let v = match run_provider_json(&cmd, &prompt, repo_root, cancel, children) {
         Ok(v) => v,
         Err(e) if is_cancelled_error(&e) => return cancel_run(ctx, run),
-        Err(e) => return Err(e),
+        Err(e) => {
+            emit(
+                registry,
+                paths,
+                &ProgressEvent::ReviewerFailed {
+                    reviewer_id: ARBITER_REVIEWER_ID.to_string(),
+                    round,
+                    reason: e.to_string(),
+                },
+            );
+            return Err(e);
+        }
     };
     // The arbiter cannot be overlapped: its wall time adds straight onto the
     // run and no cap change shortens it.
@@ -1394,7 +1725,21 @@ fn run_arbiter(
             ),
         ],
     );
-    let r3 = super::schema::validate_round3_output(&v)?;
+    let r3 = match super::schema::validate_round3_output(&v) {
+        Ok(output) => output,
+        Err(e) => {
+            emit(
+                registry,
+                paths,
+                &ProgressEvent::ReviewerFailed {
+                    reviewer_id: ARBITER_REVIEWER_ID.to_string(),
+                    round,
+                    reason: e.to_string(),
+                },
+            );
+            return Err(e);
+        }
+    };
     let _ = save_arbiter_output(paths, &v);
     apply_round3_verdicts(&mut run.findings, &r3, run.config.auto_accept_threshold);
     record_arbiter_ballots(&mut run.findings, &r3, ARBITER_REVIEWER_ID);
@@ -1558,6 +1903,76 @@ mod tests {
     use super::*;
     use crate::arena::ReviewerRef;
     use crate::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
+
+    #[test]
+    fn seeded_fuzzy_overlay_grades_every_producer_for_kept_and_dropped() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::create_dir(dir.path().join("experts")).unwrap();
+        std::fs::write(dir.path().join("review.json"), serde_json::to_vec(&json!({
+            "version":1,"diff_hash":"hash","files":{"src/a.rs":{"risk":"medium","findings":[
+                {"id":"general-1","severity":"medium","title":"unvalidated input in cache key","description":"Long detailed general claim with supporting evidence","line_start":10}
+            ]}}
+        })).unwrap()).unwrap();
+        std::fs::write(dir.path().join("experts/security.json"), serde_json::to_vec(&json!({
+            "version":1,"expert_id":"security","diff_hash":"hash","files":{"src/a.rs":{"findings":[
+                {"id":"sec-1","severity":"medium","title":"unvalidated input in cache key.","description":"short","line_start":12}
+            ]}}
+        })).unwrap()).unwrap();
+        let findings = super::super::seeded::dedupe_flow_findings(er_dir, "hash", "", true);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, Some(10));
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let mut run = super::super::seeded::build_seeded_run(
+            &config,
+            super::super::seeded::SeededRunParams {
+                id: "seeded".into(),
+                diff_hash: "hash".into(),
+                base_branch: "main".into(),
+                branch_ref: "feature".into(),
+                scope: ArenaScope::Branch,
+                arbiter: ReviewerRef {
+                    provider_id: "arbiter".into(),
+                    model_id: "model".into(),
+                    agent_kind: None,
+                },
+                lens_providers: std::collections::BTreeMap::new(),
+                strict_provenance: false,
+            },
+            findings,
+        )
+        .unwrap();
+        for verdict in [Verdict::Kept, Verdict::Dropped] {
+            run.findings[0].verdict = verdict.clone();
+            run.findings[0].confidence = 0.95;
+            let overlay = arbiter_review_from_run(&run, "seeded", "hash");
+            crate::ai::write_arbiter_review(er_dir, &overlay).unwrap();
+            let state = crate::ai::load_ai_state(er_dir, "hash", None);
+            let review = state.review.unwrap();
+            let rows = review.files.iter().flat_map(|(path, file)| {
+                file.findings
+                    .iter()
+                    .filter(|f| f.is_active())
+                    .map(move |f| (path.as_str(), f))
+            });
+            let visible = crate::ai::project_visible_findings(rows, &state.arbiter_graded_keys);
+            if verdict == Verdict::Kept {
+                assert_eq!(visible.len(), 1, "fuzzy child must be merged away");
+                assert_eq!(visible[0].1.raised_by, vec!["general", "security"]);
+                assert_eq!(
+                    visible[0].1.providers,
+                    super::super::provenance::providers_for(&run.findings[0], &run.reviewers)
+                );
+            } else {
+                assert!(
+                    visible.is_empty(),
+                    "a dropped fuzzy claim must hide every producer"
+                );
+            }
+        }
+    }
 
     #[test]
     fn effective_arena_rounds_clamps() {
@@ -1724,5 +2139,120 @@ mod tests {
         );
         let arb = default_arbiter_from_hub(&hub).expect("arbiter");
         assert_eq!(arb.model_id, "dear");
+    }
+
+    fn arbiter_provider(models: &[(&str, f32)]) -> AiProviderConfig {
+        AiProviderConfig {
+            models: models
+                .iter()
+                .map(|(id, rate)| AiModelConfig {
+                    id: (*id).into(),
+                    cost_per_1k_in: Some(*rate),
+                    cost_per_1k_out: Some(0.0),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn flow_arbiter_hub() -> AiHubConfig {
+        AiHubConfig {
+            default_provider: Some("beta".into()),
+            providers: [
+                ("alpha".into(), arbiter_provider(&[("a", 9.0)])),
+                (
+                    "beta".into(),
+                    arbiter_provider(&[("z", 1.0), ("b", 2.0), ("a", 2.0)]),
+                ),
+                ("gamma".into(), arbiter_provider(&[("a", 2.0)])),
+            ]
+            .into(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn cross_provider_arbiter_excludes_most_common_provider() {
+        let hub = flow_arbiter_hub();
+        let eligible = ["alpha", "beta", "gamma"].map(str::to_string);
+        let finders = ["alpha", "alpha", "beta"].map(str::to_string);
+        let arbiter = cross_provider_arbiter(&hub, &eligible, &finders).unwrap();
+        assert_eq!(arbiter.provider_id, "beta");
+        assert_eq!(arbiter.model_id, "a");
+    }
+
+    #[test]
+    fn cross_provider_arbiter_breaks_finder_and_price_ties_deterministically() {
+        let hub = flow_arbiter_hub();
+        let eligible = ["alpha", "beta", "gamma"].map(str::to_string);
+        // beta and alpha tie for finder count. Configured default beta wins,
+        // so alpha is the only remaining candidate.
+        let finders = ["beta", "alpha"].map(str::to_string);
+        let arbiter = cross_provider_arbiter(&hub, &eligible, &finders).unwrap();
+        assert_eq!(arbiter.provider_id, "alpha");
+        assert_eq!(arbiter.model_id, "a");
+
+        let hub = AiHubConfig {
+            default_provider: Some("outside".into()),
+            providers: [
+                ("alpha".into(), arbiter_provider(&[("m", 1.0)])),
+                (
+                    "beta".into(),
+                    arbiter_provider(&[("z", 2.0), ("b", 2.0), ("a", 2.0)]),
+                ),
+                ("gamma".into(), arbiter_provider(&[("a", 2.0)])),
+            ]
+            .into(),
+            ..Default::default()
+        };
+        let eligible = ["alpha", "beta", "gamma"].map(str::to_string);
+        let arbiter = cross_provider_arbiter(&hub, &eligible, &[]).unwrap();
+        // With all finder counts tied at zero, alpha is excluded by sorted ID.
+        // beta and gamma tie in rate, so provider ID then model ID wins.
+        assert_eq!(arbiter.provider_id, "beta");
+        assert_eq!(arbiter.model_id, "a");
+    }
+
+    #[test]
+    fn cross_provider_arbiter_uses_costliest_model_for_one_provider() {
+        let hub = flow_arbiter_hub();
+        let eligible = ["beta"].map(str::to_string);
+        let arbiter = cross_provider_arbiter(&hub, &eligible, &[]).unwrap();
+        assert_eq!(arbiter.provider_id, "beta");
+        assert_eq!(arbiter.model_id, "a");
+    }
+
+    #[test]
+    fn cross_provider_arbiter_errors_without_eligible_candidates() {
+        let mut hub = flow_arbiter_hub();
+        assert!(cross_provider_arbiter(&hub, &[], &[]).is_err());
+        assert!(cross_provider_arbiter(&hub, &["unknown".into()], &[]).is_err());
+        hub.providers.insert("empty".into(), arbiter_provider(&[]));
+        assert!(cross_provider_arbiter(&hub, &["empty".into()], &[]).is_err());
+    }
+
+    #[test]
+    fn cross_model_arbiter_uses_only_advanced_pairs_and_prefers_another_finder_provider() {
+        let hub = flow_arbiter_hub();
+        let advanced = vec![
+            FlowProvider {
+                provider_id: "alpha".into(),
+                model_id: "a".into(),
+            },
+            FlowProvider {
+                provider_id: "beta".into(),
+                model_id: "z".into(),
+            },
+        ];
+        let finders = ["alpha", "alpha", "beta"].map(str::to_string);
+        let arbiter = cross_model_arbiter(&hub, &advanced, &finders).unwrap();
+        assert_eq!(arbiter.provider_id, "beta");
+        assert_eq!(arbiter.model_id, "z");
+
+        let arbiter = cross_model_arbiter(&hub, &advanced[..1], &finders).unwrap();
+        assert_eq!(arbiter.provider_id, "alpha");
+        assert_eq!(arbiter.model_id, "a");
+        assert!(cross_model_arbiter(&hub, &[], &finders).is_err());
     }
 }

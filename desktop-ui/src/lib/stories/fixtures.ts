@@ -14,6 +14,7 @@ import type {
   ThreadSnapshot,
   TriageSnapshot,
   WorktreeSnapshot,
+  ReviewFlowSnapshot,
 } from "$lib/types";
 
 // ─── helpers ────────────────────────────────────────────────────────────────
@@ -354,6 +355,9 @@ export const triageBroadGuarded: TriageSnapshot = {
     name: "reportsPage",
     evidence: "packages/ui/src/routes/app/+layout.svelte:182",
   },
+  sensitive: [
+    { kind: "authorization", evidence: "packages/db/pgschema/public/functions/reports/overview.sql", note: "SECURITY DEFINER data access" },
+  ],
 };
 
 export const triageExpert: TriageSnapshot = {
@@ -380,6 +384,7 @@ export const triageSkip: TriageSnapshot = {
   reach_reason: "Three existing callers edited, all in one module.",
   touch_points: [],
   guard: null,
+  sensitive: [],
 };
 
 /** `triage.json` from before reach existed: no reach block, so no reach pill or row. */
@@ -400,6 +405,7 @@ export const triageBeforeReach: TriageSnapshot = {
   files_changed: 2,
   approx_risk: "medium",
   domains: ["api"],
+  sensitive: [],
 };
 
 /** The quiet case: info risk, a guard the agent could not point at, and a known reach with nothing to say. */
@@ -418,6 +424,7 @@ export const triageLowSignal: TriageSnapshot = {
   reach_reason: "",
   touch_points: [],
   guard: { kind: "feature_flag", name: "footerYear", evidence: "" },
+  sensitive: [{ kind: "authentication", evidence: "  ", note: "Unsubstantiated" }],
 };
 
 export const aiWithFindings: AiSnapshot = {
@@ -457,6 +464,8 @@ export const aiWithFindings: AiSnapshot = {
       expert_label: null,
       agent_label: "General",
       raised_by: [],
+      providers: [],
+      security_stage: false,
     },
     {
       id: "finding-2",
@@ -474,6 +483,8 @@ export const aiWithFindings: AiSnapshot = {
       expert_label: null,
       agent_label: "General",
       raised_by: [],
+      providers: [],
+      security_stage: false,
     },
     {
       id: "finding-medium-1",
@@ -492,6 +503,8 @@ export const aiWithFindings: AiSnapshot = {
       agent_label: "Security",
       // Two lenses independently raised this, so the row says so.
       raised_by: ["reliability", "security"],
+      providers: ["openai", "anthropic"],
+      security_stage: true,
     },
     {
       id: "finding-4",
@@ -509,6 +522,8 @@ export const aiWithFindings: AiSnapshot = {
       expert_label: null,
       agent_label: "General",
       raised_by: [],
+      providers: [],
+      security_stage: false,
     },
   ],
   file_risks: [],
@@ -636,6 +651,8 @@ function professorFinding(id: string, file: string, line: number, title: string)
     expert_label: null,
     agent_label: "Professor",
     raised_by: [],
+    providers: [],
+    security_stage: false,
   };
 }
 
@@ -716,6 +733,8 @@ export const aiMultiAgent: AiSnapshot = {
       expert_label: null,
       agent_label: "Security",
       raised_by: [],
+      providers: [],
+      security_stage: true,
     },
   ],
   high: 3,
@@ -785,6 +804,32 @@ export const multiFolderFiles: FileSnapshot[] = [
 
 // ─── snapshot builders ──────────────────────────────────────────────────────
 
+export function reviewFlowFixture(
+  state: ReviewFlowSnapshot["state"],
+  overrides: Partial<ReviewFlowSnapshot> = {},
+): ReviewFlowSnapshot {
+  return {
+    state,
+    depth: state === "awaiting_confirmation" ? "deep" : "standard",
+    diff_hash: "7c98d201c0f44e30",
+    lenses: ["general", "security", "database"],
+    pending_finders: state === "finding" ? ["database"] : [],
+    failed_finders: [],
+    successful_finder_providers: state === "done" ? ["openai", "openai"] : [],
+    successful_arbiter_provider: state === "done" ? "openai" : null,
+    providers_used: state === "done" ? ["openai"] : [],
+    arena_run_id: state === "done" ? "run-review-flow-story" : null,
+    estimated_cost: state === "awaiting_confirmation" ? 0.18 : null,
+    estimated_latency_seconds: state === "awaiting_confirmation" ? 135 : null,
+    kept: state === "done" ? 4 : 0,
+    dropped: 2,
+    awaiting_accept: state === "done" ? 3 : 0,
+    reason: state === "failed" ? "One finder could not write a result" : null,
+    draining: false,
+    ...overrides,
+  };
+}
+
 const baseSnapshot: AppSnapshot = {
   mode: "branch",
   branch: "show-experiment-params",
@@ -797,6 +842,8 @@ const baseSnapshot: AppSnapshot = {
   reviewed_count: 2,
   total_count: 5,
   ai: aiWithFindings,
+  review_flow: null,
+  review_bucket_er_dir: "/tmp/easy-review-story",
   pr: prDraft,
   panels: { left: true, tree: true, right: true },
   theme: "dark",

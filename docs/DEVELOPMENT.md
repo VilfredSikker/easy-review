@@ -15,6 +15,28 @@ Cargo workspace at the repo root:
 
 Run Rust commands from the **repo root** unless noted. Prefer scoped builds — compiling the whole workspace pulls in Tauri and can bloat `target/` to tens of GB.
 
+## Install development dependencies
+
+From a fresh checkout, run:
+
+```bash
+just install-deps
+```
+
+This fetches Rust workspace crates with `Cargo.lock` and installs the desktop
+frontend from `desktop-ui/bun.lock`. It requires Rust 1.88 or newer and Bun.
+When missing, it installs the Tauri CLI 2 with Cargo. It does not install Rust,
+Bun, or system packages. Tauri may also need platform build libraries described
+in the [Tauri prerequisites](https://v2.tauri.app/start/prerequisites/).
+
+The recipe updates `desktop-ui/node_modules` whenever invoked. If that path is
+a symlink, Bun preserves the symlink and updates its shared target. Stop any
+development server that uses those dependencies before running the recipe. The
+npm packages under `npm/` and `tools/` use Node's built-in test runner and need
+no separate install for source tests. The MCP launcher declares optional
+published platform binaries for distribution; this recipe fetches its Rust
+source dependencies instead.
+
 ## Cargo aliases
 
 Defined in [`.cargo/config.toml`](../.cargo/config.toml). Each alias runs [`cargo er <task>`](../.cargo/bin/cargo-er), which execs the matching script. Add `.cargo/bin` to your `PATH` once (e.g. [`direnv allow`](../.envrc) if you use direnv, or `export PATH="$PWD/.cargo/bin:$PATH"`).

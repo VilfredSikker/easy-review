@@ -12,6 +12,10 @@ use std::thread;
 
 const MAX_RETRIES: u32 = 2;
 
+/// Shared process-wide lock for tests that read or write `ER_FAKE_ARENA_DIR`.
+#[cfg(test)]
+pub(crate) static ARENA_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorClass {
     Transient,
@@ -329,8 +333,6 @@ mod tests {
     /// Hold it for the duration of any test that touches the variable, with
     /// `.lock().unwrap_or_else(|e| e.into_inner())` so one panic does not poison
     /// the rest.
-    static ARENA_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn extract_json_from_stream_json_result_event() {
         let stdout = concat!(
@@ -622,6 +624,7 @@ mod tests {
         let _guard = ARENA_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        FAKE_ARENA_CALLS.store(0, Ordering::SeqCst);
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/arena/fake"

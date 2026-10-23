@@ -1,6 +1,6 @@
 use ratatui::{
-    layout::Rect,
-    text::{Line, Span},
+    layout::{Constraint, Direction, Layout, Rect},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
@@ -58,6 +58,69 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
                 *include_questions,
                 *include_notes,
                 *selected,
+            );
+        }
+        OverlayData::ReviewFlowProgress {
+            er_dir,
+            flow,
+            selected,
+            detail_scroll,
+        } => {
+            render_review_flow_progress(f, area, er_dir, flow, *selected, *detail_scroll);
+        }
+        OverlayData::ReviewFlowResults {
+            results,
+            selected,
+            selected_ids,
+            detail_scroll,
+        } => {
+            let total = results.findings.len();
+            let selected = (*selected).min(total.saturating_sub(1));
+            let popup_height = area.height.saturating_sub(2).max(5);
+            let inner_height = popup_height.saturating_sub(2);
+            let list_height = inner_height.saturating_sub(7).clamp(3, 9) as usize;
+            let visible = visible_result_range(total, selected, list_height.saturating_sub(2));
+            let rows: Vec<ReviewFlowOverlayRow<'_>> = results.findings[visible.clone()]
+                .iter()
+                .map(|finding| ReviewFlowOverlayRow {
+                    file: &finding.file,
+                    line: finding.line,
+                    title: &finding.title,
+                    accepted: finding.accepted,
+                    selectable: finding.selectable,
+                    checked: selected_ids.contains(&finding.id),
+                })
+                .collect();
+            let detail = results.findings.get(selected).map(|finding| {
+                let verdict = match &finding.verdict {
+                    er_engine::arena::Verdict::Kept => "Kept",
+                    er_engine::arena::Verdict::Escalated => "Escalated",
+                    _ => "Not eligible",
+                };
+                ReviewFlowOverlayDetail {
+                    file: &finding.file,
+                    line: finding.line,
+                    title: &finding.title,
+                    body: &finding.body,
+                    confidence: finding.confidence,
+                    raised_by: &finding.raised_by,
+                    verdict,
+                    accepted: finding.accepted,
+                    selectable: finding.selectable,
+                }
+            });
+            render_review_flow_results(
+                f,
+                area,
+                ReviewFlowResultsView {
+                    run_id: &results.run_id,
+                    total,
+                    first_visible: visible.start,
+                    selected,
+                    findings: &rows,
+                    detail,
+                    detail_scroll: *detail_scroll,
+                },
             );
         }
     }
@@ -346,7 +409,7 @@ fn render_filter_history(
 }
 
 // Use the shared centered_rect from utils (deduplicated from overlay + settings)
-use super::utils::centered_rect;
+use super::utils::{centered_rect, word_wrap};
 
 fn render_modal_hub(
     f: &mut Frame,
@@ -547,4 +610,566 @@ fn render_export_picker(
     let list = List::new(list_items).block(block);
     let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected));
     f.render_stateful_widget(list, popup, &mut state);
+}
+
+struct ReviewFlowOverlayRow<'a> {
+    file: &'a str,
+    line: Option<usize>,
+    title: &'a str,
+    accepted: bool,
+    selectable: bool,
+    checked: bool,
+}
+
+#[derive(Clone, Copy)]
+struct ReviewFlowOverlayDetail<'a> {
+    file: &'a str,
+    line: Option<usize>,
+    title: &'a str,
+    body: &'a str,
+    confidence: f32,
+    raised_by: &'a [String],
+    verdict: &'static str,
+    accepted: bool,
+    selectable: bool,
+}
+
+fn visible_result_range(total: usize, selected: usize, capacity: usize) -> std::ops::Range<usize> {
+    let visible = total.min(capacity.max(1));
+    let start = selected
+        .min(total.saturating_sub(1))
+        .saturating_sub(visible / 2)
+        .min(total.saturating_sub(visible));
+    start..start + visible
+}
+
+fn render_review_flow_progress(
+    f: &mut Frame,
+    area: Rect,
+    er_dir: &str,
+    flow: &er_engine::ai::review_flow::ReviewFlow,
+    selected: usize,
+    detail_scroll: usize,
+) {
+    let popup = centered_rect(
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+        area,
+    );
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · Esc close ")
+        .borders(Borders::ALL)
+        .style(ratatui::style::Style::default().bg(styles::PANEL()));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .split(inner);
+    let selected = selected.min(flow.tasks.len().saturating_sub(1));
+    let visible = visible_result_range(
+        flow.tasks.len(),
+        selected,
+        panes[0].height.saturating_sub(2) as usize,
+    );
+    let rows: Vec<ListItem> = flow.tasks[visible.clone()]
+        .iter()
+        .map(|task| {
+            ListItem::new(format!(
+                "{:?} · {} · {}",
+                task.status, task.label, task.model_label
+            ))
+        })
+        .collect();
+    let mut list_state = ratatui::widgets::ListState::default()
+        .with_selected((!rows.is_empty()).then_some(selected.saturating_sub(visible.start)));
+    f.render_stateful_widget(
+        List::new(rows)
+            .highlight_style(styles::selected_style())
+            .block(
+                Block::default()
+                    .title("Captured tasks")
+                    .borders(Borders::ALL),
+            ),
+        panes[0],
+        &mut list_state,
+    );
+    let mut detail = vec![format!("Bucket {er_dir}"), format!("Flow {:?}", flow.state)];
+    if let Some(task) = flow.tasks.get(selected) {
+        detail.extend([
+            task.label.clone(),
+            format!("Stage {:?} · Status {:?}", task.stage, task.status),
+            format!(
+                "Provider {} ({})",
+                captured_value(&task.provider_label),
+                captured_value(&task.provider_id)
+            ),
+            format!(
+                "Model {} ({})",
+                captured_value(&task.model_label),
+                captured_value(&task.model_id)
+            ),
+            format!("Purpose {}", captured_value(&task.purpose)),
+        ]);
+        if let Some(round) = task.round {
+            detail.push(match task.total_rounds {
+                Some(total) => format!("Deep round {round}/{total}"),
+                None => format!("Deep round {round}"),
+            });
+        }
+        if let Some(error) = &task.error {
+            detail.push(format!("Error {error}"));
+        }
+    } else {
+        detail.push("No captured task details are available for this review.".into());
+    }
+    let lines: Vec<Line> = detail
+        .iter()
+        .flat_map(|text| word_wrap(text, panes[1].width.saturating_sub(2).max(1) as usize))
+        .map(Line::from)
+        .collect();
+    let max_scroll = lines
+        .len()
+        .saturating_sub(panes[1].height.saturating_sub(2) as usize);
+    f.render_widget(
+        Paragraph::new(lines)
+            .scroll((
+                detail_scroll.min(max_scroll).min(u16::MAX as usize) as u16,
+                0,
+            ))
+            .block(
+                Block::default()
+                    .title("Selected task")
+                    .borders(Borders::ALL),
+            ),
+        panes[1],
+    );
+}
+
+fn captured_value(value: &str) -> &str {
+    if value.is_empty() {
+        "not captured"
+    } else {
+        value
+    }
+}
+
+struct ReviewFlowResultsView<'a> {
+    run_id: &'a str,
+    total: usize,
+    first_visible: usize,
+    selected: usize,
+    findings: &'a [ReviewFlowOverlayRow<'a>],
+    detail: Option<ReviewFlowOverlayDetail<'a>>,
+    detail_scroll: usize,
+}
+
+fn render_review_flow_results(f: &mut Frame, area: Rect, view: ReviewFlowResultsView<'_>) {
+    let ReviewFlowResultsView {
+        run_id,
+        total,
+        first_visible,
+        selected,
+        findings,
+        detail,
+        detail_scroll,
+    } = view;
+    let popup_width = 100u16.min(area.width.saturating_sub(4)).max(24);
+    let popup_height = area.height.saturating_sub(2).max(5);
+    let popup = centered_rect(popup_width, popup_height, area);
+    f.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .title(Span::styled(
+            format!(
+                " REVIEW RESULTS · {} · {} of {} · Space select · a accept · PgUp/PgDn detail · Esc close ",
+                run_id,
+                if total == 0 { 0 } else { selected + 1 },
+                total,
+            ),
+            ratatui::style::Style::default().fg(styles::CYAN()),
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::CYAN()))
+        .style(ratatui::style::Style::default().bg(styles::PANEL()));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let list_height = inner.height.saturating_sub(7).clamp(3, 9);
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(list_height), Constraint::Min(0)])
+        .split(inner);
+    let items: Vec<ListItem> = if total == 0 {
+        vec![ListItem::new(Line::from(Span::styled(
+            "No Kept or Escalated findings in this run.",
+            ratatui::style::Style::default().fg(styles::MUTED()),
+        )))]
+    } else {
+        findings
+            .iter()
+            .enumerate()
+            .map(|(index, finding)| {
+                result_finding_title_item(finding, first_visible + index == selected)
+            })
+            .collect()
+    };
+    let title = Block::default()
+        .title(format!(
+            "Findings {}–{}",
+            first_visible + 1,
+            first_visible + items.len()
+        ))
+        .borders(Borders::ALL)
+        .border_style(ratatui::style::Style::default().fg(styles::DIM()));
+    let list = List::new(items).block(title);
+    let selected_local = selected.checked_sub(first_visible);
+    let mut state = ratatui::widgets::ListState::default().with_selected(selected_local);
+    f.render_stateful_widget(list, panes[0], &mut state);
+
+    let detail_text = result_finding_detail(detail, panes[1].width.saturating_sub(4) as usize);
+    let detail = Paragraph::new(Text::from(detail_text))
+        .scroll((detail_scroll.min(u16::MAX as usize) as u16, 0))
+        .block(
+            Block::default()
+                .title("Selected finding")
+                .borders(Borders::ALL),
+        );
+    f.render_widget(detail, panes[1]);
+}
+
+fn result_finding_title_item(
+    finding: &ReviewFlowOverlayRow<'_>,
+    selected: bool,
+) -> ListItem<'static> {
+    let marker = if finding.accepted {
+        "[accepted]"
+    } else if !finding.selectable {
+        "[view]"
+    } else if finding.checked {
+        "[x]"
+    } else {
+        "[ ]"
+    };
+    let location = finding
+        .line
+        .map(|line| format!("{}:{line}", finding.file))
+        .unwrap_or_else(|| finding.file.to_owned());
+    let line = Line::from(format!("{marker} {location} · {}", finding.title));
+    let style = if selected {
+        styles::selected_style()
+    } else {
+        ratatui::style::Style::default()
+    };
+    ListItem::new(line).style(style)
+}
+
+fn result_finding_detail(
+    detail: Option<ReviewFlowOverlayDetail<'_>>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let Some(detail) = detail else {
+        return vec![Line::from("No finding selected.")];
+    };
+    let location = detail
+        .line
+        .map(|line| format!("{}:{line}", detail.file))
+        .unwrap_or_else(|| detail.file.to_owned());
+    let raisers = if detail.raised_by.is_empty() {
+        "unknown".to_owned()
+    } else {
+        detail.raised_by.join(", ")
+    };
+    let acceptance = if detail.accepted {
+        "[accepted]".to_owned()
+    } else if detail.selectable {
+        "[ ]".to_owned()
+    } else {
+        "[view]".to_owned()
+    };
+    let mut lines = vec![
+        Line::from(location),
+        Line::from(detail.title.to_owned()),
+        Line::from(format!(
+            "{} · {:.0}% confidence · raised by {}",
+            detail.verdict,
+            detail.confidence * 100.0,
+            raisers
+        )),
+        Line::from(acceptance),
+        Line::from(""),
+    ];
+    lines.extend(
+        word_wrap(detail.body, width.max(1))
+            .into_iter()
+            .map(Line::from),
+    );
+    lines
+}
+
+#[cfg(test)]
+mod review_flow_results_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn rendered_text(accepted: bool, selectable: bool) -> String {
+        let row = ReviewFlowOverlayRow {
+            file: "src/auth.rs",
+            line: Some(42),
+            title: "Unchecked token audience",
+            accepted,
+            selectable,
+            checked: false,
+        };
+        let raised_by = vec!["security".to_owned(), "general".to_owned()];
+        let detail = ReviewFlowOverlayDetail {
+            file: "src/auth.rs",
+            line: Some(42),
+            title: "Unchecked token audience",
+            body: "The token audience is read before it is validated.",
+            confidence: 0.87,
+            raised_by: &raised_by,
+            verdict: "Kept",
+            accepted,
+            selectable,
+        };
+        let backend = TestBackend::new(110, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_review_flow_results(
+                    frame,
+                    frame.area(),
+                    ReviewFlowResultsView {
+                        run_id: "run-1",
+                        total: 1,
+                        first_visible: 0,
+                        selected: 0,
+                        findings: &[row],
+                        detail: Some(detail),
+                        detail_scroll: 0,
+                    },
+                );
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("")
+    }
+
+    #[test]
+    fn results_overlay_shows_finding_details_and_acceptance_state() {
+        let text = rendered_text(false, true);
+        for expected in [
+            "src/auth.rs:42",
+            "Unchecked token audience",
+            "The token audience is read before it is validated.",
+            "87% confidence",
+            "raised by security, general",
+            "[ ]",
+        ] {
+            assert!(text.contains(expected), "missing {expected:?} in {text:?}");
+        }
+        assert!(rendered_text(true, false).contains("[accepted]"));
+    }
+
+    #[test]
+    fn viewport_keeps_selected_finding_visible_without_rendering_older_rows() {
+        let selected = 50;
+        let visible = visible_result_range(100, selected, 7);
+        assert_eq!(visible, 47..54);
+        let rows: Vec<_> = visible
+            .clone()
+            .map(|index| ReviewFlowOverlayRow {
+                file: "src/file.rs",
+                line: Some(index),
+                title: if index == selected {
+                    "SELECTED RESULT"
+                } else {
+                    "neighbor"
+                },
+                accepted: false,
+                selectable: true,
+                checked: false,
+            })
+            .collect();
+        let detail = ReviewFlowOverlayDetail {
+            file: "src/file.rs",
+            line: Some(selected),
+            title: "SELECTED RESULT",
+            body: "Selected body only.",
+            confidence: 0.9,
+            raised_by: &[],
+            verdict: "Kept",
+            accepted: false,
+            selectable: true,
+        };
+        let backend = TestBackend::new(100, 28);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render_review_flow_results(
+                    frame,
+                    frame.area(),
+                    ReviewFlowResultsView {
+                        run_id: "run-1",
+                        total: 100,
+                        first_visible: visible.start,
+                        selected,
+                        findings: &rows,
+                        detail: Some(detail),
+                        detail_scroll: 0,
+                    },
+                );
+            })
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<Vec<_>>()
+            .join("");
+        assert!(text.contains("SELECTED RESULT"));
+        assert!(!text.contains("src/file.rs:0"));
+    }
+
+    #[test]
+    fn detail_scroll_reaches_evidence_at_the_end_of_a_long_body() {
+        let row = ReviewFlowOverlayRow {
+            file: "src/file.rs",
+            line: Some(1),
+            title: "Long finding",
+            accepted: false,
+            selectable: true,
+            checked: false,
+        };
+        let mut body = (0..40)
+            .map(|line| format!("Evidence line {line}"))
+            .collect::<Vec<_>>();
+        body.push("TRAILING EVIDENCE SENTENCE".to_owned());
+        let body = body.join("\n");
+        let raised_by = vec!["security".to_owned()];
+        let detail = ReviewFlowOverlayDetail {
+            file: "src/file.rs",
+            line: Some(1),
+            title: "Long finding",
+            body: &body,
+            confidence: 0.9,
+            raised_by: &raised_by,
+            verdict: "Kept",
+            accepted: false,
+            selectable: true,
+        };
+
+        let render = |detail_scroll| {
+            let backend = TestBackend::new(100, 28);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    render_review_flow_results(
+                        frame,
+                        frame.area(),
+                        ReviewFlowResultsView {
+                            run_id: "run-1",
+                            total: 1,
+                            first_visible: 0,
+                            selected: 0,
+                            findings: std::slice::from_ref(&row),
+                            detail: Some(ReviewFlowOverlayDetail {
+                                body: detail.body,
+                                ..detail
+                            }),
+                            detail_scroll,
+                        },
+                    );
+                })
+                .unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<Vec<_>>()
+                .join("")
+        };
+
+        assert!(!render(0).contains("TRAILING EVIDENCE SENTENCE"));
+        assert!(render(40).contains("TRAILING EVIDENCE SENTENCE"));
+    }
+}
+
+#[cfg(test)]
+mod review_progress_tests {
+    use super::*;
+    use er_engine::ai::review_flow::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn review_progress_renders_captured_details_and_scrolls_long_errors() {
+        let mut flow = ReviewFlow::new("captured");
+        flow.tasks.push(FlowTaskProgress {
+            id: "finder".into(),
+            stage: FlowTaskStage::Finding,
+            lens: Some("security".into()),
+            label: "Security".into(),
+            purpose: "Inspect authorization boundaries".into(),
+            provider_id: "captured-provider".into(),
+            provider_label: "Provider".into(),
+            model_id: "captured-exact-model".into(),
+            model_label: "Model".into(),
+            status: FlowTaskStatus::Failed,
+            error: Some(format!("{}\nERROR TAIL", "failure line\n".repeat(40))),
+            background_task_id: None,
+            round: Some(2),
+            total_rounds: Some(3),
+        });
+        let mut overlay = OverlayData::ReviewFlowProgress {
+            er_dir: "/captured/bucket".into(),
+            flow: Box::new(flow),
+            selected: 0,
+            detail_scroll: 0,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| render_overlay(frame, frame.area(), &overlay))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for expected in [
+            "Inspect authorization boundaries",
+            "captured-provider",
+            "captured-exact-model",
+            "Failed",
+            "2/3",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        if let OverlayData::ReviewFlowProgress { detail_scroll, .. } = &mut overlay {
+            *detail_scroll = 40;
+        }
+        terminal
+            .draw(|frame| render_overlay(frame, frame.area(), &overlay))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("ERROR TAIL"));
+    }
 }

@@ -16,15 +16,17 @@
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
   import ReviewerPickerList from "$lib/components/ReviewerPickerList.svelte";
-  import type { AiModelInfo, AiProviderInfo } from "$lib/types";
+  import type { AiModelInfo, AiProviderInfo, AppSnapshot } from "$lib/types";
+  import type { ReviewScope } from "$lib/reviewScope";
   import {
     effortChoicesForModel,
     selectedModelDescription,
   } from "$lib/arena/effort";
   import { isPaletteSearchFocused, paletteQuickActionKey } from "$lib/commandPaletteKeys";
   import { keybindIndex, paletteKeyIntent, providerDescription, validateDescription, type PaletteKeyIntent } from "$lib/commandPaletteModel";
+  import { AI_ADVANCED_GROUP, AI_GROUP_ORDER, AI_MENU_ACTION_ORDER, REVIEW_FLOW_ACTION_ID, reviewFlowControls, reviewFlowEstimate, reviewFlowStage } from "$lib/reviewFlow";
 
-  type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "PR" | "Files in this diff";
+  type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "AI · Advanced" | "PR" | "Files in this diff";
 
   interface CommandItem {
     id: string;
@@ -122,7 +124,7 @@
     const guard = (fn: () => void) => () => { if (!reviewScope) return; fn(); };
     const scoped = (description: string) => (reviewScope ? description : "Not available in this view");
 
-    return [
+    const items: CommandItem[] = [
       {
         id: "ai-triage",
         label: "Triage branch",
@@ -225,6 +227,97 @@
         run: () => { void openProviderPicker(); },
       },
     ];
+    return buildReviewFlowItems(items, reviewScope, snapshot);
+  }
+
+  function buildReviewFlowItems(
+    items: CommandItem[],
+    reviewScope: ReviewScope | null,
+    flowSnapshot: AppSnapshot | null,
+  ): CommandItem[] {
+    const flow = flowSnapshot?.review_flow;
+    const controls = reviewFlowControls(flow);
+    const flowAction = reviewFlowAction(flow, controls, reviewScope, flowSnapshot);
+    const advancedIds = new Set(["ai-run-review", "ai-run-reviewers", "ai-validate"]);
+    const advancedItems: CommandItem[] = items
+      .filter((item) => advancedIds.has(item.id))
+      .map((item) => ({ ...item, group: AI_GROUP_ORDER[1] }));
+    advancedItems.push(arenaAdvancedItem());
+
+    const visibleItems = items.filter((item) => !advancedIds.has(item.id));
+    const triageItem = visibleItems.find((item) => item.id === AI_MENU_ACTION_ORDER[1]);
+    const result: CommandItem[] = [flowAction];
+    if (controls.decline) result.push(declineReviewFlowItem(flowSnapshot));
+    if (triageItem) result.push(triageItem);
+    result.push(advancedMenuItem(advancedItems));
+    result.push(...visibleItems.filter((item) => item.id !== AI_MENU_ACTION_ORDER[1]));
+    return result;
+  }
+
+  function reviewFlowAction(
+    flow: AppSnapshot["review_flow"],
+    controls: ReturnType<typeof reviewFlowControls>,
+    reviewScope: ReviewScope | null,
+    flowSnapshot: AppSnapshot | null,
+  ): CommandItem {
+    let label = "Review";
+    if (controls.confirm) label = "Confirm Deep review";
+    else if (controls.busy) label = flow ? reviewFlowStage(flow) : "Review running";
+
+    let description = "Triage, review, and verify this diff";
+    if (flow?.state === "awaiting_confirmation") {
+      description = `${reviewFlowEstimate(flow)} · confirm Deep review`;
+    }
+
+    return {
+      id: REVIEW_FLOW_ACTION_ID,
+      label,
+      description: reviewScope ? description : "Not available in this view",
+      group: "AI",
+      kbd: "r",
+      run: () => {
+        if (!reviewScope) return;
+        const erDir = flowSnapshot?.review_bucket_er_dir;
+        if (!erDir || controls.busy && !controls.confirm) return;
+        const command = controls.confirm ? "confirm_review_flow" : "start_review_flow";
+        const args = controls.confirm ? { erDir } : { scope: reviewScope, erDir };
+        void dismissAndRun(() => app.cmd(command, args));
+      },
+    };
+  }
+
+  function declineReviewFlowItem(flowSnapshot: AppSnapshot | null): CommandItem {
+    return {
+      id: "ai-review-flow-decline",
+      label: "Decline Deep review",
+      description: "Decline the estimate and release the waiting review flow",
+      group: AI_GROUP_ORDER[0],
+      run: () => {
+        const erDir = flowSnapshot?.review_bucket_er_dir;
+        if (erDir) void dismissAndRun(() => app.cmd("decline_review_flow", { erDir }));
+      },
+    };
+  }
+
+  function arenaAdvancedItem(): CommandItem {
+    return {
+      id: "open-arena",
+      label: "Open AI review arena",
+      description: "Compare multiple reviewers on the current diff",
+      group: AI_ADVANCED_GROUP,
+      run: () => { dismissLocal(() => arena.openLauncher()); },
+    };
+  }
+
+  function advancedMenuItem(items: CommandItem[]): CommandItem {
+    return {
+      id: AI_MENU_ACTION_ORDER[2],
+      label: AI_ADVANCED_GROUP,
+      description: "Manual review, reviewers, and validation",
+      group: AI_GROUP_ORDER[0],
+      run: () => {},
+      submenuItems: items,
+    };
   }
 
   // ── Provider / model / effort nested picker ──────────────────────────────
@@ -468,13 +561,6 @@
         group: "PR",
         kbd: "⌘⇧O",
         run: () => { dismissLocal(() => { openPrUrlModal(); }); },
-      },
-      {
-        id: "open-arena",
-        label: "Open AI review arena",
-        description: "Compare multiple reviewers on the current diff",
-        group: "PR",
-        run: () => { dismissLocal(() => { arena.openLauncher(); }); },
       },
     ];
 

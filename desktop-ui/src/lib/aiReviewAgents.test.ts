@@ -8,8 +8,11 @@ import {
   resolveAgentSummary,
   showEmptyFindingsStatus,
   countBySeverity,
+  contributingProviderSummary,
   defaultAgentFilter,
   filterByAgent,
+  findingGroup,
+  groupVisibleFindings,
   reviewFindingCounts,
   sortAgentLabels,
   totalReviewFindings,
@@ -26,6 +29,9 @@ function mkFinding(overrides: Partial<FlatFinding> = {}): FlatFinding {
     severity: "low",
     expert_label: null,
     agent_label: "General",
+    raised_by: [],
+    providers: [],
+    security_stage: false,
     title: "t",
     message_markdown: "",
     promoted_to: null,
@@ -120,6 +126,33 @@ describe("filterByAgent", () => {
       mkFinding({ id: "f2", agent_label: "Professor" }),
     ];
     expect(filterByAgent(findings, "Professor")).toHaveLength(1);
+  });
+
+  it("includes merged raisers when filtering and exposing agent labels", () => {
+    const merged = mkFinding({
+      agent_label: "General",
+      raised_by: ["general", "security"],
+      providers: ["openai", "anthropic"],
+      security_stage: true,
+    });
+    expect(filterByAgent([merged], "Security")).toEqual([merged]);
+    expect(uniqueAgentLabels([merged])).toEqual(["General", "Security"]);
+    expect(findingGroup(merged)).toBe("security");
+    expect(findingGroup(mkFinding({ raised_by: ["unknown-lens"], security_stage: false }))).toBe("ordinary");
+    const ordinary = mkFinding({ id: "ordinary", security_stage: false });
+    expect(groupVisibleFindings([ordinary, merged])).toEqual({
+      security: [merged],
+      ordinary: [ordinary],
+    });
+  });
+
+  it("shows provider count and provider IDs only when at least two distinct IDs exist", () => {
+    expect(contributingProviderSummary(["codex", "anthropic"])).toEqual({
+      label: "2 providers",
+      title: "Provider IDs: codex, anthropic",
+    });
+    expect(contributingProviderSummary(["codex", "codex"])).toBeNull();
+    expect(contributingProviderSummary(["codex"])).toBeNull();
   });
 });
 

@@ -84,3 +84,31 @@ export function arenaStats(findings: ArenaFinding[]) {
     verdicts,
   };
 }
+
+/** The default flow exposes only kept or escalated survivors. Manual arena
+ * import keeps its broader historical set, including merged findings. Seeded
+ * verification exposes every verdict because it is a read-only result log. */
+export function finalTruthFindings<T extends Pick<ArenaFinding, "id" | "verdict" | "accepted_at">>(
+  findings: T[],
+  flowAcceptance = false,
+  verificationMode = false,
+): T[] {
+  if (verificationMode) return findings;
+  return findings.filter((finding) => {
+    if (flowAcceptance) return finding.verdict === "kept" || finding.verdict === "escalated";
+    return finding.verdict !== "dropped" && finding.verdict !== "pending";
+  });
+}
+
+/** Unaccepted items that the current result origin permits importing. */
+export function pendingAcceptanceFindings<T extends Pick<ArenaFinding, "id" | "verdict" | "accepted_at">>(
+  findings: T[],
+  acceptedIds: string[] = [],
+  flowAcceptance = false,
+): T[] {
+  const accepted = new Set(acceptedIds);
+  return finalTruthFindings(findings, flowAcceptance).filter((finding) => {
+    if (finding.accepted_at || accepted.has(finding.id)) return false;
+    return true;
+  });
+}

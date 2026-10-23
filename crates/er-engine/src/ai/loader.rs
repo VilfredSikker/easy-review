@@ -17,7 +17,7 @@ use std::path::Path;
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
 
 /// Read a sidecar file with a size limit to prevent memory spikes from large/adversarial files.
-fn read_sidecar(path: &Path) -> std::io::Result<String> {
+pub(crate) fn read_sidecar(path: &Path) -> std::io::Result<String> {
     let metadata = std::fs::metadata(path)?;
     if metadata.len() > MAX_SIDECAR_BYTES {
         return Err(std::io::Error::new(
@@ -350,10 +350,35 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
         }
     }
 
+    if let Some(review) = state.review.as_mut() {
+        restore_accepted_provenance(review, er_dir);
+    }
+
     // Overlay arbiter verdicts last, so they grade every finding the merges
     // above put into the review rather than only the review's own.
     if let Some(arbiter) = super::arbiter::load_arbiter_review(er_dir) {
         if let Some(review) = state.review.as_mut() {
+            if arbiter.diff_hash == review.diff_hash {
+                let verdict_ids: HashSet<&str> = arbiter
+                    .verdicts
+                    .iter()
+                    .map(|verdict| verdict.id.as_str())
+                    .collect();
+                state.arbiter_graded_keys = review
+                    .files
+                    .iter()
+                    .flat_map(|(path, file_review)| {
+                        file_review.findings.iter().filter_map(|finding| {
+                            let key = super::identity::finding_key(
+                                path,
+                                finding.line_start,
+                                &finding.title,
+                            );
+                            verdict_ids.contains(key.as_str()).then_some(key)
+                        })
+                    })
+                    .collect();
+            }
             state.arbiter_effect = super::arbiter::merge_arbiter_into_review(review, &arbiter);
         }
     }
@@ -372,6 +397,49 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     }
 
     state
+}
+
+fn restore_accepted_provenance(review: &mut ErReview, er_dir: &str) {
+    let rows: Vec<_> = review
+        .files
+        .iter()
+        .flat_map(|(file, file_review)| {
+            file_review.findings.iter().map(move |finding| {
+                super::accepted_provenance::ReviewRowIdentity {
+                    id: finding.id.clone(),
+                    file: file.clone(),
+                    line: finding.line_start,
+                }
+            })
+        })
+        .collect();
+    for file_review in review.files.values_mut() {
+        for finding in &mut file_review.findings {
+            // Provider attribution from review/expert producer JSON is never
+            // authoritative. Only accepted host runs or the arbiter restore it.
+            finding.providers.clear();
+        }
+    }
+    let restored = super::accepted_provenance::accepted_provenance_for_rows(
+        Path::new(er_dir),
+        &review.diff_hash,
+        &rows,
+    );
+    for diagnostic in restored.diagnostics {
+        crate::dev_log::arena_line(diagnostic);
+    }
+    for file_review in review.files.values_mut() {
+        for finding in &mut file_review.findings {
+            let Some(provenance) = restored.rows.get(&finding.id) else {
+                continue;
+            };
+            finding.providers = provenance.providers.clone();
+            if !provenance.raisers.is_empty() {
+                finding.raised_by = provenance.raisers.clone();
+                finding.lens = provenance.raisers[0].clone();
+            }
+        }
+    }
 }
 
 /// Read and parse a guided-tour sidecar (`tour.json` / `tour.pr.json`) from a
@@ -506,6 +574,7 @@ pub fn latest_er_mtime_skipping(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn latest_er_mtime_sees_notes_json() {
@@ -514,6 +583,164 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("notes.json"), r#"{"version":1,"notes":[]}"#).unwrap();
         assert!(latest_er_mtime(dir.path().to_str().unwrap()).is_some());
+    }
+
+    #[test]
+    fn producer_provider_metadata_is_cleared_and_accepted_run_restores_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let mut review: ErReview = serde_json::from_value(json!({
+            "version": 1,
+            "diff_hash": "hash",
+            "files": { "src/a.rs": { "risk": "high", "findings": [{
+                "id": "arena-run-1-f1", "severity": "high", "title": "claim",
+                "line_start": 9, "lens": "general", "raised_by": ["general"],
+                "providers": ["producer-forgery"]
+            }] } }
+        }))
+        .unwrap();
+        let run_dir = dir.path().join("arena/run-1");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        std::fs::write(
+            run_dir.join("run.json"),
+            serde_json::to_vec(&json!({
+                "id": "run-1", "diff_hash": "hash",
+                "reviewers": [{ "id": "reviewer-security", "provider_id": "provider-a", "agent_kind": "expert:security" }],
+                "findings": [{ "id": "f1", "file": "src/a.rs", "line": 9, "raised_by": ["reviewer-security"], "accepted_at": "now" }],
+                "accepted_finding_ids": ["f1"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        restore_accepted_provenance(&mut review, er_dir);
+        let finding = &review.files["src/a.rs"].findings[0];
+        assert_eq!(finding.providers, ["provider-a"]);
+        assert_eq!(finding.raised_by, ["security"]);
+        assert_eq!(finding.lens, "security");
+
+        std::fs::remove_dir_all(&run_dir).unwrap();
+        let mut producer_only: ErReview = serde_json::from_value(json!({
+            "version": 1, "diff_hash": "hash",
+            "files": { "src/a.rs": { "risk": "high", "findings": [{
+                "id": "plain", "severity": "high", "title": "claim", "providers": ["forged"]
+            }] } }
+        }))
+        .unwrap();
+        restore_accepted_provenance(&mut producer_only, er_dir);
+        assert!(producer_only.files["src/a.rs"].findings[0]
+            .providers
+            .is_empty());
+    }
+
+    #[test]
+    fn canonical_rows_collapse_only_for_keys_with_matching_arbiter_verdicts() {
+        fn load_case(
+            arbiter_hash: Option<&str>,
+            verdict_target: &str,
+        ) -> (tempfile::TempDir, AiState) {
+            let dir = tempfile::tempdir().unwrap();
+            let er_dir = dir.path();
+            std::fs::write(
+                er_dir.join("review.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1,
+                    "diff_hash": "hash",
+                    "files": { "src/a.rs": { "risk": "high", "findings": [
+                        { "id": "general-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "general", "raised_by": ["general"] },
+                        { "id": "security-row", "severity": "high", "title": "same claim", "line_start": 9, "lens": "security", "raised_by": ["security"] },
+                        { "id": "unrelated-a", "severity": "high", "title": "unrelated claim", "line_start": 4, "lens": "general", "raised_by": ["general"] }
+                    ] } }
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+            if let Some(diff_hash) = arbiter_hash {
+                let (line, title, raised_by, providers) = if verdict_target == "duplicate-b" {
+                    (
+                        9,
+                        "same claim",
+                        json!(["general", "security"]),
+                        json!(["provider-a", "provider-b"]),
+                    )
+                } else {
+                    (
+                        4,
+                        "unrelated claim",
+                        json!(["general"]),
+                        json!(["provider-a"]),
+                    )
+                };
+                let key = super::super::identity::finding_key("src/a.rs", Some(line), title);
+                std::fs::write(
+                    er_dir.join("arbiter.json"),
+                    serde_json::to_vec(&json!({
+                        "version": 1, "diff_hash": diff_hash, "run_id": "run-1",
+                        "verdicts": [{ "id": key, "file": "src/a.rs", "verdict": "kept",
+                            "confidence": "confirmed", "raised_by": raised_by, "providers": providers }]
+                    }))
+                    .unwrap(),
+                )
+                .unwrap();
+            }
+            let state = load_ai_state(er_dir.to_str().unwrap(), "hash", None);
+            (dir, state)
+        }
+
+        let (_valid_dir, valid) = load_case(Some("hash"), "duplicate-b");
+        let rows = valid.review.as_ref().unwrap().files["src/a.rs"]
+            .findings
+            .iter()
+            .map(|f| ("src/a.rs", f));
+        let visible =
+            super::super::review::project_visible_findings(rows, &valid.arbiter_graded_keys);
+        assert_eq!(visible.len(), 2);
+        assert_eq!(visible[0].1.id, "general-row");
+        assert!(visible[0].1.is_security_stage());
+        assert_eq!(visible[0].1.raisers(), ["general", "security"]);
+        assert_eq!(visible[0].1.providers, ["provider-a", "provider-b"]);
+
+        let (_missing_dir, missing) = load_case(None, "duplicate-b");
+        let rows = missing.review.as_ref().unwrap().files["src/a.rs"]
+            .findings
+            .iter()
+            .map(|f| ("src/a.rs", f));
+        assert_eq!(
+            super::super::review::project_visible_findings(rows, &missing.arbiter_graded_keys)
+                .len(),
+            3
+        );
+
+        let (_stale_dir, stale) = load_case(Some("old-hash"), "duplicate-b");
+        let rows = stale.review.as_ref().unwrap().files["src/a.rs"]
+            .findings
+            .iter()
+            .map(|f| ("src/a.rs", f));
+        assert_eq!(
+            super::super::review::project_visible_findings(rows, &stale.arbiter_graded_keys).len(),
+            3
+        );
+
+        let (_partial_dir, partial) = load_case(Some("hash"), "unrelated-a");
+        assert!(partial.arbiter_effect.graded());
+        assert_eq!(partial.arbiter_graded_keys.len(), 1);
+        let rows = partial.review.as_ref().unwrap().files["src/a.rs"]
+            .findings
+            .iter()
+            .map(|f| ("src/a.rs", f));
+        let visible =
+            super::super::review::project_visible_findings(rows, &partial.arbiter_graded_keys);
+        assert_eq!(
+            visible.len(),
+            3,
+            "grading unrelated A must not collapse duplicate B"
+        );
+        assert!(visible
+            .iter()
+            .any(|(_, finding)| finding.id == "general-row"));
+        assert!(visible
+            .iter()
+            .any(|(_, finding)| finding.id == "security-row"));
     }
 
     #[test]

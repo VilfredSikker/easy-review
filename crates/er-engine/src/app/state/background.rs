@@ -8,6 +8,7 @@
 //! All state is session-only — no persistence across app restarts.
 
 use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use super::{AgentLogEntry, AgentLogSource, CommandStatus, TabState};
@@ -91,12 +92,23 @@ pub struct BackgroundTask {
     pub started_at_ms: u128,
     pub finished_at_ms: Option<u128>,
     pub error: Option<String>,
+    /// Captured checkout for flow-owned launches. Target identity continues to
+    /// name the project and bucket even when another worktree supplies code.
+    pub(super) execution_root: Option<String>,
 }
 
 impl BackgroundTask {
     pub fn new(kind: String, target: BackgroundTaskTarget) -> Self {
         let now = unix_now_ms();
-        let id = format!("{}:{}:{}", kind, target.key(), now);
+        static NEXT_TASK_ID: AtomicU64 = AtomicU64::new(1);
+        let sequence = NEXT_TASK_ID.fetch_add(1, Ordering::Relaxed);
+        let id = format!(
+            "{}:{}:{}:{}",
+            kind,
+            target.key(),
+            std::process::id(),
+            sequence
+        );
         Self {
             id,
             kind,
@@ -105,6 +117,7 @@ impl BackgroundTask {
             started_at_ms: now,
             finished_at_ms: None,
             error: None,
+            execution_root: None,
         }
     }
 }
@@ -139,6 +152,9 @@ pub struct PendingBackgroundTask {
     /// when a TUI action is queued so it cannot leak into later actions or be
     /// replaced by a changed global default before launch.
     pub ai_selection: Option<crate::config::AiSelection>,
+    /// Full provider configuration captured for flow-owned tasks. Resource
+    /// limits remain live App policy and are deliberately not frozen here.
+    pub launch_config: Option<crate::config::ErConfig>,
 }
 
 /// Host-owned diagram write target — agent emits JSON; Easy Review persists it.
