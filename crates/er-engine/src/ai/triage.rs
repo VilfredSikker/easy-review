@@ -40,6 +40,33 @@ pub struct TriageReview {
     /// Absent in triage written before reach existed; see `TriageReach`.
     #[serde(default, deserialize_with = "lenient_reach")]
     pub reach: TriageReach,
+    /// Evidence-backed sensitivity signals used for security routing.
+    #[serde(default, deserialize_with = "lenient_sensitive")]
+    pub sensitive: TriageSensitive,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TriageSensitive {
+    #[serde(default)]
+    pub reasons: Vec<TriageSensitiveReason>,
+}
+
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+pub struct TriageSensitiveReason {
+    #[serde(default)]
+    pub kind: String,
+    #[serde(default)]
+    pub evidence: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+impl TriageSensitive {
+    pub fn is_flagged(&self) -> bool {
+        self.reasons
+            .iter()
+            .any(|reason| !reason.evidence.trim().is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -157,6 +184,17 @@ where
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(value
         .and_then(|v| serde_json::from_value::<TriageReach>(v).ok())
+        .unwrap_or_default())
+}
+
+fn lenient_sensitive<'de, D>(deserializer: D) -> Result<TriageSensitive, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::Deserialize as _;
+    let value = Option::<serde_json::Value>::deserialize(deserializer)?;
+    Ok(value
+        .and_then(|v| serde_json::from_value::<TriageSensitive>(v).ok())
         .unwrap_or_default())
 }
 
@@ -320,5 +358,35 @@ mod tests {
         let triage: TriageReview = serde_json::from_str(json).unwrap();
         assert_eq!(triage.diff_stats.approx_risk, RiskLevel::Info);
         assert_eq!(triage.priority_files[0].risk, RiskLevel::Info);
+    }
+
+    #[test]
+    fn missing_null_and_malformed_sensitive_keep_verdict() {
+        for block in [
+            None,
+            Some("null"),
+            Some(r#""malformed""#),
+            Some(r#"{"reasons":"bad"}"#),
+        ] {
+            let sensitive = block
+                .map(|value| format!(r#", "sensitive": {value}"#))
+                .unwrap_or_default();
+            let json = format!(
+                r#"{{"version":1,"diff_hash":"abc","verdict":{{"primary":"skip"}}{sensitive}}}"#
+            );
+            let triage: TriageReview = serde_json::from_str(&json).unwrap();
+            assert_eq!(triage.verdict.primary, TriageVerdictPrimary::Skip);
+            assert!(!triage.sensitive.is_flagged());
+        }
+    }
+
+    #[test]
+    fn sensitive_requires_nonblank_evidence() {
+        let blank: TriageSensitive =
+            serde_json::from_str(r#"{"reasons":[{"kind":"auth","evidence":"  ","note":"guess"}]}"#)
+                .unwrap();
+        assert!(!blank.is_flagged());
+        let evidenced: TriageSensitive = serde_json::from_str(r#"{"reasons":[{"kind":"auth","evidence":"src/auth.rs:42","note":"checks permissions"}]}"#).unwrap();
+        assert!(evidenced.is_flagged());
     }
 }

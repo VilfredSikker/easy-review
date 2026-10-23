@@ -8,6 +8,7 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { confidenceGlyph } from "$lib/diffAnnotations";
   import { mergeFindingReplies, type MergedReply } from "$lib/findingReplies";
+  import { contributingProviderSummary } from "$lib/aiReviewAgents";
 
   interface Props {
     finding: FlatFinding;
@@ -33,6 +34,7 @@
   /// The engine's `producers · category` tag, hidden when it only repeats the
   /// agent pill beside it.
   const lensCategory = $derived(finding.lens_category.trim());
+  const providerSummary = $derived(contributingProviderSummary(finding.providers ?? []));
   const showLensCategory = $derived(
     lensCategory.length > 0 && lensCategory.toLowerCase() !== agentLabel.toLowerCase(),
   );
@@ -197,6 +199,9 @@
     {/if}
     {#if showLensCategory}
       <span class="text-muted shrink-0">{lensCategory}</span>
+    {/if}
+    {#if providerSummary}
+      <span class="text-muted shrink-0" title={providerSummary.title}>{providerSummary.label}</span>
     {/if}
     {#if finding.resolved}
       <span class="px-1.5 py-0.5 rounded-full text-[9px] font-medium border border-hairline text-muted shrink-0">

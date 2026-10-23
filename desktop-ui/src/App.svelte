@@ -456,6 +456,7 @@
     <ArenaOverlay
       open={true}
       snapshot={arena.overlaySnapshot}
+      flowAcceptance={arena.flowAcceptanceOrigin?.runId === arena.overlayRunId}
       bind:layoutMode={arena.layoutMode}
       onClose={() => arena.closeOverlay()}
       onNewRun={() => {

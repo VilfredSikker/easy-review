@@ -142,6 +142,23 @@ rulings beside the findings rather than editing them, so the disagreement stays
 legible. See [`docs/adr/0035`](./docs/adr/0035-arbiter-verdict-overlay.md).
 _Avoid_: judge, validator, moderator
 
+**Review flow**:
+The default AI review whose triage picks a depth and lenses, whose finders run,
+and whose arbiter grades their findings. A run is bound to its starting diff
+hash. Deep requires cost confirmation and explicit result acceptance.
+_Avoid_: pipeline, auto-review, full review
+
+**Depth**:
+The review spend chosen by triage: Quick, Standard, or Deep. It is distinct
+from a file's Tier.
+_Avoid_: level, mode, effort
+
+**Model group**:
+The exact models allowed to run a Review stage. Fast covers triage and Quick,
+Standard covers most reviews, and Advanced covers Deep and the arbiter.
+Standalone actions keep the default model in Settings. See
+[`docs/adr/0045`](./docs/adr/0045-review-model-groups.md).
+
 **Importance**:
 How much of the codebase depends on a file. Declared as rules rather than
 computed, so it exists before any review has run, and it is allowed to disagree

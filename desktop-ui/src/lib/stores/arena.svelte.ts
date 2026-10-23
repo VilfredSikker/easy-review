@@ -4,10 +4,15 @@ import { normalizeArenaSnapshot } from "$lib/arena/normalize";
 import {
   agentLabelFromSnapshot,
   isArenaRunFromSnapshot,
+  isSeededRunFromSnapshot,
   isSingleReviewRun,
+  seededVerificationNotice,
 } from "$lib/arena/runKind";
+import { performUnlessSeeded } from "$lib/arena/runAction";
 import { app } from "$lib/stores/app.svelte";
 import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
+import { acceptFlowFindings, arenaAcceptanceRoute, type FlowAcceptanceOrigin } from "$lib/arenaFlowAcceptance";
+import { refreshOverlayIfCurrent } from "$lib/arenaOverlayRefresh";
 import type {
   ArenaProgressState,
   ArenaRunSnapshot,
@@ -76,6 +81,8 @@ class ArenaStore {
   liveRunStates = $state<Record<string, LiveRunState>>({});
   /** Run shown in results overlay (may be historical). */
   overlayRunId = $state<string | null>(null);
+  /** Flow overlays accept through the bucket-bound flow command. */
+  flowAcceptanceOrigin = $state<FlowAcceptanceOrigin | null>(null);
   lastConfig = $state<ArenaStartConfig | null>(null);
   liveSnapshot = $state<ArenaRunSnapshot | null>(null);
   overlaySnapshot = $state<ArenaRunSnapshot | null>(null);
@@ -246,17 +253,51 @@ class ArenaStore {
   }
 
   async acceptFindings(runId: string, findingIds?: string[]) {
+    const knownSnapshot = this.snapshotForRun(runId);
+    if (knownSnapshot && isSeededRunFromSnapshot(knownSnapshot)) {
+      app.showToast("info", seededVerificationNotice(knownSnapshot));
+      return 0;
+    }
+    let route: ReturnType<typeof arenaAcceptanceRoute> | null = null;
+    let flowCommandAttempted = false;
+    let flowCommandCompleted = false;
     try {
-      const n = await invoke<number>("arena_accept_findings", {
-        req: { run_id: runId, finding_ids: findingIds },
-      });
+      route = arenaAcceptanceRoute(this.flowAcceptanceOrigin, runId, findingIds);
+      let n: number;
+      if (route.kind === "flow") {
+        if (!route.findingIds?.length) throw new Error("Flow acceptance requires explicit finding IDs");
+        const origin = { erDir: route.erDir, runId: route.runId };
+        n = await acceptFlowFindings(
+          origin,
+          route.runId,
+          route.findingIds,
+          async (flowRoute) => {
+            flowCommandAttempted = true;
+            await app.cmd("flow_accept_findings", {
+              erDir: flowRoute.erDir,
+              runId: flowRoute.runId,
+              findingIds: flowRoute.findingIds,
+            }, { throwOnError: true });
+            flowCommandCompleted = true;
+          },
+          async (flowOrigin) => normalizeArenaSnapshot(
+            await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: flowOrigin.erDir, runId: flowOrigin.runId }),
+          ),
+        );
+      } else {
+        n = await invoke<number>("arena_accept_findings", { req: route.request });
+      }
       app.showToast("success", `Accepted ${n} finding(s) into Review`);
       if (this.overlayRunId === runId) {
         await this.refreshOverlayRun();
       }
       return n;
     } catch (e) {
-      app.showToast("error", e instanceof Error ? e.message : String(e));
+      // app.cmd already reported the mutation failure. Show errors from route
+      // validation or the follow-up receipt read here.
+      if (route?.kind !== "flow" || !flowCommandAttempted || flowCommandCompleted) {
+        app.showToast("error", e instanceof Error ? e.message : String(e));
+      }
       throw e;
     }
   }
@@ -265,9 +306,16 @@ class ArenaStore {
   private async importSingleReviewToTab(runId: string, snap: ArenaRunSnapshot) {
     const label = agentLabelFromSnapshot(snap);
     try {
-      const n = await invoke<number>("arena_accept_findings", {
-        req: { run_id: runId, finding_ids: undefined },
-      });
+      const result = await performUnlessSeeded(snap, () =>
+        invoke<number>("arena_accept_findings", {
+          req: { run_id: runId, finding_ids: undefined },
+        }),
+      );
+      if (result.kind === "readOnlyVerification") {
+        app.showToast("info", seededVerificationNotice(snap));
+        return;
+      }
+      const n = result.value;
       aiReviewFilter.filter = label;
       if (n > 0) {
         app.showToast(
@@ -284,7 +332,21 @@ class ArenaStore {
     }
   }
 
-  private openArenaOverlayForRun(runId: string, snap: ArenaRunSnapshot) {
+  private snapshotForRun(runId: string): ArenaRunSnapshot | null {
+    const candidates = [
+      this.overlaySnapshot,
+      this.liveSnapshot,
+      ...Object.values(this.liveRunStates).map((state) => state.snapshot),
+    ];
+    return candidates.find((snap) => snap?.run.id === runId) ?? null;
+  }
+
+  private openArenaOverlayForRun(
+    runId: string,
+    snap: ArenaRunSnapshot,
+    flowOrigin: FlowAcceptanceOrigin | null = null,
+  ) {
+    this.flowAcceptanceOrigin = flowOrigin;
     this.overlayRunId = runId;
     this.overlaySnapshot = snap;
     this.overlayOpen = true;
@@ -523,6 +585,10 @@ class ArenaStore {
   async openOverlay(runId?: string) {
     const id = runId ?? this.branchSummaries[0]?.id;
     if (!id) return;
+    this.flowAcceptanceOrigin = null;
+    this.overlayOpen = false;
+    this.overlayRunId = null;
+    this.overlaySnapshot = null;
     try {
       const snap = normalizeArenaSnapshot(
         await invoke<ArenaRunSnapshot>("arena_get", { runId: id }),
@@ -535,6 +601,24 @@ class ArenaStore {
     } catch (e) {
       arenaError("store: openOverlay failed", e);
       app.showToast("error", String(e));
+    }
+  }
+
+  /** Open a Deep run through its captured bucket and retain that origin for
+   * acceptance and later overlay refreshes, even after switching tabs. */
+  async openFlowOverlay(erDir: string, runId: string) {
+    if (!erDir || !runId) return;
+    try {
+      const snap = normalizeArenaSnapshot(
+        await invoke<ArenaRunSnapshot>("flow_get_run", { erDir, runId }),
+      );
+      if (snap.run.id !== runId || !isArenaRunFromSnapshot(snap)) {
+        throw new Error("The captured flow run is not an arena result");
+      }
+      this.openArenaOverlayForRun(runId, snap, { erDir, runId });
+    } catch (e) {
+      arenaError("store: openFlowOverlay failed", e);
+      app.showToast("error", e instanceof Error ? e.message : String(e));
     }
   }
 
@@ -561,14 +645,32 @@ class ArenaStore {
   }
 
   async refreshOverlayRun() {
-    const id = this.overlayRunId;
+    const requested = this.overlayIdentity();
+    const id = requested.runId;
     if (!id) return;
     try {
-      const snap = await invoke<ArenaRunSnapshot>("arena_get", { runId: id });
-      this.overlaySnapshot = normalizeArenaSnapshot(snap);
+      await refreshOverlayIfCurrent(
+        requested,
+        () => this.overlayIdentity(),
+        async () => {
+          const snap = requested.flowOrigin
+            ? await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: requested.flowOrigin.erDir, runId: id })
+            : await invoke<ArenaRunSnapshot>("arena_get", { runId: id });
+          const normalized = normalizeArenaSnapshot(snap);
+          if (normalized.run.id !== id) throw new Error("Arena refresh returned a different run");
+          return normalized;
+        },
+        (normalized) => { this.overlaySnapshot = normalized; },
+      );
     } catch (e) {
       arenaError("store: refreshOverlayRun failed", e);
     }
+  }
+
+  private overlayIdentity() {
+    const runId = this.overlayRunId;
+    const flowOrigin = this.flowAcceptanceOrigin?.runId === runId ? this.flowAcceptanceOrigin : null;
+    return { runId, flowOrigin };
   }
 
   syncFromSnapshot() {

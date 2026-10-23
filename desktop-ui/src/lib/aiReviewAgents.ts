@@ -18,13 +18,35 @@ export const AGENT_LABEL_ORDER: readonly string[] = [
 export const ALL_REVIEWERS = "all" as const;
 export type AgentFilter = typeof ALL_REVIEWERS | string;
 
+const RAISER_LABELS: Record<string, string> = {
+  general: "General",
+  triage: "Triage",
+  security: "Security",
+  performance: "Performance",
+  reliability: "Reliability",
+  testing: "Testing",
+  tests: "Testing",
+  api: "API / contracts",
+  "api-contracts": "API / contracts",
+  patterns: "Patterns",
+  simplify: "Simplifying",
+  simplifying: "Simplifying",
+  mentorship: "Mentorship",
+  professor: "Professor",
+};
+
+function raiserLabel(raiser: string): string {
+  const lens = raiser.startsWith("expert:") ? raiser.slice("expert:".length) : raiser;
+  return RAISER_LABELS[lens.toLowerCase()] ?? raiser;
+}
+
 export function uniqueAgentLabels(
   findings: FlatFinding[],
   agentSummaryLabels: string[] = [],
 ): string[] {
   const seen = new Set<string>();
   for (const f of findings) {
-    seen.add(f.agent_label ?? f.expert_label ?? "General");
+    for (const label of findingAgentLabels(f)) seen.add(label);
   }
   for (const label of agentSummaryLabels) {
     seen.add(label);
@@ -87,9 +109,7 @@ export function filterByAgent(
   agentFilter: AgentFilter,
 ): FlatFinding[] {
   if (agentFilter === ALL_REVIEWERS) return findings;
-  return findings.filter(
-    (f) => (f.agent_label ?? f.expert_label ?? "General") === agentFilter,
-  );
+  return findings.filter((f) => findingAgentLabels(f).includes(agentFilter));
 }
 
 /** Default agent filter when findings load or agent set changes. */
@@ -122,6 +142,38 @@ export function agentPillStyle(agentLabel: string): string {
 
 export function findingAgentLabel(finding: FlatFinding): string {
   return finding.agent_label ?? finding.expert_label ?? "General";
+}
+
+/** All visible reviewer labels contributing to a merged finding row. */
+export function findingAgentLabels(finding: FlatFinding): string[] {
+  const raisers = finding.raised_by ?? [];
+  const labels = [findingAgentLabel(finding), ...raisers.map(raiserLabel)];
+  return [...new Set(labels)];
+}
+
+/** Stable group decision based on the backend's normalized security marker. */
+export function findingGroup(finding: FlatFinding): "security" | "ordinary" {
+  return finding.security_stage ? "security" : "ordinary";
+}
+
+/** Partition the already filtered visible rows, preserving order within each group. */
+export function groupVisibleFindings(findings: FlatFinding[]): {
+  security: FlatFinding[];
+  ordinary: FlatFinding[];
+} {
+  return {
+    security: findings.filter((finding) => findingGroup(finding) === "security"),
+    ordinary: findings.filter((finding) => findingGroup(finding) === "ordinary"),
+  };
+}
+
+export function contributingProviderSummary(providers: string[]): { label: string; title: string } | null {
+  const names = [...new Set(providers.map((provider) => provider.trim()).filter(Boolean))];
+  if (names.length < 2) return null;
+  return {
+    label: `${names.length} providers`,
+    title: `Provider IDs: ${names.join(", ")}`,
+  };
 }
 
 /** True when global markdown summary should be hidden (single non-General agent). */

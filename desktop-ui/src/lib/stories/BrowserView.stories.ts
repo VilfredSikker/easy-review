@@ -47,6 +47,7 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
     filter: null,
     reviewed_count: 0,
     total_count: 0,
+    review_bucket_er_dir: "/tmp/easy-review-browser-story",
     ai: {
       fresh: true,
       stale_reason: null,

@@ -56,6 +56,35 @@ fn path_is_on_path(path_env: &Path, candidate: &Path) -> bool {
     std::env::split_paths(path_env).any(|entry| entry == candidate)
 }
 
+/// Whether `command` names an executable file, using the process PATH.
+pub fn command_on_path(command: &str) -> bool {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    command_on_path_in(command, &path)
+}
+
+/// Pure PATH lookup used by tests and callers that already captured an
+/// environment snapshot.
+pub fn command_on_path_in(command: &str, path_env: &std::ffi::OsStr) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+
+    if command.is_empty() {
+        return false;
+    }
+    let command_path = Path::new(command);
+    let candidates = if command.contains(std::path::MAIN_SEPARATOR) {
+        vec![command_path.to_path_buf()]
+    } else {
+        std::env::split_paths(path_env)
+            .map(|dir| dir.join(command_path))
+            .collect()
+    };
+    candidates.into_iter().any(|candidate| {
+        candidate
+            .metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -104,5 +133,44 @@ mod tests {
             Some(value) => std::env::set_var("PATH", value),
             None => std::env::remove_var("PATH"),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_lookup_uses_injected_path_without_mutating_process_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::Builder::new()
+            .prefix("er-path-")
+            .tempdir_in(".")
+            .unwrap();
+        let executable = dir.path().join("runner");
+        std::fs::write(&executable, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let plain = dir.path().join("plain");
+        std::fs::write(&plain, "text").unwrap();
+        std::fs::set_permissions(&plain, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let relative = executable
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+
+        assert!(command_on_path_in("runner", &path));
+        assert!(command_on_path_in(
+            executable.to_str().unwrap(),
+            std::ffi::OsStr::new("")
+        ));
+        assert!(command_on_path_in(
+            relative.to_str().unwrap(),
+            std::ffi::OsStr::new("")
+        ));
+        assert!(!command_on_path_in("missing", &path));
+        assert!(!command_on_path_in(
+            plain.to_str().unwrap(),
+            std::ffi::OsStr::new("")
+        ));
+        assert!(!command_on_path_in(
+            dir.path().to_str().unwrap(),
+            std::ffi::OsStr::new("")
+        ));
     }
 }

@@ -4,15 +4,18 @@ pub mod diagrams;
 pub mod experts;
 pub mod finding_cleanup;
 pub mod finding_responses;
+pub mod flow_providers;
 mod loader;
 pub mod prepared_diff;
 pub mod professor;
 pub mod prompts;
 mod relocate;
 mod review;
+pub mod review_flow;
 pub mod scoped_merge;
 pub mod triage;
 
+pub mod accepted_provenance;
 pub mod arbiter;
 pub mod identity;
 pub use arbiter::*;
@@ -22,6 +25,8 @@ pub use experts::*;
 pub use finding_cleanup::*;
 pub use finding_responses::*;
 pub use identity::*;
+#[cfg(feature = "ui")]
+pub(crate) use loader::read_sidecar;
 pub use loader::*;
 pub use professor::*;
 pub use relocate::*;

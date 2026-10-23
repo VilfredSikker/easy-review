@@ -10,6 +10,8 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import { canRunAdvancedFollowUp, reviewFlowControls, reviewFlowStage } from "$lib/reviewFlow";
+  import ReviewFlowProgress from "$lib/components/ReviewFlowProgress.svelte";
   import {
     evidencedGuard,
     filesPreview,
@@ -37,6 +39,7 @@
   let filesOpen = $state(false);
   let reachOpen = $state(false);
   let impressionOpen = $state(false);
+  let advancedFollowUpPending = $state(false);
 
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
   const label = $derived(verdictLabel(triage.verdict_primary));
@@ -47,6 +50,8 @@
   /** Triage from before reach existed, or a reach with nothing to say, gets no row. */
   const showReach = $derived(hasReachDetail(triage));
   const touchPoints = $derived(triage.touch_points ?? []);
+  const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
+  const flowControls = $derived(reviewFlowControls(reviewFlow));
 
   const verdictSummary = $derived.by(() => {
     const parts = [`Next: ${label}`];
@@ -69,15 +74,40 @@
     void app.cmd("run_ai_triage_review", { scope: reviewScope });
   }
 
-  function runFollowUp() {
-    if (!reviewScope) return;
+  async function runFollowUp() {
+    if (!reviewScope || !canRunAdvancedFollowUp(reviewFlow, advancedFollowUpPending)) return;
     const next = followUpFor(triage, reviewScope);
     if (!next) return;
-    if (next.kind === "arena") {
-      arena.openLauncher();
-      return;
+    advancedFollowUpPending = true;
+    try {
+      if (next.kind === "arena") {
+        arena.openLauncher();
+        return;
+      }
+      await app.cmd(next.command, next.args);
+    } finally {
+      advancedFollowUpPending = false;
     }
-    void app.cmd(next.command, next.args);
+  }
+
+  function startReviewFlow() {
+    const snap = app.snapshot;
+    if (!reviewScope || !snap?.review_bucket_er_dir || !flowControls.start) return;
+    void app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir });
+  }
+
+  function controlReviewFlow(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
+    const erDir = app.snapshot?.review_bucket_er_dir;
+    if (!erDir) return;
+    void app.cmd(command, { erDir });
+  }
+
+  function openFlowResults() {
+    const snap = app.snapshot;
+    const runId = snap?.review_flow?.arena_run_id;
+    if (snap?.review_bucket_er_dir && runId) {
+      void arena.openFlowOverlay(snap.review_bucket_er_dir, runId);
+    }
   }
 
   const showFollowUp = $derived(
@@ -116,6 +146,11 @@
 
   {#if open}
     <div class="mt-2.5 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+      {#if reviewFlow}
+        <div class="mb-3">
+          <ReviewFlowProgress flow={reviewFlow} />
+        </div>
+      {/if}
       {#if pills.length > 0}
         <div class="flex flex-wrap gap-1" data-testid="triage-pills">
           {#each pills as pill (pill.label)}
@@ -228,10 +263,34 @@
     </div>
 
     <div class="flex shrink-0 flex-wrap gap-2 pt-3">
-      {#if showFollowUp}
-        <Button size="sm" variant="primary" onclick={runFollowUp}>
-          Run {label}
-        </Button>
+      {#if reviewFlow && !flowControls.busy}
+        <span class="self-center text-[10px] text-muted">{reviewFlowStage(reviewFlow)}</span>
+      {/if}
+      {#if reviewScope}
+        {#if flowControls.confirm}
+          {#if reviewFlow}<span class="self-center text-[10px] text-muted">~${reviewFlow.estimated_cost?.toFixed(2) ?? "?"} · ~{reviewFlow.estimated_latency_seconds ?? "?"}s</span>{/if}
+          <Button size="sm" variant="primary" onclick={() => controlReviewFlow("confirm_review_flow")}>Confirm Deep</Button>
+          <Button size="sm" variant="ghost" onclick={() => controlReviewFlow("decline_review_flow")}>Decline</Button>
+        {:else if flowControls.busy}
+          <Button size="sm" variant="ghost" disabled>{reviewFlow ? reviewFlowStage(reviewFlow) : "Review running"}</Button>
+          {#if flowControls.cancel}<Button size="sm" variant="ghost" onclick={() => controlReviewFlow("cancel_review_flow")}>Cancel</Button>{/if}
+        {:else if flowControls.openRunId}
+          <Button size="sm" variant="secondary" onclick={openFlowResults}>{(reviewFlow?.awaiting_accept ?? 0) > 0 ? "Accept results" : "View results"}</Button>
+        {:else}
+          <Button size="sm" variant="primary" disabled={!flowControls.start} onclick={startReviewFlow}>Review</Button>
+        {/if}
+      {/if}
+      {#if reviewScope && showFollowUp}
+        <details class="relative">
+          <summary class="cursor-pointer list-none rounded-md px-3 py-1.5 text-xs font-medium uppercase tracking-wider text-fg-3 hover:bg-hover">
+            Advanced
+          </summary>
+          <div class="absolute bottom-full left-0 z-10 mb-1 rounded-md border border-border bg-bg p-2 shadow-lg">
+            <Button size="sm" variant="secondary" disabled={!canRunAdvancedFollowUp(reviewFlow, advancedFollowUpPending)} onclick={() => void runFollowUp()}>
+              Run {label}
+            </Button>
+          </div>
+        </details>
       {/if}
       {#if reviewScope}
         <Button size="sm" variant="ghost" onclick={runTriageAgain}>

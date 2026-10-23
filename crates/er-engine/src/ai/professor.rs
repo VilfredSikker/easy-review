@@ -105,6 +105,7 @@ mod tests {
             lens: String::new(),
             category: String::new(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
             title: "State machine".to_string(),
             description: "Explains transition".to_string(),
             hunk_index: Some(0),

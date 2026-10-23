@@ -83,6 +83,15 @@ export function summaryPills(triage: TriageSnapshot): TriagePill[] {
     });
   }
 
+  const sensitiveReasons = (triage.sensitive ?? []).filter((reason) => reason.evidence.trim().length > 0);
+  if (sensitiveReasons.length > 0) {
+    pills.push({
+      label: "sensitive",
+      tone: "warning",
+      title: sensitiveReasons.map((reason) => `${reason.kind} · ${reason.evidence}`).join("\n"),
+    });
+  }
+
   if (triage.confidence) {
     pills.push({
       label: `${triage.confidence} confidence`,

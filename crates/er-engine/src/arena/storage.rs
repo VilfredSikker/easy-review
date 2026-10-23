@@ -117,6 +117,11 @@ pub enum ProgressEvent {
         round: u8,
         findings_count: usize,
     },
+    ReviewerFailed {
+        reviewer_id: String,
+        round: u8,
+        reason: String,
+    },
     FindingVerdict {
         finding_id: String,
         verdict: String,
@@ -187,6 +192,12 @@ pub fn parse_progress_state(paths: &ArenaPaths) -> ArenaProgressState {
                 thinking.remove(&reviewer_id);
                 done.insert(reviewer_id);
             }
+            ProgressEvent::ReviewerFailed {
+                reviewer_id, round, ..
+            } => {
+                state.round = round;
+                thinking.remove(&reviewer_id);
+            }
             ProgressEvent::RunComplete { .. } => {
                 thinking.clear();
             }
@@ -200,12 +211,15 @@ pub fn parse_progress_state(paths: &ArenaPaths) -> ArenaProgressState {
 
 pub fn append_progress_event(paths: &ArenaPaths, event: &ProgressEvent) -> Result<()> {
     paths.ensure_dirs()?;
-    let line = serde_json::to_string(event)?;
+    let mut record = serde_json::to_vec(event)?;
+    record.push(b'\n');
     let mut file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(paths.progress_jsonl())?;
-    writeln!(file, "{line}")?;
+    // Formatting the record and newline separately lets concurrent appenders
+    // place another record between them.
+    file.write_all(&record)?;
     Ok(())
 }
 
@@ -277,6 +291,46 @@ mod tests {
     use crate::arena::model::*;
     use std::collections::BTreeMap;
     use tempfile::tempdir;
+
+    #[test]
+    fn concurrent_progress_events_remain_complete_json_lines() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(dir.path(), "parallel-events");
+        paths.ensure_dirs().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|worker| {
+                let paths = paths.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    for event in 0..100 {
+                        append_progress_event(
+                            &paths,
+                            &ProgressEvent::ReviewerThinking {
+                                reviewer_id: format!("reviewer-{worker}-{event}"),
+                                round: 1,
+                            },
+                        )
+                        .unwrap();
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        let contents = fs::read_to_string(paths.progress_jsonl()).unwrap();
+        let mut reviewers = std::collections::HashSet::new();
+        for line in contents.lines() {
+            let event: ProgressEvent = serde_json::from_str(line)
+                .unwrap_or_else(|error| panic!("incomplete progress record: {error}: {line}"));
+            if let ProgressEvent::ReviewerThinking { reviewer_id, .. } = event {
+                reviewers.insert(reviewer_id);
+            }
+        }
+        assert_eq!(reviewers.len(), 800);
+    }
 
     fn sample_run(id: &str) -> ArenaRun {
         ArenaRun {
@@ -363,5 +417,41 @@ mod tests {
             list_run_ids(&er).unwrap(),
             vec!["run-fixture-001".to_string()]
         );
+    }
+
+    #[test]
+    fn failed_reviewer_stops_thinking_and_keeps_reason_in_event_log() {
+        let dir = tempdir().unwrap();
+        let paths = ArenaPaths::for_run(&dir.path().join(".er"), "run-failure-001");
+        append_progress_event(
+            &paths,
+            &ProgressEvent::RoundStarted {
+                round: 1,
+                total_rounds: 3,
+            },
+        )
+        .unwrap();
+        append_progress_event(
+            &paths,
+            &ProgressEvent::ReviewerThinking {
+                reviewer_id: "reviewer-a".into(),
+                round: 1,
+            },
+        )
+        .unwrap();
+        append_progress_event(
+            &paths,
+            &ProgressEvent::ReviewerFailed {
+                reviewer_id: "reviewer-a".into(),
+                round: 1,
+                reason: "provider exited".into(),
+            },
+        )
+        .unwrap();
+
+        let state = parse_progress_state(&paths);
+        assert!(state.thinking.is_empty());
+        let log = fs::read_to_string(paths.progress_jsonl()).unwrap();
+        assert!(log.contains("provider exited"));
     }
 }

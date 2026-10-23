@@ -63,6 +63,35 @@ pub struct SlotPool {
 
 static GLOBAL: SlotPool = SlotPool::new();
 
+/// Serialize tests that observe the process-wide slot pool and drain any
+/// subprocess slots before allowing the next pool-sensitive test to start.
+#[cfg(test)]
+pub(crate) struct TestSerialGuard(
+    #[expect(
+        dead_code,
+        reason = "held for its Drop, which releases the shared test lock"
+    )]
+    std::sync::MutexGuard<'static, ()>,
+);
+
+#[cfg(test)]
+static TEST_SERIAL: Mutex<()> = Mutex::new(());
+
+#[cfg(test)]
+pub(crate) fn test_serial() -> TestSerialGuard {
+    TestSerialGuard(TEST_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+}
+
+#[cfg(test)]
+impl Drop for TestSerialGuard {
+    fn drop(&mut self) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while active_count() > 0 && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(25));
+        }
+    }
+}
+
 /// RAII guard for one agent slot. Dropping it frees the slot and wakes
 /// waiting spawners.
 pub struct AgentSlotGuard<'a> {

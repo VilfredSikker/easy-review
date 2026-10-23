@@ -38,6 +38,23 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
+    if matches!(
+        app.overlay,
+        Some(app::OverlayData::ReviewFlowResults { .. })
+    ) {
+        match review_flow_results_key_action(key.code) {
+            ReviewFlowResultsKeyAction::Next => app.overlay_next(),
+            ReviewFlowResultsKeyAction::Previous => app.overlay_prev(),
+            ReviewFlowResultsKeyAction::PageDown => scroll_review_flow_detail(app, 8),
+            ReviewFlowResultsKeyAction::PageUp => scroll_review_flow_detail(app, -8),
+            ReviewFlowResultsKeyAction::Toggle => toggle_review_flow_result_selection(app),
+            ReviewFlowResultsKeyAction::Accept => accept_selected_review_flow_results(app)?,
+            ReviewFlowResultsKeyAction::Close => app.overlay_close(),
+            ReviewFlowResultsKeyAction::Ignore => {}
+        }
+        return Ok(());
+    }
+
     // Export picker — multiselect + Enter copies markdown to clipboard
     if matches!(app.overlay, Some(app::OverlayData::ExportPicker { .. })) {
         match key.code {
@@ -160,6 +177,126 @@ pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReviewFlowResultsKeyAction {
+    Next,
+    Previous,
+    PageDown,
+    PageUp,
+    Toggle,
+    Accept,
+    Close,
+    Ignore,
+}
+
+fn review_flow_results_key_action(key: KeyCode) -> ReviewFlowResultsKeyAction {
+    match key {
+        KeyCode::Char('j') | KeyCode::Down => ReviewFlowResultsKeyAction::Next,
+        KeyCode::Char('k') | KeyCode::Up => ReviewFlowResultsKeyAction::Previous,
+        KeyCode::PageDown => ReviewFlowResultsKeyAction::PageDown,
+        KeyCode::PageUp => ReviewFlowResultsKeyAction::PageUp,
+        KeyCode::Char(' ') | KeyCode::Enter => ReviewFlowResultsKeyAction::Toggle,
+        KeyCode::Char('a') => ReviewFlowResultsKeyAction::Accept,
+        KeyCode::Esc | KeyCode::Char('q') => ReviewFlowResultsKeyAction::Close,
+        _ => ReviewFlowResultsKeyAction::Ignore,
+    }
+}
+
+fn scroll_review_flow_detail(app: &mut App, delta: isize) {
+    if let Some(app::OverlayData::ReviewFlowResults { detail_scroll, .. }) = app.overlay.as_mut() {
+        *detail_scroll = if delta < 0 {
+            detail_scroll.saturating_sub(delta.unsigned_abs())
+        } else {
+            detail_scroll.saturating_add(delta as usize).min(10_000)
+        };
+    }
+}
+
+fn toggle_review_flow_result_selection(app: &mut App) {
+    let message = match app.overlay.as_mut() {
+        Some(app::OverlayData::ReviewFlowResults {
+            results,
+            selected,
+            selected_ids,
+            ..
+        }) => match results.findings.get(*selected) {
+            Some(finding) if finding.selectable => {
+                toggle_selected_finding_id(selected_ids, &finding.id, true);
+                None
+            }
+            Some(_) => Some("This finding cannot be accepted"),
+            None => Some("There are no findings to select"),
+        },
+        _ => None,
+    };
+    if let Some(message) = message {
+        app.notify(message);
+    }
+}
+
+fn toggle_selected_finding_id(
+    selected_ids: &mut std::collections::HashSet<String>,
+    finding_id: &str,
+    selectable: bool,
+) -> bool {
+    if !selectable {
+        return false;
+    }
+    if !selected_ids.remove(finding_id) {
+        selected_ids.insert(finding_id.to_owned());
+    }
+    true
+}
+
+fn accept_selected_review_flow_results(app: &mut App) -> Result<()> {
+    let action = match app.overlay.as_ref() {
+        Some(app::OverlayData::ReviewFlowResults {
+            results,
+            selected_ids,
+            ..
+        }) => build_accept_review_flow_action(&results.er_dir, &results.run_id, selected_ids),
+        _ => return Ok(()),
+    };
+    if let Some(action) = action {
+        dispatch_hub_action(app, action)?;
+    } else {
+        app.notify("Select at least one finding to accept");
+    }
+    Ok(())
+}
+
+fn build_accept_review_flow_action(
+    er_dir: &str,
+    run_id: &str,
+    selected_ids: &std::collections::HashSet<String>,
+) -> Option<HubAction> {
+    if selected_ids.is_empty() {
+        return None;
+    }
+    let mut finding_ids: Vec<String> = selected_ids.iter().cloned().collect();
+    finding_ids.sort();
+    Some(HubAction::AcceptReviewFlowFindings {
+        er_dir: er_dir.to_owned(),
+        run_id: run_id.to_owned(),
+        finding_ids,
+    })
+}
+
+fn open_review_flow_results(app: &mut App, er_dir: &str, run_id: &str, selected: usize) {
+    match app.review_flow_results(er_dir, run_id) {
+        Ok(results) => {
+            let selected = selected.min(results.findings.len().saturating_sub(1));
+            app.overlay = Some(app::OverlayData::ReviewFlowResults {
+                results,
+                selected,
+                selected_ids: std::collections::HashSet::new(),
+                detail_scroll: 0,
+            });
+        }
+        Err(error) => app.notify(&format!("Review results: {error}")),
+    }
+}
+
 /// Open a PR on GitHub via `gh pr view --web`.
 ///
 /// `gh` outlives the caller, so the child is spawned detached and reaped on its
@@ -279,6 +416,39 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 "Arbiter's drops: counted only"
             });
         }
+        HubAction::StartReviewFlow { scope } => match app.start_review_flow(&scope) {
+            Ok(()) => app.notify("Review started"),
+            Err(error) => app.notify(&format!("Review: {error}")),
+        },
+        HubAction::ConfirmReviewFlow { er_dir } => match app.confirm_review_flow(&er_dir) {
+            Ok(()) => app.notify("Deep review started"),
+            Err(error) => app.notify(&format!("Deep review: {error}")),
+        },
+        HubAction::DeclineReviewFlow { er_dir } => match app.decline_review_flow(&er_dir) {
+            Ok(()) => app.notify("Deep review declined"),
+            Err(error) => app.notify(&format!("Deep review: {error}")),
+        },
+        HubAction::CancelReviewFlow { er_dir } => {
+            if app.cancel_review_flow(&er_dir) {
+                app.notify("Review stopping");
+            } else {
+                app.notify("No running review to cancel");
+            }
+        }
+        HubAction::OpenReviewFlowResults { er_dir, run_id } => {
+            open_review_flow_results(app, &er_dir, &run_id, 0);
+        }
+        HubAction::AcceptReviewFlowFindings {
+            er_dir,
+            run_id,
+            finding_ids,
+        } => match app.accept_review_flow_findings(&er_dir, &run_id, finding_ids) {
+            Ok(count) => {
+                app.notify(&format!("Accepted {count} finding(s)"));
+                open_review_flow_results(app, &er_dir, &run_id, 0);
+            }
+            Err(error) => app.notify(&format!("Could not accept findings: {error}")),
+        },
         HubAction::RunImportanceAgent => match app.spawn_background_importance() {
             Ok(()) => app.notify("Importance agent started"),
             Err(e) => app.notify(&format!("Importance: {e}")),
@@ -813,16 +983,21 @@ pub fn handle_confirm_input(app: &mut App, key: KeyEvent) -> Result<()> {
             } else if let InputMode::Confirm(ConfirmAction::CleanupReviews { .. }) = action {
                 app.input_mode = InputMode::Normal;
                 let er_dir = app.tab().er_dir();
+                if let Err(error) = app.check_review_bucket_admission(&er_dir) {
+                    app.notify(&format!("Review clear skipped: {error}"));
+                    return Ok(());
+                }
                 cleanup_reviews(&er_dir);
                 app.tab_mut().reload_ai_state();
                 app.notify("Review cleared");
             } else if let InputMode::Confirm(ConfirmAction::RunAgentReview { .. }) = action {
-                // User said "yes" to clearing previous review — clear, then run
+                // Prepare before clearing so an ignored-only diff leaves the old review intact.
                 app.input_mode = InputMode::Normal;
-                let er_dir = app.tab().er_dir();
-                cleanup_reviews(&er_dir);
-                app.tab_mut().reload_ai_state();
-                start_agent_review(app)?;
+                if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
+                    cleanup_reviews(&er_dir);
+                    app.tab_mut().reload_ai_state();
+                    start_agent_review_with_prepared_diff(app, &er_dir, &diff_hash)?;
+                }
                 app.clear_ai_selection_override();
             } else if let InputMode::Confirm(ConfirmAction::RunAgentQuestions { .. }) = action {
                 // User said "yes" to clearing previous answers — clear answers, then run
@@ -1014,13 +1189,30 @@ pub fn build_agent_expert_prompt(
 pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)> {
     let scope = app.tab().mode.fetch_scope();
     let er_dir = app.tab().er_dir();
-    let raw = match app.tab().raw_diff_for_review(scope) {
-        Ok(raw) if !raw.trim().is_empty() => raw,
-        _ => {
+    if let Err(error) = app.check_review_bucket_admission(&er_dir) {
+        app.notify(&format!("action skipped: {error}"));
+        return None;
+    }
+    let mut raw = match app.tab().raw_diff_for_review(scope) {
+        Ok(raw) => raw,
+        Err(_) => {
             app.notify("No diff to review against");
             return None;
         }
     };
+    let (repo_root, remote_repo) = {
+        let tab = app.tab();
+        (tab.repo_root.clone(), tab.remote_repo.clone())
+    };
+    let ignore =
+        er_engine::projects_pins::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+    if !ignore.is_empty() {
+        raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
+    }
+    if raw.trim().is_empty() {
+        app.notify("Nothing to review");
+        return None;
+    }
     match er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, app.tab().repo_rules())
     {
         Ok(hash) => Some((er_dir, hash)),
@@ -1036,9 +1228,18 @@ pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)
 /// cannot drift (desktop `run_ai_review` already uses this same prompt).
 fn start_agent_review(app: &mut App) -> anyhow::Result<()> {
     if let Some((er_dir, diff_hash)) = ensure_prepared_diff_for_action(app) {
-        if let Some(prompt) = build_agent_review_prompt(app, &er_dir, &diff_hash) {
-            app.spawn_agent_prompt("review", &prompt)?;
-        }
+        start_agent_review_with_prepared_diff(app, &er_dir, &diff_hash)?;
+    }
+    Ok(())
+}
+
+fn start_agent_review_with_prepared_diff(
+    app: &mut App,
+    er_dir: &str,
+    diff_hash: &str,
+) -> anyhow::Result<()> {
+    if let Some(prompt) = build_agent_review_prompt(app, er_dir, diff_hash) {
+        app.spawn_agent_prompt("review", &prompt)?;
     }
     Ok(())
 }
@@ -2026,6 +2227,38 @@ fn chrono_now() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static REVIEW_IGNORE_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    struct ProjectsPathGuard {
+        _lock: MutexGuard<'static, ()>,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ProjectsPathGuard {
+        fn set(path: &std::path::Path) -> Self {
+            let lock = REVIEW_IGNORE_ENV_LOCK
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let previous = std::env::var_os("ER_PROJECTS_JSON");
+            std::env::set_var("ER_PROJECTS_JSON", path);
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for ProjectsPathGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("ER_PROJECTS_JSON", previous);
+            } else {
+                std::env::remove_var("ER_PROJECTS_JSON");
+            }
+        }
+    }
 
     fn app_with_managed_dir(output_dir: &str) -> App {
         let mut app = App::new_for_test(vec![]);
@@ -2049,6 +2282,216 @@ mod tests {
             !prompt.contains("> .er/diff-tmp"),
             "prompt must not write repo-local diff-tmp:\n{prompt}"
         );
+    }
+
+    fn review_ignore_diff() -> &'static str {
+        "diff --git a/keep.rs b/keep.rs\n--- a/keep.rs\n+++ b/keep.rs\n@@ -0,0 +1 @@\n+keep\n\ndiff --git a/ignored.rs b/ignored.rs\n--- a/ignored.rs\n+++ b/ignored.rs\n@@ -0,0 +1 @@\n+ignore\n"
+    }
+
+    fn install_review_ignore_store(path: &std::path::Path, globs: &[&str]) {
+        let store = serde_json::json!({
+            "projects": [{
+                "root_path": "/repo",
+                "remote": "acme/widgets",
+                "review_ignore_globs": globs,
+            }]
+        });
+        std::fs::write(path, serde_json::to_vec(&store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn review_ignore_preparation_filters_before_hashing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_path = tmp.path().join("projects.json");
+        let _projects_guard = ProjectsPathGuard::set(&projects_path);
+        install_review_ignore_store(&projects_path, &["ignored.rs"]);
+
+        let output_dir = tmp.path().join("bucket");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+        app.tab_mut().repo_root = "/repo".into();
+        app.tab_mut().remote_repo = Some("acme/widgets".into());
+        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+
+        let (er_dir, hash) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
+        let prepared = std::fs::read_to_string(format!("{er_dir}/diff-tmp")).unwrap();
+        assert!(prepared.contains("keep.rs"));
+        assert!(!prepared.contains("ignored.rs"));
+        assert_eq!(
+            er_engine::ai::prepared_diff::diff_tmp_hash(&er_dir).as_deref(),
+            Some(hash.as_str())
+        );
+    }
+
+    #[test]
+    fn review_ignore_all_files_returns_before_preparation_or_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_path = tmp.path().join("projects.json");
+        let _projects_guard = ProjectsPathGuard::set(&projects_path);
+        // The matcher supports filename extension globs, not a bare `**` glob.
+        install_review_ignore_store(&projects_path, &["*.rs"]);
+
+        let output_dir = tmp.path().join("bucket");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+        app.tab_mut().repo_root = "/repo".into();
+        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+
+        assert!(ensure_prepared_diff_for_action(&mut app).is_none());
+        assert!(!output_dir.join("diff-tmp").exists());
+        assert!(app.background_task_snapshots().is_empty());
+        assert!(app
+            .notification
+            .as_ref()
+            .is_some_and(|notification| notification.message.contains("Nothing to review")));
+    }
+
+    #[test]
+    fn review_ignore_empty_globs_preserve_raw_bytes_and_lookup_root_remote_parity() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_path = tmp.path().join("projects.json");
+        let _projects_guard = ProjectsPathGuard::set(&projects_path);
+        install_review_ignore_store(&projects_path, &[]);
+
+        let output_dir = tmp.path().join("bucket");
+        std::fs::create_dir_all(&output_dir).unwrap();
+        let mut app = app_with_managed_dir(output_dir.to_str().unwrap());
+        app.tab_mut().repo_root = "/repo".into();
+        app.tab_mut().remote_repo = Some("acme/widgets".into());
+        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+
+        let (er_dir, _) = ensure_prepared_diff_for_action(&mut app).expect("prepared diff");
+        assert_eq!(
+            std::fs::read(format!("{er_dir}/diff-tmp")).unwrap(),
+            review_ignore_diff().as_bytes()
+        );
+        assert_eq!(
+            er_engine::projects_pins::review_ignore_globs_for_repo("/repo", None),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            er_engine::projects_pins::review_ignore_globs_for_repo("/other", Some("acme/widgets")),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn confirmed_general_review_preserves_bucket_while_review_flow_holds_lease() {
+        let tmp = tempfile::tempdir().unwrap();
+        let projects_path = tmp.path().join("projects.json");
+        let _projects_guard = ProjectsPathGuard::set(&projects_path);
+        install_review_ignore_store(&projects_path, &[]);
+
+        let repo = tmp.path().join("repo");
+        let bucket = tmp.path().join("bucket");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
+        let old_review = br#"{"version":1,"diff_hash":"previous-generation","files":{}}"#;
+        std::fs::write(bucket.join("review.json"), old_review).unwrap();
+
+        let mut app = app_with_managed_dir(bucket.to_str().unwrap());
+        app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
+        app.tab_mut().set_raw_diff_for_test(review_ignore_diff());
+        app.tab_mut().reload_ai_state();
+        assert!(app.tab().ai.review.is_some(), "fixture review must load");
+        app.config.ai_hub = er_engine::config::AiHubConfig {
+            default_provider: Some("fake".into()),
+            review_models: {
+                let models = vec![er_engine::config::ReviewModelRef {
+                    provider_id: "fake".into(),
+                    model_id: "fake-model".into(),
+                }];
+                er_engine::config::ReviewModelGroups {
+                    fast: models.clone(),
+                    standard: models.clone(),
+                    advanced: models,
+                }
+            },
+            providers: [(
+                "fake".into(),
+                er_engine::config::AiProviderConfig {
+                    command: "/bin/sh".into(),
+                    args: vec![
+                        "-c".into(),
+                        "exit 1".into(),
+                        "fake".into(),
+                        "{prompt}".into(),
+                    ],
+                    models: vec![er_engine::config::AiModelConfig {
+                        id: "fake-model".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]
+            .into(),
+            max_concurrent_reviews: 16,
+            max_concurrent_agents: 16,
+            ..Default::default()
+        };
+
+        // This public entry point acquires the real bucket lease and starts
+        // the fake triage provider. The failed command remains registered
+        // until App drains its completion event.
+        app.start_review_flow("branch").unwrap();
+        let er_dir = app.tab().er_dir();
+        assert!(app.check_review_bucket_admission(&er_dir).is_err());
+        let files = [
+            "review.json",
+            "diff-tmp",
+            ".diff-tmp.sha256",
+            "diff-annotated",
+            ".diff-annotated.sha256",
+            "change-facts.md",
+        ];
+        let before: Vec<_> = files
+            .iter()
+            .map(|name| std::fs::read(bucket.join(name)).unwrap())
+            .collect();
+        let task_ids_before: std::collections::HashSet<_> = app
+            .background_task_snapshots()
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        assert_eq!(task_ids_before.len(), 1, "only triage should be queued");
+
+        // A different in-memory diff makes any missed admission check rewrite
+        // the pinned artifacts before cleanup runs.
+        app.tab_mut()
+            .set_raw_diff_for_test(&review_ignore_diff().replace("keep", "changed"));
+        dispatch_hub_action(&mut app, HubAction::PromptReview).unwrap();
+        assert!(matches!(
+            app.input_mode,
+            InputMode::Confirm(ConfirmAction::RunAgentReview {
+                clear_previous: true
+            })
+        ));
+        handle_confirm_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+        )
+        .unwrap();
+
+        for (name, bytes) in files.iter().zip(before) {
+            assert_eq!(
+                std::fs::read(bucket.join(name)).unwrap(),
+                bytes,
+                "confirmation must preserve {name} while the flow owns the bucket"
+            );
+        }
+        let task_ids_after: std::collections::HashSet<_> = app
+            .background_task_snapshots()
+            .into_iter()
+            .map(|task| task.id)
+            .collect();
+        assert_eq!(
+            task_ids_after, task_ids_before,
+            "confirmation spawned a producer"
+        );
+        assert!(app.notification.as_ref().is_some_and(|notification| {
+            notification.message.contains("action skipped")
+                && notification.message.contains("review flow")
+        }));
     }
 
     #[test]
@@ -2423,5 +2866,62 @@ mod tests {
         let a = github_anchor(40, &anchor_file(), Some("@@ -1 +1 @@\n+x"));
         assert_eq!(a.hunk_index, None);
         assert!(a.line_content.is_empty() && a.hunk_header.is_empty());
+    }
+
+    #[test]
+    fn review_flow_result_selection_toggles_only_eligible_rows() {
+        let mut selected = std::collections::HashSet::new();
+        assert!(!toggle_selected_finding_id(&mut selected, "dropped", false));
+        assert!(selected.is_empty());
+        assert!(toggle_selected_finding_id(&mut selected, "kept", true));
+        assert!(selected.contains("kept"));
+        assert!(toggle_selected_finding_id(&mut selected, "kept", true));
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn review_flow_results_keys_keep_close_separate_from_accept() {
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::Char('j')),
+            ReviewFlowResultsKeyAction::Next
+        );
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::PageDown),
+            ReviewFlowResultsKeyAction::PageDown
+        );
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::PageUp),
+            ReviewFlowResultsKeyAction::PageUp
+        );
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::Char(' ')),
+            ReviewFlowResultsKeyAction::Toggle
+        );
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::Char('a')),
+            ReviewFlowResultsKeyAction::Accept
+        );
+        assert_eq!(
+            review_flow_results_key_action(KeyCode::Esc),
+            ReviewFlowResultsKeyAction::Close
+        );
+        assert_ne!(
+            review_flow_results_key_action(KeyCode::Esc),
+            ReviewFlowResultsKeyAction::Accept
+        );
+    }
+
+    #[test]
+    fn accept_action_uses_captured_bucket_and_stable_finding_ids() {
+        let selected = std::collections::HashSet::from(["finding-b".into(), "finding-a".into()]);
+        assert_eq!(
+            build_accept_review_flow_action("/captured/bucket", "run-captured", &selected),
+            Some(HubAction::AcceptReviewFlowFindings {
+                er_dir: "/captured/bucket".into(),
+                run_id: "run-captured".into(),
+                finding_ids: vec!["finding-a".into(), "finding-b".into()],
+            })
+        );
+        assert!(build_accept_review_flow_action("/bucket", "run", &Default::default()).is_none());
     }
 }

@@ -13,8 +13,10 @@
   import {
     ALL_REVIEWERS,
     agentPillStyle,
+    contributingProviderSummary,
     filterByAgent,
     findingAgentLabel,
+    groupVisibleFindings,
     EMPTY_FINDINGS_STATUS,
     resolveAgentSummary,
     reviewFindingCounts,
@@ -28,6 +30,8 @@
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import { reviewFlowControls, reviewFlowStage } from "$lib/reviewFlow";
+  import ReviewFlowProgress from "$lib/components/ReviewFlowProgress.svelte";
 
   interface Props {
     ai: AiSnapshot;
@@ -132,6 +136,28 @@
   const latestArena = $derived(branchArenaRuns[0] ?? null);
   const arenaRunning = $derived(arena.hasLiveRun);
   const activeArenaRunId = $derived(app.snapshot?.active_arena_run ?? arena.liveRunId);
+  const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
+  const flowControls = $derived(reviewFlowControls(reviewFlow));
+
+  function startReviewFlow() {
+    const snap = app.snapshot;
+    if (!reviewScope || !snap?.review_bucket_er_dir || !flowControls.start) return;
+    void app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir });
+  }
+
+  function controlReviewFlow(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
+    const erDir = app.snapshot?.review_bucket_er_dir;
+    if (!erDir) return;
+    void app.cmd(command, { erDir });
+  }
+
+  function openFlowResults() {
+    const snap = app.snapshot;
+    const runId = snap?.review_flow?.arena_run_id;
+    if (snap?.review_bucket_er_dir && runId) {
+      void arena.openFlowOverlay(snap.review_bucket_er_dir, runId);
+    }
+  }
 
   const filtered = $derived(
     agentScopedFindings.filter((f) => filter === "all" || f.severity === filter)
@@ -158,6 +184,9 @@
         a.file.localeCompare(b.file),
     ),
   );
+  const groupedFindings = $derived(groupVisibleFindings(ordered));
+  const securityFindings = $derived(groupedFindings.security);
+  const ordinaryFindings = $derived(groupedFindings.ordinary);
 
   /// The arbiter's removals, listed on demand behind the count.
   const droppedFindings = $derived(ai.dropped_findings ?? []);
@@ -236,6 +265,34 @@
 </script>
 
 <Card class="group">
+  {#if reviewScope && !ai.triage}
+    <div class="mb-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-bg px-2.5 py-2" data-testid="review-flow-controls">
+      <div class="min-w-0 flex-1">
+        <p class="text-[10px] font-semibold uppercase tracking-wide text-fg-2">Review</p>
+        {#if reviewFlow}
+          <p class="truncate text-[11px] text-muted">{reviewFlowStage(reviewFlow)}</p>
+        {:else}
+          <p class="text-[11px] text-muted">Triage, review, and verify this diff</p>
+        {/if}
+      </div>
+      {#if flowControls.confirm && reviewFlow}
+        <span class="text-[10px] text-muted">~${reviewFlow.estimated_cost?.toFixed(2) ?? "?"} · ~{reviewFlow.estimated_latency_seconds ?? "?"}s</span>
+        <Button size="sm" variant="primary" onclick={() => controlReviewFlow("confirm_review_flow")}>Confirm Deep</Button>
+        <Button size="sm" variant="ghost" onclick={() => controlReviewFlow("decline_review_flow")}>Cancel</Button>
+      {:else if flowControls.busy}
+        {#if flowControls.cancel}<Button size="sm" variant="ghost" onclick={() => controlReviewFlow("cancel_review_flow")}>Cancel</Button>{/if}
+      {:else if flowControls.openRunId}
+        <Button size="sm" variant="secondary" onclick={openFlowResults}>{(reviewFlow?.awaiting_accept ?? 0) > 0 ? "Accept results" : "View results"}</Button>
+      {:else}
+        <Button size="sm" variant="primary" onclick={startReviewFlow}>Review</Button>
+      {/if}
+    </div>
+    {#if reviewFlow}
+      <div class="mb-3">
+        <ReviewFlowProgress flow={reviewFlow} />
+      </div>
+    {/if}
+  {/if}
   {#if arena.enabled}
     <div
       class="mb-4 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] p-3"
@@ -243,7 +300,7 @@
       <div class="flex items-start justify-between gap-2">
         <div>
           <p class="text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-periwinkle)]">
-            AI Review Arena
+            Advanced · AI Review Arena
           </p>
           {#if latestArena}
             <p class="mt-1 text-[12px] font-medium text-[var(--arena-fg)]">
@@ -481,59 +538,42 @@
         {/if}
       {/if}
 
-      <div class="findings-list space-y-1.5">
-      {#each ordered as finding (finding.id)}
+      {#snippet findingRow(finding: FlatFinding)}
         {@const dotClass = SEVERITY_DOT[finding.severity] ?? "bg-risk-low"}
         {@const label = findingAgentLabel(finding)}
+        {@const providerSummary = contributingProviderSummary(finding.providers ?? [])}
         <div class="relative group">
-          <button type="button"
-            onclick={() => jumpTo(finding)}
-            class="w-full text-left p-2 pr-6 rounded-md hover:bg-bg border border-transparent hover:border-border block"
-          >
+          <button type="button" onclick={() => jumpTo(finding)} class="w-full text-left p-2 pr-6 rounded-md hover:bg-bg border border-transparent hover:border-border block">
             <div class="flex items-start gap-2">
               <span class="w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 {dotClass}"></span>
               <div class="flex-1 min-w-0">
                 <div class="flex items-center gap-1.5 flex-wrap mb-0.5">
                   <span class="text-[11px] font-mono text-muted">{basename(finding.file)}{finding.line !== null ? `:${finding.line}` : ""}</span>
-                  <span
-                    class="px-1 py-0.5 rounded border border-hairline text-[9px] text-muted shrink-0"
-                    title="Confidence: {finding.confidence}"
-                  >{confidenceGlyph(finding.confidence)}</span>
-                  {#if arbiterRuling(finding)}
-                    <span
-                      class="px-1 py-0.5 rounded border border-hairline text-[9px] text-ai"
-                      title={arbiterRuling(finding)}
-                    >regraded</span>
-                  {/if}
-                  {#if showAgentPills}
-                    <span
-                      class="px-1 py-0 rounded-full text-[9px] font-medium border shrink-0"
-                      style={agentPillStyle(label)}
-                    >{label}</span>
-                  {/if}
-                  {#if finding.raised_by.length > 1}
-                    <!-- Several experts independently found this, which is why
-                         they are one row — say so rather than showing only the
-                         lens it happens to be filed under. -->
-                    <span class="text-[9px] text-fg-3 shrink-0"
-                      >raised by {finding.raised_by.join(", ")}</span
-                    >
-                  {/if}
+                  <span class="px-1 py-0.5 rounded border border-hairline text-[9px] text-muted shrink-0" title="Confidence: {finding.confidence}">{confidenceGlyph(finding.confidence)}</span>
+                  {#if arbiterRuling(finding)}<span class="px-1 py-0.5 rounded border border-hairline text-[9px] text-ai" title={arbiterRuling(finding)}>regraded</span>{/if}
+                  {#if showAgentPills}<span class="px-1 py-0 rounded-full text-[9px] font-medium border shrink-0" style={agentPillStyle(label)}>{label}</span>{/if}
+                  {#if providerSummary}<span class="text-[9px] text-fg-3 shrink-0" title={providerSummary.title}>{providerSummary.label}</span>{/if}
+                  {#if finding.raised_by.length > 1}<span class="text-[9px] text-fg-3 shrink-0">raised by {finding.raised_by.join(", ")}</span>{/if}
                 </div>
                 <div class="text-[13px] text-fg-2 leading-snug">{finding.title}</div>
               </div>
             </div>
           </button>
-          <button
-            type="button"
-            onclick={() => app.cmd("dismiss_finding", { findingId: finding.id })}
-            title="Dismiss finding"
-            class="absolute top-1.5 right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition hover:bg-del-bg text-muted hover:text-del-fg"
-          >
+          <button type="button" onclick={() => app.cmd("dismiss_finding", { findingId: finding.id })} title="Dismiss finding" class="absolute top-1.5 right-1 p-0.5 rounded opacity-0 group-hover:opacity-100 transition hover:bg-del-bg text-muted hover:text-del-fg">
             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
           </button>
         </div>
-      {/each}
+      {/snippet}
+
+      <div class="findings-list space-y-1.5">
+        {#if securityFindings.length > 0}
+          <h3 class="px-2 pt-1 text-[10px] font-semibold uppercase tracking-wide text-warning">Security</h3>
+          {#each securityFindings as finding (finding.id)}{@render findingRow(finding)}{/each}
+        {/if}
+        {#if ordinaryFindings.length > 0}
+          {#if securityFindings.length > 0}<h3 class="px-2 pt-2 text-[10px] font-semibold uppercase tracking-wide text-fg-3">Other findings</h3>{/if}
+          {#each ordinaryFindings as finding (finding.id)}{@render findingRow(finding)}{/each}
+        {/if}
       </div>
     </div>
   {/if}

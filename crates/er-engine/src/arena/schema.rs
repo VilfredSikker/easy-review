@@ -149,4 +149,38 @@ mod tests {
         let v = json!({ "findings": [{ "file": "a.rs", "title": "t", "body": "b", "severity": "med" }] });
         assert!(validate_round1_output(&v).is_ok());
     }
+
+    #[test]
+    fn accepts_round1_payload_shaped_like_the_prompt_example() {
+        let v = json!({
+            "findings": [{
+                "file": "src/lib.rs",
+                "title": "Handle empty input",
+                "body": "`src/lib.rs:42` indexes the first item without checking for an empty list.",
+                "severity": "high",
+                "confidence": 0.8,
+                "tags": []
+            }]
+        });
+        let parsed = validate_round1_output(&v).expect("omitted line is valid for a deleted line");
+        assert_eq!(parsed.findings[0].line, None);
+        assert_eq!(parsed.findings[0].confidence, Some(0.8));
+    }
+
+    #[test]
+    fn rejects_negative_round1_line() {
+        let v = json!({"findings": [{
+            "file": "a.rs", "line": -2, "title": "t", "body": "b", "severity": "high"
+        }]});
+        assert!(parse_round1(&v).is_err());
+    }
+
+    #[test]
+    fn rejects_string_round1_confidence() {
+        let v = json!({"findings": [{
+            "file": "a.rs", "line": 2, "title": "t", "body": "b", "severity": "high",
+            "confidence": "0.8"
+        }]});
+        assert!(parse_round1(&v).is_err());
+    }
 }

@@ -6,6 +6,501 @@ use super::*;
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
 
+const DIAGRAM_READ_ONLY_TOOLS: &[&str] = &[
+    "Read",
+    "Bash(grep *)",
+    "Bash(rg *)",
+    "Bash(git grep*)",
+    "Bash(git show*)",
+    "Bash(git log*)",
+];
+const WRITABLE_PREPARED_DIFF_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash(grep *)",
+    "Bash(rg *)",
+    "Bash(git grep*)",
+    "Bash(git show*)",
+    "Bash(git fetch origin pull/*)",
+    "Bash(cp .er/*)",
+    "Bash(shasum*)",
+    "Bash(sha256sum*)",
+    "Bash(mkdir*)",
+    "Bash(awk*)",
+];
+const WRITABLE_TOOLS: &[&str] = &[
+    "Read",
+    "Write",
+    "Edit",
+    "Bash(gh pr *)",
+    "Bash(cp .er/*)",
+    "Bash(git diff*)",
+    "Bash(git grep*)",
+    "Bash(git show*)",
+    "Bash(git fetch origin pull/*)",
+    "Bash(shasum*)",
+    "Bash(sha256sum*)",
+    "Bash(mkdir*)",
+];
+
+fn background_run_is_read_only(task_kind: &str, host_write_diagram: bool) -> bool {
+    host_write_diagram || task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND
+}
+
+fn claude_allowed_tools(read_only: bool, prepared_diff: bool) -> &'static [&'static str] {
+    if read_only {
+        DIAGRAM_READ_ONLY_TOOLS
+    } else if prepared_diff {
+        WRITABLE_PREPARED_DIFF_TOOLS
+    } else {
+        WRITABLE_TOOLS
+    }
+}
+
+/// Check the final configured launch policy before prompt text is substituted.
+fn validate_importance_launch(
+    family: crate::config::CliFamily,
+    args: &[String],
+    opencode_env: Option<&(String, String)>,
+    trusted_codex_effort: Option<&str>,
+) -> Result<()> {
+    use crate::config::CliFamily;
+    let has = |flag: &str| {
+        args.iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    };
+    let has_split = |flag: &str| {
+        args.iter()
+            .enumerate()
+            .any(|(i, arg)| arg == flag && args.get(i + 1).is_some())
+    };
+    match family {
+        CliFamily::Other => anyhow::bail!(
+            "Importance is unavailable for custom CLI families because their read-only policy is unknown"
+        ),
+        CliFamily::Codex => {
+            let sandbox: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, arg)| {
+                    if arg == "--sandbox" {
+                        args.get(i + 1).map(String::as_str)
+                    } else {
+                        arg.strip_prefix("--sandbox=")
+                    }
+                })
+                .collect();
+            if sandbox.as_slice() != ["read-only"]
+                || args.iter().any(|arg| arg.starts_with("-s"))
+                || has("--full-auto")
+                || has("--yolo")
+                || has("--dangerously-bypass-approvals-and-sandbox")
+                || has("--add-dir")
+            {
+                anyhow::bail!(
+                    "Importance requires one Codex --sandbox read-only option and no write grants or bypass flags"
+                );
+            }
+            if args
+                .iter()
+                .filter(|a| a.as_str() == "--ignore-user-config")
+                .count()
+                != 1
+            {
+                anyhow::bail!("Importance requires the engine's Codex --ignore-user-config option");
+            }
+            let codex_config: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter(|(_, arg)| arg.as_str() == "-c")
+                .collect();
+            if let Some(level) = trusted_codex_effort {
+                if codex_config.len() != 1
+                    || args.get(codex_config[0].0 + 1).map(String::as_str)
+                        != Some(format!("model_reasoning_effort={level}").as_str())
+                {
+                    anyhow::bail!(
+                        "Importance requires the engine's configured Codex effort override"
+                    );
+                }
+            } else if !codex_config.is_empty() {
+                anyhow::bail!("Importance rejects Codex config overrides");
+            }
+            if has("--config")
+                || has_split("--add-dir")
+                || args.iter().any(|a| a.starts_with("--add-dir="))
+            {
+                anyhow::bail!("Importance rejects Codex config overrides and --add-dir grants");
+            }
+        }
+        CliFamily::Cursor => {
+            let modes: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, arg)| {
+                    if arg == "--mode" {
+                        args.get(i + 1).map(String::as_str)
+                    } else {
+                        arg.strip_prefix("--mode=")
+                    }
+                })
+                .collect();
+            if modes.as_slice() != ["plan"]
+                || has("--force")
+                || has("--yolo")
+                || has("--add-dir")
+                || has_split("--add-dir")
+                || has("--config")
+                || has("--settings")
+            {
+                anyhow::bail!(
+                    "Importance requires one Cursor --mode plan option and no force, yolo, or add-dir options"
+                );
+            }
+        }
+        CliFamily::Claude => {
+            let overrides = [
+                "--permission-mode",
+                "--dangerously-skip-permissions",
+                "--allow-dangerously-skip-permissions",
+                "--allowedTools",
+                "--allowed-tools",
+                "--tools",
+                "--disallowedTools",
+                "--disallowed-tools",
+                "--settings",
+                "--setting-sources",
+                "--plugin-dir",
+            ];
+            if overrides.iter().any(|flag| has(flag) || has_split(flag)) {
+                anyhow::bail!("Importance rejects Claude permission and tool-list overrides");
+            }
+        }
+        CliFamily::OpenCode => {
+            if has("--permission") || has("--config") || has("-c") || has("--agent") {
+                anyhow::bail!("Importance rejects OpenCode permission/config overrides");
+            }
+            let Some((key, value)) = opencode_env else {
+                anyhow::bail!(
+                    "Importance requires the engine-generated OpenCode read-only permission"
+                );
+            };
+            let parsed: serde_json::Value = serde_json::from_str(value)
+                .context("Importance received an invalid OpenCode permission policy")?;
+            if key != "OPENCODE_PERMISSION"
+                || parsed.get("edit").and_then(serde_json::Value::as_str) != Some("deny")
+                || parsed
+                    .pointer("/bash/*")
+                    .and_then(serde_json::Value::as_str)
+                    != Some("deny")
+            {
+                anyhow::bail!(
+                    "Importance requires the engine-generated OpenCode read-only permission"
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Reject permission and config overrides before trusted model flags are injected.
+fn validate_importance_user_config(
+    family: crate::config::CliFamily,
+    args: &[String],
+) -> Result<()> {
+    use crate::config::CliFamily;
+    let has = |flag: &str| {
+        args.iter()
+            .any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    };
+    match family {
+        CliFamily::Other => anyhow::bail!(
+            "Importance is unavailable for custom CLI families because their read-only policy is unknown"
+        ),
+        CliFamily::Codex
+            if args
+                .iter()
+                .any(|arg| arg.starts_with("-c") || arg.starts_with("-s"))
+                || has("--config") =>
+        {
+            anyhow::bail!("Importance rejects configured Codex -c/-s and config overrides");
+        }
+        CliFamily::Codex => {
+            let sandboxes: Vec<_> = args
+                .iter()
+                .enumerate()
+                .filter_map(|(i, arg)| {
+                    if arg == "--sandbox" {
+                        args.get(i + 1).map(String::as_str)
+                    } else {
+                        arg.strip_prefix("--sandbox=")
+                    }
+                })
+                .collect();
+            if sandboxes.len() > 1 || sandboxes.iter().any(|value| *value != "read-only") {
+                anyhow::bail!("Importance rejects writable or duplicate Codex sandbox options");
+            }
+        }
+        CliFamily::Cursor
+            if ["--force", "--yolo", "--add-dir", "--config", "--settings"]
+                .iter()
+                .any(|flag| has(flag)) =>
+        {
+            anyhow::bail!("Importance rejects Cursor write and config overrides");
+        }
+        CliFamily::Claude
+            if [
+                "--permission-mode",
+                "--dangerously-skip-permissions",
+                "--allow-dangerously-skip-permissions",
+                "--allowedTools",
+                "--allowed-tools",
+                "--tools",
+                "--disallowedTools",
+                "--disallowed-tools",
+                "--settings",
+                "--setting-sources",
+                "--plugin-dir",
+            ]
+            .iter()
+            .any(|flag| has(flag)) =>
+        {
+            anyhow::bail!("Importance rejects Claude permission and tool-list overrides");
+        }
+        CliFamily::OpenCode
+            if ["--permission", "--config", "-c", "--agent"]
+                .iter()
+                .any(|flag| has(flag)) =>
+        {
+            anyhow::bail!("Importance rejects OpenCode permission/config overrides");
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// Wakes a host poll after the worker sends its result, including an
+/// unexpected worker panic that disconnects the result channel.
+struct NotifyBackgroundProgressOnDrop {
+    result_tx: Option<std::sync::mpsc::Sender<Result<()>>>,
+    notify: Option<crate::arena::ArenaNotify>,
+}
+
+impl NotifyBackgroundProgressOnDrop {
+    fn send_result(&mut self, result: Result<()>) {
+        if let Some(result_tx) = self.result_tx.take() {
+            let _ = result_tx.send(result);
+        }
+        self.notify_host();
+    }
+
+    fn notify_host(&mut self) {
+        if let Some(notify) = self.notify.take() {
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| notify()));
+        }
+    }
+}
+
+impl Drop for NotifyBackgroundProgressOnDrop {
+    fn drop(&mut self) {
+        // On panic the receiver must already see Disconnected before the wake.
+        drop(self.result_tx.take());
+        self.notify_host();
+    }
+}
+
+#[cfg(test)]
+mod background_allowlist_tests {
+    use super::*;
+
+    #[test]
+    fn importance_is_read_only() {
+        assert!(background_run_is_read_only(
+            crate::ai::prompts::IMPORTANCE_TASK_KIND,
+            false
+        ));
+        assert!(!background_run_is_read_only("review", false));
+    }
+
+    #[test]
+    fn host_written_diagrams_are_read_only() {
+        assert!(background_run_is_read_only("diagram", true));
+    }
+
+    #[test]
+    fn readonly_branches_share_the_diagram_allowlist() {
+        assert_eq!(claude_allowed_tools(true, false), DIAGRAM_READ_ONLY_TOOLS);
+        assert_eq!(claude_allowed_tools(true, true), DIAGRAM_READ_ONLY_TOOLS);
+    }
+
+    #[test]
+    fn prepared_diff_writable_list_is_unchanged() {
+        assert_eq!(
+            claude_allowed_tools(false, true),
+            &[
+                "Read",
+                "Write",
+                "Edit",
+                "Bash(grep *)",
+                "Bash(rg *)",
+                "Bash(git grep*)",
+                "Bash(git show*)",
+                "Bash(git fetch origin pull/*)",
+                "Bash(cp .er/*)",
+                "Bash(shasum*)",
+                "Bash(sha256sum*)",
+                "Bash(mkdir*)",
+                "Bash(awk*)",
+            ]
+        );
+    }
+
+    #[test]
+    fn ordinary_writable_list_is_unchanged() {
+        assert_eq!(
+            claude_allowed_tools(false, false),
+            &[
+                "Read",
+                "Write",
+                "Edit",
+                "Bash(gh pr *)",
+                "Bash(cp .er/*)",
+                "Bash(git diff*)",
+                "Bash(git grep*)",
+                "Bash(git show*)",
+                "Bash(git fetch origin pull/*)",
+                "Bash(shasum*)",
+                "Bash(sha256sum*)",
+                "Bash(mkdir*)",
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
+mod importance_launch_policy {
+    use super::*;
+
+    fn strings(args: &[&str]) -> Vec<String> {
+        args.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn codex_requires_exactly_one_read_only_sandbox_in_split_or_equals_form() {
+        for args in [
+            strings(&["exec", "--sandbox", "read-only", "--ignore-user-config"]),
+            strings(&["exec", "--sandbox=read-only", "--ignore-user-config"]),
+        ] {
+            validate_importance_launch(crate::config::CliFamily::Codex, &args, None, None).unwrap();
+        }
+        for args in [
+            strings(&[
+                "exec",
+                "--sandbox=read-only",
+                "--sandbox",
+                "workspace-write",
+                "--ignore-user-config",
+            ]),
+            strings(&[
+                "exec",
+                "--sandbox",
+                "workspace-write",
+                "--ignore-user-config",
+            ]),
+            strings(&[
+                "exec",
+                "--sandbox=read-only",
+                "--ignore-user-config",
+                "--add-dir=/tmp",
+            ]),
+        ] {
+            assert!(
+                validate_importance_launch(crate::config::CliFamily::Codex, &args, None, None)
+                    .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn cursor_requires_one_plan_mode_and_rejects_write_options() {
+        for args in [strings(&["--mode", "plan"]), strings(&["--mode=plan"])] {
+            validate_importance_launch(crate::config::CliFamily::Cursor, &args, None, None)
+                .unwrap();
+        }
+        assert!(validate_importance_launch(
+            crate::config::CliFamily::Cursor,
+            &strings(&["--mode=plan", "--mode", "ask"]),
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_importance_launch(
+            crate::config::CliFamily::Cursor,
+            &strings(&["--mode=plan", "--force"]),
+            None,
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn claude_rejects_permission_overrides_before_canonical_allowlist_insertion() {
+        assert!(validate_importance_launch(
+            crate::config::CliFamily::Claude,
+            &strings(&["--permission-mode", "bypassPermissions"]),
+            None,
+            None
+        )
+        .is_err());
+        assert!(validate_importance_launch(
+            crate::config::CliFamily::Claude,
+            &strings(&["--allowedTools=Write"]),
+            None,
+            None
+        )
+        .is_err());
+        validate_importance_launch(
+            crate::config::CliFamily::Claude,
+            &strings(&["--print", "{prompt}"]),
+            None,
+            None,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn opencode_requires_engine_permission_environment_and_rejects_overrides() {
+        let mut args = strings(&["run", "--auto"]);
+        let env = crate::config::apply_opencode_readonly_storage_spawn(
+            crate::config::CliFamily::OpenCode,
+            &mut args,
+            Some("/managed/review"),
+        )
+        .unwrap();
+        validate_importance_launch(crate::config::CliFamily::OpenCode, &args, Some(&env), None)
+            .unwrap();
+        assert!(validate_importance_launch(
+            crate::config::CliFamily::OpenCode,
+            &strings(&["run", "--permission", "allow"]),
+            Some(&env),
+            None
+        )
+        .is_err());
+        assert!(
+            validate_importance_launch(crate::config::CliFamily::OpenCode, &args, None, None)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn unknown_cli_family_is_rejected() {
+        assert!(
+            validate_importance_launch(crate::config::CliFamily::Other, &[], None, None).is_err()
+        );
+    }
+}
+
 /// Whether a completed agent run writes its full transcript to
 /// `debug-agent.log`.
 ///
@@ -49,11 +544,48 @@ fn status_bar_failure(msg: String) -> String {
 /// message. Char-safe: agent stderr often includes multi-byte text.
 fn agent_stderr_snippet(stderr_lines: &[String]) -> String {
     const MAX_CHARS: usize = 280;
-    let joined = stderr_lines.join("\n");
-    let trimmed = joined.trim();
-    match trimmed.char_indices().nth(MAX_CHARS) {
-        Some((boundary, _)) => format!("{}…", trimmed.get(..boundary).unwrap_or_default()),
-        None => trimmed.to_string(),
+    let lines: Vec<_> = stderr_lines
+        .iter()
+        .map(|line| line.trim())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let is_error = |line: &&str| {
+        line.trim_start()
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("error:"))
+    };
+    let is_auth_error = |line: &&str| {
+        let lower = line.to_ascii_lowercase();
+        [
+            "authentication",
+            "not logged in",
+            "not authenticated",
+            "unauthorized",
+        ]
+        .iter()
+        .any(|marker| lower.contains(marker))
+    };
+    let start = lines
+        .iter()
+        .rposition(is_error)
+        .or_else(|| lines.iter().rposition(is_auth_error));
+    let (snippet, keep_start) = if let Some(start) = start {
+        (lines[start..].join("\n"), true)
+    } else {
+        (lines.join("\n"), false)
+    };
+    let chars: Vec<_> = snippet.chars().collect();
+    if chars.len() <= MAX_CHARS {
+        return snippet;
+    }
+    if keep_start {
+        chars.iter().take(MAX_CHARS - 1).collect::<String>() + "…"
+    } else {
+        "…".to_string()
+            + &chars
+                .iter()
+                .skip(chars.len() - (MAX_CHARS - 1))
+                .collect::<String>()
     }
 }
 
@@ -2947,6 +3479,9 @@ impl App {
             )
         };
 
+        // The TUI calls this method directly. Check the exact tour destination
+        // before creating the directory or preparing diff artifacts.
+        self.check_review_bucket_admission(&er_dir)?;
         std::fs::create_dir_all(&er_dir)?;
 
         let raw = self.tab().raw_diff_for_review(&scope)?;
@@ -3040,6 +3575,32 @@ impl App {
             .count()
     }
 
+    /// Mark an accepted background task as belonging to a review flow.
+    /// Call this immediately after enqueue returns its ID.
+    pub(crate) fn register_review_flow_task(&mut self, id: String) {
+        self.owned_flow_task_ids.insert(id);
+    }
+
+    /// Consume one terminal task record. Ownership is released at the same
+    /// time, so later polling cannot retain or redeliver it.
+    pub(crate) fn take_review_flow_task_completion(
+        &mut self,
+        id: &str,
+    ) -> Option<super::background::BackgroundTask> {
+        let completion = self.flow_task_completions.remove(id);
+        if completion.is_some() {
+            self.owned_flow_task_ids.remove(id);
+        }
+        completion
+    }
+
+    fn record_flow_task_completion(&mut self, task: &super::background::BackgroundTask) {
+        if self.owned_flow_task_ids.contains(&task.id) {
+            self.flow_task_completions
+                .insert(task.id.clone(), task.clone());
+        }
+    }
+
     /// App-level background agent task (review or expert). When the number
     /// of running tasks has reached `ai_hub.max_concurrent_reviews`, the
     /// task is queued and launched later by `poll_background_tasks`.
@@ -3052,6 +3613,36 @@ impl App {
         prepared_diff: bool,
         host_write_diagram: Option<super::background::HostWriteDiagram>,
     ) -> Result<()> {
+        self.check_review_bucket_admission(&target.er_dir)?;
+        self.enqueue_background_agent_task(
+            kind,
+            command_name,
+            target,
+            prompt,
+            prepared_diff,
+            host_write_diagram,
+            None,
+        )
+        .map(|_| ())
+    }
+
+    /// Accept a background task and return the exact ID assigned before it is
+    /// queued or launched. Flow callers register the ID before App polling can
+    /// observe a terminal result.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "preserve ordinary action admission with the captured launch configuration"
+    )]
+    pub(super) fn enqueue_background_agent_task(
+        &mut self,
+        kind: String,
+        command_name: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+        host_write_diagram: Option<super::background::HostWriteDiagram>,
+        launch_config: Option<crate::config::ErConfig>,
+    ) -> Result<String> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
         if target.repo_root.is_empty() && target.remote_repo.is_none() {
@@ -3092,7 +3683,9 @@ impl App {
                         }
                     },
                 )),
+                launch_config,
             };
+        let task_id = pending.task.id.clone();
 
         let cap = self.config.ai_hub.effective_max_concurrent_reviews();
         if self.running_background_task_count() >= cap {
@@ -3100,7 +3693,7 @@ impl App {
             self.pending_background_tasks.push_back(pending);
             let pos = self.pending_background_tasks.len();
             self.notify(&format!("{command_name} queued (#{pos}, {label})"));
-            return Ok(());
+            return Ok(task_id);
         }
 
         self.launch_background_agent_task(pending)
@@ -3116,7 +3709,7 @@ impl App {
     fn launch_background_agent_task(
         &mut self,
         pending: super::background::PendingBackgroundTask,
-    ) -> Result<()> {
+    ) -> Result<String> {
         use super::background::BackgroundTaskHandle;
 
         let super::background::PendingBackgroundTask {
@@ -3126,6 +3719,7 @@ impl App {
             prepared_diff,
             host_write_diagram,
             ai_selection,
+            launch_config,
         } = pending;
         let command_name = command_name.as_str();
         let target = task.target.clone();
@@ -3148,6 +3742,7 @@ impl App {
                 effort: self.current_ai_effort.clone(),
             }
         });
+        let config = launch_config.as_ref().unwrap_or(&self.config);
 
         let (
             agent_cmd,
@@ -3158,20 +3753,17 @@ impl App {
             resolved_provider_id,
             resolved_model_id,
             family,
-        ) = if let Some(provider_id) = self
-            .config
+        ) = if let Some(provider_id) = config
             .ai_hub
             .resolve_provider_id(selection.provider_id.as_deref())
         {
-            let provider = self
-                .config
+            let provider = config
                 .ai_hub
                 .providers
                 .get(&provider_id)
                 .ok_or_else(|| anyhow::anyhow!("Unknown AI provider: {}", provider_id))?;
             let mut args = provider.args.clone();
-            let resolved_model_id = self
-                .config
+            let resolved_model_id = config
                 .ai_hub
                 .resolve_model_id(&provider_id, selection.model_id.as_deref());
             let family = provider.cli_family();
@@ -3193,18 +3785,18 @@ impl App {
                 family,
             )
         } else {
-            let cmd = self.config.agent.command.clone();
+            let cmd = config.agent.command.clone();
             let is_claude = crate::config::agent_command_is_claude(&cmd);
             let is_codex = crate::config::agent_command_is_codex(&cmd);
             let family = crate::config::CliFamily::detect(&cmd);
             (
                 cmd.clone(),
-                self.config.agent.args.clone(),
+                config.agent.args.clone(),
                 is_claude,
                 is_codex,
                 crate::config::agent_command_uses_stream_json(&cmd),
                 None,
-                (!self.config.agent.model.is_empty()).then(|| self.config.agent.model.clone()),
+                (!config.agent.model.is_empty()).then(|| config.agent.model.clone()),
                 family,
             )
         };
@@ -3215,13 +3807,16 @@ impl App {
             None
         };
         let effort = crate::config::resolve_effort_for_model(
-            &self.config.ai_hub,
-            &self.config.agent,
+            &config.ai_hub,
+            &config.agent,
             resolved_provider_id.as_deref(),
             resolved_model_id.as_deref(),
             selection.effort.as_deref(),
             effort_override,
         );
+        if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+            validate_importance_user_config(family, &config_args)?;
+        }
         crate::config::inject_provider_effort(
             family,
             &mut config_args,
@@ -3232,14 +3827,14 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_claude_startup_trim(family, &mut config_args);
-        // Diagrams: the host writes the sidecar, so the agent must not be able to
+        // Diagrams and importance: the host writes the result, so the agent must not be able to
         // write anything — its prompt carries untrusted diff content. Claude's
         // `--allowedTools` allowlist and OpenCode's permission env deny edits
         // themselves and still need the bucket to read diff-tmp from. Codex and
         // Cursor have no tool list, so for them the only write control is the
         // sandbox, and `--add-dir` is documented as adding a *writable* directory
         // — so a read-only run withholds it and narrows the sandbox instead.
-        let readonly_run = host_write_diagram.is_some();
+        let readonly_run = background_run_is_read_only(&task_kind, host_write_diagram.is_some());
         let storage_access = match family {
             crate::config::CliFamily::Codex | crate::config::CliFamily::Cursor if readonly_run => {
                 None
@@ -3263,6 +3858,16 @@ impl App {
                 Some(target.er_dir.as_str()),
             )
         };
+        if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+            validate_importance_launch(
+                family,
+                &config_args,
+                opencode_env.as_ref(),
+                (family == crate::config::CliFamily::Codex && resolved_model_id.is_some())
+                    .then_some(effort.as_deref())
+                    .flatten(),
+            )?;
+        }
 
         std::fs::create_dir_all(&target.er_dir)?;
 
@@ -3293,13 +3898,18 @@ impl App {
         let command_name_emit: std::sync::Arc<str> = std::sync::Arc::from(command_name);
         let slot_cap = self.config.ai_hub.effective_max_concurrent_reviews();
         let ceiling = self.config.ai_hub.effective_max_concurrent_agents();
-        let agent_timeout = self.config.ai_hub.effective_agent_timeout();
+        let agent_timeout = config.ai_hub.effective_agent_timeout();
         // The worker owns one clone; the App keeps the other so a stop control
         // can reach the process. Built here, outside the thread, so the handle
         // exists before anything can try to stop it.
         let run = crate::agent_run::AgentRunHandle::new();
         let run_for_task = std::sync::Arc::clone(&run);
+        let progress_notify = self.background_progress_notify.clone();
         std::thread::spawn(move || {
+            let mut progress_signal = NotifyBackgroundProgressOnDrop {
+                result_tx: Some(result_tx),
+                notify: progress_notify,
+            };
             let mut timer = crate::agent_timing::AgentRunTimer::start();
             let result = (|| -> Result<()> {
                 // Hard process-wide cap shared with arena reviewers. The
@@ -3332,48 +3942,7 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed: &[&str] = if host_write_diagram.is_some() {
-                        // Read-only: harness persists the diagram JSON from stdout.
-                        &[
-                            "Read",
-                            "Bash(grep *)",
-                            "Bash(rg *)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git log*)",
-                        ]
-                    } else if prepared_diff {
-                        &[
-                            "Read",
-                            "Write",
-                            "Edit",
-                            "Bash(grep *)",
-                            "Bash(rg *)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git fetch origin pull/*)",
-                            "Bash(cp .er/*)",
-                            "Bash(shasum*)",
-                            "Bash(sha256sum*)",
-                            "Bash(mkdir*)",
-                            "Bash(awk*)",
-                        ]
-                    } else {
-                        &[
-                            "Read",
-                            "Write",
-                            "Edit",
-                            "Bash(gh pr *)",
-                            "Bash(cp .er/*)",
-                            "Bash(git diff*)",
-                            "Bash(git grep*)",
-                            "Bash(git show*)",
-                            "Bash(git fetch origin pull/*)",
-                            "Bash(shasum*)",
-                            "Bash(sha256sum*)",
-                            "Bash(mkdir*)",
-                        ]
-                    };
+                    let allowed = claude_allowed_tools(readonly_run, prepared_diff);
                     for rule in allowed.iter().rev() {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());
@@ -3489,7 +4058,9 @@ impl App {
                         "=== review agent command ===\ncommand: {} {}\nexit code: {}\n\n--- stdout ---\n{}\n\n--- stderr ---\n{}\n",
                         agent_cmd,
                         agent_args.join(" "),
-                        status.code().map_or_else(|| "signal".to_string(), |c| c.to_string()),
+                        status
+                            .code()
+                            .map_or_else(|| "signal".to_string(), |c| c.to_string()),
                         stdout_lines.join("\n"),
                         stderr_lines.join("\n"),
                     );
@@ -3564,7 +4135,7 @@ impl App {
                 Ok(())
             })();
             let ok = result.is_ok();
-            let _ = result_tx.send(result);
+            progress_signal.send_result(result);
             timer.emit("background", &command_name_emit, ok);
         });
 
@@ -3592,7 +4163,7 @@ impl App {
             "{command_name} started ({})",
             target.display_label()
         ));
-        Ok(())
+        Ok(task_id)
     }
 
     /// Drain log channels and check for completion across all app-level
@@ -3682,6 +4253,8 @@ impl App {
             handle.task.finished_at_ms = Some(now);
             handle.task.error = error.clone();
             let wrote_importance = handle.task.kind == crate::ai::prompts::IMPORTANCE_TASK_KIND;
+            let completion_task = handle.task.clone();
+            self.record_flow_task_completion(&completion_task);
 
             // Force reload only on matching tabs. No `last_ai_check = None`
             // reset here: the agent's freshly written sidecars have
@@ -3749,6 +4322,10 @@ impl App {
 
         // 4. Launch queued tasks while there's capacity.
         self.dispatch_pending_background_tasks();
+
+        // Flow advancement must observe the terminal records from this poll,
+        // including queued launch failures, before UI history is consulted.
+        self.advance_review_flows();
     }
 
     /// Pop queued review tasks and launch them while the running count is
@@ -3768,6 +4345,7 @@ impl App {
                 failed_task.status = CommandStatus::Failed(e.to_string());
                 failed_task.error = Some(e.to_string());
                 failed_task.finished_at_ms = Some(super::background::unix_now_ms());
+                self.record_flow_task_completion(&failed_task);
                 self.recent_background_tasks.push(failed_task);
                 if self.recent_background_tasks.len() > 32 {
                     self.recent_background_tasks.remove(0);
@@ -3797,13 +4375,27 @@ impl App {
     /// Remove a queued (not yet started) review task. Returns true when a
     /// matching task was found and removed.
     pub fn cancel_queued_background_task(&mut self, id: &str) -> bool {
-        let before = self.pending_background_tasks.len();
-        self.pending_background_tasks.retain(|p| p.task.id != id);
-        let removed = self.pending_background_tasks.len() != before;
-        if removed {
-            self.notify("review removed from queue");
+        let mut cancelled = None;
+        self.pending_background_tasks.retain(|pending| {
+            if pending.task.id == id {
+                cancelled = Some(pending.task.clone());
+                false
+            } else {
+                true
+            }
+        });
+        let Some(mut task) = cancelled else {
+            return false;
+        };
+        if self.owned_flow_task_ids.contains(id) {
+            let reason = "cancelled before launch".to_owned();
+            task.status = CommandStatus::Failed(reason.clone());
+            task.error = Some(reason);
+            task.finished_at_ms = Some(super::background::unix_now_ms());
+            self.record_flow_task_completion(&task);
         }
-        removed
+        self.notify("review removed from queue");
+        true
     }
 
     /// The running process for a background task, if it has one.
@@ -3975,7 +4567,7 @@ impl App {
 #[cfg(test)]
 mod background_queue_tests {
     use crate::app::{App, BackgroundTaskTarget};
-    use crate::config::{AiModelConfig, AiProviderConfig, AiSelection};
+    use crate::config::{AiModelConfig, AiProviderConfig, AiSelection, ErConfig};
 
     fn target(tmp: &std::path::Path, branch: &str) -> BackgroundTaskTarget {
         BackgroundTaskTarget {
@@ -4001,30 +4593,8 @@ mod background_queue_tests {
     /// tasks. So a slot held by one test changes another's dispatch decision,
     /// and these run in parallel by default. Holding this for the duration
     /// keeps each test's view of the pool its own.
-    static POOL_SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    /// Held for the duration of one pool-sensitive test.
-    ///
-    /// Serializing is not enough on its own: a spawned agent outlives the test
-    /// body that started it, so it keeps its slot after the lock is released
-    /// and the next test inherits a pool it does not own. The `Drop` waits for
-    /// the pool to drain, which is what makes the next test's view its own.
-    struct PoolGuard(
-        #[expect(dead_code, reason = "held only for its Drop, which releases the lock")]
-        std::sync::MutexGuard<'static, ()>,
-    );
-
-    impl Drop for PoolGuard {
-        fn drop(&mut self) {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
-            while crate::agent_slots::active_count() > 0 && std::time::Instant::now() < deadline {
-                std::thread::sleep(std::time::Duration::from_millis(25));
-            }
-        }
-    }
-
-    fn serial() -> PoolGuard {
-        PoolGuard(POOL_SERIAL.lock().unwrap_or_else(|e| e.into_inner()))
+    fn serial() -> crate::agent_slots::TestSerialGuard {
+        crate::agent_slots::test_serial()
     }
 
     fn test_app(cap: usize) -> Option<(App, std::path::PathBuf)> {
@@ -4084,6 +4654,7 @@ mod background_queue_tests {
 
         assert_eq!(app.running_background_task_count(), 1, "cap of 1 enforced");
         assert_eq!(app.pending_background_tasks.len(), 1, "second task queued");
+        assert!(app.pending_background_tasks[0].launch_config.is_none());
         assert_eq!(
             app.pending_background_tasks[0]
                 .ai_selection
@@ -4344,6 +4915,426 @@ mod background_queue_tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    #[test]
+    fn background_task_ids_are_unique_for_same_kind_and_target() {
+        let target = target(std::path::Path::new("/repo"), "main");
+        let first = super::super::background::BackgroundTask::new("triage".into(), target.clone());
+        let second = super::super::background::BackgroundTask::new("triage".into(), target);
+        assert_ne!(first.id, second.id);
+        assert!(first.id.contains(&std::process::id().to_string()));
+    }
+
+    #[test]
+    fn registered_completion_is_exact_one_shot_and_survives_history_retirement() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(2) else {
+            return;
+        };
+        app.config.ai_hub = Default::default();
+        app.config.agent.command = "sh".into();
+        app.config.agent.args = vec!["-c".into(), "sleep 0.05".into()];
+        let owned_target = target(&tmp, "owned");
+        let unowned_target = target(&tmp, "unowned");
+        let owned_id = app
+            .enqueue_background_agent_task(
+                "triage".into(),
+                "triage",
+                owned_target.clone(),
+                "p".into(),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+        app.register_review_flow_task(owned_id.clone());
+        let unowned_id = app
+            .enqueue_background_agent_task(
+                "triage".into(),
+                "triage",
+                unowned_target,
+                "p".into(),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !app.flow_task_completions.contains_key(&owned_id) {
+            app.poll_background_tasks();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "owned task did not complete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert!(!app.flow_task_completions.contains_key(&unowned_id));
+        let handle = app.background_tasks.get_mut(&owned_id).unwrap();
+        handle.task.finished_at_ms =
+            Some(super::super::background::unix_now_ms().saturating_sub(9_000));
+        app.poll_background_tasks();
+        assert!(
+            !app.background_tasks.contains_key(&owned_id),
+            "UI task history retired"
+        );
+        assert!(
+            app.flow_task_completions.contains_key(&owned_id),
+            "flow completion is independent of UI history"
+        );
+
+        let completion = app.take_review_flow_task_completion(&owned_id).unwrap();
+        assert_eq!(completion.id, owned_id);
+        assert_eq!(completion.target, owned_target);
+        assert!(matches!(completion.status, crate::app::CommandStatus::Done));
+        assert!(app
+            .take_review_flow_task_completion(&completion.id)
+            .is_none());
+        assert!(!app.owned_flow_task_ids.contains(&completion.id));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn background_progress_callback_wakes_after_success_and_failure_results() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(2) else {
+            return;
+        };
+        app.config.ai_hub = Default::default();
+        app.config.ai_hub.max_concurrent_reviews = 2;
+        app.config.agent.command = "sh".into();
+        let wake_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let callback_count = std::sync::Arc::clone(&wake_count);
+        app.set_background_progress_notify(Some(std::sync::Arc::new(move || {
+            callback_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        })));
+
+        app.config.agent.args = vec!["-c".into(), "exit 0".into()];
+        app.spawn_background_review(target(&tmp, "callback-success"), "p".into(), false)
+            .unwrap();
+        app.config.agent.args = vec!["-c".into(), "exit 1".into()];
+        app.spawn_background_review(target(&tmp, "callback-failure"), "p".into(), false)
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while wake_count.load(std::sync::atomic::Ordering::SeqCst) < 2 {
+            app.poll_background_tasks();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "worker did not wake the host"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        app.poll_background_tasks();
+        assert_eq!(wake_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert!(app
+            .background_tasks
+            .values()
+            .any(|task| matches!(task.task.status, crate::app::CommandStatus::Done)));
+        assert!(app
+            .background_tasks
+            .values()
+            .any(|task| matches!(task.task.status, crate::app::CommandStatus::Failed(_))));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn worker_panic_drops_result_sender_before_progress_callback() {
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<anyhow::Result<()>>();
+        let result_rx = std::sync::Mutex::new(result_rx);
+        let saw_terminal_channel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let callback_observed = std::sync::Arc::clone(&saw_terminal_channel);
+        let notify: crate::arena::ArenaNotify = std::sync::Arc::new(move || {
+            let disconnected = matches!(
+                result_rx.lock().unwrap().try_recv(),
+                Err(std::sync::mpsc::TryRecvError::Disconnected)
+            );
+            callback_observed.store(disconnected, std::sync::atomic::Ordering::SeqCst);
+        });
+        let worker = std::thread::spawn(move || {
+            let _progress_signal = super::NotifyBackgroundProgressOnDrop {
+                result_tx: Some(result_tx),
+                notify: Some(notify),
+            };
+            panic!("simulated worker-body panic");
+        });
+
+        assert!(worker.join().is_err());
+        assert!(
+            saw_terminal_channel.load(std::sync::atomic::Ordering::SeqCst),
+            "callback must observe a sent result or disconnected sender"
+        );
+    }
+
+    #[test]
+    fn queued_launch_failure_is_delivered_for_registered_id() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub = Default::default();
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        let blocker_target = target(&tmp, "blocker");
+        let mut blocker_task =
+            super::super::background::BackgroundTask::new("review".into(), blocker_target);
+        blocker_task.status = crate::app::CommandStatus::Running;
+        let blocker_id = blocker_task.id.clone();
+        let (_result_tx, result_rx) = std::sync::mpsc::channel();
+        let (_log_tx, log_rx) = std::sync::mpsc::channel();
+        app.background_tasks.insert(
+            blocker_id.clone(),
+            super::super::background::BackgroundTaskHandle {
+                task: blocker_task,
+                run: crate::agent_run::AgentRunHandle::new(),
+                result_rx,
+                log_rx,
+                recent_log: Default::default(),
+            },
+        );
+
+        let obstructed_path = tmp.join("not-a-directory");
+        std::fs::write(&obstructed_path, "file").unwrap();
+        let mut failed_target = target(&tmp, "queued-failure");
+        failed_target.er_dir = obstructed_path
+            .join("bucket")
+            .to_string_lossy()
+            .into_owned();
+        let id = app
+            .enqueue_background_agent_task(
+                "triage".into(),
+                "triage",
+                failed_target,
+                "p".into(),
+                true,
+                None,
+                Some(ErConfig::default()),
+            )
+            .unwrap();
+        app.register_review_flow_task(id.clone());
+        // A different live cap can release queued work; captured launch
+        // configuration must not freeze this resource policy.
+        app.config.ai_hub.max_concurrent_reviews = 16;
+        app.background_tasks
+            .get_mut(&blocker_id)
+            .unwrap()
+            .task
+            .status = crate::app::CommandStatus::Done;
+        app.dispatch_pending_background_tasks();
+        assert!(app.flow_task_completions.contains_key(&id));
+        let completion = app.take_review_flow_task_completion(&id).unwrap();
+        assert_eq!(completion.id, id);
+        assert!(matches!(
+            completion.status,
+            crate::app::CommandStatus::Failed(_)
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn public_spawn_wrapper_refuses_a_leased_review_bucket() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        let target = target(&tmp, "leased");
+        let lease = app.acquire_review_flow_lease(&target.er_dir).unwrap();
+
+        let error = app
+            .spawn_background_review(target.clone(), "p".into(), true)
+            .unwrap_err();
+        assert!(error.to_string().contains("review flow is already using"));
+        assert!(app.pending_background_tasks.is_empty());
+        assert!(app.background_tasks.is_empty());
+
+        app.release_review_flow_lease(&lease).unwrap();
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn cancelling_queued_flow_task_delivers_failure_and_cleans_ownership() {
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        let blocker_task =
+            super::super::background::BackgroundTask::new("review".into(), target(&tmp, "blocker"));
+        let blocker_id = blocker_task.id.clone();
+        let (_result_tx, result_rx) = std::sync::mpsc::channel();
+        let (_log_tx, log_rx) = std::sync::mpsc::channel();
+        app.background_tasks.insert(
+            blocker_id,
+            super::super::background::BackgroundTaskHandle {
+                task: blocker_task,
+                run: crate::agent_run::AgentRunHandle::new(),
+                result_rx,
+                log_rx,
+                recent_log: Default::default(),
+            },
+        );
+
+        let flow_id = app
+            .enqueue_background_agent_task(
+                "triage".into(),
+                "triage",
+                target(&tmp, "flow-queued"),
+                "p".into(),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+        app.register_review_flow_task(flow_id.clone());
+        let legacy_id = app
+            .enqueue_background_agent_task(
+                "triage".into(),
+                "triage",
+                target(&tmp, "legacy-queued"),
+                "p".into(),
+                true,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert!(app.cancel_queued_background_task(&legacy_id));
+        assert!(!app.flow_task_completions.contains_key(&legacy_id));
+        assert!(app.cancel_queued_background_task(&flow_id));
+        let completion = app.take_review_flow_task_completion(&flow_id).unwrap();
+        assert_eq!(completion.id, flow_id);
+        assert_eq!(completion.error.as_deref(), Some("cancelled before launch"));
+        assert!(matches!(
+            completion.status,
+            crate::app::CommandStatus::Failed(ref reason) if reason == "cancelled before launch"
+        ));
+        assert!(!app.owned_flow_task_ids.contains(&completion.id));
+        assert!(app
+            .take_review_flow_task_completion(&completion.id)
+            .is_none());
+        assert!(app.pending_background_tasks.is_empty());
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn queued_flow_task_launches_from_frozen_provider_config() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub = Default::default();
+        app.config.ai_hub.max_concurrent_reviews = 1;
+        app.config.agent.command = "sleep".into();
+        app.config.agent.args = vec!["30".into()];
+        app.spawn_background_triage_review(target(&tmp, "blocker"), "p".into(), true)
+            .unwrap();
+
+        let argv_path = tmp.join("frozen-argv.txt");
+        let frozen_command = tmp.join("frozen-agent");
+        std::fs::write(
+            &frozen_command,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\" > '{}'\nexit 0\n",
+                argv_path.display()
+            ),
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&frozen_command).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&frozen_command, permissions).unwrap();
+
+        let mut frozen = ErConfig::default();
+        frozen.ai_hub.default_provider = Some("frozen".into());
+        frozen.ai_hub.default_model = Some("frozen-model".into());
+        frozen.ai_hub.default_effort = Some("high".into());
+        frozen.ai_hub.agent_timeout_secs = 3;
+        frozen.ai_hub.providers.insert(
+            "frozen".into(),
+            AiProviderConfig {
+                command: frozen_command.to_string_lossy().into_owned(),
+                family: Some("claude".into()),
+                args: vec!["{prompt}".into()],
+                models: vec![AiModelConfig {
+                    id: "frozen-model".into(),
+                    args: vec!["--model".into(), "frozen-model".into()],
+                    effort_levels: vec!["low".into(), "high".into()],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            },
+        );
+        let id = app
+            .enqueue_background_agent_task(
+                "general".into(),
+                "review",
+                target(&tmp, "frozen-flow"),
+                "prompt".into(),
+                true,
+                None,
+                Some(frozen.clone()),
+            )
+            .unwrap();
+        app.register_review_flow_task(id.clone());
+        assert_eq!(
+            app.pending_background_tasks[0]
+                .launch_config
+                .as_ref()
+                .unwrap()
+                .ai_hub
+                .agent_timeout_secs,
+            3
+        );
+
+        app.config.agent.command = tmp
+            .join("live-config-must-not-run")
+            .to_string_lossy()
+            .into_owned();
+        app.config.ai_hub = Default::default();
+        app.config.ai_hub.default_provider = Some("live".into());
+        app.config.ai_hub.providers.insert(
+            "live".into(),
+            AiProviderConfig {
+                command: tmp
+                    .join("live-config-must-not-run")
+                    .to_string_lossy()
+                    .into_owned(),
+                ..Default::default()
+            },
+        );
+        app.background_tasks
+            .values()
+            .find(|h| h.task.target.branch_label == "blocker")
+            .unwrap()
+            .run
+            .kill();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !app.flow_task_completions.contains_key(&id) {
+            app.poll_background_tasks();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "frozen provider did not complete"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let argv = std::fs::read_to_string(&argv_path).unwrap();
+        assert!(
+            argv.contains("frozen-model"),
+            "model args must come from captured config: {argv}"
+        );
+        assert!(
+            argv.contains("--effort\nhigh"),
+            "effort must come from captured config: {argv}"
+        );
+        assert!(!argv.contains("live-config-must-not-run"));
+        assert!(matches!(
+            app.take_review_flow_task_completion(&id).unwrap().status,
+            crate::app::CommandStatus::Done
+        ));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
     /// One spawn case for the startup-trim tests: a fake CLI whose basename
     /// sets the family, the provider args it is configured with, and the file
     /// it writes its argv to, one argument per line.
@@ -4509,6 +5500,193 @@ mod background_queue_tests {
              (--strict-mcp-config, --disable-slash-commands) counts"
         );
 
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn importance_launch_uses_read_only_builtin_arguments_and_environment() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub.providers.clear();
+        let args_path = tmp.join("importance-argv");
+        let env_path = tmp.join("importance-env");
+
+        for (family, base_args) in [
+            ("claude", vec!["--print", "{prompt}"]),
+            ("codex", vec!["exec", "{prompt}"]),
+            ("cursor", vec!["{prompt}"]),
+            ("opencode", vec!["run", "{prompt}"]),
+        ] {
+            let command = tmp.join(family);
+            let script = format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"${{OPENCODE_PERMISSION-}}\" > '{}'\nexit 23\n",
+                args_path.display(),
+                env_path.display()
+            );
+            std::fs::write(&command, script).unwrap();
+            let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command, permissions).unwrap();
+
+            let model = AiModelConfig {
+                id: "test-model".into(),
+                effort_levels: if family == "codex" {
+                    vec!["high".into()]
+                } else {
+                    vec![]
+                },
+                ..Default::default()
+            };
+            app.config.ai_hub.providers.insert(
+                family.into(),
+                AiProviderConfig {
+                    command: command.to_string_lossy().into_owned(),
+                    family: Some(family.into()),
+                    args: base_args.iter().map(|arg| (*arg).to_string()).collect(),
+                    models: vec![model],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some(family.into());
+            app.current_ai_model = Some("test-model".into());
+            app.current_ai_effort = (family == "codex").then(|| "high".into());
+
+            let old_ids: std::collections::HashSet<_> =
+                app.background_tasks.keys().cloned().collect();
+            app.spawn_background_agent_task(
+                crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                "importance",
+                target(&tmp, "importance-test"),
+                "fake importance prompt".into(),
+                false,
+                None,
+            )
+            .unwrap();
+            let new_id = app
+                .background_tasks
+                .keys()
+                .find(|id| !old_ids.contains(*id))
+                .cloned()
+                .expect("importance task was launched");
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            loop {
+                app.poll_background_tasks();
+                if app.background_tasks.get(&new_id).is_some_and(|handle| {
+                    matches!(handle.task.status, crate::app::CommandStatus::Failed(_))
+                }) {
+                    break;
+                }
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "fake {family} did not finish"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(25));
+            }
+
+            let argv = std::fs::read_to_string(&args_path).unwrap();
+            match family {
+                "claude" => {
+                    assert!(argv.contains("--allowedTools\nRead\n"), "{argv}");
+                    assert!(!argv.contains("--allowedTools\nWrite\n"), "{argv}");
+                    assert!(
+                        argv.contains("--disallowedTools\nBash(git clone*)"),
+                        "{argv}"
+                    );
+                }
+                "codex" => {
+                    assert!(argv.contains("--sandbox\nread-only"), "{argv}");
+                    assert!(argv.contains("-c\nmodel_reasoning_effort=high"), "{argv}");
+                    assert!(!argv.contains("--add-dir"), "{argv}");
+                }
+                "cursor" => {
+                    assert!(argv.contains("--mode\nplan"), "{argv}");
+                    assert!(!argv.contains("--add-dir"), "{argv}");
+                }
+                "opencode" => {
+                    assert!(argv.contains("--auto"), "{argv}");
+                    assert!(!std::fs::read_to_string(&env_path).unwrap().is_empty());
+                    let env: serde_json::Value =
+                        serde_json::from_str(&std::fs::read_to_string(&env_path).unwrap()).unwrap();
+                    assert_eq!(env["edit"], "deny");
+                    assert_eq!(env["bash"]["*"], "deny");
+                }
+                _ => unreachable!(),
+            }
+        }
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn importance_rejects_configured_permission_conflicts_before_launch() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let _serial = serial();
+        let Some((mut app, tmp)) = test_app(1) else {
+            return;
+        };
+        app.config.ai_hub.providers.clear();
+        for (family, bad_args) in [
+            (
+                "codex",
+                vec!["exec", "-csandbox_mode=workspace-write", "{prompt}"],
+            ),
+            ("codex", vec!["exec", "-sunsafe", "{prompt}"]),
+            (
+                "codex",
+                vec!["exec", "--sandbox=workspace-write", "{prompt}"],
+            ),
+            (
+                "claude",
+                vec!["--permission-mode", "bypassPermissions", "{prompt}"],
+            ),
+            ("cursor", vec!["--mode=ask", "{prompt}"]),
+            ("opencode", vec!["run", "--permission", "allow", "{prompt}"]),
+        ] {
+            let command = tmp.join(family);
+            std::fs::write(&command, "#!/bin/sh\nexit 23\n").unwrap();
+            let mut permissions = std::fs::metadata(&command).unwrap().permissions();
+            permissions.set_mode(0o755);
+            std::fs::set_permissions(&command, permissions).unwrap();
+            app.config.ai_hub.providers.insert(
+                family.into(),
+                AiProviderConfig {
+                    command: command.to_string_lossy().into_owned(),
+                    family: Some(family.into()),
+                    args: bad_args.iter().map(|arg| (*arg).to_string()).collect(),
+                    models: vec![AiModelConfig {
+                        id: "test-model".into(),
+                        effort_levels: if family == "codex" {
+                            vec!["high".into()]
+                        } else {
+                            vec![]
+                        },
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            );
+            app.current_ai_provider = Some(family.into());
+            app.current_ai_model = Some("test-model".into());
+            app.current_ai_effort = Some("high".into());
+            assert!(app
+                .spawn_background_agent_task(
+                    crate::ai::prompts::IMPORTANCE_TASK_KIND.to_string(),
+                    "importance",
+                    target(&tmp, family),
+                    "fake importance prompt".into(),
+                    false,
+                    None,
+                )
+                .is_err());
+        }
+        assert!(!tmp.join(".er/debug-agent.log").exists());
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
@@ -4720,5 +5898,71 @@ mod checklist_toggle_tests {
         app.review_toggle_checklist().unwrap();
         assert!(item(&app, 0).checked, "focused, it toggles the cursor item");
         assert!(on_disk(&tmp).items[0].checked);
+    }
+}
+
+#[cfg(test)]
+mod agent_stderr_snippet_tests {
+    use super::agent_stderr_snippet;
+
+    #[test]
+    fn terminal_model_error_replaces_codex_startup_banner() {
+        let stderr = vec![
+            "OpenAI Codex (v0.1.0)".to_string(),
+            "Starting interactive agent session".to_string(),
+            "ERROR: model 'gpt-5.3' is not supported for this account".to_string(),
+        ];
+
+        let snippet = agent_stderr_snippet(&stderr);
+        assert!(snippet.starts_with("ERROR: model 'gpt-5.3'"));
+        assert!(!snippet.contains("Codex"));
+    }
+
+    #[test]
+    fn cursor_authentication_error_keeps_login_instructions() {
+        let stderr = vec![
+            "Cursor Agent CLI starting".to_string(),
+            "Authentication required".to_string(),
+            "Run `cursor-agent login` to authenticate.".to_string(),
+            "Then retry the review.".to_string(),
+        ];
+
+        let snippet = agent_stderr_snippet(&stderr);
+        assert!(snippet.starts_with("Authentication required"));
+        assert!(snippet.contains("cursor-agent login"));
+        assert!(snippet.contains("retry the review"));
+    }
+
+    #[test]
+    fn stderr_without_error_marker_uses_the_tail() {
+        let stderr = vec![
+            "startup banner".to_string(),
+            "initializing agent".to_string(),
+            "provider connection closed".to_string(),
+        ];
+
+        let snippet = agent_stderr_snippet(&stderr);
+        assert!(snippet.starts_with("startup banner"));
+        assert!(snippet.ends_with("provider connection closed"));
+    }
+
+    #[test]
+    fn empty_and_unicode_stderr_are_bounded_by_characters() {
+        assert_eq!(agent_stderr_snippet(&[]), "");
+
+        let stderr = vec![format!("ERROR: {}", "é界".repeat(200))];
+        let snippet = agent_stderr_snippet(&stderr);
+        assert!(snippet.starts_with("ERROR:"));
+        assert!(snippet.ends_with('…'));
+        assert_eq!(snippet.chars().count(), 280);
+    }
+
+    #[test]
+    fn long_fallback_keeps_the_unicode_tail_within_the_cap() {
+        let stderr = vec![format!("banner {} final detail", "界".repeat(300))];
+        let snippet = agent_stderr_snippet(&stderr);
+        assert!(snippet.starts_with('…'));
+        assert!(snippet.ends_with("final detail"));
+        assert_eq!(snippet.chars().count(), 280);
     }
 }

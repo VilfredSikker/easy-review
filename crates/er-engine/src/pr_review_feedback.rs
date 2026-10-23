@@ -631,6 +631,7 @@ mod tests {
                 lens: String::new(),
                 category: "correctness".into(),
                 raised_by: Vec::new(),
+                providers: Vec::new(),
                 title: "Bug".into(),
                 description: "desc".into(),
                 hunk_index: None,

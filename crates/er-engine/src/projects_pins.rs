@@ -95,6 +95,61 @@ fn load_value(path: &Path) -> Result<Value> {
     serde_json::from_slice(&bytes).with_context(|| format!("parse {}", path.display()))
 }
 
+/// Review-ignore globs configured for a repository in the global projects store.
+///
+/// Repository roots use exact string matching to preserve the desktop's existing
+/// semantics. Remote matching is the fallback for projects without a matching root.
+pub fn review_ignore_globs_for_repo(repo_root: &str, remote: Option<&str>) -> Vec<String> {
+    review_ignore_globs_for_repo_at(&projects_path(), repo_root, remote)
+}
+
+fn review_ignore_globs_for_repo_at(
+    path: &Path,
+    repo_root: &str,
+    remote: Option<&str>,
+) -> Vec<String> {
+    let Ok(root) = load_value(path) else {
+        return Vec::new();
+    };
+    let Some(projects) = root.get("projects").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+
+    let by_root = (!repo_root.is_empty())
+        .then(|| {
+            projects.iter().find(|project| {
+                project
+                    .get("root_path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|root_path| !root_path.is_empty() && root_path == repo_root)
+            })
+        })
+        .flatten();
+    let project = by_root.or_else(|| {
+        let remote = remote.and_then(valid_remote_slug)?;
+        projects.iter().find(|project| {
+            project
+                .get("remote")
+                .and_then(Value::as_str)
+                .and_then(valid_remote_slug)
+                .as_deref()
+                == Some(remote.as_str())
+        })
+    });
+
+    project
+        .and_then(|project| project.get("review_ignore_globs"))
+        .and_then(Value::as_array)
+        .map(|globs| {
+            globs
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn save_value(path: &Path, value: &Value) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).with_context(|| format!("mkdir {}", parent.display()))?;
@@ -492,5 +547,105 @@ mod tests {
             assert_eq!(id, "local-1");
             assert_eq!(name, "Local");
         });
+    }
+
+    fn write_projects(path: &Path, projects: Value) {
+        std::fs::write(path, serde_json::to_vec(&projects).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn review_ignore_globs_root_match_wins_even_when_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.json");
+        write_projects(
+            &path,
+            json!({"projects": [
+                {"root_path": "/other", "remote": "acme/widgets", "review_ignore_globs": ["remote/**"]},
+                {"root_path": "/repo", "remote": "other/repo", "review_ignore_globs": []},
+                {"root_path": "/repo", "review_ignore_globs": ["later/**"]}
+            ]}),
+        );
+
+        assert!(review_ignore_globs_for_repo_at(&path, "/repo", Some("acme/widgets")).is_empty());
+        assert_eq!(
+            review_ignore_globs_for_repo_at(&path, "/unmatched", Some("acme/widgets")),
+            vec!["remote/**"]
+        );
+    }
+
+    #[test]
+    fn review_ignore_globs_remote_accepts_https_ssh_and_slug_forms() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.json");
+        write_projects(
+            &path,
+            json!({"projects": [{
+                "root_path": "",
+                "remote": "ACME/Widgets.git",
+                "review_ignore_globs": ["generated/**"]
+            }]}),
+        );
+
+        for remote in [
+            "https://github.com/acme/widgets.git",
+            "git@github.com:acme/widgets.git",
+            "acme/widgets",
+        ] {
+            assert_eq!(
+                review_ignore_globs_for_repo_at(&path, "/repo", Some(remote)),
+                vec!["generated/**"]
+            );
+        }
+        assert!(
+            review_ignore_globs_for_repo_at(&path, "/repo", Some("github.com/acme/widgets"))
+                .is_empty()
+        );
+        assert!(review_ignore_globs_for_repo_at(&path, "/repo", None).is_empty());
+    }
+
+    #[test]
+    fn review_ignore_globs_returns_only_strings_and_defaults_missing_field() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.json");
+        write_projects(
+            &path,
+            json!({"projects": [
+                {"root_path": "/mixed", "review_ignore_globs": ["one/**", 7, null, false, "two.txt"]},
+                {"root_path": "/missing"}
+            ]}),
+        );
+
+        assert_eq!(
+            review_ignore_globs_for_repo_at(&path, "/mixed", None),
+            vec!["one/**", "two.txt"]
+        );
+        assert!(review_ignore_globs_for_repo_at(&path, "/missing", None).is_empty());
+    }
+
+    #[test]
+    fn review_ignore_globs_returns_empty_for_missing_unreadable_or_malformed_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let missing = dir.path().join("missing.json");
+        assert!(review_ignore_globs_for_repo_at(&missing, "/repo", None).is_empty());
+
+        let malformed = dir.path().join("malformed.json");
+        std::fs::write(&malformed, b"{").unwrap();
+        assert!(review_ignore_globs_for_repo_at(&malformed, "/repo", None).is_empty());
+
+        let unreadable = dir.path().join("directory.json");
+        std::fs::create_dir(&unreadable).unwrap();
+        assert!(review_ignore_globs_for_repo_at(&unreadable, "/repo", None).is_empty());
+    }
+
+    #[test]
+    fn review_ignore_globs_empty_root_does_not_match_empty_repo_root() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("projects.json");
+        write_projects(
+            &path,
+            json!({"projects": [{"root_path": "", "review_ignore_globs": ["ignored/**"]}]}),
+        );
+
+        assert!(review_ignore_globs_for_repo_at(&path, "", None).is_empty());
     }
 }

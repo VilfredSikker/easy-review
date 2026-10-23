@@ -1042,26 +1042,6 @@ pub(crate) fn resolve_inbox_project_in_file(
     None
 }
 
-pub fn review_ignore_globs_for_repo(repo_root: &str, remote: Option<&str>) -> Vec<String> {
-    let file = load();
-    if !repo_root.is_empty() {
-        if let Some(p) = file.projects.iter().find(|p| p.root_path == repo_root) {
-            return p.review_ignore_globs.clone();
-        }
-    }
-    if let Some(slug) = remote.and_then(valid_remote_slug) {
-        if let Some(p) = file.projects.iter().find(|p| {
-            p.remote
-                .as_deref()
-                .and_then(valid_remote_slug)
-                .is_some_and(|r| r == slug)
-        }) {
-            return p.review_ignore_globs.clone();
-        }
-    }
-    Vec::new()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
