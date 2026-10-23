@@ -295,7 +295,9 @@ fn parse_can_merge_as_admin(json: &str) -> Result<bool> {
 /// Distinct rulesets behind the rules `rules/branches/{base}` lists.
 fn parse_branch_ruleset_ids(json: &str) -> Result<Vec<u64>> {
     let v: serde_json::Value = serde_json::from_str(json).context("invalid branch rules JSON")?;
-    let rules = v.as_array().context("branch rules response is not a list")?;
+    let rules = v
+        .as_array()
+        .context("branch rules response is not a list")?;
     let mut ids: Vec<u64> = rules
         .iter()
         .filter_map(|r| r["ruleset_id"].as_u64())

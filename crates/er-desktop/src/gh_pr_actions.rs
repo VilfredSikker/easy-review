@@ -247,7 +247,14 @@ mod tests {
             r#"{"kind":"merge","method":"squash","admin":true,"expected_head":"abc"}"#,
         )
         .unwrap();
-        assert!(matches!(bypass, PrActionRequest::Merge { admin: true, auto: false, .. }));
+        assert!(matches!(
+            bypass,
+            PrActionRequest::Merge {
+                admin: true,
+                auto: false,
+                ..
+            }
+        ));
         let update: PrActionRequest =
             serde_json::from_str(r#"{"kind":"update_branch","rebase":true}"#).unwrap();
         assert_eq!(update, PrActionRequest::UpdateBranch { rebase: true });
