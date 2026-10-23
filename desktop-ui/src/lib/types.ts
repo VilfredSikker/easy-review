@@ -552,6 +552,8 @@ export interface GithubStatusSnapshot {
   in_merge_queue?: boolean;
   /** The base has a merge queue: merging enqueues and the queue picks the method. */
   base_has_merge_queue?: boolean;
+  /** The viewer may merge past unmet requirements (`--admin`). Set only while blocked. */
+  can_bypass_rules?: boolean;
 }
 
 export interface RepoMergeSnapshot {

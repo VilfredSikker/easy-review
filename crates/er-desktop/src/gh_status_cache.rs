@@ -246,6 +246,7 @@ mod tests {
             repo_merge: None,
             in_merge_queue: false,
             base_has_merge_queue: false,
+            can_bypass_rules: false,
             fetch_ticket: 0,
         }
     }

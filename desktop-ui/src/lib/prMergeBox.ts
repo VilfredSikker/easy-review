@@ -12,7 +12,15 @@ export type MergeBoxTone = "ok" | "warn" | "danger" | "muted" | "merged";
 
 /** Mirrors `PrActionRequest` in `crates/er-desktop/src/gh_pr_actions.rs`. */
 export type PrActionRequest =
-  | { kind: "merge"; method: MergeMethod; auto: boolean; expected_head: string; delete_branch: boolean }
+  | {
+      kind: "merge";
+      method: MergeMethod;
+      auto: boolean;
+      /** Merge now past unmet requirements (`gh pr merge --admin`). */
+      admin: boolean;
+      expected_head: string;
+      delete_branch: boolean;
+    }
   | { kind: "disable_auto_merge" }
   | { kind: "update_branch"; rebase: boolean }
   | { kind: "close" }
@@ -44,6 +52,8 @@ export interface MergeBoxModel {
   mergeQueue: boolean;
   /** The merge button: absent when the PR is not open or is a draft. */
   merge: { enabled: boolean; auto: boolean; reason: string | null } | null;
+  /** Offer "Merge without waiting for requirements" (bypass rules). */
+  offerBypass: boolean;
   /** Method of a pending auto-merge. */
   autoMerge: MergeMethod | null;
   /** Update branch shown as a button (out of date) rather than only in the menu. */
@@ -186,6 +196,7 @@ export function mergeBoxModel(github: GithubStatusSnapshot): MergeBoxModel {
     mergeQueue: github.base_has_merge_queue === true,
     merge: null,
     autoMerge: null,
+    offerBypass: false,
     updateProminent: false,
     offerDeleteOnMerge: false,
     readyPrimary: false,
@@ -287,6 +298,9 @@ function mergeStateModel(github: GithubStatusSnapshot, open: MergeBoxModel): Mer
         merge: github.repo_merge?.auto_merge_allowed
           ? { enabled: true, auto: true, reason: null }
           : { enabled: false, auto: false, reason: "Auto-merge is not enabled for this repository" },
+        // The backend asks GitHub only for a blocked PR on a base without a
+        // merge queue, where `--admin` would also skip the queue.
+        offerBypass: write && github.can_bypass_rules === true && !open.mergeQueue,
       };
     default:
       return {
@@ -299,25 +313,40 @@ function mergeStateModel(github: GithubStatusSnapshot, open: MergeBoxModel): Mer
   }
 }
 
-/**
- * `prDiffHeadOid` is the head of the PR diff on screen. The merge is pinned
- * to it when there is one, so a push after the review makes GitHub refuse the
- * merge (ADR 0040). A local-branch view has none; the live PR head is pinned.
- */
+export interface MergeRequestOptions {
+  auto: boolean;
+  deleteBranch: boolean;
+  /**
+   * Head of the PR diff on screen. The merge is pinned to it when there is
+   * one, so a push after the review makes GitHub refuse the merge (ADR 0040).
+   * A local-branch view has none; the live PR head is pinned.
+   */
+  prDiffHeadOid?: string | null;
+  /** Merge now past unmet requirements (`--admin`). */
+  bypass?: boolean;
+}
+
 export function mergeRequest(
   github: GithubStatusSnapshot,
   method: MergeMethod,
-  auto: boolean,
-  deleteBranch: boolean,
-  prDiffHeadOid?: string | null,
+  { auto, deleteBranch, prDiffHeadOid, bypass = false }: MergeRequestOptions,
 ): PrActionRequest {
+  // A bypass merge lands now, so it never waits as an auto-merge.
+  const isAuto = auto && !bypass;
   return {
     kind: "merge",
     method,
-    auto,
+    auto: isAuto,
+    admin: bypass,
     expected_head: prDiffHeadOid || github.head_oid || "",
-    delete_branch: deleteBranch && !auto,
+    delete_branch: deleteBranch && !isAuto,
   };
+}
+
+/** The merge button once the bypass checkbox is applied. */
+export function effectiveMerge(model: MergeBoxModel, bypass: boolean): MergeBoxModel["merge"] {
+  if (model.merge && bypass && model.offerBypass) return { enabled: true, auto: false, reason: null };
+  return model.merge;
 }
 
 /** Mirrors `PrTarget` in `crates/er-desktop/src/gh_pr_actions.rs`. */
@@ -366,6 +395,9 @@ export function mergeHeadNote(
 export function confirmLabel(action: PrActionRequest, github: GithubStatusSnapshot): string {
   switch (action.kind) {
     case "merge":
+      if (action.admin) {
+        return `Bypass rules and ${methodLabel(action.method).toLowerCase()} #${github.number} into ${github.base_ref}?`;
+      }
       if (github.base_has_merge_queue) return `Add #${github.number} to the ${github.base_ref} merge queue?`;
       return action.auto
         ? `Enable auto-merge (${action.method}) for #${github.number}?`
