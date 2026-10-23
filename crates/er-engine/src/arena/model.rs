@@ -67,6 +67,9 @@ pub enum ArenaRunKind {
     #[default]
     Models,
     Agent,
+    /// Findings belong to the captured Review flow and require its acceptance guards.
+    #[serde(rename = "review_flow")]
+    ReviewFlow,
     /// No debate: findings come from the expert sidecars, and the arbiter rules
     /// on them directly. A validation pass, not a run of reviewers arguing.
     Seeded,

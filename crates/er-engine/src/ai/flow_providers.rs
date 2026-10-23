@@ -72,13 +72,24 @@ fn eligible_review_models_with(
     tier: ReviewModelTier,
     mut is_installed: impl FnMut(&str) -> bool,
 ) -> anyhow::Result<Vec<FlowProvider>> {
-    hub.validate_review_models(&hub.review_models)?;
+    // Provider removal can leave selections in saved or default groups. Keep
+    // validating exact models for providers that remain, without requiring an
+    // unavailable provider to run or substituting an unselected model.
+    let mut available_groups = hub.review_models.clone();
+    for models in [
+        &mut available_groups.fast,
+        &mut available_groups.standard,
+        &mut available_groups.advanced,
+    ] {
+        models.retain(|selection| hub.providers.contains_key(&selection.provider_id));
+    }
+    hub.validate_review_models(&available_groups)?;
     let installed = installed_providers_with(hub, &mut is_installed)
         .into_iter()
         .collect::<std::collections::HashSet<_>>();
     let mut default = Vec::new();
     let mut rest = Vec::new();
-    for selection in hub.review_models.models(tier) {
+    for selection in available_groups.models(tier) {
         if !installed.contains(&selection.provider_id) {
             continue;
         }
@@ -504,6 +515,47 @@ mod tests {
         assert!(
             eligible_review_models_with(&hub, ReviewModelTier::Fast, |cmd| cmd == "codex").is_err()
         );
+    }
+
+    #[test]
+    fn review_flow_model_eligibility_survives_provider_deletion() {
+        let mut hub = catalog_hub();
+        hub.flow_providers = vec!["codex".into()];
+        crate::config::remove_ai_provider(&mut hub, "claude");
+        crate::config::supplement_ai_hub(&mut hub);
+
+        let pools = resolve_review_models_with(&hub, |command| command == "codex").unwrap();
+        for (models, expected) in [
+            (&pools.fast, "gpt-6-luna"),
+            (&pools.standard, "gpt-6-sol"),
+            (&pools.advanced, "gpt-6-astra"),
+        ] {
+            assert_eq!(models.len(), 1);
+            assert_eq!(models[0].provider_id, "codex");
+            assert_eq!(models[0].model_id, expected);
+        }
+    }
+
+    #[test]
+    fn review_flow_model_eligibility_survives_legacy_provider_tombstone() {
+        let mut hub = catalog_hub();
+        crate::config::remove_ai_provider(&mut hub, "claude");
+        hub.flow_providers = vec!["codex".into()];
+        let mut saved = serde_json::to_value(&hub).unwrap();
+        saved.as_object_mut().unwrap().remove("review_models");
+        let mut loaded: AiHubConfig = serde_json::from_value(saved).unwrap();
+        crate::config::supplement_ai_hub(&mut loaded);
+
+        let pools = resolve_review_models_with(&loaded, |command| command == "codex").unwrap();
+        assert_eq!(pools.fast[0].model_id, "gpt-6-luna");
+        assert_eq!(pools.standard[0].model_id, "gpt-6-sol");
+        assert_eq!(pools.advanced[0].model_id, "gpt-6-astra");
+        assert!(pools
+            .fast
+            .iter()
+            .chain(&pools.standard)
+            .chain(&pools.advanced)
+            .all(|model| model.provider_id == "codex"));
     }
 
     #[test]

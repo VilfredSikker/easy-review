@@ -12,7 +12,7 @@ export function isArenaRunFromConfig(config: ArenaStartConfig | null): boolean {
 }
 
 export function isArenaRunFromSnapshot(snap: ArenaRunSnapshot): boolean {
-  return isSeededRunFromSnapshot(snap) || snap.run.reviewers.length >= 2;
+  return snap.run.config.run_kind === "review_flow" || isSeededRunFromSnapshot(snap) || snap.run.reviewers.length >= 2;
 }
 
 /** Seeded arbiter verification is read-only, whatever its run status. */
@@ -35,7 +35,7 @@ export function isSingleReviewRun(
   snap: ArenaRunSnapshot | null,
 ): boolean {
   if (snap) {
-    if (isSeededRunFromSnapshot(snap)) return false;
+    if (snap.run.config.run_kind === "review_flow" || isSeededRunFromSnapshot(snap)) return false;
     return snap.run.reviewers.length === 1;
   }
   if (!config) return false;

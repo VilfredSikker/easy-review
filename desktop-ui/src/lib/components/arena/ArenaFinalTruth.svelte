@@ -20,14 +20,16 @@
   let expandedIds = $state<Set<string>>(new Set());
 
   const readOnlyVerification = $derived(isSeededRunFromSnapshot(snapshot));
+  const flowManaged = $derived(flowAcceptance || snapshot.run.config.run_kind === "review_flow");
+  const readOnlyFlow = $derived(flowManaged && !flowAcceptance);
   const verificationComplete = $derived(snapshot.run.status === "complete");
   const reviewerMap = $derived(
     Object.fromEntries(snapshot.run.reviewers.map((r) => [r.id, r])),
   );
   const truthFindings = $derived(
-    finalTruthFindings(snapshot.run.findings, flowAcceptance, readOnlyVerification),
+    finalTruthFindings(snapshot.run.findings, flowManaged, readOnlyVerification),
   );
-  const stats = $derived(arenaStats(flowAcceptance ? truthFindings : snapshot.run.findings));
+  const stats = $derived(arenaStats(flowManaged ? truthFindings : snapshot.run.findings));
 
   const SEVERITIES = ["high", "med", "low"] as const;
 
@@ -60,7 +62,7 @@
   }
 
   const pendingAccept = $derived(
-    pendingAcceptanceFindings(snapshot.run.findings, snapshot.run.accepted_finding_ids ?? [], flowAcceptance),
+    pendingAcceptanceFindings(snapshot.run.findings, snapshot.run.accepted_finding_ids ?? [], flowManaged),
   );
 
   async function acceptAll() {
@@ -105,6 +107,10 @@
     {#if readOnlyVerification}
       <p class="mt-2 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-2.5 py-2 text-[11px] text-[var(--arena-fg-subtle)]">
         {seededVerificationNotice(snapshot)}
+      </p>
+    {:else if readOnlyFlow}
+      <p class="mt-2 text-[11px] text-[var(--arena-fg-subtle)]">
+        This historical flow result is read only. Start a new Review to accept findings.
       </p>
     {:else if pendingAccept.length > 0}
       <button
@@ -161,6 +167,8 @@
                   <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-fg-subtle)]">
                     Read only
                   </span>
+                {:else if readOnlyFlow}
+                  <span class="mt-1 inline-block text-[9px] text-[var(--arena-fg-subtle)]">Read only</span>
                 {:else if f.accepted_at || snapshot.run.accepted_finding_ids?.includes(f.id)}
                   <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-ok)]">
                     In Review

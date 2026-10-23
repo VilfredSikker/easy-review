@@ -65,24 +65,61 @@ pub fn command_on_path(command: &str) -> bool {
 /// Pure PATH lookup used by tests and callers that already captured an
 /// environment snapshot.
 pub fn command_on_path_in(command: &str, path_env: &std::ffi::OsStr) -> bool {
-    use std::os::unix::fs::PermissionsExt;
+    command_on_path_for_platform(command, path_env, cfg!(windows))
+}
 
-    if command.is_empty() {
-        return false;
+fn command_on_path_for_platform(command: &str, path_env: &std::ffi::OsStr, windows: bool) -> bool {
+    command_candidates(command, path_env, windows)
+        .into_iter()
+        .any(|candidate| {
+            candidate.metadata().is_ok_and(|metadata| {
+                metadata.is_file() && (windows || has_execute_permission(&metadata))
+            })
+        })
+}
+
+fn has_execute_permission(metadata: &std::fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
     }
-    let command_path = Path::new(command);
-    let candidates = if command.contains(std::path::MAIN_SEPARATOR) {
-        vec![command_path.to_path_buf()]
+    #[cfg(not(unix))]
+    {
+        let _ = metadata;
+        true
+    }
+}
+
+fn command_candidates(command: &str, path_env: &std::ffi::OsStr, windows: bool) -> Vec<PathBuf> {
+    if command.is_empty() || command.ends_with('/') || (windows && command.ends_with('\\')) {
+        return Vec::new();
+    }
+    let explicit_path = command.contains('/')
+        || (windows && (command.contains('\\') || command.as_bytes().get(1) == Some(&b':')));
+    let command_path = PathBuf::from(command);
+    if explicit_path {
+        // Rust tries the appended .exe first for explicit Windows paths,
+        // then falls back to the exact path, including explicit .cmd/.bat.
+        if windows && !command.to_ascii_lowercase().ends_with(".exe") {
+            let mut exe = command_path.as_os_str().to_os_string();
+            exe.push(".exe");
+            return vec![PathBuf::from(exe), command_path];
+        }
+        return vec![command_path];
+    }
+
+    // Command adds only .exe during Windows PATH lookup. It does not expand
+    // PATHEXT to discover .cmd/.bat shims for extensionless commands.
+    let name = if windows && !command.contains('.') {
+        PathBuf::from(format!("{command}.exe"))
     } else {
-        std::env::split_paths(path_env)
-            .map(|dir| dir.join(command_path))
-            .collect()
+        command_path
     };
-    candidates.into_iter().any(|candidate| {
-        candidate
-            .metadata()
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-    })
+    std::env::split_paths(path_env)
+        .filter(|dir| !windows || !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(&name))
+        .collect()
 }
 
 #[cfg(test)]
@@ -91,12 +128,13 @@ mod tests {
 
     #[test]
     fn merge_keeps_separator_between_prefix_and_existing_path() {
+        let current = std::env::join_paths(["/usr/bin", "/bin"]).unwrap();
         let merged = merge_paths(
             vec![
                 PathBuf::from("/opt/homebrew/bin"),
                 PathBuf::from("/Users/x/.cargo/bin"),
             ],
-            Path::new("/usr/bin:/bin"),
+            Path::new(&current),
         );
         let entries: Vec<PathBuf> = std::env::split_paths(&merged).collect();
         assert_eq!(
@@ -164,6 +202,8 @@ mod tests {
             std::ffi::OsStr::new("")
         ));
         assert!(!command_on_path_in("missing", &path));
+        assert!(!command_on_path_in("", &path));
+        assert!(!command_on_path_in("plain", &path));
         assert!(!command_on_path_in(
             plain.to_str().unwrap(),
             std::ffi::OsStr::new("")
@@ -172,5 +212,83 @@ mod tests {
             dir.path().to_str().unwrap(),
             std::ffi::OsStr::new("")
         ));
+    }
+
+    #[test]
+    fn windows_lookup_finds_exe_without_unix_execute_permissions() {
+        let dir = tempfile::tempdir().unwrap();
+        let executable = dir.path().join("runner.exe");
+        std::fs::write(&executable, "test executable").unwrap();
+        std::fs::create_dir(dir.path().join("directory.exe")).unwrap();
+        for name in ["shim.cmd", "batch.bat", "extensionless"] {
+            std::fs::write(dir.path().join(name), "test command").unwrap();
+        }
+        let path = std::env::join_paths([dir.path()]).unwrap();
+        let lookup = |command: &str| command_on_path_for_platform(command, &path, true);
+
+        assert!(lookup("runner"));
+        assert!(lookup("runner.exe"));
+        assert!(lookup(executable.to_str().unwrap()));
+        assert!(lookup(dir.path().join("runner").to_str().unwrap()));
+        assert!(!lookup("missing"));
+        assert!(!lookup("missing.exe"));
+        assert!(!lookup("directory"));
+        assert!(!lookup("directory.exe"));
+        assert!(!lookup(dir.path().to_str().unwrap()));
+        assert!(!lookup(""));
+        assert!(!lookup("shim"));
+        assert!(!lookup("batch"));
+        assert!(!lookup("extensionless"));
+        assert!(lookup(dir.path().join("extensionless").to_str().unwrap()));
+        // Explicit batch extensions are supported by Rust's Windows launcher.
+        assert!(lookup("shim.cmd"));
+        assert!(lookup("batch.bat"));
+
+        #[cfg(windows)]
+        {
+            assert!(command_on_path_in("runner", &path));
+            assert!(command_on_path_in("runner.exe", &path));
+            assert!(command_on_path_in(
+                &executable.to_str().unwrap().replace('\\', "/"),
+                &path
+            ));
+            assert!(!command_on_path_in("missing", &path));
+            assert!(!command_on_path_in("directory", &path));
+        }
+    }
+
+    #[test]
+    fn windows_candidates_keep_explicit_paths_out_of_path_search() {
+        let path = std::env::join_paths(["unrelated"]).unwrap();
+        for command in [
+            r"tools\runner",
+            "tools/runner",
+            r"C:\tools\runner",
+            "C:runner",
+        ] {
+            assert_eq!(
+                command_candidates(command, &path, true),
+                vec![
+                    PathBuf::from(format!("{command}.exe")),
+                    PathBuf::from(command)
+                ]
+            );
+        }
+        for command in [r"tools\runner.exe", "tools/runner.EXE"] {
+            assert_eq!(
+                command_candidates(command, &path, true),
+                vec![PathBuf::from(command)]
+            );
+        }
+        assert!(command_candidates(r"tools\", &path, true).is_empty());
+        assert!(command_candidates("tools/", &path, true).is_empty());
+        assert_eq!(
+            command_candidates("runner", &path, true),
+            vec![PathBuf::from("unrelated").join("runner.exe")]
+        );
+        assert_eq!(
+            command_candidates("runner.cmd", &path, true),
+            vec![PathBuf::from("unrelated").join("runner.cmd")]
+        );
     }
 }

@@ -93,14 +93,17 @@ impl App {
 
         let bucket = std::path::Path::new(er_dir);
         for run_id in crate::arena::list_run_ids(bucket)? {
+            if self.arena_registry.is_active(&run_id) {
+                return Ok(true);
+            }
             let paths = crate::arena::ArenaPaths::for_run(bucket, &run_id);
-            let run = crate::arena::load_run(&paths)?;
-            if self.arena_registry.is_active(&run_id)
-                || matches!(
-                    run.status,
-                    crate::arena::RunStatus::Queued | crate::arena::RunStatus::Running { .. }
-                )
-            {
+            let Some(run) = crate::arena::load_historical_run(&paths)? else {
+                continue;
+            };
+            if matches!(
+                run.status,
+                crate::arena::RunStatus::Queued | crate::arena::RunStatus::Running { .. }
+            ) {
                 return Ok(true);
             }
         }

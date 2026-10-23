@@ -1,3 +1,5 @@
+import type { ArenaRunKind } from "$lib/types/arena";
+
 export interface FlowAcceptanceOrigin {
   erDir: string;
   runId: string;
@@ -12,12 +14,16 @@ export function arenaAcceptanceRoute(
   origin: FlowAcceptanceOrigin | null,
   runId: string,
   findingIds?: string[],
+  runKind?: ArenaRunKind,
 ): ArenaAcceptanceRoute {
   if (origin) {
     if (origin.runId !== runId) {
       throw new Error("Arena acceptance run does not match the captured flow run");
     }
     return { kind: "flow", erDir: origin.erDir, runId, findingIds: findingIds ? [...new Set(findingIds)] : undefined };
+  }
+  if (runKind === "review_flow") {
+    throw new Error("This historical flow result is read only. Start a new Review to accept findings.");
   }
   return { kind: "manual", request: { run_id: runId, finding_ids: findingIds } };
 }

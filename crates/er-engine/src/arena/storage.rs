@@ -78,6 +78,44 @@ pub fn load_run(paths: &ArenaPaths) -> Result<ArenaRun> {
     serde_json::from_str(&content).context("parse run.json")
 }
 
+/// Historical run directories can survive a failed start before run.json exists.
+/// Only absent or malformed metadata is recoverable. Filesystem failures remain
+/// admission failures, and recovery must never write through a symlink.
+pub(crate) fn load_historical_run(paths: &ArenaPaths) -> Result<Option<ArenaRun>> {
+    for path in [
+        &paths.root,
+        &paths.run_json(),
+        &paths.run_json().with_extension("tmp"),
+    ] {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                anyhow::bail!("arena recovery path contains a symlink: {}", path.display());
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error).with_context(|| format!("inspect {}", path.display())),
+        }
+    }
+    match load_run(paths) {
+        Ok(run) => Ok(Some(run)),
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+        {
+            Ok(None)
+        }
+        Err(error)
+            if error
+                .downcast_ref::<serde_json::Error>()
+                .is_some_and(|error| !error.is_io()) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub fn save_diff_patch(paths: &ArenaPaths, patch: &str) -> Result<()> {
     paths.ensure_dirs()?;
     write_atomic(&paths.diff_patch(), patch.as_bytes())
@@ -234,8 +272,13 @@ pub fn delete_run_dir(er_dir: &Path, run_id: &str) -> Result<()> {
 
 pub fn list_run_ids(er_dir: &Path) -> Result<Vec<String>> {
     let arena_root = er_dir.join("arena");
-    if !arena_root.is_dir() {
-        return Ok(Vec::new());
+    match fs::symlink_metadata(&arena_root) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            anyhow::bail!("arena directory is a symlink: {}", arena_root.display());
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error).context("inspect arena directory"),
     }
     let mut ids = Vec::new();
     for entry in fs::read_dir(&arena_root)? {

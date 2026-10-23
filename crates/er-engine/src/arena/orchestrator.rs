@@ -388,12 +388,23 @@ pub fn build_arena_diff_preview(
 }
 
 pub fn reconcile_stale_runs(er_dir: &Path) -> Result<()> {
+    reconcile_stale_runs_excluding(er_dir, |_| false)
+}
+
+/// Recover only this entered bucket. Registry membership owns the writer even
+/// after its status turns terminal, until the supervisor releases its entry.
+pub(crate) fn reconcile_stale_runs_excluding(
+    er_dir: &Path,
+    is_registered: impl Fn(&str) -> bool,
+) -> Result<()> {
     for run_id in super::storage::list_run_ids(er_dir)? {
-        let paths = ArenaPaths::for_run(er_dir, &run_id);
-        if !paths.run_json().is_file() {
+        if is_registered(&run_id) {
             continue;
         }
-        let mut run = load_run(&paths)?;
+        let paths = ArenaPaths::for_run(er_dir, &run_id);
+        let Some(mut run) = super::storage::load_historical_run(&paths)? else {
+            continue;
+        };
         if matches!(run.status, RunStatus::Running { .. } | RunStatus::Queued) {
             run.status = RunStatus::Failed;
             save_run(&paths, &run)?;
@@ -417,6 +428,31 @@ pub fn start_arena_run(
     config: ErConfig,
     inputs: ArenaRunInputs,
     params: ArenaStartParams,
+) -> Result<String> {
+    let run_kind = if params.agent_kind.is_some() {
+        ArenaRunKind::Agent
+    } else {
+        ArenaRunKind::Models
+    };
+    start_arena_run_with_kind(registry, config, inputs, params, run_kind)
+}
+
+/// Flow ownership is written with the first run record, before the supervisor starts.
+pub(crate) fn start_review_flow_run(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    inputs: ArenaRunInputs,
+    params: ArenaStartParams,
+) -> Result<String> {
+    start_arena_run_with_kind(registry, config, inputs, params, ArenaRunKind::ReviewFlow)
+}
+
+fn start_arena_run_with_kind(
+    registry: Arc<ArenaRegistry>,
+    config: ErConfig,
+    inputs: ArenaRunInputs,
+    params: ArenaStartParams,
+    run_kind: ArenaRunKind,
 ) -> Result<String> {
     let ArenaRunInputs {
         repo_root,
@@ -475,6 +511,7 @@ pub fn start_arena_run(
         );
     }
 
+    let reviewers = resolve_reviewers(&config, &params.reviewers)?;
     let run_id = new_run_id();
     crate::dev_log::arena_line(format!("run_id={run_id} spawning supervisor thread"));
     let paths = ArenaPaths::for_run(Path::new(&er_dir), &run_id);
@@ -482,7 +519,6 @@ pub fn start_arena_run(
     save_diff_patch(&paths, &raw_diff)?;
 
     let diff_hash = compute_diff_hash(&raw_diff);
-    let reviewers = resolve_reviewers(&config, &params.reviewers)?;
 
     let run = ArenaRun {
         id: run_id.clone(),
@@ -501,11 +537,7 @@ pub fn start_arena_run(
             auto_accept_threshold: 0.75,
             scope: params.scope,
             files: params.files.clone(),
-            run_kind: if params.agent_kind.is_some() {
-                ArenaRunKind::Agent
-            } else {
-                ArenaRunKind::Models
-            },
+            run_kind,
             agent_kind: params.agent_kind,
             effort: run_effort,
         },
@@ -764,10 +796,9 @@ fn arbiter_review_from_run(
     run_id: &str,
     diff_hash: &str,
 ) -> crate::ai::ArbiterReview {
-    let verdicts = run
-        .findings
-        .iter()
-        .filter_map(|f| {
+    let mut verdicts = Vec::new();
+    for f in &run.findings {
+        let Some(canonical) = (|| {
             let verdict = match &f.verdict {
                 Verdict::Kept => crate::ai::ArbiterRuling::Kept,
                 Verdict::Escalated => crate::ai::ArbiterRuling::Escalated,
@@ -792,8 +823,16 @@ fn arbiter_review_from_run(
                 ),
                 providers: super::provenance::providers_for(f, &run.reviewers),
             })
-        })
-        .collect();
+        })() else {
+            continue;
+        };
+        // Seeded fuzzy grouping stores the other producer keys as children.
+        // Their source rows still exist in sidecars, so each needs a ruling.
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            append_seeded_alias_verdicts(&f.merged_children, &canonical, &mut verdicts);
+        }
+        verdicts.push(canonical);
+    }
 
     crate::ai::ArbiterReview {
         version: 1,
@@ -801,6 +840,26 @@ fn arbiter_review_from_run(
         created_at: crate::app::chrono_now(),
         run_id: run_id.to_string(),
         verdicts,
+    }
+}
+
+fn append_seeded_alias_verdicts(
+    children: &[ArenaFinding],
+    canonical: &crate::ai::ArbiterVerdict,
+    verdicts: &mut Vec<crate::ai::ArbiterVerdict>,
+) {
+    for child in children {
+        if child.id != canonical.id {
+            let mut alias = canonical.clone();
+            alias.id = child.id.clone();
+            alias.file = child.file.clone();
+            if canonical.verdict != crate::ai::ArbiterRuling::Dropped {
+                alias.verdict = crate::ai::ArbiterRuling::Merged;
+                alias.merged_into = Some(canonical.id.clone());
+            }
+            verdicts.push(alias);
+        }
+        append_seeded_alias_verdicts(&child.merged_children, canonical, verdicts);
     }
 }
 
@@ -1844,6 +1903,76 @@ mod tests {
     use super::*;
     use crate::arena::ReviewerRef;
     use crate::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
+
+    #[test]
+    fn seeded_fuzzy_overlay_grades_every_producer_for_kept_and_dropped() {
+        use serde_json::json;
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        std::fs::create_dir(dir.path().join("experts")).unwrap();
+        std::fs::write(dir.path().join("review.json"), serde_json::to_vec(&json!({
+            "version":1,"diff_hash":"hash","files":{"src/a.rs":{"risk":"medium","findings":[
+                {"id":"general-1","severity":"medium","title":"unvalidated input in cache key","description":"Long detailed general claim with supporting evidence","line_start":10}
+            ]}}
+        })).unwrap()).unwrap();
+        std::fs::write(dir.path().join("experts/security.json"), serde_json::to_vec(&json!({
+            "version":1,"expert_id":"security","diff_hash":"hash","files":{"src/a.rs":{"findings":[
+                {"id":"sec-1","severity":"medium","title":"unvalidated input in cache key.","description":"short","line_start":12}
+            ]}}
+        })).unwrap()).unwrap();
+        let findings = super::super::seeded::dedupe_flow_findings(er_dir, "hash", "", true);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].line, Some(10));
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let mut run = super::super::seeded::build_seeded_run(
+            &config,
+            super::super::seeded::SeededRunParams {
+                id: "seeded".into(),
+                diff_hash: "hash".into(),
+                base_branch: "main".into(),
+                branch_ref: "feature".into(),
+                scope: ArenaScope::Branch,
+                arbiter: ReviewerRef {
+                    provider_id: "arbiter".into(),
+                    model_id: "model".into(),
+                    agent_kind: None,
+                },
+                lens_providers: std::collections::BTreeMap::new(),
+                strict_provenance: false,
+            },
+            findings,
+        )
+        .unwrap();
+        for verdict in [Verdict::Kept, Verdict::Dropped] {
+            run.findings[0].verdict = verdict.clone();
+            run.findings[0].confidence = 0.95;
+            let overlay = arbiter_review_from_run(&run, "seeded", "hash");
+            crate::ai::write_arbiter_review(er_dir, &overlay).unwrap();
+            let state = crate::ai::load_ai_state(er_dir, "hash", None);
+            let review = state.review.unwrap();
+            let rows = review.files.iter().flat_map(|(path, file)| {
+                file.findings
+                    .iter()
+                    .filter(|f| f.is_active())
+                    .map(move |f| (path.as_str(), f))
+            });
+            let visible = crate::ai::project_visible_findings(rows, &state.arbiter_graded_keys);
+            if verdict == Verdict::Kept {
+                assert_eq!(visible.len(), 1, "fuzzy child must be merged away");
+                assert_eq!(visible[0].1.raised_by, vec!["general", "security"]);
+                assert_eq!(
+                    visible[0].1.providers,
+                    super::super::provenance::providers_for(&run.findings[0], &run.reviewers)
+                );
+            } else {
+                assert!(
+                    visible.is_empty(),
+                    "a dropped fuzzy claim must hide every producer"
+                );
+            }
+        }
+    }
 
     #[test]
     fn effective_arena_rounds_clamps() {

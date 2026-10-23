@@ -34,6 +34,7 @@ pub use orchestrator::{
     ArenaBatchStartParams, ArenaDiffPreview, ArenaRunInputs, ArenaStartParams, SeededStartParams,
     ARBITER_REVIEWER_ID, ARENA_ROUNDS_V1, DEFAULT_COST_LIMIT_USD, MIN_QUORUM,
 };
+pub(crate) use orchestrator::{reconcile_stale_runs_excluding, start_review_flow_run};
 pub use projections::{
     build_arbiter_view, build_funnel, build_matrix, build_snapshot, build_snapshot_with_config,
     ArenaRunSnapshot,
@@ -44,6 +45,7 @@ pub use schema::{
     validate_round1_output, validate_round2_output, validate_round3_output, Round1Output,
     Round2Output, Round3Output,
 };
+pub(crate) use storage::load_historical_run;
 // `seeded` is reached by `orchestrator` through `super::seeded::`, and nothing
 // outside the arena uses it, so it stays unexported rather than widening the
 // public surface with no caller.

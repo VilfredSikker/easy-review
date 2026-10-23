@@ -60,6 +60,14 @@ pub fn render_overlay(f: &mut Frame, area: Rect, overlay: &OverlayData) {
                 *selected,
             );
         }
+        OverlayData::ReviewFlowProgress {
+            er_dir,
+            flow,
+            selected,
+            detail_scroll,
+        } => {
+            render_review_flow_progress(f, area, er_dir, flow, *selected, *detail_scroll);
+        }
         OverlayData::ReviewFlowResults {
             results,
             selected,
@@ -635,6 +643,118 @@ fn visible_result_range(total: usize, selected: usize, capacity: usize) -> std::
     start..start + visible
 }
 
+fn render_review_flow_progress(
+    f: &mut Frame,
+    area: Rect,
+    er_dir: &str,
+    flow: &er_engine::ai::review_flow::ReviewFlow,
+    selected: usize,
+    detail_scroll: usize,
+) {
+    let popup = centered_rect(
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(2),
+        area,
+    );
+    f.render_widget(Clear, popup);
+    let block = Block::default()
+        .title(" REVIEW TASKS · ↑↓ select · PgUp/PgDn detail · Esc close ")
+        .borders(Borders::ALL)
+        .style(ratatui::style::Style::default().bg(styles::PANEL()));
+    let inner = block.inner(popup);
+    f.render_widget(block, popup);
+    let panes = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(6), Constraint::Min(0)])
+        .split(inner);
+    let selected = selected.min(flow.tasks.len().saturating_sub(1));
+    let visible = visible_result_range(
+        flow.tasks.len(),
+        selected,
+        panes[0].height.saturating_sub(2) as usize,
+    );
+    let rows: Vec<ListItem> = flow.tasks[visible.clone()]
+        .iter()
+        .map(|task| {
+            ListItem::new(format!(
+                "{:?} · {} · {}",
+                task.status, task.label, task.model_label
+            ))
+        })
+        .collect();
+    let mut list_state = ratatui::widgets::ListState::default()
+        .with_selected((!rows.is_empty()).then_some(selected.saturating_sub(visible.start)));
+    f.render_stateful_widget(
+        List::new(rows)
+            .highlight_style(styles::selected_style())
+            .block(
+                Block::default()
+                    .title("Captured tasks")
+                    .borders(Borders::ALL),
+            ),
+        panes[0],
+        &mut list_state,
+    );
+    let mut detail = vec![format!("Bucket {er_dir}"), format!("Flow {:?}", flow.state)];
+    if let Some(task) = flow.tasks.get(selected) {
+        detail.extend([
+            task.label.clone(),
+            format!("Stage {:?} · Status {:?}", task.stage, task.status),
+            format!(
+                "Provider {} ({})",
+                captured_value(&task.provider_label),
+                captured_value(&task.provider_id)
+            ),
+            format!(
+                "Model {} ({})",
+                captured_value(&task.model_label),
+                captured_value(&task.model_id)
+            ),
+            format!("Purpose {}", captured_value(&task.purpose)),
+        ]);
+        if let Some(round) = task.round {
+            detail.push(match task.total_rounds {
+                Some(total) => format!("Deep round {round}/{total}"),
+                None => format!("Deep round {round}"),
+            });
+        }
+        if let Some(error) = &task.error {
+            detail.push(format!("Error {error}"));
+        }
+    } else {
+        detail.push("No captured task details are available for this review.".into());
+    }
+    let lines: Vec<Line> = detail
+        .iter()
+        .flat_map(|text| word_wrap(text, panes[1].width.saturating_sub(2).max(1) as usize))
+        .map(Line::from)
+        .collect();
+    let max_scroll = lines
+        .len()
+        .saturating_sub(panes[1].height.saturating_sub(2) as usize);
+    f.render_widget(
+        Paragraph::new(lines)
+            .scroll((
+                detail_scroll.min(max_scroll).min(u16::MAX as usize) as u16,
+                0,
+            ))
+            .block(
+                Block::default()
+                    .title("Selected task")
+                    .borders(Borders::ALL),
+            ),
+        panes[1],
+    );
+}
+
+fn captured_value(value: &str) -> &str {
+    if value.is_empty() {
+        "not captured"
+    } else {
+        value
+    }
+}
+
 struct ReviewFlowResultsView<'a> {
     run_id: &'a str,
     total: usize,
@@ -983,5 +1103,73 @@ mod review_flow_results_tests {
 
         assert!(!render(0).contains("TRAILING EVIDENCE SENTENCE"));
         assert!(render(40).contains("TRAILING EVIDENCE SENTENCE"));
+    }
+}
+
+#[cfg(test)]
+mod review_progress_tests {
+    use super::*;
+    use er_engine::ai::review_flow::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn review_progress_renders_captured_details_and_scrolls_long_errors() {
+        let mut flow = ReviewFlow::new("captured");
+        flow.tasks.push(FlowTaskProgress {
+            id: "finder".into(),
+            stage: FlowTaskStage::Finding,
+            lens: Some("security".into()),
+            label: "Security".into(),
+            purpose: "Inspect authorization boundaries".into(),
+            provider_id: "captured-provider".into(),
+            provider_label: "Provider".into(),
+            model_id: "captured-exact-model".into(),
+            model_label: "Model".into(),
+            status: FlowTaskStatus::Failed,
+            error: Some(format!("{}\nERROR TAIL", "failure line\n".repeat(40))),
+            background_task_id: None,
+            round: Some(2),
+            total_rounds: Some(3),
+        });
+        let mut overlay = OverlayData::ReviewFlowProgress {
+            er_dir: "/captured/bucket".into(),
+            flow: Box::new(flow),
+            selected: 0,
+            detail_scroll: 0,
+        };
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| render_overlay(frame, frame.area(), &overlay))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for expected in [
+            "Inspect authorization boundaries",
+            "captured-provider",
+            "captured-exact-model",
+            "Failed",
+            "2/3",
+        ] {
+            assert!(text.contains(expected), "missing {expected}");
+        }
+        if let OverlayData::ReviewFlowProgress { detail_scroll, .. } = &mut overlay {
+            *detail_scroll = 40;
+        }
+        terminal
+            .draw(|frame| render_overlay(frame, frame.area(), &overlay))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("ERROR TAIL"));
     }
 }

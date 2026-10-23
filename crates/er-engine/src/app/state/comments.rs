@@ -5,6 +5,8 @@ use super::*;
 /// only ever produced stray copies under `/tmp` that later runs then read stale code out of.
 /// A speed bump rather than a wall — `gh repo clone` and `cd x && git clone` slip past it.
 const CLONE_DENY_RULE: &str = "Bash(git clone*)";
+const IMPORTANCE_READ_ONLY_TOOLS: &[&str] = &["Read", "Glob", "Grep"];
+const MCP_DENY_RULE: &str = "mcp__*";
 
 const DIAGRAM_READ_ONLY_TOOLS: &[&str] = &[
     "Read",
@@ -160,15 +162,39 @@ fn validate_importance_launch(
             }
         }
         CliFamily::Claude => {
+            let values = |flag: &str| -> Vec<&str> {
+                args.iter().enumerate().filter_map(|(i, arg)| {
+                    if arg == flag {
+                        args.get(i + 1).map(String::as_str)
+                    } else {
+                        arg.strip_prefix(&format!("{flag}="))
+                    }
+                }).collect()
+            };
+            let tools = values("--tools");
+            // Autoapproval rules are additive to inherited settings. Only the
+            // actual tool set prevents inherited Write/Edit/Bash grants from
+            // reopening writes. MCP tools require their own deny rule.
+            if tools.len() != 1 || tools[0] != IMPORTANCE_READ_ONLY_TOOLS.join(",")
+                || args.iter().filter(|arg| *arg == "--tools" || arg.starts_with("--tools=")).count() != 1
+                || !values("--disallowedTools").contains(&MCP_DENY_RULE)
+            {
+                anyhow::bail!("Importance requires the engine's Claude read-only tool ceiling and MCP denial");
+            }
+            for flag in ["--allowedTools", "--allowed-tools"] {
+                if values(flag).iter().any(|tool| !IMPORTANCE_READ_ONLY_TOOLS.contains(tool)) {
+                    anyhow::bail!("Importance rejects Claude tool autoapproval outside its read-only ceiling");
+                }
+            }
+            for flag in ["--disallowedTools", "--disallowed-tools"] {
+                if values(flag).iter().any(|rule| ![MCP_DENY_RULE, CLONE_DENY_RULE].contains(rule)) {
+                    anyhow::bail!("Importance rejects unexpected Claude tool-denial overrides");
+                }
+            }
             let overrides = [
                 "--permission-mode",
                 "--dangerously-skip-permissions",
                 "--allow-dangerously-skip-permissions",
-                "--allowedTools",
-                "--allowed-tools",
-                "--tools",
-                "--disallowedTools",
-                "--disallowed-tools",
                 "--settings",
                 "--setting-sources",
                 "--plugin-dir",
@@ -445,6 +471,99 @@ mod importance_launch_policy {
     }
 
     #[test]
+    fn importance_claude_requires_actual_read_tool_ceiling() {
+        for args in [
+            strings(&[
+                "--print",
+                "--tools",
+                "Read,Glob,Grep",
+                "--disallowedTools",
+                "mcp__*",
+            ]),
+            strings(&[
+                "--print",
+                "--tools=Read,Glob,Grep",
+                "--disallowedTools=mcp__*",
+            ]),
+        ] {
+            validate_importance_launch(crate::config::CliFamily::Claude, &args, None, None)
+                .unwrap();
+        }
+        for args in [
+            strings(&["--print", "{prompt}"]),
+            strings(&[
+                "--allowedTools",
+                "Read",
+                "--disallowedTools",
+                "Bash(git clone*)",
+            ]),
+            strings(&[
+                "--tools",
+                "Read,Glob,Grep,Write",
+                "--disallowedTools=mcp__*",
+            ]),
+            strings(&["--tools", "Read,Glob,Grep"]),
+            strings(&["--tools=Read,Glob,Grep,Bash", "--disallowedTools=mcp__*"]),
+            strings(&[
+                "--tools",
+                "Read,Glob,Grep",
+                "--tools=default",
+                "--disallowedTools=mcp__*",
+            ]),
+            strings(&[
+                "--tools",
+                "Read,Glob,Grep",
+                "--tools",
+                "--disallowedTools=mcp__*",
+            ]),
+            strings(&[
+                "--tools",
+                "Read,Glob,Grep",
+                "--permission-mode=bypassPermissions",
+                "--disallowedTools=mcp__*",
+            ]),
+            strings(&[
+                "--tools",
+                "Read,Glob,Grep",
+                "--disallowedTools=mcp__*",
+                "--allowedTools=Write",
+            ]),
+        ] {
+            assert!(
+                validate_importance_launch(crate::config::CliFamily::Claude, &args, None, None,)
+                    .is_err(),
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn importance_claude_rejects_configured_tool_ceiling_overrides() {
+        for flag in [
+            "--tools",
+            "--allowedTools",
+            "--allowed-tools",
+            "--disallowedTools",
+            "--disallowed-tools",
+            "--permission-mode",
+            "--settings",
+            "--setting-sources",
+            "--plugin-dir",
+        ] {
+            for args in [
+                strings(&[flag, "Write"]),
+                strings(&[&format!("{flag}=Write")]),
+            ] {
+                assert!(
+                    validate_importance_user_config(crate::config::CliFamily::Claude, &args)
+                        .is_err(),
+                    "{args:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn claude_rejects_permission_overrides_before_canonical_allowlist_insertion() {
         assert!(validate_importance_launch(
             crate::config::CliFamily::Claude,
@@ -460,11 +579,9 @@ mod importance_launch_policy {
             None
         )
         .is_err());
-        validate_importance_launch(
+        validate_importance_user_config(
             crate::config::CliFamily::Claude,
             &strings(&["--print", "{prompt}"]),
-            None,
-            None,
         )
         .unwrap();
     }
@@ -3643,6 +3760,35 @@ impl App {
         host_write_diagram: Option<super::background::HostWriteDiagram>,
         launch_config: Option<crate::config::ErConfig>,
     ) -> Result<String> {
+        self.enqueue_background_agent_task_in_checkout(
+            kind,
+            command_name,
+            target,
+            prompt,
+            prepared_diff,
+            host_write_diagram,
+            launch_config,
+            None,
+        )
+    }
+
+    /// Capture a flow's execution checkout without changing its target key or
+    /// the ordinary actions' checkout lookup policy.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "flow launches carry a captured checkout separately from stable target identity"
+    )]
+    pub(super) fn enqueue_background_agent_task_in_checkout(
+        &mut self,
+        kind: String,
+        command_name: &str,
+        target: super::background::BackgroundTaskTarget,
+        prompt: String,
+        prepared_diff: bool,
+        host_write_diagram: Option<super::background::HostWriteDiagram>,
+        launch_config: Option<crate::config::ErConfig>,
+        execution_root: Option<String>,
+    ) -> Result<String> {
         use super::background::{BackgroundTask, PendingBackgroundTask};
 
         if target.repo_root.is_empty() && target.remote_repo.is_none() {
@@ -3664,9 +3810,11 @@ impl App {
             );
         }
 
+        let mut task = BackgroundTask::new(kind, target);
+        task.execution_root = execution_root;
         let pending =
             PendingBackgroundTask {
-                task: BackgroundTask::new(kind, target),
+                task,
                 command_name: command_name.to_string(),
                 prompt,
                 prepared_diff,
@@ -3827,10 +3975,9 @@ impl App {
             crate::config::inject_codex_ignore_user_config(&mut config_args);
         }
         crate::config::inject_claude_startup_trim(family, &mut config_args);
-        // Diagrams and importance: the host writes the result, so the agent must not be able to
-        // write anything — its prompt carries untrusted diff content. Claude's
-        // `--allowedTools` allowlist and OpenCode's permission env deny edits
-        // themselves and still need the bucket to read diff-tmp from. Codex and
+        // Diagrams and importance leave persistence to the host. Importance's
+        // Claude tool ceiling and OpenCode's permission env deny edits while
+        // retaining bucket access for reading diff-tmp. Codex and
         // Cursor have no tool list, so for them the only write control is the
         // sandbox, and `--add-dir` is documented as adding a *writable* directory
         // — so a read-only run withholds it and narrows the sandbox instead.
@@ -3859,6 +4006,17 @@ impl App {
             )
         };
         if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+            if family == crate::config::CliFamily::Claude {
+                config_args.splice(
+                    0..0,
+                    [
+                        "--tools".to_string(),
+                        IMPORTANCE_READ_ONLY_TOOLS.join(","),
+                        "--disallowedTools".to_string(),
+                        MCP_DENY_RULE.to_string(),
+                    ],
+                );
+            }
             validate_importance_launch(
                 family,
                 &config_args,
@@ -3874,6 +4032,7 @@ impl App {
         let task_id = task.id.clone();
         let er_dir = target.er_dir.clone();
         let repo_root = target.repo_root.clone();
+        let execution_root = task.execution_root.clone();
         let remote_repo = target.remote_repo.clone();
         let is_remote = target.remote_repo.is_some();
         let managed_local = target.managed_local;
@@ -3942,7 +4101,11 @@ impl App {
                 }
 
                 if is_claude_compatible {
-                    let allowed = claude_allowed_tools(readonly_run, prepared_diff);
+                    let allowed = if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
+                        IMPORTANCE_READ_ONLY_TOOLS
+                    } else {
+                        claude_allowed_tools(readonly_run, prepared_diff)
+                    };
                     for rule in allowed.iter().rev() {
                         agent_args.insert(0, rule.to_string());
                         agent_args.insert(0, "--allowedTools".to_string());
@@ -3951,18 +4114,26 @@ impl App {
                     agent_args.insert(0, "--disallowedTools".to_string());
                 }
 
+                if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND
+                    && family == crate::config::CliFamily::Claude
+                {
+                    validate_importance_launch(family, &agent_args, None, None)?;
+                }
+
                 // managed_local: er_dir is outside repo_root but git must run from repo_root.
                 // is_remote / is_cache_er_dir without managed_local: cwd = er_dir (cache-dir or remote).
                 // A remote PR whose repo *is* the local checkout runs there instead, so the
                 // agent can verify against real code rather than hunting the filesystem.
-                let remote_checkout = if is_remote {
+                let remote_checkout = if execution_root.is_none() && is_remote {
                     remote_repo
                         .as_deref()
                         .and_then(|slug| crate::github::local_checkout_for_repo(&repo_root, slug))
                 } else {
                     None
                 };
-                let work_dir = if let Some(checkout) = &remote_checkout {
+                let work_dir = if let Some(checkout) = &execution_root {
+                    checkout
+                } else if let Some(checkout) = &remote_checkout {
                     checkout
                 } else if managed_local || (!is_remote && !is_cache_er_dir) {
                     &repo_root
@@ -4326,6 +4497,7 @@ impl App {
         // Flow advancement must observe the terminal records from this poll,
         // including queued launch failures, before UI history is consulted.
         self.advance_review_flows();
+        self.refresh_review_flow_progress();
     }
 
     /// Pop queued review tasks and launch them while the running count is
@@ -5591,6 +5763,11 @@ mod background_queue_tests {
             let argv = std::fs::read_to_string(&args_path).unwrap();
             match family {
                 "claude" => {
+                    // Inherited allow rules for Write/Edit/Bash cannot restore tools
+                    // removed from the actual tool set by --tools.
+                    assert!(argv.contains("--tools\nRead,Glob,Grep\n"), "{argv}");
+                    assert_eq!(argv.lines().filter(|arg| *arg == "--tools").count(), 1);
+                    assert!(argv.contains("--disallowedTools\nmcp__*\n"), "{argv}");
                     assert!(argv.contains("--allowedTools\nRead\n"), "{argv}");
                     assert!(!argv.contains("--allowedTools\nWrite\n"), "{argv}");
                     assert!(
@@ -5646,6 +5823,8 @@ mod background_queue_tests {
                 "claude",
                 vec!["--permission-mode", "bypassPermissions", "{prompt}"],
             ),
+            ("claude", vec!["--tools", "default", "{prompt}"]),
+            ("claude", vec!["--tools=Write,Bash", "{prompt}"]),
             ("cursor", vec!["--mode=ask", "{prompt}"]),
             ("opencode", vec!["run", "--permission", "allow", "{prompt}"]),
         ] {

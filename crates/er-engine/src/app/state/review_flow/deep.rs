@@ -545,6 +545,11 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(run.diff_hash, flow.diff_hash);
+        assert_eq!(run.config.run_kind, crate::arena::ArenaRunKind::ReviewFlow);
+        assert_eq!(
+            serde_json::to_value(&run).unwrap()["config"]["run_kind"],
+            "review_flow"
+        );
         assert_eq!(run.config.reviewers.len(), 4);
         assert_eq!(run.config.arbiter.provider_id, "fake-b");
         assert_eq!(run.config.effort.as_deref(), Some("high"));

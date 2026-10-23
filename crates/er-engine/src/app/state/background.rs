@@ -92,6 +92,9 @@ pub struct BackgroundTask {
     pub started_at_ms: u128,
     pub finished_at_ms: Option<u128>,
     pub error: Option<String>,
+    /// Captured checkout for flow-owned launches. Target identity continues to
+    /// name the project and bucket even when another worktree supplies code.
+    pub(super) execution_root: Option<String>,
 }
 
 impl BackgroundTask {
@@ -114,6 +117,7 @@ impl BackgroundTask {
             started_at_ms: now,
             finished_at_ms: None,
             error: None,
+            execution_root: None,
         }
     }
 }

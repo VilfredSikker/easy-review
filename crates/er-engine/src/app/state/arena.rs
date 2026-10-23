@@ -1,10 +1,10 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
-    import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
-    save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
-    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride,
-    ReviewerRef, SeededStartParams, Verdict,
+    import_arena_findings_to_review, load_run, parse_progress_state,
+    reconcile_stale_runs_excluding, save_run, scope_git_mode, start_arena_batch, start_arena_run,
+    start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState,
+    ArenaRegistry, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams,
+    HumanOverride, ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
@@ -99,9 +99,16 @@ impl App {
     pub fn reconcile_arena_runs(&self) {
         for tab in &self.tabs {
             let er_path = tab.er_dir();
-            let er = Path::new(&er_path);
-            let _ = reconcile_stale_runs(er);
+            let _ = self.recover_arena_bucket(&er_path);
         }
+    }
+
+    /// The one-instance-per-worktree contract makes unregistered historical
+    /// writers interrupted. Registry ownership is process-local, per ADR 0044.
+    pub(super) fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {
+        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| {
+            self.arena_registry.is_active(run_id)
+        })
     }
 
     pub fn arena_preview(
@@ -161,7 +168,17 @@ impl App {
     ) -> Result<String> {
         self.check_review_flow_arena_lease(&inputs.er_dir, lease)?;
         let config = self.arena_config_with_live_limits(config);
-        let run_id = self.arena_start_with_inputs(inputs, config, params)?;
+        let er_key = inputs.er_dir.clone();
+        let run_id = crate::arena::start_review_flow_run(
+            Arc::clone(&self.arena_registry),
+            config,
+            inputs,
+            params,
+        )?;
+        self.active_arena_runs
+            .entry(er_key)
+            .or_default()
+            .push(run_id.clone());
         self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }
@@ -394,6 +411,12 @@ impl App {
                  there is nothing to import into review.json"
             );
         }
+        if self.is_review_flow_arena_run(&er_path, &run) {
+            anyhow::bail!(
+                "Review flow findings require guarded flow acceptance. \
+                 Open the current flow result or start a new Review."
+            );
+        }
         let ids = finding_ids.as_deref();
         let n = import_arena_findings_to_review(&er_path, &mut run, ids)?;
         save_run(&paths, &run)?;
@@ -443,10 +466,26 @@ impl App {
         Ok(parse_progress_state(&paths))
     }
 
+    fn is_review_flow_arena_run(&self, er_dir: &str, run: &crate::arena::ArenaRun) -> bool {
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            return false;
+        }
+        run.config.run_kind == ArenaRunKind::ReviewFlow
+            || self.review_flow_run_target(er_dir, &run.id).is_some()
+            || self
+                .review_flow_for(er_dir)
+                .is_some_and(|flow| flow.arena_run_id.as_deref() == Some(run.id.as_str()))
+    }
+
     pub fn arena_get_snapshot(&self, run_id: &str) -> Result<ArenaRunSnapshot> {
         let er_dir = self.arena_er_dir_for_run(run_id);
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
+        // Legacy Deep runs predate durable ownership. Keep their history read
+        // only unless the captured flow can supply its guarded acceptance path.
+        if self.is_review_flow_arena_run(&er_dir.to_string_lossy(), &run) {
+            run.config.run_kind = ArenaRunKind::ReviewFlow;
+        }
         if let Some(live) = self.arena_registry.get_status(run_id) {
             run.status = live;
         }

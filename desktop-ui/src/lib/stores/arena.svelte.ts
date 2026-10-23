@@ -12,6 +12,7 @@ import { performUnlessSeeded } from "$lib/arena/runAction";
 import { app } from "$lib/stores/app.svelte";
 import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
 import { acceptFlowFindings, arenaAcceptanceRoute, type FlowAcceptanceOrigin } from "$lib/arenaFlowAcceptance";
+import { captureHistoryFlowOrigin, openArenaHistory } from "$lib/arenaHistory";
 import { refreshOverlayIfCurrent } from "$lib/arenaOverlayRefresh";
 import type {
   ArenaProgressState,
@@ -262,7 +263,7 @@ class ArenaStore {
     let flowCommandAttempted = false;
     let flowCommandCompleted = false;
     try {
-      route = arenaAcceptanceRoute(this.flowAcceptanceOrigin, runId, findingIds);
+      route = arenaAcceptanceRoute(this.flowAcceptanceOrigin, runId, findingIds, knownSnapshot?.run.config.run_kind);
       let n: number;
       if (route.kind === "flow") {
         if (!route.findingIds?.length) throw new Error("Flow acceptance requires explicit finding IDs");
@@ -585,16 +586,23 @@ class ArenaStore {
   async openOverlay(runId?: string) {
     const id = runId ?? this.branchSummaries[0]?.id;
     if (!id) return;
+    const currentFlow = captureHistoryFlowOrigin(app.snapshot);
     this.flowAcceptanceOrigin = null;
     this.overlayOpen = false;
     this.overlayRunId = null;
     this.overlaySnapshot = null;
     try {
-      const snap = normalizeArenaSnapshot(
-        await invoke<ArenaRunSnapshot>("arena_get", { runId: id }),
-      );
+      const opened = await openArenaHistory(id, currentFlow, {
+        loadArena: async (historyRunId) => normalizeArenaSnapshot(
+          await invoke<ArenaRunSnapshot>("arena_get", { runId: historyRunId }),
+        ),
+        loadFlow: async (origin) => normalizeArenaSnapshot(
+          await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: origin.erDir, runId: origin.runId }),
+        ),
+      });
+      const snap = opened.snapshot;
       if (isArenaRunFromSnapshot(snap)) {
-        this.openArenaOverlayForRun(id, snap);
+        this.openArenaOverlayForRun(id, snap, opened.flowOrigin);
       } else {
         await this.importSingleReviewToTab(id, snap);
       }

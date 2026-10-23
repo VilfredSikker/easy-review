@@ -50,6 +50,7 @@ pub(super) struct ReviewFlowContext {
     target: BackgroundTaskTarget,
     scope: String,
     arena_scope: ArenaScope,
+    /// Checkout used by providers, distinct from `target.repo_root` identity.
     repo_root: String,
     branch_ref: String,
     base_branch: String,
@@ -89,6 +90,10 @@ impl App {
             if tab.repo_root.trim().is_empty() || tab.is_remote() {
                 bail!("Review requires a local repository view");
             }
+            let execution_root = tab
+                .local_checkout_root()
+                .context("Review requires a checkout of the viewed branch")?
+                .to_owned();
             let raw = tab.raw_diff_for_review(scope)?;
             let globs = crate::projects_pins::review_ignore_globs_for_repo(
                 &tab.repo_root,
@@ -115,7 +120,7 @@ impl App {
             (
                 target,
                 arena_scope,
-                tab.repo_root.clone(),
+                execution_root,
                 branch_ref,
                 tab.base_branch.clone(),
                 filtered,
@@ -154,6 +159,7 @@ impl App {
 
         // Acquire before touching any shared prepared-diff or output files.
         // App mutation is serialized by the caller's App lock.
+        self.recover_arena_bucket(&target.er_dir)?;
         let lease = self.acquire_review_flow_lease(&target.er_dir)?;
         let diff_hash = match crate::ai::prepared_diff::ensure_review_inputs(
             &target.er_dir,
@@ -185,6 +191,7 @@ impl App {
             crate::ai::triage_task_kind(),
             "triage",
             target.clone(),
+            repo_root.clone(),
             prompt,
             triage_config,
             triage_selection,
@@ -260,18 +267,23 @@ impl App {
         Ok(())
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "captured execution checkout is separate from stable target identity"
+    )]
     fn enqueue_with_selection(
         &mut self,
         kind: String,
         command_name: &str,
         target: BackgroundTaskTarget,
+        execution_root: String,
         prompt: String,
         config: ErConfig,
         selection: AiSelection,
     ) -> Result<String> {
         let previous = self.pending_ai_selection_override.clone();
         self.pending_ai_selection_override = Some(selection);
-        let result = self.enqueue_background_agent_task(
+        let result = self.enqueue_background_agent_task_in_checkout(
             kind,
             command_name,
             target,
@@ -279,6 +291,7 @@ impl App {
             true,
             None,
             Some(config),
+            Some(execution_root),
         );
         self.pending_ai_selection_override = previous;
         result
@@ -786,6 +799,7 @@ impl App {
                 kind,
                 &command,
                 context.target.clone(),
+                context.repo_root.clone(),
                 prompt,
                 launch_config,
                 selection,
@@ -1339,6 +1353,172 @@ mod tests {
     }
 
     #[test]
+    fn linked_checkout_review_flow_keeps_execution_separate_from_target_identity() {
+        let _serial = crate::agent_slots::test_serial();
+        for remote in [None, Some("example/linked-checkout")] {
+            for deep in [false, true] {
+                let dir = TestDir::new("linked-checkout");
+                let mut app = fake_app(&dir, if deep { "arena" } else { "expert" }, &["security"]);
+                let repo = dir.0.join("repo");
+                let checkout = dir.0.join("feature");
+                let git = |root: &Path, args: &[&str]| {
+                    let output = std::process::Command::new("git")
+                        .args(args)
+                        .current_dir(root)
+                        .output()
+                        .unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{}",
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                };
+                git(&repo, &["init", "-b", "main"]);
+                git(&repo, &["config", "user.name", "Test"]);
+                git(&repo, &["config", "user.email", "test@example.invalid"]);
+                std::fs::create_dir_all(repo.join("src")).unwrap();
+                std::fs::write(repo.join("src/lib.rs"), "main checkout\n").unwrap();
+                git(&repo, &["add", "."]);
+                git(
+                    &repo,
+                    &["-c", "commit.gpgsign=false", "commit", "-qm", "seed"],
+                );
+                git(
+                    &repo,
+                    &[
+                        "worktree",
+                        "add",
+                        "-b",
+                        "feature",
+                        checkout.to_str().unwrap(),
+                    ],
+                );
+                std::fs::write(checkout.join("src/lib.rs"), "feature checkout\n").unwrap();
+                let bucket = app.tab().er_dir();
+                let log = dir.0.join("execution.log");
+                let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
+                // Every actual subprocess records the source it can read. The
+                // arena response satisfies all three round schemas.
+                let script = format!(
+                    r#"
+record() {{ printf '%s|%s\n%s\n' "$1" "$(pwd -P)" "$(cat src/lib.rs)" >> '{log}'; }}
+case "$1" in
+  *triage.json*) record triage; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
+  *experts/security.json*) record expert; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
+  *review.json*) record general; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the feature source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
+  *) record arena; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
+esac
+"#,
+                    log = log.display(),
+                    primary = if deep { "arena" } else { "expert" }
+                );
+                provider.args[1] = script;
+                if deep {
+                    let second = provider.clone();
+                    app.config
+                        .ai_hub
+                        .providers
+                        .insert("fake-second".into(), second);
+                    app.config
+                        .ai_hub
+                        .review_models
+                        .advanced
+                        .push(ReviewModelRef {
+                            provider_id: "fake-second".into(),
+                            model_id: "fake-model".into(),
+                        });
+                }
+                app.config.ai_hub.max_concurrent_reviews = 1;
+                let tab = app.tab_mut();
+                tab.local_branch_view = Some("feature".into());
+                tab.local_branch_checkout_root = Some(checkout.to_string_lossy().into_owned());
+                tab.remote_repo = remote.map(str::to_owned);
+                let target = BackgroundTaskTarget {
+                    repo_root: repo.to_string_lossy().into_owned(),
+                    er_dir: "blocker".into(),
+                    branch_label: "blocker".into(),
+                    base_branch: "main".into(),
+                    scope: "branch".into(),
+                    pr_number: None,
+                    remote_repo: None,
+                    managed_local: true,
+                };
+                let blocker = BackgroundTask::new("review".into(), target);
+                let blocker_id = blocker.id.clone();
+                let (_result_tx, result_rx) = std::sync::mpsc::channel();
+                let (_log_tx, log_rx) = std::sync::mpsc::channel();
+                app.background_tasks.insert(
+                    blocker_id.clone(),
+                    super::super::background::BackgroundTaskHandle {
+                        task: blocker,
+                        run: crate::agent_run::AgentRunHandle::new(),
+                        result_rx,
+                        log_rx,
+                        recent_log: Default::default(),
+                    },
+                );
+                app.start_review_flow("branch").unwrap();
+                let context = &app.review_flow_contexts[&bucket];
+                assert_eq!(context.target.repo_root, repo.to_string_lossy());
+                assert_eq!(context.target.er_dir, bucket);
+                assert_eq!(context.repo_root, checkout.to_string_lossy());
+                assert_eq!(app.pending_background_tasks.len(), 1);
+                assert_eq!(
+                    app.pending_background_tasks[0]
+                        .task
+                        .execution_root
+                        .as_deref(),
+                    checkout.to_str()
+                );
+                assert_eq!(
+                    app.pending_background_tasks[0].task.target.repo_root,
+                    repo.to_string_lossy()
+                );
+                app.tabs
+                    .push(crate::app::TabState::new_for_test(Vec::new()));
+                app.active_tab = 1;
+                app.background_tasks.remove(&blocker_id);
+                if deep {
+                    let deadline = Instant::now() + Duration::from_secs(10);
+                    while app.review_flow_for(&bucket).unwrap().state
+                        != FlowState::AwaitingConfirmation
+                    {
+                        app.poll_background_tasks();
+                        assert!(Instant::now() < deadline, "Deep did not reach confirmation");
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                    app.confirm_review_flow(&bucket).unwrap();
+                }
+                run_until_terminal(&mut app, &bucket);
+                assert!(
+                    matches!(
+                        app.review_flow_for(&bucket).unwrap().state,
+                        FlowState::Done { .. }
+                    ),
+                    "{:?}",
+                    app.review_flow_for(&bucket).unwrap().state
+                );
+                let observed = std::fs::read_to_string(&log).unwrap();
+                let execution = std::fs::canonicalize(&checkout).unwrap();
+                for stage in if deep {
+                    vec!["triage", "arena"]
+                } else {
+                    vec!["triage", "general", "expert", "arena"]
+                } {
+                    assert!(
+                        observed.contains(&format!(
+                            "{stage}|{}\nfeature checkout\n",
+                            execution.display()
+                        )),
+                        "missing {stage} at feature checkout\n{observed}"
+                    );
+                }
+                assert!(!observed.contains("main checkout"), "{observed}");
+            }
+        }
+    }
+
+    #[test]
     fn flow_depths_use_their_model_tiers_and_advanced_arbiter_pool() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("model-tiers");
@@ -1849,6 +2029,53 @@ mod tests {
             FlowState::Skipped
         );
         assert!(!Path::new(&bucket).join("review.json").exists());
+    }
+
+    #[test]
+    fn recovery_incomplete_historical_manifests_allow_public_review_start() {
+        for malformed in [false, true] {
+            let dir = TestDir::new("incomplete-history");
+            let mut app = fake_app(&dir, "general", &[]);
+            app.config.ai_hub.max_concurrent_reviews = 1;
+            let blocker_target = BackgroundTaskTarget {
+                repo_root: app.tab().repo_root.clone(),
+                er_dir: dir.0.join("blocker").to_string_lossy().into_owned(),
+                branch_label: "blocker".into(),
+                base_branch: "main".into(),
+                scope: "branch".into(),
+                pr_number: None,
+                remote_repo: None,
+                managed_local: true,
+            };
+            let blocker = BackgroundTask::new("review".into(), blocker_target);
+            let (_result_tx, result_rx) = std::sync::mpsc::channel();
+            let (_log_tx, log_rx) = std::sync::mpsc::channel();
+            app.background_tasks.insert(
+                blocker.id.clone(),
+                super::super::background::BackgroundTaskHandle {
+                    task: blocker,
+                    run: crate::agent_run::AgentRunHandle::new(),
+                    result_rx,
+                    log_rx,
+                    recent_log: Default::default(),
+                },
+            );
+            let bucket = app.tab().er_dir();
+            let paths = crate::arena::ArenaPaths::for_run(Path::new(&bucket), "orphan");
+            paths.ensure_dirs().unwrap();
+            std::fs::write(paths.diff_patch(), "recoverable input").unwrap();
+            if malformed {
+                std::fs::write(paths.run_json(), "{broken").unwrap();
+            }
+            app.start_review_flow("branch").unwrap();
+            assert_eq!(app.pending_background_tasks.len(), 1);
+            assert!(app.check_review_bucket_admission(&bucket).is_err());
+            assert_eq!(
+                std::fs::read_to_string(paths.diff_patch()).unwrap(),
+                "recoverable input"
+            );
+            assert!(app.cancel_review_flow(&bucket));
+        }
     }
 
     #[test]

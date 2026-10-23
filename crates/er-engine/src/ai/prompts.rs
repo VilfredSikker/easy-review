@@ -972,9 +972,10 @@ pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
     );
     prompt.push_str(&sanitize_for_shell(repo_root));
     prompt.push_str(
-        "`. Survey the tree a level or two deep before writing anything.\n2. Import-counting is \
-         your legwork, not your answer. A single pass of `grep -rowFf` over the tree with the \
-         basenames of the files you are unsure about is cheap and tells you where the traffic is. \
+        "`. Survey the tree a level or two deep with the available file-reading and file-search \
+         tools.\n2. Import-counting is your legwork, not your answer. Use file-search tools to \
+         count references and inspect imports for files you are unsure about. Shell commands \
+         may be unavailable. \
          Do not turn the count into the output: basename matches also hit comments and strings, \
          and module roots (`mod.rs`, `index.ts`, `lib.rs`) are exactly the files the proxy gets \
          wrong — they match everything.\n3. Emit the JSON block below in your **final reply \

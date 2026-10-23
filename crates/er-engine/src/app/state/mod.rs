@@ -8,6 +8,7 @@ pub mod preview;
 mod review_flow;
 mod review_flow_admission;
 mod review_flow_output;
+mod review_flow_progress;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
@@ -436,6 +437,12 @@ pub enum OverlayData {
         include_notes: bool,
         selected: usize,
     },
+    ReviewFlowProgress {
+        er_dir: String,
+        flow: Box<crate::ai::review_flow::ReviewFlow>,
+        selected: usize,
+        detail_scroll: usize,
+    },
     ReviewFlowResults {
         results: crate::app::state::review_flow::results::ReviewFlowResults,
         selected: usize,
@@ -545,6 +552,9 @@ pub enum HubAction {
         er_dir: String,
     },
     CancelReviewFlow {
+        er_dir: String,
+    },
+    OpenReviewFlowProgress {
         er_dir: String,
     },
     OpenReviewFlowResults {
@@ -6373,6 +6383,7 @@ impl App {
     /// already open.
     fn push_tab(&mut self, mut tab: TabState) {
         Self::copy_repo_rules(&self.config, &mut tab);
+        let _ = self.recover_arena_bucket(&tab.er_dir());
         self.tabs.push(tab);
     }
 
@@ -6409,7 +6420,7 @@ impl App {
         // Check if this repo is already open in a tab
         for (i, tab) in self.tabs.iter().enumerate() {
             if tab.repo_root == repo_root {
-                self.active_tab = i;
+                self.select_tab(i);
                 self.overlay = None;
                 let name = self.tab().tab_name();
                 self.notify(&format!("Switched to tab: {}", name));
@@ -6429,7 +6440,7 @@ impl App {
     /// Switch to the next tab (wraps around)
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+            self.select_tab((self.active_tab + 1) % self.tabs.len());
             let name = self.tab().tab_name();
             self.notify(&format!("Tab: {}", name));
         }
@@ -6438,7 +6449,7 @@ impl App {
     /// Switch to the previous tab (wraps around)
     pub fn prev_tab(&mut self) {
         if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
+            self.select_tab((self.active_tab + self.tabs.len() - 1) % self.tabs.len());
             let name = self.tab().tab_name();
             self.notify(&format!("Tab: {}", name));
         }
@@ -6455,6 +6466,7 @@ impl App {
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
+        let _ = self.recover_arena_bucket(&self.tab().er_dir());
         self.notify(&format!("Closed: {}", name));
     }
 
@@ -6519,13 +6531,15 @@ impl App {
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
+        let _ = self.recover_arena_bucket(&self.tab().er_dir());
         self.notify(&format!("Closed: {}", name));
     }
 
     /// Switch focus to the tab at `idx`. No-op if out of bounds.
-    pub const fn select_tab(&mut self, idx: usize) {
+    pub fn select_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
+            let _ = self.recover_arena_bucket(&self.tab().er_dir());
         }
     }
 
@@ -6763,14 +6777,14 @@ impl App {
                     hint: "".into(),
                     description: match &flow.state {
                         crate::ai::review_flow::FlowState::Triaging => {
-                            "Triage is running · Enter cancels".into()
+                            "Triage is running · open task progress".into()
                         }
                         crate::ai::review_flow::FlowState::Finding => {
-                            "Finding reviewers are running · Enter cancels".into()
+                            "Finding reviewers are running · open task progress".into()
                         }
-                        _ => "Deep verification is running · Enter cancels".into(),
+                        _ => "Deep verification is running · open task progress".into(),
                     },
-                    action: HubAction::CancelReviewFlow {
+                    action: HubAction::OpenReviewFlowProgress {
                         er_dir: er_dir.clone(),
                     },
                     is_header: false,
@@ -7065,11 +7079,51 @@ impl App {
                     label: "Cancel Deep review".into(),
                     hint: "".into(),
                     description: "Decline the pending Deep review".into(),
-                    action: HubAction::DeclineReviewFlow { er_dir },
+                    action: HubAction::DeclineReviewFlow {
+                        er_dir: er_dir.clone(),
+                    },
                     is_header: false,
                     enabled: true,
                 },
             );
+        }
+        if let Some(flow) = self.review_flow_for(&er_dir) {
+            let running = matches!(
+                flow.state,
+                crate::ai::review_flow::FlowState::Triaging
+                    | crate::ai::review_flow::FlowState::Finding
+                    | crate::ai::review_flow::FlowState::Verifying
+            );
+            if !running || draining {
+                items.insert(
+                    if awaiting_confirmation { 2 } else { 1 },
+                    HubItem {
+                        label: "Review task progress".into(),
+                        hint: String::new(),
+                        description: "Inspect the captured plan, models, and task status".into(),
+                        action: HubAction::OpenReviewFlowProgress {
+                            er_dir: er_dir.clone(),
+                        },
+                        is_header: false,
+                        enabled: true,
+                    },
+                );
+            }
+            if running && !draining {
+                items.insert(
+                    1,
+                    HubItem {
+                        label: "Cancel review".into(),
+                        hint: String::new(),
+                        description: "Stop the running review".into(),
+                        action: HubAction::CancelReviewFlow {
+                            er_dir: er_dir.clone(),
+                        },
+                        is_header: false,
+                        enabled: true,
+                    },
+                );
+            }
         }
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Ai,
@@ -8638,6 +8692,17 @@ impl App {
                     *selected += 1;
                 }
             }
+            Some(OverlayData::ReviewFlowProgress {
+                flow,
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected + 1 < flow.tasks.len() {
+                    *selected += 1;
+                    *detail_scroll = 0;
+                }
+            }
             Some(OverlayData::ReviewFlowResults {
                 results,
                 selected,
@@ -8705,6 +8770,16 @@ impl App {
             Some(OverlayData::ExportPicker { selected, .. }) => {
                 if *selected > 0 {
                     *selected -= 1;
+                }
+            }
+            Some(OverlayData::ReviewFlowProgress {
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected > 0 {
+                    *selected -= 1;
+                    *detail_scroll = 0;
                 }
             }
             Some(OverlayData::ReviewFlowResults {
@@ -8807,7 +8882,8 @@ impl App {
                 // ExportPicker enter is handled directly in handle_overlay_input
                 self.overlay = Some(overlay);
             }
-            overlay @ OverlayData::ReviewFlowResults { .. } => {
+            overlay @ (OverlayData::ReviewFlowResults { .. }
+            | OverlayData::ReviewFlowProgress { .. }) => {
                 // Selection and acceptance are handled by the TUI input layer.
                 self.overlay = Some(overlay);
             }
@@ -9322,6 +9398,58 @@ mod tests {
     use crate::ai::AiState;
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn review_progress_routes_read_only_and_keeps_captured_bucket() {
+        use crate::ai::review_flow::{FlowState, ReviewFlow};
+        let mut app = App::new_for_test(Vec::new());
+        let bucket = app.tab().er_dir();
+        let flow = ReviewFlow::new("captured-hash");
+        app.review_flows.insert(bucket.clone(), flow.clone());
+        app.open_ai_hub();
+        let Some(OverlayData::ModalHub { items, .. }) = &app.overlay else {
+            panic!()
+        };
+        assert_eq!(
+            items[0].action,
+            HubAction::OpenReviewFlowProgress {
+                er_dir: bucket.clone()
+            }
+        );
+        assert!(items.iter().any(|item| item.action
+            == HubAction::CancelReviewFlow {
+                er_dir: bucket.clone()
+            }));
+        app.overlay_select().unwrap();
+        assert_eq!(
+            app.pending_hub_action.take(),
+            Some(HubAction::OpenReviewFlowProgress {
+                er_dir: bucket.clone()
+            })
+        );
+        app.open_review_flow_progress(&bucket);
+        let mut other = make_test_tab(Vec::new());
+        other.er_root = ErRoot::RepoLocal("/tmp/other-progress-tab".into());
+        app.tabs.push(other);
+        app.active_tab = 1;
+        app.review_flows.get_mut(&bucket).unwrap().state = FlowState::Failed {
+            reason: "captured failure".into(),
+        };
+        app.poll_background_tasks();
+        app.overlay_select().unwrap();
+        let Some(OverlayData::ReviewFlowProgress { er_dir, flow, .. }) = &app.overlay else {
+            panic!()
+        };
+        assert_eq!(er_dir, &bucket);
+        assert_eq!(flow.diff_hash, "captured-hash");
+        assert_eq!(
+            flow.state,
+            FlowState::Failed {
+                reason: "captured failure".into()
+            }
+        );
+        assert!(app.pending_hub_action.is_none());
+    }
 
     #[test]
     fn ai_hub_starts_with_review_and_places_advanced_after_triage() {

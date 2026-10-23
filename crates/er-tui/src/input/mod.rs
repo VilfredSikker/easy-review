@@ -40,6 +40,20 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
 pub fn handle_overlay_input(app: &mut App, key: KeyEvent) -> Result<()> {
     if matches!(
         app.overlay,
+        Some(app::OverlayData::ReviewFlowProgress { .. })
+    ) {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => app.overlay_next(),
+            KeyCode::Char('k') | KeyCode::Up => app.overlay_prev(),
+            KeyCode::PageDown => scroll_review_flow_detail(app, 8),
+            KeyCode::PageUp => scroll_review_flow_detail(app, -8),
+            KeyCode::Esc | KeyCode::Char('q') => app.overlay_close(),
+            _ => {}
+        }
+        return Ok(());
+    }
+    if matches!(
+        app.overlay,
         Some(app::OverlayData::ReviewFlowResults { .. })
     ) {
         match review_flow_results_key_action(key.code) {
@@ -203,7 +217,11 @@ fn review_flow_results_key_action(key: KeyCode) -> ReviewFlowResultsKeyAction {
 }
 
 fn scroll_review_flow_detail(app: &mut App, delta: isize) {
-    if let Some(app::OverlayData::ReviewFlowResults { detail_scroll, .. }) = app.overlay.as_mut() {
+    if let Some(
+        app::OverlayData::ReviewFlowResults { detail_scroll, .. }
+        | app::OverlayData::ReviewFlowProgress { detail_scroll, .. },
+    ) = app.overlay.as_mut()
+    {
         *detail_scroll = if delta < 0 {
             detail_scroll.saturating_sub(delta.unsigned_abs())
         } else {
@@ -435,6 +453,7 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
                 app.notify("No running review to cancel");
             }
         }
+        HubAction::OpenReviewFlowProgress { er_dir } => app.open_review_flow_progress(&er_dir),
         HubAction::OpenReviewFlowResults { er_dir, run_id } => {
             open_review_flow_results(app, &er_dir, &run_id, 0);
         }
@@ -2297,6 +2316,84 @@ mod tests {
             }]
         });
         std::fs::write(path, serde_json::to_vec(&store).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn review_progress_dispatch_is_read_only_and_scrolls() {
+        let mut app = App::new_for_test(Vec::new());
+        let bucket = app.tab().er_dir();
+        dispatch_hub_action(
+            &mut app,
+            HubAction::OpenReviewFlowProgress {
+                er_dir: bucket.clone(),
+            },
+        )
+        .unwrap();
+        assert!(app.overlay.is_none());
+        app.overlay = Some(app::OverlayData::ReviewFlowProgress {
+            er_dir: bucket,
+            flow: Box::new(er_engine::ai::review_flow::ReviewFlow::new("captured")),
+            selected: 0,
+            detail_scroll: 0,
+        });
+        for code in [KeyCode::Enter, KeyCode::Char('a'), KeyCode::Char(' ')] {
+            handle_overlay_input(&mut app, KeyEvent::new(code, KeyModifiers::NONE)).unwrap();
+        }
+        handle_overlay_input(
+            &mut app,
+            KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+        )
+        .unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(app::OverlayData::ReviewFlowProgress {
+                detail_scroll: 8,
+                ..
+            })
+        ));
+        if let Some(app::OverlayData::ReviewFlowProgress { flow, .. }) = &mut app.overlay {
+            use er_engine::ai::review_flow::*;
+            let task = FlowTaskProgress {
+                id: "one".into(),
+                stage: FlowTaskStage::Finding,
+                lens: None,
+                label: "Finder".into(),
+                purpose: "Captured purpose".into(),
+                provider_id: "provider".into(),
+                provider_label: "Provider".into(),
+                model_id: "model".into(),
+                model_label: "Model".into(),
+                status: FlowTaskStatus::Queued,
+                error: None,
+                background_task_id: None,
+                round: None,
+                total_rounds: None,
+            };
+            flow.tasks = vec![
+                task.clone(),
+                FlowTaskProgress {
+                    id: "two".into(),
+                    ..task
+                },
+            ];
+        }
+        handle_overlay_input(&mut app, KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)).unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(app::OverlayData::ReviewFlowProgress {
+                selected: 1,
+                detail_scroll: 0,
+                ..
+            })
+        ));
+        handle_overlay_input(&mut app, KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)).unwrap();
+        assert!(matches!(
+            app.overlay,
+            Some(app::OverlayData::ReviewFlowProgress { selected: 0, .. })
+        ));
+        assert!(app.pending_hub_action.is_none());
+        handle_overlay_input(&mut app, KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)).unwrap();
+        assert!(app.overlay.is_none());
     }
 
     #[test]
