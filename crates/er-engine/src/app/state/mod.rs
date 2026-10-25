@@ -4583,6 +4583,33 @@ impl TabState {
         }
     }
 
+    /// Where this tab's base-branch `REVIEW.md` files are read from.
+    pub fn review_md_source(&self) -> crate::ai::review_md::ReviewMdSource {
+        use crate::ai::review_md::ReviewMdSource;
+        if self.base_branch.is_empty() {
+            return ReviewMdSource::None;
+        }
+        if !self.is_remote() {
+            return ReviewMdSource::Git {
+                repo_root: self.repo_root.clone(),
+                base_ref: self.base_branch.clone(),
+            };
+        }
+        match self.remote_repo.as_deref() {
+            Some(slug) => match crate::github::local_checkout_for_repo(&self.repo_root, slug) {
+                Some(path) => ReviewMdSource::Git {
+                    repo_root: path,
+                    base_ref: format!("origin/{}", self.base_branch),
+                },
+                None => ReviewMdSource::Gh {
+                    repo_slug: slug.to_string(),
+                    base_ref: self.base_branch.clone(),
+                },
+            },
+            None => ReviewMdSource::None,
+        }
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {

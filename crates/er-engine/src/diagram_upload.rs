@@ -59,7 +59,7 @@ pub fn prepare_diagram_kit(
         bail!("kind=custom requires a non-empty prompt");
     }
 
-    let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(owner, repo, pr, ignore_globs)?;
+    let (er_dir, diff_tmp_path) = prepare_pr_diff_tmp(owner, repo, pr, ignore_globs, None)?;
     let diff = std::fs::read_to_string(&diff_tmp_path)
         .with_context(|| format!("read prepared diff {diff_tmp_path}"))?;
     let diff_hash = compute_diff_hash(&diff);
@@ -150,12 +150,12 @@ pub fn upload_diagram(
     validate_output_id(kind, id)?;
 
     let er_dir = if refresh_diff {
-        prepare_pr_diff_tmp(owner, repo, pr, &[])?.0
+        prepare_pr_diff_tmp(owner, repo, pr, &[], None)?.0
     } else {
         let er_dir = resolve_er_dir(owner, repo, pr);
         let diff_path = Path::new(&er_dir).join("diff-tmp");
         if !diff_path.exists() {
-            prepare_pr_diff_tmp(owner, repo, pr, &[])?.0
+            prepare_pr_diff_tmp(owner, repo, pr, &[], None)?.0
         } else {
             er_dir
         }

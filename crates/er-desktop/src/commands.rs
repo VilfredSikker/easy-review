@@ -3865,6 +3865,7 @@ pub async fn run_ai_review(
             is_remote,
             mut raw,
             rules,
+            review_md_source,
         ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
@@ -3887,6 +3888,7 @@ pub async fn run_ai_review(
                 tab.remote_repo.is_some(),
                 raw,
                 tab.owned_repo_rules(),
+                tab.review_md_source(),
             )
         };
 
@@ -3900,13 +3902,18 @@ pub async fn run_ai_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
+        let review_md = er_engine::ai::review_md::collect(&review_md_source, &raw);
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.check_review_bucket_admission(&er_dir)
             .map_err(|e| e.to_string())?;
         std::fs::create_dir_all(&er_dir)
             .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-        let diff_hash =
-            er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, rules.as_rules())?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &raw,
+            rules.as_rules(),
+            review_md.as_deref(),
+        )?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -4265,10 +4272,12 @@ pub async fn run_ai_expert_review(
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
+        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &raw,
             app.tab().repo_rules(),
+            review_md.as_deref(),
         )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
@@ -4410,10 +4419,13 @@ pub async fn run_ai_scoped_review(
             }
         };
 
+        let review_md =
+            er_engine::ai::review_md::collect(&app.tab().review_md_source(), &diff_body);
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &diff_body,
             app.tab().repo_rules(),
+            review_md.as_deref(),
         )?;
 
         let target = er_engine::app::BackgroundTaskTarget {
@@ -4606,6 +4618,8 @@ pub async fn run_ai_validate(
             return Err("Nothing to validate".to_string());
         }
         let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+        er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref())?;
 
         app.tab_mut().relocate_all_comments();
 

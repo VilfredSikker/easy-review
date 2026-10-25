@@ -89,6 +89,7 @@ impl App {
             base_branch,
             raw_diff,
             owned_rules,
+            review_md_source,
         ) = {
             let tab = self.tab();
             let arena_scope = match (scope, tab.mode) {
@@ -151,6 +152,7 @@ impl App {
                 tab.base_branch.clone(),
                 filtered,
                 tab.owned_repo_rules(),
+                tab.review_md_source(),
             )
         };
 
@@ -187,10 +189,12 @@ impl App {
         // App mutation is serialized by the caller's App lock.
         self.recover_arena_bucket(&target.er_dir)?;
         let lease = self.acquire_review_flow_lease(&target.er_dir)?;
+        let review_md = crate::ai::review_md::collect(&review_md_source, &raw_diff);
         let diff_hash = match crate::ai::prepared_diff::ensure_review_inputs(
             &target.er_dir,
             &raw_diff,
             owned_rules.as_rules(),
+            review_md.as_deref(),
         ) {
             Ok(hash) => hash,
             Err(error) => {
@@ -1841,7 +1845,7 @@ esac
         let raw_diff = app.tab().raw_diff_for_review("branch").unwrap();
         let rules = app.tab().owned_repo_rules();
         let hash =
-            crate::ai::prepared_diff::ensure_review_inputs(&bucket, &raw_diff, rules.as_rules())
+            crate::ai::prepared_diff::ensure_review_inputs(&bucket, &raw_diff, rules.as_rules(), None)
                 .unwrap();
         let old = format!(
             "{{\"version\":1,\"diff_hash\":\"{hash}\",\"files\":{{\"old.rs\":{{\"risk\":\"low\"}}}}}}"

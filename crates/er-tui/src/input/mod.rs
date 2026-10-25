@@ -1232,8 +1232,13 @@ pub fn ensure_prepared_diff_for_action(app: &mut App) -> Option<(String, String)
         app.notify("Nothing to review");
         return None;
     }
-    match er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, app.tab().repo_rules())
-    {
+    let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+    match er_engine::ai::prepared_diff::ensure_review_inputs(
+        &er_dir,
+        &raw,
+        app.tab().repo_rules(),
+        review_md.as_deref(),
+    ) {
         Ok(hash) => Some((er_dir, hash)),
         Err(e) => {
             app.notify(&format!("action skipped: {e}"));
