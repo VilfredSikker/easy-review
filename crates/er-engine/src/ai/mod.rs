@@ -11,6 +11,7 @@ pub mod professor;
 pub mod prompts;
 mod relocate;
 mod review;
+pub mod review_md;
 pub mod review_flow;
 pub mod scoped_merge;
 pub mod triage;

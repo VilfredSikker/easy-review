@@ -1663,6 +1663,44 @@ fn gh_pr_diff_via_clone(owner: &str, repo: &str, number: u64) -> Result<String> 
     Ok(String::from_utf8_lossy(&diff.stdout).to_string())
 }
 
+/// Raw contents of `path` at `git_ref` on GitHub, capped at `max_bytes`.
+pub fn gh_file_at_ref(
+    repo_slug: &str,
+    path: &str,
+    git_ref: &str,
+    max_bytes: usize,
+) -> Result<Vec<u8>> {
+    fn encode(s: &str) -> String {
+        s.bytes()
+            .map(|b| {
+                if b.is_ascii_alphanumeric() || matches!(b, b'/' | b'-' | b'_' | b'.') {
+                    (b as char).to_string()
+                } else {
+                    format!("%{b:02X}")
+                }
+            })
+            .collect()
+    }
+    let output = crate::proc::run_with_bounded_stdout(
+        Command::new("gh").args([
+            "api",
+            "-H",
+            "Accept: application/vnd.github.raw+json",
+            &format!(
+                "repos/{repo_slug}/contents/{}?ref={}",
+                encode(path),
+                encode(git_ref)
+            ),
+        ]),
+        crate::proc::GH_TIMEOUT,
+        max_bytes,
+    )?;
+    if !output.status.success() {
+        anyhow::bail!("File could not be read from GitHub");
+    }
+    Ok(output.stdout)
+}
+
 /// Get PR metadata (base branch, head branch) via `gh pr view --repo`.
 /// Returns (base_ref_name, head_ref_name).
 pub fn gh_pr_metadata_remote(owner: &str, repo: &str, number: u64) -> Result<(String, String)> {
