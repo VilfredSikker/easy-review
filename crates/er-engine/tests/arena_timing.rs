@@ -149,6 +149,7 @@ fn run_arena(label: &str, reviewers: usize, rounds: Option<u8>, tmp: &Path) -> D
             branch_ref: "feature/x".to_string(),
             base_branch: "main".to_string(),
             raw_diff: SAMPLE_DIFF.to_string(),
+            reviewed_ref_note: None,
         },
         params,
     )

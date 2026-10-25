@@ -496,6 +496,30 @@ pub fn build_review_prompt_prepared_diff(
     )
 }
 
+/// For a review that runs in a checkout of another branch, because the viewed
+/// PR or branch has no worktree of its own. The files on disk are not the
+/// change, so the agent reads `head_ref` instead. The PR's ref may still be
+/// fetching when the review starts, so the note names the exact fetch.
+pub fn reviewed_ref_section(head_ref: &str, pr_number: Option<u64>) -> String {
+    let fetch = pr_number
+        .map(|n| {
+            format!(" If that ref is missing, fetch it once: `git fetch origin pull/{n}/head:{head_ref}`.")
+        })
+        .unwrap_or_default();
+    format!(
+        "### Reviewed code\n\
+         - This working tree is on another branch: its files are **not** the code under review. Read the reviewed code from `{head_ref}` — `git show {head_ref}:<path>`, `git grep <pattern> {head_ref}`.{fetch} **Never** `git checkout` / `git switch`: the user is working in this tree."
+    )
+}
+
+/// Append a [`reviewed_ref_section`] note to a prompt when there is one.
+pub fn with_reviewed_ref_note(prompt: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) => format!("{prompt}\n\n{note}"),
+        None => prompt,
+    }
+}
+
 /// Specialized expert review for local-managed app/TUI runs.
 #[expect(
     clippy::expect_used,
