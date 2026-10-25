@@ -150,6 +150,7 @@ impl App {
                 .unwrap_or_else(|| tab.current_branch.clone()),
             base_branch: tab.base_branch.clone(),
             raw_diff,
+            reviewed_ref_note: None,
         };
         let config = self.config.clone();
         let run_id = self.arena_start_with_inputs(inputs, config, params)?;
@@ -240,6 +241,7 @@ impl App {
             include_general: false,
             source_lenses: None,
             lens_providers: std::collections::BTreeMap::new(),
+            reviewed_ref_note: None,
         };
         let config = self.config.clone();
         let run_id = self.arena_start_seeded_with_inputs(repo_root, config, params)?;
@@ -332,6 +334,7 @@ impl App {
                 branch_ref,
                 base_branch,
                 raw_diff,
+                reviewed_ref_note: None,
             },
             batch,
         )?;
@@ -659,6 +662,7 @@ mod review_flow_arena_inputs_tests {
             branch_ref: "captured/head".into(),
             base_branch: "captured/base".into(),
             raw_diff: "captured raw diff".into(),
+            reviewed_ref_note: None,
         }
     }
 
@@ -782,6 +786,7 @@ mod review_flow_arena_inputs_tests {
             include_general: true,
             source_lenses: Some(vec!["general".into()]),
             lens_providers: std::collections::BTreeMap::from([("general".into(), reviewer())]),
+            reviewed_ref_note: None,
         };
         let mut captured_config = prepared_config();
         captured_config.ai_hub.default_effort = Some("high".into());

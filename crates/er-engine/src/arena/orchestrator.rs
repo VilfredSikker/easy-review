@@ -13,6 +13,7 @@ use crate::ai::compute_diff_hash;
 use crate::ai::flow_providers::FlowProvider;
 use crate::ai::prompts::{
     build_arena_round1_prompt_agent, build_arena_round2_prompt, build_arena_round3_prompt,
+    with_reviewed_ref_note,
 };
 use crate::config::ErConfig;
 use anyhow::{Context, Result};
@@ -421,6 +422,9 @@ pub struct ArenaRunInputs {
     pub branch_ref: String,
     pub base_branch: String,
     pub raw_diff: String,
+    /// Note appended to every round prompt when `repo_root` is a checkout of
+    /// another branch (`prompts::reviewed_ref_section`). Kept off the saved run.
+    pub reviewed_ref_note: Option<String>,
 }
 
 pub fn start_arena_run(
@@ -460,6 +464,7 @@ fn start_arena_run_with_kind(
         branch_ref,
         base_branch,
         raw_diff,
+        reviewed_ref_note,
     } = inputs;
     crate::dev_log::arena_line(format!(
         "start_arena_run repo={repo_root} branch={branch_ref} base={base_branch} diff_bytes={}",
@@ -568,6 +573,7 @@ fn start_arena_run_with_kind(
             registry: &registry_thread,
             config: &config,
             repo_root: &repo_root,
+            reviewed_ref_note: reviewed_ref_note.as_deref(),
             paths: &paths_clone,
             cancel: &cancel,
             children: &children,
@@ -634,6 +640,8 @@ pub struct SeededStartParams {
     pub source_lenses: Option<Vec<String>>,
     /// Captured provider/model selection for each lens selected by the flow.
     pub lens_providers: std::collections::BTreeMap<String, ReviewerRef>,
+    /// See [`ArenaRunInputs::reviewed_ref_note`].
+    pub reviewed_ref_note: Option<String>,
 }
 
 /// Rule on the deduped expert findings, without running a debate.
@@ -718,12 +726,14 @@ pub fn start_seeded_run(
     let paths_clone = paths.clone();
     let er_dir = params.er_dir.clone();
     let diff_hash = params.diff_hash.clone();
+    let reviewed_ref_note = params.reviewed_ref_note;
 
     let join = thread::spawn(move || {
         let ctx = SupervisorCtx {
             registry: &registry_thread,
             config: &config,
             repo_root: &repo_root,
+            reviewed_ref_note: reviewed_ref_note.as_deref(),
             paths: &paths_clone,
             cancel: &cancel,
             children: &children,
@@ -1017,11 +1027,13 @@ fn run_round1_parallel(
         paths,
         cancel,
         children,
+        reviewed_ref_note,
         ..
     } = *ctx;
     let config = Arc::new(config.clone());
     let effort = effort.map(|s| s.to_string());
     let repo_root = repo_root.to_string();
+    let reviewed_ref_note = reviewed_ref_note.map(str::to_owned);
     let patch_path = patch_path.to_string();
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
@@ -1050,6 +1062,7 @@ fn run_round1_parallel(
         let config = Arc::clone(&config);
         let effort = effort.clone();
         let repo_root = repo_root.clone();
+        let reviewed_ref_note = reviewed_ref_note.clone();
         let patch_path = patch_path.clone();
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
@@ -1115,6 +1128,7 @@ fn run_round1_parallel(
                     &reviewer.name,
                     reviewer.agent_kind.as_deref(),
                 );
+                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
                 let _ = append_progress_event(
                     &paths,
                     &ProgressEvent::ReviewerThinking {
@@ -1218,11 +1232,13 @@ fn run_round2_parallel(
         paths,
         cancel,
         children,
+        reviewed_ref_note,
         ..
     } = *ctx;
     let config = Arc::new(config.clone());
     let effort = effort.map(|s| s.to_string());
     let repo_root = repo_root.to_string();
+    let reviewed_ref_note = reviewed_ref_note.map(str::to_owned);
     let patch_path = patch_path.to_string();
     // One copy of the round findings payload, shared across all reviewer
     // threads.
@@ -1251,6 +1267,7 @@ fn run_round2_parallel(
         let config = Arc::clone(&config);
         let effort = effort.clone();
         let repo_root = repo_root.clone();
+        let reviewed_ref_note = reviewed_ref_note.clone();
         let patch_path = patch_path.clone();
         let findings_json = Arc::clone(&findings_json);
         let notify_progress = Arc::clone(&registry.notify);
@@ -1307,6 +1324,7 @@ fn run_round2_parallel(
                     round,
                     findings_json.as_str(),
                 );
+                let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
                 let _ = append_progress_event(
                     &paths,
                     &ProgressEvent::ReviewerThinking {
@@ -1579,6 +1597,8 @@ struct SupervisorCtx<'a> {
     registry: &'a ArenaRegistry,
     config: &'a ErConfig,
     repo_root: &'a str,
+    /// See [`ArenaRunInputs::reviewed_ref_note`].
+    reviewed_ref_note: Option<&'a str>,
     paths: &'a ArenaPaths,
     cancel: &'a Arc<AtomicBool>,
     children: &'a Arc<Mutex<Vec<Child>>>,
@@ -1615,6 +1635,7 @@ fn run_arbiter(
         paths,
         cancel,
         children,
+        reviewed_ref_note,
         status,
     } = *ctx;
     let round = run.config.rounds;
@@ -1650,7 +1671,10 @@ fn run_arbiter(
             crate::ai::prepared_diff::hunks_for_findings(&raw, &targets)
         })
         .unwrap_or_default();
-    let prompt = build_arena_round3_prompt(&summary.to_string(), &anchored);
+    let prompt = with_reviewed_ref_note(
+        build_arena_round3_prompt(&summary.to_string(), &anchored),
+        reviewed_ref_note,
+    );
     let cmd = match resolve_provider_command(
         &config.ai_hub,
         &arbiter_ref.provider_id,

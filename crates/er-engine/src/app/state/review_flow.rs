@@ -52,6 +52,9 @@ pub(super) struct ReviewFlowContext {
     arena_scope: ArenaScope,
     /// Checkout used by providers, distinct from `target.repo_root` identity.
     repo_root: String,
+    /// Prompt note naming the ref that holds the reviewed code, set when
+    /// `repo_root` is a checkout of another branch. Every stage appends it.
+    reviewed_ref_note: Option<String>,
     branch_ref: String,
     base_branch: String,
     raw_diff: String,
@@ -77,7 +80,16 @@ impl App {
     /// Start a flow against the active local view. `scope` must identify that
     /// exact view; branch, staged and unstaged diffs are supported.
     pub fn start_review_flow(&mut self, scope: &str) -> Result<()> {
-        let (target, arena_scope, repo_root, branch_ref, base_branch, raw_diff, owned_rules) = {
+        let (
+            target,
+            arena_scope,
+            repo_root,
+            reviewed_ref_note,
+            branch_ref,
+            base_branch,
+            raw_diff,
+            owned_rules,
+        ) = {
             let tab = self.tab();
             let arena_scope = match (scope, tab.mode) {
                 ("branch", DiffMode::Branch | DiffMode::PrDiff | DiffMode::Tour) => {
@@ -90,10 +102,27 @@ impl App {
             if tab.repo_root.trim().is_empty() || tab.is_remote() {
                 bail!("Review requires a local repository view");
             }
-            let execution_root = tab
-                .local_checkout_root()
-                .context("Review requires a checkout of the viewed branch")?
-                .to_owned();
+            let branch_ref = tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone());
+            // A PR or branch view whose head has no worktree runs in the main
+            // checkout, like the other review actions, and the prompts name the
+            // ref that holds the reviewed code. Staged and unstaged diffs only
+            // exist in a checkout of the viewed branch.
+            let (execution_root, reviewed_ref_note) = match tab.local_checkout_root() {
+                Some(root) => (root.to_owned(), None),
+                None if arena_scope == ArenaScope::Branch => (
+                    tab.repo_root.clone(),
+                    Some(crate::ai::prompts::reviewed_ref_section(
+                        tab.pr_head_ref.as_deref().unwrap_or(&branch_ref),
+                        tab.pr_number,
+                    )),
+                ),
+                None => bail!(
+                    "Review of staged or unstaged changes requires a checkout of the viewed branch"
+                ),
+            };
             let raw = tab.raw_diff_for_review(scope)?;
             let globs = crate::projects_pins::review_ignore_globs_for_repo(
                 &tab.repo_root,
@@ -103,10 +132,6 @@ impl App {
             if filtered.trim().is_empty() {
                 bail!("Nothing to review after ignored files are removed");
             }
-            let branch_ref = tab
-                .local_branch_view
-                .clone()
-                .unwrap_or_else(|| tab.current_branch.clone());
             let target = BackgroundTaskTarget {
                 repo_root: tab.repo_root.clone(),
                 er_dir: tab.er_dir(),
@@ -121,6 +146,7 @@ impl App {
                 target,
                 arena_scope,
                 execution_root,
+                reviewed_ref_note,
                 branch_ref,
                 tab.base_branch.clone(),
                 filtered,
@@ -182,10 +208,13 @@ impl App {
                 return Err(error).context("archive prior triage output");
             }
         };
-        let prompt = crate::ai::prompts::build_triage_review_prompt_prepared_diff(
-            scope,
-            &target.er_dir,
-            &diff_hash,
+        let prompt = crate::ai::prompts::with_reviewed_ref_note(
+            crate::ai::prompts::build_triage_review_prompt_prepared_diff(
+                scope,
+                &target.er_dir,
+                &diff_hash,
+            ),
+            reviewed_ref_note.as_deref(),
         );
         let id = match self.enqueue_with_selection(
             crate::ai::triage_task_kind(),
@@ -241,6 +270,7 @@ impl App {
                 scope: scope.to_owned(),
                 arena_scope,
                 repo_root,
+                reviewed_ref_note,
                 branch_ref,
                 base_branch,
                 raw_diff,
@@ -784,6 +814,10 @@ impl App {
                     &flow.diff_hash,
                 )
             };
+            let prompt = crate::ai::prompts::with_reviewed_ref_note(
+                prompt,
+                context.reviewed_ref_note.as_deref(),
+            );
             let selection = selection_for_provider(context, provider);
             let mut launch_config = context.config.clone();
             launch_config.ai_hub.default_effort = selection.effort.clone();
@@ -886,6 +920,7 @@ impl App {
             include_general: successful.iter().any(|lens| lens == "general"),
             source_lenses: Some(successful),
             lens_providers,
+            reviewed_ref_note: context.reviewed_ref_note.clone(),
         };
         match self.arena_start_seeded_for(
             context.repo_root.clone(),
@@ -1519,6 +1554,101 @@ esac
     }
 
     #[test]
+    fn pr_view_without_checkout_reviews_from_the_head_ref() {
+        let _serial = crate::agent_slots::test_serial();
+        for deep in [false, true] {
+            let dir = TestDir::new("pr-no-checkout");
+            let primary = if deep { "arena" } else { "expert" };
+            let mut app = fake_app(&dir, primary, &["security"]);
+            let repo = dir.0.join("repo");
+            let bucket = app.tab().er_dir();
+            let log = dir.0.join("execution.log");
+            // Each subprocess records where it ran and whether its prompt names
+            // the PR head ref and how to fetch it, since the working tree holds
+            // another branch. The general finding gives verification work.
+            let script = format!(
+                r#"
+record() {{ case "$2" in *refs/er/pr/7/head*pull/7/head*|*pull/7/head*refs/er/pr/7/head*) r=ref ;; *) r=noref ;; esac; printf '%s|%s|%s\n' "$1" "$(pwd -P)" "$r" >> '{log}'; }}
+case "$1" in
+  *triage.json*) record triage "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","verdict":{{"primary":"{primary}","experts":["security"]}}}}' "$hash" > '{bucket}/triage.json' ;;
+  *experts/security.json*) record expert "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); mkdir -p '{bucket}/experts'; printf '{{"version":1,"expert_id":"security","diff_hash":"%s","files":{{}}}}' "$hash" > '{bucket}/experts/security.json' ;;
+  *review.json*) record general "$1"; hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{"version":1,"diff_hash":"%s","files":{{"src/lib.rs":{{"risk":"high","findings":[{{"id":"general:1","severity":"high","title":"Check the PR source"}}]}}}}}}' "$hash" > '{bucket}/review.json' ;;
+  *) record arena "$1"; printf '{{"findings":[],"ballots":[],"verdicts":[]}}' ;;
+esac
+"#,
+                log = log.display(),
+            );
+            let provider = app.config.ai_hub.providers.get_mut("fake").unwrap();
+            provider.args[1] = script;
+            if deep {
+                let second = provider.clone();
+                app.config
+                    .ai_hub
+                    .providers
+                    .insert("fake-second".into(), second);
+                app.config
+                    .ai_hub
+                    .review_models
+                    .advanced
+                    .push(ReviewModelRef {
+                        provider_id: "fake-second".into(),
+                        model_id: "fake-model".into(),
+                    });
+            }
+            let tab = app.tab_mut();
+            tab.remote_repo = Some("example/pr-no-checkout".into());
+            tab.pr_number = Some(7);
+            tab.local_branch_view = Some("feature/pr-head".into());
+            tab.current_branch = "feature/pr-head".into();
+            tab.pr_head_ref = Some("refs/er/pr/7/head".into());
+            assert!(tab.local_checkout_root().is_none());
+
+            app.start_review_flow("branch").unwrap();
+            assert_eq!(
+                app.review_flow_contexts[&bucket].repo_root,
+                repo.to_string_lossy()
+            );
+            if deep {
+                let deadline = Instant::now() + Duration::from_secs(10);
+                while app.review_flow_for(&bucket).unwrap().state != FlowState::AwaitingConfirmation
+                {
+                    app.poll_background_tasks();
+                    assert!(Instant::now() < deadline, "Deep did not reach confirmation");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                app.confirm_review_flow(&bucket).unwrap();
+            }
+            run_until_terminal(&mut app, &bucket);
+
+            let observed = std::fs::read_to_string(&log).unwrap();
+            let execution = std::fs::canonicalize(&repo).unwrap();
+            let stages = if deep {
+                vec!["triage", "arena"]
+            } else {
+                vec!["triage", "general", "expert", "arena"]
+            };
+            for stage in stages {
+                assert!(
+                    observed.contains(&format!("{stage}|{}|ref\n", execution.display())),
+                    "{stage} did not run in the repo with the head ref (deep: {deep})\n{observed}"
+                );
+            }
+            assert!(!observed.contains("|noref"), "deep: {deep}\n{observed}");
+        }
+    }
+
+    #[test]
+    fn view_without_checkout_still_rejects_working_tree_scopes() {
+        let dir = TestDir::new("pr-no-checkout-unstaged");
+        let mut app = fake_app(&dir, "general", &[]);
+        let tab = app.tab_mut();
+        tab.mode = DiffMode::Unstaged;
+        tab.local_branch_view = Some("feature/pr-head".into());
+        let error = app.start_review_flow("unstaged").unwrap_err().to_string();
+        assert!(error.contains("checkout"), "{error}");
+    }
+
+    #[test]
     fn flow_depths_use_their_model_tiers_and_advanced_arbiter_pool() {
         let _serial = crate::agent_slots::test_serial();
         let dir = TestDir::new("model-tiers");
@@ -1913,6 +2043,7 @@ esac
             scope: "branch".into(),
             arena_scope: ArenaScope::Branch,
             repo_root,
+            reviewed_ref_note: None,
             branch_ref,
             base_branch,
             raw_diff,
