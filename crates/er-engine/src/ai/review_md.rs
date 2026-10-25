@@ -16,9 +16,15 @@ pub const REVIEW_MD_PROMPT: &str = "### Repository review rules\n- If `review-md
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReviewMdSource {
     /// A local clone that has `base_ref`.
-    Git { repo_root: String, base_ref: String },
+    Git {
+        repo_root: String,
+        base_ref: String,
+    },
     /// No clone: the root file only, through `gh`.
-    Gh { repo_slug: String, base_ref: String },
+    Gh {
+        repo_slug: String,
+        base_ref: String,
+    },
     None,
 }
 
@@ -69,7 +75,8 @@ pub fn collect(source: &ReviewMdSource, raw_diff: &str) -> Option<String> {
                 .map(|h| h.path)
                 .collect();
             let candidates = candidate_paths(&changed);
-            let present = crate::git::git_paths_present_at(repo_root, base_ref, &candidates).ok()?;
+            let present =
+                crate::git::git_paths_present_at(repo_root, base_ref, &candidates).ok()?;
             let files = candidates
                 .into_iter()
                 .filter(|c| present.contains(c))
@@ -171,7 +178,9 @@ mod tests {
     }
 
     fn diff_for(path: &str) -> String {
-        format!("diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n a\n+b\n")
+        format!(
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,1 +1,2 @@\n a\n+b\n"
+        )
     }
 
     fn src(root: &Path) -> ReviewMdSource {
@@ -258,7 +267,12 @@ mod tests {
         let dir = repo();
         // Under the per-file cap, over the total cap together.
         let big = "x".repeat(15 * 1024);
-        for rel in ["REVIEW.md", "a/REVIEW.md", "a/b/REVIEW.md", "a/b/c/REVIEW.md"] {
+        for rel in [
+            "REVIEW.md",
+            "a/REVIEW.md",
+            "a/b/REVIEW.md",
+            "a/b/c/REVIEW.md",
+        ] {
             write(dir.path(), rel, &big);
         }
         commit_all(dir.path());

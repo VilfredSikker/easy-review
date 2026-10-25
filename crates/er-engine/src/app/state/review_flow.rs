@@ -1844,9 +1844,13 @@ esac
         let bucket = app.tab().er_dir();
         let raw_diff = app.tab().raw_diff_for_review("branch").unwrap();
         let rules = app.tab().owned_repo_rules();
-        let hash =
-            crate::ai::prepared_diff::ensure_review_inputs(&bucket, &raw_diff, rules.as_rules(), None)
-                .unwrap();
+        let hash = crate::ai::prepared_diff::ensure_review_inputs(
+            &bucket,
+            &raw_diff,
+            rules.as_rules(),
+            None,
+        )
+        .unwrap();
         let old = format!(
             "{{\"version\":1,\"diff_hash\":\"{hash}\",\"files\":{{\"old.rs\":{{\"risk\":\"low\"}}}}}}"
         );

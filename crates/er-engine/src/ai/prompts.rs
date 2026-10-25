@@ -1855,7 +1855,7 @@ Target: complete in under 90 seconds. Read the diff once, address all notes in-c
 // ── AI Review Arena (JSON-only stdout) ──
 
 pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
-    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None)
+    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None, None)
 }
 
 /// Round-1 arena prompt; optional `agent_kind` applies specialized lens (general / expert / professor).
@@ -1863,6 +1863,7 @@ pub fn build_arena_round1_prompt_agent(
     diff_patch_path: &str,
     reviewer_label: &str,
     agent_kind: Option<&str>,
+    review_md: Option<&str>,
 ) -> String {
     let path = diff_patch_path.replace('\\', "/");
     let lens = agent_kind.map(agent_lens_block).unwrap_or_default();
@@ -1884,7 +1885,8 @@ Rules:
 - Propose real issues grounded in the diff.
 - severity: high | med | low
 - If no issues: {{"findings":[]}}
-"#,
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
         gate_rules = arena_gate_rules(agent_kind),
         caps_line = finding_caps_line(arena_finding_caps(agent_kind)),
         lens_rules = if agent_kind == Some("professor") {
@@ -1893,6 +1895,17 @@ Rules:
             "Skip findings that do not affect correctness, security, or reliability."
         },
     )
+}
+
+/// The base branch's `REVIEW.md` text, inline: arena workers answer on stdout
+/// from their run directory and have no bucket to read it from.
+fn arena_review_md_section(review_md: Option<&str>) -> String {
+    match review_md {
+        Some(text) => format!(
+            "\nRepository review rules (REVIEW.md from the base branch; follow them, and where they conflict with the JSON format above, the format wins):\n\n{text}\n"
+        ),
+        None => String::new(),
+    }
 }
 
 fn arena_finding_caps(agent_kind: Option<&str>) -> FindingCaps {
@@ -1969,7 +1982,11 @@ Respond ONLY with JSON:
 /// needs the code, not just the claim. Empty when the diff could not be read,
 /// in which case the section is omitted and the arbiter grades on the findings
 /// alone, as it did before.
-pub fn build_arena_round3_prompt(findings_summary_json: &str, anchored_diff: &str) -> String {
+pub fn build_arena_round3_prompt(
+    findings_summary_json: &str,
+    anchored_diff: &str,
+    review_md: Option<&str>,
+) -> String {
     let code_section = if anchored_diff.trim().is_empty() {
         String::new()
     } else {
@@ -1990,7 +2007,8 @@ For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 
 
 Respond ONLY with JSON:
 {{"verdicts":[{{"finding_id":"...","verdict":"kept","confidence":0.82,"rationale":"...","merged_into":null}}]}}
-"#
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
     )
 }
 
@@ -2432,7 +2450,8 @@ mod tests {
 
     #[test]
     fn arena_round1_prompt_carries_general_review_rules() {
-        let prompt = build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"));
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
         assert!(prompt.contains(FINDING_GATE_RULES));
         assert!(prompt.contains("Max 4 findings per file, max 15 total"));
         assert!(prompt.contains("Confidence must be a number from 0.0 to 1.0."));
@@ -2449,13 +2468,14 @@ mod tests {
             ),
             (Some("professor"), "Max 3 findings per file, max 12 total"),
         ] {
-            assert!(build_arena_round1_prompt_agent("d", "r", kind).contains(cap));
+            assert!(build_arena_round1_prompt_agent("d", "r", kind, None).contains(cap));
         }
     }
 
     #[test]
     fn arena_round1_prompt_keeps_its_stdout_schema() {
-        let prompt = build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"));
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
         assert!(prompt.contains(
             r#"{"findings":[{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}]}"#
         ));
@@ -2464,7 +2484,7 @@ mod tests {
 
     #[test]
     fn arena_round1_unknown_kind_gets_general_rules() {
-        let prompt = build_arena_round1_prompt_agent("d", "r", Some("expert:unknown"));
+        let prompt = build_arena_round1_prompt_agent("d", "r", Some("expert:unknown"), None);
         assert!(prompt.contains(FINDING_GATE_RULES));
         assert!(prompt.contains("Max 4 findings per file, max 15 total"));
     }
@@ -2701,5 +2721,17 @@ mod tests {
                 "{p}"
             );
         }
+    }
+
+    #[test]
+    fn arena_prompts_carry_review_md_only_when_present() {
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), Some("skip vendor/"));
+        let r3 = build_arena_round3_prompt("{}", "", Some("skip vendor/"));
+        assert!(r1.contains("skip vendor/"));
+        assert!(r3.contains("skip vendor/"));
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), None);
+        let r3 = build_arena_round3_prompt("{}", "", None);
+        assert!(!r1.contains("REVIEW.md"));
+        assert!(!r3.contains("REVIEW.md"));
     }
 }
