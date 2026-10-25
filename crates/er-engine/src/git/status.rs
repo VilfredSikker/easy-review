@@ -1194,7 +1194,14 @@ pub fn git_paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<V
     let output = crate::proc::run_with_bounded_stdout(
         Command::new("git")
             .current_dir(root)
-            .args(["ls-tree", "--name-only", rev, "--"])
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "ls-tree",
+                "--name-only",
+                rev,
+                "--",
+            ])
             .args(paths),
         std::time::Duration::from_secs(5),
         64 * 1024,

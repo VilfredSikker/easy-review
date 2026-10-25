@@ -1902,7 +1902,7 @@ Rules:
 fn arena_review_md_section(review_md: Option<&str>) -> String {
     match review_md {
         Some(text) => format!(
-            "\nRepository review rules (REVIEW.md from the base branch; follow them, and where they conflict with the JSON format above, the format wins):\n\n{text}\n"
+            "\nRepository review rules (REVIEW.md from the base branch; follow them, and where they conflict with the JSON format or the finding caps above, those win):\n\n{text}\n"
         ),
         None => String::new(),
     }
