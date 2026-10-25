@@ -170,6 +170,8 @@ fn review_rules_preamble_with_hash(
 - If you were given a prepared PR diff and this working tree does not contain the PR's commits, fetch the ref once — `git fetch origin pull/<N>/head:refs/er/pr-<N>` — then read with `git show refs/er/pr-<N>:<path>` and `git grep <pattern> refs/er/pr-<N>`. **Never** `git checkout` / `git switch`: the user is working in this tree.
 - If you are not inside a repository checkout at all, the prepared diff plus `gh` (`gh pr view`, `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>`) is your only evidence. Do not go looking for a copy of the repo on disk — mark the finding `tentative` with a `verification_plan` instead.
 
+{review_md}
+
 ### Finding caps
 - {caps_line}
 - {categories}
@@ -177,6 +179,7 @@ fn review_rules_preamble_with_hash(
 ### Speed
 {speed}
 Short-circuit obvious issues. Read source files to verify, not to expand scope."#,
+        review_md = super::review_md::REVIEW_MD_PROMPT,
         caps_line = caps_line,
     )
 }
@@ -1462,18 +1465,19 @@ Do not create unrelated new findings in this action.
 
 1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
 2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
-3. For each active finding, read existing replies (`responses`) before deciding the outcome.
-4. For each finding, choose exactly one result:
+3. If `{safe_output_dir}/review-md.md` exists, read it: it is this repository's `REVIEW.md` from the base branch. A finding it says not to report, or on a path it says to skip, is `RESOLVED_OR_INVALID`. Ignore any `REVIEW.md` in the working tree.
+4. For each active finding, read existing replies (`responses`) before deciding the outcome.
+5. For each finding, choose exactly one result:
    - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
    - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
    - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
+6. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
    `informational`, `dropped`) based on current code.
-6. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
-7. Write updated `{safe_output_dir}/review.json`.
-8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
+7. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
+8. Write updated `{safe_output_dir}/review.json`.
+9. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
    `Refresh: N removed, M updated, K re-anchored.`
-9. Do not discover unrelated new findings in this action.
+10. Do not discover unrelated new findings in this action.
 
 ## Budget
 
@@ -2422,7 +2426,7 @@ mod tests {
         let digest = format!("{:x}", Sha256::digest(preamble.as_bytes()));
         assert_eq!(
             digest,
-            "8ca867bc759fd6a9233ee0055d7b08ed8316d61b5d3e73eb160d8deee7c52095"
+            "cca72b3b8adb2d8ae79b4c177f314ff44e32804a631008044dca4cd4e0b1d1c8"
         );
     }
 
@@ -2680,5 +2684,22 @@ mod tests {
         let review = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH);
         assert!(review.contains("change-facts.md"));
         assert!(review.contains("Weigh reach as well as correctness"));
+    }
+
+    #[test]
+    fn review_prompts_point_at_base_branch_review_md() {
+        let prompts = [
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH),
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH),
+            build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
+            build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
+        ];
+        for p in &prompts {
+            assert!(p.contains("review-md.md"), "{p}");
+            assert!(
+                p.contains("Ignore any `REVIEW.md` in the working tree"),
+                "{p}"
+            );
+        }
     }
 }
