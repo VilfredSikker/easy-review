@@ -1,3 +1,37 @@
+# Easy Review v0.5.10
+
+## In plain terms
+
+- **What changed.** A single **Review** action in the desktop and the TUI now runs triage, the general and expert finders, and verification on one captured diff, and shows each agent's stage, model and state while it runs. Quick and Standard reviews verify their findings automatically; Deep shows its estimated cost and asks before it starts. Reviews also read the repository's `REVIEW.md` from the base branch, and a PR blocked by a rule you are allowed to bypass can be merged from the merge box.
+- **TL;DR.** One Review button with live progress, `REVIEW.md` rules in every review prompt, bypass-and-merge in the merge box, and faster Claude agent startup.
+
+## Highlights
+
+- **One Review action with progress.** Review picks its depth, runs every stage against the same diff and review bucket, and lists each task with its purpose, provider and model, queue state, failures and Deep round. Review-only model groups default to Haiku for fast work, Sonnet for ordinary work and Opus for Deep and arbitration; standalone actions keep the selected default model. Evidence of sensitive code adds the security lens. It works on a PR that is not checked out: the agents run in the main checkout and read the PR's code from `refs/er/pr/<N>/head` (ADR 0044, ADR 0045).
+- **`REVIEW.md` from the base branch.** `er` reads `REVIEW.md` at the repository root and in the ancestor folders of changed files from the base ref, never from the PR head, so a PR cannot rewrite the rules it is reviewed against. Review, expert, triage, Professor and validate prompts point at it, and arena round 1 and the arbiter get its text inline. A read failure skips the file and the review still runs (ADR 0046).
+- **Bypass rules from the merge box.** When a PR is blocked and GitHub says you can bypass, a red checkbox enables a red merge button that runs `gh pr merge --admin`, still pinned to the reviewed head. A base with a merge queue never offers it, and a failed lookup hides it.
+
+## What's Changed
+
+### Features
+- **Review flow** in the desktop and TUI, with model groups, per-task progress, read-only verification history and provider provenance that survives verification and acceptance (#281).
+- **Review on a PR with no checkout.** Every stage gets a note naming the PR's head ref and how to read it; staged and unstaged reviews still need a checkout (#291).
+- **`REVIEW.md` from the base branch**, written to `review-md.md` in the review bucket and carried by the MCP kit as `review_md_path` (#292).
+- **Bypass rules and merge** from the merge box (#270).
+
+### Performance
+- Claude agent spawns skip the user's MCP servers and skill listing (`--strict-mcp-config`, `--disable-slash-commands`): 2–4 s less startup and about 20k fewer prompt-cache tokens per run (#278).
+- Card AI (Ask AI, Validate with AI) returns as soon as Claude prints its result, without waiting 0.6–2.3 s for the CLI to exit (#279).
+
+### Fixes
+- The Guide rail renders pillar descriptions as markdown, so inline code shows as code (#269).
+- The npm launcher no longer finds and runs itself when the platform package is missing; it stops with an error naming the missing package (#265).
+
+### Chores
+- `er-mcp` ships only through npm; the launcher's GitHub download fallback is gone, and `er uninstall` removes its old cache (#265).
+- CI caches the Tauri apt packages, runs only the jobs a PR touches, and runs the npm launcher's tests (#271, #265).
+- `just install-deps` installs the locked workspace and desktop dependencies (#281).
+
 # Easy Review v0.5.9
 
 ## In plain terms
