@@ -2,10 +2,9 @@
 
 npx launcher for the Easy Review MCP server (`er-mcp`).
 
-On first run it downloads the matching platform binary from the GitHub Release
-that matches this package version (`vX.Y.Z`), caches it under
-`~/.cache/easy-review/er-mcp/` (or `~/Library/Caches/…` on macOS), and execs it
-with inherited stdio.
+npm installs the prebuilt `er-mcp` binary for your platform as an optional
+dependency (`easy-review-mcp-<platform>`), and the launcher execs it with
+inherited stdio. Nothing is downloaded at run time.
 
 ## Quick start
 
@@ -64,26 +63,15 @@ Write that to `~/.config/opencode/opencode.json` (or project `opencode.json`).
 
 | Env | Meaning |
 |-----|---------|
-| `ER_MCP_PATH` / `ER_MCP_BINARY` | Use this binary instead of downloading |
-| `XDG_CACHE_HOME` | Cache root (Linux/default) |
+| `ER_MCP_PATH` / `ER_MCP_BINARY` | Use this binary instead of the platform package |
 
-If Claude Code stays on **connecting…**, clear macOS quarantine on the cached binary and reconnect:
-
-```bash
-xattr -dr com.apple.quarantine ~/Library/Caches/easy-review/er-mcp
-```
-
-Or point Claude at a source-built binary:
+If the launcher reports that `easy-review-mcp-<platform>` is not installed, the
+install skipped optional dependencies. Reinstall without `--omit=optional`, or
+point Claude at a source-built binary:
 
 ```bash
 cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
 claude mcp add --scope user easy-review -- "$(command -v er-mcp)"
-```
-
-If no release asset exists yet, install from source:
-
-```bash
-cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
 ```
 
 ## Supported platforms
@@ -93,14 +81,15 @@ cargo install --git https://github.com/VilfredSikker/easy-review --locked er-mcp
 
 ## Version lockstep
 
-`npm/er-mcp/package.json` `version` must match the Cargo workspace version and
-the GitHub release tag (`vX.Y.Z`). Release CI publishes `er-mcp-<triple>.tar.gz`
-assets consumed by this launcher.
+`npm/er-mcp/package.json` `version`, its `optionalDependencies` pins, and each
+platform package's `version` must match the Cargo workspace version and the
+GitHub release tag (`vX.Y.Z`). Release CI publishes the platform packages from
+the tag; it checks the versions and stops on a mismatch.
 
 ## Develop
 
 ```bash
 cd npm/er-mcp
 npm test
-node bin/er-mcp.js   # needs binary via PATH, ER_MCP_PATH, or a published release
+node bin/er-mcp.js   # needs the platform package, ER_MCP_PATH, or er-mcp on PATH
 ```

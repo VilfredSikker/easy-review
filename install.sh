@@ -64,9 +64,12 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     echo "(best-effort path list aligned with er-engine::uninstall categories; prefer re-running with er on PATH)"
 
     # Mirror dirs::{ / XDG resolution used by er-engine (config / data / cache).
-    config_home="${XDG_CONFIG_HOME:-$HOME/.config}"
-    data_home="${XDG_DATA_HOME:-$HOME/.local/share}"
-    cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+    # Like dirs, take an XDG root only when it is absolute: a relative one would
+    # put the paths below inside whatever directory this runs from.
+    xdg_or() { case "$1" in /*) printf '%s' "$1" ;; *) printf '%s' "$2" ;; esac; }
+    config_home="$(xdg_or "${XDG_CONFIG_HOME:-}" "$HOME/.config")"
+    data_home="$(xdg_or "${XDG_DATA_HOME:-}" "$HOME/.local/share")"
+    cache_home="$(xdg_or "${XDG_CACHE_HOME:-}" "$HOME/.cache")"
     os="$(uname -s)"
 
     # Collect paths in the same categories as er-engine::uninstall::plan.
@@ -96,8 +99,11 @@ if [[ "$UNINSTALL" -eq 1 ]]; then
     fi
     # Engine always removes legacy ~/.cache/er (remove_cache stays true with --keep-data).
     paths+=("$HOME/.cache/er")
-    if [[ -n "${XDG_CACHE_HOME:-}" ]]; then
-        paths+=("$XDG_CACHE_HOME/er")
+    paths+=("$cache_home/er")
+    # The same goes for the npm launcher's cache root (`easy-review/er-mcp/<tag>/er-mcp`).
+    paths+=("$cache_home/easy-review")
+    if [[ "$os" == "Darwin" ]]; then
+        paths+=("$HOME/Library/Caches/easy-review")
     fi
     if [[ "$KEEP_APPS" -eq 0 ]]; then
         paths+=("${INSTALL_DIR}/er" "$HOME/.local/bin/er" "$HOME/.cargo/bin/er")

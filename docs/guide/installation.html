@@ -133,7 +133,7 @@ er uninstall --keep-apps  <span class="cmt"># leave binaries / .app</span></code
     <ul>
       <li>The platform config dir — <code>~/Library/Application Support/er/</code> on macOS, <code>~/.config/er/</code> on Linux: the desktop's <code>projects.json</code> and <code>tabs.json</code>, plus a legacy <code>config.toml</code> from an older install if one is still there</li>
       <li>Managed review storage under <code>…/easy-review/</code> (see <a href="storage.html">Review Storage</a>), plus Tauri bundle data dirs when present</li>
-      <li>Legacy <code>~/.cache/er/</code></li>
+      <li>Caches: the legacy <code>~/.cache/er/</code> and the npm launcher's <code>easy-review/</code> directory under the platform cache root (<code>~/Library/Caches/</code> on macOS, <code>~/.cache/</code> on Linux, <code>$XDG_CACHE_HOME</code> when set)</li>
       <li>The <code>er</code> binary (common install locations) and <code>Easy Review.app</code> when found</li>
     </ul>
 

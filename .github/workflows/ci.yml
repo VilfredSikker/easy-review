@@ -84,6 +84,16 @@ jobs:
           node-version: "20"
       - run: cd tools/herdr-easy-review && npm test
 
+  mcp-launcher:
+    name: MCP launcher
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd npm/er-mcp && npm test
+
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
