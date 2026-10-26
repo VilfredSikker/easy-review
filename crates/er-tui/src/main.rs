@@ -1,5 +1,6 @@
 mod input;
 mod ui;
+mod update;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -83,6 +84,8 @@ enum Commands {
         #[arg(long)]
         keep_apps: bool,
     },
+    /// Download and install the latest release in place of this binary
+    Update,
 }
 
 /// Restore the terminal before the default panic handler runs, so a panic
@@ -179,6 +182,9 @@ fn main() -> Result<()> {
             remove_desktop_app: !keep_apps,
         };
         return run_uninstall(yes, dry_run, opts);
+    }
+    if matches!(cli.command, Some(Commands::Update)) {
+        return update::run();
     }
 
     // Reject conflicting --pr and PR URL arguments
@@ -401,6 +407,7 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     hint_rx: Option<mpsc::Receiver<String>>,
     pr_data_rx: Option<mpsc::Receiver<github::PrOverviewData>>,
 ) -> Result<()> {
+    let update_rx = update::spawn_background_check();
     // Channel for file watch events
     let (watch_tx, watch_rx) = mpsc::channel::<WatchEvent>();
     let (discovery_tx, discovery_rx) = mpsc::channel::<(
@@ -587,6 +594,10 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
                     let _ = tx.send((pid, result));
                 });
             }
+        }
+
+        if let Ok(version) = update_rx.try_recv() {
+            app.available_update = Some(version);
         }
 
         // Apply discovered models from background threads

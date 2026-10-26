@@ -1,3 +1,26 @@
+# Easy Review v0.5.9
+
+## In plain terms
+
+- **What changed.** Easy Review now updates itself. The terminal's top bar shows `↑ vX.Y.Z · er update` when a newer release is out, and running `er update` downloads that release, checks it against the release's `SHA256SUMS`, and swaps it in for the running binary. On the desktop, the update pill above Settings downloads the signed release, verifies it, installs it, and relaunches the app. The triage card now leads with pills — risk, reach, whether a guard holds, confidence and files changed — and keeps its reasoning (verdict, priority files, reach detail, first impression) in rows that open on a click.
+- **TL;DR.** In-app updates in both front ends, and a triage card that shows its signals first and its reasoning on request.
+
+## Highlights
+
+- **`er update` swaps the TUI binary for the latest release.** It downloads this platform's archive (`er-aarch64-apple-darwin.tar.gz`, `er-x86_64-apple-darwin.tar.gz` or `er-x86_64-unknown-linux-gnu.tar.gz`), verifies the archive against the checksum listed in the release's `SHA256SUMS`, and renames the new binary over the running one. Two cases refuse: a binary under `~/.cargo/bin` or a `target/` directory, where a release binary would silently replace a source build — it names the matching `cargo install` command instead — and a platform with no prebuilt archive. The status-bar check asks the same question, so a cargo-installed or locally built `er` sees no hint and no request goes to GitHub. The check runs off the render thread and reuses its answer for six hours from managed storage; offline or rate-limited, it stays silent.
+- **The desktop installs its update from the sidebar pill.** The pill above Settings reads **Update to vX.Y.Z** and downloads, verifies and installs the release, then relaunches — showing Checking…, Downloading… 42%, Installing… as it goes and staying disabled while it works, so a second click cannot start a parallel install. A failure, including a release with no signed archive, leaves the pill reading **Update failed — open release**, and the next click opens the release page. Updates are verified against a minisign key compiled into the app, so the key cannot be rotated without a manual reinstall; desktops built before this release have no updater, and their first update is a manual download (ADR 0043).
+- **The triage card shows its signals first.** Risk, reach, a guard, confidence and file count render as a row of pills, tinted by what each word means: a `broad` reach warns while an `isolated` one reads as safe, and `guarded` reads as good. The reasoning sits below in up to four rows — Verdict, Priority files, Reach, First impression — each collapsed to a one-line teaser (the rationale's first line with its markup stripped, the top priority file and why, the reach reason or first touch point) and opened by a click. Priority files keep their one-click jump into the diff.
+
+## What's Changed
+
+### Features
+- **In-app updates in both front ends** (ADR 0043). `er update` for the terminal and the updater pill on the desktop, each fetching for itself — release assets are public downloads that need no `gh` login — while `er-engine` holds only the decisions: version order, archive naming, the checksum match and the atomic swap. The TUI's check cache is written atomically, so two `er` instances starting at once cannot tear it, and the desktop's release check shares the engine's version comparison.
+- **Triage card pills and rows.** Risk, reach, guard, confidence and file count as tone-tinted pills; Verdict, Priority files, Reach and First impression as collapsed rows with one-line teasers. A signal the triage did not record gets no pill, and a guard counts only with the line where it is checked (ADR 0039).
+- **Releases carry what the updaters read.** Every release attaches `SHA256SUMS` for `er update` and, when the signing key is configured, the signed updater archive plus `latest.json` for the desktop. The release job fails when the tag disagrees with the version in `Cargo.toml` or `tauri.conf.json`, since both updaters compare the tag with the version compiled into the app, and a missed bump would offer the same update forever.
+
+### Chores
+- GitHub releases no longer attach `er-mcp` archives. npm installs the MCP server from the platform packages, and the tarball was the launcher's last-resort fallback.
+
 # Easy Review v0.5.8
 
 ## In plain terms

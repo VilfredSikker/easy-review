@@ -215,6 +215,31 @@ Without `APPLE_CERTIFICATE` the job skips the build and the release publishes
 the TUI binaries with no DMG — upload a locally signed one with
 `gh release upload v<version> "target/desktop/release/bundle/dmg/"*.dmg`.
 
+### In-app updates
+
+The desktop installs updates through `tauri-plugin-updater`, which accepts
+only an archive signed by the key whose public half is in `tauri.conf.json`
+(`plugins.updater.pubkey`). Why it is built this way: ADR 0043. One-time setup:
+
+```bash
+cargo tauri signer generate -w ~/.tauri/easy-review-updater.key
+# paste the printed public key into tauri.conf.json → plugins.updater.pubkey
+```
+
+| Secret | Value |
+| --- | --- |
+| `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/easy-review-updater.key` |
+| `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | the password chosen at generation |
+
+Losing the private key strands every installed desktop: a new key needs a new
+pubkey, which only a manual download can deliver. Keep it in a password
+manager. Without the secret the release ships no `latest.json`: clicking the
+sidebar pill shows "Update failed — open release", and a second click opens the
+release page.
+
+The TUI needs no key: `er update` checks the archive against the release's
+`SHA256SUMS`, which the release job writes.
+
 ### Verify
 
 ```bash
@@ -329,14 +354,16 @@ Published releases are **terminal `er`** archives and a **macOS desktop `.dmg`**
 **Maintainer flow:**
 
 ```bash
-# 1. Bump version in Cargo.toml ([workspace.package] version)
+# 1. Bump the version in Cargo.toml ([workspace.package] version) and
+#    crates/er-desktop/tauri.conf.json; the release job fails if either
+#    differs from the tag
 # 2. Commit, tag, push
 git tag v0.3.0
 git push origin main
 git push origin v0.3.0
 ```
 
-CI builds `er-tui` for `x86_64-apple-darwin`, `aarch64-apple-darwin`, and `x86_64-unknown-linux-gnu`, packages `er-<target>.tar.gz`, and creates a GitHub Release.
+CI builds `er-tui` for `x86_64-apple-darwin`, `aarch64-apple-darwin`, and `x86_64-unknown-linux-gnu`, packages `er-<target>.tar.gz`, and creates a GitHub Release with a `SHA256SUMS` for `er update`. When the updater key is set it also attaches the signed desktop archive and `latest.json` ([In-app updates](#in-app-updates)).
 
 **Local release smoke test:**
 

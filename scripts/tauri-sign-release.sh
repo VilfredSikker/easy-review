@@ -14,6 +14,9 @@
 # Or App Store Connect API key auth instead of Apple ID:
 #   APPLE_API_KEY / APPLE_API_ISSUER / APPLE_API_KEY_PATH
 #
+# Optional, for the in-app updater archive (skipped when unset):
+#   TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+#
 # Usage:
 #   ./scripts/tauri-sign-release.sh
 #   cargo desktop-sign-release
@@ -43,6 +46,14 @@ if [[ -f "$SIGNING_ENV" ]]; then
   source "$SIGNING_ENV"
   set +a
 fi
+
+# The updater key lets its holder ship an update every installed desktop
+# accepts, and it cannot be rotated (ADR 0043). Keep it out of the environment
+# of `cargo tauri build`, whose npm scripts and build.rs files would inherit it;
+# only the signer sees it again.
+UPDATER_KEY="${TAURI_SIGNING_PRIVATE_KEY:-}"
+UPDATER_KEY_PASSWORD="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:-}"
+unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD
 
 export CARGO_TARGET_DIR="$ROOT/target/desktop"
 CONF="$ROOT/crates/er-desktop/tauri.conf.json"
@@ -255,6 +266,37 @@ bundle_dmg_hdiutil() {
   fi
 }
 
+# The in-app updater downloads this archive and checks it against the pubkey in
+# tauri.conf.json. Tauri's `createUpdaterArtifacts` would archive the .app
+# before the plist re-sign and stapling above, so the update would ship a
+# bundle Gatekeeper has never seen notarized; this archives the final one.
+build_updater_archive() {
+  if [[ -z "$UPDATER_KEY" ]]; then
+    echo "TAURI_SIGNING_PRIVATE_KEY unset — skipping updater archive" >&2
+    return 0
+  fi
+  local arch_tag out archive
+  case "$(uname -m)" in
+    arm64) arch_tag="aarch64" ;;
+    *) arch_tag="$(uname -m)" ;;
+  esac
+  out="$BUNDLE_ROOT/updater"
+  archive="$out/Easy-Review_${arch_tag}.app.tar.gz"
+  rm -rf "$out"
+  mkdir -p "$out"
+  # COPYFILE_DISABLE keeps macOS from adding ._ resource-fork entries.
+  # Explicit returns: the caller runs this under `||`, which suspends errexit.
+  # stdin is closed so a key missing its password fails instead of prompting.
+  if ! COPYFILE_DISABLE=1 tar -czf "$archive" -C "$MACOS_BUNDLE_DIR" "Easy Review.app" \
+    || ! TAURI_SIGNING_PRIVATE_KEY="$UPDATER_KEY" \
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD="$UPDATER_KEY_PASSWORD" \
+      cargo tauri signer sign "$archive" </dev/null; then
+    rm -rf "$out"
+    return 1
+  fi
+  echo "Updater archive: $archive (+ .sig)" >&2
+}
+
 install_to_applications() {
   local dest="/Applications/Easy Review.app"
   if [[ "${ER_SKIP_INSTALL}" == "1" ]]; then
@@ -318,6 +360,9 @@ if [[ "${ER_SKIP_DMG}" == "1" ]]; then
 else
   bundle_dmg_hdiutil
 fi
+
+# After the DMG, and never fatal: a bad updater key must not cost the release its DMG.
+build_updater_archive || echo "warning: updater archive failed; this release ships no latest.json" >&2
 
 echo "Signed release complete." >&2
 echo "  app: $APP_PATH" >&2

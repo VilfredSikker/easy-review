@@ -5556,6 +5556,8 @@ pub struct App {
 
     /// Provider ids with an in-flight model discovery refresh (dedupe).
     pub model_discovery_inflight: std::collections::HashSet<String>,
+    /// Version of a newer release, once a front end has checked; `None` until then.
+    pub available_update: Option<String>,
 
     /// TUI: provider id waiting for the event loop to spawn discovery.
     pub pending_model_discovery: Option<String>,
@@ -5710,6 +5712,7 @@ impl App {
             arena_registry,
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
+            available_update: None,
             pending_model_discovery: None,
         };
         // These tabs were built before the config loaded, so `push_tab` never
@@ -5757,6 +5760,7 @@ impl App {
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
+            available_update: None,
             pending_model_discovery: None,
         };
         app.sync_repo_rules_to_tabs();
@@ -5796,6 +5800,7 @@ impl App {
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
+            available_update: None,
             pending_model_discovery: None,
         };
         app.sync_repo_rules_to_tabs();
@@ -5836,6 +5841,7 @@ impl App {
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
+            available_update: None,
             pending_model_discovery: None,
         }
     }
@@ -11331,6 +11337,7 @@ mod tests {
             arena_registry: App::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
+            available_update: None,
             pending_model_discovery: None,
         }
     }

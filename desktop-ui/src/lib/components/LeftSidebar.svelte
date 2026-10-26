@@ -10,6 +10,7 @@
   import { orderedByIds } from "$lib/projectOrder";
   import { orderPrsByStack } from "$lib/prStacks";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
+  import { installAppUpdate, type UpdatePhase } from "$lib/appUpdate";
 
   interface PinnedItem {
     id: string;
@@ -60,6 +61,41 @@
       cancelled = true;
     };
   });
+
+  let updatePhase = $state<UpdatePhase>({ kind: "idle" });
+  const updateBusy = $derived(
+    updatePhase.kind === "checking" ||
+      updatePhase.kind === "downloading" ||
+      updatePhase.kind === "installing",
+  );
+  const updateLabel = $derived.by(() => {
+    switch (updatePhase.kind) {
+      case "checking":
+        return "Checking…";
+      case "downloading":
+        return updatePhase.percent === null
+          ? "Downloading…"
+          : `Downloading… ${updatePhase.percent}%`;
+      case "installing":
+        return "Installing…";
+      case "failed":
+        return "Update failed — open release";
+      default:
+        return latestVersion ? `Update to v${latestVersion}` : "Update available";
+    }
+  });
+
+  async function startUpdate() {
+    if (updateBusy) return;
+    if (updatePhase.kind === "failed") {
+      await openUpdateRelease();
+      return;
+    }
+    const handled = await installAppUpdate((phase) => {
+      updatePhase = phase;
+    });
+    if (!handled) await openUpdateRelease();
+  }
 
   async function openUpdateRelease() {
     const url =
@@ -757,9 +793,10 @@
       {#if updateAvailable}
         <button
           type="button"
-          title={latestVersion ? `v${latestVersion} available` : "New version available"}
-          aria-label="New version available"
-          onclick={openUpdateRelease}
+          title={updateLabel}
+          aria-label={updateLabel}
+          disabled={updateBusy}
+          onclick={startUpdate}
           class="w-2 h-2 rounded-full bg-accent shrink-0"
         ></button>
       {/if}
@@ -1493,11 +1530,12 @@
       <button
         type="button"
         class="inline-flex items-center gap-1.5 max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
-        title={latestVersion ? `v${latestVersion} is available` : "Open release notes"}
-        onclick={openUpdateRelease}
+        title={updatePhase.kind === "failed" ? updatePhase.message : updateLabel}
+        disabled={updateBusy}
+        onclick={startUpdate}
       >
-        <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" aria-hidden="true"></span>
-        <span class="truncate">New version available</span>
+        <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" class:animate-pulse={updateBusy} aria-hidden="true"></span>
+        <span class="truncate">{updateLabel}</span>
       </button>
     {/if}
   </div>
