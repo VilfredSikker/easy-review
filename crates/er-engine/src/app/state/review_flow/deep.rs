@@ -73,6 +73,7 @@ impl App {
                     base_branch: context.base_branch.clone(),
                     raw_diff: context.raw_diff.clone(),
                     reviewed_ref_note: context.reviewed_ref_note.clone(),
+                    review_md: context.review_md.clone(),
                 },
                 context.config.clone(),
                 reviewers,

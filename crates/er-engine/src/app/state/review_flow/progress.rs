@@ -556,6 +556,7 @@ mod tests {
             arena_scope: ArenaScope::Branch,
             repo_root: "/repo".into(),
             reviewed_ref_note: None,
+            review_md: None,
             branch_ref: "main".into(),
             base_branch: "main".into(),
             raw_diff: String::new(),

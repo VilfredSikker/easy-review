@@ -425,6 +425,10 @@ pub struct ArenaRunInputs {
     /// Note appended to every round prompt when `repo_root` is a checkout of
     /// another branch (`prompts::reviewed_ref_section`). Kept off the saved run.
     pub reviewed_ref_note: Option<String>,
+    /// The base branch's `REVIEW.md` text, collected by the caller from the
+    /// tab's `review_md_source()` so arena runs read what other reviews read.
+    /// `None` when the base has none or it could not be read.
+    pub review_md: Option<String>,
 }
 
 pub fn start_arena_run(
@@ -453,13 +457,8 @@ pub(crate) fn start_review_flow_run(
 
 /// Put the base branch's `REVIEW.md` text in the run directory for the prompts
 /// to inline. A failure only means the run goes without it.
-fn store_review_md(paths: &ArenaPaths, repo_root: &str, base_branch: &str, raw_diff: &str) {
-    let source = crate::ai::review_md::ReviewMdSource::Git {
-        repo_root: repo_root.to_string(),
-        base_ref: base_branch.to_string(),
-    };
-    let text = crate::ai::review_md::collect(&source, raw_diff);
-    let _ = crate::ai::review_md::write_review_md(&paths.root.to_string_lossy(), text.as_deref());
+fn store_review_md(paths: &ArenaPaths, text: Option<&str>) {
+    let _ = crate::ai::review_md::write_review_md(&paths.root.to_string_lossy(), text);
 }
 
 fn start_arena_run_with_kind(
@@ -476,6 +475,7 @@ fn start_arena_run_with_kind(
         base_branch,
         raw_diff,
         reviewed_ref_note,
+        review_md,
     } = inputs;
     crate::dev_log::arena_line(format!(
         "start_arena_run repo={repo_root} branch={branch_ref} base={base_branch} diff_bytes={}",
@@ -533,7 +533,7 @@ fn start_arena_run_with_kind(
     let paths = ArenaPaths::for_run(Path::new(&er_dir), &run_id);
     paths.ensure_dirs()?;
     save_diff_patch(&paths, &raw_diff)?;
-    store_review_md(&paths, &repo_root, &base_branch, &raw_diff);
+    store_review_md(&paths, review_md.as_deref());
 
     let diff_hash = compute_diff_hash(&raw_diff);
 
@@ -654,6 +654,10 @@ pub struct SeededStartParams {
     pub lens_providers: std::collections::BTreeMap<String, ReviewerRef>,
     /// See [`ArenaRunInputs::reviewed_ref_note`].
     pub reviewed_ref_note: Option<String>,
+    /// The base branch's `REVIEW.md` text, collected by the caller from the
+    /// tab's `review_md_source()` so arena runs read what other reviews read.
+    /// `None` when the base has none or it could not be read.
+    pub review_md: Option<String>,
 }
 
 /// Rule on the deduped expert findings, without running a debate.
@@ -724,7 +728,7 @@ pub fn start_seeded_run(
     )?;
     if !params.raw_diff.trim().is_empty() {
         save_diff_patch(&paths, &params.raw_diff)?;
-        store_review_md(&paths, &repo_root, &params.base_branch, &params.raw_diff);
+        store_review_md(&paths, params.review_md.as_deref());
     }
     save_run(&paths, &run)?;
 

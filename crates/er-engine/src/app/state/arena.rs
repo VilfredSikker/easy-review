@@ -29,6 +29,12 @@ fn review_diff_hash(er_dir: &str, raw_diff: &str) -> String {
         .unwrap_or_else(|| crate::ai::compute_diff_hash(raw_diff))
 }
 
+/// The base branch's `REVIEW.md` for an arena on `tab`, read the way every
+/// other review on the tab reads it (ADR 0046).
+fn arena_review_md(tab: &TabState, raw_diff: &str) -> Option<String> {
+    crate::ai::review_md::collect(&tab.review_md_source(), raw_diff)
+}
+
 /// Load a run's summary, memoized by `run.json` mtime+size.
 ///
 /// `App::background_arena_runs` runs inside the desktop's per-poll
@@ -141,6 +147,7 @@ impl App {
         ));
         let tab = self.tab();
         let raw_diff = tab.raw_diff_for_arena(params.scope, params.files.as_deref())?;
+        let review_md = arena_review_md(tab, &raw_diff);
         let inputs = ArenaRunInputs {
             repo_root: tab.repo_root.clone(),
             er_dir,
@@ -151,6 +158,7 @@ impl App {
             base_branch: tab.base_branch.clone(),
             raw_diff,
             reviewed_ref_note: None,
+            review_md,
         };
         let config = self.config.clone();
         let run_id = self.arena_start_with_inputs(inputs, config, params)?;
@@ -213,6 +221,7 @@ impl App {
         self.check_review_bucket_admission(&er_dir)?;
         let tab = self.tab();
         let raw_diff = tab.raw_diff_for_arena(ArenaScope::Branch, None)?;
+        let review_md = arena_review_md(tab, &raw_diff);
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
         let branch_ref = tab
@@ -242,6 +251,7 @@ impl App {
             source_lenses: None,
             lens_providers: std::collections::BTreeMap::new(),
             reviewed_ref_note: None,
+            review_md,
         };
         let config = self.config.clone();
         let run_id = self.arena_start_seeded_with_inputs(repo_root, config, params)?;
@@ -315,6 +325,7 @@ impl App {
         );
         let tab = self.tab();
         let raw_diff = tab.raw_diff_for_arena(batch.scope, batch.files.as_deref())?;
+        let review_md = arena_review_md(tab, &raw_diff);
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
         let er_key = er_dir.clone();
@@ -335,6 +346,7 @@ impl App {
                 base_branch,
                 raw_diff,
                 reviewed_ref_note: None,
+                review_md,
             },
             batch,
         )?;
@@ -663,6 +675,7 @@ mod review_flow_arena_inputs_tests {
             base_branch: "captured/base".into(),
             raw_diff: "captured raw diff".into(),
             reviewed_ref_note: None,
+            review_md: None,
         }
     }
 
@@ -720,6 +733,47 @@ mod review_flow_arena_inputs_tests {
             !bucket.exists(),
             "rejection must happen before arena writes"
         );
+    }
+
+    #[test]
+    fn arena_run_writes_the_passed_review_md() {
+        let mut app = configured_app();
+        let tmp = tempdir().unwrap();
+        let _env = fake_arena(&app);
+        let bucket = tmp.path().join("captured-bucket");
+        let lease = app
+            .acquire_review_flow_lease(bucket.to_str().unwrap())
+            .unwrap();
+        let mut captured = inputs(bucket.to_str().unwrap());
+        captured.review_md = Some("skip vendor/".into());
+        let run_id = app
+            .arena_start_for(captured, prepared_config(), params(), &lease)
+            .unwrap();
+        let paths = ArenaPaths::for_run(&bucket, &run_id);
+        assert_eq!(
+            std::fs::read_to_string(paths.review_md()).unwrap(),
+            "skip vendor/"
+        );
+    }
+
+    #[test]
+    fn arena_run_without_review_md_leaves_no_file() {
+        let mut app = configured_app();
+        let tmp = tempdir().unwrap();
+        let _env = fake_arena(&app);
+        let bucket = tmp.path().join("captured-bucket");
+        let lease = app
+            .acquire_review_flow_lease(bucket.to_str().unwrap())
+            .unwrap();
+        let run_id = app
+            .arena_start_for(
+                inputs(bucket.to_str().unwrap()),
+                prepared_config(),
+                params(),
+                &lease,
+            )
+            .unwrap();
+        assert!(!ArenaPaths::for_run(&bucket, &run_id).review_md().exists());
     }
 
     #[test]
@@ -787,6 +841,7 @@ mod review_flow_arena_inputs_tests {
             source_lenses: Some(vec!["general".into()]),
             lens_providers: std::collections::BTreeMap::from([("general".into(), reviewer())]),
             reviewed_ref_note: None,
+            review_md: None,
         };
         let mut captured_config = prepared_config();
         captured_config.ai_hub.default_effort = Some("high".into());
@@ -985,6 +1040,30 @@ mod tests {
             .output()
             .unwrap();
         dir
+    }
+
+    #[test]
+    fn arena_review_md_reads_the_local_tab_base() {
+        let dir = init_repo_with_branches();
+        let root = dir.path().to_string_lossy().into_owned();
+        std::fs::write(dir.path().join("REVIEW.md"), "skip vendor/\n").unwrap();
+        for args in [
+            vec!["add", "REVIEW.md"],
+            vec!["-c", "commit.gpgsign=false", "commit", "-m", "rules"],
+        ] {
+            let out = Command::new("git")
+                .args(&args)
+                .current_dir(dir.path())
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "{args:?}");
+        }
+        let mut tab = TabState::new_with_base_unloaded(root, "main".into()).unwrap();
+        let raw = "diff --git a/file.txt b/file.txt\n";
+        let text = arena_review_md(&tab, raw).expect("base REVIEW.md");
+        assert!(text.contains("skip vendor/"), "{text}");
+        tab.base_branch = String::new();
+        assert_eq!(arena_review_md(&tab, raw), None);
     }
 
     #[test]

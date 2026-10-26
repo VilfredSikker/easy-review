@@ -58,6 +58,8 @@ pub(super) struct ReviewFlowContext {
     branch_ref: String,
     base_branch: String,
     raw_diff: String,
+    /// `REVIEW.md` text collected at flow start, handed to its arena runs.
+    review_md: Option<String>,
     config: ErConfig,
     model_pools: ResolvedReviewModels,
     assignments: Vec<FlowLensAssignment>,
@@ -278,6 +280,7 @@ impl App {
                 branch_ref,
                 base_branch,
                 raw_diff,
+                review_md,
                 config,
                 model_pools,
                 assignments: Vec::new(),
@@ -925,6 +928,7 @@ impl App {
             source_lenses: Some(successful),
             lens_providers,
             reviewed_ref_note: context.reviewed_ref_note.clone(),
+            review_md: context.review_md.clone(),
         };
         match self.arena_start_seeded_for(
             context.repo_root.clone(),
@@ -2052,6 +2056,7 @@ esac
             arena_scope: ArenaScope::Branch,
             repo_root,
             reviewed_ref_note: None,
+            review_md: None,
             branch_ref,
             base_branch,
             raw_diff,
