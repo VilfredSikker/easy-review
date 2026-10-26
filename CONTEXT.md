@@ -135,6 +135,13 @@ A cheap first pass that classifies a diff and recommends where to look, without
 reviewing it. Its output routes review effort; it is not itself a review.
 _Avoid_: scan, summary, overview
 
+**REVIEW.md**:
+A repository's instructions to its AI reviewers, written by its owners: what
+counts as important, what not to report, which paths to skip. Read from the
+base branch, never from the change under review. It is input to the agent;
+er never reads it as configuration.
+_Avoid_: review config, review settings
+
 **Arbiter**:
 A pass that judges findings other reviewers produced: merging duplicates,
 regrading confidence, and dropping claims it cannot substantiate. It records its

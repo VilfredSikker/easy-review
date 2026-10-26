@@ -170,6 +170,8 @@ fn review_rules_preamble_with_hash(
 - If you were given a prepared PR diff and this working tree does not contain the PR's commits, fetch the ref once — `git fetch origin pull/<N>/head:refs/er/pr-<N>` — then read with `git show refs/er/pr-<N>:<path>` and `git grep <pattern> refs/er/pr-<N>`. **Never** `git checkout` / `git switch`: the user is working in this tree.
 - If you are not inside a repository checkout at all, the prepared diff plus `gh` (`gh pr view`, `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>`) is your only evidence. Do not go looking for a copy of the repo on disk — mark the finding `tentative` with a `verification_plan` instead.
 
+{review_md}
+
 ### Finding caps
 - {caps_line}
 - {categories}
@@ -177,6 +179,7 @@ fn review_rules_preamble_with_hash(
 ### Speed
 {speed}
 Short-circuit obvious issues. Read source files to verify, not to expand scope."#,
+        review_md = super::review_md::REVIEW_MD_PROMPT,
         caps_line = caps_line,
     )
 }
@@ -1462,18 +1465,19 @@ Do not create unrelated new findings in this action.
 
 1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
 2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
-3. For each active finding, read existing replies (`responses`) before deciding the outcome.
-4. For each finding, choose exactly one result:
+3. If `{safe_output_dir}/review-md.md` exists, read it: it is this repository's `REVIEW.md` from the base branch. A finding it says not to report, or on a path it says to skip, is `RESOLVED_OR_INVALID`. Ignore any `REVIEW.md` in the working tree.
+4. For each active finding, read existing replies (`responses`) before deciding the outcome.
+5. For each finding, choose exactly one result:
    - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
    - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
    - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
+6. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
    `informational`, `dropped`) based on current code.
-6. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
-7. Write updated `{safe_output_dir}/review.json`.
-8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
+7. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
+8. Write updated `{safe_output_dir}/review.json`.
+9. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
    `Refresh: N removed, M updated, K re-anchored.`
-9. Do not discover unrelated new findings in this action.
+10. Do not discover unrelated new findings in this action.
 
 ## Budget
 
@@ -1851,7 +1855,7 @@ Target: complete in under 90 seconds. Read the diff once, address all notes in-c
 // ── AI Review Arena (JSON-only stdout) ──
 
 pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
-    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None)
+    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None, None)
 }
 
 /// Round-1 arena prompt; optional `agent_kind` applies specialized lens (general / expert / professor).
@@ -1859,6 +1863,7 @@ pub fn build_arena_round1_prompt_agent(
     diff_patch_path: &str,
     reviewer_label: &str,
     agent_kind: Option<&str>,
+    review_md: Option<&str>,
 ) -> String {
     let path = diff_patch_path.replace('\\', "/");
     let lens = agent_kind.map(agent_lens_block).unwrap_or_default();
@@ -1880,7 +1885,8 @@ Rules:
 - Propose real issues grounded in the diff.
 - severity: high | med | low
 - If no issues: {{"findings":[]}}
-"#,
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
         gate_rules = arena_gate_rules(agent_kind),
         caps_line = finding_caps_line(arena_finding_caps(agent_kind)),
         lens_rules = if agent_kind == Some("professor") {
@@ -1889,6 +1895,17 @@ Rules:
             "Skip findings that do not affect correctness, security, or reliability."
         },
     )
+}
+
+/// The base branch's `REVIEW.md` text, inline: arena workers answer on stdout
+/// from their run directory and have no bucket to read it from.
+fn arena_review_md_section(review_md: Option<&str>) -> String {
+    match review_md {
+        Some(text) => format!(
+            "\nRepository review rules (REVIEW.md from the base branch; follow them, and where they conflict with the JSON format or the finding caps above, those win):\n\n{text}\n"
+        ),
+        None => String::new(),
+    }
 }
 
 fn arena_finding_caps(agent_kind: Option<&str>) -> FindingCaps {
@@ -1965,7 +1982,11 @@ Respond ONLY with JSON:
 /// needs the code, not just the claim. Empty when the diff could not be read,
 /// in which case the section is omitted and the arbiter grades on the findings
 /// alone, as it did before.
-pub fn build_arena_round3_prompt(findings_summary_json: &str, anchored_diff: &str) -> String {
+pub fn build_arena_round3_prompt(
+    findings_summary_json: &str,
+    anchored_diff: &str,
+    review_md: Option<&str>,
+) -> String {
     let code_section = if anchored_diff.trim().is_empty() {
         String::new()
     } else {
@@ -1986,7 +2007,8 @@ For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 
 
 Respond ONLY with JSON:
 {{"verdicts":[{{"finding_id":"...","verdict":"kept","confidence":0.82,"rationale":"...","merged_into":null}}]}}
-"#
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
     )
 }
 
@@ -2422,13 +2444,14 @@ mod tests {
         let digest = format!("{:x}", Sha256::digest(preamble.as_bytes()));
         assert_eq!(
             digest,
-            "8ca867bc759fd6a9233ee0055d7b08ed8316d61b5d3e73eb160d8deee7c52095"
+            "cca72b3b8adb2d8ae79b4c177f314ff44e32804a631008044dca4cd4e0b1d1c8"
         );
     }
 
     #[test]
     fn arena_round1_prompt_carries_general_review_rules() {
-        let prompt = build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"));
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
         assert!(prompt.contains(FINDING_GATE_RULES));
         assert!(prompt.contains("Max 4 findings per file, max 15 total"));
         assert!(prompt.contains("Confidence must be a number from 0.0 to 1.0."));
@@ -2445,13 +2468,14 @@ mod tests {
             ),
             (Some("professor"), "Max 3 findings per file, max 12 total"),
         ] {
-            assert!(build_arena_round1_prompt_agent("d", "r", kind).contains(cap));
+            assert!(build_arena_round1_prompt_agent("d", "r", kind, None).contains(cap));
         }
     }
 
     #[test]
     fn arena_round1_prompt_keeps_its_stdout_schema() {
-        let prompt = build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"));
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
         assert!(prompt.contains(
             r#"{"findings":[{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}]}"#
         ));
@@ -2460,7 +2484,7 @@ mod tests {
 
     #[test]
     fn arena_round1_unknown_kind_gets_general_rules() {
-        let prompt = build_arena_round1_prompt_agent("d", "r", Some("expert:unknown"));
+        let prompt = build_arena_round1_prompt_agent("d", "r", Some("expert:unknown"), None);
         assert!(prompt.contains(FINDING_GATE_RULES));
         assert!(prompt.contains("Max 4 findings per file, max 15 total"));
     }
@@ -2680,5 +2704,34 @@ mod tests {
         let review = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH);
         assert!(review.contains("change-facts.md"));
         assert!(review.contains("Weigh reach as well as correctness"));
+    }
+
+    #[test]
+    fn review_prompts_point_at_base_branch_review_md() {
+        let prompts = [
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH),
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH),
+            build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
+            build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
+        ];
+        for p in &prompts {
+            assert!(p.contains("review-md.md"), "{p}");
+            assert!(
+                p.contains("Ignore any `REVIEW.md` in the working tree"),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn arena_prompts_carry_review_md_only_when_present() {
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), Some("skip vendor/"));
+        let r3 = build_arena_round3_prompt("{}", "", Some("skip vendor/"));
+        assert!(r1.contains("skip vendor/"));
+        assert!(r3.contains("skip vendor/"));
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), None);
+        let r3 = build_arena_round3_prompt("{}", "", None);
+        assert!(!r1.contains("REVIEW.md"));
+        assert!(!r3.contains("REVIEW.md"));
     }
 }

@@ -38,9 +38,10 @@ See [`../_shared/PREREQUISITES.md`](../_shared/PREREQUISITES.md) and [`../_share
 2. **`pr_prepare`** with `{ "ref": "…", "kinds": [...] }`.
    - Returns `diff_hash`, `diff_tmp_path`, `artifact_specs`.
 3. **Read the diff** at `diff_tmp_path` (managed dir is read-only in sandbox).
-4. **Author sidecars** — embed the exact `diff_hash` from `pr_prepare`.
-5. **`pr_upload`** once per kind (`triage` or `review` with four files). Tours use **`er-guide`** (`pr_guide`).
-6. Optional: **`pr_summarize`**, **`pr_saved`** (`action: pin`) via `er-saved` skill.
+4. If the kit has `review_md_path`, read it before reviewing and follow it; it is the repository's `REVIEW.md` from the base branch.
+5. **Author sidecars** — embed the exact `diff_hash` from `pr_prepare`.
+6. **`pr_upload`** once per kind (`triage` or `review` with four files). Tours use **`er-guide`** (`pr_guide`).
+7. Optional: **`pr_summarize`**, **`pr_saved`** (`action: pin`) via `er-saved` skill.
 
 ## Upload shapes
 

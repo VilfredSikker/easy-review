@@ -26,6 +26,10 @@ impl ArenaPaths {
         self.root.join("diff.patch")
     }
 
+    pub fn review_md(&self) -> PathBuf {
+        self.root.join(crate::ai::review_md::REVIEW_MD_FILE)
+    }
+
     pub fn progress_jsonl(&self) -> PathBuf {
         self.root.join("progress.jsonl")
     }

@@ -451,6 +451,17 @@ pub(crate) fn start_review_flow_run(
     start_arena_run_with_kind(registry, config, inputs, params, ArenaRunKind::ReviewFlow)
 }
 
+/// Put the base branch's `REVIEW.md` text in the run directory for the prompts
+/// to inline. A failure only means the run goes without it.
+fn store_review_md(paths: &ArenaPaths, repo_root: &str, base_branch: &str, raw_diff: &str) {
+    let source = crate::ai::review_md::ReviewMdSource::Git {
+        repo_root: repo_root.to_string(),
+        base_ref: base_branch.to_string(),
+    };
+    let text = crate::ai::review_md::collect(&source, raw_diff);
+    let _ = crate::ai::review_md::write_review_md(&paths.root.to_string_lossy(), text.as_deref());
+}
+
 fn start_arena_run_with_kind(
     registry: Arc<ArenaRegistry>,
     config: ErConfig,
@@ -522,6 +533,7 @@ fn start_arena_run_with_kind(
     let paths = ArenaPaths::for_run(Path::new(&er_dir), &run_id);
     paths.ensure_dirs()?;
     save_diff_patch(&paths, &raw_diff)?;
+    store_review_md(&paths, &repo_root, &base_branch, &raw_diff);
 
     let diff_hash = compute_diff_hash(&raw_diff);
 
@@ -712,6 +724,7 @@ pub fn start_seeded_run(
     )?;
     if !params.raw_diff.trim().is_empty() {
         save_diff_patch(&paths, &params.raw_diff)?;
+        store_review_md(&paths, &repo_root, &params.base_branch, &params.raw_diff);
     }
     save_run(&paths, &run)?;
 
@@ -1035,6 +1048,7 @@ fn run_round1_parallel(
     let repo_root = repo_root.to_string();
     let reviewed_ref_note = reviewed_ref_note.map(str::to_owned);
     let patch_path = patch_path.to_string();
+    let review_md = std::fs::read_to_string(paths.review_md()).ok();
     let cancel = Arc::clone(cancel);
     let children = Arc::clone(children);
     let ok: Arc<Mutex<Vec<(String, super::schema::Round1Output)>>> =
@@ -1064,6 +1078,7 @@ fn run_round1_parallel(
         let repo_root = repo_root.clone();
         let reviewed_ref_note = reviewed_ref_note.clone();
         let patch_path = patch_path.clone();
+        let review_md = review_md.clone();
         let paths = paths.clone();
         let storage_dir = storage_dir.clone();
         let cancel = Arc::clone(&cancel);
@@ -1127,6 +1142,7 @@ fn run_round1_parallel(
                     &patch_path,
                     &reviewer.name,
                     reviewer.agent_kind.as_deref(),
+                    review_md.as_deref(),
                 );
                 let prompt = with_reviewed_ref_note(prompt, reviewed_ref_note.as_deref());
                 let _ = append_progress_event(
@@ -1671,8 +1687,9 @@ fn run_arbiter(
             crate::ai::prepared_diff::hunks_for_findings(&raw, &targets)
         })
         .unwrap_or_default();
+    let review_md = std::fs::read_to_string(paths.review_md()).ok();
     let prompt = with_reviewed_ref_note(
-        build_arena_round3_prompt(&summary.to_string(), &anchored),
+        build_arena_round3_prompt(&summary.to_string(), &anchored, review_md.as_deref()),
         reviewed_ref_note,
     );
     let cmd = match resolve_provider_command(

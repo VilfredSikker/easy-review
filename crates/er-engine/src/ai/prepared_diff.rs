@@ -65,18 +65,22 @@ fn ensure_diff_artifacts_locked(er_dir: &str, raw: &str) -> Result<String, Strin
 }
 
 /// [`ensure_diff_artifacts`], plus the `change-facts.md` triage and review read
-/// to judge reach. Triage and review prepare through this one, so neither sees
-/// a diff without its facts.
+/// to judge reach, and the `review-md.md` holding the base branch's
+/// `REVIEW.md` text (removed when `review_md` is `None`, so no stale rules
+/// survive). Triage and review prepare through this one, so neither sees a
+/// diff without its facts.
 pub fn ensure_review_inputs(
     er_dir: &str,
     raw: &str,
     rules: crate::ai::change_facts::RepoRules<'_>,
+    review_md: Option<&str>,
 ) -> Result<String, String> {
     // One lock for both, so a concurrent command on the same bucket cannot
     // leave one diff's facts beside the other's `diff-tmp`.
     let _guard = ARTIFACT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let hash = ensure_diff_artifacts_locked(er_dir, raw)?;
     crate::ai::change_facts::write_change_facts(er_dir, raw, rules)?;
+    crate::ai::review_md::write_review_md(er_dir, review_md)?;
     Ok(hash)
 }
 
@@ -88,10 +92,11 @@ pub fn ensure_review_inputs_from_config(
     er_dir: &str,
     raw: &str,
     repo_key: &str,
+    review_md: Option<&str>,
 ) -> Result<String, String> {
     let config = crate::config::load_global_config();
     let rules = crate::ai::change_facts::OwnedRepoRules::from_config(&config, repo_key);
-    ensure_review_inputs(er_dir, raw, rules.as_rules())
+    ensure_review_inputs(er_dir, raw, rules.as_rules(), review_md)
 }
 
 /// Whether both artifacts on disk were already derived from `hash`.
@@ -266,6 +271,18 @@ mod tests {
     use super::*;
 
     const FIXTURE_DIFF: &str = "diff --git a/src/foo.rs b/src/foo.rs\nindex 0000000..1111111 100644\n--- a/src/foo.rs\n+++ b/src/foo.rs\n@@ -1,2 +1,3 @@\n fn foo() {}\n+fn bar() {}\n-fn baz() {}\n fn qux() {}\n";
+
+    #[test]
+    fn ensure_review_inputs_writes_and_clears_review_md() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().to_str().unwrap();
+        let rules = crate::ai::change_facts::OwnedRepoRules::default();
+        ensure_review_inputs(er_dir, FIXTURE_DIFF, rules.as_rules(), Some("rules")).unwrap();
+        let file = dir.path().join(crate::ai::review_md::REVIEW_MD_FILE);
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "rules");
+        ensure_review_inputs(er_dir, FIXTURE_DIFF, rules.as_rules(), None).unwrap();
+        assert!(!file.exists());
+    }
 
     #[test]
     fn hunks_for_findings_takes_only_the_anchored_hunk() {
