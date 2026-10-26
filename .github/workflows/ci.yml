@@ -32,6 +32,7 @@ jobs:
       rust: ${{ github.event_name == 'push' || steps.filter.outputs.rust == 'true' }}
       ui: ${{ github.event_name == 'push' || steps.filter.outputs.ui == 'true' }}
       herdr: ${{ github.event_name == 'push' || steps.filter.outputs.herdr == 'true' }}
+      mcp: ${{ github.event_name == 'push' || steps.filter.outputs.mcp == 'true' }}
     steps:
       - uses: actions/checkout@v4
         if: github.event_name == 'pull_request'
@@ -58,6 +59,9 @@ jobs:
             herdr:
               - *ci
               - 'tools/herdr-easy-review/**'
+            mcp:
+              - *ci
+              - 'npm/er-mcp/**'
 
   test:
     name: Test
@@ -100,6 +104,18 @@ jobs:
         with:
           node-version: "20"
       - run: cd tools/herdr-easy-review && npm test
+
+  mcp-launcher:
+    name: MCP launcher
+    needs: changes
+    if: needs.changes.outputs.mcp == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - run: cd npm/er-mcp && npm test
 
   # Also the type check: the gate runs clippy with --workspace --all-targets,
   # which covers everything `cargo check --all-targets` did.

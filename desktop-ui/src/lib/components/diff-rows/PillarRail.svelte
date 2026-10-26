@@ -1,6 +1,7 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { diffNav } from "$lib/stores/diffNav.svelte";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import type { FileSnapshot } from "$lib/types";
   import type { PillarHeaderInfo } from "$lib/diffRenderModel";
 
@@ -78,7 +79,7 @@
   </div>
 
   {#if info.descriptionMarkdown}
-    <p class="text-[12px] text-fg-2 leading-snug whitespace-pre-wrap">{info.descriptionMarkdown}</p>
+    <MarkdownText text={info.descriptionMarkdown} className="text-[12px] text-fg-2 leading-snug" />
   {/if}
 
   <div class="flex flex-col gap-0.5 mt-1">
