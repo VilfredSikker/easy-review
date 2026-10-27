@@ -21,6 +21,7 @@ pub struct ConfigPatch {
 pub struct GetConfigHubResponse {
     pub settings: DesktopSettingsSnapshot,
     pub providers: Vec<AiProviderInfo>,
+    pub review_models: er_engine::config::ReviewModelGroups,
     pub active_effort: Option<String>,
     /// Soft validation messages from the last upsert (e.g. missing `{prompt}`).
     #[serde(default)]
@@ -115,6 +116,7 @@ pub fn get_config_hub(state: State<AppState>) -> Result<GetConfigHubResponse, St
     Ok(GetConfigHubResponse {
         settings,
         providers,
+        review_models: app.config.ai_hub.review_models.clone(),
         active_effort: default_selection.effort,
         warnings: Vec::new(),
         family_options: family_options(),
@@ -155,6 +157,7 @@ pub async fn apply_config_patch(
         Ok(GetConfigHubResponse {
             settings,
             providers,
+            review_models: app.config.ai_hub.review_models.clone(),
             active_effort: default_selection.effort,
             warnings: Vec::new(),
             family_options: family_options(),
@@ -381,10 +384,44 @@ fn hub_response_with_warnings(
     GetConfigHubResponse {
         settings,
         providers,
+        review_models: app.config.ai_hub.review_models.clone(),
         active_effort: default_selection.effort,
         warnings,
         family_options: family_options(),
     }
+}
+
+fn persist_review_models(
+    config: &mut er_engine::config::ErConfig,
+    groups: er_engine::config::ReviewModelGroups,
+    save: impl FnOnce(&er_engine::config::ErConfig) -> Result<(), String>,
+) -> Result<(), String> {
+    config
+        .ai_hub
+        .validate_review_models(&groups)
+        .map_err(|error| error.to_string())?;
+    let mut next = config.clone();
+    next.ai_hub.review_models = groups;
+    save(&next)?;
+    *config = next;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_review_flow_models(
+    groups: er_engine::config::ReviewModelGroups,
+    state: State<'_, AppState>,
+) -> Result<GetConfigHubResponse, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|error| error.to_string())?;
+        persist_review_models(&mut app.config, groups, |next| {
+            save_config(next).map_err(|error| error.to_string())
+        })?;
+        bump_revision(&state);
+        Ok(hub_response(&app))
+    })
+    .await
 }
 
 #[tauri::command]
@@ -659,4 +696,65 @@ pub async fn delete_ai_model(
         Ok(hub_response(&app))
     })
     .await
+}
+
+#[cfg(test)]
+mod review_model_settings_tests {
+    use super::persist_review_models;
+    use er_engine::config::{supplement_ai_hub, ErConfig, ReviewModelRef};
+
+    fn config() -> ErConfig {
+        let mut config = ErConfig::default();
+        supplement_ai_hub(&mut config.ai_hub);
+        config
+    }
+
+    #[test]
+    fn review_model_save_keeps_standalone_defaults_and_persists_exact_groups() {
+        let mut config = config();
+        let original_provider = config.ai_hub.default_provider.clone();
+        let original_model = config.ai_hub.default_model.clone();
+        let mut groups = config.ai_hub.review_models.clone();
+        groups.fast = vec![ReviewModelRef {
+            provider_id: "codex".into(),
+            model_id: "gpt-6-luna".into(),
+        }];
+        let mut saved = None;
+        persist_review_models(&mut config, groups.clone(), |next| {
+            saved = Some(next.ai_hub.review_models.clone());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(saved, Some(groups.clone()));
+        assert_eq!(config.ai_hub.review_models, groups);
+        assert_eq!(config.ai_hub.default_provider, original_provider);
+        assert_eq!(config.ai_hub.default_model, original_model);
+    }
+
+    #[test]
+    fn review_model_save_failure_leaves_live_config_unchanged() {
+        let mut config = config();
+        let original = serde_json::to_value(&config).unwrap();
+        let mut groups = config.ai_hub.review_models.clone();
+        groups.fast.reverse();
+        let result = persist_review_models(&mut config, groups, |_| Err("disk full".into()));
+        assert_eq!(result.unwrap_err(), "disk full");
+        assert_eq!(serde_json::to_value(&config).unwrap(), original);
+    }
+
+    #[test]
+    fn review_model_validation_failure_does_not_persist_or_mutate() {
+        let mut config = config();
+        let original = serde_json::to_value(&config).unwrap();
+        let mut groups = config.ai_hub.review_models.clone();
+        groups.advanced.clear();
+        let mut persisted = false;
+        let result = persist_review_models(&mut config, groups, |_| {
+            persisted = true;
+            Ok(())
+        });
+        assert!(result.is_err());
+        assert!(!persisted);
+        assert_eq!(serde_json::to_value(&config).unwrap(), original);
+    }
 }

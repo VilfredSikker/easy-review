@@ -168,15 +168,29 @@ fn run_auto_triage_once(ctx: &AutoTriageContext, req: &AutoTriageRequest) -> Res
     } else {
         er_engine::storage::rules_key(&req.repo_root, None)
     };
-    let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
-        &er_dir, &raw_diff, &rules_key,
-    )?;
-
     let base_branch = if req.base_ref.is_empty() {
         "main".to_string()
     } else {
         req.base_ref.clone()
     };
+    let review_md_source = if req.repo_root.is_empty() {
+        er_engine::ai::review_md::ReviewMdSource::Gh {
+            repo_slug: req.remote.clone(),
+            base_ref: base_branch.clone(),
+        }
+    } else {
+        er_engine::ai::review_md::ReviewMdSource::Git {
+            repo_root: req.repo_root.clone(),
+            base_ref: format!("origin/{base_branch}"),
+        }
+    };
+    let review_md = er_engine::ai::review_md::collect(&review_md_source, &raw_diff);
+    let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
+        &er_dir,
+        &raw_diff,
+        &rules_key,
+        review_md.as_deref(),
+    )?;
 
     let target = BackgroundTaskTarget {
         repo_root: req.repo_root.clone(),
@@ -273,10 +287,18 @@ fn run_branch_triage_once(
         return Err("Failed to resolve branch storage".to_string());
     }
     std::fs::create_dir_all(&er_dir).map_err(|e| format!("mkdir {er_dir}: {e}"))?;
+    let review_md = er_engine::ai::review_md::collect(
+        &er_engine::ai::review_md::ReviewMdSource::Git {
+            repo_root: repo_root.to_string(),
+            base_ref: base_branch.clone(),
+        },
+        &raw_diff,
+    );
     let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs_from_config(
         &er_dir,
         &raw_diff,
         &er_engine::storage::rules_key(repo_root, None),
+        review_md.as_deref(),
     )?;
 
     let target = BackgroundTaskTarget {

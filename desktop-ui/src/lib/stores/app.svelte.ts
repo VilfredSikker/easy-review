@@ -716,6 +716,21 @@ class AppStore {
     }, 5000);
   }
 
+  private rejectSkippedCmd(
+    command: string,
+    options: { throwOnError?: boolean },
+    reason = "skipped before invocation",
+  ): void {
+    if (!options.throwOnError) return;
+    const error = new Error(`${command} ${reason}`);
+    this.reportCmdError(command, error);
+    throw error;
+  }
+
+  private throwCmdErrorIfRequested(error: unknown, options: { throwOnError?: boolean }): void {
+    if (options.throwOnError) throw error;
+  }
+
   /** Serializes optimistic IPC so add-then-reply/delete hit the same id. */
   private optimisticChain: Promise<void> = Promise.resolve();
 
@@ -918,7 +933,11 @@ class AppStore {
     }
   }
 
-  async cmd(command: string, args?: Record<string, unknown>) {
+  async cmd(
+    command: string,
+    args?: Record<string, unknown>,
+    options: { throwOnError?: boolean } = {},
+  ): Promise<void> {
     // Reviewed toggling uses an optimistic path that preserves hunks + spans.
     if (command === "mark_reviewed" || command === "unmark_reviewed") {
       const path = (args as { path?: string } | undefined)?.path;
@@ -930,7 +949,10 @@ class AppStore {
 
     const tStart = performance.now();
     const run = this.beginCmd(command, args);
-    if (!run) return;
+    if (!run) {
+      this.rejectSkippedCmd(command, options);
+      return;
+    }
     const tSwitchingSet = performance.now();
     // Stays synchronous unless busy chrome must paint: an extra await here
     // would let a later cmd bump the tab-change generation first.
@@ -940,13 +962,19 @@ class AppStore {
     }
     const tInvokeStart = performance.now();
     try {
-      if (this.cmdSuperseded(run)) return;
+      if (this.cmdSuperseded(run)) {
+        this.rejectSkippedCmd(command, options, "superseded before invocation");
+        return;
+      }
       if (VOID_COMMANDS.has(command)) {
         await invoke<void>(command, args);
         return;
       }
       const snapshot = await this.invokeCmdSnapshot(command, args, run);
-      if (snapshot === LATEST_INVOKE_SKIPPED) return;
+      if (snapshot === LATEST_INVOKE_SKIPPED) {
+        this.rejectSkippedCmd(command, options);
+        return;
+      }
       const tInvokeDone = performance.now();
       if (!this.applyCmdSnapshot(command, snapshot, run)) return;
       logSlowCmdTiming(command, [tStart, tSwitchingSet, tInvokeStart, tInvokeDone, performance.now()]);
@@ -955,6 +983,7 @@ class AppStore {
         this.restoreConfirmedSnapshot();
       }
       this.reportCmdError(command, e);
+      this.throwCmdErrorIfRequested(e, options);
     } finally {
       this.settleCmdFlags(run);
     }

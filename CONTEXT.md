@@ -135,12 +135,36 @@ A cheap first pass that classifies a diff and recommends where to look, without
 reviewing it. Its output routes review effort; it is not itself a review.
 _Avoid_: scan, summary, overview
 
+**REVIEW.md**:
+A repository's instructions to its AI reviewers, written by its owners: what
+counts as important, what not to report, which paths to skip. Read from the
+base branch, never from the change under review. It is input to the agent;
+er never reads it as configuration.
+_Avoid_: review config, review settings
+
 **Arbiter**:
 A pass that judges findings other reviewers produced: merging duplicates,
 regrading confidence, and dropping claims it cannot substantiate. It records its
 rulings beside the findings rather than editing them, so the disagreement stays
 legible. See [`docs/adr/0035`](./docs/adr/0035-arbiter-verdict-overlay.md).
 _Avoid_: judge, validator, moderator
+
+**Review flow**:
+The default AI review whose triage picks a depth and lenses, whose finders run,
+and whose arbiter grades their findings. A run is bound to its starting diff
+hash. Deep requires cost confirmation and explicit result acceptance.
+_Avoid_: pipeline, auto-review, full review
+
+**Depth**:
+The review spend chosen by triage: Quick, Standard, or Deep. It is distinct
+from a file's Tier.
+_Avoid_: level, mode, effort
+
+**Model group**:
+The exact models allowed to run a Review stage. Fast covers triage and Quick,
+Standard covers most reviews, and Advanced covers Deep and the arbiter.
+Standalone actions keep the default model in Settings. See
+[`docs/adr/0045`](./docs/adr/0045-review-model-groups.md).
 
 **Importance**:
 How much of the codebase depends on a file. Declared as rules rather than

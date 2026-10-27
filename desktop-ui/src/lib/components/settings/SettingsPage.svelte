@@ -11,6 +11,7 @@
     ImportanceFileSnapshot,
     ImportanceRuleSnapshot,
     RefreshAiModelsResponse,
+    ReviewModelGroups,
     SettingsTab,
   } from "$lib/types";
   import { importanceFileWindow, matchedRuleLabel } from "$lib/importanceFiles";
@@ -20,6 +21,7 @@
   import SettingsTextField from "./SettingsTextField.svelte";
   import ProjectSettingsCard from "./ProjectSettingsCard.svelte";
   import AiProviderEditor from "./AiProviderEditor.svelte";
+  import ReviewModelGroupsEditor from "./ReviewModelGroupsEditor.svelte";
   import Button from "$lib/components/ui/Button.svelte";
 
   interface Props {
@@ -57,6 +59,7 @@
   let generalFields = $state<ConfigHubField[]>([]);
   let terminalFields = $state<ConfigHubField[]>([]);
   let providers = $state<AiProviderInfo[]>([]);
+  let reviewModels = $state<ReviewModelGroups>({ fast: [], standard: [], advanced: [] });
   let familyOptions = $state<string[]>([]);
   let selectedEffort = $state("Auto");
   let repoRoot = $state("");
@@ -140,6 +143,7 @@
     generalFields = res.settings.general;
     terminalFields = res.settings.terminal;
     providers = res.providers;
+    reviewModels = res.reviewModels;
     familyOptions = res.familyOptions ?? [];
     selectedEffort = res.activeEffort ?? "Auto";
     if (!effortOptions.includes(selectedEffort)) selectedEffort = "Auto";
@@ -420,10 +424,19 @@
               <span class="w-1 h-3 rounded-full bg-accent/70" aria-hidden="true"></span>
               AI Hub
             </h2>
+            <div class="mb-4 rounded-xl border border-hairline bg-card px-4 py-3">
+              <ReviewModelGroupsEditor
+                {providers}
+                {reviewModels}
+                onUpdated={(res) => applySettings(res)}
+                onError={(msg) => app.showToast("error", msg)}
+              />
+            </div>
             {#if providers.length > 0}
               <div class="bg-card border border-hairline rounded-xl px-4 py-3">
                 <p class="text-xs text-muted mb-3">
-                  The default provider, model, and reasoning effort for all AI Hub actions. Changes
+                  The default provider, model, and reasoning effort for standalone AI actions. Review
+                  uses the model groups above. Changes
                   save to config immediately. Mid-session picks in the AI action palette stay
                   session-only.
                 </p>

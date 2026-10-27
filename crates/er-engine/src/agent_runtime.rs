@@ -255,6 +255,7 @@ pub fn resolve_invocation(
     if family == CliFamily::Claude {
         inject_allowed_tools(&mut args, request.access.claude_tools());
     }
+    crate::config::inject_claude_startup_trim(family, &mut args);
     // Only grant managed-storage --add-dir when the task needs artifact I/O.
     // ReadOnly must not receive a Codex-writable extra root.
     crate::config::inject_agent_storage_access(family, &mut args, request.access.output_dir());
@@ -1093,6 +1094,57 @@ mod tests {
             "stream-json"
         ));
         assert!(invocation.args.iter().any(|arg| arg == "--verbose"));
+    }
+
+    #[test]
+    fn claude_invocation_trims_startup_once_and_other_families_do_not() {
+        fn flag_counts(config: &ErConfig, provider: &str, model: &str) -> (usize, usize) {
+            let task = AgentTaskKind::CardReply;
+            let invocation = resolve_invocation(
+                config,
+                AgentInvocationRequest {
+                    selection: AgentSelection::Runtime {
+                        provider_id: Some(provider),
+                        model_id: Some(model),
+                    },
+                    task: &task,
+                    effort: None,
+                    effort_override: None,
+                    work_dir: "/repo".into(),
+                    access: AgentAccessProfile::ReadOnly,
+                    live_logs: false,
+                },
+            )
+            .unwrap();
+            let count = |flag: &str| invocation.args.iter().filter(|a| *a == flag).count();
+            (
+                count("--strict-mcp-config"),
+                count("--disable-slash-commands"),
+            )
+        }
+
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        assert_eq!(flag_counts(&config, "claude", "sonnet-5.5"), (1, 1));
+
+        // A flag the user already set is kept, not repeated.
+        config
+            .ai_hub
+            .providers
+            .get_mut("claude")
+            .unwrap()
+            .args
+            .insert(0, "--strict-mcp-config".into());
+        assert_eq!(flag_counts(&config, "claude", "sonnet-5.5"), (1, 1));
+
+        assert_eq!(
+            flag_counts(&codex_config(), "codex", "gpt-5.6-terra"),
+            (0, 0)
+        );
+        assert_eq!(
+            flag_counts(&opencode_config(), "opencode", "claude-sonnet-4-5"),
+            (0, 0)
+        );
     }
 
     #[test]

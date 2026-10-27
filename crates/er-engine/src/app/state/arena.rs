@@ -1,16 +1,17 @@
 use crate::arena::{
     build_arena_diff_preview, build_snapshot_with_config, delete_run_dir,
-    import_arena_findings_to_review, load_run, parse_progress_state, reconcile_stale_runs,
-    save_run, scope_git_mode, start_arena_batch, start_arena_run, start_seeded_run,
-    ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState, ArenaRegistry,
-    ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams, HumanOverride,
-    ReviewerRef, SeededStartParams, Verdict,
+    import_arena_findings_to_review, load_run, parse_progress_state,
+    reconcile_stale_runs_excluding, save_run, scope_git_mode, start_arena_batch, start_arena_run,
+    start_seeded_run, ArenaBatchStartParams, ArenaDiffPreview, ArenaPaths, ArenaProgressState,
+    ArenaRegistry, ArenaRunInputs, ArenaRunKind, ArenaRunSnapshot, ArenaScope, ArenaStartParams,
+    HumanOverride, ReviewerRef, SeededStartParams, Verdict,
 };
 use crate::git::filter_raw_diff_by_paths;
 use anyhow::Result;
 use std::path::Path;
 use std::sync::Arc;
 
+use super::review_flow_admission::ReviewFlowLease;
 use super::App;
 use super::TabState;
 
@@ -98,9 +99,16 @@ impl App {
     pub fn reconcile_arena_runs(&self) {
         for tab in &self.tabs {
             let er_path = tab.er_dir();
-            let er = Path::new(&er_path);
-            let _ = reconcile_stale_runs(er);
+            let _ = self.recover_arena_bucket(&er_path);
         }
+    }
+
+    /// The one-instance-per-worktree contract makes unregistered historical
+    /// writers interrupted. Registry ownership is process-local, per ADR 0044.
+    pub(super) fn recover_arena_bucket(&self, er_dir: &str) -> Result<()> {
+        reconcile_stale_runs_excluding(Path::new(er_dir), |run_id| {
+            self.arena_registry.is_active(run_id)
+        })
     }
 
     pub fn arena_preview(
@@ -117,6 +125,8 @@ impl App {
     }
 
     pub fn arena_start(&mut self, mut params: ArenaStartParams) -> Result<String> {
+        let er_dir = self.tab().er_dir();
+        self.check_review_bucket_admission(&er_dir)?;
         params.effort = crate::config::resolve_effort(
             &self.config.ai_hub,
             &self.config.agent,
@@ -131,28 +141,57 @@ impl App {
         ));
         let tab = self.tab();
         let raw_diff = tab.raw_diff_for_arena(params.scope, params.files.as_deref())?;
-        let repo_root = tab.repo_root.clone();
-        let er_dir = tab.er_dir();
-        let er_key = er_dir.clone();
-        let branch_ref = tab
-            .local_branch_view
-            .clone()
-            .unwrap_or_else(|| tab.current_branch.clone());
-        let base_branch = tab.base_branch.clone();
+        let inputs = ArenaRunInputs {
+            repo_root: tab.repo_root.clone(),
+            er_dir,
+            branch_ref: tab
+                .local_branch_view
+                .clone()
+                .unwrap_or_else(|| tab.current_branch.clone()),
+            base_branch: tab.base_branch.clone(),
+            raw_diff,
+            reviewed_ref_note: None,
+        };
         let config = self.config.clone();
-        let registry = Arc::clone(&self.arena_registry);
-        let run_id = start_arena_run(
-            registry,
+        let run_id = self.arena_start_with_inputs(inputs, config, params)?;
+        self.notify(&format!("Arena run started ({run_id})"));
+        Ok(run_id)
+    }
+
+    /// Start an arena for captured review-flow inputs. The lease binds this
+    /// operation to the bucket admitted by the flow, even after tab navigation.
+    pub(super) fn arena_start_for(
+        &mut self,
+        inputs: ArenaRunInputs,
+        config: crate::config::ErConfig,
+        params: ArenaStartParams,
+        lease: &ReviewFlowLease,
+    ) -> Result<String> {
+        self.check_review_flow_arena_lease(&inputs.er_dir, lease)?;
+        let config = self.arena_config_with_live_limits(config);
+        let er_key = inputs.er_dir.clone();
+        let run_id = crate::arena::start_review_flow_run(
+            Arc::clone(&self.arena_registry),
             config,
-            ArenaRunInputs {
-                repo_root,
-                er_dir,
-                branch_ref,
-                base_branch,
-                raw_diff,
-            },
+            inputs,
             params,
         )?;
+        self.active_arena_runs
+            .entry(er_key)
+            .or_default()
+            .push(run_id.clone());
+        self.notify(&format!("Arena run started ({run_id})"));
+        Ok(run_id)
+    }
+
+    fn arena_start_with_inputs(
+        &mut self,
+        inputs: ArenaRunInputs,
+        config: crate::config::ErConfig,
+        params: ArenaStartParams,
+    ) -> Result<String> {
+        let er_key = inputs.er_dir.clone();
+        let run_id = start_arena_run(Arc::clone(&self.arena_registry), config, inputs, params)?;
         self.active_arena_runs
             .entry(er_key.clone())
             .or_default()
@@ -160,7 +199,6 @@ impl App {
         crate::dev_log::arena_line(format!(
             "App::arena_start ok run_id={run_id} er_dir={er_key}"
         ));
-        self.notify(&format!("Arena run started ({run_id})"));
         Ok(run_id)
     }
 
@@ -171,11 +209,12 @@ impl App {
     /// when there is nothing to validate — a caller can then say so rather than
     /// starting a run that would rule on nothing.
     pub fn arena_start_seeded(&mut self) -> Result<Option<String>> {
+        let er_dir = self.tab().er_dir();
+        self.check_review_bucket_admission(&er_dir)?;
         let tab = self.tab();
         let raw_diff = tab.raw_diff_for_arena(ArenaScope::Branch, None)?;
         let repo_root = tab.repo_root.clone();
         let er_dir = tab.er_dir();
-        let er_key = er_dir.clone();
         let branch_ref = tab
             .local_branch_view
             .clone()
@@ -190,40 +229,84 @@ impl App {
             .as_ref()
             .map(|r| r.diff_hash.clone())
             .unwrap_or_default();
+        let params = SeededStartParams {
+            er_dir,
+            branch_ref,
+            base_branch,
+            scope: ArenaScope::Branch,
+            diff_hash,
+            review_hash,
+            raw_diff,
+            arbiter: None,
+            include_general: false,
+            source_lenses: None,
+            lens_providers: std::collections::BTreeMap::new(),
+            reviewed_ref_note: None,
+        };
         let config = self.config.clone();
-        let registry = Arc::clone(&self.arena_registry);
-
-        let run_id = start_seeded_run(
-            registry,
-            config,
-            repo_root,
-            SeededStartParams {
-                er_dir,
-                branch_ref,
-                base_branch,
-                scope: ArenaScope::Branch,
-                diff_hash,
-                review_hash,
-                raw_diff,
-                arbiter: None,
-            },
-        )?;
+        let run_id = self.arena_start_seeded_with_inputs(repo_root, config, params)?;
 
         let Some(run_id) = run_id else {
             return Ok(None);
         };
-        self.active_arena_runs
-            .entry(er_key.clone())
-            .or_default()
-            .push(run_id.clone());
-        crate::dev_log::arena_line(format!(
-            "App::arena_start_seeded ok run_id={run_id} er_dir={er_key}"
-        ));
         self.notify(&format!("Validating findings ({run_id})"));
         Ok(Some(run_id))
     }
 
+    /// Start seeded verification from the flow's captured bucket and producer
+    /// set. This adapter never consults the active tab or current AI selection.
+    pub(super) fn arena_start_seeded_for(
+        &mut self,
+        repo_root: String,
+        config: crate::config::ErConfig,
+        params: SeededStartParams,
+        lease: &ReviewFlowLease,
+    ) -> Result<Option<String>> {
+        self.check_review_flow_arena_lease(&params.er_dir, lease)?;
+        let config = self.arena_config_with_live_limits(config);
+        self.arena_start_seeded_with_inputs(repo_root, config, params)
+    }
+
+    fn arena_start_seeded_with_inputs(
+        &mut self,
+        repo_root: String,
+        config: crate::config::ErConfig,
+        params: SeededStartParams,
+    ) -> Result<Option<String>> {
+        let er_key = params.er_dir.clone();
+        let run_id = start_seeded_run(Arc::clone(&self.arena_registry), config, repo_root, params)?;
+        if let Some(run_id) = &run_id {
+            self.active_arena_runs
+                .entry(er_key.clone())
+                .or_default()
+                .push(run_id.clone());
+            crate::dev_log::arena_line(format!(
+                "App::arena_start_seeded ok run_id={run_id} er_dir={er_key}"
+            ));
+        }
+        Ok(run_id)
+    }
+
+    fn check_review_flow_arena_lease(&self, er_dir: &str, lease: &ReviewFlowLease) -> Result<()> {
+        if er_dir != lease.bucket() || !self.review_flow_lease_is_valid(lease) {
+            anyhow::bail!("Review flow lease does not own this arena bucket");
+        }
+        Ok(())
+    }
+
+    fn arena_config_with_live_limits(
+        &self,
+        mut captured: crate::config::ErConfig,
+    ) -> crate::config::ErConfig {
+        captured.ai_hub.max_concurrent_reviews = self.config.ai_hub.max_concurrent_reviews;
+        captured.ai_hub.max_concurrent_arena_reviews =
+            self.config.ai_hub.max_concurrent_arena_reviews;
+        captured.ai_hub.max_concurrent_agents = self.config.ai_hub.max_concurrent_agents;
+        captured
+    }
+
     pub fn arena_start_batch(&mut self, mut batch: ArenaBatchStartParams) -> Result<Vec<String>> {
+        self.check_review_bucket_admission(&self.tab().er_dir())?;
         batch.effort = crate::config::resolve_effort(
             &self.config.ai_hub,
             &self.config.agent,
@@ -251,6 +334,7 @@ impl App {
                 branch_ref,
                 base_branch,
                 raw_diff,
+                reviewed_ref_note: None,
             },
             batch,
         )?;
@@ -316,6 +400,7 @@ impl App {
     ) -> Result<usize> {
         let er_dir = self.arena_er_dir_for_run(run_id);
         let er_path = er_dir.to_string_lossy().into_owned();
+        self.check_review_bucket_admission(&er_path)?;
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
         // A seeded run's verdicts reach the review through `arbiter.json`, which
@@ -327,6 +412,12 @@ impl App {
             anyhow::bail!(
                 "a seeded run's verdicts are applied from arbiter.json on load; \
                  there is nothing to import into review.json"
+            );
+        }
+        if self.is_review_flow_arena_run(&er_path, &run) {
+            anyhow::bail!(
+                "Review flow findings require guarded flow acceptance. \
+                 Open the current flow result or start a new Review."
             );
         }
         let ids = finding_ids.as_deref();
@@ -378,10 +469,26 @@ impl App {
         Ok(parse_progress_state(&paths))
     }
 
+    fn is_review_flow_arena_run(&self, er_dir: &str, run: &crate::arena::ArenaRun) -> bool {
+        if run.config.run_kind == ArenaRunKind::Seeded {
+            return false;
+        }
+        run.config.run_kind == ArenaRunKind::ReviewFlow
+            || self.review_flow_run_target(er_dir, &run.id).is_some()
+            || self
+                .review_flow_for(er_dir)
+                .is_some_and(|flow| flow.arena_run_id.as_deref() == Some(run.id.as_str()))
+    }
+
     pub fn arena_get_snapshot(&self, run_id: &str) -> Result<ArenaRunSnapshot> {
         let er_dir = self.arena_er_dir_for_run(run_id);
         let paths = ArenaPaths::for_run(&er_dir, run_id);
         let mut run = load_run(&paths)?;
+        // Legacy Deep runs predate durable ownership. Keep their history read
+        // only unless the captured flow can supply its guarded acceptance path.
+        if self.is_review_flow_arena_run(&er_dir.to_string_lossy(), &run) {
+            run.config.run_kind = ArenaRunKind::ReviewFlow;
+        }
         if let Some(live) = self.arena_registry.get_status(run_id) {
             run.status = live;
         }
@@ -421,6 +528,7 @@ impl App {
         }
         let er_dir = self.arena_er_dir_for_run(run_id);
         let er_key = er_dir.to_string_lossy().into_owned();
+        self.check_review_bucket_admission(&er_key)?;
         delete_run_dir(&er_dir, run_id)?;
         if let Some(ids) = self.active_arena_runs.get_mut(&er_key) {
             ids.retain(|id| id != run_id);
@@ -466,6 +574,323 @@ impl App {
             super::DiffMode::Staged => ArenaScope::Staged,
             _ => ArenaScope::Branch,
         }
+    }
+}
+
+#[cfg(test)]
+mod review_flow_arena_inputs_tests {
+    use super::*;
+    use crate::arena::{ArenaPaths, ReviewerRef};
+    use crate::config::{supplement_ai_hub, ErConfig};
+    use serde_json::json;
+    use std::sync::{Arc, MutexGuard};
+    use tempfile::tempdir;
+
+    struct FakeArenaEnv {
+        _guard: MutexGuard<'static, ()>,
+        _pool_guard: crate::agent_slots::TestSerialGuard,
+        previous: Option<std::ffi::OsString>,
+        _fixture: tempfile::TempDir,
+        registry: Arc<ArenaRegistry>,
+    }
+
+    impl Drop for FakeArenaEnv {
+        fn drop(&mut self) {
+            for run_id in self.registry.active_run_ids() {
+                while self.registry.is_active(&run_id) {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+            if let Some(previous) = self.previous.take() {
+                std::env::set_var("ER_FAKE_ARENA_DIR", previous);
+            } else {
+                std::env::remove_var("ER_FAKE_ARENA_DIR");
+            }
+        }
+    }
+
+    fn fake_arena(app: &App) -> FakeArenaEnv {
+        let pool_guard = crate::agent_slots::test_serial();
+        let guard = crate::arena::ARENA_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let source = std::path::Path::new(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../tests/fixtures/arena/fake"
+        ));
+        let fixture = tempdir().unwrap();
+        for name in ["round1.json", "round2.json", "round3.json"] {
+            std::fs::copy(source.join(name), fixture.path().join(name)).unwrap();
+        }
+        let previous = std::env::var_os("ER_FAKE_ARENA_DIR");
+        std::env::set_var("ER_FAKE_ARENA_DIR", fixture.path());
+        FakeArenaEnv {
+            _pool_guard: pool_guard,
+            _guard: guard,
+            previous,
+            _fixture: fixture,
+            registry: Arc::clone(&app.arena_registry),
+        }
+    }
+
+    fn reviewer() -> ReviewerRef {
+        ReviewerRef {
+            provider_id: "claude".into(),
+            model_id: "sonnet-5.5".into(),
+            agent_kind: Some("general".into()),
+        }
+    }
+
+    fn params() -> ArenaStartParams {
+        ArenaStartParams {
+            title: Some("captured flow".into()),
+            reviewers: vec![reviewer()],
+            scope: ArenaScope::Branch,
+            files: None,
+            rounds: Some(1),
+            arbiter: Some(reviewer()),
+            confirm: true,
+            agent_kind: Some("general".into()),
+            effort: Some("high".into()),
+        }
+    }
+
+    fn inputs(bucket: &str) -> ArenaRunInputs {
+        ArenaRunInputs {
+            repo_root: "/captured/repo".into(),
+            er_dir: bucket.into(),
+            branch_ref: "captured/head".into(),
+            base_branch: "captured/base".into(),
+            raw_diff: "captured raw diff".into(),
+            reviewed_ref_note: None,
+        }
+    }
+
+    fn configured_app() -> App {
+        let mut app = App::new_for_test(Vec::new());
+        supplement_ai_hub(&mut app.config.ai_hub);
+        app
+    }
+
+    fn prepared_config() -> ErConfig {
+        let mut config = ErConfig::default();
+        supplement_ai_hub(&mut config.ai_hub);
+        for provider in config.ai_hub.providers.values_mut() {
+            provider.command = "/bin/false".into();
+        }
+        config
+    }
+
+    #[test]
+    fn review_flow_arena_inputs_reject_mismatched_bucket_before_write() {
+        let tmp = tempdir().unwrap();
+        let owned = tmp.path().join("owned");
+        let wrong = tmp.path().join("wrong");
+        let mut app = configured_app();
+        let lease = app
+            .acquire_review_flow_lease(owned.to_str().unwrap())
+            .unwrap();
+        let result = app.arena_start_for(
+            inputs(wrong.to_str().unwrap()),
+            prepared_config(),
+            params(),
+            &lease,
+        );
+        assert!(result.is_err());
+        assert!(!wrong.exists(), "rejection must happen before arena writes");
+    }
+
+    #[test]
+    fn review_flow_arena_inputs_reject_stale_lease_before_write() {
+        let tmp = tempdir().unwrap();
+        let bucket = tmp.path().join("bucket");
+        let mut app = configured_app();
+        let lease = app
+            .acquire_review_flow_lease(bucket.to_str().unwrap())
+            .unwrap();
+        app.release_review_flow_lease(&lease).unwrap();
+        let result = app.arena_start_for(
+            inputs(bucket.to_str().unwrap()),
+            prepared_config(),
+            params(),
+            &lease,
+        );
+        assert!(result.is_err());
+        assert!(
+            !bucket.exists(),
+            "rejection must happen before arena writes"
+        );
+    }
+
+    #[test]
+    fn review_flow_arena_inputs_keep_captured_values_after_tab_switch() {
+        let mut app = configured_app();
+        let tmp = tempdir().unwrap();
+        let _env = fake_arena(&app);
+        let bucket = tmp.path().join("captured-bucket");
+        let lease = app
+            .acquire_review_flow_lease(bucket.to_str().unwrap())
+            .unwrap();
+        let captured = inputs(bucket.to_str().unwrap());
+        let run_config = prepared_config();
+        app.tabs.push(TabState::new_for_test(Vec::new()));
+        app.active_tab = 1;
+        let run_id = app
+            .arena_start_for(captured, run_config, params(), &lease)
+            .unwrap();
+        let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
+        assert_eq!(run.branch_ref, "captured/head");
+        assert_eq!(run.base_branch, "captured/base");
+        assert_eq!(
+            run.diff_hash,
+            crate::ai::compute_diff_hash("captured raw diff")
+        );
+        assert_eq!(run.config.effort.as_deref(), Some("high"));
+        assert_eq!(run.title.as_deref(), Some("captured flow"));
+    }
+
+    #[test]
+    fn review_flow_seeded_inputs_preserve_sources_and_general_findings() {
+        let mut app = configured_app();
+        app.config.ai_hub.default_effort = Some("low".into());
+        let tmp = tempdir().unwrap();
+        let _env = fake_arena(&app);
+        let bucket = tmp.path().join("captured-bucket");
+        std::fs::create_dir_all(&bucket).unwrap();
+        std::fs::write(
+            bucket.join("review.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "diff_hash": "flow-hash",
+                "files": { "src/a.rs": { "risk": "medium", "findings": [{
+                    "id": "general-1", "severity": "medium", "title": "general claim",
+                    "description": "body", "line_start": 5
+                }] }}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let lease = app
+            .acquire_review_flow_lease(bucket.to_str().unwrap())
+            .unwrap();
+        app.tabs.push(TabState::new_for_test(Vec::new()));
+        app.active_tab = 1;
+        let params = SeededStartParams {
+            er_dir: bucket.to_string_lossy().into_owned(),
+            branch_ref: "captured/head".into(),
+            base_branch: "captured/base".into(),
+            scope: ArenaScope::Branch,
+            diff_hash: "flow-hash".into(),
+            review_hash: String::new(),
+            raw_diff: "captured raw diff".into(),
+            arbiter: Some(reviewer()),
+            include_general: true,
+            source_lenses: Some(vec!["general".into()]),
+            lens_providers: std::collections::BTreeMap::from([("general".into(), reviewer())]),
+            reviewed_ref_note: None,
+        };
+        let mut captured_config = prepared_config();
+        captured_config.ai_hub.default_effort = Some("high".into());
+        let run_id = app
+            .arena_start_seeded_for("/captured/repo".into(), captured_config, params, &lease)
+            .unwrap()
+            .unwrap();
+        let run = load_run(&ArenaPaths::for_run(&bucket, &run_id)).unwrap();
+        assert_eq!(run.branch_ref, "captured/head");
+        assert_eq!(run.findings.len(), 1);
+        assert_eq!(run.findings[0].raised_by, vec!["general"]);
+        assert_eq!(
+            run.config.reviewers[0].agent_kind.as_deref(),
+            Some("general")
+        );
+        assert_eq!(run.config.effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn review_flow_seeded_legacy_wrapper_keeps_false_none_defaults() {
+        let tmp = tempdir().unwrap();
+        let repo = tmp.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git command failed: {:?}: {}",
+                args,
+                String::from_utf8_lossy(&output.stderr)
+            );
+            output
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.name", "Test"]);
+        run_git(&["config", "user.email", "test@example.invalid"]);
+        std::fs::write(repo.join("file.txt"), "before\n").unwrap();
+        run_git(&["add", "file.txt"]);
+        run_git(&["-c", "commit.gpgsign=false", "commit", "-qm", "base"]);
+        std::fs::write(repo.join("file.txt"), "after\n").unwrap();
+        let raw_diff = String::from_utf8(run_git(&["diff", "--binary"]).stdout).unwrap();
+        let current_branch = String::from_utf8(run_git(&["branch", "--show-current"]).stdout)
+            .unwrap()
+            .trim()
+            .to_string();
+
+        let bucket = tmp.path().join("active");
+        std::fs::create_dir_all(&bucket).unwrap();
+        let mut app = configured_app();
+        app.tab_mut().repo_root = repo.to_string_lossy().into_owned();
+        app.tab_mut().current_branch = current_branch;
+        app.tab_mut().local_branch_checkout_root = Some(repo.to_string_lossy().into_owned());
+        app.tab_mut().set_raw_diff_for_test(&raw_diff);
+        app.tab_mut().er_root = crate::paths::ErRoot::Managed {
+            agent_dir: bucket.to_string_lossy().into_owned(),
+            session_dir: bucket.to_string_lossy().into_owned(),
+        };
+        let review = json!({
+            "version": 1,
+            "diff_hash": crate::ai::compute_diff_hash(&raw_diff),
+            "files": { "file.txt": { "risk": "medium", "findings": [{
+                "id": "general-1", "severity": "medium", "title": "general claim",
+                "description": "body", "line_start": 1
+            }] }}
+        });
+        std::fs::write(
+            bucket.join("review.json"),
+            serde_json::to_vec(&review).unwrap(),
+        )
+        .unwrap();
+        assert!(app.arena_start_seeded().unwrap().is_none());
+    }
+
+    #[test]
+    fn review_flow_arena_uses_live_resource_caps_with_captured_provider_config() {
+        let mut app = configured_app();
+        app.config.ai_hub.max_concurrent_reviews = 9;
+        app.config.ai_hub.max_concurrent_arena_reviews = 8;
+        app.config.ai_hub.max_concurrent_agents = 10;
+        let mut captured = prepared_config();
+        captured.ai_hub.max_concurrent_reviews = 1;
+        captured.ai_hub.max_concurrent_arena_reviews = 2;
+        captured.ai_hub.max_concurrent_agents = 3;
+        let provider_command = captured
+            .ai_hub
+            .providers
+            .values()
+            .next()
+            .unwrap()
+            .command
+            .clone();
+        let effective = app.arena_config_with_live_limits(captured);
+        assert_eq!(effective.ai_hub.max_concurrent_reviews, 9);
+        assert_eq!(effective.ai_hub.max_concurrent_arena_reviews, 8);
+        assert_eq!(effective.ai_hub.max_concurrent_agents, 10);
+        assert_eq!(
+            effective.ai_hub.providers.values().next().unwrap().command,
+            provider_command
+        );
     }
 }
 
@@ -856,6 +1281,21 @@ mod tests {
             !paths.root.is_dir(),
             "delete must target the run's own er_dir, not the active tab's"
         );
+    }
+
+    #[test]
+    fn arena_delete_refuses_a_bucket_owned_by_review_flow() {
+        let ta = tempfile::tempdir().unwrap();
+        let tb = tempfile::tempdir().unwrap();
+        let mut app = app_with_two_tabs(ta.path().to_str().unwrap(), tb.path().to_str().unwrap());
+        let er_b = app.tabs[1].er_dir();
+        let paths = ArenaPaths::for_run(Path::new(&er_b), "arena-flow-owned");
+        crate::arena::save_run(&paths, &sample_run("arena-flow-owned")).unwrap();
+        let lease = app.acquire_review_flow_lease(&er_b).unwrap();
+
+        assert!(app.arena_delete("arena-flow-owned").is_err());
+        assert!(paths.root.is_dir(), "the owned run must remain on disk");
+        app.release_review_flow_lease(&lease).unwrap();
     }
 
     #[test]

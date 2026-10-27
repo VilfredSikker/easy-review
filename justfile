@@ -33,6 +33,12 @@ alias sign := sign-release-desktop
 _default:
     @just --list
 
+# Install locked workspace and desktop frontend dependencies. Required toolchains
+# are checked first; this never installs Rust, Bun, or other system tools.
+[group('dev/setup')]
+install-deps:
+    ./scripts/install-deps.sh
+
 # ════════════════════════════════ DEVELOPMENT ════════════════════════════════════
 # Local dev builds and dev servers. Fast, unoptimized, never installs anything.
 

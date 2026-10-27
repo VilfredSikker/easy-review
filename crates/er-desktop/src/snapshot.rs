@@ -415,6 +415,12 @@ impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
 #[derive(Debug, Clone, Serialize)]
 pub struct AppSnapshot {
     pub preview_context_key: String,
+    /// Exact managed storage bucket used by review actions for this tab.
+    #[serde(default)]
+    pub review_bucket_er_dir: String,
+    /// Live default review flow in this bucket, when one has been started.
+    #[serde(default)]
+    pub review_flow: Option<ReviewFlowSnapshot>,
     pub mode: String,
     pub branch: String,
     pub base: String,
@@ -549,6 +555,98 @@ pub struct AppSnapshot {
     /// sidebar version label; update checks compare against GitHub Releases.
     #[serde(default)]
     pub app_version: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ReviewFlowSnapshot {
+    pub state: String,
+    pub tasks: Vec<er_engine::ai::review_flow::FlowTaskProgress>,
+    pub depth: Option<String>,
+    pub diff_hash: String,
+    pub lenses: Vec<String>,
+    pub pending_finders: Vec<String>,
+    pub failed_finders: Vec<FailedReviewFlowFinderSnapshot>,
+    pub arena_run_id: Option<String>,
+    /// Providers with successful finder output for this flow.
+    pub successful_finder_providers: Vec<String>,
+    /// Provider that successfully completed arbitration, if any.
+    pub successful_arbiter_provider: Option<String>,
+    /// Sorted unique providers that actually completed finder or arbiter work.
+    pub providers_used: Vec<String>,
+    pub estimated_cost: Option<f64>,
+    pub estimated_latency_seconds: Option<f64>,
+    pub kept: usize,
+    pub dropped: usize,
+    pub awaiting_accept: usize,
+    pub reason: Option<String>,
+    pub draining: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct FailedReviewFlowFinderSnapshot {
+    pub lens: String,
+    pub reason: String,
+}
+
+impl ReviewFlowSnapshot {
+    fn from_app(app: &App, er_dir: &str) -> Option<Self> {
+        let flow = app.review_flow_for(er_dir)?;
+        Some(Self::from_flow(flow, app.review_flow_is_draining(er_dir)))
+    }
+
+    fn from_flow(flow: &er_engine::ai::review_flow::ReviewFlow, draining: bool) -> Self {
+        use er_engine::ai::review_flow::{FlowDepth, FlowState};
+
+        let (state, kept, dropped, awaiting_accept, reason) = match &flow.state {
+            FlowState::Triaging => ("triaging", 0, 0, 0, None),
+            FlowState::Skipped => ("skipped", 0, 0, 0, None),
+            FlowState::AwaitingConfirmation => ("awaiting_confirmation", 0, 0, 0, None),
+            FlowState::Finding => ("finding", 0, 0, 0, None),
+            FlowState::Verifying => ("verifying", 0, 0, 0, None),
+            FlowState::Done {
+                kept,
+                dropped,
+                awaiting_accept,
+            } => ("done", *kept, *dropped, *awaiting_accept, None),
+            FlowState::Failed { reason } => ("failed", 0, 0, 0, Some(reason.clone())),
+            FlowState::Cancelled => ("cancelled", 0, 0, 0, None),
+        };
+
+        Self {
+            state: state.to_string(),
+            tasks: flow.tasks.clone(),
+            depth: flow.depth.map(|depth| {
+                match depth {
+                    FlowDepth::Quick => "quick",
+                    FlowDepth::Standard => "standard",
+                    FlowDepth::Deep => "deep",
+                }
+                .to_string()
+            }),
+            diff_hash: flow.diff_hash.clone(),
+            lenses: flow.lenses.clone(),
+            pending_finders: flow.pending_finders.clone(),
+            failed_finders: flow
+                .failed_finders
+                .iter()
+                .map(|(lens, reason)| FailedReviewFlowFinderSnapshot {
+                    lens: lens.clone(),
+                    reason: reason.clone(),
+                })
+                .collect(),
+            arena_run_id: flow.arena_run_id.clone(),
+            successful_finder_providers: flow.successful_finder_providers.clone(),
+            successful_arbiter_provider: flow.successful_arbiter_provider.clone(),
+            providers_used: flow.providers_used.clone(),
+            estimated_cost: flow.estimated_cost,
+            estimated_latency_seconds: flow.estimated_latency_seconds,
+            kept,
+            dropped,
+            awaiting_accept,
+            reason,
+            draining,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1170,6 +1268,12 @@ pub struct FlatFinding {
     /// merging them into a single row was for.
     #[serde(default)]
     pub raised_by: Vec<String>,
+    /// Providers that actually raised this finding, from host-owned provenance.
+    #[serde(default)]
+    pub providers: Vec<String>,
+    /// Whether the finding was produced by the dedicated Security stage.
+    #[serde(default)]
+    pub security_stage: bool,
     pub title: String,
     pub message_markdown: String,
     /// GitHub comment id this finding was promoted to (if any).
@@ -1337,6 +1441,16 @@ pub struct TriageSnapshot {
     /// Present only when the agent pointed at where the guard is checked;
     /// an unevidenced guard claim is dropped here (`TriageGuard::is_evidenced`).
     pub guard: Option<TriageGuardSnapshot>,
+    /// Evidence-backed signals that led triage to request security review.
+    #[serde(default)]
+    pub sensitive: Vec<TriageSensitiveReasonSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TriageSensitiveReasonSnapshot {
+    pub kind: String,
+    pub evidence: String,
+    pub note: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1420,6 +1534,10 @@ pub struct GithubStatusSnapshot {
     /// not this PR, picks the method. Looked up only for open PRs.
     #[serde(default)]
     pub base_has_merge_queue: bool,
+    /// The viewer may merge past the base branch's unmet requirements
+    /// (`gh pr merge --admin`). Looked up only while the PR is blocked.
+    #[serde(default)]
+    pub can_bypass_rules: bool,
     /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
     /// Process-local, so never sent or persisted.
     #[serde(skip)]
@@ -2395,6 +2513,8 @@ fn build_snapshot_inner(
     } = *sources;
     let t0 = std::time::Instant::now();
     let tab = app.tab();
+    let review_bucket_er_dir = tab.er_dir();
+    let review_flow = ReviewFlowSnapshot::from_app(app, &review_bucket_er_dir);
 
     let mode = mode_str(tab.mode);
 
@@ -2764,6 +2884,8 @@ fn build_snapshot_inner(
 
     let out = AppSnapshot {
         preview_context_key: tab.preview_context_key(),
+        review_bucket_er_dir,
+        review_flow,
         mode: mode.to_string(),
         branch,
         base,
@@ -4038,17 +4160,41 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         }
     };
 
-    let (high, med, low) = if let Some(review) = &ai.review {
+    let (projected_findings, projected_resolved_findings, projected_dropped_findings) =
+        if let Some(review) = &ai.review {
+            let mut active = Vec::new();
+            let mut resolved = Vec::new();
+            let mut dropped = Vec::new();
+            for (path, file_review) in &review.files {
+                for finding in &file_review.findings {
+                    let row = (path.as_str(), finding);
+                    if matches!(finding.confidence, er_engine::ai::Confidence::Dropped) {
+                        dropped.push(row);
+                    } else if finding.resolved {
+                        resolved.push(row);
+                    } else {
+                        active.push(row);
+                    }
+                }
+            }
+            (
+                er_engine::ai::project_visible_findings(active, &ai.arbiter_graded_keys),
+                er_engine::ai::project_visible_findings(resolved, &ai.arbiter_graded_keys),
+                er_engine::ai::project_visible_findings(dropped, &ai.arbiter_graded_keys),
+            )
+        } else {
+            (Vec::new(), Vec::new(), Vec::new())
+        };
+
+    let (high, med, low) = if ai.review.is_some() {
         let mut h = 0usize;
         let mut m = 0usize;
         let mut l = 0usize;
-        for file_review in review.files.values() {
-            for finding in file_review.findings.iter().filter(|f| f.is_active()) {
-                match finding.severity {
-                    RiskLevel::High => h += 1,
-                    RiskLevel::Medium => m += 1,
-                    RiskLevel::Low | RiskLevel::Info => l += 1,
-                }
+        for (_, finding) in projected_findings.iter().filter(|(_, f)| f.is_active()) {
+            match finding.severity {
+                RiskLevel::High => h += 1,
+                RiskLevel::Medium => m += 1,
+                RiskLevel::Low | RiskLevel::Info => l += 1,
             }
         }
         (h, m, l)
@@ -4213,8 +4359,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
     let mut findings: Vec<FlatFinding> = Vec::new();
     let mut resolved_findings: Vec<FlatFinding> = Vec::new();
     let mut dropped_findings: Vec<FlatFinding> = Vec::new();
-    if let Some(review) = &ai.review {
-        let to_flat = |path: &String, f: &er_engine::ai::Finding| -> FlatFinding {
+    if ai.review.is_some() {
+        let to_flat = |path: &str, f: &er_engine::ai::Finding| -> FlatFinding {
             let promotions = &promotions;
             let gh = ai.github_comments.as_ref();
             let thread_id = gh
@@ -4279,7 +4425,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             }
             FlatFinding {
                 id: f.id.clone(),
-                file: path.clone(),
+                file: path.to_owned(),
                 line: f.line_start,
                 hunk_index: f.hunk_index,
                 severity: severity_str(f.severity).to_string(),
@@ -4289,6 +4435,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
                 agent_label: er_engine::ai::agent_label_for_id(&f.lens).to_string(),
                 raised_by: f.named_raisers().iter().map(|s| s.to_string()).collect(),
+                providers: f.providers.clone(),
+                security_stage: f.is_security_stage(),
                 title: f.title.clone(),
                 message_markdown: f.description.clone(),
                 promoted_to: promotions
@@ -4299,20 +4447,18 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 responses,
             }
         };
-        for (path, fr) in &review.files {
-            for f in &fr.findings {
-                let built = to_flat(path, f);
-                // Three lists, one mapping: what to draw, what the reader
-                // resolved, and what the arbiter ruled out. The last two stay
-                // out of the first so nothing reading it changes meaning.
-                if matches!(f.confidence, er_engine::ai::Confidence::Dropped) {
-                    dropped_findings.push(built);
-                } else if f.resolved {
-                    resolved_findings.push(built);
-                } else {
-                    findings.push(built);
-                }
-            }
+        for (path, f) in &projected_findings {
+            let built = to_flat(path, f);
+            // Three lists, one mapping: what to draw, what the reader
+            // resolved, and what the arbiter ruled out. The last two stay
+            // out of the first so nothing reading it changes meaning.
+            findings.push(built);
+        }
+        for (path, f) in &projected_resolved_findings {
+            resolved_findings.push(to_flat(path, f));
+        }
+        for (path, f) in &projected_dropped_findings {
+            dropped_findings.push(to_flat(path, f));
         }
     }
 
@@ -4361,6 +4507,16 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     name: g.name.clone(),
                     evidence: g.evidence.clone(),
                 }),
+            sensitive: t
+                .sensitive
+                .reasons
+                .iter()
+                .map(|reason| TriageSensitiveReasonSnapshot {
+                    kind: reason.kind.clone(),
+                    evidence: reason.evidence.clone(),
+                    note: reason.note.clone(),
+                })
+                .collect(),
         }
     });
 
@@ -4515,6 +4671,44 @@ mod tests {
     use super::*;
     use er_engine::ai::{ErGitHubComments, GitHubReviewComment};
 
+    #[test]
+    fn review_flow_snapshot_keeps_captured_task_identity_and_wire_status() {
+        use er_engine::ai::review_flow::{
+            FlowState, FlowTaskProgress, FlowTaskStage, FlowTaskStatus, ReviewFlow,
+        };
+
+        let mut flow = ReviewFlow::new("captured-hash");
+        flow.state = FlowState::Failed {
+            reason: "provider failed".into(),
+        };
+        flow.tasks.push(FlowTaskProgress {
+            id: "finder:security".into(),
+            stage: FlowTaskStage::Finding,
+            lens: Some("security".into()),
+            label: "Security review".into(),
+            purpose: "Check permissions and sensitive data".into(),
+            provider_id: "captured-provider".into(),
+            provider_label: "Captured provider".into(),
+            model_id: "captured-model".into(),
+            model_label: "Captured model".into(),
+            status: FlowTaskStatus::Failed,
+            error: Some("provider failed".into()),
+            background_task_id: Some("exact-background-task".into()),
+            round: None,
+            total_rounds: None,
+        });
+        let snapshot = ReviewFlowSnapshot::from_flow(&flow, false);
+        let wire = serde_json::to_value(snapshot).unwrap();
+        assert_eq!(wire["tasks"][0]["provider_id"], "captured-provider");
+        assert_eq!(wire["tasks"][0]["model_id"], "captured-model");
+        assert_eq!(wire["tasks"][0]["stage"], "finding");
+        assert_eq!(wire["tasks"][0]["status"], "failed");
+        assert_eq!(wire["tasks"][0]["error"], "provider failed");
+        assert_eq!(
+            wire["tasks"][0]["background_task_id"],
+            "exact-background-task"
+        );
+    }
     #[test]
     fn snapshot_inbox_hides_disabled_kinds_and_drops_them_from_unread() {
         use crate::inbox::{InboxItem, InboxTarget};
@@ -5989,6 +6183,7 @@ mod tests {
             lens: "security".to_string(),
             category: "correctness".to_string(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
             title: format!("Finding {id}"),
             description: "body".to_string(),
             hunk_index: Some(0),
@@ -6053,6 +6248,51 @@ mod tests {
         // The arbiter's removals are listed rather than only counted, so the
         // claim it rejected stays readable.
         assert_eq!(ids(&snapshot.dropped_findings), vec!["drp"]);
+    }
+
+    #[test]
+    fn projected_active_claim_survives_resolved_general_duplicate() {
+        use std::collections::HashMap;
+
+        let mut general = test_finding("general", true, er_engine::ai::Confidence::Confirmed);
+        general.lens = "general".into();
+        general.title = "same canonical claim".into();
+        let mut security = test_finding("security", false, er_engine::ai::Confidence::Confirmed);
+        security.lens = "security".into();
+        security.title = general.title.clone();
+
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.review = Some(ErReview {
+            version: 1,
+            diff_hash: "abc".into(),
+            created_at: String::new(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::from([(
+                "a.rs".into(),
+                ErFileReview {
+                    risk: RiskLevel::High,
+                    risk_reason: String::new(),
+                    summary: String::new(),
+                    findings: vec![general, security],
+                },
+            )]),
+            file_hashes: HashMap::new(),
+        });
+        tab.ai
+            .arbiter_graded_keys
+            .insert(er_engine::ai::finding_key(
+                "a.rs",
+                Some(1),
+                "same canonical claim",
+            ));
+
+        let snapshot = build_ai_snapshot(&tab, None);
+        assert_eq!(snapshot.findings.len(), 1);
+        assert_eq!(snapshot.findings[0].id, "security");
+        assert_eq!(snapshot.resolved_findings.len(), 1);
+        assert_eq!(snapshot.resolved_findings[0].id, "general");
+        assert_eq!(snapshot.high, 1);
     }
 
     /// The card renders from the wire, and its toggle sends back a position in
@@ -6133,5 +6373,17 @@ mod tests {
         // is filed under the security lens and categorised `correctness`.
         assert_eq!(finding.lens_category, "security · correctness");
         assert!(!finding.resolved);
+    }
+
+    #[test]
+    fn flat_finding_carries_provider_and_security_stage_provenance() {
+        let mut finding = test_finding("provenance", false, er_engine::ai::Confidence::Confirmed);
+        finding.raised_by = vec!["general".into(), "security".into()];
+        finding.providers = vec!["provider-a".into(), "provider-b".into()];
+
+        let snapshot = ai_snapshot_with(vec![finding]);
+        let finding = &snapshot.findings[0];
+        assert_eq!(finding.providers, ["provider-a", "provider-b"]);
+        assert!(finding.security_stage);
     }
 }

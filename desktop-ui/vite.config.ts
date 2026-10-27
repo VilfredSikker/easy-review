@@ -1,7 +1,10 @@
-import { defineConfig } from "vite";
+import { defineConfig, searchForWorkspaceRoot } from "vite";
 import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath, URL } from "node:url";
+import { realpathSync } from "node:fs";
+
+const uiRoot = fileURLToPath(new URL(".", import.meta.url));
 
 // Force a full page reload when any Svelte component or CSS changes.
 // Tailwind v4 + Tauri webview occasionally drops CSS HMR silently,
@@ -36,6 +39,13 @@ export default defineConfig({
   // Port is chosen by scripts/tauri-dev.sh (free-port scan starting at 5183) and
   // passed here + to Tauri's devUrl so both agree. strictPort stays on: a silent
   // drift would leave Tauri's devUrl pointing at the wrong server.
-  server: { port: Number(process.env.VITE_DEV_PORT) || 5183, strictPort: true },
+  server: {
+    port: Number(process.env.VITE_DEV_PORT) || 5183,
+    strictPort: true,
+    fs: {
+      // Worktrees can share dependencies through a node_modules symlink.
+      allow: [searchForWorkspaceRoot(uiRoot), realpathSync(new URL("./node_modules", import.meta.url))],
+    },
+  },
   envPrefix: ["VITE_", "TAURI_"],
 });

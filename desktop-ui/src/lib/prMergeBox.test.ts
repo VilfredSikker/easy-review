@@ -4,6 +4,7 @@ import {
   allowedMethods,
   canWrite,
   confirmLabel,
+  effectiveMerge,
   mergeBoxModel,
   mergeButtonLabel,
   mergeHeadNote,
@@ -170,7 +171,7 @@ describe("mergeBoxModel — open PR", () => {
     expect(m.offerDeleteOnMerge).toBe(false);
     expect(m.merge?.enabled).toBe(true);
     expect(mergeButtonLabel("rebase", false, true)).toBe("Add to merge queue");
-    expect(confirmLabel(mergeRequest(g, "rebase", false, false), g)).toBe("Add #12 to the main merge queue?");
+    expect(confirmLabel(mergeRequest(g, "rebase", { auto: false, deleteBranch: false }), g)).toBe("Add #12 to the main merge queue?");
   });
 
   it("shows a queued PR without offering Merge again", () => {
@@ -289,10 +290,11 @@ describe("merge methods", () => {
 
 describe("mergeRequest", () => {
   it("pins the head the card showed", () => {
-    expect(mergeRequest(gh(), "squash", false, true)).toEqual({
+    expect(mergeRequest(gh(), "squash", { auto: false, deleteBranch: true })).toEqual({
       kind: "merge",
       method: "squash",
       auto: false,
+      admin: false,
       expected_head: "abc123",
       delete_branch: true,
     });
@@ -300,12 +302,16 @@ describe("mergeRequest", () => {
 
   it("pins the reviewed PR diff's head when one is on screen", () => {
     // A push after the review must make GitHub refuse the merge (ADR 0040).
-    const req = mergeRequest(gh({ head_oid: "pushed-later" }), "merge", false, false, "reviewed");
+    const req = mergeRequest(gh({ head_oid: "pushed-later" }), "merge", {
+      auto: false,
+      deleteBranch: false,
+      prDiffHeadOid: "reviewed",
+    });
     expect(req.kind === "merge" && req.expected_head).toBe("reviewed");
   });
 
   it("never deletes the branch for an auto-merge, which has not happened yet", () => {
-    const req = mergeRequest(gh(), "merge", true, true);
+    const req = mergeRequest(gh(), "merge", { auto: true, deleteBranch: true });
     expect(req.kind === "merge" && req.delete_branch).toBe(false);
   });
 });
@@ -351,8 +357,63 @@ describe("prTarget", () => {
 describe("confirmLabel", () => {
   it("names the PR, method and target", () => {
     const g = gh();
-    expect(confirmLabel(mergeRequest(g, "squash", false, false), g)).toBe("Squash and merge #12 into main?");
+    expect(confirmLabel(mergeRequest(g, "squash", { auto: false, deleteBranch: false }), g)).toBe("Squash and merge #12 into main?");
     expect(confirmLabel({ kind: "close" }, g)).toBe("Close #12 without merging?");
     expect(confirmLabel({ kind: "delete_branch" }, g)).toBe("Delete feat/x on GitHub?");
+  });
+});
+
+describe("bypass rules", () => {
+  const blocked = (overrides: Partial<GithubStatusSnapshot> = {}) =>
+    gh({ merge_state_status: "BLOCKED", review_decision: "REVIEW_REQUIRED", can_bypass_rules: true, ...overrides });
+
+  it("is offered on a blocked PR when GitHub lets the viewer bypass", () => {
+    const m = mergeBoxModel(blocked());
+    expect(m.offerBypass).toBe(true);
+    expect(m.merge?.enabled).toBe(false);
+    expect(effectiveMerge(m, false)).toEqual(m.merge);
+    expect(effectiveMerge(m, true)).toEqual({ enabled: true, auto: false, reason: null });
+  });
+
+  it("is not offered without bypass rights, write access, or on a merge-queue base", () => {
+    expect(mergeBoxModel(blocked({ can_bypass_rules: false })).offerBypass).toBe(false);
+    expect(mergeBoxModel(blocked({ can_bypass_rules: undefined })).offerBypass).toBe(false);
+    const read = { ...gh().repo_merge!, viewer_permission: "READ" };
+    expect(mergeBoxModel(blocked({ repo_merge: read })).offerBypass).toBe(false);
+    expect(mergeBoxModel(blocked({ base_has_merge_queue: true })).offerBypass).toBe(false);
+  });
+
+  it("is not offered once the PR can merge normally", () => {
+    const m = mergeBoxModel(gh({ can_bypass_rules: true }));
+    expect(m.offerBypass).toBe(false);
+    expect(effectiveMerge(m, true)).toEqual(m.merge);
+  });
+
+  it("turns an auto-merge into a direct merge that may delete the branch", () => {
+    // The confirm step rebuilds the request from the pending one, so `admin`
+    // must survive that round trip.
+    const first = mergeRequest(blocked(), "squash", { auto: true, deleteBranch: true, bypass: true });
+    expect(first).toEqual({
+      kind: "merge",
+      method: "squash",
+      auto: false,
+      admin: true,
+      expected_head: "abc123",
+      delete_branch: true,
+    });
+    if (first.kind !== "merge") throw new Error("expected a merge");
+    const rebuilt = mergeRequest(blocked(), first.method, {
+      auto: first.auto,
+      deleteBranch: true,
+      bypass: first.admin,
+    });
+    expect(rebuilt).toEqual(first);
+  });
+
+  it("names the bypass in the confirm step", () => {
+    const g = blocked();
+    expect(confirmLabel(mergeRequest(g, "squash", { auto: false, deleteBranch: false, bypass: true }), g)).toBe(
+      "Bypass rules and squash and merge #12 into main?",
+    );
   });
 });

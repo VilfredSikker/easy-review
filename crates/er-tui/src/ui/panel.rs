@@ -447,11 +447,14 @@ fn render_file_findings(
     // The count describes what the list is about to draw, and names
     // what it is not drawing. A number that counts hidden rows is
     // how a filter stops being trusted.
-    let visible: Vec<&er_engine::ai::Finding> = sorted_findings
+    let filtered: Vec<&er_engine::ai::Finding> = sorted_findings
         .iter()
         .copied()
         .filter(|f| f.passes(&tab.layers))
         .collect();
+    let visible =
+        project_file_findings(path, filtered.iter().copied(), &tab.ai.arbiter_graded_keys);
+    let (security, ordinary) = security_first(&visible);
     let resolved_count = sorted_findings.iter().filter(|f| f.resolved).count();
     let dropped_count = sorted_findings
         .iter()
@@ -459,7 +462,7 @@ fn render_file_findings(
         .count();
     let below_gate = sorted_findings
         .len()
-        .saturating_sub(visible.len() + resolved_count + dropped_count);
+        .saturating_sub(filtered.len() + resolved_count + dropped_count);
     let mut header = format!(" Findings ({})", visible.len());
     if below_gate > 0 {
         header.push_str(&format!(" · {} below gate", below_gate));
@@ -475,10 +478,71 @@ fn render_file_findings(
     )]));
     push_arbiter_effect(lines, tab, &fr.findings);
     lines.push(Line::from(""));
-
-    for finding in visible {
-        push_finding(lines, tab, finding, file_stale, max_w);
+    let has_security = !security.is_empty();
+    if !security.is_empty() {
+        lines.push(Line::from(vec![Span::styled(
+            format!(" Security ({})", security.len()),
+            Style::default()
+                .fg(styles::YELLOW())
+                .add_modifier(Modifier::BOLD),
+        )]));
+        for finding in security {
+            push_finding(lines, tab, finding, file_stale, max_w);
+        }
     }
+    if !ordinary.is_empty() {
+        if has_security {
+            lines.push(Line::from(vec![Span::styled(
+                format!(" Findings ({})", ordinary.len()),
+                Style::default()
+                    .fg(styles::PURPLE())
+                    .add_modifier(Modifier::BOLD),
+            )]));
+        }
+        for finding in ordinary {
+            push_finding(lines, tab, finding, file_stale, max_w);
+        }
+    }
+}
+
+fn project_file_findings<'a>(
+    path: &'a str,
+    findings: impl IntoIterator<Item = &'a er_engine::ai::Finding>,
+    graded_keys: &std::collections::HashSet<String>,
+) -> Vec<&'a er_engine::ai::Finding> {
+    er_engine::ai::project_visible_findings(
+        findings.into_iter().map(|finding| (path, finding)),
+        graded_keys,
+    )
+    .into_iter()
+    .map(|(_, finding)| finding)
+    .collect()
+}
+
+fn security_first<'a>(
+    findings: &[&'a er_engine::ai::Finding],
+) -> (
+    Vec<&'a er_engine::ai::Finding>,
+    Vec<&'a er_engine::ai::Finding>,
+) {
+    findings
+        .iter()
+        .copied()
+        .partition(|finding| finding.is_security_stage())
+}
+
+fn finding_display_tag(finding: &er_engine::ai::Finding) -> String {
+    let mut tag = finding.lens_category_tag();
+    if finding.providers.len() >= 2 {
+        let provider_tag = format!("{} providers", finding.providers.len());
+        if tag.is_empty() {
+            tag = provider_tag;
+        } else {
+            tag.push_str(" · ");
+            tag.push_str(&provider_tag);
+        }
+    }
+    tag
 }
 
 fn push_arbiter_effect(
@@ -595,7 +659,7 @@ fn push_finding(
     };
     // Word-wrap the title line: first line gets icon + confidence prefix,
     // continuation lines get indent to align under text
-    let tag = finding.lens_category_tag();
+    let tag = finding_display_tag(finding);
     let title_text = if tag.is_empty() {
         finding.title.clone()
     } else {
@@ -1472,6 +1536,30 @@ fn reach_line(reach: &er_engine::ai::TriageReach) -> Option<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
+
+    fn finding(
+        id: &str,
+        lens: &str,
+        title: &str,
+        line: usize,
+        raised_by: &[&str],
+        providers: &[&str],
+        confidence: &str,
+    ) -> er_engine::ai::Finding {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "severity": "high",
+            "lens": lens,
+            "category": "correctness",
+            "title": title,
+            "line_start": line,
+            "raised_by": raised_by,
+            "providers": providers,
+            "confidence": confidence,
+        }))
+        .unwrap()
+    }
 
     fn reach_text(reach: &er_engine::ai::TriageReach) -> Option<String> {
         reach_line(reach).map(|l| l.spans.iter().map(|s| s.content.as_ref()).collect())
@@ -1480,6 +1568,75 @@ mod tests {
     #[test]
     fn reach_line_hidden_for_triage_without_reach() {
         assert!(reach_text(&er_engine::ai::TriageReach::default()).is_none());
+    }
+
+    #[test]
+    fn security_group_projects_after_the_confidence_filter_and_uses_all_raisers() {
+        let general = finding(
+            "general-row",
+            "general",
+            "Shared claim",
+            42,
+            &["general", "security"],
+            &["provider-a", "provider-b"],
+            "confirmed",
+        );
+        let security = finding(
+            "security-row",
+            "security",
+            "Shared claim",
+            42,
+            &["general", "security"],
+            &["provider-a", "provider-b"],
+            "confirmed",
+        );
+        let ordinary = finding(
+            "ordinary-row",
+            "general",
+            "Other claim",
+            50,
+            &["general"],
+            &[],
+            "confirmed",
+        );
+        let hidden = finding(
+            "hidden-row",
+            "security",
+            "Dropped claim",
+            51,
+            &["security"],
+            &[],
+            "dropped",
+        );
+        let layers = er_engine::ai::InlineLayers::default();
+        let graded = HashSet::from([er_engine::ai::identity::finding_key(
+            "src/lib.rs",
+            Some(42),
+            "Shared claim",
+        )]);
+        let filtered: Vec<&er_engine::ai::Finding> = [&general, &security, &ordinary, &hidden]
+            .into_iter()
+            .filter(|finding| finding.passes(&layers))
+            .collect();
+        let visible = project_file_findings("src/lib.rs", filtered, &graded);
+        let (security_rows, ordinary_rows) = security_first(&visible);
+
+        assert_eq!(
+            visible.len(),
+            2,
+            "the graded duplicate collapses after filtering"
+        );
+        assert_eq!(security_rows.len(), 1);
+        assert_eq!(ordinary_rows.len(), 1);
+        assert_eq!(security_rows[0].id, "general-row");
+        assert!(security_rows[0].is_security_stage());
+        let tag = finding_display_tag(security_rows[0]);
+        assert!(tag.contains("security"), "all raisers appear in {tag:?}");
+        assert!(
+            tag.contains("2 providers"),
+            "provider count appears in {tag:?}"
+        );
+        assert!(!visible.iter().any(|finding| finding.id == "hidden-row"));
     }
 
     #[test]

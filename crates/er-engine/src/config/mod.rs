@@ -1,5 +1,6 @@
 pub mod desktop_settings;
 mod file_kinds;
+mod flow_models;
 pub mod inbox;
 mod path_rules;
 pub mod settings;
@@ -12,6 +13,7 @@ pub use desktop_settings::{
     ConfigHubFieldDto, DesktopSettingsSnapshot,
 };
 pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
+pub use flow_models::{ReviewModelGroups, ReviewModelRef, ReviewModelTier};
 pub use inbox::{InboxConfig, InboxKindToggles};
 use serde::{Deserialize, Serialize};
 pub use settings::{
@@ -346,6 +348,13 @@ pub struct AgentConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AiHubConfig {
+    /// Provider IDs allowed to receive review-flow input. Empty allows every
+    /// installed configured provider.
+    #[serde(default)]
+    pub flow_providers: Vec<String>,
+    /// Exact model choices available to review flows at each review depth.
+    #[serde(default)]
+    pub review_models: ReviewModelGroups,
     #[serde(default)]
     pub default_provider: Option<String>,
     #[serde(default)]
@@ -661,6 +670,48 @@ impl AgentConfig {
 }
 
 impl AiHubConfig {
+    /// Validate configured review-flow model groups without consulting the
+    /// machine's PATH. Availability is checked separately at flow admission.
+    pub fn validate_review_models(&self, groups: &ReviewModelGroups) -> Result<()> {
+        for (tier, models) in [
+            ("fast", groups.fast.as_slice()),
+            ("standard", groups.standard.as_slice()),
+            ("advanced", groups.advanced.as_slice()),
+        ] {
+            if models.is_empty() {
+                anyhow::bail!("review-flow {tier} model group must not be empty");
+            }
+            let mut seen = HashSet::new();
+            for model in models {
+                if !seen.insert((model.provider_id.as_str(), model.model_id.as_str())) {
+                    anyhow::bail!(
+                        "review-flow {tier} model group contains duplicate {}/{}",
+                        model.provider_id,
+                        model.model_id
+                    );
+                }
+                let provider = self.providers.get(&model.provider_id).ok_or_else(|| {
+                    anyhow::anyhow!(
+                        "review-flow {tier} model references unknown provider `{}`",
+                        model.provider_id
+                    )
+                })?;
+                if !provider
+                    .models
+                    .iter()
+                    .any(|entry| entry.id == model.model_id)
+                {
+                    anyhow::bail!(
+                        "review-flow {tier} model `{}` is not configured for provider `{}`",
+                        model.model_id,
+                        model.provider_id
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn has_presets(&self) -> bool {
         !self.providers.is_empty()
     }
@@ -874,18 +925,28 @@ const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
     ("codex", "gpt-5.4", "gpt-5.6-terra"),
     ("codex", "gpt-5.4-mini", "gpt-5.6-luna"),
     ("codex", "gpt-5.3-codex-spark", "gpt-5.6-luna"),
+    ("codex", "gpt-5.3-codex", "gpt-6-sol"),
 ];
 
 fn retire_preset_models(hub: &mut AiHubConfig) {
     let default_provider = hub.resolve_provider_id(None);
     for &(provider_id, retired, successor) in RETIRED_PRESET_MODELS {
-        if default_provider.as_deref() == Some(provider_id)
+        let edited_retired = hub.providers.get(provider_id).is_some_and(|provider| {
+            provider
+                .models
+                .iter()
+                .any(|model| model.id == retired && model.edited)
+        });
+        if !edited_retired
+            && default_provider.as_deref() == Some(provider_id)
             && hub.default_model.as_deref() == Some(retired)
         {
             hub.default_model = Some(successor.to_string());
         }
         if let Some(provider) = hub.providers.get_mut(provider_id) {
-            provider.models.retain(|model| model.id != retired);
+            provider
+                .models
+                .retain(|model| model.id != retired || model.edited);
         }
     }
 }
@@ -920,11 +981,46 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
     retire_preset_models(hub);
     if hub.providers.is_empty() {
         let removed_providers = std::mem::take(&mut hub.removed_catalog_providers);
-        *hub = catalog;
+        let saved_default_provider = hub.default_provider.clone();
+        let saved_default_model = hub.default_model.clone();
+        let catalog_default_provider = catalog.default_provider.clone();
+        let catalog_default_model = catalog.default_model.clone();
+        hub.providers = catalog.providers;
         hub.removed_catalog_providers = removed_providers;
         for id in hub.removed_catalog_providers.clone() {
             hub.providers.remove(&id);
         }
+        let saved_provider_is_available = saved_default_provider
+            .as_deref()
+            .is_some_and(|id| hub.providers.contains_key(id));
+        let selected_provider = if saved_provider_is_available {
+            saved_default_provider.as_deref()
+        } else {
+            catalog_default_provider.as_deref()
+        };
+        let saved_model_is_available = saved_default_model.as_deref().is_some_and(|model_id| {
+            selected_provider.is_some_and(|provider_id| {
+                hub.providers
+                    .get(provider_id)
+                    .is_some_and(|provider| provider.models.iter().any(|m| m.id == model_id))
+                    || RETIRED_PRESET_MODELS.iter().any(|(provider, retired, _)| {
+                        *provider == provider_id && *retired == model_id
+                    })
+            })
+        });
+        if saved_provider_is_available
+            && (saved_default_model.is_none() || saved_model_is_available)
+        {
+            hub.default_provider = saved_default_provider;
+            hub.default_model = saved_default_model;
+        } else if !saved_provider_is_available && saved_model_is_available {
+            hub.default_provider = catalog_default_provider;
+            hub.default_model = saved_default_model;
+        } else {
+            hub.default_provider = catalog_default_provider;
+            hub.default_model = catalog_default_model;
+        }
+        retire_preset_models(hub);
         return;
     }
 
@@ -1489,6 +1585,24 @@ pub fn inject_codex_ignore_user_config(args: &mut Vec<String>) {
         .or_else(|| args.iter().position(|arg| arg.contains("{prompt}")))
         .unwrap_or(args.len());
     args.insert(insert_at, "--ignore-user-config".to_string());
+}
+
+/// Skip the user's MCP servers and skill listing in app-launched Claude runs.
+///
+/// `er` agents use only built-in tools and self-contained prompts, yet each
+/// fresh process paid 2–4 s connecting MCP servers and ~20k tokens of cache
+/// write for the listings. User settings still load, so auth, env and an
+/// explicit `--mcp-config` in the provider args keep working. Every Claude
+/// argv builder calls this; one that skips it pays that startup again.
+pub fn inject_claude_startup_trim(family: CliFamily, args: &mut Vec<String>) {
+    if family != CliFamily::Claude {
+        return;
+    }
+    for flag in ["--disable-slash-commands", "--strict-mcp-config"] {
+        if !args.iter().any(|arg| arg == flag) {
+            args.insert(0, flag.to_string());
+        }
+    }
 }
 
 pub const EFFORT_LEVELS: &[&str] = &["low", "medium", "high", "xhigh", "max"];
@@ -2619,6 +2733,16 @@ mod tests {
         assert_eq!(restored.agent.args, vec!["--flag"]);
     }
 
+    #[test]
+    fn flow_providers_persisted_config_round_trip() {
+        let mut config = ErConfig::default();
+        config.ai_hub.flow_providers = vec!["alpha".into(), "beta".into()];
+        let persisted = persisted_config(&config);
+        let encoded = toml::to_string(&persisted).unwrap();
+        let decoded: ErConfig = toml::from_str(&encoded).unwrap();
+        assert_eq!(decoded.ai_hub.flow_providers, config.ai_hub.flow_providers);
+    }
+
     // ── split_shell_args ──
 
     #[test]
@@ -3510,6 +3634,224 @@ mod tests {
                 .as_deref(),
             Some("fable-5.1")
         );
+    }
+
+    #[test]
+    fn supplement_ai_hub_retires_legacy_codex_model_for_old_saved_config() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("claude".into()),
+            default_model: Some("sonnet-5.5".into()),
+            providers: BTreeMap::from([
+                (
+                    "claude".into(),
+                    AiProviderConfig {
+                        command: "claude".into(),
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "codex".into(),
+                    AiProviderConfig {
+                        command: "codex".into(),
+                        models: vec![AiModelConfig {
+                            id: "gpt-5.3-codex".into(),
+                            args: vec!["--model".into(), "gpt-5.3-codex".into()],
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ),
+                (
+                    "custom-provider".into(),
+                    AiProviderConfig {
+                        command: "custom-cli".into(),
+                        models: vec![AiModelConfig {
+                            id: "custom-model".into(),
+                            ..Default::default()
+                        }],
+                        ..Default::default()
+                    },
+                ),
+            ]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_provider.as_deref(), Some("claude"));
+        assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
+        let codex = &hub.providers["codex"];
+        assert!(codex.models.iter().all(|model| model.id != "gpt-5.3-codex"));
+        let catalog_first = &ai_hub_catalog().providers["codex"].models[0].id;
+        assert_eq!(
+            codex.models.first().map(|model| &model.id),
+            Some(catalog_first)
+        );
+        assert_eq!(
+            hub.providers["custom-provider"].models[0].id,
+            "custom-model"
+        );
+
+        let models_before_repeat = codex
+            .models
+            .iter()
+            .map(|model| (model.id.clone(), model.args.clone()))
+            .collect::<Vec<_>>();
+        supplement_ai_hub(&mut hub);
+        assert_eq!(
+            hub.providers["codex"]
+                .models
+                .iter()
+                .map(|model| (model.id.clone(), model.args.clone()))
+                .collect::<Vec<_>>(),
+            models_before_repeat
+        );
+        assert_eq!(hub.default_provider.as_deref(), Some("claude"));
+        assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
+    }
+
+    #[test]
+    fn supplement_ai_hub_preserves_edited_retired_codex_model_and_default() {
+        let args = vec!["--model".into(), "my-edited-codex".into()];
+        let mut hub = AiHubConfig {
+            default_provider: Some("codex".into()),
+            default_model: Some("gpt-5.3-codex".into()),
+            providers: BTreeMap::from([(
+                "codex".into(),
+                AiProviderConfig {
+                    command: "codex".into(),
+                    models: vec![AiModelConfig {
+                        id: "gpt-5.3-codex".into(),
+                        args: args.clone(),
+                        edited: true,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        let codex = &hub.providers["codex"];
+        let edited = codex
+            .models
+            .iter()
+            .find(|model| model.id == "gpt-5.3-codex")
+            .expect("edited legacy model remains configured");
+        assert!(edited.edited);
+        assert_eq!(edited.args, args);
+        assert_eq!(hub.default_provider.as_deref(), Some("codex"));
+        assert_eq!(hub.default_model.as_deref(), Some("gpt-5.3-codex"));
+        assert_eq!(
+            hub.resolve_model_id("codex", None).as_deref(),
+            Some("gpt-5.3-codex")
+        );
+    }
+
+    #[test]
+    fn supplement_ai_hub_moves_unedited_retired_codex_default_to_successor() {
+        let mut hub = AiHubConfig {
+            default_provider: Some("codex".into()),
+            default_model: Some("gpt-5.3-codex".into()),
+            providers: BTreeMap::from([(
+                "codex".into(),
+                AiProviderConfig {
+                    command: "codex".into(),
+                    models: vec![AiModelConfig {
+                        id: "gpt-5.3-codex".into(),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                },
+            )]),
+            ..Default::default()
+        };
+
+        supplement_ai_hub(&mut hub);
+
+        assert_eq!(hub.default_model.as_deref(), Some("gpt-6-sol"));
+        assert!(hub.providers["codex"]
+            .models
+            .iter()
+            .all(|model| model.id != "gpt-5.3-codex"));
+        assert_eq!(
+            hub.resolve_model_id("codex", None).as_deref(),
+            Some("gpt-6-sol")
+        );
+    }
+
+    #[test]
+    fn review_model_groups_default_to_catalogued_claude_and_codex_pairs() {
+        let groups = ReviewModelGroups::default();
+        fn pairs(models: &[ReviewModelRef]) -> Vec<(&str, &str)> {
+            models
+                .iter()
+                .map(|model| (model.provider_id.as_str(), model.model_id.as_str()))
+                .collect::<Vec<_>>()
+        }
+        assert_eq!(
+            pairs(&groups.fast),
+            [("claude", "haiku-5.5"), ("codex", "gpt-6-luna")]
+        );
+        assert_eq!(
+            pairs(&groups.standard),
+            [("claude", "sonnet-5.5"), ("codex", "gpt-6-sol")]
+        );
+        assert_eq!(
+            pairs(&groups.advanced),
+            [("claude", "opus-5.5"), ("codex", "gpt-6-astra")]
+        );
+    }
+
+    #[test]
+    fn review_model_groups_validate_nonempty_unique_known_pairs() {
+        let mut hub = AiHubConfig::default();
+        supplement_ai_hub(&mut hub);
+        hub.validate_review_models(&hub.review_models).unwrap();
+
+        let mut invalid = hub.review_models.clone();
+        invalid.fast.clear();
+        assert!(hub.validate_review_models(&invalid).is_err());
+
+        let mut invalid = hub.review_models.clone();
+        invalid.fast.push(invalid.fast[0].clone());
+        assert!(hub.validate_review_models(&invalid).is_err());
+
+        let mut invalid = hub.review_models.clone();
+        invalid.fast[0].provider_id = "unknown-provider".into();
+        assert!(hub.validate_review_models(&invalid).is_err());
+
+        let mut invalid = hub.review_models.clone();
+        invalid.fast[0].model_id = "unknown-model".into();
+        assert!(hub.validate_review_models(&invalid).is_err());
+    }
+
+    #[test]
+    fn review_model_groups_survive_config_save_and_load() {
+        let mut config = ErConfig::default();
+        config.ai_hub.default_provider = Some("claude".into());
+        config.ai_hub.default_model = Some("sonnet-5.5".into());
+        config.ai_hub.flow_providers = vec!["codex".into()];
+        config.ai_hub.review_models.fast = vec![ReviewModelRef {
+            provider_id: "codex".into(),
+            model_id: "gpt-6-sol".into(),
+        }];
+        let saved_groups = config.ai_hub.review_models.clone();
+        supplement_ai_hub(&mut config.ai_hub);
+        assert!(config.ai_hub.providers.contains_key("claude"));
+        assert!(config.ai_hub.providers.contains_key("codex"));
+        assert_eq!(config.ai_hub.review_models, saved_groups);
+        assert_eq!(config.ai_hub.flow_providers, ["codex"]);
+        assert_eq!(config.ai_hub.default_provider.as_deref(), Some("claude"));
+        assert_eq!(config.ai_hub.default_model.as_deref(), Some("sonnet-5.5"));
+
+        let saved = persisted_config(&config);
+        let serialized = toml::to_string_pretty(&saved).unwrap();
+        let loaded: ErConfig = toml::from_str(&serialized).unwrap();
+
+        assert_eq!(loaded.ai_hub.review_models, config.ai_hub.review_models);
     }
 
     #[test]

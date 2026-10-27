@@ -25,6 +25,7 @@ function makeTriage(overrides: Partial<TriageSnapshot> = {}): TriageSnapshot {
     files_changed: 0,
     approx_risk: "",
     domains: [],
+    sensitive: [],
     ...overrides,
   };
 }
@@ -112,6 +113,15 @@ describe("summaryPills", () => {
       label: "contained reach",
       tone: "neutral",
     });
+  });
+
+  it("shows only evidenced sensitivity reasons in the warning pill tooltip", () => {
+    expect(summaryPills(makeTriage({ sensitive: [
+      { kind: "authorization", evidence: "src/auth.rs:12", note: "Permission check" },
+      { kind: "secret", evidence: "  ", note: "No citation" },
+    ] }))).toEqual([
+      { label: "sensitive", tone: "warning", title: "authorization · src/auth.rs:12" },
+    ]);
   });
 });
 

@@ -5,6 +5,10 @@ pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
 pub mod preview;
+mod review_flow;
+mod review_flow_admission;
+mod review_flow_output;
+mod review_flow_progress;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
@@ -433,6 +437,18 @@ pub enum OverlayData {
         include_notes: bool,
         selected: usize,
     },
+    ReviewFlowProgress {
+        er_dir: String,
+        flow: Box<crate::ai::review_flow::ReviewFlow>,
+        selected: usize,
+        detail_scroll: usize,
+    },
+    ReviewFlowResults {
+        results: crate::app::state::review_flow::results::ReviewFlowResults,
+        selected: usize,
+        selected_ids: HashSet<String>,
+        detail_scroll: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -526,6 +542,30 @@ pub enum HubAction {
     RunImportanceAgent,
     /// List the findings the arbiter ruled out, under their count.
     ToggleDroppedFindings,
+    StartReviewFlow {
+        scope: String,
+    },
+    ConfirmReviewFlow {
+        er_dir: String,
+    },
+    DeclineReviewFlow {
+        er_dir: String,
+    },
+    CancelReviewFlow {
+        er_dir: String,
+    },
+    OpenReviewFlowProgress {
+        er_dir: String,
+    },
+    OpenReviewFlowResults {
+        er_dir: String,
+        run_id: String,
+    },
+    AcceptReviewFlowFindings {
+        er_dir: String,
+        run_id: String,
+        finding_ids: Vec<String>,
+    },
     CleanupQuestions,
     CleanupReviews,
     /// Run a named command from [commands] config (e.g. "summary", "test", "lint")
@@ -4543,6 +4583,33 @@ impl TabState {
         }
     }
 
+    /// Where this tab's base-branch `REVIEW.md` files are read from.
+    pub fn review_md_source(&self) -> crate::ai::review_md::ReviewMdSource {
+        use crate::ai::review_md::ReviewMdSource;
+        if self.base_branch.is_empty() {
+            return ReviewMdSource::None;
+        }
+        if !self.is_remote() {
+            return ReviewMdSource::Git {
+                repo_root: self.repo_root.clone(),
+                base_ref: self.base_branch.clone(),
+            };
+        }
+        match self.remote_repo.as_deref() {
+            Some(slug) => match crate::github::local_checkout_for_repo(&self.repo_root, slug) {
+                Some(path) => ReviewMdSource::Git {
+                    repo_root: path,
+                    base_ref: format!("origin/{}", self.base_branch),
+                },
+                None => ReviewMdSource::Gh {
+                    repo_slug: slug.to_string(),
+                    base_ref: self.base_branch.clone(),
+                },
+            },
+            None => ReviewMdSource::None,
+        }
+    }
+
     /// Get the list of files, filtered by filter rules, search query, and reviewed status.
     /// Pipeline: filter rules → search → unreviewed toggle
     pub fn visible_files(&self) -> Vec<(usize, &DiffFile)> {
@@ -5548,6 +5615,30 @@ pub struct App {
     /// in finished form (no channels) so snapshot building stays cheap.
     pub(crate) recent_background_tasks: Vec<background::BackgroundTask>,
 
+    /// Exact background task IDs owned by review flows. Only these tasks keep
+    /// terminal completion records after their UI history entry is retired.
+    pub(crate) owned_flow_task_ids: std::collections::HashSet<String>,
+    /// Terminal records awaiting one-shot consumption by the owning flow.
+    pub(crate) flow_task_completions: std::collections::HashMap<String, background::BackgroundTask>,
+
+    /// Exclusive review-flow ownership, keyed by the managed review bucket.
+    review_flow_leases: std::collections::HashMap<String, review_flow_admission::ReviewFlowLease>,
+    next_review_flow_lease_sequence: u64,
+
+    /// Current review-flow projection and its captured execution context,
+    /// keyed by the exact review bucket path.
+    review_flows: std::collections::HashMap<String, crate::ai::review_flow::ReviewFlow>,
+    review_flow_contexts: std::collections::HashMap<String, review_flow::ReviewFlowContext>,
+    review_flow_revision: u64,
+    /// Original target for each flow-owned arena run. Acceptance must resolve
+    /// its bucket and view identity from this capture, never the active tab.
+    review_flow_run_targets:
+        std::collections::HashMap<(String, String), background::BackgroundTaskTarget>,
+
+    /// Optional host wake-up callback used when a background result arrives.
+    /// It must only signal the host; it is called from the worker thread.
+    pub(crate) background_progress_notify: Option<crate::arena::ArenaNotify>,
+
     /// Multi-round AI review arena runs (desktop orchestration).
     pub arena_registry: std::sync::Arc<crate::arena::ArenaRegistry>,
 
@@ -5564,6 +5655,12 @@ pub struct App {
 }
 
 impl App {
+    /// Install or clear the host callback used to wake polling after a
+    /// background task reaches a terminal result.
+    pub fn set_background_progress_notify(&mut self, notify: Option<crate::arena::ArenaNotify>) {
+        self.background_progress_notify = notify;
+    }
+
     fn default_arena_registry() -> Arc<crate::arena::ArenaRegistry> {
         Self::init_arena_registry(Arc::new(|| {}))
     }
@@ -5709,6 +5806,15 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
+            owned_flow_task_ids: std::collections::HashSet::new(),
+            flow_task_completions: std::collections::HashMap::new(),
+            review_flow_leases: std::collections::HashMap::new(),
+            next_review_flow_lease_sequence: 1,
+            review_flows: std::collections::HashMap::new(),
+            review_flow_contexts: std::collections::HashMap::new(),
+            review_flow_revision: 0,
+            review_flow_run_targets: std::collections::HashMap::new(),
+            background_progress_notify: None,
             arena_registry,
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -5757,6 +5863,15 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
+            owned_flow_task_ids: std::collections::HashSet::new(),
+            flow_task_completions: std::collections::HashMap::new(),
+            review_flow_leases: std::collections::HashMap::new(),
+            next_review_flow_lease_sequence: 1,
+            review_flows: std::collections::HashMap::new(),
+            review_flow_contexts: std::collections::HashMap::new(),
+            review_flow_revision: 0,
+            review_flow_run_targets: std::collections::HashMap::new(),
+            background_progress_notify: None,
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -5797,6 +5912,15 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
+            owned_flow_task_ids: std::collections::HashSet::new(),
+            flow_task_completions: std::collections::HashMap::new(),
+            review_flow_leases: std::collections::HashMap::new(),
+            next_review_flow_lease_sequence: 1,
+            review_flows: std::collections::HashMap::new(),
+            review_flow_contexts: std::collections::HashMap::new(),
+            review_flow_revision: 0,
+            review_flow_run_targets: std::collections::HashMap::new(),
+            background_progress_notify: None,
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -5838,6 +5962,15 @@ impl App {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
+            owned_flow_task_ids: std::collections::HashSet::new(),
+            flow_task_completions: std::collections::HashMap::new(),
+            review_flow_leases: std::collections::HashMap::new(),
+            next_review_flow_lease_sequence: 1,
+            review_flows: std::collections::HashMap::new(),
+            review_flow_contexts: std::collections::HashMap::new(),
+            review_flow_revision: 0,
+            review_flow_run_targets: std::collections::HashMap::new(),
+            background_progress_notify: None,
             arena_registry: Self::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),
@@ -6277,6 +6410,7 @@ impl App {
     /// already open.
     fn push_tab(&mut self, mut tab: TabState) {
         Self::copy_repo_rules(&self.config, &mut tab);
+        let _ = self.recover_arena_bucket(&tab.er_dir());
         self.tabs.push(tab);
     }
 
@@ -6313,7 +6447,7 @@ impl App {
         // Check if this repo is already open in a tab
         for (i, tab) in self.tabs.iter().enumerate() {
             if tab.repo_root == repo_root {
-                self.active_tab = i;
+                self.select_tab(i);
                 self.overlay = None;
                 let name = self.tab().tab_name();
                 self.notify(&format!("Switched to tab: {}", name));
@@ -6333,7 +6467,7 @@ impl App {
     /// Switch to the next tab (wraps around)
     pub fn next_tab(&mut self) {
         if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + 1) % self.tabs.len();
+            self.select_tab((self.active_tab + 1) % self.tabs.len());
             let name = self.tab().tab_name();
             self.notify(&format!("Tab: {}", name));
         }
@@ -6342,7 +6476,7 @@ impl App {
     /// Switch to the previous tab (wraps around)
     pub fn prev_tab(&mut self) {
         if self.tabs.len() > 1 {
-            self.active_tab = (self.active_tab + self.tabs.len() - 1) % self.tabs.len();
+            self.select_tab((self.active_tab + self.tabs.len() - 1) % self.tabs.len());
             let name = self.tab().tab_name();
             self.notify(&format!("Tab: {}", name));
         }
@@ -6359,6 +6493,7 @@ impl App {
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
+        let _ = self.recover_arena_bucket(&self.tab().er_dir());
         self.notify(&format!("Closed: {}", name));
     }
 
@@ -6423,13 +6558,15 @@ impl App {
         if self.active_tab >= self.tabs.len() {
             self.active_tab = self.tabs.len() - 1;
         }
+        let _ = self.recover_arena_bucket(&self.tab().er_dir());
         self.notify(&format!("Closed: {}", name));
     }
 
     /// Switch focus to the tab at `idx`. No-op if out of bounds.
-    pub const fn select_tab(&mut self, idx: usize) {
+    pub fn select_tab(&mut self, idx: usize) {
         if idx < self.tabs.len() {
             self.active_tab = idx;
+            let _ = self.recover_arena_bucket(&self.tab().er_dir());
         }
     }
 
@@ -6621,7 +6758,123 @@ impl App {
         let has_unresolved_questions = self.tab().ai.has_unanswered_questions();
         let has_unresolved_notes = self.tab().ai.has_unaddressed_notes();
         let selection_label = self.active_ai_selection_label();
-        let items = vec![
+        let er_dir = self.tab().er_dir();
+        let scope = self.tab().mode.fetch_scope().to_string();
+        let draining = self.review_flow_is_draining(&er_dir);
+        let flow_item = if draining {
+            HubItem {
+                label: "Review stopping".into(),
+                hint: "".into(),
+                description: "Owned review work is still stopping".into(),
+                action: HubAction::Noop,
+                is_header: false,
+                enabled: false,
+            }
+        } else if let Some(flow) = self.review_flow_for(&er_dir) {
+            match &flow.state {
+                crate::ai::review_flow::FlowState::AwaitingConfirmation => {
+                    let estimate = match (flow.estimated_cost, flow.estimated_latency_seconds) {
+                        (Some(cost), Some(seconds)) => {
+                            format!(
+                                "Estimated ${cost:.2} · about {} min",
+                                (seconds / 60.0).ceil() as u64
+                            )
+                        }
+                        (Some(cost), None) => format!("Estimated ${cost:.2}"),
+                        (None, Some(seconds)) => {
+                            format!("About {} min", (seconds / 60.0).ceil() as u64)
+                        }
+                        (None, None) => "Deep review is ready to confirm".into(),
+                    };
+                    HubItem {
+                        label: "Review".into(),
+                        hint: "".into(),
+                        description: format!("{estimate} · Enter confirms Deep"),
+                        action: HubAction::ConfirmReviewFlow {
+                            er_dir: er_dir.clone(),
+                        },
+                        is_header: false,
+                        enabled: true,
+                    }
+                }
+                crate::ai::review_flow::FlowState::Triaging
+                | crate::ai::review_flow::FlowState::Finding
+                | crate::ai::review_flow::FlowState::Verifying => HubItem {
+                    label: "Review".into(),
+                    hint: "".into(),
+                    description: match &flow.state {
+                        crate::ai::review_flow::FlowState::Triaging => {
+                            "Triage is running · open task progress".into()
+                        }
+                        crate::ai::review_flow::FlowState::Finding => {
+                            "Finding reviewers are running · open task progress".into()
+                        }
+                        _ => "Deep verification is running · open task progress".into(),
+                    },
+                    action: HubAction::OpenReviewFlowProgress {
+                        er_dir: er_dir.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                },
+                crate::ai::review_flow::FlowState::Done {
+                    awaiting_accept, ..
+                } if *awaiting_accept > 0 => {
+                    if let Some(run_id) = flow.arena_run_id.clone() {
+                        HubItem {
+                            label: "Review".into(),
+                            hint: "".into(),
+                            description: format!(
+                                "{awaiting_accept} findings waiting to accept · open results"
+                            ),
+                            action: HubAction::OpenReviewFlowResults {
+                                er_dir: er_dir.clone(),
+                                run_id,
+                            },
+                            is_header: false,
+                            enabled: true,
+                        }
+                    } else {
+                        HubItem {
+                            label: "Review".into(),
+                            hint: "".into(),
+                            description: "Previous review is complete; start a new Review".into(),
+                            action: HubAction::StartReviewFlow {
+                                scope: scope.clone(),
+                            },
+                            is_header: false,
+                            enabled: self.tab().has_reviewable_diff(),
+                        }
+                    }
+                }
+                _ => HubItem {
+                    label: "Review".into(),
+                    hint: "".into(),
+                    description: format!("Start review flow on the active {scope} diff"),
+                    action: HubAction::StartReviewFlow {
+                        scope: scope.clone(),
+                    },
+                    is_header: false,
+                    enabled: self.tab().has_reviewable_diff(),
+                },
+            }
+        } else {
+            HubItem {
+                label: "Review".into(),
+                hint: "".into(),
+                description: format!("Start review flow on the active {scope} diff"),
+                action: HubAction::StartReviewFlow {
+                    scope: scope.clone(),
+                },
+                is_header: false,
+                enabled: self.tab().has_reviewable_diff(),
+            }
+        };
+        let awaiting_confirmation = self.review_flow_for(&er_dir).is_some_and(|flow| {
+            flow.state == crate::ai::review_flow::FlowState::AwaitingConfirmation
+        });
+        let mut items = vec![
+            flow_item,
             HubItem {
                 label: "Triage branch".into(),
                 hint: "".into(),
@@ -6631,6 +6884,14 @@ impl App {
                 action: HubAction::RunTriageReview,
                 is_header: false,
                 enabled: true,
+            },
+            HubItem {
+                label: "── Advanced ──".into(),
+                hint: "".into(),
+                description: "Manual, expert and validation actions".into(),
+                action: HubAction::Noop,
+                is_header: true,
+                enabled: false,
             },
             HubItem {
                 label: "Review work".into(),
@@ -6838,6 +7099,59 @@ impl App {
                 enabled: has_review,
             },
         ];
+        if awaiting_confirmation {
+            items.insert(
+                1,
+                HubItem {
+                    label: "Cancel Deep review".into(),
+                    hint: "".into(),
+                    description: "Decline the pending Deep review".into(),
+                    action: HubAction::DeclineReviewFlow {
+                        er_dir: er_dir.clone(),
+                    },
+                    is_header: false,
+                    enabled: true,
+                },
+            );
+        }
+        if let Some(flow) = self.review_flow_for(&er_dir) {
+            let running = matches!(
+                flow.state,
+                crate::ai::review_flow::FlowState::Triaging
+                    | crate::ai::review_flow::FlowState::Finding
+                    | crate::ai::review_flow::FlowState::Verifying
+            );
+            if !running || draining {
+                items.insert(
+                    if awaiting_confirmation { 2 } else { 1 },
+                    HubItem {
+                        label: "Review task progress".into(),
+                        hint: String::new(),
+                        description: "Inspect the captured plan, models, and task status".into(),
+                        action: HubAction::OpenReviewFlowProgress {
+                            er_dir: er_dir.clone(),
+                        },
+                        is_header: false,
+                        enabled: true,
+                    },
+                );
+            }
+            if running && !draining {
+                items.insert(
+                    1,
+                    HubItem {
+                        label: "Cancel review".into(),
+                        hint: String::new(),
+                        description: "Stop the running review".into(),
+                        action: HubAction::CancelReviewFlow {
+                            er_dir: er_dir.clone(),
+                        },
+                        is_header: false,
+                        enabled: true,
+                    },
+                );
+            }
+        }
         self.overlay = Some(OverlayData::ModalHub {
             kind: HubKind::Ai,
             title: None,
@@ -8405,6 +8719,28 @@ impl App {
                     *selected += 1;
                 }
             }
+            Some(OverlayData::ReviewFlowProgress {
+                flow,
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected + 1 < flow.tasks.len() {
+                    *selected += 1;
+                    *detail_scroll = 0;
+                }
+            }
+            Some(OverlayData::ReviewFlowResults {
+                results,
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected + 1 < results.findings.len() {
+                    *selected += 1;
+                    *detail_scroll = 0;
+                }
+            }
             None => {}
         }
     }
@@ -8461,6 +8797,26 @@ impl App {
             Some(OverlayData::ExportPicker { selected, .. }) => {
                 if *selected > 0 {
                     *selected -= 1;
+                }
+            }
+            Some(OverlayData::ReviewFlowProgress {
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected > 0 {
+                    *selected -= 1;
+                    *detail_scroll = 0;
+                }
+            }
+            Some(OverlayData::ReviewFlowResults {
+                selected,
+                detail_scroll,
+                ..
+            }) => {
+                if *selected > 0 {
+                    *selected -= 1;
+                    *detail_scroll = 0;
                 }
             }
             None => {}
@@ -8551,6 +8907,11 @@ impl App {
             }
             overlay @ OverlayData::ExportPicker { .. } => {
                 // ExportPicker enter is handled directly in handle_overlay_input
+                self.overlay = Some(overlay);
+            }
+            overlay @ (OverlayData::ReviewFlowResults { .. }
+            | OverlayData::ReviewFlowProgress { .. }) => {
+                // Selection and acceptance are handled by the TUI input layer.
                 self.overlay = Some(overlay);
             }
         }
@@ -9064,6 +9425,112 @@ mod tests {
     use crate::ai::AiState;
     use crate::git::{DiffFile, DiffHunk, DiffLine, FileStatus, LineType};
     use std::collections::{HashMap, HashSet};
+
+    #[test]
+    fn review_progress_routes_read_only_and_keeps_captured_bucket() {
+        use crate::ai::review_flow::{FlowState, ReviewFlow};
+        let mut app = App::new_for_test(Vec::new());
+        let bucket = app.tab().er_dir();
+        let flow = ReviewFlow::new("captured-hash");
+        app.review_flows.insert(bucket.clone(), flow.clone());
+        app.open_ai_hub();
+        let Some(OverlayData::ModalHub { items, .. }) = &app.overlay else {
+            panic!()
+        };
+        assert_eq!(
+            items[0].action,
+            HubAction::OpenReviewFlowProgress {
+                er_dir: bucket.clone()
+            }
+        );
+        assert!(items.iter().any(|item| item.action
+            == HubAction::CancelReviewFlow {
+                er_dir: bucket.clone()
+            }));
+        app.overlay_select().unwrap();
+        assert_eq!(
+            app.pending_hub_action.take(),
+            Some(HubAction::OpenReviewFlowProgress {
+                er_dir: bucket.clone()
+            })
+        );
+        app.open_review_flow_progress(&bucket);
+        let mut other = make_test_tab(Vec::new());
+        other.er_root = ErRoot::RepoLocal("/tmp/other-progress-tab".into());
+        app.tabs.push(other);
+        app.active_tab = 1;
+        app.review_flows.get_mut(&bucket).unwrap().state = FlowState::Failed {
+            reason: "captured failure".into(),
+        };
+        app.poll_background_tasks();
+        app.overlay_select().unwrap();
+        let Some(OverlayData::ReviewFlowProgress { er_dir, flow, .. }) = &app.overlay else {
+            panic!()
+        };
+        assert_eq!(er_dir, &bucket);
+        assert_eq!(flow.diff_hash, "captured-hash");
+        assert_eq!(
+            flow.state,
+            FlowState::Failed {
+                reason: "captured failure".into()
+            }
+        );
+        assert!(app.pending_hub_action.is_none());
+    }
+
+    #[test]
+    fn ai_hub_starts_with_review_and_places_advanced_after_triage() {
+        let mut app = App::new_for_test(Vec::new());
+        app.open_ai_hub();
+        let Some(OverlayData::ModalHub { items, .. }) = &app.overlay else {
+            panic!("AI hub should open");
+        };
+        assert_eq!(items[0].label, "Review");
+        assert_eq!(
+            items[0].action,
+            HubAction::StartReviewFlow {
+                scope: "branch".into()
+            }
+        );
+        let triage = items
+            .iter()
+            .position(|item| item.label == "Triage branch")
+            .unwrap();
+        let advanced = items
+            .iter()
+            .position(|item| item.label == "── Advanced ──")
+            .unwrap();
+        let old_review = items
+            .iter()
+            .position(|item| item.label == "Review work")
+            .unwrap();
+        assert!(triage < advanced && advanced < old_review);
+    }
+
+    #[test]
+    fn ai_hub_offers_confirm_and_decline_for_pending_deep_review() {
+        let mut app = App::new_for_test(Vec::new());
+        let er_dir = app.tab().er_dir();
+        let mut flow = crate::ai::review_flow::ReviewFlow::new("hash");
+        flow.depth = Some(crate::ai::review_flow::FlowDepth::Deep);
+        flow.estimated_cost = Some(1.25);
+        flow.estimated_latency_seconds = Some(90.0);
+        flow.state = crate::ai::review_flow::FlowState::AwaitingConfirmation;
+        app.review_flows.insert(er_dir.clone(), flow);
+
+        app.open_ai_hub();
+        let Some(OverlayData::ModalHub { items, .. }) = &app.overlay else {
+            panic!("AI hub should open");
+        };
+        assert_eq!(
+            items[0].action,
+            HubAction::ConfirmReviewFlow {
+                er_dir: er_dir.clone()
+            }
+        );
+        assert!(items[0].description.contains("$1.25"));
+        assert_eq!(items[1].action, HubAction::DeclineReviewFlow { er_dir });
+    }
 
     pub(super) fn make_test_tab(files: Vec<DiffFile>) -> TabState {
         use crate::ai::{InlineLayers, ReviewFocus};
@@ -11334,6 +11801,15 @@ mod tests {
             background_tasks: std::collections::HashMap::new(),
             recent_background_tasks: Vec::new(),
             pending_background_tasks: std::collections::VecDeque::new(),
+            owned_flow_task_ids: std::collections::HashSet::new(),
+            flow_task_completions: std::collections::HashMap::new(),
+            review_flow_leases: std::collections::HashMap::new(),
+            next_review_flow_lease_sequence: 1,
+            review_flows: std::collections::HashMap::new(),
+            review_flow_contexts: std::collections::HashMap::new(),
+            review_flow_revision: 0,
+            review_flow_run_targets: std::collections::HashMap::new(),
+            background_progress_notify: None,
             arena_registry: App::default_arena_registry(),
             active_arena_runs: std::collections::HashMap::new(),
             model_discovery_inflight: std::collections::HashSet::new(),

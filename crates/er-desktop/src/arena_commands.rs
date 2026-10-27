@@ -248,6 +248,135 @@ pub async fn arena_start(
     .await
 }
 
+fn validate_review_flow_bucket(app: &App, expected_er_dir: &str) -> Result<(), String> {
+    let active_er_dir = app.tab().er_dir();
+    if active_er_dir != expected_er_dir {
+        return Err(
+            "The active review bucket changed. Refresh before controlling this review.".into(),
+        );
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn start_review_flow(
+    scope: String,
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        validate_review_flow_bucket(&app, &er_dir)?;
+        let scope = crate::commands::resolve_review_scope(&scope, app.tab())?;
+        app.start_review_flow(&scope).map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn confirm_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        validate_review_flow_bucket(&app, &er_dir)?;
+        app.confirm_review_flow(&er_dir)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn decline_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        validate_review_flow_bucket(&app, &er_dir)?;
+        app.decline_review_flow(&er_dir)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn cancel_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        validate_review_flow_bucket(&app, &er_dir)?;
+        if !app.cancel_review_flow(&er_dir) {
+            return Err("There is no running review flow to cancel".into());
+        }
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+/// Accept selected findings from the arena run captured by a review flow.
+/// This intentionally targets the captured bucket rather than the active tab,
+/// since the user may have switched tabs before accepting the result.
+#[tauri::command]
+pub async fn flow_accept_findings(
+    er_dir: String,
+    run_id: String,
+    finding_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<crate::snapshot::AppSnapshot, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.accept_review_flow_findings(&er_dir, &run_id, finding_ids)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(crate::commands::snap_from_command(&app, &state))
+    })
+    .await
+}
+
+/// Fetch a review-flow arena run from its captured bucket. Unlike `arena_get`,
+/// this never resolves the run id through the active tab's arena index.
+#[tauri::command]
+pub async fn flow_get_run(
+    er_dir: String,
+    run_id: String,
+    state: State<'_, AppState>,
+) -> Result<ArenaRunSnapshotWire, String> {
+    let state = state.inner().clone();
+    crate::commands::run_blocking(move || {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        // Validate both the flow's captured bucket and run id before reading
+        // from the explicit path below.
+        app.review_flow_results(&er_dir, &run_id)
+            .map_err(|e| e.to_string())?;
+        let paths = er_engine::arena::ArenaPaths::for_run(std::path::Path::new(&er_dir), &run_id);
+        let mut run = er_engine::arena::load_run(&paths).map_err(|e| e.to_string())?;
+        if let Some(status) = app.arena_registry.get_status(&run_id) {
+            run.status = status;
+        }
+        Ok(er_engine::arena::build_snapshot_with_config(
+            &app.config,
+            run,
+        ))
+    })
+    .await
+}
+
 /// Validate the current tab's expert findings: dedupe them and rule on the
 /// result with one arbiter call.
 ///
@@ -394,8 +523,25 @@ pub fn dev_log_filter() -> Option<Vec<String>> {
 
 /// Re-wire arena registry notify to desktop revision (call once at startup).
 pub fn attach_arena_notify(app: &mut App, desktop_revision: Arc<std::sync::atomic::AtomicU64>) {
+    let arena_revision = Arc::clone(&desktop_revision);
     app.arena_registry = App::init_arena_registry(Arc::new(move || {
-        desktop_revision.fetch_add(1, Ordering::Relaxed);
+        arena_revision.fetch_add(1, Ordering::Relaxed);
     }));
+    app.set_background_progress_notify(Some(Arc::new(move || {
+        desktop_revision.fetch_add(1, Ordering::Relaxed);
+    })));
     app.reconcile_arena_runs();
+}
+
+#[cfg(test)]
+mod review_flow_command_tests {
+    use super::*;
+
+    #[test]
+    fn review_flow_controls_reject_delayed_click_for_another_bucket() {
+        let app = App::new_for_test(Vec::new());
+        assert!(validate_review_flow_bucket(&app, "/stale/managed/bucket").is_err());
+        let current_bucket = app.tab().er_dir();
+        assert!(validate_review_flow_bucket(&app, &current_bucket).is_ok());
+    }
 }

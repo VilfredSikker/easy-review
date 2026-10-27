@@ -12,7 +12,21 @@ export function isArenaRunFromConfig(config: ArenaStartConfig | null): boolean {
 }
 
 export function isArenaRunFromSnapshot(snap: ArenaRunSnapshot): boolean {
-  return snap.run.reviewers.length >= 2;
+  return snap.run.config.run_kind === "review_flow" || isSeededRunFromSnapshot(snap) || snap.run.reviewers.length >= 2;
+}
+
+/** Seeded arbiter verification is read-only, whatever its run status. */
+export function isSeededRunFromSnapshot(snap: ArenaRunSnapshot): boolean {
+  return snap.run.config.run_kind === "seeded";
+}
+
+export function seededVerificationNotice(snap: ArenaRunSnapshot): string {
+  if (snap.run.status === "complete") {
+    return "Verification complete. Results apply automatically to the matching review.";
+  }
+  if (snap.run.status === "failed") return "Verification failed. Check the run errors.";
+  if (snap.run.status === "cancelled") return "Verification cancelled.";
+  return "Verification is running. Results appear in Review when it completes.";
 }
 
 /** One model, one flow → single review (Review tab, not Arena overlay). */
@@ -21,6 +35,7 @@ export function isSingleReviewRun(
   snap: ArenaRunSnapshot | null,
 ): boolean {
   if (snap) {
+    if (snap.run.config.run_kind === "review_flow" || isSeededRunFromSnapshot(snap)) return false;
     return snap.run.reviewers.length === 1;
   }
   if (!config) return false;

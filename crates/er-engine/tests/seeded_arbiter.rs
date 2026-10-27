@@ -140,6 +140,10 @@ fn a_seeded_run_rules_on_expert_findings_without_touching_review_json() {
             )
             .to_string(),
             arbiter: None,
+            include_general: false,
+            source_lenses: None,
+            lens_providers: std::collections::BTreeMap::new(),
+            reviewed_ref_note: None,
         },
     );
 

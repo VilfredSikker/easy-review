@@ -1,9 +1,7 @@
 //! Import shipped arena findings into `.er/review.json` for the Review tab.
 
 use super::model::{ArenaFinding, ArenaRun, Verdict};
-use crate::ai::{
-    lens_for_producer_id, Confidence, ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS,
-};
+use crate::ai::{Confidence, ErFileReview, ErReview, Finding, RiskLevel, GENERAL_LENS};
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -45,19 +43,24 @@ fn arena_finding_to_review(f: &ArenaFinding, run: &ArenaRun) -> Finding {
     // stays empty. `agent_kind` is a task kind (`expert:security`, `professor`,
     // …), not a lens, so it is normalized rather than copied into the flat
     // vocabulary.
-    let lens = run
-        .config
-        .agent_kind
-        .as_deref()
-        .map_or(GENERAL_LENS, lens_for_producer_id)
-        .to_string();
+    let raised_by = super::provenance::normalized_raisers_for(
+        f,
+        &run.reviewers,
+        run.config.agent_kind.as_deref(),
+    );
+    let lens = raised_by
+        .first()
+        .cloned()
+        .unwrap_or_else(|| GENERAL_LENS.to_string());
+    let providers = super::provenance::providers_for(f, &run.reviewers);
     let confidence = Confidence::from_score(f.confidence);
     Finding {
         id: format!("arena-{}-{}", run.id, f.id),
         severity: latest_severity(f),
         lens,
         category: String::new(),
-        raised_by: f.raised_by.clone(),
+        raised_by,
+        providers,
         title: f.title.clone(),
         description: f.body.clone(),
         hunk_index: None,
@@ -216,5 +219,58 @@ mod tests {
             GENERAL_LENS,
             "an unset kind is the general pass"
         );
+    }
+
+    #[test]
+    fn deep_import_normalizes_exact_reviewer_ids_and_carries_provider_ids() {
+        let run = serde_json::from_value::<ArenaRun>(serde_json::json!({
+            "id": "run-with-hyphens",
+            "branch_ref": "feature",
+            "base_branch": "main",
+            "scope": "branch",
+            "diff_hash": "abc",
+            "created_at": "now",
+            "status": "complete",
+            "reviewers": [{
+                "id": "reviewer-id-with-many-hyphens",
+                "name": "Security reviewer",
+                "kind": "agent",
+                "provider_id": "provider-a",
+                "model_id": "model-with-hyphens",
+                "system_prompt": "",
+                "color": "",
+                "icon": "",
+                "tagline": "",
+                "cost_per_1k_in": 0.0,
+                "cost_per_1k_out": 0.0,
+                "avg_latency_ms": 0,
+                "status": "ok",
+                "agent_kind": "expert:security"
+            }],
+            "findings": [],
+            "cost_estimate": { "tokens_in": 0, "tokens_out": 0, "usd": 0.0 },
+            "config": {
+                "reviewers": [], "rounds": 3,
+                "arbiter": { "provider_id": "arbiter", "model_id": "model" },
+                "auto_accept_threshold": 0.75, "scope": "branch"
+            }
+        }))
+        .unwrap();
+        let mut finding: ArenaFinding = serde_json::from_value(serde_json::json!({
+            "id": "finding", "file": "src/a.rs", "line": 5, "title": "claim", "body": "body",
+            "severity_by_round": { "1": "high" }, "raised_by": ["reviewer-id-with-many-hyphens"],
+            "verdict": "kept", "confidence": 0.9, "rationale": "supported", "rounds": []
+        }))
+        .unwrap();
+        let imported = arena_finding_to_review(&finding, &run);
+        assert_eq!(imported.lens, "security");
+        assert_eq!(imported.raised_by, ["security"]);
+        assert_eq!(imported.providers, ["provider-a"]);
+
+        finding.raised_by = vec!["unknown-reviewer-id".into()];
+        let unknown = arena_finding_to_review(&finding, &run);
+        assert_eq!(unknown.lens, GENERAL_LENS);
+        assert!(unknown.raised_by.is_empty());
+        assert!(unknown.providers.is_empty());
     }
 }

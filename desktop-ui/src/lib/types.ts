@@ -194,6 +194,10 @@ export interface FlatFinding {
   agent_label: string;
   /** Every lens that raised it; more than one means several experts found it. */
   raised_by: string[];
+  /** Display names for every reviewer that contributed to the merged claim. */
+  providers: string[];
+  /** True when at least one contributing lens is the security lens. */
+  security_stage: boolean;
   title: string;
   message_markdown: string;
   /** Id of the GitHub comment this finding was promoted to. */
@@ -235,6 +239,47 @@ export interface TriageSnapshot {
   touch_points?: string[];
   /** Only sent when the agent cited where the guard is checked. */
   guard?: { kind: string; name: string; evidence: string } | null;
+  /** Evidenced reasons for routing security review. Empty means no evidence. */
+  sensitive: { kind: string; evidence: string; note: string }[];
+}
+
+/** Backend-owned progress for one review flow bound to a diff generation. */
+export interface ReviewFlowTaskProgress {
+  id: string;
+  stage: "triage" | "finding" | "verifying";
+  lens: string | null;
+  label: string;
+  purpose: string;
+  provider_id: string;
+  provider_label: string;
+  model_id: string;
+  model_label: string;
+  status: "waiting" | "queued" | "running" | "done" | "failed" | "cancelled" | "skipped";
+  error: string | null;
+  background_task_id: string | null;
+  round: number | null;
+  total_rounds: number | null;
+}
+
+export interface ReviewFlowSnapshot {
+  state: "triaging" | "skipped" | "awaiting_confirmation" | "finding" | "verifying" | "done" | "failed" | "cancelled";
+  tasks?: ReviewFlowTaskProgress[];
+  depth: "quick" | "standard" | "deep" | null;
+  diff_hash: string;
+  lenses: string[];
+  pending_finders: string[];
+  failed_finders: { lens: string; reason: string }[];
+  successful_finder_providers: string[];
+  successful_arbiter_provider: string | null;
+  providers_used: string[];
+  arena_run_id: string | null;
+  estimated_cost: number | null;
+  estimated_latency_seconds: number | null;
+  kept: number;
+  dropped: number;
+  awaiting_accept: number;
+  reason: string | null;
+  draining: boolean;
 }
 
 export interface ChecklistItemSnapshot {
@@ -552,6 +597,8 @@ export interface GithubStatusSnapshot {
   in_merge_queue?: boolean;
   /** The base has a merge queue: merging enqueues and the queue picks the method. */
   base_has_merge_queue?: boolean;
+  /** The viewer may merge past unmet requirements (`--admin`). Set only while blocked. */
+  can_bypass_rules?: boolean;
 }
 
 export interface RepoMergeSnapshot {
@@ -601,6 +648,10 @@ export interface AppSnapshot {
     code: { additions: number; deletions: number };
   };
   ai: AiSnapshot;
+  /** Review flow for the active managed diff bucket, when one exists. */
+  review_flow?: ReviewFlowSnapshot | null;
+  /** Exact active bucket identity used by flow commands, even while idle. */
+  review_bucket_er_dir: string;
   pr: PrSnapshot | null;
   panels: Panels;
   theme: string;
@@ -761,6 +812,19 @@ export interface AiProviderInfo {
   models_command?: string | null;
 }
 
+/** Exact provider/model references used by the Review flow. */
+export interface ReviewModelRef {
+  provider_id: string;
+  model_id: string;
+}
+
+/** Model groups used by Review triage, standard review, and deep verification. */
+export interface ReviewModelGroups {
+  fast: ReviewModelRef[];
+  standard: ReviewModelRef[];
+  advanced: ReviewModelRef[];
+}
+
 export interface PollResponse {
   revision: number;
   content_revision: number;
@@ -908,6 +972,8 @@ export interface DesktopSettingsSnapshot {
 export interface GetConfigHubResponse {
   settings: DesktopSettingsSnapshot;
   providers: AiProviderInfo[];
+  /** Models eligible for each Review flow stage. */
+  reviewModels: ReviewModelGroups;
   activeEffort: string | null;
   /** Soft validation from last upsert (e.g. missing `{prompt}`). */
   warnings?: string[];

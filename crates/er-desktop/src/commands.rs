@@ -716,6 +716,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
     let head_branch_exists =
         head_branch_exists_after_close(owner, repo, &overview, repo_merge.as_ref());
     let (base_has_merge_queue, in_merge_queue) = merge_queue_status(owner, repo, number, &overview);
+    let can_bypass_rules = can_bypass_rules(owner, repo, number, &overview, base_has_merge_queue);
     let comments = bundle.comments;
     let reviews = bundle.reviews;
     crate::profile_log::profile_log(
@@ -799,6 +800,7 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         repo_merge: repo_merge.map(Into::into),
         in_merge_queue,
         base_has_merge_queue,
+        can_bypass_rules,
         fetch_ticket: 0,
     })
 }
@@ -842,6 +844,26 @@ fn merge_queue_status(
         && cached_base_has_merge_queue(owner, repo, &overview.base_ref_name) == Some(true);
     let queued = has_queue && gh_pr_in_merge_queue(owner, repo, number).unwrap_or(false);
     (has_queue, queued)
+}
+
+/// Only a blocked PR can use a bypass, so other states skip the lookup. A
+/// merge-queue base is skipped too: `--admin` there merges past the queue.
+fn can_bypass_rules(
+    owner: &str,
+    repo: &str,
+    number: u64,
+    overview: &er_engine::github::PrOverviewFull,
+    base_has_merge_queue: bool,
+) -> bool {
+    overview.state == "OPEN"
+        && !base_has_merge_queue
+        && overview.merge_state_status.as_deref() == Some("BLOCKED")
+        && er_engine::gh_pr_actions::cached_viewer_can_bypass(
+            owner,
+            repo,
+            &overview.base_ref_name,
+            number,
+        ) == Some(true)
 }
 
 /// Kick a background refresh of the active tab's GitHub status.
@@ -3763,7 +3785,10 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
 
 // ── AI integration ───────────────────────────────────────────────────────────
 
-fn resolve_review_scope(scope: &str, tab: &er_engine::app::TabState) -> Result<String, String> {
+pub(crate) fn resolve_review_scope(
+    scope: &str,
+    tab: &er_engine::app::TabState,
+) -> Result<String, String> {
     let resolved = if scope == "current" {
         match tab.mode {
             DiffMode::Branch | DiffMode::Unstaged | DiffMode::Staged => {
@@ -3819,8 +3844,9 @@ pub fn list_diff_paths(state: State<AppState>) -> Result<Vec<String>, String> {
 }
 
 // ⌘K / AI Hub: may shell out for the review diff and writes artifacts, then
-// rebuilds a snapshot — must not run on the main thread. Hold the App lock
-// only to capture tab context / spawn; do artifact IO with the lock released.
+// rebuilds a snapshot — must not run on the main thread. Keep admission,
+// prepared-artifact writes, and enqueue under the App lock so an Advanced
+// producer cannot race a flow lease between its check and its write.
 #[tauri::command]
 pub async fn run_ai_review(
     scope: String,
@@ -3839,10 +3865,13 @@ pub async fn run_ai_review(
             is_remote,
             mut raw,
             rules,
+            review_md_source,
         ) = {
             let app = state.app.lock().map_err(|e| e.to_string())?;
             let scope = resolve_review_scope(&scope, app.tab())?;
             let tab = app.tab();
+            app.check_review_bucket_admission(&tab.er_dir())
+                .map_err(|e| e.to_string())?;
             let branch_label = tab
                 .local_branch_view
                 .clone()
@@ -3859,20 +3888,32 @@ pub async fn run_ai_review(
                 tab.remote_repo.is_some(),
                 raw,
                 tab.owned_repo_rules(),
+                tab.review_md_source(),
             )
         };
 
-        std::fs::create_dir_all(&er_dir)
-            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
+            &repo_root,
+            remote_repo.as_deref(),
+        );
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let diff_hash =
-            er_engine::ai::prepared_diff::ensure_review_inputs(&er_dir, &raw, rules.as_rules())?;
+        let review_md = er_engine::ai::review_md::collect(&review_md_source, &raw);
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
+        std::fs::create_dir_all(&er_dir)
+            .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
+            &er_dir,
+            &raw,
+            rules.as_rules(),
+            review_md.as_deref(),
+        )?;
         let prompt = er_engine::ai::prompts::build_review_prompt_prepared_diff(
             &scope,
             &er_dir,
@@ -3890,8 +3931,6 @@ pub async fn run_ai_review(
             remote_repo,
             managed_local: !is_remote,
         };
-
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
         app.spawn_background_review(target, prompt, true)
             .map_err(|e| e.to_string())?;
         let debug_bg = er_engine::app::debug_bg_enabled();
@@ -3964,6 +4003,9 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
             )
         };
 
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
+
         std::fs::create_dir_all(&er_dir)
             .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
@@ -3971,7 +4013,10 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
             .tab()
             .raw_diff_for_review(&scope)
             .map_err(|e| e.to_string())?;
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
+            &repo_root,
+            remote_repo.as_deref(),
+        );
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
@@ -4071,6 +4116,9 @@ pub async fn generate_diagram(
             )
         };
 
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
+
         let diagrams_dir = format!("{er_dir}/diagrams");
         std::fs::create_dir_all(&diagrams_dir)
             .map_err(|e| format!("Failed to create diagrams directory: {e}"))?;
@@ -4079,7 +4127,10 @@ pub async fn generate_diagram(
             .tab()
             .raw_diff_for_review(&scope)
             .map_err(|e| e.to_string())?;
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
+            &repo_root,
+            remote_repo.as_deref(),
+        );
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
@@ -4201,6 +4252,9 @@ pub async fn run_ai_expert_review(
             )
         };
 
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
+
         std::fs::create_dir_all(&er_dir)
             .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
 
@@ -4211,14 +4265,19 @@ pub async fn run_ai_expert_review(
         if raw.trim().is_empty() {
             return Err("Nothing to review".to_string());
         }
-        let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+        let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
+            &repo_root,
+            remote_repo.as_deref(),
+        );
         if !ignore.is_empty() {
             raw = er_engine::git::filter_raw_diff_exclude_globs(&raw, &ignore);
         }
+        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &raw,
             app.tab().repo_rules(),
+            review_md.as_deref(),
         )?;
 
         let prompt = er_engine::ai::prompts::build_expert_review_prompt_prepared_diff(
@@ -4314,6 +4373,9 @@ pub async fn run_ai_scoped_review(
             )
         };
 
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
+
         std::fs::create_dir_all(&er_dir)
             .map_err(|e| format!("Failed to create branch managed directory: {e}"))?;
 
@@ -4346,7 +4408,10 @@ pub async fn run_ai_scoped_review(
         } else {
             // Full-diff multi-reviewer run: no file manifest / no merge.
             er_engine::ai::clear_scoped_review_snapshots(er_path);
-            let ignore = projects::review_ignore_globs_for_repo(&repo_root, remote_repo.as_deref());
+            let ignore = er_engine::projects_pins::review_ignore_globs_for_repo(
+                &repo_root,
+                remote_repo.as_deref(),
+            );
             if ignore.is_empty() {
                 raw
             } else {
@@ -4354,10 +4419,13 @@ pub async fn run_ai_scoped_review(
             }
         };
 
+        let review_md =
+            er_engine::ai::review_md::collect(&app.tab().review_md_source(), &diff_body);
         let diff_hash = er_engine::ai::prepared_diff::ensure_review_inputs(
             &er_dir,
             &diff_body,
             app.tab().repo_rules(),
+            review_md.as_deref(),
         )?;
 
         let target = er_engine::app::BackgroundTaskTarget {
@@ -4531,6 +4599,8 @@ pub async fn run_ai_validate(
         }
 
         let er_dir = app.tab().er_dir();
+        app.check_review_bucket_admission(&er_dir)
+            .map_err(|e| e.to_string())?;
         let review_path = std::path::Path::new(&er_dir).join("review.json");
         let has_review = review_path.exists();
         let comment_count = eligible_github_comment_count(app.tab());
@@ -4548,6 +4618,8 @@ pub async fn run_ai_validate(
             return Err("Nothing to validate".to_string());
         }
         let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let review_md = er_engine::ai::review_md::collect(&app.tab().review_md_source(), &raw);
+        er_engine::ai::review_md::write_review_md(&er_dir, review_md.as_deref())?;
 
         app.tab_mut().relocate_all_comments();
 
@@ -6297,19 +6369,8 @@ fn build_local_branch_tab(
     log_branch_open_phase(project_id, &branch_name, "base_detect", t_base);
 
     let t_tab_init = std::time::Instant::now();
-    let mut new_tab =
-        er_engine::app::TabState::new_with_base_unloaded(proj.root_path.clone(), base_branch)
-            .map_err(|e| e.to_string())?;
+    let mut new_tab = build_local_branch_tab_for_repo(&proj.root_path, base_branch, name.clone())?;
     log_branch_open_phase(project_id, &branch_name, "tab_init", t_tab_init);
-
-    new_tab.local_branch_view = Some(name);
-    new_tab.mode = er_engine::app::DiffMode::Branch;
-    // The tab's own remote is the repo actually being viewed — NOT the active
-    // project's remote (a project may point at a different repo than the
-    // worktree/branch it reviews). Resolve it from this repo's git remote so
-    // PR links, the GitHub status card, and the PR-list cache all key on the
-    // right repo.
-    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
     // Light: re-roots managed storage and reloads the reviewed markers without
     // the AI reload. The refresh below reaches its own AI gate once
     // `branch_diff_hash` is set, so the full sync would read every sidecar
@@ -6341,6 +6402,26 @@ fn build_local_branch_tab(
             Ok((new_tab, LocalBranchOpenPath::LocalOnlyFallback))
         }
     }
+}
+
+fn build_local_branch_tab_for_repo(
+    repo_root: &str,
+    base_branch: String,
+    name: String,
+) -> Result<er_engine::app::TabState, String> {
+    let mut tab =
+        er_engine::app::TabState::new_with_base_unloaded(repo_root.to_string(), base_branch)
+            .map_err(|e| e.to_string())?;
+    tab.local_branch_view = Some(name.clone());
+    // Resolve the working tree before the first diff refresh. The watcher only
+    // applies later changes, so it cannot repair a same-branch tab whose root
+    // was left unset at construction.
+    tab.local_branch_checkout_root = resolve_head_checkout(repo_root, &name);
+    tab.mode = er_engine::app::DiffMode::Branch;
+    // The tab's own remote is the repo actually being viewed, not whichever
+    // project's remote happens to be active in the app.
+    tab.remote_repo = projects::resolve_repo_remote(repo_root);
+    Ok(tab)
 }
 
 fn refresh_branch_open_diff(tab: &mut er_engine::app::TabState) -> Result<(), String> {
@@ -8374,7 +8455,7 @@ fn open_inbox_item_impl(
             number,
         }) => return open_remote_pr_impl(owner, repo, number, replace, state),
         Some(InboxOpenTarget::Branch { project_id, branch }) => {
-            return open_local_branch_impl(project_id, branch, replace, state)
+            return open_local_branch_impl(project_id, branch, replace, state);
         }
         None => {}
     }
@@ -8581,17 +8662,11 @@ pub fn open_project_branch(
         .find(|p| p.id == project_id)
         .ok_or_else(|| format!("Project not found: {project_id}"))?
         .clone();
-    let mut new_tab = er_engine::app::TabState::new_with_base(
-        proj.root_path.clone(),
+    let mut new_tab = build_local_branch_tab_for_repo(
+        &proj.root_path,
         er_engine::git::detect_base_branch_in(&proj.root_path).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())?;
-    new_tab.local_branch_view = Some(branch);
-    new_tab.mode = er_engine::app::DiffMode::Branch;
-    // The tab's own remote is the repo actually being viewed, not the active
-    // project's remote — resolve it from this repo's git remote (see
-    // `build_local_branch_tab`).
-    new_tab.remote_repo = projects::resolve_repo_remote(&proj.root_path);
+        branch,
+    )?;
     // Light, as in `build_local_branch_tab`: the refresh below reloads the AI
     // sidecars through its own gate, so a full sync duplicates that read.
     new_tab.sync_managed_storage_light();
@@ -8971,19 +9046,26 @@ pub fn set_active_project(id: String, state: State<AppState>) -> Result<AppSnaps
 #[tauri::command]
 pub fn delete_review_artifact(kind: String, state: State<AppState>) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    let er_dir = app.tab().er_dir();
+    delete_review_artifact_from_app(&mut app, &kind)?;
+    state
+        .desktop_revision
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Ok(snap_from(&app, &state))
+}
 
-    match kind.as_str() {
+fn delete_review_artifact_from_app(app: &mut App, kind: &str) -> Result<(), String> {
+    let er_dir = app.tab().er_dir();
+    app.check_review_bucket_admission(&er_dir)
+        .map_err(|e| e.to_string())?;
+
+    match kind {
         "triage" => er_engine::app::cleanup_triage(&er_dir),
         "review" => er_engine::app::cleanup_review_artifacts(&er_dir),
         other => return Err(format!("Unknown review artifact kind: {other}")),
     }
 
     app.tab_mut().reload_ai_state();
-    state
-        .desktop_revision
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    Ok(snap_from(&app, &state))
+    Ok(())
 }
 
 // ── Review checklist ────────────────────────────────────────────────────────
@@ -10731,6 +10813,7 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
                 v.repo_merge.hash(&mut h);
                 v.in_merge_queue.hash(&mut h);
                 v.base_has_merge_queue.hash(&mut h);
+                v.can_bypass_rules.hash(&mut h);
             }
         }
     }
@@ -10751,6 +10834,29 @@ fn compute_content_revision(app: &App) -> u64 {
     let tab = app.tab();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
+    let review_bucket_er_dir = tab.er_dir();
+    review_bucket_er_dir.hash(&mut h);
+    app.review_flow_revision().hash(&mut h);
+    if let Some(flow) = app.review_flow_for(&review_bucket_er_dir) {
+        format!("{:?}", flow.state).hash(&mut h);
+        format!("{:?}", flow.depth).hash(&mut h);
+        flow.diff_hash.hash(&mut h);
+        flow.lenses.hash(&mut h);
+        flow.pending_finders.hash(&mut h);
+        flow.failed_finders.hash(&mut h);
+        flow.arena_run_id.hash(&mut h);
+        flow.successful_finder_providers.hash(&mut h);
+        flow.successful_arbiter_provider.hash(&mut h);
+        flow.providers_used.hash(&mut h);
+        flow.estimated_cost.map(f64::to_bits).hash(&mut h);
+        flow.estimated_latency_seconds
+            .map(f64::to_bits)
+            .hash(&mut h);
+        app.review_flow_is_draining(&review_bucket_er_dir)
+            .hash(&mut h);
+    } else {
+        false.hash(&mut h);
+    }
     tab.preview_context_key().hash(&mut h);
     for (_, file) in tab.visible_files() {
         tab.file_preview_key(&file.path).hash(&mut h);
@@ -11116,6 +11222,342 @@ mod tests {
         load_ui_annotations, save_ui_annotations, ErGitHubComments, ErQuestions,
         GitHubReviewComment, ReviewQuestion, UiAnnotation,
     };
+
+    struct ReviewFlowTestDir(std::path::PathBuf);
+
+    impl ReviewFlowTestDir {
+        fn new() -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "er-desktop-review-flow-{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for ReviewFlowTestDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn git_fixture_command(repo: &std::path::Path, args: &[&str]) {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    fn init_local_branch_fixture(dir: &ReviewFlowTestDir) -> std::path::PathBuf {
+        let repo = dir.0.join("branch-repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_fixture_command(&repo, &["init", "-q"]);
+        git_fixture_command(&repo, &["checkout", "-qb", "main"]);
+        git_fixture_command(&repo, &["config", "user.name", "Review Flow Test"]);
+        git_fixture_command(&repo, &["config", "commit.gpgsign", "false"]);
+        git_fixture_command(
+            &repo,
+            &["config", "user.email", "review-flow-test@example.invalid"],
+        );
+        std::fs::write(repo.join("tracked.rs"), "fn tracked() {\n    1\n}\n").unwrap();
+        git_fixture_command(&repo, &["add", "tracked.rs"]);
+        git_fixture_command(&repo, &["commit", "-qm", "baseline"]);
+        repo
+    }
+
+    fn assert_local_branch_working_modes(tab: &er_engine::app::TabState) {
+        let mut config = er_engine::config::ErConfig::default();
+        config.features.view_branch = true;
+        config.features.view_unstaged = true;
+        config.features.view_staged = true;
+        let modes = tab.visible_modes(&config);
+        assert!(modes.contains(&er_engine::app::DiffMode::Staged));
+        assert!(modes.contains(&er_engine::app::DiffMode::Unstaged));
+    }
+
+    fn review_flow_test_state(dir: &ReviewFlowTestDir) -> AppState {
+        use er_engine::config::{AiHubConfig, AiModelConfig, AiProviderConfig};
+        use std::sync::{Arc, Mutex};
+
+        let repo = dir.0.join("repo");
+        let bucket = dir.0.join("bucket");
+        std::fs::create_dir_all(&repo).unwrap();
+        std::fs::create_dir_all(&bucket).unwrap();
+        let bucket_for_script = bucket.to_string_lossy();
+        let script = format!(
+            "case \"$1\" in\n\
+             *triage.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"verdict\":{{\"primary\":\"general\",\"experts\":[]}}}}' \"$hash\" > '{bucket}/triage.json' ;;\n\
+             *review.json*) hash=$(cat '{bucket}/.diff-tmp.sha256'); printf '{{\"version\":1,\"diff_hash\":\"%s\",\"files\":{{}}}}' \"$hash\" > '{bucket}/review.json' ;;\n\
+             *) echo \"unexpected review-flow prompt\" >&2; exit 2 ;;\n\
+             esac",
+            bucket = bucket_for_script
+        );
+        let provider = AiProviderConfig {
+            command: "/bin/sh".into(),
+            args: vec!["-c".into(), script, "fake-flow".into(), "{prompt}".into()],
+            models: vec![AiModelConfig {
+                id: "fake-model".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        app.config.ai_hub = AiHubConfig {
+            default_provider: Some("fake".into()),
+            review_models: {
+                let models = vec![er_engine::config::ReviewModelRef {
+                    provider_id: "fake".into(),
+                    model_id: "fake-model".into(),
+                }];
+                er_engine::config::ReviewModelGroups {
+                    fast: models.clone(),
+                    standard: models.clone(),
+                    advanced: models,
+                }
+            },
+            providers: [("fake".into(), provider)].into(),
+            max_concurrent_reviews: 4,
+            max_concurrent_agents: 4,
+            ..Default::default()
+        };
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = repo.to_string_lossy().into_owned();
+            tab.er_root = er_engine::paths::ErRoot::Managed {
+                agent_dir: bucket.to_string_lossy().into_owned(),
+                session_dir: bucket.to_string_lossy().into_owned(),
+            };
+            tab.set_raw_diff_for_test(
+                "diff --git a/src/lib.rs b/src/lib.rs\nindex 1111111..2222222 100644\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -1 +1 @@\n-old\n+new\n",
+            );
+        }
+
+        let desktop_revision = Arc::new(AtomicU64::new(0));
+        crate::arena_commands::attach_arena_notify(&mut app, Arc::clone(&desktop_revision));
+        let app = Arc::new(Mutex::new(app));
+        let meta_cache = Arc::new(Mutex::new(HashMap::new()));
+        let gh_user = Arc::new(Mutex::new(None));
+        let gh_status_cache = Arc::new(Mutex::new(HashMap::new()));
+        let loading = Arc::new(Mutex::new(crate::snapshot::LoadingFlags::default()));
+        let watch_status = Arc::new(Mutex::new(crate::snapshot::WatchStatusSnapshot::default()));
+        AppState {
+            app,
+            pr_cache: Arc::new(Mutex::new(HashMap::new())),
+            pr_cache_fetched_at: Arc::new(Mutex::new(HashMap::new())),
+            branch_base_remote_oid: Arc::new(Mutex::new(HashMap::new())),
+            pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
+            meta_cache,
+            gh_user,
+            terminals: Arc::new(Mutex::new(HashMap::new())),
+            pending_ai_replies: Arc::new(Mutex::new(HashMap::new())),
+            gh_status_cache,
+            loading,
+            gh_status_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            pr_open_prefetch_in_flight: Arc::new(Mutex::new(HashMap::new())),
+            branch_preload_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            pr_ref_fetch_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            remote_pr_open_cache: Arc::new(Mutex::new(HashMap::new())),
+            remote_pr_open_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            desktop_revision,
+            last_sent_content_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            last_sent_chrome_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            last_sent_reviewed_revision: Arc::new(AtomicU64::new(u64::MAX)),
+            watch_status,
+            inbox: Arc::new(Mutex::new(crate::inbox::InboxState::default())),
+            tauri_app_handle: Arc::new(Mutex::new(None)),
+            auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
+            sent_files: Arc::new(Mutex::new(Default::default())),
+        }
+    }
+
+    #[test]
+    fn review_flow_poll_delivers_flow_progress_after_background_wake() {
+        use std::time::{Duration, Instant};
+
+        let dir = ReviewFlowTestDir::new();
+        let state = review_flow_test_state(&dir);
+        let bucket = state.app.lock().unwrap().tab().er_dir();
+
+        let initial = poll_impl(&state).unwrap();
+        let initial_snapshot = initial.snapshot.unwrap();
+        assert_eq!(initial_snapshot.review_bucket_er_dir, bucket);
+        assert!(initial_snapshot.review_flow.is_none());
+        let started = {
+            let mut app = state.app.lock().unwrap();
+            app.start_review_flow("branch").unwrap();
+            state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+            snap_from_command(&app, &state)
+        };
+        assert!(started.review_flow.is_some());
+        assert_eq!(started.review_flow.unwrap().state, "triaging");
+        let starting_revision = state.desktop_revision.load(Ordering::Relaxed);
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut observed_terminal = false;
+        while Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+            let response = poll_impl(&state).unwrap();
+            if let Some(snapshot) = response.snapshot {
+                if snapshot
+                    .review_flow
+                    .as_ref()
+                    .is_some_and(|flow| flow.state == "done")
+                {
+                    assert_eq!(snapshot.review_bucket_er_dir, bucket);
+                    observed_terminal = true;
+                    break;
+                }
+            }
+        }
+        assert!(
+            observed_terminal,
+            "poll did not deliver terminal flow state"
+        );
+        assert!(
+            state.desktop_revision.load(Ordering::Relaxed) > starting_revision,
+            "background completion did not wake the desktop revision watcher"
+        );
+    }
+
+    #[test]
+    fn review_flow_lease_refuses_delete_before_review_artifact_mutation() {
+        let dir = ReviewFlowTestDir::new();
+        let state = review_flow_test_state(&dir);
+        let (bucket, review_path) = {
+            let mut app = state.app.lock().unwrap();
+            let bucket = app.tab().er_dir();
+            app.start_review_flow("branch").unwrap();
+            let review_path = std::path::Path::new(&bucket).join("review.json");
+            std::fs::write(&review_path, b"preserve exact review bytes").unwrap();
+            (bucket, review_path)
+        };
+
+        let before_bytes = std::fs::read(&review_path).unwrap();
+        let before_task_ids = state
+            .app
+            .lock()
+            .unwrap()
+            .background_task_snapshots()
+            .into_iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        let result = {
+            let mut app = state.app.lock().unwrap();
+            delete_review_artifact_from_app(&mut app, "review")
+        };
+
+        assert!(result.is_err());
+        assert_eq!(std::fs::read(&review_path).unwrap(), before_bytes);
+        let after_task_ids = state
+            .app
+            .lock()
+            .unwrap()
+            .background_task_snapshots()
+            .into_iter()
+            .map(|task| task.id)
+            .collect::<Vec<_>>();
+        assert_eq!(after_task_ids, before_task_ids);
+        assert_eq!(
+            state.app.lock().unwrap().tab().er_dir(),
+            bucket,
+            "the helper must guard the same captured bucket"
+        );
+    }
+
+    #[test]
+    fn local_branch_tab_uses_main_checkout_for_dirty_tracked_diff() {
+        let dir = ReviewFlowTestDir::new();
+        let repo = init_local_branch_fixture(&dir);
+        std::fs::write(
+            repo.join("tracked.rs"),
+            "fn tracked() {\n    2 // dirty main checkout\n}\n",
+        )
+        .unwrap();
+        let root = repo.to_string_lossy().into_owned();
+
+        let mut tab = build_local_branch_tab_for_repo(&root, "main".into(), "main".into()).unwrap();
+        assert_eq!(tab.repo_root, root);
+        assert_eq!(tab.local_branch_view.as_deref(), Some("main"));
+        assert_eq!(
+            tab.local_branch_checkout_root.as_deref(),
+            Some(root.as_str())
+        );
+        assert_local_branch_working_modes(&tab);
+
+        tab.refresh_diff_without_remote_fetch_quick().unwrap();
+        let raw = tab.raw_diff_for_review("branch").unwrap();
+        assert!(raw.contains("dirty main checkout"), "{raw}");
+    }
+
+    #[test]
+    fn local_branch_tab_uses_linked_checkout_without_changing_repo_root() {
+        let dir = ReviewFlowTestDir::new();
+        let repo = init_local_branch_fixture(&dir);
+        let linked = dir.0.join("linked-checkout");
+        let linked_arg = linked.to_string_lossy().into_owned();
+        git_fixture_command(
+            &repo,
+            &["worktree", "add", "-qb", "linked", &linked_arg, "HEAD"],
+        );
+        std::fs::write(
+            linked.join("tracked.rs"),
+            "fn tracked() {\n    2 // dirty linked checkout\n}\n",
+        )
+        .unwrap();
+        let root = repo.to_string_lossy().into_owned();
+
+        let mut tab =
+            build_local_branch_tab_for_repo(&root, "main".into(), "linked".into()).unwrap();
+        let expected_checkout = linked
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        assert_eq!(tab.repo_root, root);
+        assert_eq!(tab.local_branch_view.as_deref(), Some("linked"));
+        assert_eq!(
+            tab.local_branch_checkout_root.as_deref(),
+            Some(expected_checkout.as_str())
+        );
+        assert_local_branch_working_modes(&tab);
+
+        tab.refresh_diff_without_remote_fetch_quick().unwrap();
+        let raw = tab.raw_diff_for_review("branch").unwrap();
+        assert!(raw.contains("dirty linked checkout"), "{raw}");
+    }
+
+    #[test]
+    fn local_branch_tab_without_checkout_remains_read_only() {
+        let dir = ReviewFlowTestDir::new();
+        let repo = init_local_branch_fixture(&dir);
+        let root = repo.to_string_lossy().into_owned();
+        let tab = build_local_branch_tab_for_repo(&root, "main".into(), "not-checked-out".into())
+            .unwrap();
+
+        assert_eq!(tab.repo_root, root);
+        assert_eq!(tab.local_branch_view.as_deref(), Some("not-checked-out"));
+        assert!(tab.local_branch_checkout_root.is_none());
+        let mut config = er_engine::config::ErConfig::default();
+        config.features.view_branch = true;
+        config.features.view_unstaged = true;
+        config.features.view_staged = true;
+        let modes = tab.visible_modes(&config);
+        assert!(modes.contains(&er_engine::app::DiffMode::Branch));
+        assert!(!modes.contains(&er_engine::app::DiffMode::Unstaged));
+        assert!(!modes.contains(&er_engine::app::DiffMode::Staged));
+    }
 
     fn ann(id: &str) -> UiAnnotation {
         UiAnnotation {

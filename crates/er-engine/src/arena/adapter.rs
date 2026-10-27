@@ -1,6 +1,6 @@
 use crate::config::{
-    agent_command_is_codex, inject_agent_storage_access, inject_codex_ignore_user_config,
-    inject_provider_effort, AiHubConfig,
+    agent_command_is_codex, inject_agent_storage_access, inject_claude_startup_trim,
+    inject_codex_ignore_user_config, inject_provider_effort, AiHubConfig,
 };
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 
 const MAX_RETRIES: u32 = 2;
+
+/// Shared process-wide lock for tests that read or write `ER_FAKE_ARENA_DIR`.
+#[cfg(test)]
+pub(crate) static ARENA_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ErrorClass {
@@ -47,6 +51,7 @@ pub fn resolve_provider_command(
     if agent_command_is_codex(&provider.command) {
         inject_codex_ignore_user_config(&mut args);
     }
+    inject_claude_startup_trim(family, &mut args);
     inject_agent_storage_access(family, &mut args, storage_dir);
     let mut env = Vec::new();
     if let Some(pair) = crate::config::apply_opencode_spawn(family, &mut args, storage_dir) {
@@ -328,8 +333,6 @@ mod tests {
     /// Hold it for the duration of any test that touches the variable, with
     /// `.lock().unwrap_or_else(|e| e.into_inner())` so one panic does not poison
     /// the rest.
-    static ARENA_TEST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     #[test]
     fn extract_json_from_stream_json_result_event() {
         let stdout = concat!(
@@ -402,6 +405,48 @@ mod tests {
 
         let cmd = resolve_provider_command(&hub, "codex", "gpt-5.5", None, None).unwrap();
         assert!(!cmd.args.iter().any(|arg| arg.contains("--add-dir")));
+    }
+
+    #[test]
+    fn claude_provider_command_trims_startup_once_and_codex_does_not() {
+        let provider = |command: &str, args: &[&str]| crate::config::AiProviderConfig {
+            command: command.to_string(),
+            args: args.iter().map(ToString::to_string).collect(),
+            models: vec![crate::config::AiModelConfig {
+                id: "m".to_string(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut hub = AiHubConfig::default();
+        hub.providers.insert(
+            "claude".to_string(),
+            provider("claude", &["--print", "-p", "{prompt}"]),
+        );
+        // The user already set one flag; it must not be repeated.
+        hub.providers.insert(
+            "claude-strict".to_string(),
+            provider(
+                "claude",
+                &["--strict-mcp-config", "--print", "-p", "{prompt}"],
+            ),
+        );
+        hub.providers.insert(
+            "codex".to_string(),
+            provider("codex", &["exec", "{prompt}"]),
+        );
+
+        let flag_counts = |provider_id: &str| {
+            let cmd = resolve_provider_command(&hub, provider_id, "m", None, None).unwrap();
+            let count = |flag: &str| cmd.args.iter().filter(|a| *a == flag).count();
+            (
+                count("--strict-mcp-config"),
+                count("--disable-slash-commands"),
+            )
+        };
+        assert_eq!(flag_counts("claude"), (1, 1));
+        assert_eq!(flag_counts("claude-strict"), (1, 1));
+        assert_eq!(flag_counts("codex"), (0, 0));
     }
 
     #[test]
@@ -579,6 +624,7 @@ mod tests {
         let _guard = ARENA_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
+        FAKE_ARENA_CALLS.store(0, Ordering::SeqCst);
         let dir = concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../../tests/fixtures/arena/fake"

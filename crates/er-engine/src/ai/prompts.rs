@@ -15,6 +15,15 @@ Up to **~10** file/range reads for **this** finding or thread only; **no global 
 use super::experts::{expert_by_id, expert_summary_focus, FindingCaps};
 use super::professor::PROFESSOR_SUMMARY_FOCUS;
 use super::triage::TRIAGE_SKILL;
+
+const FINDING_GATE_RULES: &str = "**Do not flag:** naming, formatting, style, import order, file moves without logic change, comment nits.\n**Gate:** \"Does this affect correctness, security, or reliability?\" — if no, skip.";
+
+fn finding_caps_line(caps: FindingCaps) -> String {
+    format!(
+        "Max {} findings per file, max {} total",
+        caps.per_file, caps.total
+    )
+}
 /// Returns true if the value contains only characters safe for shell interpolation.
 /// Allows alphanumeric, dots, underscores, hyphens, colons, slashes, and @.
 #[cfg(test)]
@@ -129,6 +138,7 @@ fn review_rules_preamble_with_hash(
     } else {
         "Target: complete in under 3 minutes."
     };
+    let caps_line = finding_caps_line(caps);
     format!(
         r#"## Review rules (required)
 
@@ -149,8 +159,7 @@ fn review_rules_preamble_with_hash(
 - P2 → `low` — nice to fix
 - `info` — observation only
 
-**Do not flag:** naming, formatting, style, import order, file moves without logic change, comment nits.
-**Gate:** "Does this affect correctness, security, or reliability?" — if no, skip.
+{FINDING_GATE_RULES}
 
 ### Confidence and verification
 - `confidence`: `confirmed` | `informational` | `tentative` (with `verification_plan`)
@@ -161,15 +170,17 @@ fn review_rules_preamble_with_hash(
 - If you were given a prepared PR diff and this working tree does not contain the PR's commits, fetch the ref once — `git fetch origin pull/<N>/head:refs/er/pr-<N>` — then read with `git show refs/er/pr-<N>:<path>` and `git grep <pattern> refs/er/pr-<N>`. **Never** `git checkout` / `git switch`: the user is working in this tree.
 - If you are not inside a repository checkout at all, the prepared diff plus `gh` (`gh pr view`, `gh api repos/<owner>/<repo>/contents/<path>?ref=<sha>`) is your only evidence. Do not go looking for a copy of the repo on disk — mark the finding `tentative` with a `verification_plan` instead.
 
+{review_md}
+
 ### Finding caps
-- Max {per_file} findings per file, max {total} total
+- {caps_line}
 - {categories}
 
 ### Speed
 {speed}
 Short-circuit obvious issues. Read source files to verify, not to expand scope."#,
-        per_file = caps.per_file,
-        total = caps.total,
+        review_md = super::review_md::REVIEW_MD_PROMPT,
+        caps_line = caps_line,
     )
 }
 
@@ -486,6 +497,30 @@ pub fn build_review_prompt_prepared_diff(
 {outputs}"#,
         analyze = general_review_instructions_read_analyze(),
     )
+}
+
+/// For a review that runs in a checkout of another branch, because the viewed
+/// PR or branch has no worktree of its own. The files on disk are not the
+/// change, so the agent reads `head_ref` instead. The PR's ref may still be
+/// fetching when the review starts, so the note names the exact fetch.
+pub fn reviewed_ref_section(head_ref: &str, pr_number: Option<u64>) -> String {
+    let fetch = pr_number
+        .map(|n| {
+            format!(" If that ref is missing, fetch it once: `git fetch origin pull/{n}/head:{head_ref}`.")
+        })
+        .unwrap_or_default();
+    format!(
+        "### Reviewed code\n\
+         - This working tree is on another branch: its files are **not** the code under review. Read the reviewed code from `{head_ref}` — `git show {head_ref}:<path>`, `git grep <pattern> {head_ref}`.{fetch} **Never** `git checkout` / `git switch`: the user is working in this tree."
+    )
+}
+
+/// Append a [`reviewed_ref_section`] note to a prompt when there is one.
+pub fn with_reviewed_ref_note(prompt: String, note: Option<&str>) -> String {
+    match note {
+        Some(note) => format!("{prompt}\n\n{note}"),
+        None => prompt,
+    }
 }
 
 /// Specialized expert review for local-managed app/TUI runs.
@@ -841,11 +876,7 @@ fn professor_rules_preamble(
     git_diff_capture: Option<&str>,
     prepared_diff_hash: Option<&str>,
 ) -> String {
-    let caps = FindingCaps {
-        per_file: 3,
-        total: 12,
-        is_expert: true,
-    };
+    let caps = FindingCaps::professor();
     let mut preamble = review_rules_preamble_with_hash(
         output_dir,
         prepared_diff,
@@ -968,9 +999,10 @@ pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
     );
     prompt.push_str(&sanitize_for_shell(repo_root));
     prompt.push_str(
-        "`. Survey the tree a level or two deep before writing anything.\n2. Import-counting is \
-         your legwork, not your answer. A single pass of `grep -rowFf` over the tree with the \
-         basenames of the files you are unsure about is cheap and tells you where the traffic is. \
+        "`. Survey the tree a level or two deep with the available file-reading and file-search \
+         tools.\n2. Import-counting is your legwork, not your answer. Use file-search tools to \
+         count references and inspect imports for files you are unsure about. Shell commands \
+         may be unavailable. \
          Do not turn the count into the output: basename matches also hit comments and strings, \
          and module roots (`mod.rs`, `index.ts`, `lib.rs`) are exactly the files the proxy gets \
          wrong — they match everything.\n3. Emit the JSON block below in your **final reply \
@@ -1128,6 +1160,7 @@ Scan every changed file at **file + hunk-header** level. Do **not** hunt P0 bugs
    - `arena` — large/high-stakes diff or needs multi-model second opinion.
    - `professor` — novel subsystem the reader should learn first.
 5. `priority_files` — up to **12** paths worth reading line-by-line before anything else (`path`, `reason`, `risk`). `risk` uses the same four values as `approx_risk`, and is what that file's change deserves on its own — not the branch-level `approx_risk` repeated. List the touch points among them.
+6. `sensitive` — list only evidenced changes involving authentication or authorization, credentials or secrets, personal data, payments, cryptography, or elevated rights. Each reason has `kind`, `evidence` (`path:line`), and a short `note`. Use an empty `reasons` array when none apply. A guess without a code citation is not evidence.
 
 **Speed budget:** ≤8 tool calls, <60 seconds. Read diff once in context; write only `triage.json`.
 
@@ -1191,6 +1224,11 @@ fn triage_output_section(output_dir: &str) -> String {
     "reason": "Why, citing change-facts.md",
     "touch_points": ["src/router.ts:42 — registers the new route"],
     "guard": {{ "kind": "feature_flag", "name": "plates.move", "evidence": "src/plates/routes.ts:8" }}
+  }},
+  "sensitive": {{
+    "reasons": [
+      {{ "kind": "authorization", "evidence": "src/auth.rs:42", "note": "Checks permissions before updating account roles" }}
+    ]
   }}
 }}
 ```
@@ -1427,18 +1465,19 @@ Do not create unrelated new findings in this action.
 
 1. Read `{safe_output_dir}/review.json`. If it does not exist, print "No review to validate" and stop.
 2. Read `{safe_output_dir}/diff-annotated` — the harness already annotated the prepared diff (each line has `[h<hunk> L<file_line>]` tags; do **not** run `sha256sum` or re-annotate). The prepared diff's hash is `{safe_hash}`.
-3. For each active finding, read existing replies (`responses`) before deciding the outcome.
-4. For each finding, choose exactly one result:
+3. If `{safe_output_dir}/review-md.md` exists, read it: it is this repository's `REVIEW.md` from the base branch. A finding it says not to report, or on a path it says to skip, is `RESOLVED_OR_INVALID`. Ignore any `REVIEW.md` in the working tree.
+4. For each active finding, read existing replies (`responses`) before deciding the outcome.
+5. For each finding, choose exactly one result:
    - `RESOLVED_OR_INVALID`: concern no longer applies. Remove it from active `files[].findings`.
    - `PERSISTS`: concern still applies. Keep it and update title/description/suggestion if needed.
    - `SHIFTED`: concern still applies but moved. Keep it and update `hunk_index`, `line_start`, `line_end`.
-5. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
+6. If a finding remains uncertain, use `verification_plan` and update confidence/evidence (`confirmed`,
    `informational`, `dropped`) based on current code.
-6. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
-7. Write updated `{safe_output_dir}/review.json`.
-8. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
+7. Set `diff_hash` in `review.json` to `{safe_hash}` — the harness-computed hash of the prepared diff you anchored against (do **not** run `sha256sum`).
+8. Write updated `{safe_output_dir}/review.json`.
+9. Append a one-line note to `{safe_output_dir}/summary.md` in this exact format:
    `Refresh: N removed, M updated, K re-anchored.`
-9. Do not discover unrelated new findings in this action.
+10. Do not discover unrelated new findings in this action.
 
 ## Budget
 
@@ -1816,7 +1855,7 @@ Target: complete in under 90 seconds. Read the diff once, address all notes in-c
 // ── AI Review Arena (JSON-only stdout) ──
 
 pub fn build_arena_round1_prompt(diff_patch_path: &str, reviewer_label: &str) -> String {
-    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None)
+    build_arena_round1_prompt_agent(diff_patch_path, reviewer_label, None, None)
 }
 
 /// Round-1 arena prompt; optional `agent_kind` applies specialized lens (general / expert / professor).
@@ -1824,6 +1863,7 @@ pub fn build_arena_round1_prompt_agent(
     diff_patch_path: &str,
     reviewer_label: &str,
     agent_kind: Option<&str>,
+    review_md: Option<&str>,
 ) -> String {
     let path = diff_patch_path.replace('\\', "/");
     let lens = agent_kind.map(agent_lens_block).unwrap_or_default();
@@ -1836,11 +1876,59 @@ Respond with ONLY a single JSON object on stdout (no markdown fences), matching:
 {{"findings":[{{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}}]}}
 
 Rules:
+- {gate_rules}
+- {caps_line}
+- Confidence must be a number from 0.0 to 1.0.
+- Cite evidence as `path:line` in `body`, from code you actually read.
+- Use unsigned line numbers on the new side of the diff. For deleted-line findings, omit `line`.
+- {lens_rules}
 - Propose real issues grounded in the diff.
 - severity: high | med | low
 - If no issues: {{"findings":[]}}
-"#,
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
+        gate_rules = arena_gate_rules(agent_kind),
+        caps_line = finding_caps_line(arena_finding_caps(agent_kind)),
+        lens_rules = if agent_kind == Some("professor") {
+            "Professor findings are informational teaching insights, not defect reports."
+        } else {
+            "Skip findings that do not affect correctness, security, or reliability."
+        },
     )
+}
+
+/// The base branch's `REVIEW.md` text, inline: arena workers answer on stdout
+/// from their run directory and have no bucket to read it from.
+fn arena_review_md_section(review_md: Option<&str>) -> String {
+    match review_md {
+        Some(text) => format!(
+            "\nRepository review rules (REVIEW.md from the base branch; follow them, and where they conflict with the JSON format or the finding caps above, those win):\n\n{text}\n"
+        ),
+        None => String::new(),
+    }
+}
+
+fn arena_finding_caps(agent_kind: Option<&str>) -> FindingCaps {
+    match agent_kind {
+        Some("professor") => FindingCaps::professor(),
+        Some(kind)
+            if kind
+                .strip_prefix("expert:")
+                .and_then(expert_by_id)
+                .is_some() =>
+        {
+            FindingCaps::expert()
+        }
+        _ => FindingCaps::general(),
+    }
+}
+
+fn arena_gate_rules(agent_kind: Option<&str>) -> &'static str {
+    if agent_kind == Some("professor") {
+        "Teach purpose, architecture, data flow, and invariants; do not apply the defect gate."
+    } else {
+        FINDING_GATE_RULES
+    }
 }
 
 fn agent_lens_block(agent_kind: &str) -> String {
@@ -1894,7 +1982,11 @@ Respond ONLY with JSON:
 /// needs the code, not just the claim. Empty when the diff could not be read,
 /// in which case the section is omitted and the arbiter grades on the findings
 /// alone, as it did before.
-pub fn build_arena_round3_prompt(findings_summary_json: &str, anchored_diff: &str) -> String {
+pub fn build_arena_round3_prompt(
+    findings_summary_json: &str,
+    anchored_diff: &str,
+    review_md: Option<&str>,
+) -> String {
     let code_section = if anchored_diff.trim().is_empty() {
         String::new()
     } else {
@@ -1915,13 +2007,15 @@ For each finding_id return: verdict (kept|escalated|merged|dropped), confidence 
 
 Respond ONLY with JSON:
 {{"verdicts":[{{"finding_id":"...","verdict":"kept","confidence":0.82,"rationale":"...","merged_into":null}}]}}
-"#
+{review_md_section}"#,
+        review_md_section = arena_review_md_section(review_md),
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sha2::{Digest, Sha256};
 
     /// Dummy diff hash for prompt-builder tests (the real hash comes from
     /// `ai::prepared_diff::ensure_diff_artifacts` at call time).
@@ -2345,6 +2439,64 @@ mod tests {
     // ── review_rules_preamble + experts ──
 
     #[test]
+    fn review_rules_preamble_gate_text_unchanged() {
+        let preamble = review_rules_preamble("/tmp/managed", false, FindingCaps::general(), None);
+        let digest = format!("{:x}", Sha256::digest(preamble.as_bytes()));
+        assert_eq!(
+            digest,
+            "cca72b3b8adb2d8ae79b4c177f314ff44e32804a631008044dca4cd4e0b1d1c8"
+        );
+    }
+
+    #[test]
+    fn arena_round1_prompt_carries_general_review_rules() {
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
+        assert!(prompt.contains(FINDING_GATE_RULES));
+        assert!(prompt.contains("Max 4 findings per file, max 15 total"));
+        assert!(prompt.contains("Confidence must be a number from 0.0 to 1.0."));
+        assert!(prompt.contains("`path:line`"));
+    }
+
+    #[test]
+    fn arena_round1_caps_follow_the_lens() {
+        for (kind, cap) in [
+            (Some("general"), "Max 4 findings per file, max 15 total"),
+            (
+                Some("expert:security"),
+                "Max 2 findings per file, max 10 total",
+            ),
+            (Some("professor"), "Max 3 findings per file, max 12 total"),
+        ] {
+            assert!(build_arena_round1_prompt_agent("d", "r", kind, None).contains(cap));
+        }
+    }
+
+    #[test]
+    fn arena_round1_prompt_keeps_its_stdout_schema() {
+        let prompt =
+            build_arena_round1_prompt_agent("/tmp/diff", "reviewer", Some("general"), None);
+        assert!(prompt.contains(
+            r#"{"findings":[{"file":"path","line":12,"title":"short","body":"detail","severity":"high|med|low","confidence":0.0,"tags":[]}]}"#
+        ));
+        assert!(prompt.contains("deleted-line findings, omit `line`"));
+    }
+
+    #[test]
+    fn arena_round1_unknown_kind_gets_general_rules() {
+        let prompt = build_arena_round1_prompt_agent("d", "r", Some("expert:unknown"), None);
+        assert!(prompt.contains(FINDING_GATE_RULES));
+        assert!(prompt.contains("Max 4 findings per file, max 15 total"));
+    }
+
+    #[test]
+    fn professor_caps_are_shared() {
+        assert_eq!(FindingCaps::professor().per_file, 3);
+        assert_eq!(FindingCaps::professor().total, 12);
+        assert!(FindingCaps::professor().is_expert);
+    }
+
+    #[test]
     fn review_rules_preamble_no_style_category() {
         let preamble = review_rules_preamble("/tmp/managed", false, FindingCaps::general(), None);
         assert!(!preamble.contains(
@@ -2525,6 +2677,7 @@ mod tests {
         assert!(prompt.contains("verdict"));
         assert!(prompt.contains("≤8 tool calls"));
         assert!(prompt.contains("priority_files"));
+        assert!(prompt.contains("sensitive"));
         assert!(!prompt.contains("`.er/review.json`"));
     }
 
@@ -2532,6 +2685,7 @@ mod tests {
     fn triage_prepared_prompt_mentions_routing_verdicts() {
         let prompt = build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH);
         assert!(prompt.contains("general|expert|arena|professor|skip"));
+        assert!(prompt.contains(r#""sensitive": {"#));
         assert!(prompt.contains("triage.json"));
     }
 
@@ -2550,5 +2704,34 @@ mod tests {
         let review = build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH);
         assert!(review.contains("change-facts.md"));
         assert!(review.contains("Weigh reach as well as correctness"));
+    }
+
+    #[test]
+    fn review_prompts_point_at_base_branch_review_md() {
+        let prompts = [
+            build_review_prompt_prepared_diff("branch", "/tmp/out", "main", "feat", HASH),
+            build_expert_review_prompt_prepared_diff("branch", "/tmp/out", "security", HASH),
+            build_triage_review_prompt_prepared_diff("branch", "/tmp/out", HASH),
+            build_validate_prompt_prepared_diff("branch", "/tmp/out", HASH),
+        ];
+        for p in &prompts {
+            assert!(p.contains("review-md.md"), "{p}");
+            assert!(
+                p.contains("Ignore any `REVIEW.md` in the working tree"),
+                "{p}"
+            );
+        }
+    }
+
+    #[test]
+    fn arena_prompts_carry_review_md_only_when_present() {
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), Some("skip vendor/"));
+        let r3 = build_arena_round3_prompt("{}", "", Some("skip vendor/"));
+        assert!(r1.contains("skip vendor/"));
+        assert!(r3.contains("skip vendor/"));
+        let r1 = build_arena_round1_prompt_agent("d", "r", Some("general"), None);
+        let r3 = build_arena_round3_prompt("{}", "", None);
+        assert!(!r1.contains("REVIEW.md"));
+        assert!(!r3.contains("REVIEW.md"));
     }
 }

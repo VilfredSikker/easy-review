@@ -107,6 +107,23 @@ fn triage_schema() -> Value {
                         }
                     }
                 }
+            },
+            "sensitive": {
+                "type": "object",
+                "description": "Evidence-backed signals for changes involving authentication or authorization, credentials or secrets, personal data, payments, cryptography, or elevated rights. Empty reasons means none.",
+                "properties": {
+                    "reasons": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "kind": { "type": "string" },
+                                "evidence": { "type": "string", "description": "Code citation such as path:line; without evidence the reason does not affect routing" },
+                                "note": { "type": "string" }
+                            }
+                        }
+                    }
+                }
             }
         }
     })
@@ -356,7 +373,8 @@ fn triage_example() -> Value {
         },
         "priority_files": [
             { "path": "src/app.rs", "reason": "Main change", "risk": "low" }
-        ]
+        ],
+        "sensitive": { "reasons": [] }
     })
 }
 
@@ -561,6 +579,15 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn triage_kit_exposes_sensitive_prompt_schema_and_example() {
+        let response = artifact_specs(&[SidecarKind::Triage]);
+        let spec = &response.specs[0];
+        assert!(spec.schemas["triage.json"]["properties"]["sensitive"].is_object());
+        assert!(spec.examples["triage.json"]["sensitive"]["reasons"].is_array());
+        assert!(spec.prompt.contains("sensitive"));
     }
 
     #[test]

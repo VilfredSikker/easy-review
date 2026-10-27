@@ -2,6 +2,7 @@
   import type { ArenaRunSnapshot } from "$lib/types/arena";
   import { agentCatalogEntry } from "$lib/arena/agents";
   import { arenaStats } from "$lib/arena/projections";
+  import { isSeededRunFromSnapshot, isSingleReviewRun } from "$lib/arena/runKind";
   import ArenaIcons from "$lib/components/arena/ArenaIcons.svelte";
   import ArenaProcessBracket from "$lib/components/arena/ArenaProcessBracket.svelte";
   import ArenaProcessMatrix from "$lib/components/arena/ArenaProcessMatrix.svelte";
@@ -20,6 +21,7 @@
     onClose: () => void;
     onLayoutMode?: (mode: ArenaLayoutMode) => void;
     onNewRun?: () => void;
+    flowAcceptance?: boolean;
   }
 
   let {
@@ -29,14 +31,17 @@
     onClose,
     onLayoutMode,
     onNewRun,
+    flowAcceptance = false,
   }: Props = $props();
 
   let selectedId = $state<string | null>(null);
 
   const stats = $derived(arenaStats(snapshot.run.findings));
-  const isSingleReview = $derived(snapshot.run.reviewers.length === 1);
+  const isReadOnlyVerification = $derived(isSeededRunFromSnapshot(snapshot));
+  const isSingleReview = $derived(isSingleReviewRun(null, snapshot));
+  const isSingleColumnLayout = $derived(isSingleReview || isReadOnlyVerification);
   const gridCols = $derived.by(() => {
-    if (isSingleReview) return selectedId ? "lg:grid-cols-[minmax(0,1fr)_320px]" : "";
+    if (isSingleColumnLayout) return selectedId ? "lg:grid-cols-[minmax(0,1fr)_320px]" : "";
     return selectedId
       ? "lg:grid-cols-[minmax(0,1fr)_420px_320px]"
       : "lg:grid-cols-[minmax(0,1fr)_420px]";
@@ -81,7 +86,7 @@
     class="fixed inset-0 z-[100] flex flex-col bg-[color-mix(in_srgb,var(--arena-bg-app)_78%,transparent)] backdrop-blur-[6px]"
     role="dialog"
     aria-modal="true"
-    aria-label="AI Review Arena"
+    aria-label={isReadOnlyVerification ? "Verification" : "AI Review Arena"}
   >
     <!-- Tauri window-drag region (platform chrome, mouse-only by design); parent dialog is aria-labelled -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -95,7 +100,9 @@
         <ArenaIcons name="trophy" class="text-[var(--arena-periwinkle)]" size={18} />
         <div class="min-w-0">
           <h1 class="truncate text-[14px] font-semibold text-[var(--arena-fg)]">
-            {agentLabel ?? (isSingleReview ? "AI Review" : "AI Review Arena")}
+            {isReadOnlyVerification
+              ? "Verification"
+              : agentLabel ?? (isSingleReview ? "AI Review" : "AI Review Arena")}
           </h1>
           <p class="text-[11px] text-[var(--arena-fg-subtle)]">
             {snapshot.run.id}
@@ -104,18 +111,25 @@
             {:else if agentLabel}
               · {agentLabel}
             {/if}
-            · {snapshot.run.reviewers.length} reviewer{snapshot.run.reviewers.length === 1
-              ? ""
-              : "s"}
+            {#if isReadOnlyVerification}
+              · {snapshot.run.reviewers.length} contributing lens{snapshot.run.reviewers.length === 1
+                ? ""
+                : "es"}
+              · verifier {snapshot.run.config.arbiter.provider_id}/{snapshot.run.config.arbiter.model_id}
+            {:else}
+              · {snapshot.run.reviewers.length} reviewer{snapshot.run.reviewers.length === 1
+                ? ""
+                : "s"}
+            {/if}
             · {totalRounds} round{totalRounds === 1 ? "" : "s"}
-            {#if !isSingleReview && totalRounds >= 2}
+            {#if !isReadOnlyVerification && !isSingleReview && totalRounds >= 2}
               · arbiter {snapshot.run.config.arbiter.model_id}
             {/if}
           </p>
         </div>
         <div class="flex-1"></div>
 
-        {#if !isSingleReview}
+        {#if !isSingleReview && !isReadOnlyVerification}
           <div
             class="flex rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-0)] p-0.5"
             role="tablist"
@@ -192,7 +206,7 @@
     <div
       class="grid min-h-0 flex-1 grid-cols-1 {gridCols}"
     >
-      {#if !isSingleReview}
+      {#if !isSingleColumnLayout}
         <section class="flex min-h-0 flex-col bg-[var(--arena-bg-0)]">
           <p
             class="shrink-0 border-b border-[var(--arena-border)] px-4 py-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-fg-faint)]"
@@ -241,7 +255,7 @@
           {/if}
         </section>
       {/if}
-      {#if isSingleReview && showEmptyBanner}
+      {#if isSingleColumnLayout && showEmptyBanner && !isReadOnlyVerification}
         <div
           class="mx-3 mt-3 shrink-0 rounded-lg border border-[var(--arena-warn)]/40 bg-[color-mix(in_srgb,var(--arena-warn)_8%,transparent)] px-4 py-3 text-[12px] text-[var(--arena-fg-muted)] lg:col-span-2"
         >
@@ -254,7 +268,7 @@
           {/if}
         </div>
       {/if}
-      <ArenaFinalTruth {snapshot} {selectedId} onSelect={(id) => (selectedId = id)} />
+      <ArenaFinalTruth {snapshot} {selectedId} {flowAcceptance} onSelect={(id) => (selectedId = id)} />
       {#if selectedId}
         <ArenaFindingDetail
           {snapshot}

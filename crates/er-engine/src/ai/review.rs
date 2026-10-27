@@ -287,6 +287,9 @@ pub struct Finding {
     /// treated as `[lens]` when read.
     #[serde(default)]
     pub raised_by: Vec<String>,
+    /// Host-derived provider IDs. Producers cannot persist or author this field.
+    #[serde(default, skip_serializing)]
+    pub providers: Vec<String>,
     pub title: String,
     #[serde(default)]
     pub description: String,
@@ -350,6 +353,11 @@ pub struct Finding {
 }
 
 impl Finding {
+    /// Whether at least one producer assigned this finding to the security lens.
+    pub fn is_security_stage(&self) -> bool {
+        self.raisers().contains(&"security")
+    }
+
     /// Whether this finding still demands the reviewer's attention. False
     /// when the user has fixed it (`resolved`) or the AI dismissed it as a
     /// false positive (`Confidence::Dropped`).
@@ -454,6 +462,51 @@ impl Finding {
             (true, true) => String::new(),
         }
     }
+}
+
+/// Collapse repeated canonical claims after callers apply visibility rules.
+/// Only keys matched by the current arbiter overlay collapse; other producer
+/// rows stay separate. Producer records remain untouched in `ErReview`.
+pub fn project_visible_findings<'a>(
+    findings: impl IntoIterator<Item = (&'a str, &'a Finding)>,
+    arbiter_graded_keys: &HashSet<String>,
+) -> Vec<(&'a str, &'a Finding)> {
+    let rows: Vec<_> = findings.into_iter().collect();
+    if arbiter_graded_keys.is_empty() {
+        return rows;
+    }
+    let mut representatives = HashMap::<String, usize>::new();
+    let mut selected: HashSet<usize> = HashSet::new();
+    for (index, (file, finding)) in rows.iter().enumerate() {
+        let key = super::identity::finding_key(file, finding.line_start, &finding.title);
+        if !arbiter_graded_keys.contains(&key) {
+            selected.insert(index);
+            continue;
+        }
+        representatives
+            .entry(key)
+            .and_modify(|current| {
+                if visible_representative_key(rows[index].1)
+                    < visible_representative_key(rows[*current].1)
+                {
+                    *current = index;
+                }
+            })
+            .or_insert(index);
+    }
+    selected.extend(representatives.into_values());
+    rows.into_iter()
+        .enumerate()
+        .filter_map(|(index, row)| selected.contains(&index).then_some(row))
+        .collect()
+}
+
+fn visible_representative_key(finding: &Finding) -> (u8, &str, &str) {
+    (
+        u8::from(finding.lens != GENERAL_LENS),
+        finding.lens.as_str(),
+        finding.id.as_str(),
+    )
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -763,6 +816,9 @@ pub struct AiState {
     /// hidden findings are still in `review` — carrying `Confidence::Dropped` —
     /// so a UI can list them rather than only counting them.
     pub arbiter_effect: super::arbiter::ArbiterEffect,
+    /// Canonical claim keys with an actual verdict from the matching review
+    /// hash. Only these keys may collapse duplicate producer rows.
+    pub arbiter_graded_keys: HashSet<String>,
     /// Lazily-built comment index for O(1) lookups.
     /// An empty cell means unbuilt; rebuilt on first query after invalidation.
     comment_index: RefCell<OnceCell<CommentIndexData>>,
@@ -787,6 +843,7 @@ impl Default for AiState {
             tour_stale: false,
             stale_files: HashSet::new(),
             arbiter_effect: super::arbiter::ArbiterEffect::default(),
+            arbiter_graded_keys: HashSet::new(),
             comment_index: RefCell::new(OnceCell::new()),
         }
     }
@@ -2134,6 +2191,7 @@ mod tests {
             lens: String::new(),
             category: String::new(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
@@ -2168,6 +2226,7 @@ mod tests {
             lens: String::new(),
             category: String::new(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
             title: format!("Finding {}", id),
             description: String::new(),
             hunk_index,
@@ -2210,6 +2269,54 @@ mod tests {
         }"#;
         let f: Finding = serde_json::from_str(json).unwrap();
         assert!(f.promoted_to.is_none());
+    }
+
+    #[test]
+    fn host_provider_metadata_defaults_on_read_and_is_not_written_to_review_json() {
+        let mut finding = make_finding("provider", Some(0), RiskLevel::Medium);
+        finding.providers = vec!["provider-a".into()];
+        let json = serde_json::to_value(&finding).unwrap();
+        assert!(json.get("providers").is_none());
+        let decoded: Finding = serde_json::from_value(json).unwrap();
+        assert!(decoded.providers.is_empty());
+    }
+
+    #[test]
+    fn visible_projection_uses_complete_raisers_and_prefers_general_representative() {
+        let mut security = make_finding("security-row", Some(0), RiskLevel::Medium);
+        security.title = "same canonical claim".into();
+        security.line_start = Some(9);
+        security.lens = "security".into();
+        security.raised_by = vec!["general".into(), "security".into()];
+        let mut general = security.clone();
+        general.id = "general-row".into();
+        general.lens = GENERAL_LENS.into();
+        let mut distinct = security.clone();
+        distinct.id = "distinct-row".into();
+        distinct.title = "different claim".into();
+
+        let rows = [
+            ("src/a.rs", &security),
+            ("src/a.rs", &distinct),
+            ("src/a.rs", &general),
+        ];
+        let ungraded = project_visible_findings(rows, &HashSet::new());
+        assert_eq!(
+            ungraded.len(),
+            3,
+            "without a current overlay, keep producer rows"
+        );
+        let graded_key =
+            super::super::identity::finding_key("src/a.rs", Some(9), "same canonical claim");
+        let graded = HashSet::from([graded_key]);
+        let projected = project_visible_findings(rows, &graded);
+        assert_eq!(projected.len(), 2);
+        assert_eq!(projected[0].1.id, "distinct-row");
+        assert_eq!(projected[1].1.id, "general-row");
+        assert!(projected[1].1.is_security_stage());
+
+        let category_only = make_finding("category-only", Some(0), RiskLevel::Medium);
+        assert!(!category_only.is_security_stage());
     }
 
     fn make_feedback_comment(file: &str, hunk_index: Option<usize>) -> FeedbackComment {

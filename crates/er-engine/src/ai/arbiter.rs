@@ -57,6 +57,9 @@ pub struct ArbiterVerdict {
     /// reads as one row from all of them rather than one row from the first.
     #[serde(default)]
     pub raised_by: Vec<String>,
+    /// Host-derived providers responsible for the surviving finding.
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 const MAX_SIDECAR_BYTES: u64 = 10_000_000;
@@ -200,6 +203,9 @@ fn apply_verdict(
             }
         }
     }
+    if !verdict.providers.is_empty() {
+        finding.providers = verdict.providers.clone();
+    }
 
     // A ruling that hides the finding settles its confidence outright, so the
     // regrade is skipped: recording "regraded from tentative to confirmed" on a
@@ -327,6 +333,7 @@ mod tests {
             merged_into: None,
             rationale: "Reproduced against the diff.".to_string(),
             raised_by: Vec::new(),
+            providers: Vec::new(),
         }
     }
 
@@ -362,6 +369,27 @@ mod tests {
             ..response
         };
         assert!(!is_arbiter_ruling(&plain));
+    }
+
+    #[test]
+    fn arbiter_overlay_restores_host_provider_ids() {
+        let mut review = review_with(vec![finding(Confidence::Tentative)]);
+        let mut verdict = verdict(ArbiterRuling::Kept, Some(Confidence::Confirmed));
+        verdict.providers = vec!["provider-a".into(), "provider-b".into()];
+        merge_arbiter_into_review(&mut review, &arbiter(HASH, vec![verdict]));
+        assert_eq!(
+            review.files["src/a.rs"].findings[0].providers,
+            ["provider-a", "provider-b"]
+        );
+    }
+
+    #[test]
+    fn legacy_arbiter_verdict_defaults_providers_to_empty() {
+        let verdict: ArbiterVerdict = serde_json::from_value(serde_json::json!({
+            "id": "claim", "verdict": "kept"
+        }))
+        .unwrap();
+        assert!(verdict.providers.is_empty());
     }
 
     #[test]

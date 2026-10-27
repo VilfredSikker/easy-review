@@ -1182,6 +1182,41 @@ pub fn git_read_blob(root: &str, spec: &str, max_bytes: usize) -> Result<Vec<u8>
     Ok(output.stdout)
 }
 
+/// Which of `paths` exist as files at `rev`. One `git ls-tree` for all of
+/// them; a path that is absent is simply not listed.
+pub fn git_paths_present_at(root: &str, rev: &str, paths: &[String]) -> Result<Vec<String>> {
+    if rev.is_empty() || rev.starts_with('-') {
+        anyhow::bail!("Invalid revision: {}", rev);
+    }
+    if paths.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = crate::proc::run_with_bounded_stdout(
+        Command::new("git")
+            .current_dir(root)
+            .args([
+                "-c",
+                "core.quotePath=false",
+                "ls-tree",
+                "--name-only",
+                rev,
+                "--",
+            ])
+            .args(paths),
+        std::time::Duration::from_secs(5),
+        64 * 1024,
+    )?;
+    if !output.status.success() {
+        anyhow::bail!("Revision could not be listed");
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

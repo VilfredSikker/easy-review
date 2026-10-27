@@ -14,7 +14,7 @@ use super::model::{
 };
 use super::orchestrator::resolve_reviewers;
 use crate::ai::finding_key;
-use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, Finding};
+use crate::ai::{expert_by_id, expert_hash_accepted, load_expert_reviews, ErReview, Finding};
 use crate::config::ErConfig;
 use anyhow::Result;
 use std::collections::{BTreeMap, HashMap};
@@ -38,6 +38,34 @@ pub fn dedupe_expert_findings(
     current_diff_hash: &str,
     review_hash: &str,
 ) -> Vec<ArenaFinding> {
+    dedupe_flow_findings_filtered(er_dir, current_diff_hash, review_hash, false, None)
+}
+
+/// Collapse general and expert claims for the review flow. The public helper
+/// considers every current-generation producer; the flow uses an explicit lens
+/// set so an unrelated sidecar from the same diff cannot enter this run.
+pub fn dedupe_flow_findings(
+    er_dir: &str,
+    current_diff_hash: &str,
+    review_hash: &str,
+    include_general: bool,
+) -> Vec<ArenaFinding> {
+    dedupe_flow_findings_filtered(
+        er_dir,
+        current_diff_hash,
+        review_hash,
+        include_general,
+        None,
+    )
+}
+
+pub(super) fn dedupe_flow_findings_filtered(
+    er_dir: &str,
+    current_diff_hash: &str,
+    review_hash: &str,
+    include_general: bool,
+    source_lenses: Option<&[String]>,
+) -> Vec<ArenaFinding> {
     // `load_expert_reviews` reads the directory in filesystem order, which is
     // not stable across machines or runs. Left alone it would decide which
     // claim survives a collision, which raiser is listed first, and which row
@@ -46,6 +74,14 @@ pub fn dedupe_expert_findings(
     experts.sort_by(|a, b| a.expert_id.cmp(&b.expert_id));
 
     let mut out: Vec<ArenaFinding> = Vec::new();
+    let allows = |lens: &str| source_lenses.is_none_or(|sources| sources.iter().any(|s| s == lens));
+    if include_general && allows("general") {
+        out.extend(read_general_findings(
+            er_dir,
+            current_diff_hash,
+            review_hash,
+        ));
+    }
     for expert in experts {
         if !expert_hash_accepted(&expert, review_hash, current_diff_hash) {
             continue;
@@ -53,6 +89,9 @@ pub fn dedupe_expert_findings(
         let Some(def) = expert_by_id(&expert.expert_id) else {
             continue;
         };
+        if !allows(def.id) {
+            continue;
+        }
         for (path, file_review) in &expert.files {
             for finding in &file_review.findings {
                 let id = finding_key(path, finding.line_start, &finding.title);
@@ -81,6 +120,37 @@ pub fn dedupe_expert_findings(
     collapsed
 }
 
+fn read_general_findings(
+    er_dir: &str,
+    current_diff_hash: &str,
+    review_hash: &str,
+) -> Vec<ArenaFinding> {
+    let path = std::path::Path::new(er_dir).join("review.json");
+    let Ok(content) = crate::ai::read_sidecar(&path) else {
+        return Vec::new();
+    };
+    let Ok(review) = serde_json::from_str::<ErReview>(&content) else {
+        return Vec::new();
+    };
+    if review.diff_hash != current_diff_hash
+        && (review_hash.is_empty() || review.diff_hash != review_hash)
+    {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+    for (file, file_review) in &review.files {
+        for finding in &file_review.findings {
+            if !finding.lens.is_empty() && finding.lens != "general" {
+                continue;
+            }
+            let id = finding_key(file, finding.line_start, &finding.title);
+            findings.push(from_expert_finding(file, finding, "general", id));
+        }
+    }
+    findings
+}
+
 /// Every lens that raised something in `findings`, deduplicated and sorted.
 ///
 /// This is the run's reviewer list: an expert that contributed a finding is a
@@ -104,6 +174,10 @@ pub struct SeededRunParams {
     pub scope: ArenaScope,
     /// The model that will do the ruling.
     pub arbiter: ReviewerRef,
+    /// Captured provider/model assignment for each contributing lens.
+    pub lens_providers: BTreeMap<String, ReviewerRef>,
+    /// Require a captured assignment for every contributing lens.
+    pub strict_provenance: bool,
 }
 
 /// Assemble the run record for a seeded pass over already-deduped findings.
@@ -132,12 +206,30 @@ pub fn build_seeded_run(
 
     let refs: Vec<ReviewerRef> = contributing_lenses(&findings)
         .into_iter()
-        .map(|lens| ReviewerRef {
-            provider_id: provider_id.clone(),
-            model_id: model_id.clone(),
-            agent_kind: Some(format!("expert:{lens}")),
+        .map(|lens| {
+            let agent_kind = if lens == "general" {
+                "general".to_string()
+            } else {
+                format!("expert:{lens}")
+            };
+            if params.strict_provenance {
+                let captured = params.lens_providers.get(&lens).ok_or_else(|| {
+                    anyhow::anyhow!("missing captured provider assignment for lens {lens}")
+                })?;
+                Ok(ReviewerRef {
+                    provider_id: captured.provider_id.clone(),
+                    model_id: captured.model_id.clone(),
+                    agent_kind: Some(agent_kind),
+                })
+            } else {
+                Ok(ReviewerRef {
+                    provider_id: provider_id.clone(),
+                    model_id: model_id.clone(),
+                    agent_kind: Some(agent_kind),
+                })
+            }
         })
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
     let reviewers = resolve_reviewers(config, &refs)?;
 
     Ok(ArenaRun {
@@ -351,6 +443,192 @@ mod tests {
             serde_json::to_string(&sidecar).unwrap(),
         )
         .unwrap();
+    }
+
+    fn write_general(er_dir: &Path, hash: &str, title: &str, line: usize) {
+        std::fs::write(
+            er_dir.join("review.json"),
+            serde_json::to_vec(&json!({
+                "version": 1,
+                "diff_hash": hash,
+                "files": { "src/a.rs": {
+                    "risk": "medium",
+                    "findings": [{
+                        "id": "finding-1", "severity": "medium", "title": title,
+                        "description": format!("{title} — body"), "line_start": line
+                    }]
+                }}
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn general_and_expert_exact_duplicates_keep_both_raisers() {
+        let dir = tempdir().unwrap();
+        write_general(dir.path(), HASH, "unchecked user input", 10);
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "unchecked user input", 10)],
+        );
+        let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].raised_by, vec!["general", "security"]);
+        assert_eq!(
+            out[0].id,
+            finding_key("src/a.rs", Some(10), "unchecked user input")
+        );
+    }
+
+    #[test]
+    fn general_and_expert_fuzzy_duplicates_keep_both_raisers() {
+        let dir = tempdir().unwrap();
+        write_general(dir.path(), HASH, "unvalidated input in cache key", 10);
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "unvalidated input in cache key.", 12)],
+        );
+        let out = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].raised_by, vec!["general", "security"]);
+    }
+
+    #[test]
+    fn general_review_requires_accepted_hash_and_explicit_inclusion() {
+        let dir = tempdir().unwrap();
+        write_general(dir.path(), "old-generation", "old claim", 10);
+        assert!(dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true).is_empty());
+        assert_eq!(
+            dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "old-generation", true).len(),
+            1
+        );
+        assert!(
+            dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "old-generation", false)
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn source_lenses_filter_before_exact_and_fuzzy_collapse() {
+        let dir = tempdir().unwrap();
+        write_general(dir.path(), HASH, "unchecked user input", 10);
+        write_expert(
+            dir.path(),
+            "security",
+            &[("src/a.rs", "unchecked user input", 10)],
+        );
+        write_expert(
+            dir.path(),
+            "reliability",
+            &[("src/a.rs", "another claim", 40)],
+        );
+        let sources = vec!["general".to_string()];
+        let out = dedupe_flow_findings_filtered(
+            dir.path().to_str().unwrap(),
+            HASH,
+            "",
+            true,
+            Some(&sources),
+        );
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].raised_by, vec!["general"]);
+    }
+
+    #[test]
+    fn seeded_general_reviewer_kind_is_normalized() {
+        let dir = tempdir().unwrap();
+        write_general(dir.path(), HASH, "general claim", 10);
+        let findings = dedupe_flow_findings(dir.path().to_str().unwrap(), HASH, "", true);
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let run = build_seeded_run(
+            &config,
+            SeededRunParams {
+                id: "run".into(),
+                diff_hash: HASH.into(),
+                base_branch: "main".into(),
+                branch_ref: "branch".into(),
+                scope: ArenaScope::Branch,
+                arbiter: ReviewerRef {
+                    provider_id: "openai".into(),
+                    model_id: "gpt".into(),
+                    agent_kind: None,
+                },
+                lens_providers: BTreeMap::new(),
+                strict_provenance: false,
+            },
+            findings,
+        )
+        .unwrap();
+        assert_eq!(
+            run.config.reviewers[0].agent_kind.as_deref(),
+            Some("general")
+        );
+    }
+
+    #[test]
+    fn strict_security_only_seeded_run_requires_captured_assignment() {
+        let dir = tempdir().unwrap();
+        write_expert(dir.path(), "security", &[("src/a.rs", "secure claim", 10)]);
+        let findings = dedupe_expert_findings(dir.path().to_str().unwrap(), HASH, "");
+        let mut config = ErConfig::default();
+        crate::config::supplement_ai_hub(&mut config.ai_hub);
+        let arbiter = crate::arena::default_arbiter_from_hub(&config.ai_hub).unwrap();
+
+        let missing = build_seeded_run(
+            &config,
+            SeededRunParams {
+                id: "strict-missing".into(),
+                diff_hash: HASH.into(),
+                base_branch: "main".into(),
+                branch_ref: "feature".into(),
+                scope: ArenaScope::Branch,
+                arbiter: arbiter.clone(),
+                lens_providers: BTreeMap::new(),
+                strict_provenance: true,
+            },
+            findings.clone(),
+        );
+        assert!(missing.unwrap_err().to_string().contains("security"));
+
+        let provider_id = config
+            .ai_hub
+            .providers
+            .keys()
+            .find(|provider| provider.as_str() != arbiter.provider_id.as_str())
+            .unwrap()
+            .clone();
+        let model_id = config.ai_hub.providers[&provider_id].models[0].id.clone();
+        let assignment = ReviewerRef {
+            provider_id: provider_id.clone(),
+            model_id: model_id.clone(),
+            agent_kind: None,
+        };
+        let run = build_seeded_run(
+            &config,
+            SeededRunParams {
+                id: "strict-security".into(),
+                diff_hash: HASH.into(),
+                base_branch: "main".into(),
+                branch_ref: "feature".into(),
+                scope: ArenaScope::Branch,
+                arbiter,
+                lens_providers: BTreeMap::from([("security".into(), assignment)]),
+                strict_provenance: true,
+            },
+            findings,
+        )
+        .unwrap();
+        assert_eq!(run.config.reviewers.len(), 1);
+        assert_eq!(run.config.reviewers[0].provider_id, provider_id);
+        assert_eq!(run.config.reviewers[0].model_id, model_id);
+        assert_eq!(
+            run.config.reviewers[0].agent_kind.as_deref(),
+            Some("expert:security")
+        );
     }
 
     /// An identical claim from three lenses is one row, and the row names all
@@ -625,6 +903,8 @@ mod tests {
                     model_id: "opus".to_string(),
                     agent_kind: None,
                 },
+                lens_providers: BTreeMap::new(),
+                strict_provenance: false,
             },
             findings,
         )
@@ -684,6 +964,8 @@ mod tests {
                     model_id,
                     agent_kind: None,
                 },
+                lens_providers: BTreeMap::new(),
+                strict_provenance: false,
             },
             findings,
         )
