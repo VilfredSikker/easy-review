@@ -7,6 +7,12 @@ description: >
 runs:
   using: composite
   steps:
+    # The cache action skips `apt update` on GitHub runners, trusting the
+    # image's package lists. Once Ubuntu replaces a package those lists name a
+    # file the mirror no longer has, the install 404s, and the action still
+    # succeeds and caches nothing.
+    - shell: bash
+      run: sudo apt-get update -qq
     - uses: awalsh128/cache-apt-pkgs-action@v1
       with:
         packages: >-
@@ -19,4 +25,12 @@ runs:
           libssl-dev
           pkg-config
         # Bump to force a fresh download.
-        version: 1
+        version: 2
+    # Fail here, not at link time, when the install or the restored cache came
+    # back empty. An empty cache keeps failing until `version` is bumped.
+    - shell: bash
+      run: |
+        if ! pkg-config --exists webkit2gtk-4.1 gtk+-3.0; then
+          echo "::error::Tauri libraries missing after the apt cache step; bump 'version' in .github/actions/tauri-linux-deps/action.yml"
+          exit 1
+        fi
