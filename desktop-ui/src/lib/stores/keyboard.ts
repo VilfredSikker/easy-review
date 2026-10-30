@@ -308,6 +308,8 @@ function handleBareKey(e: KeyboardEvent) {
     reviewPage.show(page);
     return;
   }
+  // The Inbox page binds its own j/k/u/Enter; diff keys would act on a hidden diff.
+  if (app.mainView === "inbox") return;
   switch (e.key) {
     case "j":
       moveFile(1);

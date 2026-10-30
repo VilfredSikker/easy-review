@@ -11,11 +11,77 @@ export interface PrOpenHint {
   author: string;
 }
 
-/** Plain click replaces the active tab. Cmd/Ctrl-click or middle-click opens
- * a new tab. (Inverse of the previous behavior — power users use modifiers
- * when they want to keep the current tab around.) */
-export function shouldReplaceTab(e: MouseEvent): boolean {
-  return !(e.metaKey || e.ctrlKey || e.button === 1);
+/** Where an open lands: ask with the tab-open modal, or go straight to a new
+ *  tab or the current one. */
+export type PrOpenChoice = "ask" | "new-tab" | "replace";
+
+/** A per-viewer UI preference, so localStorage rather than config.toml: it
+ *  only changes which dialog this window shows, never what the engine does. */
+const ALWAYS_NEW_TAB_KEY = "er.alwaysOpenInNewTab";
+
+type PrefStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function defaultStorage(): PrefStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function loadAlwaysNewTab(storage: PrefStorage | null = defaultStorage()): boolean {
+  try {
+    return storage?.getItem(ALWAYS_NEW_TAB_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveAlwaysNewTab(on: boolean, storage: PrefStorage | null = defaultStorage()): void {
+  try {
+    if (on) storage?.setItem(ALWAYS_NEW_TAB_KEY, "1");
+    else storage?.removeItem(ALWAYS_NEW_TAB_KEY);
+  } catch {
+    // Blocked storage only means the modal asks again next time.
+  }
+}
+
+function wantsNewTab(e: Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: number }): boolean {
+  return e.metaKey || e.ctrlKey || e.button === 1;
+}
+
+/**
+ * A plain open asks, unless the reader said "always open in a new tab". This
+ * inverts the old default, where a plain click silently replaced the current
+ * tab and lost its place. Cmd/Ctrl-click and middle-click still skip the
+ * question and open a new tab.
+ */
+export function resolvePrOpen(
+  e: (Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: number }) | null,
+  alwaysNewTab: boolean = loadAlwaysNewTab(),
+): PrOpenChoice {
+  if (e && wantsNewTab(e)) return "new-tab";
+  return alwaysNewTab ? "new-tab" : "ask";
+}
+
+/** For open paths that have no modal to ask with: a plain click replaces the
+ *  active tab unless the reader chose "always open in a new tab". */
+export function shouldReplaceTab(e: MouseEvent, alwaysNewTab: boolean = loadAlwaysNewTab()): boolean {
+  return resolvePrOpen(e, alwaysNewTab) === "ask";
+}
+
+/** What the tab-open modal shows about the thing being opened. */
+export interface TabOpenRequest {
+  title: string;
+  /** "repo #123", in mono. */
+  ref: string;
+  /** "Comment on your PR · 21m ago"; empty when the open has no triggering event. */
+  context: string;
+  iconPath: string;
+  /** A theme colour token name (e.g. "comment"), never a raw colour. */
+  tone: string;
+  /** The last comment, quoted so the reader knows what they are jumping to. */
+  quote: string | null;
 }
 
 function nextAnimationFrame(): Promise<void> {
