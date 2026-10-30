@@ -303,7 +303,7 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
 /** Single-key shortcuts, only outside fields and modals and without modifiers. */
 function handleBareKey(e: KeyboardEvent) {
   const page = REVIEW_PAGE_KEYS[e.key];
-  if (page) {
+  if (page && reviewPage.available(page)) {
     e.preventDefault();
     reviewPage.show(page);
     return;

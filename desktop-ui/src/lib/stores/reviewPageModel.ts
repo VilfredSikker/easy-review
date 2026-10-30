@@ -34,8 +34,18 @@ export function currentReviewPage(
   return mode === "tour" ? "tour" : "diff";
 }
 
-/** Tour is off when the view is disabled in settings; `set_mode tour` would only error. */
-export function reviewPageAvailable(page: ReviewPage, snap: ModeSnapshot | null): boolean {
+/**
+ * Tour is off when the view is disabled in settings; `set_mode tour` would only
+ * error. Overview is off until a component that renders it has registered: the
+ * shell sends any main view it does not know to the Export page, so switching
+ * to an unrendered Overview would open the wrong page and drop the right rail.
+ */
+export function reviewPageAvailable(
+  page: ReviewPage,
+  snap: ModeSnapshot | null,
+  overviewRendered = false,
+): boolean {
+  if (page === "overview") return overviewRendered;
   if (page !== "tour") return true;
   return snap?.features?.viewTour ?? true;
 }

@@ -18,6 +18,7 @@ const state = {
   terminalOpen: false,
   modalOpen: false,
   focusedField: false,
+  overviewRendered: false,
 };
 
 mock.module("@tauri-apps/api/core", () => ({
@@ -115,7 +116,10 @@ mock.module("$lib/stores/diffNav.svelte", () => ({
 }));
 mock.module("$lib/stores/rightRail.svelte", () => ({ rightRail: { toggle: log("rightRail.toggle") } }));
 mock.module("./reviewPage.svelte", () => ({
-  reviewPage: { show: (page: string) => calls.push(`reviewPage.show:${page}`) },
+  reviewPage: {
+    available: (page: string) => page !== "overview" || state.overviewRendered,
+    show: (page: string) => calls.push(`reviewPage.show:${page}`),
+  },
 }));
 mock.module("./quickExport", () => ({ copyReviewExport: log("copyReviewExport") }));
 
@@ -352,10 +356,16 @@ describe("bare keys", () => {
   });
 
   it("1, 2 and 3 pick Overview, Tour and Diff", () => {
+    state.overviewRendered = true;
     expect(press({ key: "1" })).toEqual({ calls: ["reviewPage.show:overview"], prevented: true });
     expect(press({ key: "2" })).toEqual({ calls: ["reviewPage.show:tour"], prevented: true });
     expect(press({ key: "3" })).toEqual({ calls: ["reviewPage.show:diff"], prevented: true });
     expect(press({ key: "4" })).toEqual({ calls: [], prevented: false });
+  });
+
+  it("1 does nothing while no Overview page is registered", () => {
+    expect(press({ key: "1" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "2" }).calls).toEqual(["reviewPage.show:tour"]);
   });
 
   it("leave digits to fields and modals, and Cmd+digit to tab selection", () => {

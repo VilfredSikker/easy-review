@@ -89,6 +89,11 @@ describe("reviewPageAvailable", () => {
     expect(reviewPageAvailable("tour", snap())).toBe(true);
     expect(reviewPageAvailable("tour", null)).toBe(true);
   });
+
+  it("hides Overview until a page that renders it has registered", () => {
+    expect(reviewPageAvailable("overview", snap())).toBe(false);
+    expect(reviewPageAvailable("overview", snap(), true)).toBe(true);
+  });
 });
 
 describe("reviewPageTabKey", () => {
