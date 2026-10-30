@@ -787,17 +787,17 @@
 </script>
 
 <div
-  class="flex flex-col h-full w-full bg-surface"
+  class="flex flex-col h-full w-full bg-bg border-l border-hairline"
   role="region"
   aria-label="Browser view"
 >
-  <div class="flex items-center gap-2 px-3 py-2 border-b border-hairline shrink-0">
+  <div class="flex items-center gap-1 px-2 py-1.5 border-b border-hairline shrink-0">
     <input
       bind:value={urlInput}
       onfocus={() => { urlBarFocused = true; }}
       onblur={() => { urlBarFocused = false; }}
       onkeydown={onUrlKeydown}
-      class="flex-1 bg-bg border border-hairline rounded px-2 py-1 text-sm outline-none mono"
+      class="flex-1 min-w-0 h-[26px] bg-surface rounded-[7px] px-2.5 text-[11px] outline-none mono focus:ring-1 focus:ring-accent/50"
       placeholder="http://localhost:5173"
       title="Use localhost consistently — cookies differ from 127.0.0.1"
     />
