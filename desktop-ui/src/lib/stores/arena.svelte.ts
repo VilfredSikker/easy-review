@@ -661,6 +661,11 @@ class ArenaStore {
    * The finding still needs the explicit import afterwards (ADR 0024).
    */
   async keepAnyway(runId: string, findingId: string) {
+    // `arena_override` resolves runs by id, not through the flow's captured bucket.
+    if (this.flowAcceptanceOrigin?.runId === runId) {
+      arenaWarn("store: keepAnyway refused — run is flow-managed", { runId });
+      return;
+    }
     try {
       const snap = normalizeArenaSnapshot(
         await invoke<ArenaRunSnapshot>("arena_override", {

@@ -2,6 +2,7 @@ import { commitColorVar } from "$lib/commitColors";
 import type {
   ArenaFinding,
   ArenaRunDigest,
+  ArenaRunKind,
   ArenaRunSnapshot,
   ArenaRunSummary,
   ArenaSeverity,
@@ -14,6 +15,31 @@ import type {
 
 /** Round number the engine records the arbiter's ballots under. */
 export const ARBITER_ROUND = 255;
+
+export interface OverlayAccess {
+  /** Flow runs belong to the review flow; their results are read through its origin, not `arena_get`. */
+  flowManaged: boolean;
+  /** A flow run opened outside flow acceptance: nothing on the page may change it. */
+  readOnlyFlow: boolean;
+  readOnly: boolean;
+  /**
+   * "Keep anyway" goes through `arena_override`, which resolves the run by its
+   * id against the tabs' current buckets rather than the flow's captured
+   * `erDir`, so a flow-managed run never offers it.
+   */
+  keepAnyway: boolean;
+}
+
+export function overlayAccess(opts: {
+  flowAcceptance: boolean;
+  runKind: ArenaRunKind | undefined;
+  readOnlyVerification: boolean;
+}): OverlayAccess {
+  const flowManaged = opts.flowAcceptance || opts.runKind === "review_flow";
+  const readOnlyFlow = flowManaged && !opts.flowAcceptance;
+  const readOnly = readOnlyFlow || opts.readOnlyVerification;
+  return { flowManaged, readOnlyFlow, readOnly, keepAnyway: !readOnly && !flowManaged };
+}
 
 export type VerdictKey = "kept" | "escalated" | "merged" | "dropped" | "pending";
 

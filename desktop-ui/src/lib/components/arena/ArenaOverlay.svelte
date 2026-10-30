@@ -4,6 +4,7 @@
     endedRunNotice,
     importableFindings,
     importedCount,
+    overlayAccess,
     roundsRun,
     runOrdinals,
     runStatusLabel,
@@ -29,6 +30,10 @@
     layoutMode?: ArenaLayoutMode;
     onClose: () => void;
     onLayoutMode?: (mode: ArenaLayoutMode) => void;
+    /**
+     * Not called: "+ New arena" opens the launcher over this page, which stays
+     * open beneath it. Kept so the host's existing binding still type-checks.
+     */
     onNewRun?: () => void;
     flowAcceptance?: boolean;
   }
@@ -39,7 +44,6 @@
     layoutMode = $bindable("matrix"),
     onClose,
     onLayoutMode,
-    onNewRun,
     flowAcceptance = false,
   }: Props = $props();
 
@@ -50,9 +54,15 @@
   const isReadOnlyVerification = $derived(isSeededRunFromSnapshot(snapshot));
   const isSingleReview = $derived(isSingleReviewRun(null, snapshot));
   const isSingleColumnLayout = $derived(isSingleReview || isReadOnlyVerification);
-  const flowManaged = $derived(flowAcceptance || run.config.run_kind === "review_flow");
-  const readOnlyFlow = $derived(flowManaged && !flowAcceptance);
-  const readOnly = $derived(readOnlyFlow || isReadOnlyVerification);
+  const access = $derived(
+    overlayAccess({
+      flowAcceptance,
+      runKind: run.config.run_kind,
+      readOnlyVerification: isReadOnlyVerification,
+    }),
+  );
+  const readOnlyFlow = $derived(access.readOnlyFlow);
+  const readOnly = $derived(access.readOnly);
 
   // The page always shows a detail; a stale pick from another run falls back to the first finding.
   const selectedId = $derived(
@@ -145,8 +155,7 @@
   }
 
   function newRun() {
-    if (onNewRun) onNewRun();
-    else arena.openLauncher();
+    arena.openLauncher();
   }
 
   async function importAll() {
@@ -301,7 +310,7 @@
               {readOnly}
               excluded={selectedId ? excluded.has(selectedId) : false}
               onToggleExcluded={(id) => arena.toggleImportExcluded(run.id, id)}
-              onKeepAnyway={(id) => void arena.keepAnyway(run.id, id)}
+              onKeepAnyway={access.keepAnyway ? (id) => void arena.keepAnyway(run.id, id) : undefined}
               onOpenInDiff={(p) => void arena.openFileInDiff(p)}
             />
           </div>

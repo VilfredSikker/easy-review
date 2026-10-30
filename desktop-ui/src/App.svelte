@@ -459,7 +459,10 @@
       flowAcceptance={arena.flowAcceptanceOrigin?.runId === arena.overlayRunId}
       bind:layoutMode={arena.layoutMode}
       onClose={() => arena.closeOverlay()}
-      onNewRun={() => arena.openLauncher()}
+      onNewRun={() => {
+        arena.closeOverlay();
+        arena.openLauncher();
+      }}
     />
   {/if}
 

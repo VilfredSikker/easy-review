@@ -11,6 +11,7 @@ import {
   funnelSteps,
   importableFindings,
   importedCount,
+  overlayAccess,
   agentPickKey,
   lensColorVar,
   modelPickKey,
@@ -229,5 +230,30 @@ describe("formatting", () => {
     expect(endedRunNotice(snap, 1)?.title).toBe("Run #1 was cancelled after round 1");
     snap.run.status = "complete";
     expect(endedRunNotice(snap, 1)).toBeNull();
+  });
+});
+
+describe("overlayAccess", () => {
+  it("offers Keep anyway on an ordinary arena run", () => {
+    const a = overlayAccess({ flowAcceptance: false, runKind: "models", readOnlyVerification: false });
+    expect(a).toEqual({ flowManaged: false, readOnlyFlow: false, readOnly: false, keepAnyway: true });
+  });
+
+  it("hides Keep anyway during flow acceptance, which stays editable for import", () => {
+    const a = overlayAccess({ flowAcceptance: true, runKind: "review_flow", readOnlyVerification: false });
+    expect(a.readOnly).toBe(false);
+    expect(a.keepAnyway).toBe(false);
+  });
+
+  it("treats a flow run outside acceptance as read only", () => {
+    const a = overlayAccess({ flowAcceptance: false, runKind: "review_flow", readOnlyVerification: false });
+    expect(a.readOnlyFlow).toBe(true);
+    expect(a.keepAnyway).toBe(false);
+  });
+
+  it("hides Keep anyway on a read-only verification run", () => {
+    const a = overlayAccess({ flowAcceptance: false, runKind: "seeded", readOnlyVerification: true });
+    expect(a.readOnly).toBe(true);
+    expect(a.keepAnyway).toBe(false);
   });
 });
