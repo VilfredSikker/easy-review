@@ -45,6 +45,9 @@ export interface ReviewRunCard {
   openRunId: string | null;
   canCancel: boolean;
   canConfirm: boolean;
+  /** Run the triaged lenses at Standard depth instead of the Deep arena,
+   *  without triaging again. Only a pending Deep plan can be downgraded. */
+  canRunStandard: boolean;
   /** A terminal flow can be started again, which is what Retry means here:
    *  the backend has no per-finder retry. */
   canRestart: boolean;
@@ -213,6 +216,7 @@ export function reviewRunCard(flow: ReviewFlowSnapshot): ReviewRunCard {
     openRunId: controls.openRunId ?? (flow.state === "done" ? flow.arena_run_id : null),
     canCancel: controls.cancel,
     canConfirm: controls.confirm,
+    canRunStandard: controls.confirm && flow.depth === "deep",
     canRestart: controls.start,
   };
 }

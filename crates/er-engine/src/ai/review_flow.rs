@@ -113,6 +113,9 @@ pub enum FlowEvent {
     },
     Confirmed,
     Declined,
+    /// The user turned a pending Deep plan into a Standard one: the same
+    /// lenses run as ordinary finders, without triaging again.
+    StandardChosen,
     DeepStarted {
         run_id: String,
     },
@@ -196,6 +199,17 @@ impl ReviewFlow {
             }
             FlowEvent::Declined if self.state == FlowState::AwaitingConfirmation => {
                 self.state = FlowState::Cancelled;
+            }
+            FlowEvent::StandardChosen
+                if self.state == FlowState::AwaitingConfirmation
+                    && self.depth == Some(FlowDepth::Deep) =>
+            {
+                self.depth = Some(FlowDepth::Standard);
+                // The estimate priced the Deep arena, not these finders.
+                self.estimated_cost = None;
+                self.estimated_latency_seconds = None;
+                self.pending_finders.clone_from(&self.lenses);
+                self.state = FlowState::Finding;
             }
             FlowEvent::DeepStarted { run_id }
                 if self.state == FlowState::Finding
@@ -379,6 +393,25 @@ mod tests {
         });
         assert_eq!(duplicates.lenses, ["general"]);
         assert_eq!(duplicates.pending_finders, ["general"]);
+    }
+
+    #[test]
+    fn standard_chosen_runs_the_deep_lenses_as_finders_only_from_confirmation() {
+        let mut deep = planned(FlowDepth::Deep, &["general", "security"]);
+        deep.estimated_cost = Some(0.8);
+        deep.apply(FlowEvent::StandardChosen);
+        assert_eq!(deep.state, FlowState::Finding);
+        assert_eq!(deep.depth, Some(FlowDepth::Standard));
+        assert_eq!(deep.pending_finders, ["general", "security"]);
+        assert_eq!(deep.estimated_cost, None);
+        let after = deep.clone();
+        deep.apply(FlowEvent::StandardChosen);
+        assert_eq!(deep, after, "a second click is ignored");
+
+        let mut standard = planned(FlowDepth::Standard, &["general"]);
+        let before = standard.clone();
+        standard.apply(FlowEvent::StandardChosen);
+        assert_eq!(standard, before);
     }
 
     #[test]
