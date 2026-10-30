@@ -16,6 +16,7 @@
    * highlight itself.
    */
   import { findMatchRanges, type MatchOptions } from "$lib/referenceHighlight";
+  import { clampPopoverTop } from "$lib/rulerGeometry";
   import type { RulerMark, UsageContextLine, UsageLine } from "$lib/referenceUsages";
 
   interface MarkPreview {
@@ -73,9 +74,7 @@
   /** Keep the preview box inside the ruler's vertical extent. */
   const previewTop = $derived.by(() => {
     if (!hovered) return 0;
-    const ideal = hovered.mark.topPx - 14;
-    const maxTop = Math.max(4, rulerHeight - (popH || 120) - 4);
-    return Math.max(4, Math.min(ideal, maxTop));
+    return clampPopoverTop(hovered.mark.topPx - 14, rulerHeight, popH || 120);
   });
 
   function segments(text: string): Array<{ text: string; match: boolean }> {
