@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveContextIdentity } from "./contextIdentity";
+import { resolveContextIdentity, resolveContextTitle } from "./contextIdentity";
 import type { AppSnapshot, GithubStatusSnapshot, PrInfo, ProjectSnapshot, TabSummary } from "./types";
 
 function githubSnap(overrides: Partial<GithubStatusSnapshot> = {}): GithubStatusSnapshot {
@@ -204,5 +204,48 @@ describe("resolveContextIdentity", () => {
       snap({ branch: "   ", base: "", github: githubSnap() }),
     );
     expect(id).toEqual({ branch: "feat/from-fork", base: "main" });
+  });
+});
+
+describe("resolveContextTitle", () => {
+  it("is empty without a snapshot", () => {
+    expect(resolveContextTitle(null)).toEqual({ repo: "", prNumber: null, title: "" });
+  });
+
+  it("prefers the PR card title and takes the repo from the tab remote", () => {
+    const s = snap({
+      pr: { number: 1425, title: "Reorder migrations", state: "OPEN", base: "main", head: "h", url: "", author: "u" },
+    });
+    expect(resolveContextTitle(s)).toEqual({
+      repo: "discovery",
+      prNumber: 1425,
+      title: "Reorder migrations",
+    });
+  });
+
+  it("falls back to the sidebar PR list for a remote stub", () => {
+    const project: ProjectSnapshot = {
+      id: "discovery",
+      name: "discovery",
+      root_path: "",
+      remote: "reshapebiotech/discovery",
+      is_active: true,
+      local_branches: [],
+      auto_branches: [],
+      saved_prs: [],
+      my_prs: [],
+      prs_to_review: [],
+      recent_prs: [prInfo({ title: "Listed title" })],
+      recently_merged: [],
+    };
+    expect(resolveContextTitle(snap({ projects: [project] })).title).toBe("Listed title");
+  });
+
+  it("uses the tab label when the view is not a PR", () => {
+    const s = snap({
+      branch: "feat/x",
+      tabs: [tab({ pr_number: null, remote: null, label: "my-worktree" })],
+    });
+    expect(resolveContextTitle(s)).toMatchObject({ prNumber: null, title: "my-worktree" });
   });
 });
