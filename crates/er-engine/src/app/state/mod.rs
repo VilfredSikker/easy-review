@@ -10109,6 +10109,7 @@ mod tests {
             adds: 0,
             dels: 0,
             is_merge: false,
+            diffstat_known: false,
         }];
 
         tab.mode = DiffMode::PrDiff;
