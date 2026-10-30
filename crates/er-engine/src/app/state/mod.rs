@@ -4843,7 +4843,9 @@ impl TabState {
             pillars.push(TourPillarView {
                 id: p.id.clone(),
                 title: p.title.clone(),
-                description: p.description.clone(),
+                // The TUI draws this as plain text, so diff-path links would
+                // show as raw `[name](path)` markup.
+                description: crate::ai::strip_diff_links(&p.description),
                 importance: p.importance,
                 foundation: p.foundation,
             });

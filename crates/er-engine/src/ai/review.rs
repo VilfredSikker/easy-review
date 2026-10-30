@@ -631,6 +631,41 @@ pub struct TourRelatedFile {
     pub reason: String,
 }
 
+/// Rewrite markdown links whose target is not an http(s) URL — the diff-path
+/// links a tour writes into its prose — to their bare link text, for surfaces
+/// that draw tour markdown as plain text and cannot follow them.
+pub fn strip_diff_links(md: &str) -> String {
+    let mut out = String::with_capacity(md.len());
+    let mut rest = md;
+    while let Some((before, after)) = rest.split_once('[') {
+        out.push_str(before);
+        match split_diff_link(after) {
+            Some((text, tail)) => {
+                out.push_str(text);
+                rest = tail;
+            }
+            None => {
+                out.push('[');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// `after` follows a `[`. Returns the link text and the remainder when it opens
+/// a `text](target)` link with a non-web target.
+fn split_diff_link(after: &str) -> Option<(&str, &str)> {
+    let (text, tail) = after.split_once(']')?;
+    let (target, rest) = tail.strip_prefix('(')?.split_once(')')?;
+    let plain_target = !target.is_empty()
+        && !target.contains(char::is_whitespace)
+        && !target.starts_with("http://")
+        && !target.starts_with("https://");
+    (plain_target && !text.contains('[')).then_some((text, rest))
+}
+
 impl TourFile {
     /// This file's path followed by its related (co-located) file paths, in
     /// reading order.
@@ -3840,6 +3875,24 @@ mod tests {
             foundation: false,
             files,
         }
+    }
+
+    #[test]
+    fn strip_diff_links_keeps_text_and_web_links() {
+        assert_eq!(
+            strip_diff_links("See [foo.ts](src/foo.ts) and [bar](src/a/bar.rs)."),
+            "See foo.ts and bar."
+        );
+        assert_eq!(
+            strip_diff_links("[docs](https://x.dev/a) [b](http://y)"),
+            "[docs](https://x.dev/a) [b](http://y)"
+        );
+        assert_eq!(
+            strip_diff_links("arr[0] and [x] (y) [z]()"),
+            "arr[0] and [x] (y) [z]()"
+        );
+        assert_eq!(strip_diff_links("[[a](b.rs)"), "[a");
+        assert_eq!(strip_diff_links("ünï [ç](d/ç.rs) ok ["), "ünï ç ok [");
     }
 
     #[test]
