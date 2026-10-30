@@ -537,6 +537,24 @@ describe("mergeChromeSnapshot", () => {
     expect(mergeChromeSnapshot(prev, next, "next").local_branch_divergence).toBeUndefined();
   });
 
+  it("keeps the other view's summary, which a chrome stub does not read", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const other_bucket = {
+      view: "pr" as const,
+      has_triage: true,
+      has_review: true,
+      finding_count: 4,
+      pillar_count: 4,
+      tour_shared: false,
+      same_diff: false,
+    };
+    const prev = snap({ active_tab: 0, tabs, other_bucket });
+    const next = snap({ active_tab: 0, tabs, other_bucket: null });
+    expect(mergeChromeSnapshot(prev, next, "prev").other_bucket).toEqual(other_bucket);
+    // Across a view change the old view's summary would describe the wrong tab.
+    expect(mergeChromeSnapshot(prev, next, "next").other_bucket).toBeNull();
+  });
+
   it("takes the per-tab stale flags from next chrome", () => {
     const prev = snap({
       active_tab: 0,

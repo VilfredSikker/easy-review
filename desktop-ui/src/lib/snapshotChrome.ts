@@ -73,6 +73,8 @@ export function mergeChromeSnapshot(
     // `files` are what these counts describe.
     unstaged_stat: prev.unstaged_stat,
     staged_stat: prev.staged_stat,
+    // Read from sidecars on a full build only; a chrome stub sends none.
+    other_bucket: aiSource === "next" ? next.other_bucket : prev.other_bucket,
     local_branch_divergence:
       aiSource === "next"
         ? next.local_branch_divergence

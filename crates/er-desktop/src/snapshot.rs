@@ -347,6 +347,9 @@ pub struct PillarSnapshot {
     pub id: String,
     pub title: String,
     pub description_markdown: String,
+    /// The pillar's one-line summary for the pillar lists. Empty on a tour
+    /// written before pillars had one; readers fall back to the description.
+    pub summary_markdown: String,
     pub importance: u32,
     pub foundation: bool,
     pub files: Vec<TourFileRef>,
@@ -369,6 +372,13 @@ pub struct TourSnapshot {
     pub title: String,
     pub overview_markdown: String,
     pub pillars: Vec<PillarSnapshot>,
+    /// When the tour was generated (ISO-8601, as the agent wrote it); empty
+    /// when the sidecar does not say.
+    pub created_at: String,
+    /// Hash of the diff the tour was generated against — its identity
+    /// (ADR 0025). A diff hash, not a commit: the commit the on-screen diff
+    /// was built from is `DiffStaleSnapshot::built_from_oid`.
+    pub diff_hash: String,
 }
 
 impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
@@ -380,6 +390,34 @@ impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
             tab_width: d.tab_width,
         }
     }
+}
+
+/// What the other view of a local PR tab holds, so an empty view can say
+/// where the review artifacts are instead of only that it has none.
+///
+/// Artifacts are per view bucket (ADR 0004), and the snapshot otherwise
+/// carries only the active one. The tour is the exception (ADR 0025): a tour
+/// in the other bucket is reused here when its diff hash matches, so
+/// `tour_shared` says when this view's tour *is* the other bucket's file and
+/// an empty-state must not claim this view has no tour.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct OtherBucketSnapshot {
+    /// The view the summary describes: `"pr"` (PR diff) or `"branch"`
+    /// (local branch).
+    pub view: String,
+    pub has_triage: bool,
+    pub has_review: bool,
+    /// Findings still open in that view's review (resolved and arbiter-dropped
+    /// ones left out), counted the way its own findings list is.
+    pub finding_count: usize,
+    /// Pillars in the tour stored in that view's bucket; 0 with no tour there.
+    pub pillar_count: usize,
+    /// The tour this view shows is that bucket's tour, reused on a matching
+    /// diff hash.
+    pub tour_shared: bool,
+    /// Some artifact there was generated against the diff on screen, so it
+    /// describes this view too (the branch and the PR head are the same diff).
+    pub same_diff: bool,
 }
 
 /// Files and +/- summary for a scope (unstaged / staged) so the scope selector
@@ -555,6 +593,11 @@ pub struct AppSnapshot {
     /// Guided tour (Guide tab). `available` drives whether the Guide tab shows.
     #[serde(default)]
     pub tour: TourSnapshot,
+    /// The other view's artifacts on a local PR tab in its Local branch or PR
+    /// diff view; `None` everywhere else, and on a chrome-only build, which
+    /// does not read sidecars.
+    #[serde(default)]
+    pub other_bucket: Option<OtherBucketSnapshot>,
     /// Active arena runs across ALL tabs (tab-independent background runs).
     /// Lets the UI keep a run visible/controllable after switching branches.
     #[serde(default)]
@@ -1309,7 +1352,15 @@ pub struct FileSnapshot {
     pub deletions: usize,
     pub reviewed: bool,
     pub compacted: bool,
+    /// The AI review's rating from `review.json`; `None` before a review.
     pub risk: Option<String>,
+    /// The tier the repo's risk rules give this path (`high|med|low|ai`). `ai`
+    /// declares nothing and leaves the file to `risk`, so a reader shows the
+    /// review's rating for it, or nothing before a review (ADR 0048).
+    pub risk_tier: &'static str,
+    /// The rule that set `risk_tier`: its key as written, label and source
+    /// table. `None` when a default, or nothing at all, answered.
+    pub risk_rule: Option<er_engine::config::MatchedRiskRule>,
     pub finding_count: usize,
     pub comment_count: usize,
     pub question_count: usize,
@@ -1425,6 +1476,12 @@ pub struct ThreadMessage {
     pub editable: Option<bool>,
     #[serde(default)]
     pub deletable: Option<bool>,
+    /// The AI action that wrote this reply (`ask` / `elaborate`), so the card
+    /// can name it. Also set on the pending "…thinking" reply, which is how the
+    /// reader knows which of the two is running. `None` on a person's text and
+    /// on AI replies written before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1554,6 +1611,12 @@ pub struct AiSnapshot {
     /// rather than derived in the UI so the rule has one definition.
     #[serde(default)]
     pub min_trust_default: String,
+    /// When the review was generated (ISO-8601). `None` with no review; empty
+    /// when the sidecar does not say, as with a review assembled from expert
+    /// sidecars alone.
+    pub review_created_at: Option<String>,
+    /// Hash of the diff the review was generated against; `None` with no review.
+    pub review_diff_hash: Option<String>,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
@@ -1653,6 +1716,10 @@ pub struct TriageSnapshot {
     /// Evidence-backed signals that led triage to request security review.
     #[serde(default)]
     pub sensitive: Vec<TriageSensitiveReasonSnapshot>,
+    /// When triage ran (ISO-8601); empty when the sidecar does not say.
+    pub created_at: String,
+    /// Hash of the diff triage was run against; `fresh` compares it.
+    pub diff_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1675,6 +1742,65 @@ pub struct CheckSummary {
     pub status: String,
     pub conclusion: String,
     pub url: Option<String>,
+    /// ISO-8601 start and end; `None` until reached.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    /// Wall time of a finished check, computed once here so the UI does not
+    /// re-parse GitHub's timestamps. `None` while running or untimed.
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
+    /// Status-context text (a deploy preview's "Ready"), shown where a check
+    /// has no duration.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl From<er_engine::github::CheckRun> for CheckSummary {
+    fn from(c: er_engine::github::CheckRun) -> Self {
+        let duration_secs = c.duration_secs();
+        Self {
+            name: c.name,
+            status: c.status,
+            conclusion: c.conclusion,
+            url: c.url,
+            started_at: c.started_at,
+            completed_at: c.completed_at,
+            duration_secs,
+            description: c.description,
+        }
+    }
+}
+
+/// One person (or team) on the PR's reviewer list: a pending request, a
+/// submitted review, or both. Folded by `er_engine::github::pr_reviewers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhReviewerSummary {
+    pub reviewer: String,
+    pub is_team: bool,
+    /// A review is requested from them now (first ask or re-ask).
+    pub requested: bool,
+    /// The review that counts for them (`APPROVED`, `CHANGES_REQUESTED`,
+    /// `DISMISSED`, `COMMENTED`); `None` until they review.
+    pub state: Option<String>,
+}
+
+/// The reviewer list for a PR. The author is left out: their reviews are
+/// replies on their own PR, not reviews of it.
+pub fn github_reviewers(
+    overview: &er_engine::github::PrOverviewFull,
+    reviews: &[er_engine::github::PrReview],
+) -> Vec<GhReviewerSummary> {
+    er_engine::github::pr_reviewers(&overview.author, &overview.review_requests, reviews)
+        .into_iter()
+        .map(|r| GhReviewerSummary {
+            reviewer: r.reviewer,
+            is_team: r.is_team,
+            requested: r.requested,
+            state: r.state,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1747,6 +1873,16 @@ pub struct GithubStatusSnapshot {
     /// (`gh pr merge --admin`). Looked up only while the PR is blocked.
     #[serde(default)]
     pub can_bypass_rules: bool,
+    /// When the PR was opened (ISO-8601). `gh pr view` has no timeline, so the
+    /// "opened" event is built from this instead (ADR 0026).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Commits on the PR.
+    #[serde(default)]
+    pub commit_count: usize,
+    /// Requested reviewers first, then everyone else who reviewed.
+    #[serde(default)]
+    pub reviewers: Vec<GhReviewerSummary>,
     /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
     /// Process-local, so never sent or persisted.
     #[serde(skip)]
@@ -2073,6 +2209,7 @@ fn comment_ref_to_thread(
             synced: None,
             editable: None,
             deletable: None,
+            ai_action: None,
         },
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
@@ -2126,6 +2263,7 @@ fn build_replies(
                     synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: q.ai_action.clone(),
                 });
             }
         }
@@ -2146,6 +2284,7 @@ fn build_replies(
                     synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: n.ai_action.clone(),
                 });
             }
         }
@@ -2166,6 +2305,7 @@ fn build_replies(
                     synced: Some(c.synced),
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: None,
                 });
             }
         }
@@ -2176,25 +2316,21 @@ fn build_replies(
     // Append synthetic "…thinking" reply when an ask_ai subprocess is in
     // flight for this thread. Injected after the sort so it always renders at
     // the bottom regardless of timestamps.
-    if let Some(pmap) = pending {
-        let is_pending = pmap
-            .lock()
-            .map(|g| g.contains_key(root.id()))
-            .unwrap_or(false);
-        if is_pending {
-            replies.push(ThreadMessage {
-                id: String::new(),
-                author: "ai".to_string(),
-                kind: "ai".to_string(),
-                timestamp: String::new(),
-                body_markdown: "…thinking".to_string(),
-                origin: Some("thread_reply".to_string()),
-                source: None,
-                synced: None,
-                editable: None,
-                deletable: None,
-            });
-        }
+    let in_flight = pending.and_then(|pmap| pmap.lock().ok()?.get(root.id()).copied());
+    if let Some(reply) = in_flight {
+        replies.push(ThreadMessage {
+            id: String::new(),
+            author: "ai".to_string(),
+            kind: "ai".to_string(),
+            timestamp: String::new(),
+            body_markdown: "…thinking".to_string(),
+            origin: Some("thread_reply".to_string()),
+            source: None,
+            synced: None,
+            editable: None,
+            deletable: None,
+            ai_action: reply.ai_action.map(str::to_string),
+        });
     }
 
     replies
@@ -2212,9 +2348,19 @@ pub type BranchBaseRemoteOid = Arc<Mutex<HashMap<String, String>>>;
 /// the background poller fetched.
 pub type GhStatusCache = Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>>;
 
-/// Map of `thread_id -> started_at_ms`. Used to render a synthetic "…thinking"
+/// Map of `thread_id -> PendingAiReply`. Used to render a synthetic "…thinking"
 /// reply on threads where an AI subprocess is currently running.
-pub type PendingAiReplies = Arc<Mutex<HashMap<String, u64>>>;
+pub type PendingAiReplies = Arc<Mutex<HashMap<String, PendingAiReply>>>;
+
+/// One AI subprocess answering a thread or finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingAiReply {
+    pub started_at_ms: u64,
+    /// Which action is running (`AI_ACTION_ASK` / `AI_ACTION_ELABORATE`); the
+    /// placeholder carries it so the card can say "Elaborating" before the
+    /// rewrite lands, rather than guessing from the thread.
+    pub ai_action: Option<&'static str>,
+}
 
 #[derive(Clone, Default)]
 pub struct ProjectMeta {
@@ -2457,6 +2603,8 @@ fn build_file_snapshot_with_keys(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(fr.risk).to_string());
 
+    let declared = tab.risk_rules.resolve(&f.path);
+
     let (lines_key, delta_key) = match precomputed {
         Some(keys) => keys,
         None => {
@@ -2481,6 +2629,8 @@ fn build_file_snapshot_with_keys(
         reviewed: tab.reviewed.contains_key(&f.path),
         compacted: f.compacted,
         risk,
+        risk_tier: declared.tier.as_str(),
+        risk_rule: declared.rule,
         finding_count,
         comment_count,
         question_count,
@@ -2593,6 +2743,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
                 description_markdown: p.description.clone(),
+                summary_markdown: p.summary.clone(),
                 importance: p.importance,
                 foundation: p.foundation,
                 files,
@@ -2619,6 +2770,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: "__other__".to_string(),
                 title: "Other changes".to_string(),
                 description_markdown: "Files not assigned to a tour pillar.".to_string(),
+                summary_markdown: "Files not assigned to a tour pillar.".to_string(),
                 importance: 0,
                 foundation: false,
                 files: other,
@@ -2646,6 +2798,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
                 description_markdown: p.description.clone(),
+                summary_markdown: p.summary.clone(),
                 importance: p.importance,
                 foundation: p.foundation,
                 files,
@@ -2669,7 +2822,170 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,
+        created_at: tour.created_at.clone(),
+        diff_hash: tour.diff_hash.clone(),
     }
+}
+
+/// The other view's bucket directory and its name, for a local PR tab in its
+/// Local branch or PR diff view. Unstaged/Staged/History have buckets of their
+/// own that describe a different diff, so they have no "other view" to point
+/// at; a remote tab has only the PR bucket.
+fn other_bucket_dir(tab: &TabState) -> Option<(&'static str, String)> {
+    if tab.is_remote() || tab.pr_number.is_none() {
+        return None;
+    }
+    let on_pr = tab.tour_context_is_pr();
+    if !matches!(
+        tab.mode,
+        DiffMode::PrDiff | DiffMode::Branch | DiffMode::Tour
+    ) {
+        return None;
+    }
+    let (view, dir) = if on_pr {
+        ("branch", tab.branch_bucket_er_dir()?)
+    } else {
+        // A PR tab's GitHub comments live in its PR bucket, so this is that
+        // bucket's directory; the engine keeps the bare PR-bucket path private.
+        ("pr", tab.github_comments_dir())
+    };
+    // Repo-local storage (`ER_REPO_LOCAL`) has one bucket for every view.
+    (dir != tab.er_dir()).then_some((view, dir))
+}
+
+/// What the summary needs from the other bucket's sidecars, read once per
+/// write to that bucket. Only facts are kept: the loaded `AiState` holds
+/// thread-local caches and cannot sit in a process-wide cache.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OtherBucketFacts {
+    triage_hash: Option<String>,
+    review_hash: Option<String>,
+    /// Findings still open in its review (resolved and arbiter-dropped ones
+    /// left out), counted the way its own findings list is.
+    finding_count: usize,
+    /// `(diff_hash, created_at, pillar count)` of the tour stored there.
+    tour: Option<(String, String, usize)>,
+}
+
+impl OtherBucketFacts {
+    fn read(dir: &str) -> Self {
+        // Loaded as of the bucket's own generation, so the loader merges the
+        // expert and professor sidecars its own view would. Freshness against
+        // the active view is judged in `summarize_other_bucket`.
+        let ai = er_engine::ai::load_ai_state(dir, &bucket_generation_hash(dir), None);
+        let tour = er_engine::ai::load_tour_sidecar(dir, "tour.json");
+        Self {
+            triage_hash: ai.triage.as_ref().map(|t| t.diff_hash.clone()),
+            review_hash: ai.review.as_ref().map(|r| r.diff_hash.clone()),
+            finding_count: ai.review.as_ref().map_or(0, |r| {
+                r.files
+                    .values()
+                    .flat_map(|f| f.findings.iter())
+                    .filter(|f| f.is_active())
+                    .count()
+            }),
+            tour: tour.map(|t| (t.diff_hash, t.created_at, t.pillars.len())),
+        }
+    }
+}
+
+/// The diff hash the bucket's sidecars were generated against: `review.json`'s,
+/// else the newest expert, professor or triage sidecar's. The loader merges only
+/// sidecars matching the hash it is given, so an empty one drops a review built
+/// from experts or professor alone.
+fn bucket_generation_hash(dir: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct HashOnly {
+        diff_hash: String,
+    }
+    let review_hash = std::fs::read_to_string(std::path::Path::new(dir).join("review.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<HashOnly>(&content).ok())
+        .map(|review| review.diff_hash)
+        .filter(|hash| !hash.is_empty());
+    if let Some(hash) = review_hash {
+        return hash;
+    }
+    let experts = er_engine::ai::load_expert_reviews(dir)
+        .into_iter()
+        .map(|e| (e.created_at, e.diff_hash));
+    let professor = er_engine::ai::load_professor_review(dir).map(|p| (p.created_at, p.diff_hash));
+    let triage = er_engine::ai::load_triage_review(dir).map(|t| (t.created_at, t.diff_hash));
+    experts
+        .chain(professor)
+        .chain(triage)
+        .filter(|(_, hash)| !hash.is_empty())
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, hash)| hash)
+        .unwrap_or_default()
+}
+
+/// The pure half of the summary, so it can be tested without managed storage.
+fn summarize_other_bucket(
+    view: &str,
+    other: &OtherBucketFacts,
+    shown_tour: Option<&er_engine::ai::ErTour>,
+    active_hashes: &[&str],
+) -> OtherBucketSnapshot {
+    let matches = |hash: &str| !hash.is_empty() && active_hashes.contains(&hash);
+    // The tour on screen came from there when it is that same file: the hash
+    // alone could match a tour generated separately in each bucket.
+    let tour_shared = match (&other.tour, shown_tour) {
+        (Some((hash, created, _)), Some(shown)) => {
+            *hash == shown.diff_hash && *created == shown.created_at
+        }
+        _ => false,
+    };
+    let same_diff = [&other.triage_hash, &other.review_hash]
+        .into_iter()
+        .flatten()
+        .chain(other.tour.as_ref().map(|(hash, _, _)| hash))
+        .any(|hash| matches(hash));
+    OtherBucketSnapshot {
+        view: view.to_string(),
+        has_triage: other.triage_hash.is_some(),
+        has_review: other.review_hash.is_some(),
+        finding_count: other.finding_count,
+        pillar_count: other.tour.as_ref().map_or(0, |(_, _, n)| *n),
+        tour_shared,
+        same_diff,
+    }
+}
+
+/// Keyed by the bucket's directory and newest sidecar mtime. Every full
+/// snapshot asks, and that bucket only changes when an agent writes to it, so
+/// the parse runs once per write rather than once per poll.
+fn other_bucket_facts_cached(dir: &str) -> OtherBucketFacts {
+    type Key = Option<std::time::SystemTime>;
+    static CACHE: std::sync::LazyLock<Mutex<HashMap<String, (Key, OtherBucketFacts)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    let key: Key = er_engine::ai::latest_er_mtime(dir);
+    if let Some((_, facts)) = CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(dir).filter(|(k, _)| *k == key).cloned())
+    {
+        return facts;
+    }
+    let facts = OtherBucketFacts::read(dir);
+    if let Ok(mut cache) = CACHE.lock() {
+        if cache.len() > 32 {
+            cache.clear();
+        }
+        cache.insert(dir.to_string(), (key, facts.clone()));
+    }
+    facts
+}
+
+fn build_other_bucket_snapshot(tab: &TabState) -> Option<OtherBucketSnapshot> {
+    let (view, dir) = other_bucket_dir(tab)?;
+    let active_hashes = [tab.branch_diff_hash.as_str(), tab.diff_hash.as_str()];
+    Some(summarize_other_bucket(
+        view,
+        &other_bucket_facts_cached(&dir),
+        tab.ai.tour.as_ref(),
+        &active_hashes,
+    ))
 }
 
 /// The desktop-owned state a snapshot reads beside the engine `App`. Every
@@ -3219,6 +3535,11 @@ fn build_snapshot_inner(
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         },
         tour: build_tour_snapshot(tab),
+        other_bucket: if chrome_only {
+            None
+        } else {
+            build_other_bucket_snapshot(tab)
+        },
         background_arena_runs: app.background_arena_runs(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -3287,6 +3608,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         resolved_findings: Vec::new(),
         dropped_findings: Vec::new(),
         min_trust_default: String::new(),
+        review_created_at: None,
+        review_diff_hash: None,
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
@@ -4610,6 +4933,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
@@ -4643,6 +4967,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&nref, tab, pending),
                         promoted_to: n.promoted_to.clone(),
@@ -4681,6 +5006,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&cref, tab, pending),
                         promoted_to: None,
@@ -4855,6 +5181,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     note: reason.note.clone(),
                 })
                 .collect(),
+            created_at: t.created_at.clone(),
+            diff_hash: t.diff_hash.clone(),
         }
     });
 
@@ -4919,6 +5247,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         dropped_findings,
         min_trust_default: confidence_str(er_engine::ai::min_trust_for(&ai.arbiter_effect))
             .to_string(),
+        review_created_at: ai.review.as_ref().map(|r| r.created_at.clone()),
+        review_diff_hash: ai.review.as_ref().map(|r| r.diff_hash.clone()),
         has_review_json,
         eligible_comment_count,
         triage,
@@ -7111,5 +7441,313 @@ mod tests {
         let finding = &snapshot.findings[0];
         assert_eq!(finding.providers, ["provider-a", "provider-b"]);
         assert!(finding.security_stage);
+    }
+    fn question_json(
+        id: &str,
+        author: &str,
+        reply_to: Option<&str>,
+        action: Option<&str>,
+    ) -> er_engine::ai::ReviewQuestion {
+        let mut v = serde_json::json!({
+            "id": id,
+            "timestamp": "2026-10-30T10:00:00Z",
+            "file": "src/a.rs",
+            "hunk_index": 0,
+            "line_start": 3,
+            "text": format!("text of {id}"),
+            "author": author,
+        });
+        if let Some(parent) = reply_to {
+            v["in_reply_to"] = parent.into();
+        }
+        if let Some(action) = action {
+            v["ai_action"] = action.into();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn tab_with_question_thread() -> TabState {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.questions = Some(er_engine::ai::ErQuestions {
+            version: 1,
+            diff_hash: "h".into(),
+            questions: vec![
+                question_json("q-1", "You", None, None),
+                question_json(
+                    "q-2",
+                    "ai",
+                    Some("q-1"),
+                    Some(er_engine::ai::AI_ACTION_ELABORATE),
+                ),
+            ],
+        });
+        tab
+    }
+
+    #[test]
+    fn thread_replies_name_the_ai_action_that_wrote_them() {
+        let tab = tab_with_question_thread();
+        let root = tab.ai.questions.as_ref().unwrap().questions[0].clone();
+        let replies = build_replies(&CommentRef::Question(&root), &tab, None);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].kind, "ai");
+        assert_eq!(replies[0].ai_action.as_deref(), Some("elaborate"));
+        // A reply a person wrote carries none, and the field stays off the wire.
+        let json = serde_json::to_value(&build_ai_snapshot(&tab, None).threads[0].root).unwrap();
+        assert!(json.get("ai_action").is_none(), "{json}");
+    }
+
+    #[test]
+    fn pending_thinking_reply_carries_the_running_action() {
+        let tab = tab_with_question_thread();
+        let root = tab.ai.questions.as_ref().unwrap().questions[0].clone();
+        let pending: PendingAiReplies = Arc::new(Mutex::new(HashMap::from([(
+            "q-1".to_string(),
+            PendingAiReply {
+                started_at_ms: 1,
+                ai_action: Some(er_engine::ai::AI_ACTION_ASK),
+            },
+        )])));
+        let replies = build_replies(&CommentRef::Question(&root), &tab, Some(&pending));
+        let thinking = replies.last().unwrap();
+        assert_eq!(thinking.body_markdown, "…thinking");
+        assert_eq!(thinking.ai_action.as_deref(), Some("ask"));
+    }
+
+    #[test]
+    fn file_snapshot_carries_the_declared_risk_tier_and_its_rule() {
+        let file = |path: &str| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![file("db/001.sql"), file("src/lib.rs")]);
+        tab.risk_rules.project.rules.insert(
+            "db/**".to_string(),
+            er_engine::config::RiskRule {
+                tier: "high".to_string(),
+                label: Some("Migrations".to_string()),
+            },
+        );
+
+        let claimed = build_file_snapshot(0, &tab.files[0], &tab, None, false);
+        assert_eq!(claimed.risk_tier, "high");
+        let rule = claimed.risk_rule.expect("db/** claims the migration");
+        assert_eq!(rule.key, "db/**");
+        assert_eq!(rule.label.as_deref(), Some("Migrations"));
+        assert_eq!(rule.source.as_str(), "project");
+
+        // Nothing claims it: `ai` leaves the file to the review, and no rule
+        // is named for a judgement nobody declared.
+        let unclaimed = build_file_snapshot(1, &tab.files[1], &tab, None, false);
+        assert_eq!(unclaimed.risk_tier, "ai");
+        assert!(unclaimed.risk_rule.is_none());
+    }
+
+    fn tour_json(
+        diff_hash: &str,
+        created_at: &str,
+        summary: Option<&str>,
+    ) -> er_engine::ai::ErTour {
+        let mut pillar = serde_json::json!({
+            "id": "p1",
+            "title": "Schema",
+            "description": "The migration and its check.",
+            "files": [{ "path": "src/a.rs" }],
+        });
+        if let Some(summary) = summary {
+            pillar["summary"] = summary.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "diff_hash": diff_hash,
+            "created_at": created_at,
+            "pillars": [pillar],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn tour_snapshot_carries_pillar_summary_and_provenance() {
+        let file = DiffFile {
+            path: "src/a.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.mode = DiffMode::Branch;
+        tab.ai.tour = Some(tour_json(
+            "hash-1",
+            "2026-10-30T10:00:00Z",
+            Some("Adds the check."),
+        ));
+        let tour = build_tour_snapshot(&tab);
+        assert_eq!(tour.pillars[0].summary_markdown, "Adds the check.");
+        assert_eq!(tour.created_at, "2026-10-30T10:00:00Z");
+        assert_eq!(tour.diff_hash, "hash-1");
+
+        // A tour from before pillar summaries sends an empty one, so readers
+        // can tell it apart and fall back to the description.
+        tab.ai.tour = Some(tour_json("hash-1", "", None));
+        assert_eq!(build_tour_snapshot(&tab).pillars[0].summary_markdown, "");
+    }
+
+    #[test]
+    fn other_bucket_summary_reports_artifacts_and_tour_reuse() {
+        let facts = OtherBucketFacts {
+            triage_hash: Some("pr-hash".into()),
+            review_hash: Some("pr-hash".into()),
+            finding_count: 4,
+            tour: Some(("pr-hash".into(), "t1".into(), 4)),
+        };
+
+        // Diverged diffs: the PR view has everything, nothing describes this one.
+        let diverged = summarize_other_bucket("pr", &facts, None, &["local-hash", ""]);
+        assert_eq!(
+            diverged,
+            OtherBucketSnapshot {
+                view: "pr".into(),
+                has_triage: true,
+                has_review: true,
+                finding_count: 4,
+                pillar_count: 4,
+                tour_shared: false,
+                same_diff: false,
+            }
+        );
+
+        // Same diff, and the tour on screen is the PR bucket's file (ADR 0025):
+        // the empty state must not claim this view has no tour.
+        let shown = tour_json("pr-hash", "t1", None);
+        let reused = summarize_other_bucket("pr", &facts, Some(&shown), &["pr-hash"]);
+        assert!(reused.tour_shared);
+        assert!(reused.same_diff);
+
+        // A tour generated separately in each bucket for the same diff is not
+        // the other bucket's tour.
+        let own = tour_json("pr-hash", "t2", None);
+        assert!(!summarize_other_bucket("pr", &facts, Some(&own), &["pr-hash"]).tour_shared);
+
+        // An empty hash never counts as a match.
+        let empty = OtherBucketFacts {
+            review_hash: Some(String::new()),
+            ..OtherBucketFacts::default()
+        };
+        assert!(!summarize_other_bucket("pr", &empty, None, &["", "x"]).same_diff);
+    }
+
+    #[test]
+    fn other_bucket_facts_count_expert_and_professor_findings_without_review_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let finding = |id: &str, line: u32| {
+            serde_json::json!({
+                "id": id, "severity": "medium", "category": "logic",
+                "title": format!("finding {id}"), "description": "d",
+                "hunk_index": 0, "line_start": line, "line_end": line
+            })
+        };
+        std::fs::create_dir_all(dir.join("experts")).unwrap();
+        std::fs::write(
+            dir.join("experts/security.json"),
+            serde_json::json!({
+                "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:00:00Z",
+                "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("professor.json"),
+            serde_json::json!({
+                "version": 1, "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:05:00Z",
+                "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let facts = OtherBucketFacts::read(dir.to_str().unwrap());
+        assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));
+        assert_eq!(facts.finding_count, 3);
+        let summary = summarize_other_bucket("pr", &facts, None, &["pr-hash"]);
+        assert!(summary.has_review);
+        assert!(summary.same_diff);
+    }
+
+    #[test]
+    fn only_a_local_pr_tabs_review_views_have_an_other_bucket() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Branch;
+        assert!(other_bucket_dir(&tab).is_none(), "no PR, no other view");
+
+        tab.pr_number = Some(7);
+        tab.mode = DiffMode::Unstaged;
+        assert!(
+            other_bucket_dir(&tab).is_none(),
+            "Unstaged has its own diff, not the other view's"
+        );
+    }
+
+    #[test]
+    fn check_summary_carries_timing_and_duration() {
+        let run = er_engine::github::CheckRun {
+            name: "ci".into(),
+            status: "COMPLETED".into(),
+            conclusion: "SUCCESS".into(),
+            url: None,
+            started_at: Some("2026-10-30T10:00:00Z".into()),
+            completed_at: Some("2026-10-30T10:01:52Z".into()),
+            description: None,
+        };
+        let summary = CheckSummary::from(run);
+        assert_eq!(summary.duration_secs, Some(112));
+        assert_eq!(summary.started_at.as_deref(), Some("2026-10-30T10:00:00Z"));
+    }
+
+    #[test]
+    fn triage_and_review_carry_when_and_against_what_they_ran() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.triage = Some(
+            serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "tri-hash",
+                "created_at": "2026-10-30T09:00:00Z",
+            }))
+            .unwrap(),
+        );
+        tab.ai.review = Some(er_engine::ai::ErReview {
+            version: 1,
+            diff_hash: "rev-hash".into(),
+            created_at: "2026-10-30T09:30:00Z".into(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        });
+        let ai = build_ai_snapshot(&tab, None);
+        let triage = ai.triage.expect("triage loaded");
+        assert_eq!(triage.created_at, "2026-10-30T09:00:00Z");
+        assert_eq!(triage.diff_hash, "tri-hash");
+        assert_eq!(
+            ai.review_created_at.as_deref(),
+            Some("2026-10-30T09:30:00Z")
+        );
+        assert_eq!(ai.review_diff_hash.as_deref(), Some("rev-hash"));
+
+        tab.ai.review = None;
+        assert_eq!(build_ai_snapshot(&tab, None).review_created_at, None);
     }
 }

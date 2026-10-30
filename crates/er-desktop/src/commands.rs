@@ -813,15 +813,8 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         })
         .collect();
 
-    let check_summaries: Vec<CheckSummary> = checks
-        .into_iter()
-        .map(|c| CheckSummary {
-            name: c.name,
-            status: c.status,
-            conclusion: c.conclusion,
-            url: c.url,
-        })
-        .collect();
+    let check_summaries: Vec<CheckSummary> = checks.into_iter().map(CheckSummary::from).collect();
+    let reviewers = crate::snapshot::github_reviewers(&overview, &reviews);
 
     // ISO-8601-ish timestamp using only std. Format: seconds since epoch as
     // string — frontend renders as "x sec ago". Avoids pulling in chrono.
@@ -861,6 +854,9 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         in_merge_queue,
         base_has_merge_queue,
         can_bypass_rules,
+        created_at: overview.created_at,
+        commit_count: overview.commit_count,
+        reviewers,
         fetch_ticket: 0,
     })
 }
@@ -5692,7 +5688,13 @@ fn ask_ai_impl(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(thread_id.clone(), started_at);
+        p.insert(
+            thread_id.clone(),
+            crate::snapshot::PendingAiReply {
+                started_at_ms: started_at,
+                ai_action,
+            },
+        );
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
@@ -5921,7 +5923,13 @@ fn ask_ai_for_finding(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(pending_key, started_at);
+        p.insert(
+            pending_key,
+            crate::snapshot::PendingAiReply {
+                started_at_ms: started_at,
+                ai_action: None,
+            },
+        );
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 

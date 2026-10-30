@@ -13,6 +13,10 @@ export interface LineSnapshot {
   spans?: SpanSnapshot[];
 }
 
+/** The AI action behind a question or note reply: `ask` answers it,
+ *  `elaborate` rewrites it into a self-contained one. */
+export type AiAction = "ask" | "elaborate";
+
 export interface ThreadMessage {
   id: string;
   author: string;
@@ -24,6 +28,10 @@ export interface ThreadMessage {
   synced?: boolean;
   editable?: boolean;
   deletable?: boolean;
+  /** The action that wrote this AI reply, and on the pending "…thinking"
+   *  reply the action that is running. Absent on a person's text and on AI
+   *  replies written before the field existed. */
+  ai_action?: AiAction;
 }
 
 export interface FindingResponseSnapshot {
@@ -70,6 +78,21 @@ export interface HunkSnapshot {
 
 export type FileKind = "production" | "test" | "storybook" | "generated" | "docs";
 
+/** How closely a file needs reading (ADR 0048). `ai` declares no tier and
+ *  leaves the file to the AI review's rating. */
+export type RiskTier = "high" | "med" | "low" | "ai";
+
+/** Which config table a risk rule came from: `[risk.<repo>]` or `[user_risk]`. */
+export type RiskRuleSource = "project" | "user";
+
+/** The rule that set a path's tier. */
+export interface MatchedRiskRule {
+  /** The rule key as written: a path, glob or file type. */
+  key: string;
+  label: string | null;
+  source: RiskRuleSource;
+}
+
 export interface FileSnapshot {
   /** Complete document identity, independent of visible hunks. */
   preview_key?: string;
@@ -85,7 +108,13 @@ export interface FileSnapshot {
   deletions: number;
   reviewed: boolean;
   compacted: boolean;
+  /** The AI review's rating from review.json; null before a review. */
   risk: "high" | "med" | "low" | null;
+  /** The tier the repo's risk rules give this path. For `ai`, show `risk`
+   *  instead, or nothing before a review. Optional only for fixtures. */
+  risk_tier?: RiskTier;
+  /** The rule behind `risk_tier`; null when a default, or nothing, answered. */
+  risk_rule?: MatchedRiskRule | null;
   finding_count: number;
   comment_count: number;
   question_count: number;
@@ -140,6 +169,9 @@ export interface PillarSnapshot {
   id: string;
   title: string;
   descriptionMarkdown: string;
+  /** One-line summary for the pillar lists. Empty on a tour written before
+   *  pillars had one: fall back to `descriptionMarkdown`. Optional for fixtures. */
+  summaryMarkdown?: string;
   importance: number;
   foundation: boolean;
   files: TourFileRef[];
@@ -158,6 +190,30 @@ export interface TourSnapshot {
   title: string;
   overviewMarkdown: string;
   pillars: PillarSnapshot[];
+  /** When the tour was generated (ISO-8601); empty when the sidecar does not say. */
+  createdAt?: string;
+  /** Hash of the diff the tour was generated against — a diff hash, not a
+   *  commit. The commit the on-screen diff came from is `diff_stale.built_from_oid`. */
+  diffHash?: string;
+}
+
+/**
+ * What the other view of a local PR tab holds (ADR 0004), so an empty view can
+ * say where the artifacts are. A tour is reused across the two views on a
+ * matching diff hash (ADR 0025): when `tour_shared`, this view's tour *is*
+ * that bucket's, so never claim "no tour" here while `tour.available`.
+ */
+export interface OtherBucketSnapshot {
+  view: "pr" | "branch";
+  has_triage: boolean;
+  has_review: boolean;
+  /** Open findings there (resolved and arbiter-dropped left out). */
+  finding_count: number;
+  /** Pillars in the tour stored there; 0 with none. */
+  pillar_count: number;
+  tour_shared: boolean;
+  /** Some artifact there was built against the diff on screen. */
+  same_diff: boolean;
 }
 
 export interface FilterSuggestionSnapshot {
@@ -249,6 +305,10 @@ export interface TriageSnapshot {
   guard?: { kind: string; name: string; evidence: string } | null;
   /** Evidenced reasons for routing security review. Empty means no evidence. */
   sensitive: { kind: string; evidence: string; note: string }[];
+  /** When triage ran (ISO-8601); empty when the sidecar does not say. Optional for fixtures. */
+  created_at?: string;
+  /** Hash of the diff triage ran against. */
+  diff_hash?: string;
 }
 
 /** Backend-owned progress for one review flow bound to a diff generation. */
@@ -367,6 +427,11 @@ export interface AiSnapshot {
   dropped_findings: FlatFinding[];
   /** The gate this review defaults to, resolved by the engine. */
   min_trust_default: Confidence;
+  /** When the review was generated (ISO-8601). Null with no review; empty when
+   *  the sidecar does not say. Optional for fixtures. */
+  review_created_at?: string | null;
+  /** Hash of the diff the review was generated against; null with no review. */
+  review_diff_hash?: string | null;
   /** Whether `{er_dir}/review.json` exists (batch validate target). */
   has_review_json: boolean;
   /** Top-level GitHub comments eligible for batch validate (!resolved, !outdated). */
@@ -516,6 +581,23 @@ export interface CheckSummary {
   /** e.g. "SUCCESS" | "FAILURE" | "NEUTRAL" — empty while status === "PENDING". */
   conclusion: string;
   url: string | null;
+  /** ISO-8601; null until reached. */
+  started_at?: string | null;
+  completed_at?: string | null;
+  /** Wall time of a finished check; null while running or untimed. */
+  duration_secs?: number | null;
+  /** Status-context text (a deploy preview's "Ready"), shown where there is no duration. */
+  description?: string | null;
+}
+
+/** One person or team on a PR's reviewer list. */
+export interface GhReviewerSummary {
+  reviewer: string;
+  is_team: boolean;
+  /** A review is requested from them now. */
+  requested: boolean;
+  /** "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED" | "COMMENTED"; null until they review. */
+  state: string | null;
 }
 
 export interface GhCommentSummary {
@@ -618,6 +700,12 @@ export interface GithubStatusSnapshot {
   base_has_merge_queue?: boolean;
   /** The viewer may merge past unmet requirements (`--admin`). Set only while blocked. */
   can_bypass_rules?: boolean;
+  /** When the PR was opened (ISO-8601). `gh pr view` has no timeline, so the
+   *  "opened" event is built from this (ADR 0026). */
+  created_at?: string | null;
+  commit_count?: number;
+  /** Requested reviewers first, then everyone else who reviewed; the author is left out. */
+  reviewers?: GhReviewerSummary[];
 }
 
 export interface RepoMergeSnapshot {
@@ -758,6 +846,9 @@ export interface AppSnapshot {
   arena_runs?: import("./types/arena").ArenaRunSummary[];
   /** Guided tour for the active tab. `available` drives the Guide tab. */
   tour?: TourSnapshot;
+  /** The other view's artifacts, on a local PR tab in its Local branch or PR
+   *  diff view; null elsewhere. A chrome-only poll does not read it. */
+  other_bucket?: OtherBucketSnapshot | null;
   /** Active arena runs across all tabs (tab-independent background runs). */
   background_arena_runs?: import("./types/arena").ArenaRunSummary[];
   /** Desktop app version from the backend (`CARGO_PKG_VERSION`). */
@@ -992,6 +1083,27 @@ export interface RefreshAiModelsResponse {
   errors: string[];
 }
 
+/** One declared risk rule, for the Settings rule table. */
+export interface RiskRuleSnapshot {
+  pattern: string;
+  /** The canonical tier, or the text as written when it does not read. */
+  tier: string;
+  /** Whether `tier` reads. An unreadable rule is listed but claims nothing. */
+  readable: boolean;
+  label: string | null;
+  source: RiskRuleSource;
+  /** Changed files this rule claims; zero is an idle rule. */
+  fileCount: number;
+}
+
+/** One changed file resolved against the risk rules. */
+export interface RiskFileSnapshot {
+  path: string;
+  tier: RiskTier;
+  /** Null when a default, or nothing, answered. */
+  rule: MatchedRiskRule | null;
+}
+
 /** One declared importance rule, as written. */
 export interface ImportanceRuleSnapshot {
   matcher: string;
@@ -1013,7 +1125,16 @@ export interface DesktopSettingsSnapshot {
   terminal: ConfigHubField[];
   agentEffort: string;
   repoRoot: string;
-  /** Read-only: the rules are written by the importance agent or by hand. */
+  /** The rules key a project rule edit names, so it lands in the table this tab reads. */
+  riskRepo: string;
+  /** The active repo's project rules, then the user's. */
+  riskRules: RiskRuleSnapshot[];
+  /** What a path no rule claims resolves to. */
+  riskDefault: RiskTier;
+  /** The active tab's changed files, resolved. Empty when nothing is declared. */
+  riskFiles: RiskFileSnapshot[];
+  /** The pre-merge shape of `riskRules` (project rows only), read by the
+   *  current Settings card until it moves to `riskRules`. */
   importanceRules: ImportanceRuleSnapshot[];
   importanceDefault: string;
   /** The active tab's changed files, resolved. Empty when the repo declares no
