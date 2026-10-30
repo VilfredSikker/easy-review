@@ -62,8 +62,8 @@ describe("CommandPalette.svelte search focus", () => {
 
   it("does not autofocus the search input", () => {
     expect(src).not.toContain('focusSelector="input"');
-    expect(src).toContain('id: "focus-search"');
-    expect(src).toContain('kbd: "/"');
+    expect(src).toContain('"focus-search": () => focusSearch()');
+    expect(src).toContain('{@render kbd("/")} search');
     expect(src).toContain("paletteQuickActionKey");
     expect(src).toContain("isPaletteSearchFocused");
     expect(src).toContain('data-palette-search="true"');
