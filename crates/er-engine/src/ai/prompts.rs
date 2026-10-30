@@ -630,7 +630,7 @@ pub fn build_tour_prompt_prepared_diff(
 4. Group the changed files into **pillars** ordered foundation-first, then by importance:
    - `foundation: true` for pillars other pillars build on (data models, core types, shared utilities, schema). Order these first.
    - `importance` (0–100) ranks reviewer attention; higher sorts earlier among non-foundation.
-   - Each pillar: a short `title`, a 1–3 sentence markdown `description` (what it is and what to look for), and its `files` (new-side paths) in reading order, each with a one-line `reason`.
+   - Each pillar: a short `title`, a one-line plain-text `summary` (under ~100 chars, shown in the overview's pillar list), a 1–3 sentence markdown `description` (what it is and what to look for), and its `files` (new-side paths) in reading order, each with a one-line `reason`.
    - **Co-locate tests and supporting files.** When a changed file has an accompanying test, style, story, or snapshot in the diff (e.g. `foo.ts` + `foo.test.ts`/`foo.spec.ts`, `foo.css`/`foo.scss`, `foo.stories.ts`, `__snapshots__/foo.snap`), attach it to its source file's `related` array instead of listing it as a separate `files` entry. Set `kind` to `"test"`, `"style"`, `"story"`, `"snapshot"`, or `"other"`. The reviewer then sees each file with its tests nested beneath it. A related file is owned by its source file, not a standalone pillar entry.
    - Every changed file appears exactly once — as a pillar `files` entry **or** as one file's `related` child. 3–7 pillars is ideal.
 5. Write `{safe_output_dir}/{safe_output_file}` (and nothing else) with this exact shape:
@@ -646,6 +646,7 @@ pub fn build_tour_prompt_prepared_diff(
     {{
       "id": "p-1",
       "title": "Foundation: ...",
+      "summary": "<one line>",
       "description": "...",
       "order": 0,
       "importance": 90,

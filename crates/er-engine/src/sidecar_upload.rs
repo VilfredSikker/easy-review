@@ -486,6 +486,7 @@ mod tests {
                     description: "d".into(),
                     order: 0,
                     importance: 80,
+                    summary: String::new(),
                     foundation: true,
                     files: vec![TourFile {
                         path: "x".into(),
