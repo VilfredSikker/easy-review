@@ -8,8 +8,8 @@ Legend: planned, implementing, reviewing, fixing, merged, blocked.
 
 | PR | Title | Lane | Model | Status | PR link | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| ER21 | Browser fixtures | Fixtures | Terra | planned | — | No native prerequisite |
-| ER32a | Engine annotation storage | Storage | Sol | planned | — | Engine-only; snapshot wiring follows separately |
+| ER21 | Browser fixtures | Fixtures | Terra | implementing | — | No native prerequisite |
+| ER32a | Engine annotation storage | Storage | Sol | implementing | — | Engine-only; snapshot wiring follows separately |
 | ER34a | Shared prompt renderer | Storage | Sol | blocked | — | Needs ER32a; preserves existing exports |
 | ER35 | Browser annotations MCP reader | Storage | Sol | blocked | — | Needs ER32a and ER34a |
 | ER32b | Desktop snapshot integration | Desktop | Terra | blocked | — | Needs ER32a; coordinate with other snapshot work |
