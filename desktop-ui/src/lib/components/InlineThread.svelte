@@ -8,15 +8,20 @@
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
   import { navigateToThread } from "$lib/dom";
   import { copyToClipboard } from "$lib/clipboard";
+  import AnnotationOverflowMenu from "$lib/components/AnnotationOverflowMenu.svelte";
+  import { authorLabel, kindStyle, lineRangeLabel, threadActions, type OverflowItem } from "$lib/annotationActions";
+  import { longAge } from "$lib/relativeTime";
   import { resolveActivePrNumber } from "$lib/prUrl";
 
   interface Props {
     thread: ThreadSnapshot;
     hunk_idx: number;
     variant?: "inline" | "panel";
+    /** Anchored on a document line outside the diff (ADR 0041): hides Promote. */
+    documentAnchored?: boolean;
   }
 
-  const { thread, variant = "inline" }: Props = $props();
+  const { thread, variant = "inline", documentAnchored = false }: Props = $props();
   const draft = $derived(annotationDrafts.get(app.snapshot, "thread", thread.id));
 
   const isQuestion = $derived(thread.kind === "question");
@@ -25,7 +30,7 @@
   const isLocal = $derived(isQuestion || isNote);
   const isPromoted = $derived(thread.promoted_to != null);
 
-  let replyTextarea: HTMLTextAreaElement | null = $state(null);
+  let replyInput: HTMLInputElement | null = $state(null);
   let replyFocusPending = $state(false);
   let showPromote = $state(false);
   let editMessageId = $state<string | null>(null);
@@ -39,9 +44,9 @@
 
   // Auto-focus the textarea when a composer opens. Opening one closes the other.
   $effect(() => {
-    if (replyFocusPending && draft.showReply && replyTextarea) {
+    if (replyFocusPending && draft.showReply && replyInput) {
       replyFocusPending = false;
-      queueMicrotask(() => replyTextarea?.focus());
+      queueMicrotask(() => replyInput?.focus());
     }
   });
   $effect(() => {
@@ -64,21 +69,7 @@
     askAiFocusPending = true;
   }
 
-  function formatTimestamp(ts: string): string {
-    try {
-      const d = new Date(ts);
-      const now = Date.now();
-      const diff = now - d.getTime();
-      const mins = Math.floor(diff / 60000);
-      const hours = Math.floor(diff / 3600000);
-      const days = Math.floor(diff / 86400000);
-      if (mins < 60) return `${Math.max(mins, 0)}m`;
-      if (hours < 24) return `${hours}h`;
-      return `${days}d`;
-    } catch {
-      return ts;
-    }
-  }
+  const formatTimestamp = (ts: string) => longAge(ts) || ts;
 
   function authorInitial(author: string): string {
     return (author || "?")[0].toUpperCase();
@@ -126,6 +117,19 @@
     void app.cmd("reply_to_thread", { parentId: thread.id, text });
     draft.replyText = "";
     draft.showReply = false;
+  }
+
+  // Post-then-ask is one gesture: the AI answers the thread as it stands after
+  // the reply lands, so the two commands must run in order.
+  function replyAndAskAi() {
+    const text = draft.replyText.trim();
+    if (!text) return;
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
+    draft.replyText = "";
+    draft.showReply = false;
+    void app.cmd("reply_to_thread", { parentId: thread.id, text }).then(() =>
+      app.cmd("ask_ai", { threadId: thread.id, prompt: "" }),
+    );
   }
 
   function buildPromoteBody(): string {
@@ -205,39 +209,66 @@
   const targetLineLabel = $derived(
     thread.line > 0 ? `${thread.file}:${thread.line}` : thread.file,
   );
+
+  const actions = $derived(
+    threadActions({
+      kind: thread.kind,
+      synced: thread.synced,
+      promoted: isPromoted,
+      documentAnchored,
+      rootEditable: thread.root.kind === "you",
+    }),
+  );
+
+  const overflowItems = $derived.by((): OverflowItem[] => {
+    const byId: Record<string, OverflowItem> = {
+      copy: { id: "copy", label: justCopied ? "Copied" : "Copy thread", title: "Copy thread as markdown", onselect: () => void copyThread() },
+      push: {
+        id: "push",
+        label: pushing ? "Pushing…" : "Push only this",
+        title: "Push this thread to GitHub (not a full review)",
+        disabled: pushing,
+        onselect: () => void pushOnlyThis(),
+      },
+      promoteNote: { id: "promoteNote", label: "Promote to note", title: "Turn this question into a local actionable note", onselect: () => void promoteToNote() },
+      edit: { id: "edit", label: "Edit", onselect: () => openEdit(thread.root.id, thread.root.body_markdown) },
+      validate: { id: "validate", label: "Validate with AI", title: "Check this against the current code (local reply, not posted to GitHub)", onselect: () => void validateWithAi() },
+      delete: { id: "delete", label: confirmingDelete ? "Confirm delete?" : "Delete", title: deleteTitle, danger: true, onselect: deleteThread },
+    };
+    return actions.overflow.map((id) => byId[id]);
+  });
+
+  const kindChip = $derived(kindStyle(thread.kind));
+  const rangeLabel = $derived(lineRangeLabel(thread.line, thread.line_end));
 </script>
+
+{#snippet avatar(kind: "you" | "human" | "ai", author: string)}
+  <span class="w-[18px] h-[18px] rounded-full inline-grid place-items-center shrink-0 text-[9px] font-semibold {avatarClass(kind)}">
+    {#if kind === "ai"}
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
+    {:else}
+      {authorInitial(author)}
+    {/if}
+  </span>
+{/snippet}
 
 <div
   id={thread.id}
-  class="{variant === 'panel' ? '' : 'my-3'} rounded-lg overflow-hidden font-sans border scroll-mt-16 min-w-0 max-w-full {thread.stale ? 'opacity-60' : ''} {isLocal ? 'bg-question-surface border-question-border' : 'bg-card border-border'}"
+  style="--kc: {kindChip.color}; box-shadow: inset 3px 0 0 var(--kc);"
+  class="{variant === 'panel' ? '' : 'my-3'} grid gap-1.5 rounded-[9px] px-3 py-2.5 font-sans border border-border bg-card scroll-mt-16 min-w-0 max-w-full {thread.stale || thread.resolved ? 'opacity-60' : ''}"
 >
   <!-- Header -->
-  <div class="px-3 py-2 border-b border-hairline flex items-center gap-2">
-    {#if isNote}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
-      <span class="text-question text-sm font-medium">Note</span>
-    {:else if isQuestion}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-question"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-      <span class="text-question text-sm font-medium">Local question</span>
-    {:else}
-      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-comment"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-      <span class="text-fg-2 text-sm font-medium">Comment</span>
+  <div class="flex items-center gap-2 flex-wrap text-xs">
+    <span
+      class="text-[10.5px] font-semibold px-1.5 leading-[17px] rounded"
+      style="color: var(--kc); background: color-mix(in srgb, var(--kc) 14%, transparent);"
+    >{kindChip.label}</span>
+    {@render avatar(thread.root.kind, thread.root.author)}
+    <b class="font-semibold text-fg-2">{authorLabel(thread.root.kind, thread.root.author)}</b>
+    {#if rangeLabel}
+      <span class="text-[11px] font-mono text-muted">{rangeLabel}</span>
     {/if}
-    {#if thread.line > 0}
-      <span class="text-[10px] font-mono text-muted">· line {thread.line}</span>
-    {/if}
-
-    {#if isLocal}
-      <span class="ml-auto text-[10px] font-mono text-muted">private · won't push</span>
-    {:else if !thread.synced && thread.source === "local"}
-      <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-hover border border-border font-mono text-[10px] text-ai ml-auto">
-        <span class="w-1 h-1 rounded-full bg-ai"></span>local · unpushed
-      </span>
-    {:else if thread.synced}
-      <span class="ml-auto text-add-fg text-[10px] font-mono">✓ synced</span>
-    {:else}
-      <div class="flex-1"></div>
-    {/if}
+    <span class="text-muted">{formatTimestamp(thread.root.timestamp)}</span>
     {#if thread.stale}
       <span class="text-[10px] font-mono px-1.5 py-0.5 rounded bg-hover text-fg-3">stale</span>
     {/if}
@@ -252,100 +283,66 @@
         <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M7 17L17 7M7 7h10v10"/></svg>
       </button>
     {/if}
-    <span class="text-muted text-[10px] font-mono shrink-0">{formatTimestamp(thread.root.timestamp)}</span>
+    <span class="ml-auto text-[11px] text-fg-3">
+      {#if isLocal}
+        only you
+      {:else if thread.synced}
+        GitHub · synced
+      {:else if thread.source === "local"}
+        <span class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-hover border border-border font-mono text-[10px] text-ai"><span class="w-1 h-1 rounded-full bg-ai"></span>local · unpushed</span>
+      {/if}
+    </span>
   </div>
 
   <!-- Root message -->
-  <div class="px-3 py-2.5 flex gap-2.5 group/row">
-    <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {avatarClass(thread.root.kind)}">
-      {#if thread.root.kind === "ai"}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-      {:else}
-        {authorInitial(thread.root.author)}
-      {/if}
-    </div>
-    <div class="flex-1 min-w-0">
-      <div class="text-[11px] font-mono text-muted mb-0.5">
-        {thread.root.kind === "you" ? "you" : thread.root.author} · {formatTimestamp(thread.root.timestamp)}
-      </div>
-      <div class="annotation-body-scroll">
-        <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2" />
-      </div>
-    </div>
-    <div class="self-start shrink-0 flex gap-0.5 opacity-0 group-hover/row:opacity-60">
-      {#if thread.root.kind === "you"}
-        <button
-          type="button"
-          onclick={() => openEdit(thread.root.id, thread.root.body_markdown)}
-          title="Edit message"
-          aria-label="Edit message"
-          class="p-0.5 rounded text-muted hover:!opacity-100 hover:text-fg-2 hover:bg-hover transition"
-        >
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-        </button>
-      {/if}
-      <button
-        type="button"
-        onclick={deleteThread}
-        title={deleteTitle}
-        aria-label={confirmingDelete ? "Confirm delete thread" : "Delete thread"}
-        class="p-0.5 rounded transition {confirmingDelete ? 'text-del-fg bg-hover !opacity-100' : 'text-muted hover:!opacity-100 hover:text-del-fg hover:bg-hover'}"
-      >
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M3 6h18M8 6V4h8v2M19 6l-1 14H6L5 6"/></svg>
-      </button>
-    </div>
+  <div class="annotation-body-scroll">
+    <MarkdownText text={thread.root.body_markdown} className="text-sm text-fg-2 leading-[1.55]" />
   </div>
 
   <!-- Replies -->
-  {#if thread.replies.length > 0}
-    <div class="border-t border-hairline bg-surface">
-      {#each thread.replies as reply, i (i)}
-        <div class="px-3 py-2.5 flex gap-2.5 group/row {i > 0 ? 'border-t border-hairline' : ''}">
-          <div class="w-6 h-6 rounded-full flex items-center justify-center shrink-0 text-[11px] font-bold {avatarClass(reply.kind)}">
-            {#if reply.kind === "ai"}
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-ai"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
-            {:else}
-              {authorInitial(reply.author)}
-            {/if}
-          </div>
-          <div class="flex-1 min-w-0 {reply.kind === 'ai' ? 'border-l-2 border-ai pl-2.5' : ''}">
-            <div class="text-[11px] font-mono text-muted mb-0.5 flex items-center gap-1.5">
-              {#if reply.kind === "ai"}<span class="text-ai font-medium font-sans">AI</span>{:else}<span>{reply.author}</span>{/if}
-              {#if reply.timestamp}<span>· {formatTimestamp(reply.timestamp)}</span>{/if}
-            </div>
-            {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
-              <div class="text-sm text-fg-3 italic animate-pulse">…thinking</div>
-            {:else}
-              <div class="annotation-body-scroll">
-                <MarkdownText text={reply.body_markdown} className="text-sm text-fg-2" />
-              </div>
-            {/if}
-            {#if reply.id && reply.body_markdown !== "…thinking"}
-              <ReplyActionBar
-                reply={{ ...reply, origin: reply.origin ?? "thread_reply" }}
-                rootThreadId={thread.id}
-                isQuestion={isLocal}
-                parentSynced={thread.synced}
-                threadResolved={thread.resolved}
-                onEdit={reply.kind === "you" ? () => openEdit(reply.id, reply.body_markdown) : undefined}
-                onDelete={() => deleteReply(reply.id)}
-              />
-            {/if}
-          </div>
+  {#each thread.replies as reply, i (i)}
+    <div
+      class="group/row grid grid-cols-[18px_minmax(0,1fr)] gap-2 pt-2 border-t border-hairline {reply.kind === 'ai' ? '-mx-3 px-3 pb-0.5' : ''}"
+      style={reply.kind === "ai" ? "background: linear-gradient(90deg, color-mix(in srgb, var(--color-accent) 6%, transparent), transparent 60%);" : ""}
+    >
+      {@render avatar(reply.kind, reply.author)}
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 text-xs">
+          <b class="font-semibold text-fg-2">{authorLabel(reply.kind, reply.author)}</b>
+          {#if reply.kind === "ai"}<span class="inline-flex items-center h-4 px-1.5 rounded-full bg-hover text-[10px] text-fg-3">AI</span>{/if}
+          {#if reply.timestamp}<span class="text-muted">{formatTimestamp(reply.timestamp)}</span>{/if}
         </div>
-      {/each}
+        {#if reply.kind === "ai" && reply.body_markdown === "…thinking"}
+          <div class="text-sm text-fg-3 italic animate-pulse">Thinking…</div>
+        {:else}
+          <div class="annotation-body-scroll">
+            <MarkdownText text={reply.body_markdown} className="text-sm {reply.kind === 'ai' ? 'text-fg-2' : 'text-fg'} leading-[1.55]" />
+          </div>
+        {/if}
+        {#if reply.id && reply.body_markdown !== "…thinking"}
+          <ReplyActionBar
+            reply={{ ...reply, origin: reply.origin ?? "thread_reply" }}
+            rootThreadId={thread.id}
+            isQuestion={isLocal}
+            parentSynced={thread.synced}
+            threadResolved={thread.resolved}
+            onEdit={reply.kind === "you" ? () => openEdit(reply.id, reply.body_markdown) : undefined}
+            onDelete={() => deleteReply(reply.id)}
+          />
+        {/if}
+      </div>
     </div>
-  {/if}
+  {/each}
 
-  <!-- Ask AI composer -->
+  <!-- Ask AI composer (context for the prompt) -->
   {#if draft.showAskAi}
-    <div class="px-3 py-2 border-t border-hairline">
+    <div class="pt-1">
       <textarea
         bind:this={askAiTextarea}
         bind:value={draft.askAiText}
         placeholder="Add context for the AI… (leave empty for default · ⌘+Enter to send)"
         rows="3"
-        class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-ai resize-y font-mono"
+        class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-accent resize-y font-mono"
         onkeydown={(e) => {
           if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
             e.preventDefault();
@@ -363,135 +360,92 @@
           onclick={() => { draft.showAskAi = false; draft.askAiText = ""; }}
           class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
         >Cancel</button>
-        <button type="button" onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-ai hover:bg-hover border border-border">
-          Ask AI
+        <button type="button" onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-accent hover:bg-accent-soft border border-accent-border">
+          ✦ Ask AI
         </button>
       </div>
     </div>
   {/if}
 
-  <!-- Inline reply composer -->
+  <!-- Reply box: roots only (ADR 0008). -->
   {#if draft.showReply}
-    <div class="px-3 py-2 border-t border-hairline">
-      <textarea
-        bind:this={replyTextarea}
+    <form
+      class="flex gap-1.5"
+      onsubmit={(e) => { e.preventDefault(); submitReply(); }}
+    >
+      <input
+        bind:this={replyInput}
         bind:value={draft.replyText}
-        placeholder={isQuestion ? "Follow-up… (⌘+Enter to send)" : "Reply… (⌘+Enter to send)"}
-        rows="3"
-        class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-accent resize-y font-mono"
+        placeholder={isQuestion ? "Follow-up…" : "Reply…"}
+        aria-label="Reply"
+        class="flex-1 min-w-0 h-[26px] px-2 rounded-md border border-border bg-bg text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-accent"
         onkeydown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            submitReply();
-          } else if (e.key === "Escape") {
+          if (e.key === "Escape") {
             e.preventDefault();
             draft.showReply = false;
             draft.replyText = "";
           }
         }}
-      ></textarea>
-      <div class="mt-1 flex items-center gap-2">
-        <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel</span>
-        <button type="button"
-          onclick={() => { draft.showReply = false; draft.replyText = ""; }}
-          class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
-        >Cancel</button>
-        <button type="button" onclick={submitReply} disabled={!draft.replyText.trim()} class="px-2 py-1 rounded-md text-[11px] text-fg-2 hover:bg-hover disabled:opacity-40 border border-border">
-          Reply
-        </button>
-      </div>
-    </div>
+      />
+      <button type="submit" disabled={!draft.replyText.trim()} class="h-[26px] px-2.5 rounded-md text-xs text-fg-2 border border-border hover:bg-hover disabled:opacity-40">Reply</button>
+      <button
+        type="button"
+        onclick={() => void replyAndAskAi()}
+        disabled={!draft.replyText.trim()}
+        title="Post your reply, then have AI answer it locally"
+        class="h-[26px] px-2.5 rounded-md text-xs text-accent border border-accent-border hover:bg-accent-soft disabled:opacity-40"
+      >✦ Ask AI</button>
+    </form>
   {/if}
 
-  <!-- Footer actions -->
-  <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-1 flex-wrap text-[11px]">
-    {#if !draft.showReply}
-      <button type="button" onclick={openReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
-    {/if}
-    {#if !draft.showAskAi}
-      <button type="button" onclick={openAskAi} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI…</button>
-    {/if}
-    {#if isQuestion}
-      <button
-        type="button"
-        onclick={() => void elaborateWithAi()}
-        title="Ask AI to answer / elaborate on this question (local reply, not posted to GitHub)"
-        class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-        Elaborate
-      </button>
+  <!-- Actions -->
+  <div class="flex items-center gap-0.5 flex-wrap -mx-1.5 text-xs">
+    {#if thread.resolved}
+      <span class="px-1.5 text-fg-3">Resolved</span>
     {:else}
-      <button
-        type="button"
-        onclick={() => void validateWithAi()}
-        title="Check this against the current code (local reply, not posted to GitHub)"
-        class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
-        Validate with AI
-      </button>
+      {#each actions.primary as action (action)}
+        {#if action === "askAi"}
+          {#if !draft.showAskAi}
+            <button type="button" onclick={openAskAi} title="Ask AI about this" class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft">✦ Ask AI</button>
+          {/if}
+        {:else if action === "elaborate"}
+          <button
+            type="button"
+            onclick={() => void elaborateWithAi()}
+            title="Ask AI to expand this (local reply, not posted to GitHub)"
+            class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft"
+          >✦ Elaborate</button>
+        {:else if action === "reply"}
+          {#if !draft.showReply}
+            <button type="button" onclick={openReply} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Reply</button>
+          {/if}
+        {:else if action === "resolve"}
+          <button type="button" onclick={resolveThread} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Resolve</button>
+        {:else if action === "promote"}
+          <button
+            type="button"
+            onclick={() => (showPromote = true)}
+            title="Promote to a GitHub comment"
+            class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg"
+          >Promote</button>
+        {:else if action === "delete"}
+          <button
+            type="button"
+            onclick={deleteThread}
+            title={deleteTitle}
+            class="px-[7px] py-0.5 rounded-[5px] {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-2 hover:bg-hover hover:text-del-fg'}"
+          >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
+        {/if}
+      {/each}
     {/if}
-    <button type="button"
-      onclick={copyThread}
-      title="Copy thread as markdown"
-      class="px-2 py-0.5 rounded hover:bg-hover flex items-center gap-1 {justCopied ? 'text-add-fg' : 'text-fg-3'}"
-    >
-      {#if justCopied}
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
-        Copied
-      {:else}
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
-        Copy
-      {/if}
-    </button>
-    {#if !thread.resolved}
-      <button type="button" onclick={resolveThread} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
-    {/if}
-    {#if !isLocal && !thread.synced}
-      <button
-        type="button"
-        onclick={() => void pushOnlyThis()}
-        disabled={pushing}
-        title="Push this thread to GitHub (not a full review)"
-        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1 disabled:opacity-40"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>
-        {pushing ? "Pushing…" : "Push only this"}
-      </button>
-    {/if}
-    {#if isQuestion}
-      <button type="button"
-        onclick={() => void promoteToNote()}
-        title="Turn this question into a local actionable note"
-        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
-        Promote to note
-      </button>
-    {/if}
-    {#if (isQuestion || isNote) && !isPromoted}
-      <button type="button"
-        onclick={() => (showPromote = true)}
-        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover flex items-center gap-1"
-      >
-        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-        Promote to comment
-      </button>
-    {/if}
-    <button
-      type="button"
-      onclick={deleteThread}
-      title={deleteTitle}
-      class="px-2 py-0.5 rounded {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-3 hover:bg-hover hover:text-del-fg'}"
-    >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
+    <AnnotationOverflowMenu items={overflowItems} />
     {#if thread.replies.length > 0}
-      <span class="ml-auto text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
+      <span class="ml-auto pr-1.5 text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>
     {/if}
   </div>
 
   {#if isPromoted}
-    <div class="px-3 py-1.5 border-t border-hairline text-[11px] font-mono text-muted flex items-center gap-1">
+    <div class="text-[11px] font-mono text-muted flex items-center gap-1">
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
       <span>Promoted to <span class="text-fg-3">#{thread.promoted_to}</span></span>
     </div>
