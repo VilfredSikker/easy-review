@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2.0.0",
   "productName": "Easy Review",
-  "version": "0.5.10",
+  "version": "0.5.11",
   "identifier": "com.reshape.easy-review",
   "build": {
     "beforeDevCommand": { "script": "bun run dev", "cwd": "../../desktop-ui" },
@@ -19,7 +19,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwMEMwRDUwNUE1QTQyRDcKUldUWFFscGFVQTBNOEV0aDc3WEpTQ2NFNnZvcmlqNTdLUlgyeWZPRTJzU00vYmN3TGtTMk5IMEcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCQzJBMTM3OUVCNUJCNTMKUldSVHU3V2VONkhDYXlHbXhnaTA5bzcrK3F1dmpPZk5WVlY0bHllMlpUZzE4eVphc2gvSDVHdmsK",
       "endpoints": [
         "https://github.com/VilfredSikker/easy-review/releases/latest/download/latest.json"
       ]

@@ -294,7 +294,24 @@ build_updater_archive() {
     rm -rf "$out"
     return 1
   fi
+  # Signing succeeds with any key, but installed apps reject every key except
+  # the pubkey's. v0.5.9 and v0.5.10 shipped with a pubkey nobody signed with.
+  local trusted signed
+  trusted="$(minisign_key_id "$(sed -n 's/.*"pubkey": "\([^"]*\)".*/\1/p' "$CONF")")"
+  signed="$(minisign_key_id "$(cat "$archive.sig")")"
+  if [[ -z "$trusted" || "$trusted" != "$signed" ]]; then
+    echo "error: updater archive signed by key ${signed:-?}, but tauri.conf.json trusts ${trusted:-?}" >&2
+    rm -rf "$out"
+    return 1
+  fi
   echo "Updater archive: $archive (+ .sig)" >&2
+}
+
+# Key ID of a Tauri updater pubkey or signature, as minisign prints it. Both are
+# base64 of minisign's text form, whose second line holds the ID little-endian
+# at bytes 2–10.
+minisign_key_id() {
+  base64 -d <<<"$1" | sed -n 2p | base64 -d | xxd -p -s 2 -l 8 | fold -w2 | tail -r | tr -d '\n' | tr 'a-f' 'A-F'
 }
 
 install_to_applications() {
