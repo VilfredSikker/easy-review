@@ -44,4 +44,25 @@ describe("filesByPillar", () => {
     const g = filesByPillar([], [file("a")]);
     expect(g).toEqual([{ pillarId: null, title: OTHER_FILES_TITLE, files: [file("a")] }]);
   });
+
+  it("places a ref's related files under its pillar, not Other files", () => {
+    const p = {
+      id: "1",
+      title: "Pillar 1",
+      files: [
+        {
+          path: "a.ts",
+          reason: "",
+          findingIds: [],
+          related: [
+            { path: "a.test.ts", kind: "test", reason: "" },
+            { path: "gone.test.ts", kind: "test", reason: "" },
+          ],
+        },
+      ],
+    } as unknown as PillarSnapshot;
+    const g = filesByPillar([p], [file("a.ts"), file("a.test.ts"), file("x.ts")]);
+    expect(g[0].files.map((f) => f.path)).toEqual(["a.ts", "a.test.ts"]);
+    expect(g[1].files.map((f) => f.path)).toEqual(["x.ts"]);
+  });
 });
