@@ -18,6 +18,7 @@ const state = {
   terminalOpen: false,
   modalOpen: false,
   focusedField: false,
+  overviewRendered: false,
 };
 
 mock.module("@tauri-apps/api/core", () => ({
@@ -114,6 +115,13 @@ mock.module("$lib/stores/diffNav.svelte", () => ({
   diffNav: { scrollToFile: (p: string) => calls.push(`diffNav.scrollToFile:${p}`) },
 }));
 mock.module("$lib/stores/rightRail.svelte", () => ({ rightRail: { toggle: log("rightRail.toggle") } }));
+mock.module("./reviewPage.svelte", () => ({
+  reviewPage: {
+    available: (page: string) => page !== "overview" || state.overviewRendered,
+    show: (page: string) => calls.push(`reviewPage.show:${page}`),
+  },
+}));
+mock.module("./quickExport", () => ({ copyReviewExport: log("copyReviewExport") }));
 
 let handler: ((e: KeyboardEvent) => void) | null = null;
 const fieldEl = {
@@ -263,6 +271,18 @@ describe("modifier shortcuts", () => {
     expect(press({ key: "e", metaKey: true, shiftKey: true }).calls).toEqual(["setMainView:export-review"]);
   });
 
+  it("Cmd+Shift+C copies the export, from a field too", () => {
+    expect(press({ key: "C", metaKey: true, shiftKey: true })).toEqual({
+      calls: ["copyReviewExport"],
+      prevented: true,
+    });
+    expect(press({ key: "c", ctrlKey: true, shiftKey: true, inField: true }).calls).toEqual(["copyReviewExport"]);
+  });
+
+  it("Cmd+C without Shift is left to the platform copy", () => {
+    expect(press({ key: "c", metaKey: true })).toEqual({ calls: [], prevented: false });
+  });
+
   it("Cmd+O opens a worktree, Cmd+Shift+O the PR URL modal", () => {
     expect(press({ key: "o", metaKey: true }).calls).toEqual(["cmd:open_worktree"]);
     expect(press({ key: "O", metaKey: true, shiftKey: true }).calls).toEqual(["openPrUrlModal"]);
@@ -333,6 +353,26 @@ describe("bare keys", () => {
     expect(press({ key: "R" }).calls).toEqual(["cmd:refresh_diff"]);
     expect(press({ key: "/" }).calls).toEqual(['querySelector:input[placeholder^="Filter files"]']);
     expect(press({ key: "e" }).calls).toEqual(["invoke:open_in_vscode"]);
+  });
+
+  it("1, 2 and 3 pick Overview, Tour and Diff", () => {
+    state.overviewRendered = true;
+    expect(press({ key: "1" })).toEqual({ calls: ["reviewPage.show:overview"], prevented: true });
+    expect(press({ key: "2" })).toEqual({ calls: ["reviewPage.show:tour"], prevented: true });
+    expect(press({ key: "3" })).toEqual({ calls: ["reviewPage.show:diff"], prevented: true });
+    expect(press({ key: "4" })).toEqual({ calls: [], prevented: false });
+  });
+
+  it("1 does nothing while no Overview page is registered", () => {
+    expect(press({ key: "1" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "2" }).calls).toEqual(["reviewPage.show:tour"]);
+  });
+
+  it("leave digits to fields and modals, and Cmd+digit to tab selection", () => {
+    expect(press({ key: "1", inField: true }).calls).toEqual([]);
+    expect(press({ key: "1", metaKey: true }).calls).toEqual(["cmd:select_tab:0"]);
+    state.modalOpen = true;
+    expect(press({ key: "2" }).calls).toEqual([]);
   });
 
   it("are ignored in a field, under a modal, or with a modifier", () => {
