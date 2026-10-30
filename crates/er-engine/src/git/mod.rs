@@ -1,3 +1,4 @@
+mod blame;
 mod diff;
 mod diff_stats;
 mod file_kind;
@@ -24,6 +25,10 @@ pub const CONTEXT_STEPS: &[usize] = &[DEFAULT_CONTEXT_LINES, 20, 40, 80, FULL_CO
 /// `DEFAULT_CONTEXT_LINES`. Ordered small → large.
 pub const SIZE_LADDER: &[(usize, usize)] = &[(60, FULL_CONTEXT), (180, 80), (500, 40), (1500, 20)];
 
+pub use blame::{
+    blame_range, git_merge_base, git_rev_parse_commit, BlameEnd, BlameRequest, BlameSpan,
+    LineAttribution,
+};
 pub use diff::{
     compact_files, compact_files_match, expand_compacted_file, filter_raw_diff_by_paths,
     filter_raw_diff_exclude_globs, header_to_stub, lazy_files_with_compaction, parse_diff,

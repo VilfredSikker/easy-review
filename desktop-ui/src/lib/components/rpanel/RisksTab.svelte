@@ -37,10 +37,8 @@
     ai: "bg-periwinkle",
   };
 
-  // The per-file tier and matching rule come from the engine's risk-rule
-  // resolution (ADR 0048). The diff snapshot does not carry them yet, so the
-  // tab reads them from the settings snapshot, which resolves the active tab's
-  // changed files against its rules.
+  // Per-file tier and matching rule ride on the snapshot's files (ADR 0048);
+  // the settings snapshot is read only for the rule table and its file counts.
   let settings = $state<RiskSettingsWire | null>(null);
   let loadError = $state<string | null>(null);
 
@@ -64,7 +62,7 @@
     };
   });
 
-  const rows = $derived(riskRows(files, settings?.riskFiles ?? [], ai?.file_risks ?? []));
+  const rows = $derived(riskRows(files, ai?.file_risks ?? []));
   const groups = $derived(groupRiskRows(rows));
   const counts = $derived(tierCounts(rows));
   const toRead = $derived(unreviewedHigh(rows));
@@ -168,7 +166,7 @@
 
 <PanelActions
   actions={[
-    { glyph: "✎", label: "Edit risk rules", title: "Settings → Review", run: () => app.setMainView("settings") },
+    { glyph: "✎", label: "Edit risk rules", title: "Settings → Review → Risk rules", run: () => app.openSettings("risk-rules") },
     {
       glyph: "✦",
       label: "Suggest rules for this repo",

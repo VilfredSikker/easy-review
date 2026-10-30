@@ -2,6 +2,8 @@
   import { app } from "$lib/stores/app.svelte";
   import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
+  import ScopeSegment from "./ScopeSegment.svelte";
+  import { railView } from "$lib/stores/railView.svelte";
   import FileRailRow from "./FileRailRow.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
@@ -37,6 +39,11 @@
     onSelectedPathsChange,
     onPickerEnter,
   }: Props = $props();
+
+  // The design puts the local scope at the top of the rail, above the filter.
+  // Same test as ScopeSegment's own, so its padding goes with it.
+  const rail = railView();
+  const showScope = $derived(!pickerMode && rail.scopes.length > 1 && !rail.isPr);
 
   const snapshot = $derived(app.snapshot);
 
@@ -370,6 +377,11 @@
     : 'w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200'}"
 >
   <div class="shrink-0 border-b border-hairline">
+    {#if showScope}
+      <div class="px-2.5 pt-2.5">
+        <ScopeSegment />
+      </div>
+    {/if}
     <div class="px-2.5 pt-2.5 pb-1.5">
       <div class="flex items-center gap-1.5 h-7 px-2 rounded-[7px] border border-hairline bg-card text-fg-3 focus-within:border-fg-3">
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
@@ -526,6 +538,7 @@
 
   {#if snapshot && !pickerMode}
     <ScopeSelector
+      showScopeSegment={false}
       mode={snapshot.mode}
       total_count={snapshot.total_count}
       reviewed_count={snapshot.reviewed_count}

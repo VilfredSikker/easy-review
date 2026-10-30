@@ -4,7 +4,7 @@ import type { AppSnapshot } from "$lib/types";
 
 const cache = new AnnotationDraftCache();
 function createDraft() {
-  const draft = $state({ replyText: "", showReply: false, askAiText: "", showAskAi: false });
+  const draft = $state({ replyText: "", showReply: false });
   return draft;
 }
 export const annotationDrafts = {

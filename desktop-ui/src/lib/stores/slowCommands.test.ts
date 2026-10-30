@@ -54,6 +54,21 @@ describe("SLOW_COMMANDS", () => {
     }
   });
 
+  it("keeps review-flow controls and lazy per-file reads off the switching overlay", () => {
+    // Neither switches the view: the flow runs in the background and reports
+    // through the jobs popover, and line_commits fills in one file's markers.
+    const block = src.slice(src.indexOf("const SLOW_COMMANDS"), src.indexOf("const VOID_COMMANDS"));
+    for (const command of [
+      "start_review_flow",
+      "confirm_review_flow",
+      "run_standard_review_flow",
+      "decline_review_flow",
+      "line_commits",
+    ]) {
+      expect(block.includes(`"${command}"`)).toBe(false);
+    }
+  });
+
   it("routes local sidecar writes through the optimistic writer", () => {
     expect(src).toContain("if (isOptimisticCommand(command))");
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");

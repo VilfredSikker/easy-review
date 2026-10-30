@@ -1,14 +1,11 @@
-import type { FileRiskSnapshot } from "$lib/types";
+import type { FileRiskSnapshot, MatchedRiskRule, RiskRuleSource, RiskTier } from "$lib/types";
 
-/** CONTEXT.md **Tier**. `ai` means no rule fixed one. */
-export type RiskTier = "high" | "med" | "low" | "ai";
-export type RiskRuleSource = "project" | "user";
+export type { RiskRuleSource, RiskTier };
 
 /**
- * The risk-rule fields of `get_config_hub`'s settings snapshot
- * (`DesktopSettingsSnapshot` in er-engine's `config/desktop_settings.rs`,
- * camelCase over IPC). `types.ts` does not mirror them yet, so this panel
- * declares the slice it reads; keep it in step with that struct.
+ * The rule table the tab lists under the files, from `get_config_hub`. The
+ * per-file tier and matching rule are not here: they ride on each
+ * `FileSnapshot` (ADR 0048), so only the table itself still needs the call.
  */
 export interface RiskRuleWire {
   pattern: string;
@@ -20,23 +17,8 @@ export interface RiskRuleWire {
   fileCount: number;
 }
 
-export interface MatchedRiskRuleWire {
-  key: string;
-  label: string | null;
-  source: RiskRuleSource;
-}
-
-export interface RiskFileWire {
-  path: string;
-  tier: RiskTier;
-  rule: MatchedRiskRuleWire | null;
-}
-
 export interface RiskSettingsWire {
   riskRules: RiskRuleWire[];
-  riskDefault: RiskTier;
-  /** Empty when nothing is declared: every path then reads as `ai`. */
-  riskFiles: RiskFileWire[];
 }
 
 export interface RiskRow {
@@ -49,7 +31,7 @@ export interface RiskRow {
    * ADR 0048 shows it unrated rather than defaulting it to `low`.
    */
   shown: RiskTier;
-  rule: MatchedRiskRuleWire | null;
+  rule: MatchedRiskRule | null;
   /** The review's reason, kept only where the review set the tier. */
   aiReason: string | null;
   reviewed: boolean;
@@ -63,22 +45,19 @@ interface FileLike {
   reviewed: boolean;
   /** The review's rating, when the snapshot carries one on the file. */
   risk?: FileRiskSnapshot["risk"] | null;
+  /** The tier the repo's risk rules give the path; absent only in fixtures. */
+  risk_tier?: RiskTier;
+  risk_rule?: MatchedRiskRule | null;
 }
 
 /**
  * One row per changed file. A declared tier wins; the AI review only answers
  * for files the rules left to it, which is what a tier of `ai` means.
  */
-export function riskRows(
-  files: readonly FileLike[],
-  resolved: readonly RiskFileWire[],
-  aiRisks: readonly FileRiskSnapshot[],
-): RiskRow[] {
-  const byPath = new Map(resolved.map((r) => [r.path, r]));
+export function riskRows(files: readonly FileLike[], aiRisks: readonly FileRiskSnapshot[]): RiskRow[] {
   const aiByPath = new Map(aiRisks.map((r) => [r.path, r]));
   const rows = files.map((file): RiskRow => {
-    const declared = byPath.get(file.path);
-    const tier = declared?.tier ?? "ai";
+    const tier = file.risk_tier ?? "ai";
     const ai = aiByPath.get(file.path);
     const aiRating = ai?.risk ?? file.risk ?? null;
     const aiSets = tier === "ai" && aiRating !== null;
@@ -86,7 +65,7 @@ export function riskRows(
       path: file.path,
       tier,
       shown: aiSets ? aiRating : tier,
-      rule: declared?.rule ?? null,
+      rule: file.risk_rule ?? null,
       aiReason: aiSets ? (ai?.risk_reason || null) : null,
       reviewed: file.reviewed,
     };

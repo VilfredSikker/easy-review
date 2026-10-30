@@ -70,12 +70,7 @@
   }
 
   function openUninstall() {
-    try {
-      localStorage.setItem("er.focusUninstall", "1");
-    } catch {
-      /* ignore */
-    }
-    app.setMainView("settings");
+    app.openSettings("uninstall");
     app.showEmptyState = false;
   }
 

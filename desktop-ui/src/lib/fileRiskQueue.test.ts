@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { riskCounts, riskQueueRows, type RiskQueueSort } from "./fileRiskQueue";
+import { ratedRows, riskCounts, riskQueueRows, riskWhy } from "./fileRiskQueue";
 import type { FileRiskSnapshot, FileSnapshot } from "./types";
 
 function risk(path: string, level: FileRiskSnapshot["risk"]): FileRiskSnapshot {
@@ -13,7 +13,7 @@ function file(
   extra: Partial<FileSnapshot> = {},
 ) {
   // Only the fields the queue reads; the rest of FileSnapshot is irrelevant here.
-  return { path, additions, deletions, reviewed: false, ...extra } as FileSnapshot;
+  return { path, additions, deletions, reviewed: false, risk_tier: "ai", ...extra } as FileSnapshot;
 }
 
 const risks = [risk("b.rs", "low"), risk("a.rs", "high"), risk("c.rs", "med")];
@@ -94,13 +94,49 @@ describe("riskQueueRows", () => {
   });
 });
 
+describe("merged tier", () => {
+  const rule = { key: "db/**", label: "Migrations", source: "project" as const };
+
+  it("shows the declared tier over the review's rating", () => {
+    const rows = riskQueueRows(
+      [risk("db/1.sql", "low")],
+      [file("db/1.sql", 1, 0, { risk_tier: "high", risk_rule: rule })],
+      "risk",
+    );
+    expect(rows[0].shown).toBe("high");
+    expect(rows[0].aiReason).toBeNull();
+    expect(riskWhy(rows[0])).toEqual({ text: "Migrations", source: "rule" });
+  });
+
+  it("shows the review's rating and reason for an ai-tier file", () => {
+    const rows = riskQueueRows([risk("a.rs", "med")], [file("a.rs", 1, 0)], "risk");
+    expect(rows[0].shown).toBe("med");
+    expect(riskWhy(rows[0])).toEqual({ text: "med because", source: "ai" });
+  });
+
+  it("names the rule key when the rule has no label", () => {
+    const rows = riskQueueRows(
+      [],
+      [file("x.lock", 1, 0, { risk_tier: "low", risk_rule: { key: "*.lock", label: null, source: "user" } })],
+      "risk",
+    );
+    expect(riskWhy(rows[0]).text).toBe("*.lock");
+  });
+
+  it("keeps an unrated ai file out of the list but in the count", () => {
+    const rows = riskQueueRows([], [file("a.rs", 1, 0), file("b.rs", 1, 0, { risk_tier: "high" })], "risk");
+    expect(rows.map((r) => r.shown)).toEqual(["high", "ai"]);
+    expect(ratedRows(rows).map((r) => r.path)).toEqual(["b.rs"]);
+    expect(riskCounts(rows)).toEqual({ high: 1, med: 0, low: 0, ai: 1 });
+  });
+});
+
 describe("riskCounts", () => {
   it("counts per level", () => {
-    const sorts: RiskQueueSort[] = ["risk", "churn", "path"];
-    expect(riskCounts(riskQueueRows(risks, files, sorts[0]))).toEqual({ high: 1, med: 1, low: 1 });
+    expect(riskCounts(riskQueueRows(risks, files, "risk"))).toEqual({ high: 1, med: 1, low: 1, ai: 0 });
   });
 
   it("reports zeroes rather than undefined for an empty queue", () => {
-    expect(riskCounts([])).toEqual({ high: 0, med: 0, low: 0 });
+    expect(riskCounts([])).toEqual({ high: 0, med: 0, low: 0, ai: 0 });
   });
 });
