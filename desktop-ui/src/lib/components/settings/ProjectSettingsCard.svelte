@@ -1,6 +1,11 @@
 <script lang="ts">
   import type { ProjectSnapshot } from "$lib/types";
-  import Button from "$lib/components/ui/Button.svelte";
+  import SettingsSection from "./SettingsSection.svelte";
+  import SettingsRow from "./SettingsRow.svelte";
+  import SettingsButton from "./SettingsButton.svelte";
+  import Segmented from "./Segmented.svelte";
+  import Switch from "./Switch.svelte";
+  import { INPUT_CLASS } from "./settingsModel";
 
   interface Props {
     project: ProjectSnapshot;
@@ -9,98 +14,122 @@
 
   const { project, onpatch }: Props = $props();
 
+  // The engine's AUTO_TRIAGE_WHEN_OPTIONS; the labels say what each one waits for.
+  const TRIAGE_WHEN: Record<string, string> = {
+    "new-and-push": "New PRs and pushes",
+    "new-only": "New PRs only",
+    "review-requested": "When I'm asked",
+  };
+
   let addGlob = $state("");
 
   const maxDiffKb = $derived(project.auto_triage_max_diff_kb ?? 0);
   const ignoreGlobs = $derived(project.review_ignore_globs ?? []);
+  const autoTriage = $derived(project.auto_triage ?? false);
 
   // Editable draft; resets whenever the saved value changes.
   let maxDiffInput = $derived(maxDiffKb === 0 ? "" : String(maxDiffKb));
 
+  function commitMaxDiff() {
+    const trimmed = maxDiffInput.trim();
+    const kb = trimmed === "" ? 0 : Math.max(0, parseInt(trimmed, 10) || 0);
+    if (kb !== maxDiffKb) void onpatch({ autoTriageMaxDiffKb: kb });
+  }
+
+  async function addIgnore() {
+    const glob = addGlob.trim();
+    if (!glob) return;
+    await onpatch({ reviewIgnoreGlobAdd: glob });
+    addGlob = "";
+  }
 </script>
 
-<section class="bg-card border border-hairline rounded-xl px-4 py-3.5 mb-4">
-  <div class="flex items-baseline justify-between gap-2">
-    <h3 class="text-sm font-semibold text-fg tracking-tight">{project.name}</h3>
-    {#if project.remote}
-      <span class="text-[10px] font-mono text-muted truncate">{project.remote}</span>
-    {/if}
-  </div>
-  {#if project.root_path}
-    <p class="text-[10px] font-mono text-muted truncate mt-0.5 mb-2" title={project.root_path}>
-      {project.root_path}
-    </p>
-  {/if}
+<SettingsSection
+  title={project.name}
+  keywords={["Location", "Run triage", "Size limit", "Review ignore patterns", ...ignoreGlobs]}
+>
+  <SettingsRow label="Location">
+    <span class="font-mono text-xs text-fg-3 truncate max-w-[360px]" title={project.root_path || project.remote || ""}>
+      {project.root_path || project.remote || "—"}
+    </span>
+  </SettingsRow>
 
   {#if project.remote}
-    <p class="text-xs text-muted mb-2">
-      Run triage from the sidebar — hover a branch or PR row and click the scan icon.
-    </p>
-    <div class="py-2">
-      <div class="text-sm text-fg mb-0.5">Max diff size (KB)</div>
-      <div class="text-xs text-muted mb-1.5">
-        Skip sidebar triage when the filtered diff exceeds this size. Leave empty for no limit.
-      </div>
-      <div class="flex gap-2 max-w-xs">
+    <SettingsRow label="Auto-triage" description="Triage new and updated open PRs while the app is open.">
+      <Switch label="Auto-triage" checked={autoTriage} onchange={(v) => void onpatch({ autoTriage: v })} />
+    </SettingsRow>
+    {#if autoTriage}
+      <SettingsRow label="Run triage" description="Which PRs start a triage run.">
+        <Segmented
+          options={Object.keys(TRIAGE_WHEN)}
+          value={project.auto_triage_when ?? "new-and-push"}
+          ariaLabel="Run triage"
+          display={(o) => TRIAGE_WHEN[o] ?? o}
+          onchange={(o) => void onpatch({ autoTriageWhen: o })}
+        />
+      </SettingsRow>
+      <SettingsRow label="Include my own PRs" description="Also triage PRs you opened.">
+        <Switch
+          label="Include my own PRs"
+          checked={project.auto_triage_own_prs ?? false}
+          onchange={(v) => void onpatch({ autoTriageOwnPrs: v })}
+        />
+      </SettingsRow>
+    {/if}
+    <SettingsRow label="Size limit" description="Skip triage when the filtered diff is larger than this. Empty means no limit.">
+      <span class="inline-flex items-center gap-1.5">
         <input
           type="number"
           min="0"
           step="1"
-          class="flex-1 bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
+          class="{INPUT_CLASS} w-[96px] flex-none text-right"
+          aria-label="Size limit in KB"
           placeholder="No limit"
           bind:value={maxDiffInput}
-          onchange={() => {
-            const trimmed = maxDiffInput.trim();
-            const kb = trimmed === "" ? 0 : Math.max(0, parseInt(trimmed, 10) || 0);
-            void onpatch({ autoTriageMaxDiffKb: kb });
-          }}
+          onchange={commitMaxDiff}
+          onkeydown={(e) => e.stopPropagation()}
         />
-      </div>
-    </div>
+        <span class="text-xs text-muted">KB</span>
+      </span>
+    </SettingsRow>
   {/if}
 
-  <div class="mt-3 pt-3 border-t border-hairline/60">
-    <div class="text-sm text-fg mb-0.5">Ignore in AI reviews</div>
-    <div class="text-xs text-muted mb-2">
-      Glob patterns excluded from triage and full-review diffs (e.g. <code class="font-mono">**/*.lock</code>).
-    </div>
-    {#if ignoreGlobs.length === 0}
-      <p class="text-xs text-muted/80 italic mb-2">No ignore patterns.</p>
-    {:else}
-      <div class="divide-y divide-hairline/40 mb-1">
+  <SettingsRow
+    label="Review ignore patterns"
+    description="Paths reviewers never see, in triage and full reviews. REVIEW.md on the base branch can add more."
+    layout="col"
+  >
+    {#if ignoreGlobs.length > 0}
+      <ul class="w-full grid gap-px" aria-label="Ignore patterns">
         {#each ignoreGlobs as glob, index (glob + index)}
-          <div class="flex items-center gap-2 py-1.5 font-mono text-xs text-fg-2 group">
+          <li class="flex items-center gap-2 font-mono text-xs text-fg-2">
             <span class="flex-1 truncate" title={glob}>{glob}</span>
             <button
               type="button"
-              class="text-muted opacity-60 group-hover:opacity-100 hover:text-risk-high px-2 py-0.5 rounded transition-colors"
-              title="Remove"
-              onclick={() => onpatch({ reviewIgnoreGlobRemove: index })}
-            >
-              ×
-            </button>
-          </div>
+              class="w-[22px] h-[22px] grid place-items-center rounded-[5px] text-[15px] leading-none text-fg-3 hover:bg-hover hover:text-risk-high"
+              aria-label="Remove {glob}"
+              onclick={() => void onpatch({ reviewIgnoreGlobRemove: index })}
+            >×</button>
+          </li>
         {/each}
-      </div>
+      </ul>
     {/if}
-    <div class="flex gap-2 mt-1">
+    <form
+      class="flex w-full gap-2"
+      onsubmit={(e) => {
+        e.preventDefault();
+        void addIgnore();
+      }}
+    >
       <input
         type="text"
-        class="flex-1 bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm font-mono outline-none transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
+        class={INPUT_CLASS}
+        aria-label="Add ignore pattern"
         placeholder="Glob pattern, e.g. package-lock.json"
         bind:value={addGlob}
+        onkeydown={(e) => e.stopPropagation()}
       />
-      <Button
-        onclick={() => {
-          const p = addGlob.trim();
-          if (!p) return;
-          void onpatch({ reviewIgnoreGlobAdd: p }).then(() => {
-            addGlob = "";
-          });
-        }}
-      >
-        Add
-      </Button>
-    </div>
-  </div>
-</section>
+      <SettingsButton type="submit" disabled={!addGlob.trim()}>Add</SettingsButton>
+    </form>
+  </SettingsRow>
+</SettingsSection>
