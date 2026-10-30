@@ -1,3 +1,5 @@
+import type { ToastMessage } from "$lib/stores/app.svelte";
+
 /**
  * Splits a toast message into a bold title and a muted detail line.
  * Backend and store messages are written as "Title · detail"; errors keep the
@@ -5,7 +7,7 @@
  * must stay copyable as one string.
  */
 export function splitToast(
-  kind: "success" | "error" | "info" | "warn",
+  kind: ToastMessage["kind"],
   message: string,
 ): { title: string; detail: string } {
   if (kind === "error" || kind === "warn") return { title: message, detail: "" };

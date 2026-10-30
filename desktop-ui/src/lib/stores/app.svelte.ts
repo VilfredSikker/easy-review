@@ -57,8 +57,10 @@ export type { CommentVisibility };
 
 export interface ToastMessage {
   id: number;
-  kind: "success" | "error" | "info" | "warn";
+  kind: "success" | "error" | "info" | "warn" | "progress";
   message: string;
+  /** Auto-dismiss delay this toast was shown with; absent when it persists. */
+  durationMs?: number;
   /** If true, the toast will not auto-dismiss (errors always persist). */
   persist?: boolean;
   /** Optional action button shown in the toast footer. */
@@ -84,6 +86,7 @@ const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
   success: 4_200,
   info: 3_200,
   warn: 3_200,
+  progress: 4_200,
 };
 
 export interface LogEntry {
@@ -365,7 +368,14 @@ class AppStore {
     const id = ++this.toastId;
     // Errors always persist; warn persists if not explicitly overridden.
     const persist = opts?.persist ?? (kind === "error");
-    this.toasts = [...this.toasts, { id, kind, message, persist, action: opts?.action }];
+    this.toasts = [...this.toasts, {
+      id,
+      kind,
+      message,
+      persist,
+      durationMs: persist ? undefined : durationMs,
+      action: opts?.action,
+    }];
     if (this.toasts.length > 4) this.toasts = this.toasts.slice(-4);
     if (!persist) {
       const timer = setTimeout(() => {

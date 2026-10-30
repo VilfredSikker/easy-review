@@ -9,6 +9,13 @@
   const { toast }: Props = $props();
 
   const RESUME_MS = 1_800;
+  const EXIT_MS = 160;
+
+  /** True while the pointer is over the card; pauses the countdown bar. */
+  let hovered = $state(false);
+  /** Bumped on mouseleave so the bar restarts from full, matching resumeToast's fresh timer. */
+  let barRun = $state(0);
+  const barMs = $derived(barRun === 0 ? toast.durationMs : RESUME_MS);
 
   let expanded = $state(false);
   let justCopied = $state(false);
@@ -25,6 +32,7 @@
   const parts = $derived(splitToast(toast.kind, toast.message));
 
   const isPersist = $derived(toast.persist ?? toast.kind === "error");
+  const showBar = $derived(!isPersist && barMs !== undefined);
   const isMultiline = $derived(toast.kind === "error" || toast.kind === "warn");
   /** Success/info wrap inside the card instead of nowrap (avoids horizontal scrollbar). */
   const wrapsText = $derived(toast.kind === "success" || toast.kind === "info");
@@ -40,6 +48,7 @@
 
   interface KindStyle {
     chipClass: string;
+    /** Empty for kinds drawn without a path (progress shows a spinner). */
     iconPath: string;
     iconClass: string;
   }
@@ -59,6 +68,8 @@
             "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01",
           iconClass: "text-warning",
         };
+      case "progress":
+        return { chipClass: "bg-accent/15", iconPath: "", iconClass: "text-accent" };
       case "error":
         return {
           chipClass: "bg-del-fg/15",
@@ -78,11 +89,24 @@
   const ks = $derived(kindStyle(toast.kind));
 
   function onMouseEnter() {
+    hovered = true;
     if (!isPersist) app.pauseToast(toast.id);
   }
 
   function onMouseLeave() {
-    if (!isPersist) app.resumeToast(toast.id, RESUME_MS);
+    hovered = false;
+    if (isPersist) return;
+    app.resumeToast(toast.id, RESUME_MS);
+    barRun += 1;
+  }
+
+  /** Fade and slide right on dismiss; instant when the user asks for reduced motion. */
+  function toastOut(_node: Element) {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    return {
+      duration: reduce ? 0 : EXIT_MS,
+      css: (t: number) => `opacity: ${t}; transform: translateX(${(1 - t) * 12}px) scale(${0.97 + t * 0.03});`,
+    };
   }
 
   async function copyMessage() {
@@ -108,13 +132,23 @@
   role={toast.kind === "error" || toast.kind === "warn" ? "alert" : "status"}
   onmouseenter={onMouseEnter}
   onmouseleave={onMouseLeave}
-  class="pointer-events-auto flex gap-2.5 w-[min(480px,calc(100vw-32px))] px-3 py-2.5 rounded-[10px] bg-ink-800 border border-ink-500/40 shadow-[0_12px_32px_rgba(0,0,0,0.28)] font-mono text-xs motion-safe:animate-[toast-in_180ms_ease-out] items-start"
+  out:toastOut
+  class="pointer-events-auto relative overflow-hidden flex gap-2.5 w-[min(480px,calc(100vw-32px))] px-3 pt-2.5 {showBar
+    ? 'pb-3'
+    : 'pb-2.5'} rounded-[10px] bg-ink-800 border border-ink-500/40 shadow-[0_12px_32px_rgba(0,0,0,0.28)] font-mono text-xs motion-safe:animate-[toast-in_180ms_ease-out] items-start"
 >
   <!-- Kind icon -->
   <span class="shrink-0 w-5 h-5 rounded-md grid place-items-center {ks.iconClass} {ks.chipClass}">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
-      <path d={ks.iconPath} />
-    </svg>
+    {#if toast.kind === "progress"}
+      <span
+        aria-hidden="true"
+        class="w-2.5 h-2.5 rounded-full border-2 border-accent border-r-transparent motion-safe:animate-spin"
+      ></span>
+    {:else}
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d={ks.iconPath} />
+      </svg>
+    {/if}
   </span>
 
   <!-- Body -->
@@ -209,4 +243,40 @@
       <line x1="6" y1="6" x2="18" y2="18" />
     </svg>
   </button>
+
+  <!-- Countdown: drains over the dismiss delay, freezes while hovered, refills on leave. -->
+  {#if showBar}
+    {#key barRun}
+      <span
+        aria-hidden="true"
+        class="toast-bar absolute left-0 right-0 bottom-0 h-[2px] origin-left bg-current opacity-70 {ks.iconClass}"
+        style:animation-duration="{barMs}ms"
+        style:animation-play-state={hovered ? "paused" : "running"}
+      ></span>
+    {/key}
+  {/if}
 </div>
+
+<style>
+  /* Animate only when motion is allowed; a frozen full bar would misreport the
+   * time left, so reduced motion hides it instead. */
+  .toast-bar {
+    display: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .toast-bar {
+      display: block;
+      animation-name: toast-bar;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+    }
+  }
+  @keyframes toast-bar {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+</style>

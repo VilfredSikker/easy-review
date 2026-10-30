@@ -14,6 +14,12 @@ describe("splitToast", () => {
   test("no separator means no detail", () => {
     expect(splitToast("info", "Copied")).toEqual({ title: "Copied", detail: "" });
   });
+  test("progress splits like success", () => {
+    expect(splitToast("progress", "Review started · 3 agents")).toEqual({
+      title: "Review started",
+      detail: "3 agents",
+    });
+  });
   test("errors and warnings stay whole", () => {
     expect(splitToast("error", "cmd: x · y")).toEqual({ title: "cmd: x · y", detail: "" });
     expect(splitToast("warn", "a · b").detail).toBe("");
