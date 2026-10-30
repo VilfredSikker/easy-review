@@ -110,6 +110,25 @@ export const WithNewChangesIndicator: Story = {
   },
 };
 
+// Trailing marks, one per tab: spinner (AI running) beats the stale dot, which
+// beats the unseen dot. PR tabs lead with a faint #number.
+export const TabStates: Story = {
+  beforeEach: () => {
+    tabSeen.markSeen(3, "v0");
+  },
+  args: {
+    showToolbar: true,
+    active: 0,
+    runningTabs: new Set([1]),
+    tabs: [
+      tab({ idx: 0, label: "easy-review", is_active: true }),
+      tab({ idx: 1, label: "easy-review#412", kind: "remote_pr", pr_number: 412 }),
+      tab({ idx: 2, label: "discovery#398", kind: "remote_pr", pr_number: 398, stale: true }),
+      tab({ idx: 3, label: "feat/unseen", kind: "local_branch", branch: "feat/unseen", change_token: "v1" }),
+    ],
+  },
+};
+
 // Marker: tabs in the strip support HTML5 drag-and-drop reorder. The drop
 // triggers the `reorder_tabs` Tauri command, which mutates `App.tabs` and
 // adjusts `active_tab` so the focused tab stays focused. There's no visual

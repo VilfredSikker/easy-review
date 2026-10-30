@@ -1,7 +1,9 @@
 <script lang="ts">
   import { app } from "$lib/stores/app.svelte";
   import { tabSeen } from "$lib/stores/tabSeen.svelte";
-  import { commandPalette } from "$lib/stores/commandPalette.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
+  import { activeJobCount, aggregateJobs, jobsForTab } from "$lib/runningJobs";
+  import { arenaRunsAcrossTabs, tabRowModel } from "$lib/tabStripModel";
   import type { TabSummary } from "$lib/types";
   import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
   import { startWindowDrag } from "$lib/windowDrag";
@@ -19,6 +21,8 @@
     onToggleRightCollapse?: () => void;
     /** Whether the right panel is currently collapsed to 44px rail. */
     rightCollapsed?: boolean;
+    /** Tab idxs with AI work in flight; derived from the live snapshot when omitted (Storybook). */
+    runningTabs?: ReadonlySet<number>;
   }
 
   let {
@@ -30,15 +34,25 @@
     showToolbar = true,
     onToggleRightCollapse,
     rightCollapsed = false,
+    runningTabs: runningProp,
   }: Props = $props();
 
   // Default to the live snapshot; props win when supplied (Storybook).
   const tabs = $derived(tabsProp ?? app.snapshot?.tabs ?? []);
   const _active = $derived(activeProp ?? app.snapshot?.active_tab ?? 0);
   const canClose = $derived(tabs.length > 1);
-  const aiProviderLabel = $derived(app.snapshot?.active_ai_provider_label ?? null);
-  const aiModelLabel = $derived(app.snapshot?.active_ai_model_label ?? null);
-  const aiLabel = $derived(app.snapshot?.active_ai_label ?? "");
+  const runningTabs = $derived.by(() => {
+    if (runningProp) return runningProp;
+    const jobs = aggregateJobs({
+      backgroundTasks: app.snapshot?.background_tasks,
+      agentCommands: app.snapshot?.agent_commands,
+      arenaRuns: arenaRunsAcrossTabs(arena.summaries, arena.backgroundRuns),
+      tabs,
+      activeTabIdx: app.snapshot?.active_tab ?? null,
+      nowMs: Date.now(),
+    });
+    return new Set(tabs.filter((t) => activeJobCount(jobsForTab(jobs, t.idx)) > 0).map((t) => t.idx));
+  });
 
   // Drag state. `dragFrom` is the source tab idx; `dropAt` is the insertion
   // marker position (0..tabs.length, where `tabs.length` means after the last
@@ -131,18 +145,18 @@
 
 <!-- Outer wrapper is the window-drag region. Must not be overflow-scrollable
      because WebKit ignores -webkit-app-region: drag inside overflow containers.
-     The right padding (pr-4) is always-empty outer space that stays draggable
+     The right padding (pr-3) is always-empty outer space that stays draggable
      even when the tab list is full. The left padding offsets the macOS traffic lights. -->
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 <div
-  class="flex items-center h-11 border-b border-ink-650 bg-ink-870 shrink-0 tabstrip-drag pr-3 gap-1"
+  class="flex items-end h-11 border-b border-line bg-ground shrink-0 tabstrip-drag pr-3 gap-1"
   style="padding-left: env(titlebar-area-x, 80px)"
   data-testid="tab-strip"
   data-tauri-drag-region
   onmousedown={startWindowDrag}
 >
   {#if showToolbar}
-    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300">
+    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300 self-center">
       <button type="button"
         class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.left ? 'text-accent bg-ink-700' : ''}"
         onclick={() => app.togglePanel("left")}
@@ -156,18 +170,20 @@
 <!-- Tabs scroll container: overflow here, but explicitly no-drag so tabs stay interactive.
      Use shrink (not flex-1) so leftover space goes to the drag spacer that follows. -->
 <div
-  class="flex items-center gap-1 pr-1 min-w-0 overflow-x-auto tabstrip-no-drag {showToolbar ? 'shrink max-w-full' : 'max-w-full'}"
+  class="flex items-end pr-1 min-w-0 overflow-x-auto tabstrip-no-drag {showToolbar ? 'shrink max-w-full' : 'max-w-full'}"
 >
   {#each tabs as tab, i (tab.idx)}
+    {@const row = tabRowModel(tab, {
+      running: runningTabs.has(tab.idx),
+      unseen: tabSeen.hasUnseen(tab.idx, tab.change_token),
+    })}
     {#if dragFrom !== null && dropAt === i}
-      <div class="w-0.5 h-6 bg-accent rounded-full shrink-0" aria-hidden="true"></div>
+      <div class="w-0.5 h-6 mb-1 bg-accent rounded-full shrink-0" aria-hidden="true"></div>
     {/if}
     <!-- svelte-ignore a11y_click_events_have_key_events -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div
-      class="group flex items-center gap-2 px-3 h-7 rounded-md text-sm cursor-default max-w-[200px] shrink-0 transition-colors {tab.is_active
-        ? 'bg-ink-700 border-b-2 border-accent text-ink-100'
-        : 'text-ink-300 hover:bg-ink-750'} {dragFrom === i ? 'opacity-50' : ''}"
+      class="wtab group {tab.is_active ? 'on' : ''} {dragFrom === i ? 'opacity-50' : ''}"
       onclick={() => select(tab.idx)}
       onauxclick={(e) => handleAuxClick(e, tab.idx)}
       title={`${tab.repo_root} — Click to switch · Middle-click to close`}
@@ -177,41 +193,47 @@
       ondrop={(e) => handleDrop(e, i)}
       ondragend={handleDragEnd}
     >
-      {#if tab.kind === "working"}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
-          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
-        </svg>
-      {:else if tab.kind === "local_branch"}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
-          <circle cx="6" cy="6" r="2"/>
-          <circle cx="6" cy="18" r="2"/>
-          <circle cx="18" cy="12" r="2"/>
-          <path d="M6 8v8M8 18h2a4 4 0 0 0 4-4v-2"/>
-        </svg>
-      {:else}
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
-          <circle cx="18" cy="18" r="3"/>
-          <circle cx="6" cy="6" r="3"/>
-          <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
-          <line x1="6" y1="9" x2="6" y2="21"/>
-        </svg>
-      {/if}
-      <span class="truncate min-w-0">{tab.label}</span>
-      {#if !tab.is_active && tabSeen.hasUnseen(tab.idx, tab.change_token)}
-        <span
-          class="w-1.5 h-1.5 rounded-full bg-periwinkle shrink-0"
-          title="New changes since last viewed"
-          aria-label="New changes"
-        ></span>
-      {/if}
+      <span class="wtab-b">
+        <span class="wtab-ic">
+          {#if tab.kind === "working"}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+            </svg>
+          {:else if tab.kind === "local_branch"}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="6" cy="6" r="2"/>
+              <circle cx="6" cy="18" r="2"/>
+              <circle cx="18" cy="12" r="2"/>
+              <path d="M6 8v8M8 18h2a4 4 0 0 0 4-4v-2"/>
+            </svg>
+          {:else}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="18" cy="18" r="3"/>
+              <circle cx="6" cy="6" r="3"/>
+              <path d="M13 6h3a2 2 0 0 1 2 2v7"/>
+              <line x1="6" y1="9" x2="6" y2="21"/>
+            </svg>
+          {/if}
+        </span>
+        <span class="wtab-l">
+          {#if row.prefix}<span class="wtab-pr">{row.prefix}</span>&nbsp;{/if}{row.title}
+        </span>
+        {#if row.mark === "running"}
+          <i class="wtab-spin" title="AI running" role="img" aria-label="AI running"></i>
+        {:else if row.mark === "stale"}
+          <i class="wtab-dot wtab-dot-stale" title="Stale: newer commits upstream" role="img" aria-label="Stale"></i>
+        {:else if row.mark === "unseen"}
+          <i class="wtab-dot wtab-dot-unseen" title="New changes since last viewed" role="img" aria-label="New changes"></i>
+        {/if}
+      </span>
       {#if canClose}
         <button type="button"
-          class="opacity-0 group-hover:opacity-100 text-ink-300 hover:text-ink-100 transition-opacity shrink-0 w-4 h-4 flex items-center justify-center"
+          class="wtab-x"
           onclick={(e) => close(tab.idx, e)}
           title="Close tab"
           aria-label="Close tab {tab.label}"
         >
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <path d="M18 6L6 18M6 6l12 12"/>
           </svg>
         </button>
@@ -219,13 +241,13 @@
     </div>
   {/each}
   {#if dragFrom !== null && dropAt !== null && dropAt >= tabs.length}
-    <div class="w-0.5 h-6 bg-accent rounded-full shrink-0" aria-hidden="true"></div>
+    <div class="w-0.5 h-6 mb-1 bg-accent rounded-full shrink-0" aria-hidden="true"></div>
   {/if}
 
   <!-- New tab dropdown -->
   <div class="relative shrink-0">
     <button type="button"
-      class="w-7 h-7 rounded hover:bg-ink-700 flex items-center justify-center text-ink-300 hover:text-ink-100 transition-colors"
+      class="wtab-new flex items-center justify-center"
       onclick={openNewTabMenu}
       title="New tab"
       aria-label="New tab"
@@ -253,50 +275,19 @@
   </div>
 <!-- Close the inner tabs scroll container -->
 </div>
-  {#if showToolbar}
-    <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
-
-    {#if aiProviderLabel}
-      <button
-        type="button"
-        class="tabstrip-no-drag shrink-0 max-w-[16rem] h-7 px-2 rounded hover:bg-ink-700 flex items-center gap-1 text-xs transition-colors"
-        onclick={() => commandPalette.showAiProviders()}
-        title={aiLabel || "Change provider / model"}
-        aria-label={aiLabel ? `Active model ${aiLabel}` : "Change provider / model"}
-      >
-        <span class="text-ink-300 truncate">{aiProviderLabel}</span>
-        {#if aiModelLabel}
-          <span class="text-ink-500 shrink-0">/</span>
-          <span class="text-ink-100 truncate">{aiModelLabel}</span>
-        {/if}
-      </button>
-    {/if}
-    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300 border-l border-ink-650 pl-2 ml-1">
-      {#if app.snapshot?.watch_active}
-        <span class="w-1.5 h-1.5 rounded-full bg-add-fg/60 shrink-0 mr-1" title="Watch active"></span>
-      {/if}
+  <div class="flex-1 min-w-4 self-stretch" data-tauri-drag-region aria-hidden="true"></div>
+  {#if showToolbar && onToggleRightCollapse}
+    <div class="tabstrip-no-drag flex items-center gap-0.5 shrink-0 text-ink-300 self-center">
       <button type="button"
-        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {layoutPanels.tree ? 'text-accent bg-ink-700' : ''}"
-        onclick={() => app.togglePanel("tree")}
-        title="Toggle file tree [\]"
+        class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {rightCollapsed ? '' : 'text-accent bg-ink-700'}"
+        onclick={onToggleRightCollapse}
+        title={rightCollapsed ? "Expand right panel" : "Collapse right panel to rail"}
+        aria-pressed={!rightCollapsed}
       >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
+        <!-- Mirrored sidebar icon to indicate collapse direction -->
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: scaleX(-1)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 8l4 4-4 4"/></svg>
       </button>
-      <button type="button" class="text-xs text-ink-200 hover:bg-ink-700 px-2.5 py-1 rounded-md font-mono transition-colors" onclick={() => commandPalette.show()} title="Open command palette (⌘K)">⌘K</button>
-      {#if onToggleRightCollapse}
-        <button type="button"
-          class="w-7 h-7 rounded flex items-center justify-center hover:bg-ink-700 transition-colors {rightCollapsed ? '' : 'text-accent bg-ink-700'}"
-          onclick={onToggleRightCollapse}
-          title={rightCollapsed ? "Expand right panel" : "Collapse right panel to rail"}
-          aria-pressed={!rightCollapsed}
-        >
-          <!-- Mirrored sidebar icon to indicate collapse direction -->
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="transform: scaleX(-1)"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/><path d="M15 8l4 4-4 4"/></svg>
-        </button>
-      {/if}
     </div>
-  {:else}
-    <div class="flex-1 min-w-4" data-tauri-drag-region aria-hidden="true"></div>
   {/if}
 </div>
 
@@ -311,5 +302,124 @@
   .tabstrip-no-drag,
   .tabstrip-no-drag :global(*) {
     -webkit-app-region: no-drag;
+  }
+
+  /* Browser-style tab: the active one merges into the page below it. */
+  .wtab {
+    display: flex;
+    align-items: center;
+    flex: none;
+    max-width: 230px;
+    min-width: 120px;
+    height: 30px;
+    border-radius: 8px 8px 0 0;
+    color: var(--color-muted);
+    position: relative;
+    cursor: default;
+  }
+  .wtab:hover {
+    background: color-mix(in srgb, var(--color-ink-900) 60%, transparent);
+    color: var(--color-fg-3);
+  }
+  .wtab.on {
+    background: var(--color-ink-900);
+    color: var(--color-fg);
+    box-shadow:
+      0 1px 0 var(--color-ink-900),
+      inset 0 2px 0 var(--color-accent);
+  }
+  .wtab-b {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    flex: 1;
+    min-width: 0;
+    height: 100%;
+    padding: 0 4px 0 12px;
+    font-size: 12.5px;
+  }
+  .wtab-ic {
+    display: inline-grid;
+    flex: none;
+    color: var(--color-muted);
+  }
+  .wtab.on .wtab-ic {
+    color: var(--color-accent);
+  }
+  .wtab-l {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .wtab-pr {
+    color: var(--color-muted);
+  }
+  .wtab-x {
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 20px;
+    height: 20px;
+    margin-right: 5px;
+    border-radius: 5px;
+    color: var(--color-muted);
+    opacity: 0;
+  }
+  .wtab:hover .wtab-x,
+  .wtab.on .wtab-x {
+    opacity: 1;
+  }
+  .wtab-x:hover {
+    background: var(--color-ink-700);
+    color: var(--color-fg);
+  }
+  .wtab-new {
+    width: 26px;
+    height: 26px;
+    margin: 0 0 2px 4px;
+    border-radius: 6px;
+    color: var(--color-muted);
+  }
+  .wtab-new:hover {
+    background: var(--color-ink-700);
+    color: var(--color-fg);
+  }
+  .wtab-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .wtab-dot-stale {
+    background: var(--color-warning);
+  }
+  .wtab-dot-unseen {
+    background: var(--color-periwinkle);
+  }
+  .wtab-spin {
+    width: 8px;
+    height: 8px;
+    flex: none;
+    border-radius: 50%;
+    border: 1.5px solid var(--color-accent);
+    border-right-color: transparent;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .wtab-spin {
+      animation: wtab-spin 0.8s linear infinite;
+    }
+  }
+  @keyframes wtab-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  @media (max-width: 640px) {
+    .wtab {
+      min-width: 100px;
+    }
   }
 </style>
