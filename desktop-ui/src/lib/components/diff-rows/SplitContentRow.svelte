@@ -107,11 +107,16 @@
 >
   <!-- Left gutter -->
   <div
-    class="leading-6 text-right pr-2 gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
   >
-    {left?.old_num ?? ""}
     {#if left && leftLn !== null && left.kind !== "fold"}
-      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, { file: filePath, side: "old", startRowIdx: rowIdx })}>+</button>
+      <button type="button"
+        class="block w-full pr-2 text-right cursor-pointer {selLeft(leftLn) ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {leftLn}"
+        onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, { file: filePath, side: "old", startRowIdx: rowIdx })}
+      >{left.old_num}</button>
+    {:else}
+      <span class="pr-2">{left?.old_num ?? ""}</span>
     {/if}
   </div>
   <!-- Left code -->
@@ -143,11 +148,16 @@
   </div>
   <!-- Right gutter -->
   <div
-    class="leading-6 text-right pr-2 gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
   >
-    {right?.new_num ?? ""}
     {#if right && rightLn !== null && right.kind !== "fold"}
-      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, { file: filePath, side: "new", startRowIdx: rowIdx })}>+</button>
+      <button type="button"
+        class="block w-full pr-2 text-right cursor-pointer {selRight(rightLn) ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {rightLn}"
+        onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, { file: filePath, side: "new", startRowIdx: rowIdx })}
+      >{right.new_num}</button>
+    {:else}
+      <span class="pr-2">{right?.new_num ?? ""}</span>
     {/if}
   </div>
   <!-- Right code -->
