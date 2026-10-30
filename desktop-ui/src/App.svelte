@@ -28,6 +28,10 @@
   import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
+  import { reviewPage } from "$lib/stores/reviewPage.svelte";
+  import OverviewView from "$lib/components/overview/OverviewView.svelte";
+  import { showOverviewSection, type OverviewSection } from "$lib/components/overview/overviewNav";
+  import { isSecondaryTab, type SecondaryRightPanelTab } from "$lib/components/rpanel/rightPanelTabs";
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -90,7 +94,19 @@
   let rightPanelWidth = $state(RIGHT_PANEL_DEFAULT);
   let resizingRightPanel = $state(false);
 
+  // Branch & PR, Triage and Diagrams moved from the panel to the Overview; the
+  // collapsed rail's shortcuts for them go there.
+  const OVERVIEW_HOME: Record<SecondaryRightPanelTab, OverviewSection> = {
+    branch: "branch",
+    triage: "triage",
+    context: "diagrams",
+  };
+
   function expandRightPanelToTab(tab: RightPanelTab) {
+    if (isSecondaryTab(tab)) {
+      void showOverviewSection(OVERVIEW_HOME[tab]);
+      return;
+    }
     rightRail.expand();
     rightPanelTab.set(tab);
   }
@@ -242,6 +258,9 @@
   });
 
   onMount(() => {
+    // This shell draws the `overview` main view, so the Overview page and its
+    // `1` key are live from here on.
+    reviewPage.registerOverview();
     // Restore persisted drawer height before the drawer can render.
     try {
       const raw = localStorage.getItem(DRAWER_STORAGE_KEY);
@@ -372,6 +391,8 @@
                     {/if}
                     <DiffView />
                   {/if}
+                {:else if app.mainView === "overview"}
+                  <OverviewView />
                 {:else if app.mainView === "agent-output"}
                   <AgentOutputView />
                 {:else if app.mainView === "inbox"}
@@ -413,7 +434,6 @@
             {:else}
               <RightPanel
                 ai={app.snapshot?.ai ?? null}
-                pr={app.snapshot?.pr ?? null}
                 width={rightPanelWidth}
                 dragging={resizingRightPanel}
                 onResizeStart={onRightPanelResizeStart}

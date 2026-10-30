@@ -9,7 +9,7 @@ const meta = {
   argTypes: {
     tab: {
       control: { type: "select" },
-      options: ["findings", "risks", "comments", "branch", "triage", "context"],
+      options: ["findings", "risks", "comments"],
     },
     collapsed: { control: { type: "boolean" } },
   },
