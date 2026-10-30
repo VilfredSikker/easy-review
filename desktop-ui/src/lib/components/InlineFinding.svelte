@@ -70,6 +70,12 @@
   function dismiss() {
     void app.cmd("dismiss_finding", { findingId: finding.id });
   }
+  // Resolve keeps the finding, dimmed, where Dismiss removes it (ADR 0047).
+  function toggleResolved() {
+    const command = finding.resolved ? "unresolve_finding" : "resolve_finding";
+    if (!app.canPaintOptimistic()) return app.explainPaintBlocked(command);
+    void app.cmd(command, { findingId: finding.id });
+  }
   function reply() {
     const body = draft.replyText.trim();
     if (!body) return;
@@ -224,7 +230,7 @@
   <!-- Body -->
   <div class="px-3 py-2 text-sm text-fg-2 min-w-0">
     <div class="annotation-body-scroll">
-      <MarkdownText text={finding.title} className="text-sm text-fg-2" />
+      <MarkdownText text={finding.title} className="text-sm text-fg-2 {finding.resolved ? 'line-through' : ''}" />
       {#if finding.message_markdown}
         <MarkdownText text={finding.message_markdown} className="text-fg-3 mt-1" />
       {/if}
@@ -258,6 +264,12 @@
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
       Validate with AI
     </button>
+    <button
+      type="button"
+      onclick={toggleResolved}
+      title={finding.resolved ? "Reopen this finding" : "Mark this finding resolved; it stays listed, dimmed"}
+      class="px-2 h-6 rounded-[7px] text-fg-3 hover:bg-hover hover:text-fg-1"
+    >{finding.resolved ? "Reopen" : "Resolve"}</button>
     {#if thread}
       <button
         type="button"
