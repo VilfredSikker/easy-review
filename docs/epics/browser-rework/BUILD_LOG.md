@@ -40,3 +40,20 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   curl checks and docs-check passed. Independent review found the hostile
   synthetic-click fixture targeted the document rather than an element, weakening
   the later trust test; returned to the same implementer for a focused fix.
+- Reviewed the focused ER21 synthetic-click fix at `83437941` and merged PR 330
+  with a merge commit after the routing suite passed again. The proof log remains
+  pending and the fixture's Safari DOM check remains an owner action.
+- Corrected GNU/BSD stat fallback order in the installed shared-check helper so
+  Linux waiters can read the lock age. The repository's locking policy is unchanged.
+- ER32a PR 332 passed independent review and twelve storage tests, formatting,
+  headless compilation and scoped engine Clippy. PR CI passed. Merged the reviewed
+  head `d71588bd` as `1ba952af`; v1 callers remain unchanged.
+- ER34a pure renderer PR 335 is under independent review. Eight renderer golden
+  tests and fourteen existing export tests passed; no existing reader switched.
+  ER35 implementation is stacked on that renderer and cannot ship ahead of it.
+- Started ER32b against the reconciled PR 324 snapshot. Its read path remains
+  separate from live draft/save integration.
+- Started ER22 debug-only parking proof scaffolding. Its dedicated probe child
+  avoids the product modal teardown confounder; this changes the experiment
+  driver, not the release browser behavior. Mac compile and native observations
+  remain required before the proof can pass.
