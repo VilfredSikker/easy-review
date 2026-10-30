@@ -19,7 +19,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYwMEMwRDUwNUE1QTQyRDcKUldUWFFscGFVQTBNOEV0aDc3WEpTQ2NFNnZvcmlqNTdLUlgyeWZPRTJzU00vYmN3TGtTMk5IMEcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDZCQzJBMTM3OUVCNUJCNTMKUldSVHU3V2VONkhDYXlHbXhnaTA5bzcrK3F1dmpPZk5WVlY0bHllMlpUZzE4eVphc2gvSDVHdmsK",
       "endpoints": [
         "https://github.com/VilfredSikker/easy-review/releases/latest/download/latest.json"
       ]

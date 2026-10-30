@@ -248,6 +248,9 @@ cargo tauri signer generate -w ~/.tauri/easy-review-updater.key
 # paste the printed public key into tauri.conf.json → plugins.updater.pubkey
 ```
 
+The signing script drops an updater archive signed by any other key, since no
+installed app would accept it.
+
 | Secret | Value |
 | --- | --- |
 | `TAURI_SIGNING_PRIVATE_KEY` | contents of `~/.tauri/easy-review-updater.key` |
