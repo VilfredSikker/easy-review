@@ -122,8 +122,8 @@ export const TabStates: Story = {
     runningTabs: new Set([1]),
     tabs: [
       tab({ idx: 0, label: "easy-review", is_active: true }),
-      tab({ idx: 1, label: "Tour rail: pillar progress", kind: "remote_pr", pr_number: 412 }),
-      tab({ idx: 2, label: "Inbox triage", kind: "remote_pr", pr_number: 398, stale: true }),
+      tab({ idx: 1, label: "easy-review#412", kind: "remote_pr", pr_number: 412 }),
+      tab({ idx: 2, label: "discovery#398", kind: "remote_pr", pr_number: 398, stale: true }),
       tab({ idx: 3, label: "feat/unseen", kind: "local_branch", branch: "feat/unseen", change_token: "v1" }),
     ],
   },

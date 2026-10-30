@@ -1,4 +1,5 @@
 import type { TabSummary } from "./types";
+import type { ArenaRunSummary } from "./types/arena";
 
 /** Trailing state mark on a tab. One at a time: a running review outranks a
  *  stale diff, which outranks unread changes, so the strip never stacks dots. */
@@ -16,10 +17,23 @@ export interface TabRowFacts {
   unseen: boolean;
 }
 
-/** A PR tab's label can already lead with its number; the prefix owns it. */
+/** The backend names a PR tab `repo#412` (TabState::tab_name); the prefix owns
+ *  the number, so drop it from whichever end of the label carries it. */
 function titleWithoutNumber(label: string, pr: number): string {
-  const lead = `#${pr}`;
-  return label.startsWith(`${lead} `) ? label.slice(lead.length + 1) : label;
+  const num = `#${pr}`;
+  if (label.startsWith(`${num} `)) return label.slice(num.length + 1);
+  if (label.endsWith(num) && label.length > num.length) return label.slice(0, -num.length);
+  return label;
+}
+
+/** `summaries` holds only the active tab's branch; runs on other tabs reach
+ *  the frontend solely through `background`. A run in both counts once. */
+export function arenaRunsAcrossTabs(
+  summaries: readonly ArenaRunSummary[],
+  background: readonly ArenaRunSummary[],
+): ArenaRunSummary[] {
+  const seen = new Set(summaries.map((s) => s.id));
+  return [...summaries, ...background.filter((b) => !seen.has(b.id))];
 }
 
 export function tabRowModel(tab: TabSummary, facts: TabRowFacts): TabRowModel {

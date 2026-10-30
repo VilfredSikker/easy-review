@@ -3,7 +3,7 @@
   import { tabSeen } from "$lib/stores/tabSeen.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { activeJobCount, aggregateJobs, jobsForTab } from "$lib/runningJobs";
-  import { tabRowModel } from "$lib/tabStripModel";
+  import { arenaRunsAcrossTabs, tabRowModel } from "$lib/tabStripModel";
   import type { TabSummary } from "$lib/types";
   import { destIndexAfterRemove, dropSlot } from "$lib/listReorder";
   import { startWindowDrag } from "$lib/windowDrag";
@@ -46,7 +46,7 @@
     const jobs = aggregateJobs({
       backgroundTasks: app.snapshot?.background_tasks,
       agentCommands: app.snapshot?.agent_commands,
-      arenaRuns: arena.summaries,
+      arenaRuns: arenaRunsAcrossTabs(arena.summaries, arena.backgroundRuns),
       tabs,
       activeTabIdx: app.snapshot?.active_tab ?? null,
       nowMs: Date.now(),
