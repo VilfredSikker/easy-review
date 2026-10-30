@@ -11,6 +11,9 @@
 - The desktop updater trusts the key that signs releases (#296).
 - `scripts/tauri-sign-release.sh` drops an updater archive signed by any key other than the one in `tauri.conf.json`. A release signed with the wrong key ships without `latest.json`, so installed apps never download an update they would reject (#296).
 
+### Chores
+- CI refreshes apt package lists before installing the Tauri libraries, and fails early when the install or restored cache comes back empty (#295).
+
 # Easy Review v0.5.10
 
 ## In plain terms
