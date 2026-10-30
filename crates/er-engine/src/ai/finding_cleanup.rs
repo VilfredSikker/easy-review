@@ -1,10 +1,10 @@
-//! Persisted removal of findings and linked validation threads.
+//! Persisted removal and resolution of findings, and removal of linked validation threads.
 
 use super::comments::{ErGitHubComments, ErNotes, ErQuestions};
 use super::experts::{expert_by_id, load_expert_reviews, ExpertReview};
 use super::professor::{load_professor_review, PROFESSOR_ID_PREFIX};
 use super::review::AiState;
-use super::review::ErReview;
+use super::review::{ErReview, Finding};
 use std::path::Path;
 
 /// Root thread id (question or github comment) linked to a finding via `finding_ref`.
@@ -59,11 +59,7 @@ pub(crate) fn matches_finding_id(
         || stored_id == target_id.strip_prefix(&format!("{prefix}-")).unwrap_or("")
 }
 
-fn retain_findings(
-    findings: &mut Vec<super::review::Finding>,
-    target_id: &str,
-    id_prefix: Option<&str>,
-) -> bool {
+fn retain_findings(findings: &mut Vec<Finding>, target_id: &str, id_prefix: Option<&str>) -> bool {
     let before = findings.len();
     findings.retain(|f| !matches_finding_id(&f.id, target_id, id_prefix));
     findings.len() < before
@@ -76,8 +72,14 @@ fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> std::io::Re
     std::fs::rename(&tmp, path)
 }
 
-/// Remove a finding from `review.json`, `professor.json`, and `experts/*.json`. Returns true if any file changed.
-pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::Result<bool> {
+/// Apply `edit` to the findings of every sidecar that can own a finding —
+/// `review.json`, `professor.json` and `experts/*.json` — writing back each file
+/// the edit reports as changed. `edit` gets the id prefix the loader adds to that
+/// sidecar's ids, so it can match the merged id the UI holds.
+fn edit_finding_sidecars<F>(er_dir: &str, mut edit: F) -> std::io::Result<bool>
+where
+    F: FnMut(&mut Vec<Finding>, Option<&str>) -> bool,
+{
     let er = Path::new(er_dir);
     let mut changed = false;
 
@@ -87,9 +89,7 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
             if let Ok(mut review) = serde_json::from_str::<ErReview>(&content) {
                 let mut file_changed = false;
                 for fr in review.files.values_mut() {
-                    if retain_findings(&mut fr.findings, finding_id, None) {
-                        file_changed = true;
-                    }
+                    file_changed |= edit(&mut fr.findings, None);
                 }
                 if file_changed {
                     write_json_atomic(&review_path, &review)?;
@@ -104,9 +104,7 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
         if let Some(mut prof) = load_professor_review(er_dir) {
             let mut file_changed = false;
             for pfr in prof.files.values_mut() {
-                if retain_findings(&mut pfr.findings, finding_id, Some(PROFESSOR_ID_PREFIX)) {
-                    file_changed = true;
-                }
+                file_changed |= edit(&mut pfr.findings, Some(PROFESSOR_ID_PREFIX));
             }
             if file_changed {
                 write_json_atomic(&prof_path, &prof)?;
@@ -127,9 +125,7 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
             if let Ok(mut er) = serde_json::from_str::<ExpertReview>(&content) {
                 let mut file_changed = false;
                 for efr in er.files.values_mut() {
-                    if retain_findings(&mut efr.findings, finding_id, prefix) {
-                        file_changed = true;
-                    }
+                    file_changed |= edit(&mut efr.findings, prefix);
                 }
                 if file_changed {
                     write_json_atomic(&path, &er)?;
@@ -140,6 +136,52 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
     }
 
     Ok(changed)
+}
+
+/// Remove a finding from `review.json`, `professor.json`, and `experts/*.json`. Returns true if any file changed.
+pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::Result<bool> {
+    edit_finding_sidecars(er_dir, |findings, prefix| {
+        retain_findings(findings, finding_id, prefix)
+    })
+}
+
+/// Set or clear a person's resolution of a finding in whichever sidecar owns
+/// it. Only the status fields move; the claim is left as the AI wrote it
+/// (ADR 0047). Clearing also drops any `resolved_note` a legacy or
+/// hand-written sidecar carries, because a reopened finding has no resolution
+/// left to explain.
+/// Returns false when no sidecar holds the finding.
+pub fn set_finding_resolved(
+    er_dir: &str,
+    finding_id: &str,
+    resolved: bool,
+) -> std::io::Result<bool> {
+    let resolved_at = if resolved {
+        crate::sync::chrono_now()
+    } else {
+        String::new()
+    };
+    let mut found = false;
+    edit_finding_sidecars(er_dir, |findings, prefix| {
+        let mut changed = false;
+        for f in findings
+            .iter_mut()
+            .filter(|f| matches_finding_id(&f.id, finding_id, prefix))
+        {
+            found = true;
+            if f.resolved == resolved {
+                continue;
+            }
+            f.resolved = resolved;
+            f.resolved_at.clone_from(&resolved_at);
+            if !resolved {
+                f.resolved_note.clear();
+            }
+            changed = true;
+        }
+        changed
+    })?;
+    Ok(found)
 }
 
 /// Delete question/github threads created for finding validation (`finding_ref`).
@@ -308,6 +350,7 @@ mod tests {
                 author: "You".into(),
                 promoted_to: None,
                 finding_ref: Some("f-1".into()),
+                ai_action: None,
             }],
         });
         ai.github_comments = Some(ErGitHubComments {
@@ -408,5 +451,85 @@ mod tests {
         )
         .unwrap();
         assert!(expert2.files["a.rs"].findings.is_empty());
+    }
+
+    fn write_expert_with(er: &str, finding: Finding) {
+        std::fs::create_dir_all(format!("{er}/experts")).unwrap();
+        let expert = ExpertReview {
+            version: 1,
+            expert_id: "security".into(),
+            diff_hash: "h".into(),
+            diff_scope: String::new(),
+            created_at: String::new(),
+            summary: String::new(),
+            files: std::iter::once((
+                "a.rs".into(),
+                crate::ai::experts::ExpertFileReview {
+                    findings: vec![finding],
+                },
+            ))
+            .collect(),
+        };
+        write_json_atomic(&Path::new(er).join("experts/security.json"), &expert).unwrap();
+    }
+
+    fn read_expert_finding(er: &str) -> Finding {
+        let expert: ExpertReview = serde_json::from_str(
+            &std::fs::read_to_string(format!("{er}/experts/security.json")).unwrap(),
+        )
+        .unwrap();
+        expert.files["a.rs"].findings[0].clone()
+    }
+
+    #[test]
+    fn resolving_a_finding_flips_status_and_keeps_the_claim() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let mut finding = sample_finding("f-1");
+        finding.description = "the AI's claim".into();
+        write_expert_with(er, finding);
+
+        assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
+        let resolved = read_expert_finding(er);
+        assert!(resolved.resolved);
+        assert!(!resolved.resolved_at.is_empty());
+        assert_eq!(resolved.title, "t");
+        assert_eq!(resolved.description, "the AI's claim");
+
+        assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
+        let reopened = read_expert_finding(er);
+        assert!(!reopened.resolved);
+        assert!(reopened.resolved_at.is_empty());
+    }
+
+    #[test]
+    fn unresolving_clears_a_leftover_resolved_note() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let mut finding = sample_finding("f-1");
+        finding.resolved = true;
+        finding.resolved_note = "null check added".into();
+        finding.resolved_at = "2026-01-01T00:00:00Z".into();
+        write_expert_with(er, finding);
+
+        assert!(set_finding_resolved(er, "sec-f-1", false).unwrap());
+        let reopened = read_expert_finding(er);
+        assert!(!reopened.resolved);
+        assert!(reopened.resolved_note.is_empty());
+        assert!(reopened.resolved_at.is_empty());
+    }
+
+    #[test]
+    fn resolving_is_idempotent_and_reports_unknown_ids() {
+        let dir = tempdir().unwrap();
+        let er = dir.path().to_str().unwrap();
+        let mut finding = sample_finding("f-1");
+        finding.resolved = true;
+        finding.resolved_at = "2026-01-01T00:00:00Z".into();
+        write_expert_with(er, finding);
+
+        assert!(set_finding_resolved(er, "sec-f-1", true).unwrap());
+        assert_eq!(read_expert_finding(er).resolved_at, "2026-01-01T00:00:00Z");
+        assert!(!set_finding_resolved(er, "sec-missing", true).unwrap());
     }
 }

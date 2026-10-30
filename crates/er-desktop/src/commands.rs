@@ -42,11 +42,9 @@ Reply in markdown with:
 
 Be concise. If the concern is already addressed in the current diff, say so clearly."#;
 
-/// Per-question elaboration: answer / expand on a reviewer's question by reading
-/// the surrounding code. Used by the `elaborate_with_ai` command (questions),
-/// where "validate" doesn't fit — there is nothing to confirm/refute, the
-/// reviewer wants the AI to investigate and explain.
-const ELABORATE_CARD_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
+/// One-click Ask AI on a question: investigate and answer. "Validate" does not
+/// fit a question — there is nothing to confirm or refute.
+const ANSWER_QUESTION_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
 
 Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence.
 
@@ -56,6 +54,68 @@ Reply in markdown with:
 3. **Follow-ups**: Anything the reviewer should double-check or decide.
 
 Be concise and concrete."#;
+
+/// One-click Ask AI on a note. A note is an instruction for a coding agent, so
+/// the useful answer is whether the change is right and what it would touch —
+/// not the change itself, which stays the agent's job once the note is sent.
+const ANSWER_NOTE_AI_PROMPT: &str = r#"Assess this review note against the current code. The note is an instruction the reviewer intends to hand to a coding agent.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence. Do not edit any file.
+
+Reply in markdown with:
+1. **Assessment**: Whether the requested change is right, and why.
+2. **Details**: What the change would touch (cite file:line when possible).
+3. **Risks**: Anything that could break, or that the note leaves undecided.
+
+Be concise and concrete."#;
+
+/// Elaborate on a question: rewrite it, do not answer it. A terse question
+/// written mid-review ("why fetch-depth?") only makes sense next to the line it
+/// sits on; the rewrite has to survive export and being read by someone, or
+/// some agent, who never saw that line.
+const ELABORATE_QUESTION_AI_PROMPT: &str = r#"Rewrite this review question so it stands on its own, without the diff beside it.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the question refers to. Up to ~10 reads.
+
+The rewritten question must:
+- name the file and the lines or symbol it is about;
+- state the relevant facts from the code that make the question worth asking;
+- say what a good answer has to settle.
+
+Do not answer the question. Keep the reviewer's intent and tone; do not add concerns they did not raise.
+Reply with only the rewritten question in markdown — no preamble, no heading."#;
+
+/// Elaborate on a note: rewrite it into an instruction a coding agent can carry
+/// out without the review open. Same reason as the question variant; the note
+/// variant names the change and its outcome instead of what to settle.
+const ELABORATE_NOTE_AI_PROMPT: &str = r#"Rewrite this review note into a self-contained instruction for a coding agent that will not see the diff.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the note refers to. Up to ~10 reads. Do not edit any file.
+
+The instruction must:
+- name the file and the lines, job, function or other symbol to change;
+- state the exact change to make;
+- state the expected outcome, and anything that must stay unchanged when the note implies it.
+
+Keep the reviewer's intent; do not widen the change beyond what the note asks.
+Reply with only the instruction in markdown — no preamble, no heading."#;
+
+/// The prompt for a one-click AI action on a question or note, keyed on the
+/// thread id prefix the stores use (`q-` question, `n-` note). `None` for any
+/// other thread: Ask AI and Elaborate act on the private stores only.
+fn card_action_prompt(thread_id: &str, ai_action: &str) -> Option<&'static str> {
+    let is_note = thread_id.starts_with("n-");
+    if !is_note && !thread_id.starts_with("q-") {
+        return None;
+    }
+    match (ai_action, is_note) {
+        (er_engine::ai::AI_ACTION_ELABORATE, false) => Some(ELABORATE_QUESTION_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ELABORATE, true) => Some(ELABORATE_NOTE_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ASK, false) => Some(ANSWER_QUESTION_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ASK, true) => Some(ANSWER_NOTE_AI_PROMPT),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
@@ -5192,22 +5252,36 @@ pub async fn validate_with_ai(
         }
         let resolved_thread =
             thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
-        ask_ai_impl(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), &state)
+        ask_ai_impl(
+            resolved_thread,
+            VALIDATE_CARD_AI_PROMPT.to_string(),
+            None,
+            &state,
+        )
     })
     .await
 }
 
-/// Ask AI to elaborate on / answer a question thread — adds a local reply.
-///
-/// This is the question-flavored counterpart to `validate_with_ai`: questions
-/// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
+/// Elaborate on a question or note: the AI rewrites it into a self-contained
+/// question or instruction and adds that as a local reply. It does not answer;
+/// a one-click `ask_ai` does.
 #[tauri::command]
 pub async fn elaborate_with_ai(
     thread_id: String,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || ask_ai_impl(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), &state)).await
+    run_blocking(move || {
+        let prompt = card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ELABORATE)
+            .ok_or_else(|| "Elaborate works on questions and notes only".to_string())?;
+        ask_ai_impl(
+            thread_id,
+            prompt.to_string(),
+            Some(er_engine::ai::AI_ACTION_ELABORATE),
+            &state,
+        )
+    })
+    .await
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -5223,13 +5297,35 @@ pub async fn ask_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || ask_ai_impl(thread_id, prompt, &state)).await
+    run_blocking(move || {
+        // An empty prompt is the one-click Ask AI: answer with the kind's own
+        // prompt. Typed text is the reviewer's own question and goes as written.
+        let prompt = if prompt.trim().is_empty() {
+            card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ASK)
+                .map_or(prompt, str::to_string)
+        } else {
+            prompt
+        };
+        ask_ai_impl(
+            thread_id,
+            prompt,
+            Some(er_engine::ai::AI_ACTION_ASK),
+            &state,
+        )
+    })
+    .await
 }
 
 /// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
 /// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
 /// files) under the app lock, so callers run it on the blocking pool.
-fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<AppSnapshot, String> {
+/// `ai_action` is stamped on the reply when the thread is a question or note.
+fn ask_ai_impl(
+    thread_id: String,
+    prompt: String,
+    ai_action: Option<&'static str>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
@@ -5454,7 +5550,11 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
         );
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
-            let _ = app.submit_comment_text_as_author(
+            let ai_action = match comment_type {
+                CommentType::Question | CommentType::Note => ai_action,
+                CommentType::GitHubComment => None,
+            };
+            let _ = app.submit_ai_reply(
                 CommentTarget {
                     file,
                     hunk_idx,
@@ -5464,8 +5564,7 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
                 body,
                 comment_type,
                 Some(thread_id_for_thread.clone()),
-                None,
-                "ai".to_string(),
+                ai_action,
             );
         }
         if let Ok(mut p) = pending_arc.lock() {
@@ -9151,6 +9250,56 @@ pub async fn dismiss_finding(
     .await
 }
 
+/// A person marks a finding resolved: it stays on record, dimmed, instead of
+/// being removed as `dismiss_finding` does. ADR 0047.
+#[tauri::command]
+pub async fn resolve_finding(
+    finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        write_finding_resolved(&mut app, &finding_id, true)?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Reopen a finding a person, or the validate pass, resolved. ADR 0047.
+#[tauri::command]
+pub async fn unresolve_finding(
+    finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        write_finding_resolved(&mut app, &finding_id, false)?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+fn write_finding_resolved(app: &mut App, finding_id: &str, resolved: bool) -> Result<(), String> {
+    let er_dir = app.tab().er_dir();
+    let found = er_engine::ai::set_finding_resolved(&er_dir, finding_id, resolved)
+        .map_err(|e| format!("Failed to update finding: {e}"))?;
+    if !found {
+        return Err(format!("Finding not found: {finding_id}"));
+    }
+    app.tab_mut().reload_ai_state();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn promote_finding_to_comment(
     finding_id: String,
@@ -9352,7 +9501,12 @@ fn reply_to_finding_impl(
                 .ok_or_else(|| "Failed to create finding comment thread".to_string())?
         };
         drop(app);
-        return ask_ai_impl(root_id, enriched_prompt, state);
+        return ask_ai_impl(
+            root_id,
+            enriched_prompt,
+            Some(er_engine::ai::AI_ACTION_ASK),
+            state,
+        );
     }
 
     let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
@@ -11265,6 +11419,40 @@ mod tests {
         GitHubReviewComment, ReviewQuestion, UiAnnotation,
     };
 
+    #[test]
+    fn card_action_prompt_picks_the_kind_and_action() {
+        use er_engine::ai::{AI_ACTION_ASK, AI_ACTION_ELABORATE};
+        assert_eq!(
+            card_action_prompt("q-1", AI_ACTION_ELABORATE),
+            Some(ELABORATE_QUESTION_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("n-1", AI_ACTION_ELABORATE),
+            Some(ELABORATE_NOTE_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("q-1", AI_ACTION_ASK),
+            Some(ANSWER_QUESTION_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("n-1", AI_ACTION_ASK),
+            Some(ANSWER_NOTE_AI_PROMPT)
+        );
+        // GitHub comments are shared, so the one-click private actions skip them.
+        assert_eq!(card_action_prompt("c-1", AI_ACTION_ELABORATE), None);
+        assert_eq!(card_action_prompt("q-1", "unknown"), None);
+    }
+
+    #[test]
+    fn elaborate_prompts_rewrite_rather_than_answer() {
+        for prompt in [ELABORATE_QUESTION_AI_PROMPT, ELABORATE_NOTE_AI_PROMPT] {
+            assert!(prompt.starts_with("Rewrite"));
+            assert!(prompt.contains("Reply with only"));
+        }
+        assert!(ELABORATE_QUESTION_AI_PROMPT.contains("Do not answer"));
+        assert!(ELABORATE_NOTE_AI_PROMPT.contains("Do not edit any file"));
+    }
+
     struct ReviewFlowTestDir(std::path::PathBuf);
 
     impl ReviewFlowTestDir {
@@ -12087,6 +12275,7 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                ai_action: None,
             }],
         };
         std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
@@ -12867,6 +13056,8 @@ mod tests {
             "resolve_thread",
             "update_thread_message",
             "dismiss_finding",
+            "resolve_finding",
+            "unresolve_finding",
             "promote_to_comment",
             "promote_to_note",
             "bulk_review_pillar",
@@ -12962,6 +13153,8 @@ mod tests {
                     | "resolve_thread"
                     | "update_thread_message"
                     | "dismiss_finding"
+                    | "resolve_finding"
+                    | "unresolve_finding"
                     | "promote_to_comment"
                     | "promote_to_note"
                     | "bulk_review_pillar"

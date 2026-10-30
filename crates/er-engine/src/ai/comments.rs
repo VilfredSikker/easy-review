@@ -291,7 +291,19 @@ pub struct ReviewQuestion {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[serde(default)]
     pub finding_ref: Option<String>,
+    /// Which AI action wrote this reply (`AI_ACTION_ASK`, `AI_ACTION_ELABORATE`);
+    /// `None` for a person's text. A string rather than an enum so a sidecar
+    /// written by a newer build with an action this one does not know still
+    /// loads instead of failing the whole file.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default)]
+    pub ai_action: Option<String>,
 }
+
+/// An AI reply that answers the question or note it hangs off.
+pub const AI_ACTION_ASK: &str = "ask";
+/// An AI reply that rewrites its question or note into a self-contained one.
+pub const AI_ACTION_ELABORATE: &str = "elaborate";
 
 impl ReviewQuestion {
     /// Anchored to a line of the document rather than a hunk: written from the
@@ -569,6 +581,7 @@ mod tests {
             author: "You".into(),
             promoted_to: None,
             finding_ref: None,
+            ai_action: None,
         }
     }
 
@@ -599,6 +612,23 @@ mod tests {
             finding_ref: None,
             side: "RIGHT".into(),
         }
+    }
+
+    #[test]
+    fn ai_action_is_optional_on_disk() {
+        let plain = serde_json::to_string(&sample_question()).unwrap();
+        assert!(
+            !plain.contains("ai_action"),
+            "a person's text writes no action"
+        );
+        let read: ReviewQuestion = serde_json::from_str(&plain).unwrap();
+        assert_eq!(read.ai_action, None);
+
+        let mut reply = sample_question();
+        reply.ai_action = Some("a-later-action".into());
+        let json = serde_json::to_string(&reply).unwrap();
+        let read: ReviewQuestion = serde_json::from_str(&json).unwrap();
+        assert_eq!(read.ai_action.as_deref(), Some("a-later-action"));
     }
 
     #[test]

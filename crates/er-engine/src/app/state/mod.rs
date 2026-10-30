@@ -870,6 +870,11 @@ pub struct TabState {
     /// Used by the desktop `ask_ai` flow to attribute AI replies as "ai".
     pub comment_author_override: Option<String>,
 
+    /// Transient: the AI action that produced the next question or note reply,
+    /// stamped on it as `ai_action`. Set on every desktop submit, so a value
+    /// cannot outlive the submit it was meant for.
+    pub comment_ai_action_override: Option<String>,
+
     /// Transient: selection side for the next comment/question/note ("LEFT"/"RIGHT").
     /// Consumed by submit_question / submit_note / submit_github_comment. Defaults to "RIGHT".
     pub comment_side: Option<String>,
@@ -1655,6 +1660,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
@@ -1791,6 +1797,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
@@ -1921,6 +1928,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
@@ -2064,6 +2072,7 @@ impl TabState {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
@@ -9658,6 +9667,7 @@ mod tests {
             comment_edit_id: None,
             comment_finding_ref: None,
             comment_author_override: None,
+            comment_ai_action_override: None,
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
@@ -13032,6 +13042,44 @@ mod tests {
     }
 
     #[test]
+    fn ai_reply_records_its_action_and_the_next_reply_does_not() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let mut app = document_app(&tmp);
+        app.submit_comment_text(
+            document_target(1),
+            "Why?".to_string(),
+            CommentType::Note,
+            None,
+            None,
+        )
+        .unwrap();
+        let parent = app.tab().ai.notes.as_ref().unwrap().notes[0].id.clone();
+
+        app.submit_ai_reply(
+            document_target(1),
+            "Rewritten.".to_string(),
+            CommentType::Note,
+            Some(parent.clone()),
+            Some(crate::ai::AI_ACTION_ELABORATE),
+        )
+        .unwrap();
+        app.submit_comment_text(
+            document_target(1),
+            "Thanks.".to_string(),
+            CommentType::Note,
+            Some(parent),
+            None,
+        )
+        .unwrap();
+
+        let notes = &app.tab().ai.notes.as_ref().unwrap().notes;
+        assert_eq!(notes[1].author, "ai");
+        assert_eq!(notes[1].ai_action.as_deref(), Some("elaborate"));
+        assert_eq!(notes[2].author, "You");
+        assert_eq!(notes[2].ai_action, None);
+    }
+
+    #[test]
     fn document_anchor_of_names_only_document_anchored_threads() {
         let tmp = tempfile::TempDir::new().unwrap();
         let mut app = document_app(&tmp);
@@ -13152,6 +13200,7 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                ai_action: None,
             }],
         });
         let mut app = make_test_app(tab);

@@ -747,6 +747,14 @@ fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
     mint_comment_id(prefix)
 }
 
+/// Who a desktop submit is written as. Both fields are set on every desktop
+/// submit, so an override never carries over into the next one.
+#[derive(Default)]
+struct ReplyAttribution {
+    author: Option<String>,
+    ai_action: Option<String>,
+}
+
 impl App {
     // ── Comment System ──
 
@@ -1062,6 +1070,7 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            ai_action: self.tab_mut().comment_ai_action_override.take(),
         });
 
         // Write atomically
@@ -1171,6 +1180,7 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            ai_action: self.tab_mut().comment_ai_action_override.take(),
         });
 
         // Write atomically
@@ -1357,7 +1367,14 @@ impl App {
         let anchor = document_line_anchor(source, line)
             .with_context(|| format!("Line {line} is past the end of {}", target.file))?;
         self.tab_mut().comment_document_anchor = Some(anchor);
-        let result = self.submit_comment_text_inner(target, text, comment_type, None, None, None);
+        let result = self.submit_comment_text_inner(
+            target,
+            text,
+            comment_type,
+            None,
+            None,
+            ReplyAttribution::default(),
+        );
         // An empty body returns before the anchor is taken; never let it leak
         // into the next submit.
         self.tab_mut().comment_document_anchor = None;
@@ -1482,29 +1499,37 @@ impl App {
         reply_to: Option<String>,
         finding_ref: Option<String>,
     ) -> Result<()> {
-        self.submit_comment_text_inner(target, text, comment_type, reply_to, finding_ref, None)
-    }
-
-    /// Submit a comment/question whose `author` field is set to the provided
-    /// value (e.g. "ai") instead of "You". Used by the desktop `ask_ai` flow
-    /// to attribute AI-generated replies. Mirrors `submit_comment_text` and
-    /// sets a transient override consumed by submit_question/submit_github_comment.
-    pub fn submit_comment_text_as_author(
-        &mut self,
-        target: CommentTarget,
-        text: String,
-        comment_type: CommentType,
-        reply_to: Option<String>,
-        finding_ref: Option<String>,
-        author: String,
-    ) -> Result<()> {
         self.submit_comment_text_inner(
             target,
             text,
             comment_type,
             reply_to,
             finding_ref,
-            Some(author),
+            ReplyAttribution::default(),
+        )
+    }
+
+    /// Submit an AI-written reply: `author` is "ai" rather than "You", and a
+    /// question or note reply also records which AI action wrote it, so a front
+    /// end can label it. Used by the desktop card AI flows.
+    pub fn submit_ai_reply(
+        &mut self,
+        target: CommentTarget,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+        ai_action: Option<&str>,
+    ) -> Result<()> {
+        self.submit_comment_text_inner(
+            target,
+            text,
+            comment_type,
+            reply_to,
+            None,
+            ReplyAttribution {
+                author: Some("ai".to_string()),
+                ai_action: ai_action.map(str::to_string),
+            },
         )
     }
 
@@ -1515,7 +1540,7 @@ impl App {
         comment_type: CommentType,
         reply_to: Option<String>,
         finding_ref: Option<String>,
-        author: Option<String>,
+        attribution: ReplyAttribution,
     ) -> Result<()> {
         let CommentTarget {
             file,
@@ -1534,7 +1559,8 @@ impl App {
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
-            tab.comment_author_override = author;
+            tab.comment_author_override = attribution.author;
+            tab.comment_ai_action_override = attribution.ai_action;
         }
         self.input_mode = InputMode::Comment;
         self.submit_comment()

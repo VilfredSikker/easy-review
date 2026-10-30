@@ -101,6 +101,8 @@ commands.allow = [
   "open_remote_pr",
   "open_worktree",
   "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
   "toggle_checklist_item",
   "delete_review_artifact",
   "remove_finding_thread",
