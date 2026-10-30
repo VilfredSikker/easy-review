@@ -69,6 +69,10 @@ export function mergeChromeSnapshot(
     filter_suggestions: prev.filter_suggestions,
     commits: prev.commits,
     selected_commit_sha: prev.selected_commit_sha,
+    // Chrome-only builds skip the shortstat calls and send zeros; the kept
+    // `files` are what these counts describe.
+    unstaged_stat: prev.unstaged_stat,
+    staged_stat: prev.staged_stat,
   };
 }
 

@@ -62,6 +62,10 @@ pub struct DiffFile {
     pub compacted: bool,
     /// Raw hunk count before compaction (for display)
     pub raw_hunk_count: usize,
+    /// Git's `similarity index N%` for a rename or copy; `None` for every other
+    /// status. Kept beside `status` rather than inside `FileStatus::Renamed` so
+    /// the many matches on that variant do not change shape.
+    pub similarity: Option<u8>,
     // Binary files ("Binary files a/x and b/x differ") parse to hunks=[], adds=0,
     // dels=0 — indistinguishable here from a mode-only change.
 }
@@ -75,6 +79,8 @@ pub struct DiffFileHeader {
     pub adds: usize,
     pub dels: usize,
     pub hunk_count: usize,
+    /// See [`DiffFile::similarity`].
+    pub similarity: Option<u8>,
     /// Byte offset of this file's section start in the raw diff string
     pub byte_offset: usize,
     /// Length of this file's section in bytes
@@ -97,6 +103,15 @@ fn path_from_diff_git_line(line: &str) -> String {
         (Some(old), Some(new)) if path_len > 0 && old == new => old.to_string(),
         _ => after_a.split(" b/").last().unwrap_or("").to_string(),
     }
+}
+
+/// The percentage from a `similarity index N%` extended header line.
+fn parse_similarity(line: &str) -> Option<u8> {
+    line.strip_prefix("similarity index ")?
+        .trim_end()
+        .strip_suffix('%')?
+        .parse()
+        .ok()
 }
 
 /// Fast header-only scan of a raw diff.
@@ -130,6 +145,7 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
                 adds: 0,
                 dels: 0,
                 hunk_count: 0,
+                similarity: None,
                 byte_offset: byte_pos,
                 byte_length: 0,
             });
@@ -142,6 +158,8 @@ pub fn parse_diff_headers(raw: &str) -> Vec<DiffFileHeader> {
             } else if line.starts_with("rename from ") {
                 let old_path = line.strip_prefix("rename from ").unwrap_or("").to_string();
                 h.status = FileStatus::Renamed(old_path);
+            } else if let Some(pct) = parse_similarity(line) {
+                h.similarity = Some(pct);
             } else if line.starts_with("@@") {
                 h.hunk_count += 1;
             } else if line.starts_with('+') && !line.starts_with("+++") {
@@ -215,6 +233,7 @@ pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
         // Ensure path matches (the section parse may produce a valid file)
         file.path = header.path.clone();
         file.status = header.status.clone();
+        file.similarity = header.similarity;
         file
     } else {
         // Fallback: empty file with header metadata
@@ -226,6 +245,7 @@ pub fn parse_file_at_offset(raw: &str, header: &DiffFileHeader) -> DiffFile {
             dels: header.dels,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: header.similarity,
         }
     }
 }
@@ -289,6 +309,7 @@ pub fn header_to_stub(header: &DiffFileHeader) -> DiffFile {
         dels: header.dels,
         compacted: false,
         raw_hunk_count: header.hunk_count,
+        similarity: header.similarity,
     }
 }
 
@@ -323,6 +344,7 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 dels: 0,
                 compacted: false,
                 raw_hunk_count: 0,
+                similarity: None,
             });
             continue;
         }
@@ -342,11 +364,14 @@ pub fn parse_diff(raw: &str) -> Vec<DiffFile> {
                 file.status = FileStatus::Renamed(old_path);
                 continue;
             }
+            if let Some(pct) = parse_similarity(line) {
+                file.similarity = Some(pct);
+                continue;
+            }
             // Skip other header lines (index, ---, +++)
             if line.starts_with("index ")
                 || line.starts_with("--- ")
                 || line.starts_with("+++ ")
-                || line.starts_with("similarity index")
                 || line.starts_with("rename to")
                 || line.starts_with("old mode")
                 || line.starts_with("new mode")
@@ -802,6 +827,30 @@ index abc1234..def5678 100644
             files[0].status,
             FileStatus::Renamed("src/old_name.rs".to_string())
         );
+        assert_eq!(files[0].similarity, Some(95));
+
+        // The lazy path reads headers first; a stub and its later parse must
+        // agree with the eager parse.
+        let headers = parse_diff_headers(raw);
+        assert_eq!(headers[0].similarity, Some(95));
+        assert_eq!(header_to_stub(&headers[0]).similarity, Some(95));
+        assert_eq!(parse_file_at_offset(raw, &headers[0]).similarity, Some(95));
+    }
+
+    #[test]
+    fn test_parse_diff_pure_rename_keeps_similarity_without_hunks() {
+        let raw = "diff --git a/a.txt b/b.txt\nsimilarity index 100%\nrename from a.txt\nrename to b.txt\n";
+        let files = parse_diff(raw);
+        assert_eq!(files[0].status, FileStatus::Renamed("a.txt".to_string()));
+        assert_eq!(files[0].similarity, Some(100));
+        assert!(files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn test_parse_diff_modified_file_has_no_similarity() {
+        let raw = "diff --git a/a.rs b/a.rs\nindex 1..2 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-a\n+b\n";
+        assert_eq!(parse_diff(raw)[0].similarity, None);
+        assert_eq!(parse_diff_headers(raw)[0].similarity, None);
     }
 
     #[test]
@@ -1248,6 +1297,7 @@ index aaa..bbb 100644
                 dels: 0,
                 compacted: false,
                 raw_hunk_count: 0,
+                similarity: None,
             },
             DiffFile {
                 path: "src/main.rs".to_string(),
@@ -1257,6 +1307,7 @@ index aaa..bbb 100644
                 dels: 0,
                 compacted: false,
                 raw_hunk_count: 0,
+                similarity: None,
             },
         ];
         let config = CompactionConfig::default();
@@ -1293,6 +1344,7 @@ index aaa..bbb 100644
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }];
         let config = CompactionConfig::default();
         compact_files(&mut files, &config);
@@ -1322,6 +1374,7 @@ index aaa..bbb 100644
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }];
         let config = CompactionConfig {
             enabled: false,
@@ -1452,6 +1505,7 @@ index aaa..bbb 100644
             hunk_count: 2,
             byte_offset: 0,
             byte_length: 100,
+            similarity: None,
         };
         let file = header_to_stub(&header);
         assert_eq!(file.path, "test.rs");

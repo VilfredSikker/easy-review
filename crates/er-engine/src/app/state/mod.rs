@@ -9657,6 +9657,7 @@ mod tests {
             dels,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -11737,6 +11738,7 @@ mod tests {
             dels: 0,
             compacted: true,
             raw_hunk_count: 3,
+            similarity: None,
         };
         let mut tab = make_test_tab(vec![compacted_file]);
         // user_expanded starts empty
@@ -14041,6 +14043,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -14183,6 +14186,7 @@ mod tests {
                 adds: 1,
                 dels: 0,
                 is_merge: false,
+                diffstat_known: true,
             }],
             selected_commit: 0,
             commit_files: vec![test_diff_file("commit-a.rs"), test_diff_file("commit-b.rs")],
@@ -14241,6 +14245,7 @@ mod tests {
             adds: 0,
             dels: 0,
             is_merge: false,
+            diffstat_known: false,
         }
     }
 

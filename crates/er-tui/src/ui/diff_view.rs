@@ -3327,6 +3327,7 @@ mod github_comment_fold_tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 1,
+            similarity: None,
         };
         let mut app = App::new_for_test(vec![file]);
         app.tab_mut().ai.github_comments = Some(ErGitHubComments {

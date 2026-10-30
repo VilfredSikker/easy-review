@@ -1102,6 +1102,7 @@ mod tests {
                 adds: 1,
                 dels: 1,
                 is_merge: false,
+                diffstat_known: true,
             }],
             selected_commit: 0,
             commit_files: cached,

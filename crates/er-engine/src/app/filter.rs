@@ -468,6 +468,7 @@ mod tests {
             dels,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 

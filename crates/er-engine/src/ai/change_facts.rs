@@ -261,6 +261,7 @@ mod tests {
             hunk_count: 1,
             byte_offset: 0,
             byte_length: 0,
+            similarity: None,
         }
     }
 
