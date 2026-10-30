@@ -2,16 +2,11 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
-  import { browser } from "$lib/stores/browser.svelte";
-  import { terminal } from "$lib/stores/terminal.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
   import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
-  import { openPrUrlModal } from "$lib/stores/prUrlModal.svelte";
   import { arena } from "$lib/stores/arena.svelte";
-  import { diffNav } from "$lib/stores/diffNav.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
-  import { copyToClipboard } from "$lib/clipboard";
   import { reviewScopeFromMode, scopeDescriptionFromMode } from "$lib/reviewScope";
   import { openAiReviewFilesModal } from "$lib/components/AiReviewFilesModal.svelte";
   import { openProfessorFocusModal } from "$lib/components/ProfessorFocusModal.svelte";
@@ -25,26 +20,10 @@
   import { isPaletteSearchFocused, paletteQuickActionKey } from "$lib/commandPaletteKeys";
   import { keybindIndex, paletteKeyIntent, providerDescription, validateDescription, type PaletteKeyIntent } from "$lib/commandPaletteModel";
   import { AI_ADVANCED_GROUP, AI_GROUP_ORDER, AI_MENU_ACTION_ORDER, REVIEW_FLOW_ACTION_ID, reviewFlowControls, reviewFlowEstimate, reviewFlowStage } from "$lib/reviewFlow";
-
-  type Group = "Actions" | "Navigate" | "View & Layout" | "AI" | "AI · Advanced" | "PR" | "Files in this diff";
-
-  interface CommandItem {
-    id: string;
-    label: string;
-    description?: string;
-    group: Group;
-    kbd?: string;
-    /** Action to run when the row is activated (leaf items). */
-    run: () => void;
-    /** Filename to render for "Files" entries — uses mono font + diff stats. */
-    file?: { path: string; additions: number; deletions: number };
-    /** Sub-items shown in a second-level list when this item is activated. */
-    submenuItems?: CommandItem[];
-    /** Render a custom submenu body instead of a list (currently: reviewer picker). */
-    view?: "reviewers";
-    /** Label of the submenu this item lives in (shown when surfaced by search). */
-    submenuOf?: string;
-  }
+  import { actionsMenu, filesMenu, navigateMenu, prMenu, viewMenu, type CommandItem, type PaletteRunners } from "$lib/commandPaletteMenus";
+  import { RUN_FLASH_MS, fileDir, groupByMenu, isRowKey, isSingleKey, paletteFooterContext, paletteGlyph, palettePlaceholder } from "$lib/commandPaletteView";
+  import { resolveContextTitle } from "$lib/contextIdentity";
+  import { baseName } from "$lib/shortFileName";
 
   let query = $state("");
   let selectedIdx = $state(0);
@@ -62,19 +41,21 @@
   let reviewerHighlight = $state(0);
   let reviewerPickerRef = $state<{ moveHighlight: (d: number) => void; toggleHighlighted: () => void } | null>(null);
 
+  /** The row showing the run flash; its action fires when the flash ends. */
+  let flashId = $state<string | null>(null);
+  let flashTimer: ReturnType<typeof setTimeout> | null = null;
+
   const snapshot = $derived(app.snapshot);
 
-  function close() {
-    commandPalette.close();
-    query = "";
-    selectedIdx = 0;
-    submenuStack = [];
-    reviewerSelection = new Set();
+  function cancelFlash() {
+    if (flashTimer !== null) clearTimeout(flashTimer);
+    flashTimer = null;
+    flashId = null;
   }
 
-  /** Close the palette from a submenu action. Clears the submenu stack so the
-   *  next open (via ⌘K or the TabStrip/sidebar buttons) lands at the root. */
-  function closeKeepSubmenu() {
+  /** Also clears the submenu stack, so the next open lands at the root. */
+  function close() {
+    cancelFlash();
     commandPalette.close();
     query = "";
     selectedIdx = 0;
@@ -83,8 +64,8 @@
   }
 
   /** Close the palette, let it paint, then run a heavy (IPC / snapshot) action. */
-  async function dismissAndRun(fn: () => void | Promise<void>) {
-    closeKeepSubmenu();
+  async function dismissAndRun(fn: () => unknown) {
+    close();
     await Promise.resolve();
     if (typeof requestAnimationFrame === "function") {
       await new Promise<void>((r) => requestAnimationFrame(() => r()));
@@ -98,10 +79,10 @@
     fn();
   }
 
-  function openExportReviewView() {
-    app.setMainView("export-review");
-    if (browser.layout === "fullscreen") void browser.setLayout("hidden");
-  }
+  const runners: PaletteRunners = {
+    dismissAndRun: (fn) => { void dismissAndRun(fn); },
+    dismissLocal,
+  };
 
   // ── AI actions ───────────────────────────────────────────────────────────
   function buildAiItems(): CommandItem[] {
@@ -164,7 +145,7 @@
       {
         id: "ai-tour",
         label: tourAvailable ? "Regenerate tour" : "Generate tour",
-        description: scoped("Group the diff into a guided walkthrough (pillars) for the Guide tab"),
+        description: scoped("Group the diff into a guided walkthrough (pillars) for the Tour tab"),
         group: "AI" as const,
         kbd: "g",
         run: guard(() => { void dismissAndRun(() => app.cmd("generate_tour")); }),
@@ -176,7 +157,7 @@
         group: "AI" as const,
         kbd: "d",
         run: guard(() => {
-          closeKeepSubmenu();
+          close();
           rightRail.expand();
           rightPanelTab.set("context");
         }),
@@ -421,179 +402,20 @@
 
   // ── Root menu containers ──────────────────────────────────────────────────
   function buildItems(): CommandItem[] {
-    const mode = snapshot?.mode;
-    const reviewScope = reviewScopeFromMode(mode);
-    const _scopeDescription = scopeDescriptionFromMode(mode);
-
-    const actionsItems: CommandItem[] = [
-      {
-        id: "open-in-vscode",
-        label: "Open in VS Code",
-        description: "Open selected file at current hunk (local checkout only)",
-        group: "Actions",
-        kbd: "e",
-        run: () => {
-          void dismissAndRun(() =>
-            invoke<{ kind: string; target: string }>("open_in_vscode").then((r) => {
-              if (r.kind === "needs_checkout") app.showToast("info", r.target);
-            }).catch((e) => app.showToast("error", `VS Code: ${e}`)),
-          );
-        },
-      },
-      {
-        id: "export-review-copy",
-        label: "Export review",
-        description: "Open export view for copy, save, and preview",
-        group: "Actions",
-        kbd: "⌘⇧E",
-        run: () => { dismissLocal(() => { openExportReviewView(); }); },
-      },
-      {
-        id: "export-review-file",
-        label: "Export review to file",
-        description: "Write markdown export of the current review",
-        group: "Actions",
-        run: () => { void dismissAndRun(() => app.cmd("export_to_agent")); },
-      },
-      {
-        id: "copy-logs",
-        label: `Copy logs to clipboard (${app.logs.length})`,
-        description: "All captured errors & warnings since launch",
-        group: "Actions",
-        run: () => {
-          dismissLocal(() => {
-            const text = app.dumpLogs() || "(no logs)";
-            void copyToClipboard(text)
-              .then(() => app.pushLog("info", "clipboard", `Copied ${text.length} chars`))
-              .catch(() => {});
-          });
-        },
-      },
-      {
-        id: "clear-logs",
-        label: "Clear logs",
-        group: "Actions",
-        run: () => { dismissLocal(() => { app.clearLogs(); }); },
-      },
-      {
-        id: "open-settings",
-        label: "Open settings",
-        group: "Actions",
-        run: () => { dismissLocal(() => { app.setMainView("settings"); }); },
-      },
-    ];
-
-    const navigateItems: CommandItem[] = [
-      {
-        id: "refresh",
-        label: "Refresh diff",
-        group: "Navigate",
-        kbd: "R",
-        run: () => { void dismissAndRun(() => app.cmd("refresh_diff")); },
-      },
-      {
-        id: "force-refresh",
-        label: "Force refresh diff",
-        description: "Re-fetch PR head and base from remote",
-        group: "Navigate",
-        kbd: "⌘R",
-        run: () => { void dismissAndRun(() => app.cmd("force_refresh_diff")); },
-      },
-      {
-        id: "toggle-terminal",
-        label: terminal.open ? "Hide terminal" : "Show terminal",
-        description: "Bottom drawer shell at the active tab's repo root",
-        group: "Navigate",
-        kbd: "`",
-        run: () => { dismissLocal(() => { terminal.toggle(); }); },
-      },
-    ];
-
-    const viewItems: CommandItem[] = [
-      {
-        id: "toggle-diff-view-mode",
-        label: "Toggle diff view (unified/split)",
-        description: `Currently: ${app.diffViewMode}`,
-        group: "View & Layout",
-        kbd: "d",
-        run: () => { dismissLocal(() => { app.toggleDiffViewMode(); }); },
-      },
-      {
-        id: "open-browser-view",
-        label: browser.open ? "Cycle browser layout" : "Open browser (split)",
-        description: "Per-tab embedded browser — ⌘B cycles hidden → split → fullscreen",
-        group: "View & Layout",
-        kbd: "⌘B",
-        run: () => {
-          dismissLocal(() => {
-            void (browser.open ? browser.cycleLayout() : browser.setLayout("split"));
-          });
-        },
-      },
-      {
-        id: "toggle-left",
-        label: "Toggle left panel",
-        group: "View & Layout",
-        kbd: "[",
-        run: () => { dismissLocal(() => { app.togglePanel("left"); }); },
-      },
-      {
-        id: "toggle-tree",
-        label: "Toggle file tree",
-        group: "View & Layout",
-        kbd: "\\",
-        run: () => { dismissLocal(() => { app.togglePanel("tree"); }); },
-      },
-      {
-        id: "toggle-right",
-        label: "Toggle right panel",
-        group: "View & Layout",
-        kbd: "]",
-        run: () => { dismissLocal(() => { app.togglePanel("right"); }); },
-      },
-    ];
-
-    const prItems: CommandItem[] = [
-      {
-        id: "open-pr-url",
-        label: "Open PR by URL",
-        description: "Paste a GitHub PR link to open it",
-        group: "PR",
-        kbd: "⌘⇧O",
-        run: () => { dismissLocal(() => { openPrUrlModal(); }); },
-      },
-    ];
-
-    const fileItems: CommandItem[] = (snapshot?.files ?? []).map((file) => ({
-      id: `file-${file.path}`,
-      label: file.path,
-      group: "Files in this diff" as const,
-      file: { path: file.path, additions: file.additions, deletions: file.deletions },
-      run: () => {
-        void dismissAndRun(() => {
-          // Mirror FileTree.jumpToFile: select + scroll the flat diff to the file.
-          void diffNav.scrollToFile(file.path);
-          return app.cmd("select_file", { idx: file.source_index });
-        });
-      },
-    }));
-
-    const aiItems = buildAiItems();
+    const reviewScope = reviewScopeFromMode(snapshot?.mode);
+    const activeAiLabel = snapshot?.active_ai_label ?? "";
+    const aiDescription = reviewScope
+      ? "Reviews, triage, Professor, model"
+      : "Model picker available; reviews need a diff view";
+    const fileItems = filesMenu(snapshot, runners);
 
     const containers: CommandItem[] = [
-      {
-        id: "focus-search",
-        label: "Focus search",
-        description: "Type a command or jump to file",
-        group: "Actions",
-        kbd: "/",
-        run: () => { focusSearch(); },
-      },
-      { id: "menu-actions", label: "Actions", description: "Export, settings, logs", group: "Actions", kbd: "s", run: () => {}, submenuItems: actionsItems },
-      { id: "menu-navigate", label: "Navigate", description: "Refresh, terminal, agent output", group: "Navigate", kbd: "n", run: () => {}, submenuItems: navigateItems },
-      { id: "menu-view", label: "View & Layout", description: "Diff mode, browser, panels", group: "View & Layout", kbd: "v", run: () => {}, submenuItems: viewItems },
-      { id: "menu-ai", label: "AI", description: reviewScope ? "Reviews, triage, Professor, model" : "Model picker available; reviews need a diff view", group: "AI", kbd: "a", run: () => {}, submenuItems: aiItems },
-      { id: "menu-pr", label: "PR", description: "Open by URL, arena", group: "PR", kbd: "p", run: () => {}, submenuItems: prItems },
+      { id: "menu-actions", label: "Actions", description: "Export, settings, logs", group: "Actions", kbd: "s", run: () => {}, submenuItems: actionsMenu(snapshot, runners) },
+      { id: "menu-navigate", label: "Navigate", description: "Refresh, terminal, agent output", group: "Navigate", kbd: "n", run: () => {}, submenuItems: navigateMenu(runners) },
+      { id: "menu-view", label: "View & Layout", description: "Diff mode, browser, panels", group: "View & Layout", kbd: "v", run: () => {}, submenuItems: viewMenu(snapshot, runners) },
+      // The active provider/model rides on the AI row: the top bar no longer shows it.
+      { id: "menu-ai", label: "AI", description: activeAiLabel ? `${aiDescription} · ${activeAiLabel}` : aiDescription, group: "AI", kbd: "a", run: () => {}, submenuItems: buildAiItems() },
+      { id: "menu-pr", label: "PR", description: "Open by URL, arena", group: "PR", kbd: "p", run: () => {}, submenuItems: prMenu(snapshot, runners) },
       ...(fileItems.length > 0
         ? [{ id: "menu-files", label: "Files in this diff", description: `${fileItems.length} files`, group: "Files in this diff" as const, kbd: "f", run: () => {}, submenuItems: fileItems }]
         : []),
@@ -602,13 +424,13 @@
     return containers;
   }
 
-  /** Flatten all items, including those nested in submenus, for search. */
-  function flattenAll(items: CommandItem[], parent?: CommandItem): CommandItem[] {
+  /** Every item below the root menus, for search. Nested menus (AI · Advanced)
+   *  are listed themselves and through their items. */
+  function flattenLeaves(items: CommandItem[]): CommandItem[] {
     const out: CommandItem[] = [];
     for (const item of items) {
-      if (parent) out.push({ ...item, submenuOf: parent.label });
-      else out.push(item);
-      if (item.submenuItems) out.push(...flattenAll(item.submenuItems, item));
+      out.push(item);
+      if (item.submenuItems) out.push(...flattenLeaves(item.submenuItems));
     }
     return out;
   }
@@ -638,10 +460,30 @@
     if (keepSearchFocus) queueMicrotask(() => inputEl?.focus());
   }
 
+  function prefersReducedMotion(): boolean {
+    return typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  /** Flash the row, then run it. The flash confirms which row a letter hit
+   *  before the palette disappears; closing the palette meanwhile cancels it. */
+  function runWithFlash(item: CommandItem) {
+    if (flashTimer !== null) return;
+    if (prefersReducedMotion()) {
+      item.run();
+      return;
+    }
+    flashId = item.id;
+    flashTimer = setTimeout(() => {
+      flashTimer = null;
+      flashId = null;
+      item.run();
+    }, RUN_FLASH_MS);
+  }
+
   /** Open a list item: push a submenu if it has one, otherwise run it. */
   function openItem(item: CommandItem) {
     if (item.submenuItems || item.view) pushSubmenu(item);
-    else item.run();
+    else runWithFlash(item);
   }
 
   /** Pop the current submenu (Esc or ←). Restores the position (selected item
@@ -664,33 +506,37 @@
    *  free work that amplified ⌘K action jank. */
   const allRootItems = $derived(commandPalette.open ? buildItems() : []);
 
-  /** Flatten containers + their leaves for search (leaves get a "in <menu>" hint). */
   const searchableItems = $derived(
-    commandPalette.open ? flattenAll(allRootItems) : [],
+    commandPalette.open ? flattenLeaves(allRootItems.flatMap((menu) => menu.submenuItems ?? [])) : [],
   );
 
-  /** When searching, surface nested actions inline with their submenu hint. */
-  const searchResults = $derived(
+  /** Root search: every menu's matches, each menu's together under its name. */
+  const searchRows = $derived(
     query.trim() === ""
       ? []
-      : searchableItems.filter((item) => matches(item.label, query)),
+      : groupByMenu(searchableItems.filter((item) => matches(item.label, query))),
   );
-
-  /** Root list: the menu containers, in order. */
-  const flat = $derived(allRootItems);
 
   /** Items shown in a submenu (filtered by the query). */
   const filtered = $derived(
     activeSubmenu
       ? (activeSubmenu.submenuItems ?? []).filter((item) => matches(item.label, query))
-      : searchResults,
+      : [],
   );
 
-  /** The list navigated by arrows/Enter in the current view. */
+  /** The list navigated by arrows/Enter in the current view, in render order. */
   const navList = $derived.by(() => {
     if (activeSubmenu) return filtered;
-    return query.trim() !== "" ? searchResults : flat;
+    return query.trim() !== "" ? searchRows.map((row) => row.item) : allRootItems;
   });
+
+  /** Group header to draw above each row; only root search has them. */
+  const rowHeaders = $derived(
+    !activeSubmenu && query.trim() !== "" ? searchRows.map((row) => row.header) : [],
+  );
+
+  const crumb = $derived(submenuStack.map((entry) => entry.item.label).join(" › "));
+  const footerContext = $derived(paletteFooterContext(resolveContextTitle(snapshot)));
 
   /** Single-letter keybinds for the current view's items (root containers or
    *  the active submenu's actions), e.g. a → AI, t → Triage, r → Run review. */
@@ -723,6 +569,18 @@
       { match: text.slice(idx, idx + q.length), rest: "" },
       { match: "", rest: text.slice(idx + q.length) },
     ];
+  }
+
+  function rowTint(active: boolean, flashing: boolean): string {
+    if (flashing) return "bg-[color-mix(in_srgb,var(--color-accent)_28%,var(--color-hover))]";
+    return active ? "bg-[color-mix(in_srgb,var(--color-accent)_12%,var(--color-hover))]" : "";
+  }
+
+  /** A single key runs the row, so it is filled; a chord only documents a global shortcut. */
+  function keyTone(single: boolean, active: boolean): string {
+    if (!single) return "text-muted border-border";
+    if (active) return "bg-hover font-medium text-accent border-[color-mix(in_srgb,var(--color-accent)_60%,transparent)]";
+    return "bg-hover font-medium text-fg border-border";
   }
 
   function openPalette() {
@@ -780,7 +638,8 @@
       searchFocused,
       hasQuery: query.trim() !== "",
       inSubmenu: activeSubmenu != null,
-      quickAction: paletteQuickActionKey(e, searchFocused),
+      quickAction: paletteQuickActionKey(e, searchFocused)
+        ?? (isRowKey(e, searchFocused, (k) => viewKeybinds.has(k)) ? "letter" : null),
     });
     if (intent === "none") return;
     e.preventDefault();
@@ -801,144 +660,158 @@
 
   $effect(() => {
     if (!commandPalette.open) return;
-    if (commandPalette.pendingView !== "ai-providers") return;
+    const view = commandPalette.pendingView;
+    if (view === "root") return;
     untrack(() => {
       commandPalette.consumePendingView();
       submenuStack = [];
       query = "";
       selectedIdx = 0;
-      void openProviderPicker();
+      if (view === "ai-providers") {
+        void openProviderPicker();
+        return;
+      }
+      const menu = allRootItems.find((item) => item.id === view);
+      if (menu) pushSubmenu(menu);
     });
+  });
+
+  // The store can be closed from outside (another modal, a view switch); a
+  // pending run must not fire into whatever comes next.
+  $effect(() => {
+    if (!commandPalette.open) untrack(cancelFlash);
   });
 </script>
 
+{#snippet kbd(text: string)}
+  <kbd class="font-mono text-[10px] px-1 mr-0.5 border border-border rounded-[3px] text-fg-2">{text}</kbd>
+{/snippet}
+
+{#snippet rowLabel(item: CommandItem)}
+  {@const text = item.file ? baseName(item.file.path) : item.label}
+  {@const description = item.file ? fileDir(item.file.path) : item.description}
+  <span class="min-w-0 truncate text-fg">
+    {#each highlight(text, query) as part, i (i)}{#if part.match}<span class="text-accent font-medium">{part.match}</span>{:else}{part.rest}{/if}{/each}
+    {#if description}<span class="ml-2 text-xs text-muted">{description}</span>{/if}
+  </span>
+{/snippet}
+
+{#snippet paletteRow(item: CommandItem, idx: number, isActive: boolean)}
+  {@const flashing = flashId === item.id}
+  <button type="button"
+    role="option"
+    aria-selected={isActive}
+    data-active={isActive}
+    title={item.file?.path}
+    onclick={() => openItem(item)}
+    onmouseenter={() => (selectedIdx = idx)}
+    class="w-full grid grid-cols-[18px_minmax(0,1fr)_auto] gap-2.5 items-center px-2.5 py-[7px] rounded-[7px] text-left text-[13px] {rowTint(isActive, flashing)}"
+  >
+    <span class="font-mono text-[11px] text-center {isActive ? 'text-accent' : 'text-muted'}">{paletteGlyph(item.group)}</span>
+    {@render rowLabel(item)}
+    <span class="inline-flex items-center gap-2">
+      {#if item.kbd}
+        <kbd class="font-mono text-[10.5px] leading-[17px] min-w-[19px] px-[5px] rounded border text-center {keyTone(isSingleKey(item.kbd), isActive)}">{item.kbd}</kbd>
+      {/if}
+      {#if item.submenuItems || item.view}
+        <span class="text-muted">›</span>
+      {/if}
+    </span>
+  </button>
+{/snippet}
+
+<!-- Prototype .palette: --bg1 → card, --bg2 → hover, --line → line, --line2 → border, --tx3 → muted (ADR 0030). -->
 <ModalShell
   open={commandPalette.open}
   ariaLabel="Command palette"
   onClose={close}
   onKeydown={onModalKeydown}
   closeOnEscape={false}
-  backdropClass="fixed inset-0 z-[100] bg-bg/50"
-  panelClass="fixed left-1/2 -translate-x-1/2 top-[12vh] w-[640px] z-[101] rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none"
+  backdropClass="fixed inset-0 z-[100] bg-[color-mix(in_srgb,var(--color-ground)_55%,transparent)]"
+  panelClass="fixed left-1/2 -translate-x-1/2 top-[72px] w-[calc(100%-32px)] max-w-[620px] max-h-[calc(100vh-88px)] z-[101] flex flex-col rounded-xl bg-card border border-border shadow-2xl overflow-hidden outline-none"
 >
-  <div class="flex items-center gap-3 px-4 py-3 border-b border-hairline">
+
+  <div class="flex items-center gap-2.5 px-3.5 py-3 border-b border-line text-muted">
     {#if activeSubmenu}
       <button
         type="button"
         aria-label="Back"
         onclick={goBack}
-        class="text-muted hover:text-fg-2"
-      >←</button>
-      <span class="text-sm text-fg-2 font-medium">{activeSubmenu.label}</span>
-    {:else}
-      <button
-        type="button"
-        aria-label="Focus search"
-        onclick={focusSearch}
-        class="text-muted hover:text-fg-2"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-      </button>
+        class="w-[22px] h-[22px] shrink-0 rounded-[5px] text-base leading-none text-fg-2 hover:bg-hover hover:text-fg"
+      >‹</button>
+      <span class="text-xs font-semibold text-fg px-2 py-0.5 rounded-[5px] bg-hover whitespace-nowrap" data-testid="palette-crumb">{crumb}</span>
     {/if}
+    <button
+      type="button"
+      aria-label="Focus search"
+      onclick={focusSearch}
+      class="shrink-0 hover:text-fg-2"
+    >
+      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5L14 14"/></svg>
+    </button>
     {#if activeSubmenu?.view !== "reviewers"}
       <input
         bind:this={inputEl}
         bind:value={query}
         data-palette-search="true"
-        class="flex-1 bg-transparent outline-none text-base placeholder:text-muted"
-        placeholder={activeSubmenu ? "Filter…" : "Type a command or jump to file…"}
+        aria-label="Search commands"
+        autocomplete="off"
+        class="flex-1 min-w-0 bg-transparent outline-none text-[15px] text-fg placeholder:text-muted"
+        placeholder={palettePlaceholder(activeSubmenu?.label ?? null)}
       />
-      <span class="kbd">esc</span>
+      {@render kbd("esc")}
     {:else}
       <span class="ml-auto text-[10px] mono text-muted">{reviewerSelection.size} selected</span>
     {/if}
   </div>
 
-  <div bind:this={listEl} class="max-h-[60vh] overflow-y-auto py-1">
-    {#snippet paletteRow(item: CommandItem, idx: number, isActive: boolean)}
-      <button type="button"
-        data-active={isActive}
-        onclick={() => openItem(item)}
-        onmouseenter={() => (selectedIdx = idx)}
-        class="w-full flex items-center gap-3 px-4 py-2 text-left transition-colors {isActive ? 'bg-hover' : 'hover:bg-hover'}"
-      >
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class={isActive ? "text-accent" : "text-fg-3"}><circle cx="12" cy="12" r="9"/></svg>
-        <div class="flex-1 min-w-0">
-          <div class="text-sm {isActive ? 'text-fg' : 'text-fg-2'}">
-            {#each highlight(item.label, query) as part, i (i)}{#if part.match}<span class="text-accent font-medium">{part.match}</span>{:else}{part.rest}{/if}{/each}
-          </div>
-          {#if item.submenuOf}
-            <div class="text-[11px] text-muted">in {item.submenuOf}</div>
-          {:else if item.description}
-            <div class="text-[11px] text-muted">{item.description}</div>
-          {/if}
-        </div>
-        {#if item.kbd}
-          <span class="kbd">{item.kbd}</span>
-        {/if}
-        {#if item.submenuItems || item.view}
-          <span class="text-fg-3 text-xs">›</span>
-        {/if}
-      </button>
-    {/snippet}
-    {#if activeSubmenu?.view === "reviewers"}
-      <div class="flex flex-col h-[40vh]">
-        <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
-          <ReviewerPickerList
-            bind:this={reviewerPickerRef}
-            selected={reviewerSelection}
-            onSelectedChange={(s) => (reviewerSelection = s)}
-            bind:highlightIdx={reviewerHighlight}
-          />
-        </div>
-        <div class="px-4 py-3 border-t border-hairline flex items-center justify-end gap-2 shrink-0">
-          <button
-            type="button"
-            onclick={goBack}
-            class="px-3 py-1.5 rounded-md text-xs font-medium text-muted hover:text-fg"
-          >Back</button>
-          <button
-            type="button"
-            onclick={() => void runSelectedReviewers()}
-            disabled={reviewerSelection.size === 0}
-            class="px-3 py-1.5 rounded-md text-xs font-medium bg-comment text-on-accent disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            Run {reviewerSelection.size} reviewer{reviewerSelection.size === 1 ? "" : "s"}
-          </button>
-        </div>
-      </div>
-    {:else if activeSubmenu}
-      {#each filtered as item, _i (item.id)}
-        {@render paletteRow(item, _i, _i === selectedIdx)}
-      {/each}
-      {#if filtered.length === 0}
-        <div class="px-4 py-6 text-center text-sm text-muted">No matches</div>
-      {/if}
-    {:else if query.trim() !== ""}
-      {#each searchResults as item, _i (item.id)}
-        {@render paletteRow(item, _i, _i === selectedIdx)}
-      {/each}
-      {#if searchResults.length === 0}
-        <div class="px-4 py-6 text-center text-sm text-muted">No matches</div>
-      {/if}
-    {:else}
-      {#each flat as item, _i (item.id)}
-        {@render paletteRow(item, _i, _i === selectedIdx)}
-      {/each}
-    {/if}
-    {#if navList.length === 0 && !activeSubmenu && query.trim() === ""}
-      <div class="px-4 py-6 text-center text-sm text-muted">No commands</div>
-    {/if}
-  </div>
 
-  <div class="border-t border-hairline px-4 py-2 flex items-center gap-3 text-[11px] text-muted">
-    <span class="flex items-center gap-1"><span class="kbd">↑</span><span class="kbd">↓</span> nav</span>
-    <span class="flex items-center gap-1"><span class="kbd">→</span> open</span>
-    <span class="flex items-center gap-1"><span class="kbd">←</span> back</span>
-    <span class="flex items-center gap-1"><span class="kbd">⏎</span> run</span>
-    <span class="ml-auto flex items-center gap-2">
-      <span class="flex items-center gap-1"><span class="kbd">/</span> search</span>
-      <span>letters jump to item</span>
-    </span>
+  {#if activeSubmenu?.view === "reviewers"}
+    <div class="flex flex-col h-[40vh]">
+      <div class="flex-1 min-h-0 flex flex-col overflow-hidden">
+        <ReviewerPickerList
+          bind:this={reviewerPickerRef}
+          selected={reviewerSelection}
+          onSelectedChange={(s) => (reviewerSelection = s)}
+          bind:highlightIdx={reviewerHighlight}
+        />
+      </div>
+      <div class="px-4 py-3 border-t border-line flex items-center justify-end gap-2 shrink-0">
+        <button
+          type="button"
+          onclick={goBack}
+          class="px-3 py-1.5 rounded-md text-xs font-medium text-muted hover:text-fg"
+        >Back</button>
+        <button
+          type="button"
+          onclick={() => void runSelectedReviewers()}
+          disabled={reviewerSelection.size === 0}
+          class="px-3 py-1.5 rounded-md text-xs font-medium bg-comment text-on-accent disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          Run {reviewerSelection.size} reviewer{reviewerSelection.size === 1 ? "" : "s"}
+        </button>
+      </div>
+    </div>
+  {:else}
+    <div bind:this={listEl} role="listbox" aria-label="Commands" class="flex-1 min-h-0 overflow-y-auto p-1.5">
+      {#each navList as item, idx (item.id)}
+        {#if rowHeaders[idx]}
+          <div class="px-2.5 pt-2.5 pb-1 text-[10.5px] font-semibold tracking-[.06em] uppercase text-muted">{rowHeaders[idx]}</div>
+        {/if}
+        {@render paletteRow(item, idx, idx === selectedIdx)}
+      {/each}
+      {#if navList.length === 0}
+        <div class="p-4 text-[12.5px] text-muted">No commands or files match.</div>
+      {/if}
+    </div>
+  {/if}
+
+  <div class="flex flex-wrap items-center gap-3.5 px-3.5 py-2 border-t border-line text-[11px] text-muted">
+    <span>{@render kbd("a")}{@render kbd("r")} letters run the matching item</span>
+    <span>{@render kbd("/")} search</span>
+    <span>{@render kbd("←")} back</span>
+    <span>{@render kbd("↵")} run</span>
+    <span class="flex-1"></span>
+    <span data-testid="palette-context">{footerContext}</span>
   </div>
 </ModalShell>

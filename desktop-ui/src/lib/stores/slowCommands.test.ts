@@ -247,7 +247,11 @@ describe("panel chrome is local-first", () => {
   });
 
   it("command palette toggles all three chrome panels through togglePanel", () => {
-    const palette = component("CommandPalette.svelte");
+    // The View & Layout menu is built in commandPaletteMenus.ts.
+    const palette = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "commandPaletteMenus.ts"),
+      "utf8",
+    );
     expect(palette).toContain('id: "toggle-tree"');
     expect(palette).toContain('app.togglePanel("left")');
     expect(palette).toContain('app.togglePanel("tree")');
