@@ -16,6 +16,27 @@ pub fn SURFACE() -> Color {
 pub fn PANEL() -> Color {
     super::themes::current().panel
 }
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn GROUND() -> Color {
+    super::themes::current().ground
+}
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn LINE() -> Color {
+    super::themes::current().line
+}
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn COMMIT_SERIES() -> [Color; 6] {
+    super::themes::current().commit_series
+}
 pub fn BORDER() -> Color {
     super::themes::current().border
 }
@@ -60,6 +81,36 @@ pub fn PURPLE() -> Color {
 // ── AI overlay colors ──
 pub fn ORANGE() -> Color {
     super::themes::current().orange
+}
+
+// ── Annotation kinds ──
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn COMMENT() -> Color {
+    super::themes::current().comment
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn QUESTION() -> Color {
+    super::themes::current().question
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn NOTE() -> Color {
+    super::themes::current().note
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn FINDING() -> Color {
+    super::themes::current().finding
 }
 
 // ── Diff colors ──
