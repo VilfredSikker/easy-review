@@ -9657,6 +9657,7 @@ mod tests {
             dels,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -11737,6 +11738,7 @@ mod tests {
             dels: 0,
             compacted: true,
             raw_hunk_count: 3,
+            similarity: None,
         };
         let mut tab = make_test_tab(vec![compacted_file]);
         // user_expanded starts empty
@@ -14041,6 +14043,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 

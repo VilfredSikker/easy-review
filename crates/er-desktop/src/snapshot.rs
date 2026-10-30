@@ -382,10 +382,11 @@ impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
     }
 }
 
-/// +/- summary for a scope (unstaged / staged) so the scope selector can show
-/// counts without switching modes.
+/// Files and +/- summary for a scope (unstaged / staged) so the scope selector
+/// can show counts without switching modes.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ScopeStat {
+    pub files: usize,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -402,6 +403,7 @@ pub struct DiffLineStatsSnapshot {
 impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
     fn from(stats: &er_engine::git::ProdDiffStats) -> Self {
         let stat = |k: &er_engine::git::DiffKindStats| ScopeStat {
+            files: k.files,
             additions: k.additions,
             deletions: k.deletions,
         };
@@ -1102,6 +1104,14 @@ pub struct FileSnapshot {
     pub preview_key: String,
     pub path: String,
     pub status: String,
+    /// Source path of a rename or copy; `None` for every other status. `path`
+    /// stays the new name so every path-keyed lookup keeps working.
+    pub old_path: Option<String>,
+    /// Git's similarity percentage for a rename or copy, when git reported one.
+    pub similarity: Option<u8>,
+    /// `FileKind` after the repo's `[file_kinds]` overrides, so a chip agrees
+    /// with what the `kind:` filter selects.
+    pub kind: &'static str,
     pub additions: usize,
     pub deletions: usize,
     pub reviewed: bool,
@@ -1143,6 +1153,12 @@ pub struct CommitSummary {
     /// ISO 8601 commit timestamp; the frontend renders it as a relative
     /// "time ago" string (uniform across local and remote-PR commits).
     pub committed_at: String,
+    /// `None` when the commit's diffstat is unknown — a PR commit not in the
+    /// local object DB (remote PR tabs) — so the UI can tell that from zero.
+    pub additions: Option<usize>,
+    pub deletions: Option<usize>,
+    /// On no remote yet. Always false for commits listed from GitHub.
+    pub unpushed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2261,6 +2277,12 @@ fn build_file_snapshot_with_keys(
         preview_key: tab.file_preview_key(&f.path),
         path: f.path.clone(),
         status: status_str(&f.status),
+        old_path: match &f.status {
+            FileStatus::Renamed(old) | FileStatus::Copied(old) => Some(old.clone()),
+            _ => None,
+        },
+        similarity: f.similarity,
+        kind: tab.file_kinds.classify(&f.path).as_str(),
         additions: f.adds,
         deletions: f.dels,
         reviewed: tab.reviewed.contains_key(&f.path),
@@ -2852,18 +2874,16 @@ fn build_snapshot_inner(
         && !tab.is_remote()
         && (tab.local_branch_view.is_none() || tab.local_branch_checkout_root.is_some())
     {
-        let (ua, ud) = er_engine::git::diff_shortstat(&tab.repo_root, false);
-        let (sa, sd) = er_engine::git::diff_shortstat(&tab.repo_root, true);
-        (
+        let stat = |staged| {
+            let (files, additions, deletions) =
+                er_engine::git::diff_shortstat(&tab.repo_root, staged);
             ScopeStat {
-                additions: ua,
-                deletions: ud,
-            },
-            ScopeStat {
-                additions: sa,
-                deletions: sd,
-            },
-        )
+                files,
+                additions,
+                deletions,
+            }
+        };
+        (stat(false), stat(true))
     } else {
         (ScopeStat::default(), ScopeStat::default())
     };
@@ -3087,10 +3107,37 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
 
     let log_root = tab.commit_log_root();
 
+    // `gh pr view --json commits` carries no diffstat, so PR commits read theirs
+    // from the local object DB when the head was fetched. A commit GitHub lists
+    // is pushed by definition.
+    let from_github = tab.history.is_none() && tab.pr_number.is_some();
+    if from_github {
+        let commits: Vec<&er_engine::git::CommitInfo> = tab.pr_commits.iter().take(LIMIT).collect();
+        let stats = if tab.is_remote() {
+            std::collections::HashMap::new()
+        } else {
+            let shas: Vec<&str> = commits.iter().map(|c| c.hash.as_str()).collect();
+            er_engine::git::git_commit_shortstats(log_root, &shas)
+        };
+        return commits
+            .into_iter()
+            .map(|c| {
+                let stat = stats.get(&c.hash);
+                CommitSummary {
+                    sha: c.hash.clone(),
+                    title: c.subject.clone(),
+                    author: c.author.clone(),
+                    committed_at: c.date.clone(),
+                    additions: stat.map(|s| s.1),
+                    deletions: stat.map(|s| s.2),
+                    unpushed: false,
+                }
+            })
+            .collect();
+    }
+
     let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
         history.commits.iter().take(LIMIT).cloned().collect()
-    } else if tab.pr_number.is_some() {
-        tab.pr_commits.iter().take(LIMIT).cloned().collect()
     } else {
         // Log the VIEWED branch's commits (base..branch), not base..HEAD — when
         // the branch isn't the checked-out HEAD of log_root, base..HEAD logs the
@@ -3108,12 +3155,24 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
         }
     };
 
+    let unpushed = if raw.is_empty() || tab.is_remote() {
+        std::collections::HashSet::new()
+    } else {
+        // A local PR tab's fetched head counts as pushed even when it lives
+        // outside refs/remotes (a fork's PR).
+        let pushed_refs: Vec<&str> = tab.pr_head_ref.as_deref().into_iter().collect();
+        er_engine::git::git_unpushed_shas(log_root, tab.commit_head_ref(), &pushed_refs, LIMIT)
+    };
+
     raw.into_iter()
         .map(|c| CommitSummary {
+            unpushed: unpushed.contains(&c.hash),
             sha: c.hash,
             title: c.subject,
             author: c.author,
             committed_at: c.date,
+            additions: Some(c.adds),
+            deletions: Some(c.dels),
         })
         .collect()
 }
@@ -5317,6 +5376,41 @@ mod tests {
     }
 
     #[test]
+    fn file_snapshot_kind_follows_repo_file_kind_overrides() {
+        let file = |path: &str| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![
+            file("src/lib.rs"),
+            file("src/lib.test.ts"),
+            file("src/api/schema.ts"),
+        ]);
+        tab.file_kinds =
+            er_engine::config::FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]));
+
+        let kinds: Vec<&str> = tab
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| build_file_snapshot(i, f, &tab, None, false).kind)
+            .collect();
+        assert_eq!(kinds, vec!["production", "test", "generated"]);
+        let plain = build_file_snapshot(0, &tab.files[0], &tab, None, false);
+        assert_eq!(plain.old_path, None);
+        assert_eq!(plain.similarity, None);
+    }
+
+    #[test]
     fn lazy_pure_rename_is_not_a_stub_but_unparsed_content_is() {
         // A `DiffFile` with no hunks and zero +/- lines: a pure rename (or
         // mode-only / binary change). In lazy mode this must not report as a
@@ -5332,6 +5426,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: Some(100),
         };
         // A genuinely-unparsed content file: empty hunks but real +/- counts
         // from the header scan. This one *must* still read as a stub so the
@@ -5344,6 +5439,7 @@ mod tests {
             dels: 12,
             compacted: false,
             raw_hunk_count: 3,
+            similarity: None,
         };
 
         let mut tab = TabState::new_for_test(vec![rename, unparsed]);
@@ -5354,6 +5450,12 @@ mod tests {
             !rename_snap.is_lazy_stub,
             "a pure rename has nothing to load and must not be a perpetual stub"
         );
+        assert_eq!(rename_snap.status, "renamed");
+        assert_eq!(
+            rename_snap.old_path.as_deref(),
+            Some("routes/quality-control/component/ReplicateDeviationSection.svelte")
+        );
+        assert_eq!(rename_snap.similarity, Some(100));
 
         let unparsed_snap = build_file_snapshot(1, &tab.files[1], &tab, None, true);
         assert!(
@@ -5558,6 +5660,53 @@ mod tests {
 
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].title, "feature commit");
+        assert_eq!(commits[0].additions, Some(1));
+        assert_eq!(commits[0].deletions, Some(0));
+        // The test repo has no remote, so the branch's own commit is unpushed.
+        assert!(commits[0].unpushed);
+    }
+
+    #[test]
+    fn local_branch_commit_on_a_remote_ref_is_not_unpushed() {
+        let tmp = init_repo_with_feature_commit();
+        run_git(
+            tmp.path(),
+            &["update-ref", "refs/remotes/origin/feature", "feature"],
+        );
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.base_branch = "main".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 1);
+        assert!(!commits[0].unpushed);
+    }
+
+    #[test]
+    fn pr_commit_snapshot_reads_diffstat_from_the_local_object_db() {
+        let tmp = init_repo_with_feature_commit();
+        let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_commits = vec![
+            commit_info(&feature_sha, "feature commit"),
+            // Listed by GitHub but never fetched: stats unknown, not zero.
+            commit_info("cccccccccccccccccccccccccccccccccccccccc", "not fetched"),
+        ];
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].additions, Some(1));
+        assert_eq!(commits[0].deletions, Some(0));
+        assert_eq!(commits[1].additions, None);
+        assert_eq!(commits[1].deletions, None);
+        assert!(commits.iter().all(|c| !c.unpushed));
     }
 
     #[test]

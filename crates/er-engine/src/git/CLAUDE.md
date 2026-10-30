@@ -17,8 +17,8 @@ no UI: this module returns data and the caller decides what it means.
 Input is raw unified diff text from `git diff`; output is the structured tree
 (`DiffFile` → `DiffHunk` → `DiffLine`). A line-by-line state machine over
 `diff --git`, `new file`/`deleted file`/`rename from`, `@@` headers and
-`+`/`-`/space content; it skips `index`, `---`, `+++`, mode and similarity
-lines, and `\ No newline at end of file`.
+`+`/`-`/space content; it reads the `similarity index` percentage onto the
+file and skips `index`, `---`, `+++`, mode lines, and `\ No newline at end of file`.
 
 A hunk's `lines` describe the diff, not the file: `Fold(n)` is synthetic,
 inserted by the in-process context fold, carrying no line numbers and standing

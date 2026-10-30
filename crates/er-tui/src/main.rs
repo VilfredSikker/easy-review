@@ -696,6 +696,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -927,6 +928,7 @@ mod tests {
                 dels: 0,
                 compacted: false,
                 raw_hunk_count: 0,
+                similarity: None,
             },
         ];
         let mut app = make_app(files);

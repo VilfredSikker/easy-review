@@ -429,6 +429,69 @@ describe("mergeChromeSnapshot", () => {
     expect(merged.branch).toBe("feat/keep");
     expect(merged.base).toBe("origin/main");
   });
+
+  it("keeps per-file and per-commit fields from prev content", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      files: [
+        {
+          path: "src/new.ts",
+          status: "renamed",
+          old_path: "src/old.ts",
+          similarity: 92,
+          kind: "test",
+          additions: 1,
+          deletions: 1,
+          reviewed: false,
+          compacted: false,
+          risk: null,
+          finding_count: 0,
+          comment_count: 0,
+          question_count: 0,
+          hunks: [],
+          source_index: 0,
+          cache_key: "k",
+        },
+      ],
+      commits: [
+        {
+          sha: "abc",
+          title: "t",
+          author: "a",
+          committed_at: "2026-01-01T00:00:00Z",
+          additions: 3,
+          deletions: 1,
+          unpushed: true,
+        },
+      ],
+    });
+    // A chrome-only stub carries no files or commits.
+    const next = snap({ active_tab: 0, tabs, files: [], commits: [] });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.files[0]).toMatchObject({ old_path: "src/old.ts", similarity: 92, kind: "test" });
+    expect(merged.commits?.[0]).toMatchObject({ additions: 3, deletions: 1, unpushed: true });
+  });
+
+  it("keeps prev scope stats over a chrome-only stub's zeros", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      unstaged_stat: { files: 2, additions: 10, deletions: 4 },
+      staged_stat: { files: 1, additions: 3, deletions: 0 },
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      unstaged_stat: { files: 0, additions: 0, deletions: 0 },
+      staged_stat: { files: 0, additions: 0, deletions: 0 },
+    });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.unstaged_stat).toEqual({ files: 2, additions: 10, deletions: 4 });
+    expect(merged.staged_stat).toEqual({ files: 1, additions: 3, deletions: 0 });
+  });
 });
 
 describe("shouldDeferChromeIdentityChange", () => {

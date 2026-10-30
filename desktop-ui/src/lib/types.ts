@@ -68,11 +68,19 @@ export interface HunkSnapshot {
   threads: ThreadSnapshot[];
 }
 
+export type FileKind = "production" | "test" | "storybook" | "generated" | "docs";
+
 export interface FileSnapshot {
   /** Complete document identity, independent of visible hunks. */
   preview_key?: string;
   path: string;
   status: "added" | "modified" | "deleted" | "renamed" | "copied" | "unmerged";
+  /** Source path of a rename or copy; null for every other status. */
+  old_path?: string | null;
+  /** Git's similarity percentage for a rename or copy, when reported. */
+  similarity?: number | null;
+  /** File kind after the repo's `[file_kinds]` overrides — matches `kind:` filtering. */
+  kind?: FileKind;
   additions: number;
   deletions: number;
   reviewed: boolean;
@@ -475,6 +483,11 @@ export interface CommitSummary {
   author: string;
   /** ISO 8601 commit timestamp; render via `timeAgo()` from `$lib/time`. */
   committed_at: string;
+  /** Null when unknown (a PR commit not in the local object DB), not zero. */
+  additions?: number | null;
+  deletions?: number | null;
+  /** On no remote yet. Always false for commits listed from GitHub. */
+  unpushed?: boolean;
 }
 
 export interface TabSummary {
@@ -612,6 +625,13 @@ export interface RepoMergeSnapshot {
   viewer_permission: string | null;
 }
 
+/** Files and +/- for one scope or slice of the diff. `files` is optional only for fixtures. */
+export interface ScopeStat {
+  files?: number;
+  additions: number;
+  deletions: number;
+}
+
 export interface AppSnapshot {
   /** Retained source context for read-only document requests. */
   preview_context_key?: string;
@@ -620,9 +640,9 @@ export interface AppSnapshot {
   commits?: CommitSummary[];
   /** SHA of the selected commit when in history mode; null otherwise. */
   selected_commit_sha?: string | null;
-  /** +/- counts for the unstaged / staged diffs (for scope-selector counters). */
-  unstaged_stat?: { additions: number; deletions: number };
-  staged_stat?: { additions: number; deletions: number };
+  /** File and +/- counts for the unstaged / staged diffs (scope-selector counters). */
+  unstaged_stat?: ScopeStat;
+  staged_stat?: ScopeStat;
   /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
   detected_pr_number?: number | null;
   /** Set when the active diff is behind origin. Drives the "stale" pill + Sync. */
@@ -644,8 +664,8 @@ export interface AppSnapshot {
   /** Whole-diff line counts, independent of the file filter. `code` leaves out
    *  tests, Storybook, generated files and docs. Optional only for fixtures. */
   diff_stats?: {
-    total: { additions: number; deletions: number };
-    code: { additions: number; deletions: number };
+    total: ScopeStat;
+    code: ScopeStat;
   };
   ai: AiSnapshot;
   /** Review flow for the active managed diff bucket, when one exists. */

@@ -156,6 +156,7 @@ const mediaComboboxHunk2: HunkSnapshot = {
 
 const fileBase: Omit<FileSnapshot, "path" | "additions" | "deletions"> = {
   status: "modified",
+  kind: "production",
   reviewed: false,
   compacted: false,
   risk: null,
@@ -191,6 +192,7 @@ export const fileVariantWarningCopy: FileSnapshot = {
 export const fileVariantWarningTest: FileSnapshot = {
   ...fileBase,
   path: "packages/discovery-platform/src/lib/variant-warning-copy.test.ts",
+  kind: "test",
   additions: 2,
   deletions: 2,
 };
@@ -207,9 +209,21 @@ export const fileExperimentTemplate: FileSnapshot = {
 export const filePageTest: FileSnapshot = {
   ...fileBase,
   path: "packages/discovery-platform/src/routes/page.test.ts",
+  kind: "test",
   additions: 0,
   deletions: 0,
   reviewed: true,
+};
+
+/** Pure rename: no hunks, the source path and git's similarity carried explicitly. */
+export const fileRenamedPure: FileSnapshot = {
+  ...fileBase,
+  path: "packages/discovery-platform/src/lib/components/qc/ReplicateDeviationSection.svelte",
+  status: "renamed",
+  old_path: "packages/discovery-platform/src/routes/quality-control/component/ReplicateDeviationSection.svelte",
+  similarity: 100,
+  additions: 0,
+  deletions: 0,
 };
 
 // ─── AI snapshots ───────────────────────────────────────────────────────────
@@ -765,10 +779,11 @@ export const worktreesMulti: WorktreeSnapshot[] = [
 const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 export const commitsRich: CommitSummary[] = [
-  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", committed_at: isoAgo(45 * 60_000) },
-  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", committed_at: isoAgo(24 * 60 * 60_000) },
-  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", committed_at: isoAgo(2 * 60 * 60_000) },
-  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", committed_at: isoAgo(60 * 60_000) },
+  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", committed_at: isoAgo(45 * 60_000), additions: 6, deletions: 4, unpushed: true },
+  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", committed_at: isoAgo(24 * 60 * 60_000), additions: 41, deletions: 2, unpushed: false },
+  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", committed_at: isoAgo(2 * 60 * 60_000), additions: 12, deletions: 6, unpushed: false },
+  // Merges carry no diffstat of their own.
+  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", committed_at: isoAgo(60 * 60_000), additions: 0, deletions: 0, unpushed: false },
 ];
 
 /** Active working-tree tab — ScopeSelector shows unstaged/staged/commits even when pr is set. */
@@ -872,6 +887,8 @@ const baseSnapshot: AppSnapshot = {
   active_tab: 0,
   bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
   commits: commitsRich,
+  unstaged_stat: { files: 1, additions: 3, deletions: 1 },
+  staged_stat: { files: 0, additions: 0, deletions: 0 },
   active_ai_label: "Codex / GPT-5.6 Luna",
   active_ai_provider_label: "Codex",
   active_ai_model_label: "GPT-5.6 Luna",
@@ -993,6 +1010,7 @@ export const classicTreeFiles: FileSnapshot[] = [
     ...fileBase,
     path: "packages/discovery-platform/src/routes/page.test.ts",
     status: "deleted",
+    kind: "test",
     additions: 0,
     deletions: 12,
     reviewed: true,
@@ -1002,6 +1020,7 @@ export const classicTreeFiles: FileSnapshot[] = [
     ...fileBase,
     path: "README.md",
     status: "modified",
+    kind: "docs",
     additions: 1,
     deletions: 1,
     reviewed: true,

@@ -710,7 +710,6 @@ pub fn git_log_branch(
     // If the ranged `git log` fails (e.g. unknown base ref), this falls back to an
     // unranged log — the caller gets full repo history instead of branch commits.
     let range = format!("{}..HEAD", base);
-    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
     let skip_str = format!("--skip={}", skip);
 
@@ -720,7 +719,7 @@ pub fn git_log_branch(
             &range,
             &limit_str,
             &skip_str,
-            format_str,
+            LOG_FORMAT,
             "--shortstat",
         ])
         .current_dir(repo_root)
@@ -730,7 +729,7 @@ pub fn git_log_branch(
     if !output.status.success() {
         // Might be on a detached HEAD or base doesn't exist — try without range
         let output = Command::new("git")
-            .args(["log", &limit_str, &skip_str, format_str, "--shortstat"])
+            .args(["log", &limit_str, &skip_str, LOG_FORMAT, "--shortstat"])
             .current_dir(repo_root)
             .output()
             .context("Failed to run git log")?;
@@ -757,7 +756,6 @@ pub fn git_log_range(
     skip: usize,
 ) -> Result<Vec<CommitInfo>> {
     let range = format!("{}..{}", from, to);
-    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
     let skip_str = format!("--skip={}", skip);
 
@@ -767,7 +765,7 @@ pub fn git_log_range(
             &range,
             &limit_str,
             &skip_str,
-            format_str,
+            LOG_FORMAT,
             "--shortstat",
         ])
         .current_dir(repo_root)
@@ -777,7 +775,7 @@ pub fn git_log_range(
     if !output.status.success() {
         // `from` or `to` may not exist locally — fall back to logging `to` alone.
         let output = Command::new("git")
-            .args(["log", to, &limit_str, &skip_str, format_str, "--shortstat"])
+            .args(["log", to, &limit_str, &skip_str, LOG_FORMAT, "--shortstat"])
             .current_dir(repo_root)
             .output()
             .context("Failed to run git log")?;
@@ -791,17 +789,19 @@ pub fn git_log_range(
 }
 
 pub fn git_log_head(repo_root: &str, limit: usize) -> Result<Vec<CommitInfo>> {
-    let format_str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
     let limit_str = format!("--max-count={}", limit);
 
     let output = Command::new("git")
-        .args(["log", &limit_str, format_str, "--shortstat"])
+        .args(["log", &limit_str, LOG_FORMAT, "--shortstat"])
         .current_dir(repo_root)
         .output()
         .context("Failed to run git log")?;
 
     parse_git_log(&String::from_utf8_lossy(&output.stdout))
 }
+
+/// The `--format` every commit-listing `git log` passes, so one parser reads them all.
+const LOG_FORMAT: &str = "--format=%H\x1e%h\x1e%s\x1e%an\x1e%aI\x1e%ar\x1e%P";
 
 /// Parse the output of `git log --format=... --shortstat`
 ///
@@ -832,9 +832,11 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
         let parents = parts[6];
         let is_merge = parents.split_whitespace().count() > 1;
 
-        // Parse the optional --shortstat line that follows (absent for empty commits)
+        // Git separates the format line from its --shortstat with a blank line;
+        // the stat itself is absent for empty commits and merges.
+        while lines.next_if(|next| next.trim().is_empty()).is_some() {}
         let (file_count, adds, dels) = lines
-            .next_if(|next| !next.contains('\x1e') && !next.trim().is_empty())
+            .next_if(|next| !next.contains('\x1e'))
             .map_or((0, 0, 0), parse_shortstat);
 
         commits.push(CommitInfo {
@@ -854,9 +856,88 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
     Ok(commits)
 }
 
-/// Quick (additions, deletions) summary for the working-tree (unstaged) or
-/// index (staged) diff. Cheap `--shortstat` call; returns (0, 0) on any failure.
-pub fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize) {
+/// Diffstat of the commits named in `shas`, keyed by full hash, as
+/// `(files, additions, deletions)`.
+///
+/// For commit lists that came from somewhere other than `git log` (the PR
+/// commits `gh` returns carry no stats). A sha missing from the object DB is
+/// skipped rather than failing the batch, so a PR whose head was never fetched
+/// yields an empty map; merges map to zeros, as `--shortstat` prints nothing
+/// for them.
+pub fn git_commit_shortstats(
+    repo_root: &str,
+    shas: &[&str],
+) -> std::collections::HashMap<String, (usize, usize, usize)> {
+    if shas.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let output = Command::new("git")
+        .args([
+            "log",
+            "--no-color",
+            "--no-walk=unsorted",
+            "--ignore-missing",
+            LOG_FORMAT,
+            "--shortstat",
+        ])
+        .args(shas)
+        .current_dir(repo_root)
+        .output();
+    let Ok(output) = output else {
+        return std::collections::HashMap::new();
+    };
+    if !output.status.success() {
+        return std::collections::HashMap::new();
+    }
+    parse_git_log(&String::from_utf8_lossy(&output.stdout))
+        .unwrap_or_default()
+        .into_iter()
+        .map(|c| (c.hash, (c.file_count, c.adds, c.dels)))
+        .collect()
+}
+
+/// Full hashes of up to `limit` commits reachable from `head` that no
+/// remote-tracking ref (and none of `pushed_refs`) contains.
+///
+/// "Pushed" means present on some remote, not on this branch's upstream: a
+/// branch never pushed has no upstream, yet its commits may already be on
+/// `origin` under another name. `pushed_refs` covers heads fetched outside
+/// `refs/remotes`, such as a PR's `refs/er/pr/<N>/head`; one that does not
+/// exist is ignored. Any failure yields an empty set, so a commit is shown as
+/// unpushed only when git positively says so.
+pub fn git_unpushed_shas(
+    repo_root: &str,
+    head: &str,
+    pushed_refs: &[&str],
+    limit: usize,
+) -> std::collections::HashSet<String> {
+    let limit_str = format!("--max-count={limit}");
+    let output = Command::new("git")
+        .args([
+            "rev-list",
+            "--ignore-missing",
+            &limit_str,
+            head,
+            "--not",
+            "--remotes",
+        ])
+        .args(pushed_refs)
+        .current_dir(repo_root)
+        .output();
+    match output {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .lines()
+            .map(str::trim)
+            .filter(|l| !l.is_empty())
+            .map(str::to_string)
+            .collect(),
+        _ => std::collections::HashSet::new(),
+    }
+}
+
+/// `(files, additions, deletions)` for the working-tree (unstaged) or index
+/// (staged) diff. Cheap `--shortstat` call; all zeros on any failure.
+pub fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize, usize) {
     let mut args: Vec<&str> = vec!["diff", "--no-color", "--no-ext-diff", "--shortstat"];
     if staged {
         args.push("--cached");
@@ -867,12 +948,11 @@ pub fn diff_shortstat(repo_root: &str, staged: bool) -> (usize, usize) {
         .output()
     {
         Ok(o) if o.status.success() => o,
-        _ => return (0, 0),
+        _ => return (0, 0, 0),
     };
     let text = String::from_utf8_lossy(&output.stdout);
     let line = text.lines().last().unwrap_or("");
-    let (_files, adds, dels) = parse_shortstat(line);
-    (adds, dels)
+    parse_shortstat(line)
 }
 
 /// Parse a --shortstat line like " 3 files changed, 45 insertions(+), 12 deletions(-)"
@@ -1422,6 +1502,77 @@ mod tests {
         );
     }
 
+    /// Commit `content` to `file` in `root` and return the new full hash.
+    fn commit_file(root: &std::path::Path, file: &str, content: &str) -> String {
+        let git = |args: &[&str]| {
+            let out = std::process::Command::new("git")
+                .args(args)
+                .current_dir(root)
+                .env("GIT_AUTHOR_NAME", "t")
+                .env("GIT_AUTHOR_EMAIL", "t@t.com")
+                .env("GIT_COMMITTER_NAME", "t")
+                .env("GIT_COMMITTER_EMAIL", "t@t.com")
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "git {args:?} failed");
+            String::from_utf8_lossy(&out.stdout).trim().to_string()
+        };
+        std::fs::write(root.join(file), content).unwrap();
+        git(&["add", file]);
+        git(&["commit", "-m", file, "--no-gpg-sign", "--quiet"]);
+        git(&["rev-parse", "HEAD"])
+    }
+
+    #[test]
+    fn unpushed_shas_are_the_commits_no_remote_ref_contains() {
+        let dir = repo_with_refs("feature", &[], &["origin/feature"]);
+        let root = dir.path();
+        let local = commit_file(root, "g.txt", "y\n");
+        let unpushed = git_unpushed_shas(root.to_str().unwrap(), "HEAD", &[], 10);
+        assert_eq!(unpushed, std::collections::HashSet::from([local]));
+    }
+
+    #[test]
+    fn unpushed_shas_treat_an_extra_pushed_ref_as_pushed_and_ignore_a_missing_one() {
+        let dir = repo_with_refs("feature", &[], &[]);
+        let root = dir.path();
+        let tip = commit_file(root, "g.txt", "y\n");
+        let root_str = root.to_str().unwrap();
+        // No remotes at all: everything on the branch is unpushed.
+        assert_eq!(git_unpushed_shas(root_str, "HEAD", &[], 10).len(), 2);
+        // A PR head fetched outside refs/remotes counts as pushed.
+        std::process::Command::new("git")
+            .args(["update-ref", "refs/er/pr/7/head", &tip])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(git_unpushed_shas(root_str, "HEAD", &["refs/er/pr/7/head"], 10).is_empty());
+        assert_eq!(
+            git_unpushed_shas(root_str, "HEAD", &["refs/er/pr/8/head"], 10).len(),
+            2
+        );
+    }
+
+    #[test]
+    fn commit_shortstats_reads_named_commits_and_skips_unknown_ones() {
+        let dir = repo_with_refs("feature", &[], &[]);
+        let root = dir.path();
+        let sha = commit_file(root, "g.txt", "a\nb\nc\n");
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+        let stats = git_commit_shortstats(root.to_str().unwrap(), &[sha.as_str(), missing]);
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats.get(&sha), Some(&(1, 3, 0)));
+    }
+
+    #[test]
+    fn diff_shortstat_counts_files_and_lines() {
+        let dir = repo_with_refs("feature", &[], &[]);
+        let root = dir.path();
+        std::fs::write(root.join("f.txt"), "x\ny\n").unwrap();
+        assert_eq!(diff_shortstat(root.to_str().unwrap(), false), (1, 1, 0));
+        assert_eq!(diff_shortstat(root.to_str().unwrap(), true), (0, 0, 0));
+    }
+
     // ── parse_shortstat ──
 
     #[test]
@@ -1480,6 +1631,38 @@ mod tests {
         let commits = parse_git_log(output).unwrap();
         assert_eq!(commits.len(), 1);
         assert!(commits[0].is_merge);
+    }
+
+    #[test]
+    fn parse_git_log_reads_the_stat_after_gits_blank_separator() {
+        // Real `git log --format=... --shortstat` output: a blank line between
+        // each format line and its stat, and none after a stat-less merge.
+        let output = concat!(
+            "aaaa1234567890abcdef1234567890abcdef1234\x1eaaaa123\x1eMerge\x1eAlice\x1e2026-02-25T10:00:00+01:00\x1e1 hour ago\x1ep1 p2\n",
+            "bbbb1234567890abcdef1234567890abcdef1234\x1ebbbb123\x1eSecond\x1eBob\x1e2026-02-24T10:00:00+01:00\x1e1 day ago\x1ep1\n",
+            "\n",
+            " 2 files changed, 20 insertions(+), 5 deletions(-)\n",
+        );
+        let commits = parse_git_log(output).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(
+            (commits[0].file_count, commits[0].adds, commits[0].dels),
+            (0, 0, 0)
+        );
+        assert_eq!(
+            (commits[1].file_count, commits[1].adds, commits[1].dels),
+            (2, 20, 5)
+        );
+    }
+
+    #[test]
+    fn git_log_head_fills_commit_stats() {
+        let dir = repo_with_refs("feature", &[], &[]);
+        commit_file(dir.path(), "g.txt", "a\nb\n");
+        let commits = git_log_head(dir.path().to_str().unwrap(), 10).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!((commits[0].file_count, commits[0].adds), (1, 2));
+        assert_eq!((commits[1].file_count, commits[1].adds), (1, 1));
     }
 
     #[test]
