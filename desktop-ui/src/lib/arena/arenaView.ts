@@ -71,7 +71,7 @@ export const VOTE_META: Record<Vote, { glyph: string; label: string }> = {
 export const VOTE_ORDER: Vote[] = ["propose", "keep", "drop", "merge", "escalate", "lower", "flag", "abstain"];
 
 /**
- * Short labels (F1, F2…) in the order the run lists its findings. Engine ids
+ * Short labels ("F" plus the 1-based position) in the order the run lists its findings. Engine ids
  * are slugs that do not fit a matrix cell, and every view of one run has to
  * agree on the label, so it is derived once from the finding order.
  */
