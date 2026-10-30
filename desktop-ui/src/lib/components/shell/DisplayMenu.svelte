@@ -19,10 +19,10 @@
   const counts = $derived(displayMenuCounts(app.snapshot));
   const vis = $derived(app.commentVisibility);
 
-  // `s` is the global split toggle; the hint teaches it where it applies.
+  // `d` toggles unified/split globally; the hint teaches it where it applies.
   const LAYOUT_ROWS = [
     { mode: "unified", label: "Unified", hint: "" },
-    { mode: "split", label: "Split", hint: "s" },
+    { mode: "split", label: "Split", hint: "d" },
   ] as const;
 
   type HideKey = keyof Pick<CommentVisibility, "hideComments" | "hideFindings" | "hideQuestions" | "hideNotes">;
