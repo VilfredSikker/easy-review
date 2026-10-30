@@ -37,6 +37,21 @@
     return extChip(name.includes(".") ? (name.split(".").pop() ?? "").toLowerCase() : "");
   }
 
+  // The popover opens on hover or keyboard focus only. A click focuses the
+  // ruler too (it has a tabindex), and if that opened it the 340px list would
+  // stay pinned over the diff after the pointer left; so going to a file and
+  // Escape both drop focus to close it.
+  function goto(e: MouseEvent, path: string) {
+    onGoto(path);
+    (e.currentTarget as HTMLElement).blur();
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key !== "Escape") return;
+    const el = document.activeElement;
+    if (el instanceof HTMLElement && (e.currentTarget as HTMLElement).contains(el)) el.blur();
+  }
+
   function rowTitle(it: RulerItem): string {
     return it.annotations > 0 ? `${it.path} · ${it.annotations} annotation${it.annotations === 1 ? "" : "s"}` : it.path;
   }
@@ -45,7 +60,7 @@
 <svelte:window bind:innerHeight={height} />
 
 {#if total > 0}
-  <div class="ruler" style="left:{left}" role="toolbar" aria-label={label} tabindex="0">
+  <div class="ruler" style="left:{left}" role="toolbar" aria-label={label} tabindex="0" onkeydown={onKeydown}>
     <div class="rticks" style="gap:{gap}px">
       {#each groups as g, gi (gi)}
         {#if gi > 0}<i class="rgap"></i>{/if}
@@ -69,7 +84,7 @@
               role="menuitem"
               class="rp-file {it.current ? 'cur' : ''} {it.reviewed ? 'rev' : ''} {g.title ? 'ind' : ''}"
               title={rowTitle(it)}
-              onclick={() => onGoto(it.path)}
+              onclick={(e) => goto(e, it.path)}
             >
               <span
                 class="chip"
@@ -126,11 +141,13 @@
     height: 6px;
   }
   .ruler:hover .rt,
-  .ruler:focus-within .rt {
+  .ruler:focus-visible .rt,
+  .ruler:has(:focus-visible) .rt {
     width: 12px;
   }
   .ruler:hover .rt.cur,
-  .ruler:focus-within .rt.cur {
+  .ruler:focus-visible .rt.cur,
+  .ruler:has(:focus-visible) .rt.cur {
     width: 14px;
   }
   .rpop {
@@ -149,7 +166,8 @@
     overflow: hidden;
   }
   .ruler:hover .rpop,
-  .ruler:focus-within .rpop {
+  .ruler:focus-visible .rpop,
+  .ruler:has(:focus-visible) .rpop {
     display: flex;
   }
   @media (prefers-reduced-motion: no-preference) {
