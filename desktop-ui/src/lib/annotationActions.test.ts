@@ -1,5 +1,14 @@
 import { describe, expect, test } from "bun:test";
-import { authorLabel, kindStyle, lineRangeLabel, threadActions, type ThreadActionInput } from "./annotationActions";
+import {
+  askAiTitle,
+  authorLabel,
+  elaborateTitle,
+  kindStyle,
+  lineRangeLabel,
+  sendToAgentButton,
+  threadActions,
+  type ThreadActionInput,
+} from "./annotationActions";
 
 describe("card labels", () => {
   test("lineRangeLabel", () => {
@@ -50,6 +59,20 @@ describe("threadActions", () => {
     expect(doc.overflow).toContain("promoteNote");
   });
 
+  test("an open note can be sent to an agent; nothing else can", () => {
+    expect(threadActions({ ...base, kind: "note" }).primary).toEqual([
+      "askAi",
+      "elaborate",
+      "reply",
+      "sendToAgent",
+      "promote",
+      "delete",
+    ]);
+    expect(threadActions({ ...base, kind: "question" }).primary).not.toContain("sendToAgent");
+    expect(threadActions(base).primary).not.toContain("sendToAgent");
+    expect(threadActions({ ...base, kind: "note", resolved: true }).primary).not.toContain("sendToAgent");
+  });
+
   test("a note is never pushed and has no promote-to-note", () => {
     const a = threadActions({ ...base, kind: "note" });
     expect(a.overflow).toEqual(["copy", "resolve", "edit", "validate"]);
@@ -79,5 +102,40 @@ describe("threadActions", () => {
     const a = threadActions({ ...base, resolved: true });
     expect(a.primary).toEqual(["reply"]);
     expect(a.overflow).toContain("delete");
+  });
+});
+
+describe("sendToAgentButton", () => {
+  test("is disabled on a remote PR tab with the reason", () => {
+    const b = sendToAgentButton({ remotePr: true, running: false });
+    expect(b.disabled).toBe(true);
+    expect(b.title).toContain("remote PR");
+  });
+
+  test("waits while an agent already runs in the tab", () => {
+    const b = sendToAgentButton({ remotePr: false, running: true });
+    expect(b.disabled).toBe(true);
+    expect(b.label).toBe("Agent working…");
+  });
+
+  test("says it takes an agent slot when enabled", () => {
+    const b = sendToAgentButton({ remotePr: false, running: false });
+    expect(b.disabled).toBe(false);
+    expect(b.title).toContain("agent slot");
+  });
+});
+
+describe("AI action tooltips", () => {
+  test("Elaborate says it rewrites rather than answers, per kind", () => {
+    for (const kind of ["question", "note"] as const) {
+      expect(elaborateTitle(kind)).toMatch(/^Rewrite/);
+      expect(elaborateTitle(kind)).toContain("does not answer");
+    }
+    expect(elaborateTitle("note")).toContain("instruction");
+  });
+
+  test("Ask AI answers locally", () => {
+    expect(askAiTitle("question")).toContain("answer");
+    expect(askAiTitle("note")).toContain("not posted to GitHub");
   });
 });
