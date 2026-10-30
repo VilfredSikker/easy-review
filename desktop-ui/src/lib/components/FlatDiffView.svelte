@@ -53,7 +53,7 @@
   } from "$lib/diffRenderModel";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
-  import { MIN_WRAP_COLS } from "$lib/lineWrap";
+  import { CELL_HPAD_PX, codeCellWidthPx as cellWidthPx, wrapColsForWidth } from "$lib/lineWrap";
   import {
     scheduleAfterPaint,
     shouldCommitWrapColsImmediately,
@@ -81,7 +81,16 @@
   import { profileLog, profileLogRateLimited } from "$lib/profileLog";
   import { buildTree, flattenForNav } from "$lib/treeFromPaths";
   import type { AppSnapshot, FileSnapshot, LineSnapshot } from "$lib/types";
-  import { gutterWidthPx, maxLineNumber } from "$lib/splitDiffLayout";
+  import { diffGutterPx, maxLineNumber } from "$lib/splitDiffLayout";
+  import DiffToolbar from "./DiffToolbar.svelte";
+  import {
+    commitNote,
+    DIFF_EMPTY_TEXT,
+    diffEmptyState,
+    nextVisibleFile,
+    reviewedCount,
+    visibleDiffFiles,
+  } from "$lib/diffToolbarModel";
   import { findComposerAnchorRow, foldRowExtras } from "$lib/composerPlacement";
   import { DocumentSideView } from "$lib/documentSideView.svelte";
   import { sideBlockPadding } from "$lib/documentSideLayout";
@@ -148,7 +157,7 @@
   // Order files to match the tree (folders-first, alphabetical, single-child
   // folder chains collapsed). Reuses the memoized buildTree + flattenForNav
   // already used by keyboard nav (`j`/`k`), so tree and diff render in lockstep.
-  const files = $derived.by<FileSnapshot[]>(() => {
+  const orderedFiles = $derived.by<FileSnapshot[]>(() => {
     const all = snapshot?.files ?? [];
     if (all.length === 0) return [];
     const byPath = new Map(all.map((f) => [f.path, f]));
@@ -189,6 +198,13 @@
   const treeHidden = $derived(!layoutPanels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
+  /** What the column draws. Keyboard nav (`moveFile` in keyboard.ts) still
+   *  orders from the snapshot's full list, so `j`/`k` can select a file Hide
+   *  reviewed took out; that is a known gap, not handled here. */
+  const files = $derived(visibleDiffFiles(orderedFiles, app.hideReviewed, mode));
+  const toolbarNote = $derived(
+    commitNote(snapshot?.commits ?? [], snapshot?.selected_commit_sha, app.markLines),
+  );
   /** Guide/Diff toggle is offered once a tour exists for the current view
    *  context (PR vs local branch). */
   const tourAvailable = $derived(
@@ -247,32 +263,22 @@
   // The .band is always viewport-width (no min-width:max-content), so split
   // panels are a fixed 50/50. Long lines either word-wrap (app.wrapLines, the
   // default) or pan horizontally inside their own panel via --dx-l/--dx-r.
-  /** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
-  const CELL_HPAD_PX = 24;
-
   const wrapEnabled = $derived(app.wrapLines);
   /** Measured monospace character width (px). 0 until the probe runs. */
   let charWPx = $state(0);
   /** Line-number gutter width per panel, wide enough for the diff's largest
-   *  line number. Published to the rows as `--er-split-gutter`. */
-  const GUTTER_PX = $derived(gutterWidthPx(maxLineNumber(files), charWPx));
+   *  line number, or the bare accent-bar lane with line numbers off.
+   *  Published to the rows as `--er-split-gutter`. */
+  const GUTTER_PX = $derived(diffGutterPx(maxLineNumber(files), charWPx, app.lineNumbers));
   /** Measured .hscroll (band) width (px). 0 until the observer fires. */
   let bandWidthPx = $state(0);
 
   /** Width of one code cell's text area (px) for the current view mode. */
-  const codeCellWidthPx = $derived.by(() => {
-    if (bandWidthPx <= 0) return 0;
-    const cellW =
-      viewMode === "split" ? (bandWidthPx - 2 * GUTTER_PX) / 2 : bandWidthPx - GUTTER_PX;
-    return Math.max(0, cellW - CELL_HPAD_PX);
-  });
+  const codeCellWidthPx = $derived(cellWidthPx(bandWidthPx, GUTTER_PX, viewMode === "split"));
 
   /** Column capacity of a code cell — the render model's wrap input. Null when
    *  wrapping is off or the panel/char widths aren't measured yet. */
-  const wrapCols = $derived.by(() => {
-    if (!wrapEnabled || codeCellWidthPx <= 0 || charWPx <= 0) return null;
-    return Math.max(MIN_WRAP_COLS, Math.floor(codeCellWidthPx / charWPx));
-  });
+  const wrapCols = $derived(wrapEnabled ? wrapColsForWidth(codeCellWidthPx, charWPx) : null);
 
   /** Width fed to the render model. First measurement applies immediately;
    *  later changes wait until after paint so panel collapse can hit the
@@ -302,9 +308,8 @@
   });
   /** Wrap capacity of the raw half of a side-by-side document. */
   const sideWrapCols = $derived.by(() => {
-    if (!wrapEnabled || bandWidthPx <= 0 || charWPx <= 0) return null;
-    const cellW = Math.max(0, bandWidthPx / 2 - GUTTER_PX - CELL_HPAD_PX);
-    return Math.max(MIN_WRAP_COLS, Math.floor(cellW / charWPx));
+    if (!wrapEnabled || bandWidthPx <= 0) return null;
+    return wrapColsForWidth(Math.max(0, bandWidthPx / 2 - GUTTER_PX - CELL_HPAD_PX), charWPx);
   });
   const baseCrossFileModel = $derived(
     getCrossFileModel({
@@ -392,6 +397,21 @@
     if (_lastWrapCols === cols) return;
     const first = _lastWrapCols === undefined;
     _lastWrapCols = cols;
+    if (first) return;
+    overlayHeights = new Map();
+    overlaySerial++;
+  });
+
+  // The gutter width moves every code cell and every split annotation track,
+  // so heights measured at the old width are wrong even with wrapping off,
+  // where wrap columns stay null and the effect above never fires. Turning
+  // line numbers off is the common case (ADR 0029).
+  let _lastGutterPx: number | undefined = undefined;
+  $effect(() => {
+    const px = GUTTER_PX;
+    if (_lastGutterPx === px) return;
+    const first = _lastGutterPx === undefined;
+    _lastGutterPx = px;
     if (first) return;
     overlayHeights = new Map();
     overlaySerial++;
@@ -1741,9 +1761,12 @@
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    const i = files.findIndex((f) => f.path === collapsedPath);
-    if (i === -1) return;
-    const target = files[i + 1] ?? files[i];
+    const target = nextVisibleFile(orderedFiles, files, collapsedPath);
+    if (!target) {
+      // Hide reviewed took out the last drawn file: the empty state shows from the top.
+      if (files.length === 0) applyScrollTop(0);
+      return;
+    }
     const rowIdx = crossFileModel.fileStartRow.get(target.path);
     if (rowIdx === undefined) return;
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
@@ -2130,7 +2153,7 @@
 
 <div class="flex-1 flex flex-col min-w-0 overflow-hidden relative">
   <!-- Top bar -->
-  {#if treeHidden || files.length > 0}
+  {#if treeHidden || orderedFiles.length > 0}
     <div class="h-10 px-4 border-b border-hairline bg-ink-870 flex items-center gap-3 shrink-0 text-muted">
       {#if treeHidden}
         <button type="button"
@@ -2142,7 +2165,7 @@
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
         </button>
       {/if}
-      <span class="mono text-xs text-fg-3">{files.length} {files.length === 1 ? "file" : "files"}</span>
+      <span class="mono text-xs text-fg-3">{orderedFiles.length} {orderedFiles.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
         {#if tourAvailable && !tourFresh}
           <!-- New changes landed since the guide was generated — offer a re-run. -->
@@ -2250,6 +2273,17 @@
                 </span>
                 Wrap long lines
               </button>
+              <button type="button"
+                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
+                onclick={() => app.setLineNumbers(!app.lineNumbers)}
+              >
+                <span class="w-3 inline-flex items-center justify-center">
+                  {#if app.lineNumbers}
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
+                  {/if}
+                </span>
+                Line numbers
+              </button>
               <div class="border-t border-ink-600 my-1"></div>
               <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
               <button type="button"
@@ -2313,10 +2347,26 @@
     </div>
   {/if}
 
+  {#if snapshot && mode !== "tour"}
+    <DiffToolbar
+      {viewMode}
+      onViewMode={(m) => app.setDiffViewMode(m)}
+      hideReviewed={app.hideReviewed}
+      onHideReviewed={(on) => app.setHideReviewed(on)}
+      note={toolbarNote}
+      onShowAllChanges={() => void app.cmd("exit_history")}
+      reviewed={reviewedCount(orderedFiles)}
+      total={orderedFiles.length}
+    />
+  {/if}
+
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
-  <div class="flex-1 min-h-0 relative flex flex-col" style="--er-split-gutter:{GUTTER_PX}px">
+  <div
+    class="flex-1 min-h-0 relative flex flex-col {app.lineNumbers ? '' : 'no-line-numbers'}"
+    style="--er-split-gutter:{GUTTER_PX}px"
+  >
   <div
     bind:this={scrollEl}
     class="vscroll flex-1 mono text-[13px] leading-[1.55] relative {diffSel.dragging ? 'select-none' : ''}"
@@ -2332,7 +2382,16 @@
         Loading diff…
       </div>
     {:else if files.length === 0}
-      <div class="flex items-center justify-center h-full text-muted text-sm">No changes</div>
+      {@const empty = diffEmptyState(mode, orderedFiles.length)}
+      {#if empty === "no-changes"}
+        <div class="flex items-center justify-center h-full text-muted text-sm">{DIFF_EMPTY_TEXT[empty]}</div>
+      {:else}
+        <div class="px-4 pt-3">
+          <div class="rounded-lg border border-line bg-card px-7 py-7 text-center text-[13px] font-sans text-fg-2">
+            {DIFF_EMPTY_TEXT[empty]}
+          </div>
+        </div>
+      {/if}
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
            In Guide mode it's inset past the pillar rail lane so it pins over the
@@ -2609,5 +2668,15 @@
   }
   .composer-flow-row {
     display: flow-root;
+  }
+  /* Line numbers off: the gutter keeps its accent bar and stays the comment
+   * click target, only the digits go. Its narrower width comes from
+   * diffGutterPx, so the digits are clipped as well as hidden. */
+  .no-line-numbers :global(.diff-row > .gutter),
+  .no-line-numbers :global(.diff-row > .gutter button) {
+    color: transparent;
+  }
+  .no-line-numbers :global(.diff-row > .gutter) {
+    overflow: hidden;
   }
 </style>
