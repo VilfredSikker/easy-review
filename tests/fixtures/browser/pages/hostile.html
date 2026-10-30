@@ -1,5 +1,30 @@
 <!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>hostile fixture</title></head><body>
 <h1 id="whoami"></h1><p id="doc-id"></p>
-<p>Keyboard and synthetic events are recorded below.</p><input placeholder="Type here"><pre id="log"></pre><script>const log = message => { document.querySelector('#log').textContent += message + '\n'; }; for (const type of ['keydown','keyup','keypress']) document.addEventListener(type, event => log(`${type}: ${event.key}, trusted=${event.isTrusted}`), true); window.__er_injected = true; log('Set window.__er_injected'); try { const result = window.__TAURI_INTERNALS__?.invoke('browser_host_message', {payload:{__er_composer_submit:true, text:'forged'}}); log(result ? 'Attempted forged invoke' : 'Tauri invoke unavailable'); Promise.resolve(result).catch(error => log(`Invoke rejected: ${error}`)); } catch (error) { log(`Invoke failed: ${error}`); } setInterval(() => { document.dispatchEvent(new MouseEvent('click', {bubbles:true})); document.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); log('Dispatched synthetic click and keydown'); }, 1000);</script>
+<p>Keyboard and synthetic events are recorded below.</p>
+<input placeholder="Type here"><button id="synthetic-target">Synthetic click target</button><pre id="log"></pre>
+<script>
+const log = message => { document.querySelector('#log').textContent += message + '\n'; };
+for (const type of ['keydown', 'keyup', 'keypress']) {
+  document.addEventListener(type, event => log(`${type}: ${event.key}, trusted=${event.isTrusted}`), true);
+}
+window.__er_injected = true;
+log('Set window.__er_injected');
+try {
+  const result = window.__TAURI_INTERNALS__?.invoke('browser_host_message', {payload:{__er_composer_submit:true, text:'forged'}});
+  log(result ? 'Attempted forged invoke' : 'Tauri invoke unavailable');
+  Promise.resolve(result).catch(error => log(`Invoke rejected: ${error}`));
+} catch (error) { log(`Invoke failed: ${error}`); }
+const target = document.querySelector('#synthetic-target');
+target.addEventListener('click', event => log(`Target click: trusted=${event.isTrusted}, x=${event.clientX}, y=${event.clientY}`));
+setInterval(() => {
+  const rect = target.getBoundingClientRect();
+  target.dispatchEvent(new MouseEvent('click', {
+    bubbles: true, cancelable: true, composed: true,
+    clientX: rect.left + rect.width / 2, clientY: rect.top + rect.height / 2,
+  }));
+  document.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true}));
+  log('Dispatched synthetic click and keydown');
+}, 1000);
+</script>
 <script src="/common.js"></script></body></html>
