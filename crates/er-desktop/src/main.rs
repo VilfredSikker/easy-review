@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod browser_annotation_cache;
+
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
@@ -1483,6 +1485,21 @@ fn main() {
             }
         });
     }
+
+    // Read annotation metadata off the App lock and wake the normal revision path.
+    std::thread::spawn({
+        let app = Arc::clone(&app_arc);
+        let revision = Arc::clone(&desktop_revision);
+        move || loop {
+            let dir = app.lock().ok().map(|g| g.tab().comments_dir());
+            if let Some(dir) = dir {
+                if browser_annotation_cache::refresh(std::path::Path::new(&dir)) {
+                    profile_log::bump_desktop_revision(&revision, "browser_annotations");
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    });
 
     // Spawn the desktop active-branch watcher. Follows the currently active
     // tab's local-branch checkout (project root or linked worktree) and

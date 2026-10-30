@@ -65,6 +65,7 @@ export function mergeChromeSnapshot(
     ai: aiSource === "next" ? next.ai : prev.ai,
     pr: aiSource === "next" ? next.pr : prev.pr,
     ui_annotations: aiSource === "next" ? next.ui_annotations : prev.ui_annotations,
+    browser_annotations: aiSource === "next" ? next.browser_annotations : prev.browser_annotations,
     browser: aiSource === "next" ? next.browser : prev.browser,
     filter_suggestions: prev.filter_suggestions,
     commits: prev.commits,

@@ -811,6 +811,7 @@ export interface AppSnapshot {
   active_tab: number;
   /** Browser-view annotations for the active tab. */
   ui_annotations?: UiAnnotation[];
+  browser_annotations?: BrowserAnnotationsSnapshot;
   /** Per-tab browser pane (active tab only). */
   browser?: BrowserSnapshot;
   /** Live GitHub status for the active tab (only when it's a remote PR with cached data). */
@@ -1170,3 +1171,22 @@ export interface DisplayConfigSnapshot {
   splitDiff: boolean;
   tabWidth: number;
 }
+
+/** V2 browser evidence read from the active view bucket. */
+export interface BrowserAnnotationsSnapshot {
+  annotations: BrowserAnnotation[];
+  load_error: string | null;
+}
+type BrowserExtensions = { [key: string]: unknown };
+export type BrowserRect = BrowserExtensions & { x: number; y: number; width: number; height: number };
+type BrowserFingerprint = BrowserExtensions & { tag: string | null; role: string | null; name: string | null; text_excerpt: string | null };
+export type BrowserAnnotation = BrowserExtensions & {
+  id: string; number: number; idempotency_key: string; created_at: string; author: string; text: string;
+  page: BrowserExtensions & { origin: string; path: string; query: string | null; hash_route: string | null };
+  locator: (BrowserExtensions & { frames: (BrowserExtensions & { selector: string; shadow_hosts: string[]; fingerprint: BrowserFingerprint })[]; shadow_hosts: string[]; selector: string; fingerprint: BrowserFingerprint }) | null;
+  target: BrowserExtensions & { kind: "element" | "region"; role: string | null; name: string | null; text_excerpt: string | null; limitation: string | null };
+  captured: BrowserExtensions & { rect: BrowserRect; viewport: BrowserExtensions & { width: number; height: number }; scroll: BrowserExtensions & { x: number; y: number }; device_scale: number; zoom: number };
+  dom_context: unknown | null;
+  resolution: BrowserExtensions & { status: "resolved" | "missing" | "ambiguous"; current_rect: BrowserRect | null };
+  image: (BrowserExtensions & { status: "none" }) | (BrowserExtensions & { status: "unavailable"; reason: string }) | (BrowserExtensions & { status: "captured"; asset_id: string; capture: BrowserExtensions & { crop: BrowserRect; marker: BrowserRect; scale: number; captured_at: string } });
+};
