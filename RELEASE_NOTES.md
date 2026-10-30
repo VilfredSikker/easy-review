@@ -8,8 +8,8 @@
 ## What's Changed
 
 ### Fixes
-- The desktop updater trusts the key that signs releases (#PR).
-- `scripts/tauri-sign-release.sh` drops an updater archive signed by any key other than the one in `tauri.conf.json`. A release signed with the wrong key ships without `latest.json`, so installed apps never download an update they would reject (#PR).
+- The desktop updater trusts the key that signs releases (#296).
+- `scripts/tauri-sign-release.sh` drops an updater archive signed by any key other than the one in `tauri.conf.json`. A release signed with the wrong key ships without `latest.json`, so installed apps never download an update they would reject (#296).
 
 # Easy Review v0.5.10
 
