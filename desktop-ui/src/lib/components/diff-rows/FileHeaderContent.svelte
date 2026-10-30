@@ -8,8 +8,7 @@
   import { documentPreviewKind } from "$lib/documentPreview";
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
   import { langForPath } from "$lib/extToLang";
-  import { baseName } from "$lib/shortFileName";
-  import { renameSpans, splitSpan } from "$lib/renameDiff";
+  import { renameHeader } from "$lib/renameDiff";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
@@ -86,9 +85,8 @@
   });
 
   const lang = $derived(langForPath(row.filePath));
-  const spans = $derived(row.oldPath ? renameSpans(baseName(row.oldPath), pathParts.name) : null);
-  const oldParts = $derived(row.oldPath && spans ? splitSpan(baseName(row.oldPath), spans.old) : ["", "", ""]);
-  const newParts = $derived(spans ? splitSpan(pathParts.name, spans.new) : ["", "", ""]);
+  const rename = $derived(row.oldPath ? renameHeader(row.oldPath, row.filePath) : null);
+  const title = $derived(row.oldPath ? `${row.oldPath} → ${row.filePath}` : row.filePath);
 
   async function openSource(e: MouseEvent) {
     e.stopPropagation();
@@ -130,15 +128,17 @@
 {#if lang}
   <span class="lang-chip mono shrink-0 {reviewed ? 'opacity-60' : ''}">{lang}</span>
 {/if}
-<span class="mono text-xs font-medium text-fg shrink-0 max-w-[60%] truncate {reviewed ? 'opacity-60' : ''}" title={row.filePath}>
-  {#if row.oldPath && spans}
-    <span class="text-fg-3">{oldParts[0]}<mark class="mark-old">{oldParts[1]}</mark>{oldParts[2]}</span><span class="text-fg-3 mx-1.5">→</span>{newParts[0]}<mark class="mark-new">{newParts[1]}</mark>{newParts[2]}
+<!-- The name may shrink (to its truncation) but keeps priority over the
+     directory, which gives up its width first. -->
+<span class="mono text-xs font-medium text-fg min-w-[4ch] max-w-[60%] truncate {reviewed ? 'opacity-60' : ''}" style="flex-shrink:0.25" {title}>
+  {#if rename}
+    <span class="text-fg-3">{rename.old[0]}<mark class="mark-old">{rename.old[1]}</mark>{rename.old[2]}</span><span class="text-fg-3 mx-1.5">→</span>{rename.new[0]}<mark class="mark-new">{rename.new[1]}</mark>{rename.new[2]}
   {:else}
     {pathParts.name}
   {/if}
 </span>
-<div class="mono text-[11px] flex flex-1 min-w-0 items-center overflow-hidden" title={row.filePath}>
-  {#if pathParts.dir}
+<div class="mono text-[11px] flex flex-1 min-w-0 items-center overflow-hidden" {title}>
+  {#if pathParts.dir && !rename?.crossDir}
     <span class="text-muted truncate-start min-w-0 flex-1">
       <span class="truncate-start-inner">{pathParts.dir}</span>
     </span>
@@ -150,10 +150,12 @@
 {#if row.isNew}
   <span class="chip chip-new">new</span>
 {/if}
+<!-- No "local" chip yet: FileSnapshot carries no per-file unpushed signal, and
+     CommitSummary.unpushed has no file list to derive one from. -->
 
 <!-- +N/−N totals -->
 {#if documentKind}
-  <div class="flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
+  <div class="doc-modes flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
     {#each viewModes as [mode, label] (mode)}
       <button type="button" aria-pressed={viewMode === mode}
         class="rounded px-1.5 py-1 hover:bg-hover {viewMode === mode ? 'bg-hover text-fg' : 'text-fg-3'}"
@@ -175,6 +177,7 @@
   type="button"
   role="checkbox"
   aria-checked={reviewed}
+  aria-label="Mark as reviewed"
   onclick={toggleReviewed}
   title={reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
   class="shrink-0 h-6 px-1.5 rounded flex items-center gap-1.5 text-xs transition hover:bg-hover group
@@ -188,7 +191,7 @@
       <polyline points="20 6 9 17 4 12" />
     </svg>
   </span>
-  <span>Reviewed</span>
+  <span class="rev-label">Reviewed</span>
 </button>
 
 <!-- Open source (icon only) -->
@@ -213,4 +216,8 @@
   .chip-new { color: var(--color-fg-2); background: var(--color-hover); }
   .mark-old { background: color-mix(in srgb, var(--color-del-fg) 22%, transparent); color: inherit; border-radius: 2px; }
   .mark-new { background: color-mix(in srgb, var(--color-add-fg) 22%, transparent); color: inherit; border-radius: 2px; }
+  /* Narrow widths keep the controls, not their labels: the checkbox stays named
+     through aria-label, and the document view falls back to its current mode. */
+  @media (max-width: 520px) { .rev-label { display: none; } }
+  @media (max-width: 880px) { .doc-modes { display: none; } }
 </style>
