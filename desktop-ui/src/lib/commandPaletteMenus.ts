@@ -194,9 +194,17 @@ function pageItems(r: PaletteRunners): CommandItem[] {
   }));
 }
 
-export function navigateMenu(r: PaletteRunners): CommandItem[] {
+export function navigateMenu(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem[] {
   return [
     ...pageItems(r),
+    {
+      id: "open-inbox",
+      label: "Open inbox",
+      description: `${snapshot?.inbox_unread_count ?? 0} unread`,
+      group: "Navigate",
+      kbd: "i",
+      run: () => r.dismissLocal(() => app.setMainView("inbox")),
+    },
     {
       id: "refresh",
       label: "Refresh diff",

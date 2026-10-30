@@ -411,7 +411,7 @@
 
     const containers: CommandItem[] = [
       { id: "menu-actions", label: "Actions", description: "Export, settings, logs", group: "Actions", kbd: "s", run: () => {}, submenuItems: actionsMenu(snapshot, runners) },
-      { id: "menu-navigate", label: "Navigate", description: "Refresh, terminal, agent output", group: "Navigate", kbd: "n", run: () => {}, submenuItems: navigateMenu(runners) },
+      { id: "menu-navigate", label: "Navigate", description: "Refresh, terminal, agent output", group: "Navigate", kbd: "n", run: () => {}, submenuItems: navigateMenu(snapshot, runners) },
       { id: "menu-view", label: "View & Layout", description: "Diff mode, browser, panels", group: "View & Layout", kbd: "v", run: () => {}, submenuItems: viewMenu(snapshot, runners) },
       // The active provider/model rides on the AI row: the top bar no longer shows it.
       { id: "menu-ai", label: "AI", description: activeAiLabel ? `${aiDescription} · ${activeAiLabel}` : aiDescription, group: "AI", kbd: "a", run: () => {}, submenuItems: buildAiItems() },
