@@ -18,7 +18,7 @@ function fixture(lines: Pick<LineSnapshot, "kind" | "old_num" | "new_num">[], th
     hunks: [{ lines: lines.map((l) => ({ ...l, text: "" })) }],
   } as unknown as FileSnapshot;
   const rows: CrossFileFlatRow[] = [
-    { type: "file-header", filePath: PATH, fileIndex: 0, sourceIndex: 0, height: 30, identity: "fh", additions: 0, deletions: 0 },
+    { type: "file-header", filePath: PATH, fileIndex: 0, sourceIndex: 0, height: 30, identity: "fh", additions: 0, deletions: 0, oldPath: null, similarity: null, kind: null, isNew: false },
     { type: "hunk-header", filePath: PATH, hunkIdx: 0, header: "@@", height: 20, identity: "hh" },
   ];
   lines.forEach((_, lineIdx) => {
@@ -27,7 +27,7 @@ function fixture(lines: Pick<LineSnapshot, "kind" | "old_num" | "new_num">[], th
       rows.push({ type: "inline-thread", filePath: PATH, hunkIdx: 0, threadId: `t${lineIdx}`, side: "unified", height: 50, identity: `it${lineIdx}` });
     }
   });
-  rows.push({ type: "file-header", filePath: "next.md", fileIndex: 1, sourceIndex: 1, height: 30, identity: "fh2", additions: 0, deletions: 0 });
+  rows.push({ type: "file-header", filePath: "next.md", fileIndex: 1, sourceIndex: 1, height: 30, identity: "fh2", additions: 0, deletions: 0, oldPath: null, similarity: null, kind: null, isNew: false });
   return { file, rows };
 }
 

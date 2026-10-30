@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ToastMessage } from "$lib/stores/app.svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { splitToast } from "$lib/components/toastModel";
 
   interface Props {
     toast: ToastMessage;
@@ -8,6 +9,13 @@
   const { toast }: Props = $props();
 
   const RESUME_MS = 1_800;
+  const EXIT_MS = 160;
+
+  /** True while the pointer is over the card; pauses the countdown bar. */
+  let hovered = $state(false);
+  /** Bumped on mouseleave so the bar restarts from full, matching resumeToast's fresh timer. */
+  let barRun = $state(0);
+  const barMs = $derived(barRun === 0 ? toast.durationMs : RESUME_MS);
 
   let expanded = $state(false);
   let justCopied = $state(false);
@@ -21,7 +29,10 @@
     overflowing = msgEl.scrollHeight - 2 > msgEl.clientHeight;
   });
 
+  const parts = $derived(splitToast(toast.kind, toast.message));
+
   const isPersist = $derived(toast.persist ?? toast.kind === "error");
+  const showBar = $derived(!isPersist && barMs !== undefined);
   const isMultiline = $derived(toast.kind === "error" || toast.kind === "warn");
   /** Success/info wrap inside the card instead of nowrap (avoids horizontal scrollbar). */
   const wrapsText = $derived(toast.kind === "success" || toast.kind === "info");
@@ -36,7 +47,8 @@
   });
 
   interface KindStyle {
-    ruleClass: string;
+    chipClass: string;
+    /** Empty for kinds drawn without a path (progress shows a spinner). */
     iconPath: string;
     iconClass: string;
   }
@@ -45,26 +57,28 @@
     switch (kind) {
       case "success":
         return {
-          ruleClass: "border-l-add-fg",
+          chipClass: "bg-add-fg/15",
           iconPath: "M22 11.08V12a10 10 0 1 1-5.93-9.14M22 4 12 14.01l-3-3",
           iconClass: "text-add-fg",
         };
       case "warn":
         return {
-          ruleClass: "border-l-warning",
+          chipClass: "bg-warning/15",
           iconPath:
             "M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01",
           iconClass: "text-warning",
         };
+      case "progress":
+        return { chipClass: "bg-accent/15", iconPath: "", iconClass: "text-accent" };
       case "error":
         return {
-          ruleClass: "border-l-del-fg",
+          chipClass: "bg-del-fg/15",
           iconPath: "M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM15 9l-6 6M9 9l6 6",
           iconClass: "text-del-fg",
         };
       default:
         return {
-          ruleClass: "border-l-periwinkle",
+          chipClass: "bg-periwinkle/15",
           iconPath:
             "M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zM12 8h.01M12 12v4",
           iconClass: "text-periwinkle",
@@ -75,11 +89,24 @@
   const ks = $derived(kindStyle(toast.kind));
 
   function onMouseEnter() {
+    hovered = true;
     if (!isPersist) app.pauseToast(toast.id);
   }
 
   function onMouseLeave() {
-    if (!isPersist) app.resumeToast(toast.id, RESUME_MS);
+    hovered = false;
+    if (isPersist) return;
+    app.resumeToast(toast.id, RESUME_MS);
+    barRun += 1;
+  }
+
+  /** Fade and slide right on dismiss; instant when the user asks for reduced motion. */
+  function toastOut(_node: Element) {
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    return {
+      duration: reduce ? 0 : EXIT_MS,
+      css: (t: number) => `opacity: ${t}; transform: translateX(${(1 - t) * 12}px) scale(${0.97 + t * 0.03});`,
+    };
   }
 
   async function copyMessage() {
@@ -105,20 +132,24 @@
   role={toast.kind === "error" || toast.kind === "warn" ? "alert" : "status"}
   onmouseenter={onMouseEnter}
   onmouseleave={onMouseLeave}
-  class="pointer-events-auto flex gap-2.5 w-[min(480px,calc(100vw-32px))] px-3 py-2 rounded bg-ink-800 border border-ink-500/40 border-l-[3px] shadow-[0_8px_24px_rgba(0,0,0,0.35),0_2px_6px_rgba(0,0,0,0.25)] font-mono text-xs animate-[toast-in_180ms_ease-out] {ks.ruleClass} {isMultiline ? 'items-start' : 'items-center'}"
+  out:toastOut
+  class="pointer-events-auto relative overflow-hidden flex gap-2.5 w-[min(480px,calc(100vw-32px))] px-3 pt-2.5 {showBar
+    ? 'pb-3'
+    : 'pb-2.5'} rounded-[10px] bg-ink-800 border border-ink-500/40 shadow-[0_12px_32px_rgba(0,0,0,0.28)] font-mono text-xs motion-safe:animate-[toast-in_180ms_ease-out] items-start"
 >
   <!-- Kind icon -->
-  <svg
-    width="13"
-    height="13"
-    viewBox="0 0 24 24"
-    fill="none"
-    stroke="currentColor"
-    stroke-width="2"
-    class="shrink-0 {ks.iconClass} {isMultiline ? 'mt-0.5' : ''}"
-  >
-    <path d={ks.iconPath} />
-  </svg>
+  <span class="shrink-0 w-5 h-5 rounded-md grid place-items-center {ks.iconClass} {ks.chipClass}">
+    {#if toast.kind === "progress"}
+      <span
+        aria-hidden="true"
+        class="w-2.5 h-2.5 rounded-full border-2 border-accent border-r-transparent motion-safe:animate-spin"
+      ></span>
+    {:else}
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+        <path d={ks.iconPath} />
+      </svg>
+    {/if}
+  </span>
 
   <!-- Body -->
   <div class="flex-1 min-w-0 flex flex-col gap-1.5">
@@ -133,10 +164,13 @@
       style:-webkit-line-clamp={clamp.lineClamp}
       style:-webkit-box-orient={!isMultiline ? undefined : "vertical"}
       style:display={!isMultiline ? undefined : "-webkit-box"}
-      class="leading-[1.45] text-ink-100"
+      class="leading-[1.45] text-fg"
     >
-      {toast.message}
+      <span class="font-semibold">{parts.title}</span>
     </div>
+    {#if parts.detail}
+      <div class="text-muted leading-[1.4] -mt-1" style:overflow-wrap="anywhere">{parts.detail}</div>
+    {/if}
 
     <!-- Footer: action + show-more + copy (only when multiline or action present) -->
     {#if isMultiline || toast.action}
@@ -145,7 +179,7 @@
           <button
             type="button"
             onclick={toast.action.onClick}
-            class="border-0 bg-transparent p-0 font-mono text-xs font-semibold cursor-pointer {ks.iconClass}"
+            class="h-6 px-2 rounded-md border border-ink-500/60 bg-transparent font-mono text-xs font-medium text-fg cursor-pointer hover:bg-ink-700"
           >
             {toast.action.label}
           </button>
@@ -196,19 +230,53 @@
     {/if}
   </div>
 
-  <!-- Close × (persistent toasts only) -->
-  {#if isPersist}
-    <button
-      type="button"
-      onclick={() => app.closeToast(toast.id)}
-      title="Dismiss"
-      aria-label="Dismiss"
-      class="shrink-0 w-5 h-5 rounded flex items-center justify-center border-0 bg-transparent text-muted hover:bg-ink-700 hover:text-fg cursor-pointer {isMultiline ? 'mt-0.5' : ''}"
-    >
-      <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-        <line x1="18" y1="6" x2="6" y2="18" />
-        <line x1="6" y1="6" x2="18" y2="18" />
-      </svg>
-    </button>
+  <!-- Close × on every kind: hover holds the timer, this is the explicit way out. -->
+  <button
+    type="button"
+    onclick={() => app.closeToast(toast.id)}
+    title="Dismiss"
+    aria-label="Dismiss"
+    class="shrink-0 w-5 h-5 rounded flex items-center justify-center border-0 bg-transparent text-muted hover:bg-ink-700 hover:text-fg cursor-pointer {isMultiline ? 'mt-0.5' : ''}"
+  >
+    <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <line x1="18" y1="6" x2="6" y2="18" />
+      <line x1="6" y1="6" x2="18" y2="18" />
+    </svg>
+  </button>
+
+  <!-- Countdown: drains over the dismiss delay, freezes while hovered, refills on leave. -->
+  {#if showBar}
+    {#key barRun}
+      <span
+        aria-hidden="true"
+        class="toast-bar absolute left-0 right-0 bottom-0 h-[2px] origin-left bg-current opacity-70 {ks.iconClass}"
+        style:animation-duration="{barMs}ms"
+        style:animation-play-state={hovered ? "paused" : "running"}
+      ></span>
+    {/key}
   {/if}
 </div>
+
+<style>
+  /* Animate only when motion is allowed; a frozen full bar would misreport the
+   * time left, so reduced motion hides it instead. */
+  .toast-bar {
+    display: none;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .toast-bar {
+      display: block;
+      animation-name: toast-bar;
+      animation-timing-function: linear;
+      animation-fill-mode: forwards;
+    }
+  }
+  @keyframes toast-bar {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+</style>

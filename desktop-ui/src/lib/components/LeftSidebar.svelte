@@ -10,6 +10,8 @@
   import { orderedByIds } from "$lib/projectOrder";
   import { orderPrsByStack } from "$lib/prStacks";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
+  import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram, projectTileInk } from "$lib/sidebarModel";
+  import { themeByName } from "$lib/themes";
   import { installAppUpdate, type UpdatePhase } from "$lib/appUpdate";
 
   interface PinnedItem {
@@ -27,6 +29,7 @@
   const { collapsed = false, pinnedOverride }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
+  const theme = $derived(themeByName(app.snapshot?.theme));
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
@@ -261,6 +264,23 @@
     if (mins < 60) return `${mins}m`;
     const hrs = Math.floor(mins / 60);
     return `${hrs}h`;
+  }
+
+  const CI_DOT = {
+    ok: { cls: "bg-add-fg", title: "CI passing" },
+    fail: { cls: "bg-del-fg", title: "CI failing" },
+    pend: { cls: "bg-warning", title: "CI running" },
+  } as const;
+
+  function ciDot(pr: PrInfo) {
+    const ci = prCiState(pr);
+    return ci ? CI_DOT[ci] : null;
+  }
+
+  function trackerClass(merged: boolean, active: boolean): string {
+    if (merged) return "bg-periwinkle";
+    if (active) return "bg-question shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-question)_20%,transparent)]";
+    return "bg-ink-500";
   }
 
   function prIconColor(pr: PrInfo): string {
@@ -805,7 +825,7 @@
   </aside>
 {:else}
 
-<aside class="w-60 bg-surface border-r border-hairline shrink-0 flex flex-col h-full overflow-hidden transition-[width] duration-200">
+<aside class="w-[284px] bg-surface border-r border-hairline shrink-0 flex flex-col h-full overflow-hidden transition-[width] duration-200">
   <!-- Scrollable content; Settings footer is fixed at bottom outside this wrapper. -->
   <div class="flex-1 overflow-y-auto min-h-0">
   <!-- Top actions -->
@@ -935,11 +955,13 @@
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
                   <path d="M6 9l6 6 6-6"/>
                 </svg>
-                <!-- Folder icon — 12px text-fg-3 -->
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-fg-3">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                </svg>
-                <span class="truncate font-medium">{project.name}</span>
+                <!-- Monogram tile: colour is a hash of the name so it survives reorder and search. -->
+                <span
+                  class="w-4 h-4 rounded-[4px] grid place-items-center text-[9.5px] font-bold shrink-0"
+                  style="background:{projectColorVar(project.name)};color:{projectTileInk(theme, project.name)}"
+                  aria-hidden="true"
+                >{projectMonogram(project.name)}</span>
+                <span class="truncate font-semibold text-[12.5px]">{project.name}</span>
                 {#if badge > 0}
                   <span class="font-mono text-[10px] text-muted ml-auto shrink-0">{badge}</span>
                 {/if}
@@ -1087,9 +1109,10 @@
                         <path d="M6 9l6 6 6-6"/>
                       </svg>
                     </span>
-                    <span class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70 leading-none">
-                      {label} - {count}
+                    <span class="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted leading-none">
+                      {label}
                     </span>
+                    <span class="font-mono text-[10.5px] font-normal text-muted leading-none">{count}</span>
                     {#if showLoading && loadingPrList}
                       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
                     {/if}
@@ -1136,6 +1159,12 @@
                         <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
                         <path d="M21 3v5h-5"/>
                       </svg>
+                    {/if}
+                    {#if prNeedsMyReview(pr, project.prs_to_review.some((q) => q.number === pr.number))}
+                      <span class="shrink-0 font-mono text-[10px] leading-4 px-1.5 rounded-full text-accent bg-accent/15">review</span>
+                    {:else if pr.state === "OPEN" && ciDot(pr)}
+                      {@const dot = ciDot(pr)}
+                      <i class="w-1.5 h-1.5 rounded-full shrink-0 {dot?.cls}" title={dot?.title}></i>
                     {/if}
                     <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
                   </button>
@@ -1204,15 +1233,14 @@
                         onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
                         class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-7 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                       >
-                        {#if isActiveView}
-                          <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-accent'} shrink-0"></span>
-                        {:else}
-                          <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-ink-500'} shrink-0"></span>
-                        {/if}
+                        <!-- Tracker square: purple glow marks the branch open in the active tab. -->
+                        <span
+                          class="w-[7px] h-[7px] rounded-[2px] shrink-0 mt-px {trackerClass(br.is_merged, isActiveView)}"
+                        ></span>
                         <div class="flex flex-col min-w-0 flex-1">
-                          <span class="truncate">{br.name}</span>
+                          <span class="truncate font-mono text-[11.5px]">{br.name}</span>
                           {#if br.worktree_path != null}
-                            <span class="truncate text-[10px] text-muted font-mono">{br.worktree_path.split("/").slice(-2).join("/")}</span>
+                            <span class="truncate text-[10px] text-muted font-mono">worktree · {br.worktree_path.split("/").slice(-2).join("/")}</span>
                           {/if}
                         </div>
                         {#if branchPending}
@@ -1519,22 +1547,20 @@
     </div>
   {/if}
 
-  <!-- Version + optional update pill above Settings. -->
-  <div class="border-t border-hairline px-3 pt-2.5 pb-1.5 shrink-0 space-y-1.5">
-    <div class="flex items-center gap-2 min-w-0">
-      <span class="text-[11px] font-mono text-fg-3 truncate" title="Installed version">
-        v{appVersion}
-      </span>
-    </div>
+  <!-- Version footer: update dot beside the version, pill only while an update is offered. -->
+  <div class="border-t border-hairline px-2 py-2 shrink-0 flex items-center gap-2 min-w-0 text-[12px] text-fg-2">
+    {#if updateAvailable}
+      <span class="w-[7px] h-[7px] rounded-full bg-accent shrink-0" class:animate-pulse={updateBusy} title="Update available" aria-hidden="true"></span>
+    {/if}
+    <span class="font-mono text-[11px] text-fg-3 truncate" title="Installed version">er {appVersion}</span>
     {#if updateAvailable}
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
+        class="inline-flex items-center max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
         title={updatePhase.kind === "failed" ? updatePhase.message : updateLabel}
         disabled={updateBusy}
         onclick={startUpdate}
       >
-        <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" class:animate-pulse={updateBusy} aria-hidden="true"></span>
         <span class="truncate">{updateLabel}</span>
       </button>
     {/if}

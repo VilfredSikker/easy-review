@@ -2,6 +2,8 @@
   import { app } from "$lib/stores/app.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrNumber } from "$lib/prUrl";
+  import AnnotationOverflowMenu from "$lib/components/AnnotationOverflowMenu.svelte";
+  import type { OverflowItem } from "$lib/annotationActions";
   import type { FindingResponseSnapshot, ThreadMessage } from "$lib/types";
 
   type ReplyLike = (ThreadMessage | FindingResponseSnapshot) & { synced?: boolean };
@@ -42,7 +44,28 @@
   const showAskAi = $derived(hasThread || Boolean(findingId));
   const showResolve = $derived(hasThread && !threadResolved && !isQuestion);
   let pushing = $state(false);
-  let justCopied = $state(false);
+
+  // Copy, Push, Edit and Validate are rarer than Ask AI / Resolve / Delete, so
+  // they sit behind the menu rather than crowding every reply.
+  const overflow = $derived.by((): OverflowItem[] => {
+    const items: OverflowItem[] = [
+      { id: "copy", label: "Copy reply", onselect: () => void copyReply() },
+    ];
+    if (onEdit) items.push({ id: "edit", label: "Edit", onselect: onEdit });
+    if (showPush) {
+      items.push({
+        id: "push",
+        label: pushing ? "Pushing…" : "Push only this",
+        title: "Push only this reply",
+        disabled: pushing,
+        onselect: () => void pushReply(),
+      });
+    }
+    if (findingId || rootThreadId) {
+      items.push({ id: "validate", label: "Validate with AI", onselect: () => void validateWithAi() });
+    }
+    return items;
+  });
 
   async function askAi() {
     const focus = reply.body_markdown.trim();
@@ -66,8 +89,6 @@
 
   async function copyReply() {
     await copyToClipboard(reply.body_markdown);
-    justCopied = true;
-    setTimeout(() => (justCopied = false), 1500);
   }
 
   async function pushReply() {
@@ -87,28 +108,15 @@
   }
 </script>
 
-<div class="mt-1 -ml-1 flex flex-wrap gap-0.5 opacity-0 group-hover/row:opacity-100 text-[10px]">
+<div class="mt-1 -ml-1 flex flex-wrap items-center gap-0.5 opacity-0 group-hover/row:opacity-100 focus-within:opacity-100 text-[11px]">
   {#if showAskAi}
-    <button type="button" onclick={() => void askAi()} title="Ask AI about this reply" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover">Ask AI</button>
-  {/if}
-  {#if findingId || rootThreadId}
-    <button type="button" onclick={() => void validateWithAi()} title="Validate with AI" class="px-1 py-0.5 rounded text-ai hover:bg-hover">Validate</button>
-  {/if}
-  <button type="button" onclick={() => void copyReply()} title="Copy reply" class="px-1 py-0.5 rounded hover:bg-hover {justCopied ? 'text-add-fg' : 'text-fg-3'}">
-    {justCopied ? "Copied" : "Copy"}
-  </button>
-  {#if onEdit}
-    <button type="button" onclick={onEdit} title="Edit reply" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover">Edit</button>
-  {/if}
-  {#if showPush}
-    <button type="button" onclick={() => void pushReply()} disabled={pushing} title="Push only this reply" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover disabled:opacity-40">
-      {pushing ? "…" : "Push"}
-    </button>
+    <button type="button" onclick={() => void askAi()} title="Ask AI about this reply" class="px-1.5 py-0.5 rounded text-accent hover:bg-accent-soft">✦ {isQuestion ? "Elaborate" : "Ask AI"}</button>
   {/if}
   {#if showResolve}
-    <button type="button" onclick={() => void resolveThread()} title="Resolve thread" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover">Resolve</button>
+    <button type="button" onclick={() => void resolveThread()} title="Resolve thread" class="px-1.5 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-fg-2">Resolve</button>
   {/if}
   {#if reply.deletable !== false}
-    <button type="button" onclick={() => void onDelete()} title="Delete reply" class="px-1 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg">Delete</button>
+    <button type="button" onclick={() => void onDelete()} title="Delete reply" class="px-1.5 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg">Delete</button>
   {/if}
+  <AnnotationOverflowMenu items={overflow} label="More reply actions" />
 </div>

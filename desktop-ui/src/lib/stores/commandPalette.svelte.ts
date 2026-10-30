@@ -2,7 +2,16 @@
 // CommandPalette.svelte, TabStrip.svelte, and LeftSidebar.svelte all reach
 // for this — keeps the prop-passing chain short.
 
-export type CommandPaletteView = "root" | "ai-providers";
+/** A root menu the palette can open straight into. */
+export type CommandPaletteMenu =
+  | "menu-actions"
+  | "menu-navigate"
+  | "menu-view"
+  | "menu-ai"
+  | "menu-pr"
+  | "menu-files";
+
+export type CommandPaletteView = "root" | "ai-providers" | CommandPaletteMenu;
 
 function createCommandPaletteStore() {
   let open = $state(false);
@@ -28,6 +37,15 @@ function createCommandPaletteStore() {
     },
     showAiProviders() {
       pendingView = "ai-providers";
+      open = true;
+    },
+    /**
+     * Opens on one menu, with ← leading back to the root. Lets a control that
+     * stands for a group of actions (a breadcrumb, an overflow button) hand
+     * over to the palette instead of growing its own menu.
+     */
+    showMenu(menu: CommandPaletteMenu) {
+      pendingView = menu;
       open = true;
     },
     consumePendingView(): CommandPaletteView {

@@ -6,6 +6,7 @@
  * same start/end/dragging state and update it together on mouse events.
  */
 
+import { selectionRangeHint } from "./selectionRangeHint";
 import { DRAG_SLOP_PX, exceededDragSlop as slopExceeded } from "$lib/dragSlop";
 
 export type SelectionKind = "comment" | "question" | "note";
@@ -112,6 +113,11 @@ class DiffSelection {
     return this.first() === this.last()
       ? `Line ${this.first()}`
       : `Lines ${this.first()}–${this.last()}`;
+  }
+
+  /** Composer hint after the range label. */
+  rangeHint(): string {
+    return selectionRangeHint(this.start, this.end);
   }
 
   clear() {

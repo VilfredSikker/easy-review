@@ -32,3 +32,14 @@ export function moveHighlight(current: number, count: number, dir: 1 | -1): numb
   if (current < 0) return dir === 1 ? 0 : count - 1;
   return (current + dir + count) % count;
 }
+
+/** Small-caps tag in the dropdown's first column. */
+export function suggestionLabel(s: Pick<FilterSuggestionSnapshot, "kind">): string {
+  return s.kind === "history" ? "RECENT" : s.kind.toUpperCase();
+}
+
+/** Footer under the suggestions: what the filter currently shows against the
+ *  whole diff, so a reader sees how much of the review the filter hides. */
+export function suggestionFooter(shown: number, reviewed: number, total: number): string {
+  return `${shown} ${shown === 1 ? "file" : "files"} · ${reviewed}/${total} reviewed`;
+}

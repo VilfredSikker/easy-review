@@ -57,8 +57,14 @@
 
   const mergedReplies = $derived(mergeFindingReplies(finding, thread));
 
-  function focusReply() {
-    replyInputEl?.focus();
+  // The prototype's reply box is closed until asked for; an unsent draft keeps
+  // it open so switching files never hides typed text.
+  let replyOpen = $state(false);
+  const replyVisible = $derived(replyOpen || draft.replyText.length > 0);
+
+  function toggleReply() {
+    replyOpen = !replyOpen;
+    if (replyOpen) queueMicrotask(() => replyInputEl?.focus());
   }
 
   function dismiss() {
@@ -70,6 +76,7 @@
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked("reply_to_finding");
     void app.cmd("reply_to_finding", { findingId: finding.id, body, aiAssist: false });
     draft.replyText = "";
+    replyOpen = false;
   }
   async function askAi() {
     if (thread) {
@@ -175,9 +182,9 @@
 
 <div
   id="finding-{finding.id}"
-  class="my-3 border rounded-lg overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-full"
+  class="my-3 border border-border rounded-[9px] overflow-hidden font-sans scroll-mt-16 min-w-0 max-w-[720px] bg-surface"
   class:opacity-60={finding.resolved}
-  style="border-color: color-mix(in srgb, {severityColor} 30%, transparent); background: color-mix(in srgb, {severityColor} 4%, transparent);"
+  style="border-left: 3px solid {severityColor};"
 >
   <!-- Header -->
   <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs flex-wrap">
@@ -227,17 +234,17 @@
   <!-- Actions on the finding (not on replies below) -->
   <div class="px-3 py-1.5 border-t border-hairline flex items-center gap-2 text-[11px] flex-wrap">
     {#if !isPromoted}
-      <button type="button" onclick={() => (showPromote = true)} class="px-2 py-0.5 rounded text-comment hover:bg-hover flex items-center gap-1">
+      <button type="button" onclick={() => (showPromote = true)} title="Turns this finding into a GitHub comment and removes the finding" class="px-2 h-6 rounded-[7px] border border-border bg-surface text-fg-2 hover:border-fg-3 flex items-center gap-1">
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
         Promote to comment
       </button>
     {/if}
-    <button type="button" onclick={focusReply} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover">Reply</button>
+    <button type="button" onclick={toggleReply} aria-expanded={replyVisible} class="px-2 h-6 rounded-[7px] text-fg-3 hover:bg-hover hover:text-fg-1">Reply</button>
     <button
       type="button"
       onclick={() => void askAi()}
       title="Ask AI to elaborate on this finding"
-      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+      class="px-2 h-6 rounded-[7px] text-ai hover:bg-hover flex items-center gap-1"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M12 2l3 7h7l-5.5 4 2 7L12 16l-6.5 4 2-7L2 9h7z"/></svg>
       Ask AI
@@ -246,7 +253,7 @@
       type="button"
       onclick={() => void validateWithAi()}
       title="Check this finding against the current code (local reply, not posted to GitHub)"
-      class="px-2 py-0.5 rounded text-ai hover:bg-hover flex items-center gap-1"
+      class="px-2 h-6 rounded-[7px] text-ai hover:bg-hover flex items-center gap-1"
     >
       <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="10"/></svg>
       Validate with AI
@@ -256,10 +263,10 @@
         type="button"
         onclick={() => void deleteConversation()}
         title="Remove validation / AI replies on this finding"
-        class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg"
+        class="px-2 h-6 rounded-[7px] text-fg-3 hover:bg-hover hover:text-del-fg"
       >Remove thread</button>
     {/if}
-    <button type="button" onclick={dismiss} class="px-2 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-del-fg" title="Remove finding from review">Dismiss finding</button>
+    <button type="button" onclick={dismiss} class="px-2 h-6 rounded-[7px] text-fg-3 hover:bg-hover hover:text-del-fg" title="Remove finding from review">Dismiss finding</button>
     <span class="ml-auto kbd">⇧R</span>
   </div>
 
@@ -306,18 +313,20 @@
   {/if}
 
   <!-- Reply composer -->
+  {#if replyVisible}
   <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">
     <input
       bind:this={replyInputEl}
       bind:value={draft.replyText}
       onkeydown={(e) => {
         if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); reply(); }
-        else if (e.key === "Escape") { draft.replyText = ""; }
+        else if (e.key === "Escape") { draft.replyText = ""; replyOpen = false; }
       }}
       placeholder="Reply to this finding…"
       class="bg-transparent flex-1 text-[13px] outline-none placeholder:text-muted"
     />
   </div>
+  {/if}
 
   {#if isPromoted}
     <div class="px-3 py-1.5 border-t border-hairline text-[11px] font-mono text-muted flex items-center gap-1">

@@ -1,35 +1,31 @@
 <script lang="ts">
-  import type { Vote } from "$lib/types/arena";
-  import ArenaVoteIcon from "$lib/components/arena/ArenaVoteIcon.svelte";
+  import { VOTE_META, VOTE_ORDER } from "$lib/arena/arenaView";
+  import ArenaVoteCell from "$lib/components/arena/ArenaVoteCell.svelte";
 
   interface Props {
-    compact?: boolean;
     class?: string;
   }
 
-  const { compact = false, class: className = "" }: Props = $props();
-
-  const items: { vote: Vote; label: string }[] = [
-    { vote: "keep", label: "Keep" },
-    { vote: "drop", label: "Drop" },
-    { vote: "merge", label: "Merge" },
-    { vote: "escalate", label: "Escalate" },
-    { vote: "lower", label: "Lower" },
-    { vote: "flag", label: "Flag" },
-    { vote: "abstain", label: "Abstain" },
-    { vote: "propose", label: "Propose" },
-  ];
+  const { class: className = "" }: Props = $props();
 </script>
 
-<div
-  class="flex flex-wrap items-center gap-x-3 gap-y-1 {compact ? 'text-[9px]' : 'text-[10px]'} {className}"
-  role="list"
-  aria-label="Vote legend"
->
-  {#each items as item (item.vote)}
-    <span class="inline-flex items-center gap-1 text-[var(--arena-fg-muted)]" role="listitem">
-      <ArenaVoteIcon vote={item.vote} size={compact ? 12 : 14} />
-      <span>{item.label}</span>
-    </span>
+<div class="legend {className}" role="list" aria-label="Vote legend">
+  {#each VOTE_ORDER as vote (vote)}
+    <span role="listitem"><ArenaVoteCell {vote} />{VOTE_META[vote].label}</span>
   {/each}
 </div>
+
+<style>
+  .legend {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 11px;
+    color: var(--color-muted);
+  }
+  .legend > span {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+</style>

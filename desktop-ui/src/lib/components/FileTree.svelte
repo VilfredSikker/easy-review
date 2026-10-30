@@ -2,15 +2,15 @@
   import { app } from "$lib/stores/app.svelte";
   import { buildTree, filesByPathMap, resolveTreeFile, visibleTree } from "$lib/treeFromPaths";
   import ScopeSelector from "./ScopeSelector.svelte";
+  import FileRailRow from "./FileRailRow.svelte";
   import { onDestroy } from "svelte";
   import { windowFromScroll } from "$lib/virtualWindow";
   import { diffNav } from "$lib/stores/diffNav.svelte";
   import { diffScroll } from "$lib/stores/diffScroll.svelte";
   import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
   import type { FileSnapshot } from "$lib/types";
-  import { extChip, hiddenFindingCounts, toggledPath, toggledPaths } from "$lib/fileTreeModel";
-  import { riskDotClass } from "$lib/fileStatus";
-  import { moveHighlight, visibleSuggestions } from "$lib/filterSuggestions";
+  import { hiddenFindingCounts, toggledPath, toggledPaths } from "$lib/fileTreeModel";
+  import { moveHighlight, suggestionFooter, suggestionLabel, visibleSuggestions } from "$lib/filterSuggestions";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
 
   interface Props {
@@ -331,30 +331,6 @@
     return `${6 + depth * 12}px`;
   }
 
-  function filenameClass(file: { reviewed: boolean; status: string }, selected: boolean): string {
-    if (file.status === "deleted") return "text-muted line-through";
-    if (file.reviewed) return "text-muted line-through";
-    if (selected) return "font-semibold text-fg";
-    return "text-fg-2";
-  }
-
-  // ── File-type chip helpers ────────────────────────────────────────────────
-  function fileExtension(path: string): string {
-    const name = path.split("/").pop() ?? path;
-    // Handle compound extensions like .test.ts → take last segment
-    const parts = name.split(".");
-    if (parts.length < 2) return "";
-    return parts[parts.length - 1].toLowerCase();
-  }
-
-  function fileRowClass(row: { pickerFocused: boolean; selected: boolean; inViewport: boolean; checked: boolean }): string {
-    if (row.pickerFocused) return "bg-ink-700 border-accent/60";
-    if (row.selected) return "bg-tree-selected border-accent";
-    if (row.inViewport) return "border-accent/40 bg-card/60 hover:bg-hover";
-    if (row.checked) return "bg-card/40 border-transparent hover:bg-hover";
-    return "border-transparent hover:bg-hover";
-  }
-
   const showTreeContent = $derived(
     pickerMode
       ? sourceFiles.length > 0 && displayTree.length > 0
@@ -394,49 +370,54 @@
     : 'w-64 border-r border-hairline bg-surface flex flex-col overflow-hidden transition-[width] duration-200'}"
 >
   <div class="shrink-0 border-b border-hairline">
-    <div class="flex items-center gap-2 px-3 py-2">
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-fg-3"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
-      <input
-        bind:this={inputEl}
-        class="flex-1 bg-transparent text-sm text-fg-2 placeholder:text-muted outline-none min-w-0"
-        placeholder="Filter files…"
-        value={filterDraft}
-        oninput={onFilterInput}
-        onkeydown={onFilterKeydown}
-        onfocus={onFilterFocus}
-        onblur={onFilterBlur}
-      />
-      <span class="kbd">/</span>
-    </div>
-    <!-- Quick filters render in normal flow ABOVE the results: all of them
-         while the query is empty, only matching kinds while typing `kind:`,
-         none otherwise — so the live matching files below stay visible rather
-         than sitting under a dropdown. -->
-    {#if !pickerMode && inputFocused && suggestions.length > 0}
-      <div class="border-t border-hairline max-h-40 overflow-y-auto" bind:this={suggestionsEl}>
-        {#each suggestions as sug, i (i)}
-          <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div
-            class="flex items-center gap-2 px-3 py-1 text-[12px] cursor-pointer hover:bg-hover
-              {i === highlight ? 'bg-hover' : ''}"
-            data-sugg-idx={i}
-            aria-selected={i === highlight}
-            onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
-          >
-            <span class="text-[10px] mono uppercase shrink-0 {sug.kind === 'history' ? 'text-muted' : 'text-accent'}">{sug.kind === 'history' ? 'recent' : sug.kind}</span>
-            {#if sug.kind === 'kind'}
-              <span class="text-fg-2 mono shrink-0">{sug.expr}</span>
-              <span class="text-muted mono text-[11px] ml-auto shrink-0">{sug.files} {sug.files === 1 ? 'file' : 'files'}</span>
-            {:else if sug.kind === 'preset'}
-              <span class="text-fg-2 shrink-0">{sug.name}</span>
-              <span class="text-muted mono truncate text-[11px]">{sug.expr}</span>
-            {:else}
-              <span class="text-fg-2 mono truncate">{sug.expr}</span>
-            {/if}
-          </div>
-        {/each}
+    <div class="px-2.5 pt-2.5 pb-1.5">
+      <div class="flex items-center gap-1.5 h-7 px-2 rounded-[7px] border border-hairline bg-card text-fg-3 focus-within:border-fg-3">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+        <input
+          bind:this={inputEl}
+          class="flex-1 bg-transparent text-[12px] text-fg placeholder:text-fg-3 outline-none min-w-0"
+          placeholder="Filter files…"
+          value={filterDraft}
+          oninput={onFilterInput}
+          onkeydown={onFilterKeydown}
+          onfocus={onFilterFocus}
+          onblur={onFilterBlur}
+        />
+        <span class="kbd">/</span>
       </div>
-    {/if}
+      <!-- Quick filters render in normal flow ABOVE the results: all of them
+           while the query is empty, only matching kinds while typing `kind:`,
+           none otherwise — so the live matching files below stay visible rather
+           than sitting under a dropdown. -->
+      {#if !pickerMode && inputFocused && suggestions.length > 0}
+        <div
+          class="mt-1.5 grid p-1 rounded-lg border border-hairline bg-card shadow-lg max-h-48 overflow-y-auto"
+          bind:this={suggestionsEl}
+        >
+          {#each suggestions as sug, i (i)}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="grid grid-cols-[50px_minmax(0,auto)_minmax(0,1fr)] gap-2 items-center px-2 py-[5px] rounded-[5px] text-[12.5px] cursor-pointer hover:bg-hover
+                {i === highlight ? 'bg-hover' : ''}"
+              data-sugg-idx={i}
+              aria-selected={i === highlight}
+              onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
+            >
+              <span class="mono text-[10px] tracking-[0.04em] {sug.kind === 'history' ? 'text-muted' : 'text-accent'}">{suggestionLabel(sug)}</span>
+              <span class="mono font-medium text-fg truncate min-w-0">{sug.kind === 'preset' ? sug.name : sug.expr}</span>
+              <span class="mono text-[11px] text-fg-3 truncate text-right">
+                {#if sug.kind === 'kind'}{sug.files ?? 0} {sug.files === 1 ? 'file' : 'files'}{:else if sug.kind === 'preset'}{sug.expr}{/if}
+              </span>
+            </div>
+          {/each}
+          {#if snapshot}
+            <div class="border-t border-hairline mt-1 pt-1.5 px-2 pb-0.5 text-[11px] text-fg-3">
+              {suggestionFooter(files.length, snapshot.reviewed_count, snapshot.total_count)}
+            </div>
+          {/if}
+        </div>
+      {/if}
+    </div>
   </div>
 
   {#if snapshot || pickerMode}
@@ -522,78 +503,19 @@
             {@const inViewport = !pickerMode && !selected && viewportPath === file.path}
             {@const pickerFocused = pickerMode && visibleFilePaths[pickerFocusIdx] === file.path}
             {@const checked = pickerMode && isPathSelected(file.path)}
-            {@const chip = extChip(fileExtension(file.path))}
-            <div
-              role="treeitem"
-              aria-level={node.depth + 1}
-              aria-selected={pickerMode ? checked : selected}
-              tabindex={selected ? 0 : -1}
-              class="flex items-center gap-1.5 pr-2 cursor-pointer border-l-2 transition-colors duration-75 {fileRowClass({ pickerFocused, selected, inViewport, checked })}"
-              style="padding-top: 4px; padding-bottom: 4px; padding-left: {indentPx(node.depth)};"
-              onclick={() =>
-                pickerMode
-                  ? toggleSelection(file.path)
-                  : jumpToFile(file.path, file.source_index)}
-              onkeydown={(e) => {
-                if (e.key !== "Enter") return;
-                if (pickerMode) toggleSelection(file.path);
-                else jumpToFile(file.path, file.source_index);
-              }}
-            >
-              {#if pickerMode}
-                <input
-                  type="checkbox"
-                  class="shrink-0 size-3.5 accent-accent"
-                  {checked}
-                  onclick={(e) => e.stopPropagation()}
-                  onchange={() => toggleSelection(file.path)}
-                  aria-label="Include {node.name} in review"
-                />
-              {/if}
-              <!-- File-type chip -->
-              <span
-                class="shrink-0 inline-flex items-center justify-center w-[14px] h-[14px] rounded-[3px] text-[7px] font-bold leading-none"
-                style="background: color-mix(in srgb, {chip.color} 13%, transparent); color: {chip.color}"
-                aria-hidden="true"
-              >{chip.label}</span>
-
-              <!-- File-level risk from the review, on every row that has a
-                   verdict — the spec's "a dot per row". A file the review never
-                   reached carries none, which is the distinction the dot makes. -->
-              {#if file.risk}
-                <span
-                  class="w-1.5 h-1.5 rounded-full shrink-0 {riskDotClass(file.risk)}"
-                  title="Risk: {file.risk}"
-                  aria-hidden="true"
-                ></span>
-              {/if}
-
-              <span class="truncate flex-1 min-w-0 text-[12px] {filenameClass(file, selected)}">{node.name}</span>
-
-              <!-- Comment/question/finding badge — shown for any active (non-stale,
-                   non-outdated, non-resolved) annotation regardless of reviewed state. -->
-              {#if file.comment_count > 0 || file.question_count > 0 || file.finding_count > 0}
-                <span
-                  title={annotationTitle(file)}
-                  class="w-[13px] h-[13px] rounded-full shrink-0 flex items-center justify-center text-[9px] font-bold"
-                  style="background: color-mix(in srgb, var(--color-comment) 15%, transparent); color: var(--color-comment); border: 1px solid color-mix(in srgb, var(--color-comment) 25%, transparent);"
-                >?</span>
-              {/if}
-
-              <!-- +N −N counts -->
-              {#if file.is_lazy_stub}
-                <span class="text-[10px] mono text-muted shrink-0 opacity-40">···</span>
-              {:else}
-                <span class="flex items-center gap-1 shrink-0">
-                  {#if file.additions > 0}
-                    <span class="text-[10px] mono text-add-fg">+{file.additions}</span>
-                  {/if}
-                  {#if file.deletions > 0}
-                    <span class="text-[10px] mono text-del-fg">−{file.deletions}</span>
-                  {/if}
-                </span>
-              {/if}
-            </div>
+            <FileRailRow
+              {file}
+              depth={node.depth}
+              {selected}
+              {inViewport}
+              {pickerMode}
+              {pickerFocused}
+              {checked}
+              annotationTitle={annotationTitle(file)}
+              onActivate={() =>
+                pickerMode ? toggleSelection(file.path) : jumpToFile(file.path, file.source_index)}
+              onTogglePick={() => toggleSelection(file.path)}
+            />
           {/if}
         {/each}
       </div>

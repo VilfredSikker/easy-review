@@ -1,73 +1,189 @@
 <script lang="ts">
   import type { ArenaRunSnapshot } from "$lib/types/arena";
-  import { basename, verdictLabel, verdictPillClass } from "$lib/arena/display";
-  import { voteCellClass } from "$lib/arena/voteCell";
-  import ArenaVoteIcon from "$lib/components/arena/ArenaVoteIcon.svelte";
+  import { basename } from "$lib/arena/display";
+  import {
+    VOTE_META,
+    arbiterBallot,
+    findingLabels,
+    firstSentence,
+    hasArbiterRound,
+    latestSeverity,
+    reviewerColorVar,
+    verdictKey,
+    votesAtRound,
+  } from "$lib/arena/arenaView";
+  import ArenaVoteCell from "$lib/components/arena/ArenaVoteCell.svelte";
+  import ArenaVerdictPill from "$lib/components/arena/ArenaVerdictPill.svelte";
 
   interface Props {
     snapshot: ArenaRunSnapshot;
+    /** Reviewer round whose ballots fill the vote cells. */
+    round: number;
     selectedId: string | null;
     onSelect: (id: string) => void;
   }
 
-  const { snapshot, selectedId, onSelect }: Props = $props();
+  const { snapshot, round, selectedId, onSelect }: Props = $props();
 
   const reviewers = $derived(snapshot.run.reviewers);
+  const labels = $derived(findingLabels(snapshot.run.findings));
+  const showArbiter = $derived(hasArbiterRound(snapshot));
 </script>
 
-<div class="min-h-0 flex-1 overflow-auto p-3">
-  <table class="w-full min-w-[640px] border-collapse text-left text-[11px]">
+<div class="wrap">
+  <table class="ar-table">
     <thead>
-      <tr class="border-b border-[var(--arena-border)] text-[10px] uppercase tracking-wider text-[var(--arena-fg-faint)]">
-        <th class="sticky left-0 z-10 bg-[var(--arena-bg-0)] px-2 py-2 font-semibold">Finding</th>
-        {#each reviewers as r, ri (ri)}
-          <th class="px-2 py-2 font-semibold" style="color:{r.color}">{r.name}</th>
+      <tr>
+        <th>Finding</th>
+        {#each reviewers as r, ri (r.id)}
+          <th class="c" title="{r.name} · {r.model_id}"><i style="background:{reviewerColorVar(r, ri)}"></i>{r.name}</th>
         {/each}
-        {#if snapshot.arbiter && snapshot.run.config.rounds >= 2}
-          <th class="px-2 py-2 font-semibold text-[var(--arena-periwinkle)]">Arbiter</th>
-        {/if}
-        <th class="px-2 py-2 font-semibold">Verdict</th>
+        {#if showArbiter}<th>Arbiter</th>{/if}
+        <th>Verdict</th>
       </tr>
     </thead>
     <tbody>
-      {#each snapshot.matrix as row (row.finding_id)}
-        {@const f = snapshot.run.findings.find((x) => x.id === row.finding_id)}
-        {#if f}
-          <tr
-            class="arena-link-row cursor-pointer border-b border-[var(--arena-border)] {row.verdict === 'dropped' ? 'opacity-55' : ''} {selectedId === f.id ? 'arena-selected' : ''}"
-            onclick={() => onSelect(f.id)}
-          >
-            <td class="sticky left-0 z-10 max-w-[200px] bg-[var(--arena-bg-0)] px-2 py-2">
-              <p class="truncate font-medium text-[var(--arena-fg)]">{f.title}</p>
-              <p class="mono truncate text-[9px] text-[var(--arena-fg-faint)]">{basename(f.file)}</p>
+      {#each snapshot.run.findings as f (f.id)}
+        {@const votes = votesAtRound(f, round)}
+        {@const ruling = f.rationale || arbiterBallot(f)?.note || ""}
+        <tr
+          class:dropped={verdictKey(f.verdict) === "dropped"}
+          class:sel={selectedId === f.id}
+          onclick={() => onSelect(f.id)}
+        >
+          <td>
+            <button type="button" class="ft" aria-pressed={selectedId === f.id}>
+              <span class="mono faint">{labels.get(f.id)}</span>
+              <span class="sev sev-{latestSeverity(f)}" title="{latestSeverity(f)} severity"></span>
+              <span class="t">{f.title}</span>
+            </button>
+            <div class="mono faint loc">{basename(f.file)}{f.line ? `:${f.line}` : ""}</div>
+          </td>
+          {#each reviewers as r (r.id)}
+            {@const v = votes[r.id]}
+            <td class="c">
+              <ArenaVoteCell
+                vote={v}
+                title="{r.name} · round {round}: {v ? VOTE_META[v].label : 'no vote'}"
+              />
             </td>
-            {#each reviewers as r, ri (ri)}
-              {@const vote = row.latest_vote[r.id]}
-              <td class="px-2 py-2 text-center {voteCellClass(vote)}">
-                {#if vote}
-                  <ArenaVoteIcon {vote} size={15} class="mx-auto" />
-                {:else}
-                  <span class="text-[var(--arena-fg-faint)]">—</span>
-                {/if}
-              </td>
-            {/each}
-            {#if snapshot.arbiter && snapshot.run.config.rounds >= 2}
-              <td class="max-w-[140px] px-2 py-2 text-[10px] text-[var(--arena-fg-muted)]" title={row.arbiter_note}>
-                {#if row.arbiter_vote}
-                  <ArenaVoteIcon vote={row.arbiter_vote} size={15} class="mx-auto" />
-                {/if}
-                <span class="mt-0.5 whitespace-pre-wrap break-words">{row.arbiter_note || "—"}</span>
-              </td>
-            {/if}
-            <td class="px-2 py-2">
-              <span class={verdictPillClass(row.verdict)}>{verdictLabel(row.verdict)}</span>
-              <span class="mono ml-1 text-[10px] text-[var(--arena-fg-subtle)]"
-                >{Math.round(row.confidence * 100)}%</span
-              >
-            </td>
-          </tr>
-        {/if}
+          {/each}
+          {#if showArbiter}
+            <td title={ruling}><span class="arb">{ruling ? firstSentence(ruling) : "—"}</span></td>
+          {/if}
+          <td><ArenaVerdictPill verdict={f.verdict} /></td>
+        </tr>
       {/each}
     </tbody>
   </table>
 </div>
+
+<style>
+  .wrap {
+    overflow-x: auto;
+    border: 1px solid var(--color-hairline);
+    border-radius: 10px;
+    background: var(--color-surface);
+  }
+  .ar-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12.5px;
+  }
+  th {
+    text-align: left;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    padding: 9px 10px;
+    border-bottom: 1px solid var(--color-hairline);
+    white-space: nowrap;
+  }
+  th i {
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    margin-right: 5px;
+  }
+  td {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--color-hairline);
+    vertical-align: middle;
+    color: var(--color-fg);
+  }
+  tr:last-child td {
+    border-bottom: 0;
+  }
+  tbody tr {
+    cursor: pointer;
+  }
+  tbody tr:hover td {
+    background: var(--color-card);
+  }
+  .ft:focus-visible {
+    outline: 1px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: 3px;
+  }
+  tr.sel td {
+    background: color-mix(in srgb, var(--color-accent) 9%, var(--color-surface));
+  }
+  tr.sel td:first-child {
+    box-shadow: inset 2px 0 0 var(--color-accent);
+  }
+  tr.dropped .t {
+    text-decoration: line-through;
+    color: var(--color-muted);
+  }
+  .c {
+    text-align: center;
+  }
+  .ft {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    text-align: left;
+    color: inherit;
+  }
+  .t {
+    font-weight: 500;
+  }
+  .loc {
+    font-size: 10.5px;
+    margin-top: 2px;
+    padding-left: 36px;
+  }
+  .faint {
+    color: var(--color-muted);
+  }
+  .arb {
+    color: var(--color-fg-3);
+    font-size: 12px;
+    max-width: 220px;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
+  }
+  .sev {
+    width: 7px;
+    height: 7px;
+    border-radius: 2px;
+    flex: none;
+    background: var(--color-muted);
+  }
+  .sev-high {
+    background: var(--color-risk-high);
+  }
+  .sev-med {
+    background: var(--color-risk-med);
+  }
+  .sev-low {
+    background: var(--color-risk-low);
+  }
+</style>

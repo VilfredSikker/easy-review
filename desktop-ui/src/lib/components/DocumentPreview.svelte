@@ -37,6 +37,7 @@
   {:else if state.text.length === 0}
     <p class="preview-state">Empty file</p>
   {:else if file}
+    <p class="doc-note">{file.status === "added" ? "New file" : "After this change"}</p>
     <DocumentPreviewBlocks source={state.text} {blocks} {file} />
   {:else if kind === "markdown"}
     <DocumentMarkdown {segments} />
@@ -50,6 +51,7 @@
   .preview-state { color: var(--color-fg-3); margin: 0; font-size: 0.8125rem; }
   .preview-state p { margin: 0 0 0.4rem; }
   .preview-error { white-space: pre-wrap; }
+  .doc-note { color: var(--color-muted); margin: 0 0 0.5rem; font-size: 0.6875rem; }
   button { padding: 0.25rem 0.6rem; border: 1px solid var(--color-border); border-radius: 4px; color: var(--color-fg); cursor: pointer; }
   .document-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-family: "JetBrains Mono", monospace; font-size: 0.8125rem; line-height: 1.6; }
 </style>

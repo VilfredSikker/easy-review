@@ -150,14 +150,8 @@ describe("optimistic local-write call sites", () => {
   });
 
   it("fires app-wide chrome writes without waiting on the backend", () => {
-    const inbox = component("InboxPanel.svelte");
-    for (const command of [
-      "mark_inbox_item_read",
-      "mark_inbox_items_read",
-      "mark_all_inbox_read",
-      "clear_read_inbox_items",
-      "clear_inbox_items",
-    ]) {
+    const inbox = component("InboxView.svelte");
+    for (const command of ["mark_inbox_items_read", "clear_inbox_items"]) {
       expect(inbox).toContain(`void app.cmd("${command}"`);
     }
 
@@ -249,7 +243,11 @@ describe("panel chrome is local-first", () => {
   });
 
   it("command palette toggles all three chrome panels through togglePanel", () => {
-    const palette = component("CommandPalette.svelte");
+    // The View & Layout menu is built in commandPaletteMenus.ts.
+    const palette = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "commandPaletteMenus.ts"),
+      "utf8",
+    );
     expect(palette).toContain('id: "toggle-tree"');
     expect(palette).toContain('app.togglePanel("left")');
     expect(palette).toContain('app.togglePanel("tree")');

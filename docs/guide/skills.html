@@ -130,19 +130,22 @@
       <code>triage.json</code>. Useful before committing to a full review.
     </p>
 
-    <h3>Importance rules</h3>
+    <h3>Risk rules</h3>
     <table>
       <thead><tr><th>App</th><th>Invocation</th></tr></thead>
       <tbody>
-        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Propose importance rules</strong></td></tr>
+        <tr><td>TUI</td><td>Press <kbd>a</kbd> → <strong>Propose risk rules</strong></td></tr>
         <tr><td>Desktop</td><td>Settings → Review → <strong>File importance</strong> → <strong>Propose rules</strong></td></tr>
       </tbody>
     </table>
     <p>
-      Reads the repo and writes this repo's <code>[importance.&lt;repo&gt;]</code> table into the global
-      config, where each rule declares a path, glob or file type as <code>foundational</code> or
-      <code>isolated</code>. The table ranks files by how much of the tree depends on them without asking a
-      model at review time, so an unreviewed diff can be filtered with <code>importance:foundational</code>.
+      Reads the repo and writes this repo's <code>[risk.&lt;repo&gt;]</code> table into the global
+      config, where each rule declares a path, glob or file type as <code>high</code>, <code>med</code>,
+      <code>low</code> or <code>ai</code> (no fixed tier: the AI review rates the file). Rules you write
+      yourself under <code>[user_risk]</code> apply in every repo, after the repo's own. The tiers rank
+      files without asking a model at review time, so an unreviewed diff can be filtered with
+      <code>importance:high</code>. An older <code>[importance.&lt;repo&gt;]</code> table is still read
+      (<code>foundational</code> as high, <code>isolated</code> as low, <code>normal</code> as ai).
       The agent reports the share each tier covers; a table that claims most of the tree is visible there.
     </p>
 

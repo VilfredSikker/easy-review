@@ -30,6 +30,7 @@
   import BrowserView from "$lib/components/BrowserView.svelte";
   import AgentOutputView from "$lib/components/AgentOutputView.svelte";
   import ExportReviewView from "$lib/components/ExportReviewView.svelte";
+  import InboxView from "$lib/components/InboxView.svelte";
   import SettingsPage from "$lib/components/settings/SettingsPage.svelte";
   import { showFullWelcome as showFullWelcomeFor } from "$lib/welcomeVisibility";
   import { browser } from "$lib/stores/browser.svelte";
@@ -340,6 +341,8 @@
               <DiffView />
             {:else if app.mainView === "agent-output"}
               <AgentOutputView />
+            {:else if app.mainView === "inbox"}
+              <InboxView />
             {:else}
               <ExportReviewView />
             {/if}

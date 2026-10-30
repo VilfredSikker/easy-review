@@ -33,6 +33,20 @@ export const WithInlineComposer: Story = {
  * "Promote to comment" action is hidden and a "Promoted to #N" footer
  * is shown instead.
  */
+export const Note: Story = {
+  args: { thread: { ...questionThread, kind: "note" }, hunk_idx: 0 },
+};
+
+/** Anchored on a document line outside the diff: Promote is hidden (ADR 0041). */
+export const DocumentAnchored: Story = {
+  args: { thread: questionThread, hunk_idx: 0, documentAnchored: true },
+};
+
+/** Resolved: Reply stays on the card and Delete moves into the overflow menu. */
+export const ResolvedNote: Story = {
+  args: { thread: { ...questionThread, kind: "note", resolved: true }, hunk_idx: 0 },
+};
+
 export const AlreadyPromoted: Story = {
   args: {
     thread: { ...questionThread, promoted_to: "c-1738592100000-42" },

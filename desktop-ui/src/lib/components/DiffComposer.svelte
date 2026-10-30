@@ -117,8 +117,23 @@
     }
   }
 
-  const cardClass =
-    "mb-4 mt-2 rounded-lg overflow-hidden font-sans shadow-[0_20px_40px_-8px_rgba(0,0,0,0.7),0_0_0_1px_color-mix(in_srgb,var(--color-fg)_4%,transparent)]";
+  /** Accent bar and focus ring colour per kind, matching the posted annotation card. */
+  const KIND_VAR: Record<SelectionKind, string> = {
+    comment: "var(--color-comment)",
+    question: "var(--color-question)",
+    note: "var(--color-note)",
+  };
+  const KIND_LABEL: Record<SelectionKind, string> = {
+    comment: "Comment",
+    question: "Question",
+    note: "Note",
+  };
+  const VISIBILITY: Record<SelectionKind, string> = {
+    comment: "will sync to GitHub",
+    question: "private · won't push",
+    note: "private · won't push",
+  };
+  const KINDS: SelectionKind[] = ["comment", "question", "note"];
 </script>
 
 <div
@@ -140,82 +155,49 @@
       aria-label="Add comment or question"
       tabindex="-1"
       onkeydown={() => {}}
-      class={[
-        cardClass,
-        diffSel.kind === "question" || diffSel.kind === "note"
-          ? "border border-question/40 bg-card"
-          : "border border-action/40 bg-card",
-      ]}
+      class="composer-card mb-4 mt-2 grid max-w-[760px] gap-1.5 rounded-[9px] border border-border bg-card px-3 py-2.5 font-sans"
+      style="--kc:{KIND_VAR[diffSel.kind]}; box-shadow: inset 3px 0 0 var(--kc)"
     >
-    <!-- Header -->
-    <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
-      {#if diffSel.kind === "comment"}
-        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-action"><path d="M3 3h7v7H3zM14 3h7v7h-7zM14 14h7v7h-7zM3 14h7v7H3z"/></svg>
-      {/if}
-      <span class="text-fg-2 font-medium">{diffSel.rangeLabel()}</span>
-
-      <div class="ml-3 flex items-center gap-0.5 bg-bg border border-hairline rounded-md p-0.5">
-        <button type="button"
-          onclick={() => (diffSel.kind = "comment")}
-          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-                 {diffSel.kind === 'comment' ? 'bg-comment text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-        >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-          Comment
-        </button>
-        <button type="button"
-          onclick={() => (diffSel.kind = "question")}
-          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-                 {diffSel.kind === 'question' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-        >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01"/></svg>
-          Question
-        </button>
-        <button type="button"
-          onclick={() => (diffSel.kind = "note")}
-          class="px-2 py-0.5 rounded text-[11px] flex items-center gap-1 transition
-                 {diffSel.kind === 'note' ? 'bg-question text-on-accent font-medium' : 'text-fg-3 hover:text-fg-2'}"
-        >
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M9 13h6M9 17h6"/></svg>
-          Note
-        </button>
+      <div class="flex flex-wrap items-center gap-2.5">
+        <div class="flex items-center gap-0.5 rounded-md border border-hairline bg-bg p-0.5" role="group" aria-label="Kind">
+          {#each KINDS as k (k)}
+            <button type="button"
+              aria-pressed={diffSel.kind === k}
+              onclick={() => (diffSel.kind = k)}
+              class="rounded px-2 py-0.5 text-[11px] transition {diffSel.kind === k ? 'font-medium text-on-accent' : 'text-fg-3 hover:text-fg-2'}"
+              style={diffSel.kind === k ? `background:${KIND_VAR[k]}` : undefined}
+            >{KIND_LABEL[k]}</button>
+          {/each}
+        </div>
+        <span class="mono text-[11px] text-muted">{diffSel.rangeLabel()} · {diffSel.rangeHint()}</span>
+        <span class="ml-auto text-[11px] text-muted">{VISIBILITY[diffSel.kind]}</span>
       </div>
 
-      <span class="ml-auto text-[10px] mono text-muted">
-        {diffSel.kind === "comment" ? "will sync to GitHub" : "private · won't push"}
-      </span>
-      <button type="button" onclick={() => diffSel.clear()} aria-label="Cancel" class="ml-2 text-muted hover:text-fg-2">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-      </button>
-    </div>
+      <textarea
+        bind:this={composerEl}
+        bind:value={diffSel.text}
+        onkeydown={handleKeydown}
+        rows="3"
+        placeholder={PLACEHOLDER[diffSel.kind]}
+        style="--kc:{KIND_VAR[diffSel.kind]}"
+        class="min-h-16 w-full resize-y rounded-[7px] border border-border bg-bg px-2.5 py-2 font-sans text-[13px] leading-normal outline-none placeholder:text-muted focus:border-[color-mix(in_srgb,var(--kc)_60%,transparent)]"
+      ></textarea>
 
-    <textarea
-      bind:this={composerEl}
-      bind:value={diffSel.text}
-      onkeydown={handleKeydown}
-      rows="3"
-      placeholder={PLACEHOLDER[diffSel.kind]}
-      class="w-full bg-transparent text-sm px-3 py-2.5 outline-none resize-none font-sans placeholder:text-muted leading-relaxed"
-    ></textarea>
-
-    <div class="px-3 py-2 border-t border-hairline flex items-center gap-2 text-[11px]">
-      <span class="text-muted">Markdown supported</span>
-      <span class="ml-auto text-muted flex items-center gap-1">
-        <span class="kbd">ctrl+t</span> toggle
-        <span class="kbd">esc</span> cancel
-      </span>
-      <button type="button"
-        onclick={submit}
-        disabled={!canSubmit}
-        class="px-3 py-1.5 rounded-md text-xs font-medium transition disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5
-               {diffSel.kind === 'question' || diffSel.kind === 'note'
-                 ? 'bg-question hover:bg-question/90 text-on-accent'
-                 : 'bg-comment hover:bg-comment/90 text-on-accent'}"
-      >
-        <span>{SUBMIT_LABEL[diffSel.kind]}</span>
-        <span class="opacity-60 mono">⌘⏎</span>
-      </button>
+      <div class="flex flex-wrap items-center gap-2.5 text-[11px] text-muted">
+        <span><span class="kbd">ctrl+t</span> toggle</span>
+        <span><span class="kbd">esc</span> cancel</span>
+        <span class="flex-1"></span>
+        <button type="button" onclick={() => diffSel.clear()} class="rounded-md px-2.5 py-1.5 text-xs text-fg-2 hover:bg-bg">Cancel</button>
+        <button type="button"
+          onclick={submit}
+          disabled={!canSubmit}
+          class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          style="background:{KIND_VAR[diffSel.kind]}"
+        >
+          <span>{SUBMIT_LABEL[diffSel.kind]}</span>
+          <span class="mono opacity-60">⌘⏎</span>
+        </button>
+      </div>
     </div>
-  </div>
   </div>
 </div>

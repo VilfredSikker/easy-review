@@ -2,8 +2,14 @@
   import type { ArenaStartConfig, LiveRunEntry, LiveRunState } from "$lib/stores/arena.svelte";
   import { arena, isArenaRunActive } from "$lib/stores/arena.svelte";
   import { agentCatalogEntry } from "$lib/arena/agents";
+  import {
+    ARBITER_COLOR,
+    type ReviewerRunState,
+    reviewerColorVar,
+    reviewerProgress,
+    runOrdinals,
+  } from "$lib/arena/arenaView";
   import type { ArenaProgressState, ArenaRunSnapshot, Reviewer } from "$lib/types/arena";
-  import ArenaIcons from "$lib/components/arena/ArenaIcons.svelte";
 
   interface Props {
     open: boolean;
@@ -38,125 +44,110 @@
   const batchMode = $derived(liveRuns.length > 1);
 
   let elapsedSec = $state(0);
-  let tickTimer: ReturnType<typeof setInterval> | null = null;
 
   const isArena = $derived(
-    (config?.reviewers?.length ?? 0) >= 2 ||
+    (snapshot?.run.reviewers.length ?? 0) >= 2 ||
+      (config?.reviewers?.length ?? 0) >= 2 ||
       (config?.agent_groups?.some((g) => g.models.length >= 2) ?? false),
   );
-  const totalRounds = $derived(isArena ? (config?.rounds ?? 3) : 1);
-
-  const runProgress = $derived.by(() => {
-    if (progress?.phase === "arbiter") {
-      return {
-        round: totalRounds,
-        label: "Arbiter",
-        subtitle: "Final verdicts and rationale",
-      };
-    }
-    const st = snapshot?.run.status;
-    if (!st) return { round: 1, label: "Starting…", subtitle: "Preparing reviewers" };
-    if (st === "queued") return { round: 0, label: "Queued", subtitle: "Waiting to start" };
-    if (st === "complete") return { round: totalRounds, label: "Complete", subtitle: "Done" };
-    if (st === "cancelled") return { round: 0, label: "Cancelled", subtitle: "Run cancelled" };
-    if (st === "failed") {
-      const failed = (snapshot?.run.reviewers ?? []).flatMap((r) => {
-        if (typeof r.status === "object" && r.status !== null && "failed" in r.status) {
-          return [`${r.name}: ${r.status.failed.reason}`];
-        }
-        return [];
-      });
-      const subtitle =
-        failed.length > 0 ? failed.slice(0, 2).join(" · ") : "All reviewers failed in round 1";
-      return { round: 0, label: "Failed", subtitle };
-    }
-    if (typeof st === "object" && "running" in st) {
-      const r = st.running.round;
-      const subtitle =
-        r === 1
-          ? "Each reviewer proposing independently"
-          : "Cross-checking findings";
-      return { round: r, label: `Round ${r} of ${totalRounds}`, subtitle };
-    }
-    return { round: 1, label: "Running", subtitle: "Review in progress" };
+  const totalRounds = $derived(
+    progress?.total_rounds || snapshot?.run.config.rounds || (isArena ? (config?.rounds ?? 3) : 1),
+  );
+  const arbiterPhase = $derived(progress?.phase === "arbiter");
+  const status = $derived(snapshot?.run.status);
+  const round = $derived.by(() => {
+    if (progress?.round) return progress.round;
+    if (status && typeof status === "object" && "running" in status) return status.running.round;
+    return 1;
   });
+  const hasArbiter = $derived(isArena && totalRounds >= 2);
+
+  const runName = $derived.by(() => {
+    const id = snapshot?.run.id;
+    if (!id) return isArena ? "New arena" : "Review";
+    const tabs = arena.branchSummaries.filter((s) => s.reviewer_count >= 2 || s.id === id);
+    const n = runOrdinals(tabs.some((s) => s.id === id) ? tabs : [...tabs, { id, created_at: snapshot.run.created_at }]).get(id);
+    return n ? `Run #${n}` : "Run";
+  });
+
+  const headline = $derived.by(() => {
+    if (batchMode) return `${liveRuns.length} reviews in progress`;
+    if (status === "queued") return `${runName} · queued`;
+    if (status === "failed") return `${runName} · failed`;
+    if (status === "cancelled") return `${runName} · cancelled`;
+    if (arbiterPhase) return `${runName} · arbiter ruling`;
+    if (!isArena) return "Review in progress";
+    return `${runName} · round ${Math.min(round, totalRounds)} of ${totalRounds}`;
+  });
+
+  // Shown only when the engine has priced the run; it is an estimate, never the spend.
+  const estCost = $derived(snapshot?.run.cost_estimate?.usd ?? 0);
 
   const reviewers = $derived.by((): Reviewer[] => {
     const fromSnap = snapshot?.run.reviewers ?? [];
     if (fromSnap.length > 0) return fromSnap;
-    return (config?.reviewers ?? []).map((r, i) => ({
-      id: `${r.provider_id}-${r.model_id}`,
-      name: r.model_id,
-      kind: "model" as const,
+    return (config?.reviewers ?? []).map((r) => ({
+      id: r.agent_kind ? `${r.agent_kind}::${r.provider_id}-${r.model_id}` : `${r.provider_id}-${r.model_id}`,
+      name: r.agent_kind ? agentCatalogEntry(r.agent_kind, r.agent_kind, "").label : r.model_id,
+      kind: r.agent_kind ? ("agent" as const) : ("model" as const),
       provider_id: r.provider_id,
       model_id: r.model_id,
       system_prompt: "",
-      color: ["#ff7a2b", "#ff6b6b", "#7f87ff", "#4ec9a4", "#ffc457", "#5fd970"][i % 6],
+      color: "",
       icon: "cube",
       tagline: r.provider_id,
       cost_per_1k_in: 0,
       cost_per_1k_out: 0,
       avg_latency_ms: 12_000,
       status: "ok" as const,
+      agent_kind: r.agent_kind,
     }));
   });
 
-  function reviewerState(r: Reviewer): "thinking" | "done" | "queued" | "failed" {
+  function reviewerState(r: Reviewer): ReviewerRunState {
     if (typeof r.status === "object" && r.status !== null && "failed" in r.status) return "failed";
+    if (arbiterPhase || status === "complete") return "done";
     if (progress?.done.includes(r.id)) return "done";
-    if (progress?.thinking.includes(r.id)) return "thinking";
+    if (progress?.thinking.includes(r.id)) return "running";
     return "queued";
   }
 
-  const pct = $derived.by(() => {
-    if (progress && reviewers.length > 0 && totalRounds > 0) {
-      const doneInRound = reviewers.filter((r) => progress.done.includes(r.id)).length;
-      const roundSlice = 100 / totalRounds;
-      const base = Math.max(0, progress.round - 1) * roundSlice;
-      const inRound = (doneInRound / reviewers.length) * roundSlice;
-      return Math.min(100, Math.round(base + inRound));
-    }
-    const r = runProgress.round;
-    return totalRounds > 0 ? Math.min(100, Math.round((r / totalRounds) * 100)) : 0;
+  const STATE_LABEL: Record<ReviewerRunState, string> = {
+    queued: "Queued",
+    running: "Running",
+    done: "✓ done",
+    failed: "Failed",
+  };
+
+  /** The arbiter rules in one call, so its bar only has three positions. */
+  const ARBITER_PCT: Record<ReviewerRunState, number> = { queued: 0, running: 50, done: 100, failed: 0 };
+
+  const arbiterState = $derived.by((): ReviewerRunState => {
+    if (status === "complete") return "done";
+    return arbiterPhase ? "running" : "queued";
   });
 
-  const headline = $derived.by(() => {
-    if (batchMode) return `${liveRuns.length} reviews in progress`;
-    if (isArena) return `Arena in progress · Round ${Math.min(runProgress.round || 1, totalRounds)} of ${totalRounds}`;
-    return "Review in progress";
+  const overallPct = $derived.by(() => {
+    if (reviewers.length === 0) return 0;
+    const sum = reviewers.reduce(
+      (n, r) => n + reviewerProgress(reviewerState(r), round, totalRounds, arbiterPhase),
+      0,
+    );
+    return Math.round(sum / reviewers.length);
   });
-
-  function roundSegmentClass(i: number): string {
-    if (i + 1 < runProgress.round) return "bg-[var(--arena-periwinkle)]";
-    if (i + 1 === runProgress.round) return "bg-[color-mix(in_srgb,var(--arena-periwinkle)_40%,transparent)]";
-    return "bg-[var(--arena-bg-3)]";
-  }
 
   function runLabel(entry: LiveRunEntry): string {
     if (entry.title) return entry.title;
-    if (entry.agentKind) {
-      const meta = agentCatalogEntry(entry.agentKind, entry.agentKind, "");
-      return meta.label;
-    }
+    if (entry.agentKind) return agentCatalogEntry(entry.agentKind, entry.agentKind, "").label;
     return entry.runId.slice(0, 12);
   }
 
   function batchRunStatus(entry: LiveRunEntry): string {
     const st = liveRunStates[entry.runId]?.snapshot?.run.status;
     if (!st) return "Starting…";
-    if (st === "complete") return "Complete";
-    if (st === "failed") return "Failed";
-    if (st === "cancelled") return "Cancelled";
-    if (st === "queued") return "Queued";
     if (typeof st === "object" && "running" in st) return `Round ${st.running.round}`;
-    return "Running";
+    return st.charAt(0).toUpperCase() + st.slice(1);
   }
-
-  const subhead = $derived(
-    isArena
-      ? runProgress.subtitle
-      : `${reviewers.find((r) => reviewerState(r) === "thinking")?.name ?? reviewers[0]?.name ?? "Reviewer"} is reading the diff`,
-  );
 
   $effect(() => {
     if (snapshot?.run.status === "complete") {
@@ -166,8 +157,6 @@
 
   $effect(() => {
     if (!open || !startedAt) {
-      if (tickTimer) clearInterval(tickTimer);
-      tickTimer = null;
       elapsedSec = 0;
       return;
     }
@@ -175,40 +164,15 @@
       elapsedSec = Math.max(0, (Date.now() - startedAt) / 1000);
     };
     update();
-    tickTimer = setInterval(update, 200);
-    return () => {
-      if (tickTimer) clearInterval(tickTimer);
-      tickTimer = null;
-    };
+    const timer = setInterval(update, 500);
+    return () => clearInterval(timer);
   });
 
-  function handleSkip() {
-    void arena.skipToResults();
+  function elapsedLabel(sec: number): string {
+    const s = Math.floor(sec);
+    return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${s % 60}s`;
   }
 </script>
-
-<style>
-  @keyframes arena-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-  @keyframes arena-pulse-dot {
-    0%,
-    100% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.25;
-    }
-  }
-  .arena-spin-ring {
-    animation: arena-spin 1.1s linear infinite;
-  }
-  .arena-pulse-dot {
-    animation: arena-pulse-dot 1.2s ease-in-out infinite;
-  }
-</style>
 
 {#if open && config}
   {#if minimized}
@@ -222,175 +186,199 @@
           onRestore();
         }
       }}
-      class="fixed bottom-20 right-6 z-[260] flex max-w-[320px] min-w-[240px] cursor-pointer items-center gap-2.5 rounded-full border border-[var(--arena-border)] bg-[var(--arena-bg-1)] px-3 py-2 shadow-[0_10px_28px_rgba(0,0,0,0.45),0_0_0_1px_color-mix(in_srgb,var(--arena-periwinkle)_18%,transparent)] hover:border-[var(--arena-periwinkle)]"
+      class="pill fixed bottom-20 right-6 z-[260]"
       title="Open progress"
       aria-label="Open arena progress"
     >
-      <span class="relative flex h-[34px] w-[34px] shrink-0 items-center justify-center">
-        <svg class="absolute inset-0 -rotate-90" width="34" height="34" viewBox="0 0 34 34" aria-hidden="true">
-          <circle cx="17" cy="17" r="14" fill="none" stroke="var(--arena-bg-3)" stroke-width="2.5" />
-          <circle
-            cx="17"
-            cy="17"
-            r="14"
-            fill="none"
-            stroke="var(--arena-periwinkle)"
-            stroke-width="2.5"
-            stroke-linecap="round"
-            stroke-dasharray="87.96"
-            stroke-dashoffset={87.96 * (1 - pct / 100)}
-          />
-        </svg>
-        <span
-          class="flex h-5 w-5 items-center justify-center rounded-md text-[var(--arena-bg-0)]"
-          style="background: {reviewers.find((r) => reviewerState(r) === 'thinking')?.color ?? 'var(--arena-periwinkle)'}"
-        >
-          <ArenaIcons name="trophy" size={10} class="text-[var(--arena-bg-0)]" />
-        </span>
-      </span>
-      <span class="min-w-0 flex-1 text-left">
-        <span class="block truncate text-[11px] font-medium text-[var(--arena-fg)]">
-          {isArena ? runProgress.label : "Review running"}
-        </span>
-        <span class="block truncate text-[10px] text-[var(--arena-fg-subtle)]">
-          {elapsedSec.toFixed(1)}s · {pct}%
-        </span>
+      <span class="pbar pill-bar"><i style="width:{overallPct}%;background:var(--color-periwinkle)"></i></span>
+      <span class="min-w-0 flex-1">
+        <span class="block truncate pill-t">{headline}</span>
+        <span class="block truncate mono faint">{elapsedLabel(elapsedSec)} · {overallPct}%</span>
       </span>
       <button
         type="button"
-        class="shrink-0 rounded-full p-1 text-[var(--arena-fg-muted)] hover:bg-[var(--arena-bg-2)] hover:text-[var(--arena-fg)]"
+        class="x"
         aria-label="Cancel run"
         onclick={(e) => {
           e.stopPropagation();
           onCancel();
-        }}
-      >✕</button>
+        }}>✕</button
+      >
     </div>
   {:else}
-    <div
-      class="fixed inset-0 z-[260] flex items-center justify-center bg-[color-mix(in_srgb,var(--arena-bg-app)_82%,transparent)] backdrop-blur-[6px]"
-      role="dialog"
-      aria-modal="true"
-      aria-label="Review in progress"
-    >
-      <div
-        class="flex w-full max-w-[520px] flex-col gap-[18px] rounded-[14px] border border-[var(--arena-border)] bg-[var(--arena-bg-1)] p-6 shadow-[0_24px_64px_rgba(0,0,0,0.5),0_0_0_1px_color-mix(in_srgb,var(--arena-periwinkle)_20%,transparent)]"
-      >
-        <div class="flex items-center gap-2.5">
-          <span class="relative inline-flex h-9 w-9 shrink-0 items-center justify-center">
-            <span
-              class="arena-spin-ring absolute inset-0 rounded-full border-2 border-[color-mix(in_srgb,var(--arena-periwinkle)_20%,transparent)] border-t-[var(--arena-periwinkle)]"
-              aria-hidden="true"
-            ></span>
-            <span
-              class="relative inline-flex h-7 w-7 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--arena-periwinkle)_16%,transparent)]"
-            >
-              <ArenaIcons name="trophy" size={14} class="text-[var(--arena-periwinkle)]" />
-            </span>
+    <div class="scrim fixed inset-0 z-[260]" role="dialog" aria-modal="true" aria-label="Arena in progress">
+      <div class="ar-run">
+        <div class="ar-run-h">
+          <b>{headline}</b>
+          <span class="faint mono">
+            {elapsedLabel(elapsedSec)}{#if estCost > 0}&nbsp;· est. ${estCost.toFixed(2)}{/if}
           </span>
-          <div class="min-w-0 flex-1">
-            <h2 class="truncate text-[14px] font-semibold text-[var(--arena-fg)]">{headline}</h2>
-            <p class="truncate text-[11px] text-[var(--arena-fg-muted)]">{subhead}</p>
-          </div>
-          <button
-            type="button"
-            onclick={onMinimize}
-            class="inline-flex shrink-0 items-center gap-1 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] px-2.5 py-1 text-[11px] text-[var(--arena-fg-muted)] hover:border-[var(--arena-border)] hover:text-[var(--arena-fg)]"
-          >
-            ↘ Run in background
-          </button>
+          <span class="flex-1"></span>
+          <button type="button" class="btn ghost" onclick={onMinimize}>Run in background</button>
+          <button type="button" class="btn ghost" onclick={onCancel}>Cancel run</button>
         </div>
 
         {#if batchMode}
-          <div class="flex flex-col gap-1.5">
-            {#each liveRuns as entry (entry.runId)}
-              {@const st = liveRunStates[entry.runId]?.snapshot?.run.status}
-              {@const active = st != null && isArenaRunActive(st)}
-              <div
-                class="flex items-center gap-2 rounded-md border px-2.5 py-2
-                  {active
-                  ? 'border-[var(--arena-periwinkle)] bg-[color-mix(in_srgb,var(--arena-periwinkle)_10%,transparent)]'
-                  : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)]'}"
-              >
-                <span class="text-[12px]" aria-hidden="true">
-                  {entry.agentKind
-                    ? agentCatalogEntry(entry.agentKind, entry.agentKind, "").glyph
-                    : "✦"}
-                </span>
-                <span class="min-w-0 flex-1 truncate text-[12px] font-medium text-[var(--arena-fg)]">
-                  {runLabel(entry)}
-                </span>
-                <span class="text-[10px] text-[var(--arena-fg-subtle)]">{batchRunStatus(entry)}</span>
-              </div>
-            {/each}
-          </div>
-        {:else}
-        <div class="flex flex-col gap-1.5">
-          {#each reviewers as r (r.id)}
-            {@const state = reviewerState(r)}
-            <div
-              class="flex items-center gap-2.5 rounded-md border px-2.5 py-2 transition-colors
-                {state === 'thinking'
-                ? 'border-[var(--arena-periwinkle)] bg-[color-mix(in_srgb,var(--arena-periwinkle)_10%,transparent)]'
-                : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)]'}"
-            >
-              <span
-                class="inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded-md text-[var(--arena-bg-0)]"
-                style="background: {r.color}"
-              >
-                <span class="text-[10px] font-bold">◆</span>
-              </span>
-              <span class="flex-1 text-[12px] font-medium text-[var(--arena-fg)]">{r.name}</span>
-              {#if state === "thinking"}
-                <span
-                  class="inline-flex items-center gap-1 text-[10px] font-semibold"
-                  style="color: {r.color}"
-                >
-                  <span class="arena-pulse-dot h-1.5 w-1.5 rounded-full" style="background: {r.color}"></span>
-                  Thinking…
-                </span>
-              {:else if state === "done"}
-                <span class="text-[12px] text-[var(--arena-ok)]">✓</span>
-              {:else if state === "failed"}
-                <span class="text-[10px] text-[var(--arena-err)]">Failed</span>
-              {:else}
-                <span class="text-[10px] text-[var(--arena-fg-subtle)]">Queued</span>
-              {/if}
+          {#each liveRuns as entry (entry.runId)}
+            {@const st = liveRunStates[entry.runId]?.snapshot?.run.status}
+            <div class="ar-prow">
+              <span class="rev">{runLabel(entry)}</span>
+              <span class="faint mono">{st != null && isArenaRunActive(st) ? "active" : ""}</span>
+              <span></span>
+              <span class="mono state">{batchRunStatus(entry)}</span>
             </div>
           {/each}
-        </div>
+        {:else}
+          {#each reviewers as r, i (r.id)}
+            {@const state = reviewerState(r)}
+            {@const color = reviewerColorVar(r, i)}
+            <div class="ar-prow">
+              <span class="rev" title={r.name}><i style="background:{color}"></i><span class="truncate">{r.name}</span></span>
+              <span class="faint mono model" title={r.model_id}>{r.model_id}</span>
+              <div class="pbar">
+                <i style="width:{reviewerProgress(state, round, totalRounds, arbiterPhase)}%;background:{color}"></i>
+              </div>
+              <span class="mono state" class:ok={state === "done"} class:err={state === "failed"}>{STATE_LABEL[state]}</span>
+            </div>
+          {/each}
+          {#if hasArbiter}
+            <div class="ar-prow">
+              <span class="rev"><i style="background:{ARBITER_COLOR}"></i>Arbiter</span>
+              <span class="faint mono model">{snapshot?.run.config.arbiter.model_id ?? config.arbiter?.model_id ?? ""}</span>
+              <div class="pbar">
+                <i style="width:{ARBITER_PCT[arbiterState]}%;background:{ARBITER_COLOR}"></i>
+              </div>
+              <span class="mono state" class:ok={arbiterState === "done"}>{STATE_LABEL[arbiterState]}</span>
+            </div>
+          {/if}
         {/if}
-
-        {#if !batchMode && isArena && totalRounds > 1}
-          <div class="flex gap-1">
-            {#each Array(totalRounds) as _, roundIdx (roundIdx)}
-              <span
-                class="h-1 flex-1 rounded-sm {roundSegmentClass(roundIdx)}"
-              ></span>
-            {/each}
-          </div>
-        {/if}
-
-        <div class="flex items-center gap-2">
-          <span class="flex-1 font-mono text-[10px] text-[var(--arena-fg-subtle)]">
-            {elapsedSec.toFixed(1)}s elapsed
-          </span>
-          <button
-            type="button"
-            class="rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] px-3 py-1.5 text-[11px] text-[var(--arena-fg)]"
-            onclick={onCancel}
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            class="rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] px-3 py-1.5 text-[11px] text-[var(--arena-fg)]"
-            onclick={handleSkip}
-          >
-            Skip to results
-          </button>
-        </div>
       </div>
     </div>
   {/if}
 {/if}
+
+<style>
+  .scrim {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 64px 16px 16px;
+    background: color-mix(in srgb, var(--color-ground) 55%, transparent);
+    overflow: auto;
+  }
+  .ar-run {
+    width: min(720px, 100%);
+    border: 1px solid var(--color-hairline);
+    border-radius: 12px;
+    background: var(--color-surface);
+    padding: 14px 16px;
+    display: grid;
+    gap: 10px;
+    color: var(--color-fg);
+    font-size: 12.5px;
+    box-shadow: 0 24px 60px color-mix(in srgb, var(--color-ground) 60%, transparent);
+  }
+  .ar-run-h {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .ar-prow {
+    display: grid;
+    grid-template-columns: 140px 110px minmax(0, 1fr) 64px;
+    gap: 12px;
+    align-items: center;
+  }
+  .rev {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+  }
+  .rev i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .model {
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .pbar {
+    height: 6px;
+    border-radius: 3px;
+    background: var(--color-hover);
+    overflow: hidden;
+  }
+  .pbar i {
+    display: block;
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.12s linear;
+  }
+  .state {
+    font-size: 11px;
+    color: var(--color-fg-3);
+  }
+  .state.ok {
+    color: var(--color-success);
+  }
+  .state.err {
+    color: var(--color-error);
+  }
+  .faint {
+    color: var(--color-muted);
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 7px;
+    font-weight: 500;
+    white-space: nowrap;
+    color: var(--color-fg-3);
+  }
+  .btn:hover {
+    background: var(--color-card);
+    color: var(--color-fg);
+  }
+  .pill {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    min-width: 240px;
+    max-width: 320px;
+    padding: 8px 12px;
+    border-radius: 10px;
+    border: 1px solid var(--color-border);
+    background: var(--color-surface);
+    color: var(--color-fg);
+    font-size: 11px;
+    cursor: pointer;
+    box-shadow: 0 10px 28px color-mix(in srgb, var(--color-ground) 50%, transparent);
+  }
+  .pill:hover {
+    border-color: var(--color-periwinkle);
+  }
+  .pill-bar {
+    width: 36px;
+    flex: none;
+  }
+  .pill-t {
+    font-weight: 500;
+  }
+  .x {
+    color: var(--color-fg-3);
+    padding: 2px 4px;
+    border-radius: 5px;
+  }
+  .x:hover {
+    background: var(--color-card);
+    color: var(--color-fg);
+  }
+</style>
