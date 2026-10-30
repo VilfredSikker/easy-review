@@ -234,7 +234,9 @@
       </svg>
     </button>
   </div>
-  <div bind:this={containerEl} class="flex-1 min-h-0 overflow-hidden px-3.5 py-2"></div>
+  <div class="flex-1 min-h-0 overflow-hidden px-3.5 py-2">
+    <div bind:this={containerEl} class="w-full h-full overflow-hidden"></div>
+  </div>
 </div>
 
 <style>
