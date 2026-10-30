@@ -70,6 +70,26 @@ export function hangingIndentStyle(text: string, wrapCols: number | null): strin
   return `padding-left: calc(0.75rem + ${cols}ch); text-indent: -${cols}ch;`;
 }
 
+/** Horizontal padding inside a code cell (0.75rem left + pr-3 right). */
+export const CELL_HPAD_PX = 24;
+
+/**
+ * Text width of one code cell. The gutter is subtracted per panel, so turning
+ * line numbers off widens every cell, changes the wrap capacity, and with it
+ * every predicted row height (ADR 0029).
+ */
+export function codeCellWidthPx(bandWidthPx: number, gutterPx: number, split: boolean): number {
+  if (bandWidthPx <= 0) return 0;
+  const cellW = split ? (bandWidthPx - 2 * gutterPx) / 2 : bandWidthPx - gutterPx;
+  return Math.max(0, cellW - CELL_HPAD_PX);
+}
+
+/** Column capacity of a code cell, or null until both widths are measured. */
+export function wrapColsForWidth(cellWidthPx: number, charWPx: number): number | null {
+  if (cellWidthPx <= 0 || charWPx <= 0) return null;
+  return Math.max(MIN_WRAP_COLS, Math.floor(cellWidthPx / charWPx));
+}
+
 /** Visual line count of one code line wrapped at `wrapCols` columns. */
 export function wrappedLineCount(text: string, wrapCols: number): number {
   const total = lineTotalCols(text);
