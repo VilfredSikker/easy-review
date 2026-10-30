@@ -9,7 +9,17 @@
   import { navigateToThread } from "$lib/dom";
   import { copyToClipboard } from "$lib/clipboard";
   import AnnotationOverflowMenu from "$lib/components/AnnotationOverflowMenu.svelte";
-  import { authorLabel, kindStyle, lineRangeLabel, threadActions, type OverflowItem } from "$lib/annotationActions";
+  import {
+    SEND_TO_AGENT_COMMAND,
+    askAiTitle,
+    authorLabel,
+    elaborateTitle,
+    kindStyle,
+    lineRangeLabel,
+    sendToAgentButton,
+    threadActions,
+    type OverflowItem,
+  } from "$lib/annotationActions";
   import { longAge } from "$lib/relativeTime";
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { isDocumentAnchored, ownReplyCount } from "$lib/threadAnchor";
@@ -40,37 +50,19 @@
   let editMessageId = $state<string | null>(null);
   let editInitialBody = $state("");
 
-  let askAiTextarea: HTMLTextAreaElement | null = $state(null);
-  let askAiFocusPending = $state(false);
-
   let justCopied = $state(false);
   let pushing = $state(false);
 
-  // Auto-focus the textarea when a composer opens. Opening one closes the other.
   $effect(() => {
     if (replyFocusPending && draft.showReply && replyInput) {
       replyFocusPending = false;
       queueMicrotask(() => replyInput?.focus());
     }
   });
-  $effect(() => {
-    if (askAiFocusPending && draft.showAskAi && askAiTextarea) {
-      askAiFocusPending = false;
-      queueMicrotask(() => askAiTextarea?.focus());
-    }
-  });
 
   function openReply() {
-    draft.showAskAi = false;
-    draft.askAiText = "";
     draft.showReply = true;
     replyFocusPending = true;
-  }
-  function openAskAi() {
-    draft.showReply = false;
-    draft.replyText = "";
-    draft.showAskAi = true;
-    askAiFocusPending = true;
   }
 
   const formatTimestamp = (ts: string) => longAge(ts) || ts;
@@ -169,11 +161,24 @@
     void app.cmd("promote_to_note", { id: thread.id, body: buildPromoteBody() });
   }
 
-  async function submitAskAi() {
-    const prompt = draft.askAiText.trim();
-    draft.showAskAi = false;
-    draft.askAiText = "";
-    await app.cmd("ask_ai", { threadId: thread.id, prompt });
+  // One click: an empty prompt makes the backend answer with the kind's own
+  // prompt. Typed context goes through the reply box's Ask AI instead.
+  async function askAi() {
+    await app.cmd("ask_ai", { threadId: thread.id, prompt: "" });
+  }
+
+  const agentButton = $derived(
+    sendToAgentButton({
+      remotePr: app.snapshot?.tabs.find((t) => t.is_active)?.kind === "remote_pr",
+      running: (app.snapshot?.agent_commands ?? []).some(
+        (c) => c.name === SEND_TO_AGENT_COMMAND && c.status === "running",
+      ),
+    }),
+  );
+
+  async function sendToAgent() {
+    if (agentButton.disabled) return;
+    await app.cmd("send_note_to_agent", { noteId: thread.id });
   }
 
   async function validateWithAi() {
@@ -351,39 +356,6 @@
     </div>
   {/each}
 
-  <!-- Ask AI composer (context for the prompt) -->
-  {#if draft.showAskAi}
-    <div class="pt-1">
-      <textarea
-        bind:this={askAiTextarea}
-        bind:value={draft.askAiText}
-        placeholder="Add context for the AI… (leave empty for default · ⌘+Enter to send)"
-        rows="3"
-        class="w-full rounded-md border border-border bg-bg px-2 py-1.5 text-[13px] text-fg-2 placeholder:text-muted outline-none focus:border-accent resize-y font-mono"
-        onkeydown={(e) => {
-          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-            e.preventDefault();
-            submitAskAi();
-          } else if (e.key === "Escape") {
-            e.preventDefault();
-            draft.showAskAi = false;
-            draft.askAiText = "";
-          }
-        }}
-      ></textarea>
-      <div class="mt-1 flex items-center gap-2">
-        <span class="text-[10px] font-mono text-muted">⌘+Enter to send · Esc to cancel · empty = default prompt</span>
-        <button type="button"
-          onclick={() => { draft.showAskAi = false; draft.askAiText = ""; }}
-          class="ml-auto px-2 py-1 rounded-md text-[11px] text-fg-3 hover:bg-hover"
-        >Cancel</button>
-        <button type="button" onclick={submitAskAi} class="px-2 py-1 rounded-md text-[11px] text-accent hover:bg-accent-soft border border-accent-border">
-          ✦ Ask AI
-        </button>
-      </div>
-    </div>
-  {/if}
-
   <!-- Reply box: roots only (ADR 0008). -->
   {#if draft.showReply}
     <form
@@ -422,20 +394,26 @@
     {/if}
     {#each actions.primary as action (action)}
       {#if action === "askAi"}
-        {#if !draft.showAskAi}
-          <button type="button" onclick={openAskAi} title="Ask AI about this" class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft">✦ Ask AI</button>
-        {/if}
+        <button type="button" onclick={() => void askAi()} title={askAiTitle(thread.kind)} class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft">✦ Ask AI</button>
       {:else if action === "elaborate"}
         <button
           type="button"
           onclick={() => void elaborateWithAi()}
-          title="Ask AI to expand this (local reply, not posted to GitHub)"
+          title={elaborateTitle(thread.kind)}
           class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft"
         >✦ Elaborate</button>
       {:else if action === "reply"}
         {#if !draft.showReply}
           <button type="button" onclick={openReply} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Reply</button>
         {/if}
+      {:else if action === "sendToAgent"}
+        <button
+          type="button"
+          onclick={() => void sendToAgent()}
+          disabled={agentButton.disabled}
+          title={agentButton.title}
+          class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-fg-2"
+        >{agentButton.label}</button>
       {:else if action === "resolve"}
         <button type="button" onclick={resolveThread} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Resolve</button>
       {:else if action === "promote"}
