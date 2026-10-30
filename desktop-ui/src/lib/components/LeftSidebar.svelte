@@ -5,7 +5,18 @@
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
-  import { buildPrHint, createPrPrefetch, remoteParts, shouldReplaceTab, yieldForPendingPaint } from "$lib/prOpen";
+  import {
+    buildPrHint,
+    createPrPrefetch,
+    remoteParts,
+    resolvePrOpen,
+    saveAlwaysNewTab,
+    shouldReplaceTab,
+    yieldForPendingPaint,
+  } from "$lib/prOpen";
+  import { findPrTab, sidebarPrOpenRequest } from "$lib/sidebarPrOpen";
+  import { groupInboxThreads, isThreadUnread } from "$lib/inboxThreads";
+  import TabOpenModal from "$lib/components/TabOpenModal.svelte";
   import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
   import { orderedByIds } from "$lib/projectOrder";
   import { orderPrsByStack } from "$lib/prStacks";
@@ -34,6 +45,13 @@
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  // Counted per PR like the Inbox rows (and InboxPanel's badge), so the
+  // collapsed rail's badge matches what a click lands on.
+  const unreadPrs = $derived(
+    collapsed
+      ? groupInboxThreads(snapshot?.inbox_items ?? [], projects).filter(isThreadUnread).length
+      : 0,
+  );
   const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
 
   interface AppUpdateInfo {
@@ -742,13 +760,48 @@
     }
   }
 
+  /** The sidebar PR open waiting on the tab-open modal's answer. */
+  let pendingPrOpen = $state<{ project: ProjectSnapshot; prNumber: number; hint?: PrInfo } | null>(null);
+
+  /** A PR click asks "new tab or here?" (P1C's modal) unless the click already
+   *  said (⌘/middle-click), the reader opted out, the PR is open in a tab, or
+   *  there is no tab to replace. */
   async function openPr(project: ProjectSnapshot, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
+    // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
+    cancelPrPrefetch(project.id, prNumber);
+    const tabs = snapshot?.tabs ?? [];
+    const existing = findPrTab(project, prNumber, tabs);
+    if (existing) {
+      if (!existing.is_active) await app.cmd("select_tab", { idx: existing.idx });
+      return;
+    }
+    const choice = tabs.length === 0 ? "replace" : resolvePrOpen(e);
+    if (choice === "ask") {
+      pendingPrOpen = { project, prNumber, hint };
+      return;
+    }
+    await openPrIn(project, prNumber, choice === "replace", hint);
+  }
+
+  const prOpenRequest = $derived.by(() => {
+    const p = pendingPrOpen;
+    if (!p) return null;
+    const pr = p.hint ?? { number: p.prNumber, title: `Pull request #${p.prNumber}`, author: "", updated_at: "", state: "OPEN" as const, is_draft: false };
+    return sidebarPrOpenRequest(p.project, pr);
+  });
+
+  function choosePrOpen(newTab: boolean, remember: boolean) {
+    const p = pendingPrOpen;
+    pendingPrOpen = null;
+    if (remember) saveAlwaysNewTab(true);
+    if (p) void openPrIn(p.project, p.prNumber, !newTab, p.hint);
+  }
+
+  async function openPrIn(project: ProjectSnapshot, prNumber: number, replace: boolean, hint?: PrInfo) {
     const projectId = project.id;
     const prKey = `${projectId}:${prNumber}`;
     if (pendingPrKey === prKey) return;
     pendingPrKey = prKey;
-    // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
-    cancelPrPrefetch(projectId, prNumber);
     try {
       await yieldForPendingPaint();
       if (project.remote_only) {
@@ -758,13 +811,13 @@
           owner: parts.owner,
           repo: parts.repo,
           number: prNumber,
-          replace: shouldReplaceTab(e),
+          replace,
         });
       } else {
         await app.cmd("open_pr_review", {
           projectId,
           prNumber,
-          replace: shouldReplaceTab(e),
+          replace,
           hint: hint ? buildPrHint(hint) : undefined,
         });
       }
@@ -804,6 +857,19 @@
     </button>
     <button type="button" title="Search (⌘K)" aria-label="Search" onclick={() => commandPalette.show()} class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
+    </button>
+    <button
+      type="button"
+      title={unreadPrs > 0 ? `Inbox · ${unreadPrs} unread` : "Inbox"}
+      aria-label={unreadPrs > 0 ? `Inbox, ${unreadPrs} unread` : "Inbox"}
+      aria-current={app.mainView === "inbox" ? "page" : undefined}
+      onclick={() => app.setMainView("inbox")}
+      class="relative w-7 h-7 rounded flex items-center justify-center {app.mainView === 'inbox' ? 'bg-hover text-fg' : 'text-fg-3 hover:bg-hover'}"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+      {#if unreadPrs > 0}
+        <span class="absolute -top-0.5 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-on-accent font-mono text-[9px] leading-[14px] text-center">{unreadPrs > 99 ? "99+" : unreadPrs}</span>
+      {/if}
     </button>
     <div class="h-px w-5 bg-hairline my-1"></div>
     <button type="button" title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
@@ -1574,4 +1640,12 @@
   </button>
 </aside>
 {/if}
+
+<TabOpenModal
+  request={prOpenRequest}
+  tabCount={snapshot?.tabs?.length ?? 0}
+  currentTabLabel={activeTab?.label ?? null}
+  onChoose={choosePrOpen}
+  onClose={() => (pendingPrOpen = null)}
+/>
 

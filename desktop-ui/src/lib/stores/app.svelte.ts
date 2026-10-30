@@ -40,7 +40,9 @@ import {
   tabSnapshotCacheKey,
   tabSnapshotCacheKeyFromTab,
 } from "../tabSnapshotCache";
-import type { AppSnapshot, NotificationSnapshot, PollResponse } from "../types";
+import type { AppSnapshot, NotificationSnapshot, PollResponse, SettingsTab } from "../types";
+import { resolveSettingsTarget, type SettingsSectionId, type SettingsTarget } from "../settingsLink";
+import { syncToastMessage, type SyncReply } from "../syncToast";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { rightRail } from "./rightRail.svelte";
@@ -79,6 +81,8 @@ interface CmdRun {
   modeTabIdx: number | undefined;
   isSlow: boolean;
   isForceRefresh: boolean;
+  /** Tab a `select_tab` is switching to; null for every other command. */
+  selectIdx: number | null;
 }
 
 const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
@@ -188,7 +192,7 @@ function timingSegmentMs(start: number, end: number): number {
 }
 
 /**
- * Optimistically adjust the `reviewedCount` of every Guide-tour pillar that
+ * Optimistically adjust the `reviewedCount` of every Tour pillar that
  * contains `path` by `delta` (clamped to [0, totalCount]). Lets the rail badge
  * track a file's reviewed flip before the backend round-trip lands; the next
  * `mergeChromeSnapshot` overwrites `tour` with the authoritative backend value.
@@ -233,6 +237,8 @@ class AppStore {
   private tabChangeGeneration = 0;
   /** User-facing label for the active slow command. */
   switchingLabel = $state<string | null>(null);
+  /** Tab an uncached `select_tab` is switching to, so the shell can name it while it loads. */
+  switchingTabIdx = $state<number | null>(null);
   /** True while force_refresh_diff is fetching from the remote. */
   refreshing = $state(false);
   error = $state<string | null>(null);
@@ -259,6 +265,8 @@ class AppStore {
   /** Shiki syntax theme id — picker UI wires here later. */
   currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
   mainView = $state<MainViewMode>("diff");
+  /** Where the next Settings mount should land; the page takes it and clears it. */
+  settingsTarget = $state<SettingsTarget | null>(null);
   private reviewPages = new ReviewPageMemory();
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
@@ -664,6 +672,12 @@ class AppStore {
 
   setMainView(mode: MainViewMode) {
     this.mainView = mode;
+  }
+
+  /** Open Settings, optionally at a tab or a named section ("risk-rules"). */
+  openSettings(to?: SettingsTab | SettingsSectionId) {
+    this.settingsTarget = resolveSettingsTarget(to);
+    this.mainView = "settings";
   }
 
   /** Restore the review page the newly active tab was left on. */
@@ -1075,6 +1089,7 @@ class AppStore {
       modeTabIdx,
       isSlow: SLOW_COMMANDS.has(command) && cachedTab === null,
       isForceRefresh: command === "force_refresh_diff",
+      selectIdx,
     };
   }
 
@@ -1084,6 +1099,7 @@ class AppStore {
       this.inflightSlow += 1;
       this.switching = true;
       this.switchingLabel = switchingLabelForCommand(command);
+      if (run.selectIdx !== null) this.switchingTabIdx = run.selectIdx;
     }
     if (run.isForceRefresh) this.refreshing = true;
     return run.isSlow || run.isForceRefresh;
@@ -1126,6 +1142,7 @@ class AppStore {
 
   /** Ingest a command's snapshot and toast success unless the backend already did. */
   private applyCmdSnapshot(command: string, snapshot: AppSnapshot, run: CmdRun): boolean {
+    const before = this.snapshot;
     const applied = this.ingestCommandSnapshot(snapshot, {
       allowTabChange: run.isTabChange,
       tabChangeGen: run.myTabChangeGen ?? undefined,
@@ -1133,7 +1150,12 @@ class AppStore {
     if (!applied) return false;
     const hadBackendToast = snapshot.notification != null;
     if (!hadBackendToast) {
-      const message = successToastForCommand(command);
+      // A Sync says where it landed and which Reviewed marks it cost in one
+      // toast; a second one for the marks would stack on top of it.
+      const message =
+        command === "force_refresh_diff"
+          ? syncToastMessage(before, snapshot as SyncReply)
+          : successToastForCommand(command);
       if (message) this.showToast("success", message);
     }
     return true;
@@ -1167,6 +1189,7 @@ class AppStore {
       if (this.inflightSlow === 0) {
         this.switching = false;
         this.switchingLabel = null;
+        this.switchingTabIdx = null;
       }
     }
     if (isForceRefresh) this.refreshing = false;
@@ -1191,8 +1214,6 @@ function logSlowCmdTiming(
 
 function successToastForCommand(command: string): string | null {
   switch (command) {
-    case "force_refresh_diff":
-      return "Diff force refreshed";
     case "refresh_github_status":
       return "GitHub status refreshed";
     case "pull_github_comments":

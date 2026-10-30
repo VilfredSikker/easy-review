@@ -366,8 +366,9 @@ pub struct TourSnapshot {
     /// True when the tour matches the current diff (not stale). When false and
     /// `available` is true, the UI offers a "Re-run guide" affordance.
     pub fresh: bool,
-    /// Which diff the tour is attached to: `"pr"` or `"branch"`. Drives the
-    /// Diff/PR header toggle state and where the Diff toggle returns to.
+    /// Which diff the tour view belongs to: `"pr"` or `"branch"`, set even
+    /// when there is no tour. Drives the Diff/PR header toggle state and
+    /// where leaving Tour returns to.
     pub scope: String,
     pub title: String,
     pub overview_markdown: String,
@@ -2660,12 +2661,16 @@ fn build_file_snapshot_with_keys(
 /// are passed through unfiltered — only `available`/pillar-count is consumed
 /// there (the pillar nav renders in Tour mode only).
 fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
-    let Some(tour) = tab.ai.tour.as_ref() else {
-        return TourSnapshot::default();
+    let scope = tour_scope(tab);
+    // A view with no tour still has a source: the Tour page's empty state and
+    // every "leave Tour" path return to the diff `scope` names, so an empty
+    // scope would send a PR view back to the local branch.
+    let Some(tour) = tab.ai.tour.as_ref().filter(|t| !t.pillars.is_empty()) else {
+        return TourSnapshot {
+            scope,
+            ..TourSnapshot::default()
+        };
     };
-    if tour.pillars.is_empty() {
-        return TourSnapshot::default();
-    }
 
     let branch_scope = matches!(
         tab.mode,
@@ -2814,17 +2819,23 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
         // `scope` tells the frontend which guide (branch vs PR) is showing so the Guide
         // tab is context-aware and the Diff toggle returns to the right diff.
         fresh: !tab.ai.tour_stale,
-        scope: if tab.tour_context_is_pr() {
-            "pr".to_string()
-        } else {
-            "branch".to_string()
-        },
+        scope,
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,
         created_at: tour.created_at.clone(),
         diff_hash: tour.diff_hash.clone(),
     }
+}
+
+/// Which diff the tour view belongs to: `"pr"` or `"branch"`.
+fn tour_scope(tab: &TabState) -> String {
+    if tab.tour_context_is_pr() {
+        "pr"
+    } else {
+        "branch"
+    }
+    .to_string()
 }
 
 /// The other view's bucket directory and its name, for a local PR tab in its
@@ -7570,6 +7581,34 @@ mod tests {
             "pillars": [pillar],
         }))
         .unwrap()
+    }
+
+    /// With no tour, the Tour page still has to know which diff it was
+    /// entered from, or leaving it lands a PR view on the local branch (and a
+    /// remote tab in a mode it never offers).
+    #[test]
+    fn tour_snapshot_without_tour_keeps_source_scope() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Tour;
+
+        tab.tour_is_pr = true;
+        let tour = build_tour_snapshot(&tab);
+        assert!(!tour.available);
+        assert_eq!(tour.scope, "pr", "local tab entered from PR diff");
+
+        tab.tour_is_pr = false;
+        assert_eq!(
+            build_tour_snapshot(&tab).scope,
+            "branch",
+            "entered from branch"
+        );
+
+        tab.remote_repo = Some("owner/repo".to_string());
+        assert_eq!(
+            build_tour_snapshot(&tab).scope,
+            "pr",
+            "remote tabs are PR-only"
+        );
     }
 
     #[test]

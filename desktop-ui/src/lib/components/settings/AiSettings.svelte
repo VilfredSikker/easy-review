@@ -199,7 +199,7 @@
 {/if}
 
 {#if concurrencyFields.length > 0}
-  <SettingsSection title="Concurrency">
+  <SettingsSection id="settings-concurrency" title="Concurrency">
     <FieldRows fields={concurrencyFields} {warnings} {onpatch} descriptions={CONCURRENCY_DESCRIPTIONS} />
   </SettingsSection>
 {/if}

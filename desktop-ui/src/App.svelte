@@ -11,7 +11,6 @@
   import RightPanel from "$lib/components/RightPanel.svelte";
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
   import Toast from "$lib/components/Toast.svelte";
-  import BackgroundTasks from "$lib/components/BackgroundTasks.svelte";
   import CommandPalette from "$lib/components/CommandPalette.svelte";
   import AiReviewFilesModal from "$lib/components/AiReviewFilesModal.svelte";
   import ProfessorFocusModal from "$lib/components/ProfessorFocusModal.svelte";
@@ -21,7 +20,14 @@
   import EmptyState from "$lib/components/EmptyState.svelte";
   import PrUrlModal from "$lib/components/PrUrlModal.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
-  import BranchContextBar from "$lib/components/BranchContextBar.svelte";
+  import TopBar from "$lib/components/shell/TopBar.svelte";
+  import ViewBar from "$lib/components/shell/ViewBar.svelte";
+  import StaleBanner from "$lib/components/shell/StaleBanner.svelte";
+  import LocalBranchBanner from "$lib/components/shell/LocalBranchBanner.svelte";
+  import TabPlaceholder from "$lib/components/TabPlaceholder.svelte";
+  import TourEmptyState from "$lib/components/TourEmptyState.svelte";
+  import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
+  import { isReviewMainView } from "$lib/stores/reviewPageModel";
   import Terminal from "$lib/components/Terminal.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
   import { rightRail } from "$lib/stores/rightRail.svelte";
@@ -215,6 +221,17 @@
     window.addEventListener("mouseup", onUp);
   }
 
+  const isReviewView = $derived(isReviewMainView(app.mainView));
+  /** The tab an uncached switch is loading; the review area names it until it lands. */
+  const placeholderTab = $derived(
+    isReviewView ? tabPlaceholderTarget(app.snapshot?.tabs, app.switchingTabIdx) : null,
+  );
+  const inTour = $derived(app.snapshot?.mode === "tour");
+  /** Tour mode with no tour for this view draws an empty state, not a pillar-less diff. */
+  const tourMissing = $derived(inTour && !(app.snapshot?.tour?.available ?? false));
+  /** The findings panel sits beside the Tour and the Diff, never over other pages. */
+  const showRightPanel = $derived(showDiff && app.mainView === "diff" && !placeholderTab);
+
   const activeTabIdx = $derived(app.snapshot?.active_tab ?? 0);
   const activeTab = $derived(app.snapshot?.tabs?.[activeTabIdx]);
   const activeTabRoot = $derived(resolveTabRoot(app.snapshot, activeTab));
@@ -294,10 +311,9 @@
   style="--shell-bottom-chrome: {terminal.open ? '12px' : '28px'}"
 >
   <TabStrip onToggleRightCollapse={rightRail.toggle} rightCollapsed={rightRail.collapsed} />
-  <BranchContextBar />
 
   <div class="flex-1 flex min-h-0 relative">
-    {#if app.switching}
+    {#if app.switching && !placeholderTab}
       <!-- Immediate loading feedback while a slow command (branch open, tab switch) is in flight. -->
       <div class="absolute inset-0 z-50 flex items-center justify-center bg-ink-900/60 backdrop-blur-sm pointer-events-none">
         <div class="flex items-center gap-2 px-4 py-2 rounded-md bg-ink-800 border border-ink-600 text-fg-2 text-sm">
@@ -324,71 +340,90 @@
       <LeftSidebar collapsed={!layoutPanels.left} />
     {/if}
 
-    <main class="flex-1 flex min-w-0 min-h-0">
-      {#if isSettingsView}
-        <SettingsPage onBack={() => app.setMainView("diff")} />
-      {:else}
-      <div class="flex flex-1 min-w-0 min-h-0 flex-row">
-        {#if showDiff}
-          <div
-            class="flex flex-1 min-w-0 min-h-0"
-            style="flex: {diffColumnFlex};"
-          >
-            {#if app.mainView === "diff"}
-              {#if app.snapshot?.mode !== "tour"}
-                <FileTree collapsed={!layoutPanels.tree} />
-              {/if}
-              <DiffView />
-            {:else if app.mainView === "agent-output"}
-              <AgentOutputView />
-            {:else if app.mainView === "inbox"}
-              <InboxView />
-            {:else}
-              <ExportReviewView />
+    <!-- The review window: top bar, view bar and banners over the page and its
+         findings panel, as the design stacks them beside the side menu. -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+      <TopBar />
+      <ViewBar />
+      {#if isReviewView}
+        <StaleBanner />
+        <LocalBranchBanner />
+      {/if}
+
+      <div class="flex-1 flex min-h-0">
+        <main class="flex-1 flex min-w-0 min-h-0">
+          {#if isSettingsView}
+            <SettingsPage onBack={() => app.setMainView("diff")} />
+          {:else}
+          <div class="flex flex-1 min-w-0 min-h-0 flex-row">
+            {#if showDiff}
+              <div
+                class="flex flex-1 min-w-0 min-h-0"
+                style="flex: {diffColumnFlex};"
+              >
+                {#if placeholderTab}
+                  <TabPlaceholder tab={placeholderTab} status={app.switchingLabel} />
+                {:else if app.mainView === "diff"}
+                  {#if tourMissing}
+                    <TourEmptyState />
+                  {:else}
+                    {#if !inTour}
+                      <FileTree collapsed={!layoutPanels.tree} />
+                    {/if}
+                    <DiffView />
+                  {/if}
+                {:else if app.mainView === "agent-output"}
+                  <AgentOutputView />
+                {:else if app.mainView === "inbox"}
+                  <InboxView />
+                {:else}
+                  <ExportReviewView />
+                {/if}
+              </div>
+            {/if}
+            {#if showBrowser && showDiff}
+              <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
+              <div
+                class="w-1 shrink-0 cursor-col-resize hover:bg-accent/40 {resizingBrowserSplit ? 'bg-accent/60' : 'bg-ink-650'}"
+                onmousedown={onBrowserSplitResizeStart}
+                role="separator"
+                aria-orientation="vertical"
+                aria-label="Resize browser split"
+              ></div>
+            {/if}
+            {#if showBrowser}
+              <div
+                class="flex flex-col min-w-0 min-h-0"
+                style="flex: {showDiff ? 1 - browserSplitRatio : 1} 1 0%; min-width: 12rem;"
+              >
+                <BrowserView />
+              </div>
             {/if}
           </div>
-        {/if}
-        {#if showBrowser && showDiff}
-          <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
-          <div
-            class="w-1 shrink-0 cursor-col-resize hover:bg-accent/40 {resizingBrowserSplit ? 'bg-accent/60' : 'bg-ink-650'}"
-            onmousedown={onBrowserSplitResizeStart}
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize browser split"
-          ></div>
-        {/if}
-        {#if showBrowser}
-          <div
-            class="flex flex-col min-w-0 min-h-0"
-            style="flex: {showDiff ? 1 - browserSplitRatio : 1} 1 0%; min-width: 12rem;"
-          >
-            <BrowserView />
-          </div>
+          {/if}
+        </main>
+
+        {#if showRightPanel}
+          {#key app.snapshot ? snapshotViewIdentity(app.snapshot) : "none"}
+            {#if rightRail.collapsed}
+              <CollapsedRightRail
+                ai={app.snapshot?.ai ?? null}
+                onExpand={expandRightPanelToTab}
+              />
+            {:else}
+              <RightPanel
+                ai={app.snapshot?.ai ?? null}
+                pr={app.snapshot?.pr ?? null}
+                width={rightPanelWidth}
+                dragging={resizingRightPanel}
+                onResizeStart={onRightPanelResizeStart}
+                onCollapseToggle={rightRail.toggle}
+              />
+            {/if}
+          {/key}
         {/if}
       </div>
-      {/if}
-    </main>
-
-    {#if showDiff && app.mainView === "diff"}
-      {#key app.snapshot ? snapshotViewIdentity(app.snapshot) : "none"}
-        {#if rightRail.collapsed}
-          <CollapsedRightRail
-            ai={app.snapshot?.ai ?? null}
-            onExpand={expandRightPanelToTab}
-          />
-        {:else}
-          <RightPanel
-            ai={app.snapshot?.ai ?? null}
-            pr={app.snapshot?.pr ?? null}
-            width={rightPanelWidth}
-            dragging={resizingRightPanel}
-            onResizeStart={onRightPanelResizeStart}
-            onCollapseToggle={rightRail.toggle}
-          />
-        {/if}
-      {/key}
-    {/if}
+    </div>
   </div>
 
   {#if terminal.everOpened && browserLayout !== "fullscreen"}
@@ -419,11 +454,6 @@
     </div>
   {/if}
 
-  <BackgroundTasks
-    tasks={app.snapshot?.background_tasks ?? []}
-    avoidRightPanel={showDiff && app.mainView === "diff"}
-    rightPanelWidth={rightRail.collapsed ? 44 : rightPanelWidth}
-  />
   <Toast toasts={app.toasts} />
   {#if app.error}
     <div class="fixed bottom-12 left-1/2 -translate-x-1/2 bg-[color-mix(in_srgb,var(--color-error)_18%,var(--color-bg))] border border-error/70 text-error text-xs font-mono px-4 py-2 rounded shadow-lg z-50 max-w-[80vw] truncate">

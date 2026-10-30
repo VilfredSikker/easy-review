@@ -9,7 +9,7 @@
   import { GENERAL_ROWS } from "./settingsSearch";
 
   interface Props {
-    /** Load the preview on mount: the `er.focusUninstall` deep link lands here. */
+    /** Load the preview on mount: the `app.openSettings("uninstall")` deep link lands here. */
     autoPreview?: boolean;
     /** The deep link has been acted on; the page clears it so a later visit
      *  to General does not preview and scroll again. */

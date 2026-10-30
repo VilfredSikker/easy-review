@@ -7,6 +7,8 @@ use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
+pub mod line_commits;
+
 use crate::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
     InboxItem, InboxNotification, InboxState, InboxTarget, NotificationInboxCtx, PrInboxView,
@@ -212,6 +214,8 @@ pub struct AppState {
     /// Differential snapshots: per-file content keys the frontend currently
     /// holds, so unchanged hunks can be omitted from later snapshots.
     pub sent_files: crate::snapshot::SentFilesHandle,
+    /// Per-file "Mark lines" attribution, outside the snapshot on purpose.
+    pub line_commits_cache: line_commits::LineCommitsCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -5381,6 +5385,27 @@ fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String
                 .to_string(),
         ),
     }
+}
+
+/// "Run standard instead" on a pending Deep confirmation: the triaged lenses
+/// run as Standard finders, each queued for an agent slot (ADR 0021), with the
+/// prompts the flow already builds in Rust (ADR 0023). Declining cancels, and
+/// starting a new flow re-triages, which is why neither stands in for this.
+#[tauri::command]
+pub async fn run_standard_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        crate::arena_commands::validate_review_flow_bucket(&app, &er_dir)?;
+        app.run_review_flow_standard(&er_dir)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
 }
 
 /// Hand a note to the configured agent CLI to carry out (ADR 0031). It runs as
@@ -11876,6 +11901,7 @@ mod tests {
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             sent_files: Arc::new(Mutex::new(Default::default())),
+            line_commits_cache: Arc::default(),
         }
     }
 
