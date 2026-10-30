@@ -12,16 +12,20 @@
   import { authorLabel, kindStyle, lineRangeLabel, threadActions, type OverflowItem } from "$lib/annotationActions";
   import { longAge } from "$lib/relativeTime";
   import { resolveActivePrNumber } from "$lib/prUrl";
+  import { isDocumentAnchored, ownReplyCount } from "$lib/threadAnchor";
 
   interface Props {
     thread: ThreadSnapshot;
     hunk_idx: number;
     variant?: "inline" | "panel";
-    /** Anchored on a document line outside the diff (ADR 0041): hides Promote. */
+    /**
+     * Anchored on a document line outside the diff (ADR 0041), which hides
+     * Promote. Worked out from the snapshot when left unset.
+     */
     documentAnchored?: boolean;
   }
 
-  const { thread, variant = "inline", documentAnchored = false }: Props = $props();
+  const { thread, variant = "inline", documentAnchored }: Props = $props();
   const draft = $derived(annotationDrafts.get(app.snapshot, "thread", thread.id));
 
   const isQuestion = $derived(thread.kind === "question");
@@ -120,16 +124,27 @@
   }
 
   // Post-then-ask is one gesture: the AI answers the thread as it stands after
-  // the reply lands, so the two commands must run in order.
-  function replyAndAskAi() {
+  // the reply lands, so the two commands must run in order. reply_to_thread is
+  // optimistic and rolls back on failure without throwing, so whether the
+  // reply landed is read off the snapshot once the write settles.
+  async function replyAndAskAi() {
     const text = draft.replyText.trim();
     if (!text) return;
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
+    const before = ownReplyCount(app.snapshot, thread.id, text);
+    const posted = app.cmd("reply_to_thread", { parentId: thread.id, text });
     draft.replyText = "";
     draft.showReply = false;
-    void app.cmd("reply_to_thread", { parentId: thread.id, text }).then(() =>
-      app.cmd("ask_ai", { threadId: thread.id, prompt: "" }),
-    );
+    await posted;
+    if (ownReplyCount(app.snapshot, thread.id, text) <= before) {
+      // Give the text back for a retry unless the reviewer has started anew.
+      if (!draft.replyText) {
+        draft.replyText = text;
+        draft.showReply = true;
+      }
+      return;
+    }
+    await app.cmd("ask_ai", { threadId: thread.id, prompt: "" });
   }
 
   function buildPromoteBody(): string {
@@ -214,8 +229,9 @@
     threadActions({
       kind: thread.kind,
       synced: thread.synced,
+      resolved: thread.resolved,
       promoted: isPromoted,
-      documentAnchored,
+      documentAnchored: documentAnchored ?? isDocumentAnchored(thread, app.snapshot?.files),
       rootEditable: thread.root.kind === "you",
     }),
   );
@@ -231,6 +247,7 @@
         onselect: () => void pushOnlyThis(),
       },
       promoteNote: { id: "promoteNote", label: "Promote to note", title: "Turn this question into a local actionable note", onselect: () => void promoteToNote() },
+      resolve: { id: "resolve", label: "Resolve", onselect: resolveThread },
       edit: { id: "edit", label: "Edit", onselect: () => openEdit(thread.root.id, thread.root.body_markdown) },
       validate: { id: "validate", label: "Validate with AI", title: "Check this against the current code (local reply, not posted to GitHub)", onselect: () => void validateWithAi() },
       delete: { id: "delete", label: confirmingDelete ? "Confirm delete?" : "Delete", title: deleteTitle, danger: true, onselect: deleteThread },
@@ -402,42 +419,41 @@
   <div class="flex items-center gap-0.5 flex-wrap -mx-1.5 text-xs">
     {#if thread.resolved}
       <span class="px-1.5 text-fg-3">Resolved</span>
-    {:else}
-      {#each actions.primary as action (action)}
-        {#if action === "askAi"}
-          {#if !draft.showAskAi}
-            <button type="button" onclick={openAskAi} title="Ask AI about this" class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft">✦ Ask AI</button>
-          {/if}
-        {:else if action === "elaborate"}
-          <button
-            type="button"
-            onclick={() => void elaborateWithAi()}
-            title="Ask AI to expand this (local reply, not posted to GitHub)"
-            class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft"
-          >✦ Elaborate</button>
-        {:else if action === "reply"}
-          {#if !draft.showReply}
-            <button type="button" onclick={openReply} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Reply</button>
-          {/if}
-        {:else if action === "resolve"}
-          <button type="button" onclick={resolveThread} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Resolve</button>
-        {:else if action === "promote"}
-          <button
-            type="button"
-            onclick={() => (showPromote = true)}
-            title="Promote to a GitHub comment"
-            class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg"
-          >Promote</button>
-        {:else if action === "delete"}
-          <button
-            type="button"
-            onclick={deleteThread}
-            title={deleteTitle}
-            class="px-[7px] py-0.5 rounded-[5px] {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-2 hover:bg-hover hover:text-del-fg'}"
-          >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
-        {/if}
-      {/each}
     {/if}
+    {#each actions.primary as action (action)}
+      {#if action === "askAi"}
+        {#if !draft.showAskAi}
+          <button type="button" onclick={openAskAi} title="Ask AI about this" class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft">✦ Ask AI</button>
+        {/if}
+      {:else if action === "elaborate"}
+        <button
+          type="button"
+          onclick={() => void elaborateWithAi()}
+          title="Ask AI to expand this (local reply, not posted to GitHub)"
+          class="px-[7px] py-0.5 rounded-[5px] text-accent hover:bg-accent-soft"
+        >✦ Elaborate</button>
+      {:else if action === "reply"}
+        {#if !draft.showReply}
+          <button type="button" onclick={openReply} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Reply</button>
+        {/if}
+      {:else if action === "resolve"}
+        <button type="button" onclick={resolveThread} class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg">Resolve</button>
+      {:else if action === "promote"}
+        <button
+          type="button"
+          onclick={() => (showPromote = true)}
+          title="Promote to a GitHub comment"
+          class="px-[7px] py-0.5 rounded-[5px] text-fg-2 hover:bg-hover hover:text-fg"
+        >Promote</button>
+      {:else if action === "delete"}
+        <button
+          type="button"
+          onclick={deleteThread}
+          title={deleteTitle}
+          class="px-[7px] py-0.5 rounded-[5px] {confirmingDelete ? 'text-del-fg bg-hover font-medium' : 'text-fg-2 hover:bg-hover hover:text-del-fg'}"
+        >{confirmingDelete ? "Confirm delete?" : "Delete"}</button>
+      {/if}
+    {/each}
     <AnnotationOverflowMenu items={overflowItems} />
     {#if thread.replies.length > 0}
       <span class="ml-auto pr-1.5 text-muted text-[10px]">{thread.replies.length} {thread.replies.length === 1 ? "reply" : "replies"}</span>

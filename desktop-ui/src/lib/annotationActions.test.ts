@@ -20,6 +20,7 @@ describe("card labels", () => {
 const base: ThreadActionInput = {
   kind: "comment",
   synced: false,
+  resolved: false,
   promoted: false,
   documentAnchored: false,
   rootEditable: true,
@@ -39,7 +40,7 @@ describe("threadActions", () => {
   test("a question carries the AI actions and Promote", () => {
     const a = threadActions({ ...base, kind: "question" });
     expect(a.primary).toEqual(["askAi", "elaborate", "reply", "promote", "delete"]);
-    expect(a.overflow).toEqual(["copy", "promoteNote", "edit"]);
+    expect(a.overflow).toEqual(["copy", "promoteNote", "resolve", "edit"]);
   });
 
   test("Promote is hidden once promoted and on document anchors", () => {
@@ -51,10 +52,32 @@ describe("threadActions", () => {
 
   test("a note is never pushed and has no promote-to-note", () => {
     const a = threadActions({ ...base, kind: "note" });
-    expect(a.overflow).toEqual(["copy", "edit", "validate"]);
+    expect(a.overflow).toEqual(["copy", "resolve", "edit", "validate"]);
   });
 
   test("edit only when the root is editable", () => {
     expect(threadActions({ ...base, rootEditable: false }).overflow).not.toContain("edit");
+  });
+
+  test("an open question or note can be resolved", () => {
+    for (const kind of ["question", "note"] as const) {
+      expect(threadActions({ ...base, kind }).overflow).toContain("resolve");
+    }
+  });
+
+  test("a resolved question or note keeps Reply and Delete", () => {
+    for (const kind of ["question", "note"] as const) {
+      const a = threadActions({ ...base, kind, resolved: true });
+      expect(a.primary).toEqual(["reply"]);
+      expect(a.overflow).toContain("delete");
+      expect(a.overflow).not.toContain("resolve");
+      expect([...a.primary, ...a.overflow]).not.toContain("promote");
+    }
+  });
+
+  test("a resolved comment keeps Reply and Delete but not Resolve", () => {
+    const a = threadActions({ ...base, resolved: true });
+    expect(a.primary).toEqual(["reply"]);
+    expect(a.overflow).toContain("delete");
   });
 });

@@ -2,7 +2,7 @@ import type { ThreadSnapshot } from "./types";
 
 /** Buttons shown on the card itself; everything else lives in the overflow menu. */
 export type PrimaryAction = "askAi" | "elaborate" | "reply" | "resolve" | "promote" | "delete";
-export type OverflowAction = "copy" | "push" | "promoteNote" | "edit" | "validate" | "delete";
+export type OverflowAction = "copy" | "push" | "promoteNote" | "resolve" | "edit" | "validate" | "delete";
 
 export interface OverflowItem {
   id: string;
@@ -16,6 +16,7 @@ export interface OverflowItem {
 export interface ThreadActionInput {
   kind: ThreadSnapshot["kind"];
   synced: boolean;
+  resolved: boolean;
   /** Already promoted to a GitHub comment. */
   promoted: boolean;
   /** Anchored on a document line outside the diff (ADR 0041). */
@@ -54,20 +55,30 @@ export function authorLabel(kind: "you" | "human" | "ai", author: string): strin
  * Which actions a thread card offers. A comment is public, so its row stays
  * short (Reply, Resolve). Questions and notes are private and carry the AI
  * actions and Promote. Nothing is dropped: the less common actions move into
- * the overflow menu.
+ * the overflow menu. A resolved thread keeps Reply, and Delete moves to the
+ * overflow so it stays reachable.
  */
 export function threadActions(t: ThreadActionInput): ThreadActions {
-  const isLocal = t.kind !== "comment";
-  const primary: PrimaryAction[] = isLocal ? ["askAi", "elaborate", "reply"] : ["reply", "resolve"];
-  // Promote-to-comment needs a diff line for GitHub to accept (ADR 0041).
-  if (isLocal && !t.promoted && !t.documentAnchored) primary.push("promote");
-  if (isLocal) primary.push("delete");
+  return { primary: primaryActions(t), overflow: overflowActions(t) };
+}
 
+function primaryActions(t: ThreadActionInput): PrimaryAction[] {
+  if (t.resolved) return ["reply"];
+  if (t.kind === "comment") return ["reply", "resolve"];
+  // Promote-to-comment needs a diff line for GitHub to accept (ADR 0041).
+  const promote: PrimaryAction[] = t.promoted || t.documentAnchored ? [] : ["promote"];
+  return ["askAi", "elaborate", "reply", ...promote, "delete"];
+}
+
+function overflowActions(t: ThreadActionInput): OverflowAction[] {
+  const isLocal = t.kind !== "comment";
+  const open = !t.resolved;
   const overflow: OverflowAction[] = ["copy"];
   if (!isLocal && !t.synced) overflow.push("push");
-  if (t.kind === "question") overflow.push("promoteNote");
+  if (t.kind === "question" && open) overflow.push("promoteNote");
+  if (isLocal && open) overflow.push("resolve");
   if (t.rootEditable) overflow.push("edit");
   if (t.kind !== "question") overflow.push("validate");
-  if (!isLocal) overflow.push("delete");
-  return { primary, overflow };
+  if (!isLocal || !open) overflow.push("delete");
+  return overflow;
 }
