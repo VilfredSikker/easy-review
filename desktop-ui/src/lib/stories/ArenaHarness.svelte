@@ -11,7 +11,7 @@
 
   const {
     snapshot = MOCK_ARENA_SNAPSHOT,
-    layoutMode: initialLayout = "bracket",
+    layoutMode: initialLayout = "matrix",
   }: Props = $props();
 
   let open = $state(true);
@@ -21,7 +21,7 @@
 
 <div class="h-screen bg-[var(--arena-bg-app)] p-4">
   <p class="mb-3 text-[12px] text-[var(--arena-fg-muted)]">
-    Arena overlay (mock) — layout: {layoutMode} · Esc closes
+    Arena page (mock) — layout: {layoutMode} · Esc closes
   </p>
   <button
     type="button"

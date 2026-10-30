@@ -14,8 +14,11 @@ import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
 import { acceptFlowFindings, arenaAcceptanceRoute, type FlowAcceptanceOrigin } from "$lib/arenaFlowAcceptance";
 import { captureHistoryFlowOrigin, openArenaHistory } from "$lib/arenaHistory";
 import { refreshOverlayIfCurrent } from "$lib/arenaOverlayRefresh";
+import { importableFindings, runDigest } from "$lib/arena/arenaView";
+import { diffNav } from "$lib/stores/diffNav.svelte";
 import type {
   ArenaProgressState,
+  ArenaRunDigest,
   ArenaRunSnapshot,
   ArenaRunSummary,
   ArenaScope,
@@ -33,6 +36,8 @@ export interface AgentGroupConfig {
 
 export interface ArenaStartConfig {
   title?: string;
+  /** Run-level lens for a single-agent review, so it files under that agent's label. */
+  agent_kind?: string;
   mode?: LauncherReviewerMode;
   reviewers?: ReviewerRef[];
   agent_groups?: AgentGroupConfig[];
@@ -88,7 +93,14 @@ class ArenaStore {
   liveSnapshot = $state<ArenaRunSnapshot | null>(null);
   overlaySnapshot = $state<ArenaRunSnapshot | null>(null);
   progress = $state<ArenaProgressState | null>(null);
-  layoutMode = $state<"bracket" | "matrix" | "funnel">("bracket");
+  layoutMode = $state<"bracket" | "matrix" | "funnel">("matrix");
+  /** Matrix round; null follows the last round of whichever run is open. */
+  matrixRound = $state<number | null>(null);
+  /** Findings the reviewer chose to leave out of the import, per run. */
+  importExcluded = $state<Record<string, string[]>>({});
+  /** Rounds and survivors per run, filled as runs are loaded (see ArenaRunDigest). */
+  digests = $state<Record<string, ArenaRunDigest>>({});
+  private overlaySeq = 0;
   loading = $state(false);
   runStartedAt = $state<number | null>(null);
 
@@ -207,7 +219,7 @@ class ArenaStore {
             rounds: config.rounds != null ? Number(config.rounds) : undefined,
             arbiter: config.arbiter,
             confirm: config.confirm ?? false,
-            agent_kind: undefined,
+            agent_kind: config.agent_kind,
             effort: config.effort,
           },
         });
@@ -348,9 +360,11 @@ class ArenaStore {
     flowOrigin: FlowAcceptanceOrigin | null = null,
   ) {
     this.flowAcceptanceOrigin = flowOrigin;
+    if (this.overlayRunId !== runId) this.matrixRound = null;
     this.overlayRunId = runId;
     this.overlaySnapshot = snap;
     this.overlayOpen = true;
+    this.rememberDigest(snap);
     arenaLog("store: arena complete — opening overlay", { runId });
   }
 
@@ -583,14 +597,23 @@ class ArenaStore {
     }
   }
 
+  /**
+   * Open a run on the arena page. Switching between runs keeps the page up
+   * while the next one loads; the flow origin is replaced only once the new
+   * snapshot is in hand, so acceptance never pairs one run with another's
+   * origin. The sequence number drops a slower response for a run the user
+   * already clicked away from.
+   */
   async openOverlay(runId?: string) {
     const id = runId ?? this.branchSummaries[0]?.id;
     if (!id) return;
+    const seq = ++this.overlaySeq;
     const currentFlow = captureHistoryFlowOrigin(app.snapshot);
-    this.flowAcceptanceOrigin = null;
-    this.overlayOpen = false;
-    this.overlayRunId = null;
-    this.overlaySnapshot = null;
+    if (!this.overlayOpen) {
+      this.flowAcceptanceOrigin = null;
+      this.overlayRunId = null;
+      this.overlaySnapshot = null;
+    }
     try {
       const opened = await openArenaHistory(id, currentFlow, {
         loadArena: async (historyRunId) => normalizeArenaSnapshot(
@@ -600,15 +623,91 @@ class ArenaStore {
           await invoke<ArenaRunSnapshot>("flow_get_run", { erDir: origin.erDir, runId: origin.runId }),
         ),
       });
+      if (seq !== this.overlaySeq) return;
       const snap = opened.snapshot;
       if (isArenaRunFromSnapshot(snap)) {
         this.openArenaOverlayForRun(id, snap, opened.flowOrigin);
       } else {
+        this.overlayOpen = false;
         await this.importSingleReviewToTab(id, snap);
       }
     } catch (e) {
       arenaError("store: openOverlay failed", e);
       app.showToast("error", String(e));
+    }
+  }
+
+  excludedFor(runId: string): Set<string> {
+    return new Set(this.importExcluded[runId] ?? []);
+  }
+
+  /** "Leave out of import" and its undo; held in memory, scoped to the run. */
+  toggleImportExcluded(runId: string, findingId: string) {
+    const cur = this.importExcluded[runId] ?? [];
+    const next = cur.includes(findingId) ? cur.filter((id) => id !== findingId) : [...cur, findingId];
+    this.importExcluded = { ...this.importExcluded, [runId]: next };
+  }
+
+  /** The page's single import action: survivors minus what was left out. */
+  async importSurvivors(snapshot: ArenaRunSnapshot): Promise<number> {
+    const ids = importableFindings(snapshot.run, this.excludedFor(snapshot.run.id)).map((f) => f.id);
+    if (ids.length === 0) return 0;
+    return this.acceptFindings(snapshot.run.id, ids);
+  }
+
+  /**
+   * "Keep anyway": a human override recorded beside the arbiter's ruling,
+   * which the engine keeps as the round-255 ballot and rationale (ADR 0035).
+   * The finding still needs the explicit import afterwards (ADR 0024).
+   */
+  async keepAnyway(runId: string, findingId: string) {
+    try {
+      const snap = normalizeArenaSnapshot(
+        await invoke<ArenaRunSnapshot>("arena_override", {
+          req: {
+            run_id: runId,
+            finding_id: findingId,
+            verdict: "kept",
+            note: "Kept by the reviewer despite the arbiter",
+          },
+        }),
+      );
+      if (this.overlayRunId === runId) {
+        this.overlaySnapshot = snap;
+        this.rememberDigest(snap);
+      }
+      app.showToast("success", "Kept for import despite the arbiter");
+    } catch (e) {
+      app.showToast("error", e instanceof Error ? e.message : String(e));
+    }
+  }
+
+  /** Leave the arena for the diff, with the finding's file in view. */
+  async openFileInDiff(path: string) {
+    this.closeOverlay();
+    app.setMainView("diff");
+    const file = app.snapshot?.files.find((f) => f.path === path);
+    if (!file) return;
+    await app.cmd("select_file", { idx: file.source_index });
+    await diffNav.scrollToFile(path);
+  }
+
+  private rememberDigest(snap: ArenaRunSnapshot) {
+    if (isArenaRunActive(snap.run.status)) return;
+    this.digests = { ...this.digests, [snap.run.id]: runDigest(snap) };
+  }
+
+  /** Load a run once to learn its rounds and survivors, for summaries outside the page. */
+  async loadDigest(runId: string): Promise<ArenaRunDigest | null> {
+    const known = this.digests[runId];
+    if (known) return known;
+    try {
+      const snap = normalizeArenaSnapshot(await invoke<ArenaRunSnapshot>("arena_get", { runId }));
+      this.rememberDigest(snap);
+      return this.digests[runId] ?? null;
+    } catch (e) {
+      arenaWarn("store: loadDigest failed", { runId, e });
+      return null;
     }
   }
 
@@ -668,7 +767,10 @@ class ArenaStore {
           if (normalized.run.id !== id) throw new Error("Arena refresh returned a different run");
           return normalized;
         },
-        (normalized) => { this.overlaySnapshot = normalized; },
+        (normalized) => {
+          this.overlaySnapshot = normalized;
+          this.rememberDigest(normalized);
+        },
       );
     } catch (e) {
       arenaError("store: refreshOverlayRun failed", e);

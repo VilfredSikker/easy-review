@@ -25,8 +25,7 @@
     useAgentScopedSummary,
   } from "$lib/aiReviewAgents";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
-  import { arenaLog } from "$lib/arena/log";
-  import ArenaHistoryList from "$lib/components/arena/ArenaHistoryList.svelte";
+  import ArenaPanelCard from "$lib/components/arena/ArenaPanelCard.svelte";
   import CardDeleteButton from "$lib/components/ui/CardDeleteButton.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
@@ -132,10 +131,6 @@
   );
   const staleReason = $derived(ai.stale_reason ?? "Review artifacts are stale.");
 
-  const branchArenaRuns = $derived(arena.branchSummaries);
-  const latestArena = $derived(branchArenaRuns[0] ?? null);
-  const arenaRunning = $derived(arena.hasLiveRun);
-  const activeArenaRunId = $derived(app.snapshot?.active_arena_run ?? arena.liveRunId);
   const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
   const flowControls = $derived(reviewFlowControls(reviewFlow));
 
@@ -294,72 +289,7 @@
     {/if}
   {/if}
   {#if arena.enabled}
-    <div
-      class="mb-4 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] p-3"
-    >
-      <div class="flex items-start justify-between gap-2">
-        <div>
-          <p class="text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-periwinkle)]">
-            Advanced · AI Review Arena
-          </p>
-          {#if latestArena}
-            <p class="mt-1 text-[12px] font-medium text-[var(--arena-fg)]">
-              {latestArena.title ?? latestArena.id}
-            </p>
-            <p class="text-[10px] text-[var(--arena-fg-subtle)]">
-              {latestArena.finding_count} findings · {latestArena.reviewer_count} reviewers
-            </p>
-          {:else}
-            <p class="mt-1 text-[12px] text-[var(--arena-fg-muted)]">
-              Multi-reviewer consensus on this diff
-            </p>
-          {/if}
-        </div>
-        <div class="flex shrink-0 flex-col items-end gap-1">
-          <button
-            type="button"
-            class="text-[10px] font-semibold text-[var(--arena-periwinkle)] hover:underline"
-            onclick={() => arena.openLauncher()}
-          >
-            + New arena
-          </button>
-          <button
-            type="button"
-            class="text-[10px] font-semibold text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)] hover:underline"
-            onclick={() => arena.openSingleReviewLauncher()}
-          >
-            Single review
-          </button>
-        </div>
-      </div>
-      <div class="mt-3 flex flex-wrap gap-2">
-        {#if latestArena}
-          <Button
-            variant="secondary"
-            onclick={() =>
-              arenaRunning ? arena.showRunningProgress() : arena.openOverlay(latestArena.id)}
-          >
-            {arenaRunning ? "View progress" : "Open latest"}
-          </Button>
-        {/if}
-        <button
-          type="button"
-          onclick={() => {
-            arenaLog("AiReviewCard: Promote to Arena clicked");
-            arena.openLauncher();
-          }}
-          class="rounded-md border border-[var(--arena-border)] px-3 py-1.5 text-[11px] text-[var(--arena-fg-muted)] hover:bg-[var(--arena-bg-2)]"
-        >
-          {isEmpty ? "Run as Arena" : "Promote to Arena"}
-        </button>
-      </div>
-      <ArenaHistoryList
-        summaries={branchArenaRuns}
-        activeRunId={activeArenaRunId}
-        onOpen={(id) => void arena.openOverlay(id)}
-        onDelete={(id) => void arena.deleteRun(id)}
-      />
-    </div>
+    <ArenaPanelCard />
   {/if}
 
   {#if showAgentDropdown}
