@@ -397,14 +397,14 @@
           {#each suggestions as sug, i (i)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
-              class="grid grid-cols-[50px_auto_minmax(0,1fr)] gap-2 items-center px-2 py-[5px] rounded-[5px] text-[12.5px] cursor-pointer hover:bg-hover
+              class="grid grid-cols-[50px_minmax(0,auto)_minmax(0,1fr)] gap-2 items-center px-2 py-[5px] rounded-[5px] text-[12.5px] cursor-pointer hover:bg-hover
                 {i === highlight ? 'bg-hover' : ''}"
               data-sugg-idx={i}
               aria-selected={i === highlight}
               onmousedown={(e) => { e.preventDefault(); pickSuggestion(sug.expr); }}
             >
               <span class="mono text-[10px] tracking-[0.04em] {sug.kind === 'history' ? 'text-muted' : 'text-accent'}">{suggestionLabel(sug)}</span>
-              <span class="mono font-medium text-fg">{sug.kind === 'preset' ? sug.name : sug.expr}</span>
+              <span class="mono font-medium text-fg truncate min-w-0">{sug.kind === 'preset' ? sug.name : sug.expr}</span>
               <span class="mono text-[11px] text-fg-3 truncate text-right">
                 {#if sug.kind === 'kind'}{sug.files ?? 0} {sug.files === 1 ? 'file' : 'files'}{:else if sug.kind === 'preset'}{sug.expr}{/if}
               </span>

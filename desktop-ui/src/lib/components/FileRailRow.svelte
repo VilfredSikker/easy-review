@@ -139,7 +139,8 @@
 
   {#if isRename}
     <span class="text-[10px] mono text-muted shrink-0" title={file.similarity != null ? `Renamed, ${file.similarity}% similar` : "Renamed"}>R</span>
-  {:else if file.is_lazy_stub}
+  {/if}
+  {#if file.is_lazy_stub}
     <span class="text-[10px] mono text-muted shrink-0 opacity-40">···</span>
   {:else}
     <span class="flex items-center gap-1 shrink-0">
