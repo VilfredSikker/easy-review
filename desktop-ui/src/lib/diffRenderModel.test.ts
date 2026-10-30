@@ -153,6 +153,7 @@ const VIS_DEFAULT: CommentVisibility = {
   hideComments: false,
   hideFindings: false,
   hideQuestions: false,
+  hideNotes: false,
 };
 
 interface MkInputsOptions {

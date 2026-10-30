@@ -408,7 +408,8 @@ function visBits(v: CommentVisibility): number {
     (v.hideOutdated ? 4 : 0) |
     (v.hideComments ? 8 : 0) |
     (v.hideFindings ? 16 : 0) |
-    (v.hideQuestions ? 32 : 0)
+    (v.hideQuestions ? 32 : 0) |
+    (v.hideNotes ? 64 : 0)
   );
 }
 
