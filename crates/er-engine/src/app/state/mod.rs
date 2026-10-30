@@ -12,7 +12,7 @@ mod review_flow_progress;
 pub(super) mod tour_navigation;
 
 use crate::ai::{self, AiState, CommentType, InlineLayers, PanelContent, ReviewFocus};
-use crate::config::{self, ErConfig, FileKindRepoConfig, ImportanceRepoConfig, WatchedConfig};
+use crate::config::{self, ErConfig, FileKindRepoConfig, RiskRules, WatchedConfig};
 use crate::git::{
     self, CommitInfo, CompactionConfig, DiffFile, DiffFileHeader, WatchedFile, Worktree,
 };
@@ -909,14 +909,16 @@ pub struct TabState {
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
 
-    /// This repo's declared importance rules, copied off the app's config.
+    /// This repo's risk rules (its own, then the user's), copied off the app's
+    /// config. Resolve a path with `risk_rules.resolve(path)` for its tier and
+    /// the rule that set it.
     ///
     /// The filter resolves a tier from here rather than reaching for `ErConfig`,
     /// which lives on `App` — same shape as `watched_config`.
-    pub importance: ImportanceRepoConfig,
+    pub risk_rules: RiskRules,
 
     /// This repo's `[file_kinds]` overrides, copied off the app's config the
-    /// same way as `importance`.
+    /// same way as `risk_rules`.
     pub file_kinds: FileKindRepoConfig,
 
     /// Git-ignored files opted into visibility
@@ -1613,7 +1615,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
-            importance: ImportanceRepoConfig::default(),
+            risk_rules: RiskRules::default(),
             file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
@@ -1749,7 +1751,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
-            importance: ImportanceRepoConfig::default(),
+            risk_rules: RiskRules::default(),
             file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
@@ -1879,7 +1881,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
-            importance: ImportanceRepoConfig::default(),
+            risk_rules: RiskRules::default(),
             file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
@@ -2022,7 +2024,7 @@ impl TabState {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
-            importance: ImportanceRepoConfig::default(),
+            risk_rules: RiskRules::default(),
             file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
@@ -4565,7 +4567,7 @@ impl TabState {
             .collect()
     }
 
-    /// The key this tab's `[importance]` / `[file_kinds]` tables live under.
+    /// The key this tab's `[risk]` / `[file_kinds]` tables live under.
     /// Anything that reads or writes those tables for the tab goes through
     /// this, so Settings, the importance agent and the filter name one table.
     pub fn rules_key(&self) -> String {
@@ -4578,11 +4580,11 @@ impl TabState {
         crate::storage::rules_key(&self.repo_root, remote_only)
     }
 
-    /// The rule tables `change-facts.md` resolves against. An empty importance
+    /// The rule tables `change-facts.md` resolves against. An empty risk
     /// table is no declaration at all — the tab holds an empty one when the
     /// repo has none, and the facts must say "undeclared" rather than "normal".
     pub fn repo_rules(&self) -> crate::ai::change_facts::RepoRules<'_> {
-        crate::ai::change_facts::RepoRules::new(&self.file_kinds, &self.importance)
+        crate::ai::change_facts::RepoRules::new(&self.file_kinds, &self.risk_rules)
     }
 
     /// [`Self::repo_rules`] as an owned copy, for a command that releases the
@@ -4591,7 +4593,7 @@ impl TabState {
     pub fn owned_repo_rules(&self) -> crate::ai::change_facts::OwnedRepoRules {
         crate::ai::change_facts::OwnedRepoRules {
             file_kinds: self.file_kinds.clone(),
-            importance: self.importance.clone(),
+            risk: self.risk_rules.clone(),
         }
     }
 
@@ -4636,7 +4638,7 @@ impl TabState {
                     &self.filter_rules,
                     f,
                     review,
-                    Some(&self.importance),
+                    Some(&self.risk_rules),
                     Some(&self.file_kinds),
                 )
             });
@@ -5247,7 +5249,7 @@ impl TabState {
                 &self.filter_rules,
                 f,
                 review,
-                Some(&self.importance),
+                Some(&self.risk_rules),
                 Some(&self.file_kinds),
             ) {
                 total += 1;
@@ -6476,14 +6478,14 @@ impl App {
         self.tabs.push(tab);
     }
 
-    /// Copy the per-repo tables `tab`'s repo declares (`[importance]`,
+    /// Copy the per-repo tables `tab`'s repo declares (`[risk]`,
     /// `[file_kinds]`), or empty ones.
     ///
     /// Takes the config rather than `&self` so a caller holding `self.tabs`
     /// mutably can still resolve a tab's rules.
     fn copy_repo_rules(config: &ErConfig, tab: &mut TabState) {
         let repo = tab.rules_key();
-        tab.importance = config.importance.repo(&repo).cloned().unwrap_or_default();
+        tab.risk_rules = config.risk_rules(&repo);
         tab.file_kinds = config.file_kinds.repo(&repo).cloned().unwrap_or_default();
     }
 
@@ -7129,9 +7131,9 @@ impl App {
                 enabled: true,
             },
             HubItem {
-                label: "Propose importance rules".into(),
+                label: "Propose risk rules".into(),
                 hint: "".into(),
-                description: "Agent reads the repo and writes its [importance] table".into(),
+                description: "Agent reads the repo and writes its [risk] table".into(),
                 action: HubAction::RunImportanceAgent,
                 is_header: false,
                 enabled: true,
@@ -9614,7 +9616,7 @@ mod tests {
             h_scroll_old: 0,
             h_scroll_new: 0,
             layers: InlineLayers::default(),
-            importance: ImportanceRepoConfig::default(),
+            risk_rules: RiskRules::default(),
             file_kinds: FileKindRepoConfig::default(),
             panel: None,
             panel_scroll: 0,
@@ -10459,19 +10461,13 @@ mod tests {
     /// The rules live on the app's config and the filter reads them off the tab,
     /// so what matters is that the copy on the tab is what decides.
     #[test]
-    fn visible_files_filters_by_the_importance_rules_on_the_tab() {
+    fn visible_files_filters_by_the_risk_rules_on_the_tab() {
         let files = vec![
             make_file("src/lib.rs", vec![], 1, 0),
             make_file("docs/guide.md", vec![], 1, 0),
         ];
         let mut tab = make_test_tab(files);
-        tab.importance = ImportanceRepoConfig {
-            default: None,
-            rules: std::collections::BTreeMap::from([(
-                "src/**".to_string(),
-                "foundational".to_string(),
-            )]),
-        };
+        tab.risk_rules = crate::config::test_support::risk_rules(&[("src/**", "high")], None);
         tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");
 
         let visible: Vec<&str> = tab
@@ -10485,7 +10481,7 @@ mod tests {
     /// Nothing declared means every path is `normal`, so a tier filter selects
     /// nothing rather than everything.
     #[test]
-    fn visible_files_without_importance_rules_selects_no_tier() {
+    fn visible_files_without_risk_rules_selects_no_tier() {
         let files = vec![make_file("src/lib.rs", vec![], 1, 0)];
         let mut tab = make_test_tab(files);
         tab.filter_rules = crate::app::filter::parse_filter_expr("importance:foundational");

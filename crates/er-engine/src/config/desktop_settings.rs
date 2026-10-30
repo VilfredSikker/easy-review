@@ -2,8 +2,8 @@
 
 use super::settings::{agent_effort_label, settings_fields_grouped};
 use super::{
-    split_shell_args, ErConfig, ImportanceRepoConfig, AGENT_EFFORT_OPTIONS,
-    MAX_CONCURRENT_REVIEWS_RANGE,
+    apply_risk_rule_edit, split_shell_args, ErConfig, ResolvedRisk, RiskRuleEdit, RiskRuleSource,
+    RiskRules, RiskTier, AGENT_EFFORT_OPTIONS, MAX_CONCURRENT_REVIEWS_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,7 +55,40 @@ pub enum ConfigHubFieldDto {
     },
 }
 
-/// One declared importance rule, as written, for the read-only list.
+/// The patch key that edits one risk rule. Its value is a [`RiskRuleEdit`] as
+/// JSON text: a rule is four fields, and the patch wire carries one scalar.
+pub const RISK_RULE_PATCH_KEY: &str = "risk.rule";
+
+/// One declared risk rule, for the Settings rule table.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskRuleDto {
+    pub pattern: String,
+    /// The canonical tier, or the text as written when it does not read — the
+    /// table must show a typo rather than hide the rule it broke.
+    pub tier: String,
+    /// Whether `tier` reads. A rule that does not is listed but claims nothing.
+    pub readable: bool,
+    pub label: Option<String>,
+    pub source: RiskRuleSource,
+    /// How many of the active tab's changed files this rule claims. Zero is an
+    /// idle rule, which the table dims.
+    pub file_count: usize,
+}
+
+/// One changed file's resolution: the tier it reads as, and the rule that said
+/// so. The rules list shows what was declared; this shows what a given file
+/// resolved to, which precedence and the defaults sit between.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RiskFileDto {
+    pub path: String,
+    #[serde(flatten)]
+    pub resolved: ResolvedRisk,
+}
+
+/// The `importance_*` shape of [`RiskRuleDto`], still read by the desktop's current
+/// Settings card; removed once that card reads `risk_rules`.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportanceRuleDto {
@@ -63,18 +96,12 @@ pub struct ImportanceRuleDto {
     pub tier: String,
 }
 
-/// One changed file's resolution: the tier it reads as, and the rule that said so.
-///
-/// The rules list shows what was declared; this shows what a given file
-/// resolved to. Precedence and the default sit between those two, so only the
-/// resolved form answers "why is this file foundational?".
+/// The `importance_*` shape of [`RiskFileDto`]; see [`ImportanceRuleDto`].
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportanceFileDto {
     pub path: String,
-    /// The effective tier, whether a rule or the default produced it.
     pub tier: String,
-    /// The rule key that claimed the path; `None` when the default applies.
     pub matched_rule: Option<String>,
 }
 
@@ -86,45 +113,65 @@ pub struct DesktopSettingsSnapshot {
     pub terminal: Vec<ConfigHubFieldDto>,
     pub agent_effort: String,
     pub repo_root: String,
-    /// The active repo's declared importance rules, for the read-only view.
-    pub importance_rules: Vec<ImportanceRuleDto>,
+    /// The rules key a project rule edit names (`TabState::rules_key`), so the
+    /// edit lands in the table this tab resolves against.
+    pub risk_repo: String,
+    /// The active repo's project rules, then the user's.
+    pub risk_rules: Vec<RiskRuleDto>,
     /// What a path no rule claims resolves to.
+    pub risk_default: RiskTier,
+    /// The active tab's changed files, resolved. Empty when nothing is
+    /// declared: there is nothing to explain about a path that reads as `ai`
+    /// because nobody wrote a rule.
+    pub risk_files: Vec<RiskFileDto>,
+    pub importance_rules: Vec<ImportanceRuleDto>,
     pub importance_default: String,
-    /// The active tab's changed files, resolved. Empty when the repo has no
-    /// rules — there is nothing to explain about a path that reads as normal
-    /// because nothing was ever declared.
     pub importance_files: Vec<ImportanceFileDto>,
 }
 
-/// Resolve the active tab's changed files against `table`.
+/// Resolve the active tab's changed files against `rules`.
 ///
 /// Split from the snapshot so the wire values are testable without shelling out
 /// to git for the repo slug.
-fn importance_file_rows(
-    table: Option<&ImportanceRepoConfig>,
-    changed_paths: &[String],
-) -> Vec<ImportanceFileDto> {
-    let Some(table) = table else {
+fn risk_file_rows(rules: &RiskRules, changed_paths: &[String]) -> Vec<RiskFileDto> {
+    if !rules.is_declared() {
         return Vec::new();
-    };
+    }
     changed_paths
         .iter()
-        .map(|path| {
-            let (matched_rule, tier) = table.matching_rule(path).map_or_else(
-                || (None, table.default_tier()),
-                |(key, tier)| (Some(key.to_string()), tier),
-            );
-            ImportanceFileDto {
-                path: path.clone(),
-                tier: tier.as_str().to_string(),
-                matched_rule,
-            }
+        .map(|path| RiskFileDto {
+            path: path.clone(),
+            resolved: rules.resolve(path),
         })
         .collect()
 }
 
+fn risk_rule_rows(rules: &RiskRules, changed_paths: &[String]) -> Vec<RiskRuleDto> {
+    let counts = rules.claim_counts(changed_paths.iter().map(String::as_str));
+    [
+        (RiskRuleSource::Project, &rules.project),
+        (RiskRuleSource::User, &rules.user),
+    ]
+    .into_iter()
+    .flat_map(|(source, table)| {
+        let counts = &counts;
+        table.rules.iter().map(move |(pattern, rule)| {
+            let tier = rule.tier();
+            RiskRuleDto {
+                pattern: pattern.clone(),
+                tier: tier.map_or_else(|| rule.tier.clone(), |t| t.as_str().to_string()),
+                readable: tier.is_some(),
+                label: rule.label.clone(),
+                source,
+                file_count: counts.get(&(source, pattern.clone())).copied().unwrap_or(0),
+            }
+        })
+    })
+    .collect()
+}
+
 /// `repo_key` is the active tab's `TabState::rules_key`, so Settings shows the
-/// table the tab's filter and header resolve against.
+/// rules the tab's filter and header resolve against.
 pub fn desktop_settings_snapshot(
     config: &ErConfig,
     repo_root: &str,
@@ -132,28 +179,12 @@ pub fn desktop_settings_snapshot(
     changed_paths: &[String],
 ) -> DesktopSettingsSnapshot {
     let grouped = settings_fields_grouped(config);
-
-    let rules = config.importance.repo(repo_key);
-    let importance_rules = rules
-        .map(|table| {
-            table
-                .rules
-                .iter()
-                .map(|(matcher, tier)| ImportanceRuleDto {
-                    matcher: matcher.clone(),
-                    tier: tier.clone(),
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    // The default as it resolves, not as it was written: a table whose default
-    // does not read falls back to normal, and the view has to say what the
-    // resolver will actually do rather than repeat a typo back.
-    let importance_default = rules
-        .map(|table| table.default_tier())
-        .unwrap_or_default()
-        .as_str()
-        .to_string();
+    let rules = config.risk_rules(repo_key);
+    let risk_rules = risk_rule_rows(&rules, changed_paths);
+    let risk_files = risk_file_rows(&rules, changed_paths);
+    // The default as it resolves, not as it was written: the view has to say
+    // what the resolver will do rather than repeat a typo back.
+    let risk_default = rules.default_tier();
 
     DesktopSettingsSnapshot {
         general: grouped.general,
@@ -161,9 +192,26 @@ pub fn desktop_settings_snapshot(
         terminal: grouped.terminal,
         agent_effort: agent_effort_label(&config.agent.effort),
         repo_root: repo_root.to_string(),
-        importance_rules,
-        importance_default,
-        importance_files: importance_file_rows(rules, changed_paths),
+        risk_repo: repo_key.to_string(),
+        importance_rules: risk_rules
+            .iter()
+            .map(|r| ImportanceRuleDto {
+                matcher: r.pattern.clone(),
+                tier: r.tier.clone(),
+            })
+            .collect(),
+        importance_default: risk_default.as_str().to_string(),
+        importance_files: risk_files
+            .iter()
+            .map(|f| ImportanceFileDto {
+                path: f.path.clone(),
+                tier: f.resolved.tier.as_str().to_string(),
+                matched_rule: f.resolved.rule.as_ref().map(|r| r.key.clone()),
+            })
+            .collect(),
+        risk_rules,
+        risk_default,
+        risk_files,
     }
 }
 
@@ -178,6 +226,16 @@ pub fn validate_config_text_field(key: &str, value: &str) -> Option<String> {
 }
 
 pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldValue) -> bool {
+    if key == RISK_RULE_PATCH_KEY {
+        // An edit that does not parse or validate changes nothing, like any
+        // other out-of-range patch value: Settings validates before it sends.
+        if let ConfigFieldValue::String(json) = value {
+            if let Ok(edit) = serde_json::from_str::<RiskRuleEdit>(&json) {
+                let _ = apply_risk_rule_edit(config, edit);
+            }
+        }
+        return false;
+    }
     if let Some(kind) = key.strip_prefix("inbox.show.") {
         if let ConfigFieldValue::Bool(v) = value {
             let _ = config.inbox.show.set(kind, v);
@@ -398,7 +456,7 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::test_support::importance_rules;
+    use crate::config::test_support::risk_rules;
     use crate::config::ErConfig;
 
     #[test]
@@ -545,26 +603,27 @@ mod tests {
     /// Settings must list the table under the tab's key, not one derived from
     /// that directory.
     #[test]
-    fn settings_read_importance_under_the_tabs_key() {
+    fn settings_read_risk_rules_under_the_tabs_key() {
         let mut config = ErConfig::default();
-        config.importance.items.insert(
+        config.risk.items.insert(
             "my-service".to_string(),
-            importance_rules(&[("src/**", "foundational")], "normal"),
+            risk_rules(&[("src/**", "high")], None).project,
         );
         let snap = desktop_settings_snapshot(&config, "/", "my-service", &[]);
-        assert_eq!(snap.importance_rules.len(), 1);
+        assert_eq!(snap.risk_rules.len(), 1);
+        assert_eq!(snap.risk_repo, "my-service");
         assert_eq!(snap.repo_root, "/");
     }
 
     #[test]
-    fn importance_file_rows_report_the_rule_that_claimed_each_path() {
-        let table = importance_rules(
+    fn risk_file_rows_report_the_rule_that_claimed_each_path() {
+        let rules = risk_rules(
             &[
-                ("crates/er-engine/src/app/filter.rs", "normal"),
-                ("crates/er-engine/src/**", "foundational"),
-                ("*.rs", "isolated"),
+                ("crates/er-engine/src/app/filter.rs", "med"),
+                ("crates/er-engine/src/**", "high"),
+                ("*.rs", "low"),
             ],
-            "normal",
+            None,
         );
         let changed = vec![
             "crates/er-engine/src/app/filter.rs".to_string(),
@@ -572,23 +631,17 @@ mod tests {
             "desktop-ui/src/lib/types.ts".to_string(),
         ];
 
-        let rows = importance_file_rows(Some(&table), &changed);
+        let rows = risk_file_rows(&rules, &changed);
 
         assert_eq!(rows.len(), changed.len());
-        // Each row is claimed by a different level, so the key says which one.
-        assert_eq!(
-            rows[0].matched_rule.as_deref(),
-            Some("crates/er-engine/src/app/filter.rs")
-        );
-        assert_eq!(rows[0].tier, "normal");
-        assert_eq!(
-            rows[1].matched_rule.as_deref(),
-            Some("crates/er-engine/src/**")
-        );
-        assert_eq!(rows[1].tier, "foundational");
+        let key = |i: usize| rows[i].resolved.rule.as_ref().map(|r| r.key.as_str());
+        assert_eq!(key(0), Some("crates/er-engine/src/app/filter.rs"));
+        assert_eq!(rows[0].resolved.tier, RiskTier::Med);
+        assert_eq!(key(1), Some("crates/er-engine/src/**"));
+        assert_eq!(rows[1].resolved.tier, RiskTier::High);
         // Nothing claimed this one, so no key is named and the default answers.
-        assert_eq!(rows[2].matched_rule, None);
-        assert_eq!(rows[2].tier, "normal");
+        assert_eq!(key(2), None);
+        assert_eq!(rows[2].resolved.tier, RiskTier::Ai);
     }
 
     #[test]
@@ -596,7 +649,67 @@ mod tests {
         // The card reads "no rules declared for this repo" in this case, so an
         // empty list is the honest payload — a row per file would say the
         // resolution meant something when nothing was ever declared.
-        let rows = importance_file_rows(None, &["src/main.rs".to_string()]);
+        let rows = risk_file_rows(&RiskRules::default(), &["src/main.rs".to_string()]);
         assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn rule_rows_count_claimed_files_and_keep_an_unreadable_tier_visible() {
+        let mut config = ErConfig::default();
+        config.risk.items.insert(
+            "er".into(),
+            risk_rules(&[("src/**", "high"), ("docs/**", "critical")], None).project,
+        );
+        config.user_risk = risk_rules(&[("*.lock", "low")], None).project;
+        let changed = ["src/a.rs", "src/b.rs", "Cargo.lock"].map(str::to_string);
+        let snap = desktop_settings_snapshot(&config, "/repo", "er", &changed);
+
+        let row = |p: &str| snap.risk_rules.iter().find(|r| r.pattern == p).unwrap();
+        assert_eq!(
+            (row("src/**").file_count, row("src/**").source),
+            (2, RiskRuleSource::Project)
+        );
+        assert_eq!(
+            (row("*.lock").file_count, row("*.lock").source),
+            (1, RiskRuleSource::User)
+        );
+        assert_eq!(row("docs/**").tier, "critical");
+        assert!(!row("docs/**").readable);
+        assert_eq!(snap.risk_files.len(), 3);
+    }
+
+    #[test]
+    fn the_risk_rule_patch_key_edits_and_refuses_without_side_effects() {
+        let mut config = ErConfig::default();
+        let set = r#"{"source":"project","repo":"er","pattern":"db/**","tier":"high","label":"Migrations"}"#;
+        assert!(!apply_config_field(
+            &mut config,
+            RISK_RULE_PATCH_KEY,
+            ConfigFieldValue::String(set.into())
+        ));
+        let resolved = config.risk_rules("er").resolve("db/0001.sql");
+        assert_eq!(resolved.tier, RiskTier::High);
+        assert_eq!(resolved.rule.unwrap().label.as_deref(), Some("Migrations"));
+
+        let before = config.risk.items.clone();
+        for bad in [
+            r#"{"source":"project","repo":"er","pattern":"db/**","tier":"critical"}"#,
+            "not json",
+        ] {
+            apply_config_field(
+                &mut config,
+                RISK_RULE_PATCH_KEY,
+                ConfigFieldValue::String(bad.into()),
+            );
+        }
+        assert_eq!(config.risk.items, before);
+
+        let remove = r#"{"source":"project","repo":"er","pattern":"db/**"}"#;
+        apply_config_field(
+            &mut config,
+            RISK_RULE_PATCH_KEY,
+            ConfigFieldValue::String(remove.into()),
+        );
+        assert!(config.risk.items["er"].rules.is_empty());
     }
 }
