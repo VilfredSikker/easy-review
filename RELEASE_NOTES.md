@@ -1,3 +1,16 @@
+# Easy Review v0.5.11
+
+## In plain terms
+
+- **What changed.** The desktop app can update itself again. v0.5.9 and v0.5.10 trusted an updater key that no release was signed with, so every in-app update failed. v0.5.11 trusts the key releases are signed with.
+- **What you need to do.** On v0.5.9 or v0.5.10, download `Easy.Review_0.5.11_aarch64.dmg` from this release and install it over the old app, once. Your current app can't verify this update, so it can't install it for you. From v0.5.11 on, updates install from the sidebar pill.
+
+## What's Changed
+
+### Fixes
+- The desktop updater trusts the key that signs releases (#PR).
+- `scripts/tauri-sign-release.sh` drops an updater archive signed by any key other than the one in `tauri.conf.json`. A release signed with the wrong key ships without `latest.json`, so installed apps never download an update they would reject (#PR).
+
 # Easy Review v0.5.10
 
 ## In plain terms
