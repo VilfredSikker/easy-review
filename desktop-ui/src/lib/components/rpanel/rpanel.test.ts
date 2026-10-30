@@ -7,6 +7,8 @@ import {
   findingLens,
   findingLocation,
   findingsPanelView,
+  scopeToReviewer,
+  showReviewerPicker,
   toggleSeverity,
 } from "./findingsPanel";
 import {
@@ -146,6 +148,32 @@ describe("findingsPanelView", () => {
       "2 dropped, 1 regraded by arbiter",
     );
     expect(arbiterSummary({ arbiter_dropped: 0, arbiter_merged: 0, arbiter_regraded: 0 })).toBeNull();
+  });
+});
+
+describe("reviewer scope", () => {
+  const general = finding({ id: "g", agent_label: "General", raised_by: ["general"] });
+  const security = finding({ id: "s", agent_label: "Security", expert_label: "Security", raised_by: ["expert:security"] });
+  const resolvedSec = finding({ id: "rs", agent_label: "Security", raised_by: ["expert:security"], resolved: true });
+  const ai = { findings: [general, security], resolved_findings: [resolvedSec], agent_summaries: { Testing: "ok" } };
+
+  it("filters open and resolved rows the way the diff does", () => {
+    const scope = scopeToReviewer(ai, "Security");
+    expect(scope.open.map((f) => f.id)).toEqual(["s"]);
+    expect(scope.resolved.map((f) => f.id)).toEqual(["rs"]);
+    expect(scopeToReviewer(ai, "all").open).toHaveLength(2);
+  });
+
+  it("offers every reviewer, including summary-only ones", () => {
+    expect(scopeToReviewer(ai, "all").labels).toEqual(["General", "Security", "Testing"]);
+    expect(scopeToReviewer(null, "all")).toEqual({ open: [], resolved: [], labels: [] });
+  });
+
+  it("shows the picker for a choice or a filter that hides rows", () => {
+    expect(showReviewerPicker(["General", "Security"], "all")).toBe(true);
+    expect(showReviewerPicker(["General"], "General")).toBe(false);
+    expect(showReviewerPicker(["General"], "all")).toBe(false);
+    expect(showReviewerPicker(["General"], "Security")).toBe(true);
   });
 });
 

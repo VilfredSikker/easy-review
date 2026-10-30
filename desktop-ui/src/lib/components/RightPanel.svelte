@@ -4,6 +4,9 @@
   import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
   import { resolveContextIdentity } from "$lib/contextIdentity";
   import { panelThreads } from "./rpanel/commentsPanel";
+  import { scopeToReviewer } from "./rpanel/findingsPanel";
+  import { useReviewerFilterSync } from "./rpanel/reviewerFilter.svelte";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import BranchCard from "./BranchCard.svelte";
   import ChecklistCard from "./ChecklistCard.svelte";
   import TriageCard from "./TriageCard.svelte";
@@ -44,13 +47,15 @@
   const activeTab = $derived(rightPanelTab.active);
 
   useCommentAutoPull();
+  useReviewerFilterSync(() => ai);
 
   const currentFile = $derived(app.snapshot?.files[app.snapshot.selected_file]?.path ?? null);
 
-  // Tab counts are of what each tab lists: open findings, changed files, and
+  // Tab counts are of what each tab lists: open findings (under the reviewer
+  // filter the diff applies), changed files, and
   // the threads the Comments tab shows (GitHub ones under the diff's filters).
   const files = $derived(app.snapshot?.files);
-  const findingCount = $derived(ai?.findings.length ?? 0);
+  const findingCount = $derived(scopeToReviewer(ai, aiReviewFilter.filter).open.length);
   const fileCount = $derived(files?.length ?? 0);
   const threadCount = $derived(panelThreads(ai?.threads, app.commentVisibility, files).length);
   const TAB_LABEL: Record<PrimaryRightPanelTab, string> = {

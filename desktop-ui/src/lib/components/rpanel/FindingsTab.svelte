@@ -9,12 +9,24 @@
   import { copyToClipboard } from "$lib/clipboard";
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { baseName } from "$lib/shortFileName";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
+  import {
+    ALL_REVIEWERS,
+    EMPTY_FINDINGS_STATUS,
+    countBySeverity,
+    resolveAgentSummary,
+    showEmptyFindingsStatus,
+  } from "$lib/aiReviewAgents";
+  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import ArenaPanelCard from "$lib/components/arena/ArenaPanelCard.svelte";
   import {
     arbiterSummary,
     findingLens,
     findingLocation,
     findingsPanelView,
+    scopeToReviewer,
     SEVERITIES,
+    showReviewerPicker,
     toggleSeverity,
   } from "./findingsPanel";
   import { rightPanelFilters } from "./panelFilters.svelte";
@@ -40,8 +52,13 @@
   // The gate in force: the reader's override, else the engine's default for
   // this review — tighter once an arbiter has graded it.
   const minTrust = $derived(ai ? findingsVisibility.minTrust(ai.min_trust_default) : "informational");
+  // The reviewer filter is the diff's own (aiReviewFilter), so the list and the
+  // diff hide the same rows; a single-review import sets it.
+  const reviewer = $derived(aiReviewFilter.filter);
+  const scope = $derived(scopeToReviewer(ai, reviewer));
+  const showPicker = $derived(showReviewerPicker(scope.labels, reviewer));
   const view = $derived(
-    findingsPanelView(ai?.findings ?? [], ai?.resolved_findings ?? [], {
+    findingsPanelView(scope.open, scope.resolved, {
       severity: rightPanelFilters.severity,
       minTrust,
       showResolved: findingsVisibility.showResolved,
@@ -52,8 +69,38 @@
   let showDropped = $state(false);
 
   const hasReview = $derived(
-    !!ai && (ai.has_review_json || view.openCount > 0 || view.resolvedCount > 0),
+    !!ai &&
+      (ai.has_review_json ||
+        !!ai.summary_markdown?.trim() ||
+        ai.findings.length > 0 ||
+        ai.resolved_findings.length > 0),
   );
+
+  // The review's own words: the summary markdown, or the selected reviewer's.
+  // A review that found nothing is only this, so it opens by itself then.
+  const summary = $derived(
+    ai
+      ? resolveAgentSummary(ai, reviewer, countBySeverity(scope.open), {
+          fileCount: view.fileCount,
+          isEmpty: view.openCount === 0,
+          fileRiskCount: ai.file_risks?.length ?? 0,
+        })
+      : null,
+  );
+  const leadWithNoFindings = $derived(
+    !!summary && showEmptyFindingsStatus(view.openCount === 0, summary),
+  );
+  let summaryOpen = $state(false);
+  const summaryExpanded = $derived(summaryOpen || view.openCount === 0);
+
+  async function clearReview() {
+    try {
+      await app.cmd("delete_review_artifact", { kind: "review" });
+      app.showToast("success", "Review cleared");
+    } catch (e) {
+      app.showToast("error", e instanceof Error ? e.message : String(e));
+    }
+  }
   const flowActive = $derived(app.snapshot?.review_flow != null);
 
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
@@ -68,9 +115,6 @@
     if (activeTab?.kind === "remote_pr") return "Check out this PR locally to validate its review findings";
     return "Validate the review findings against the current diff and re-anchor their locations";
   });
-
-  const latestArena = $derived(arena.branchSummaries[0] ?? null);
-  const arenaRunNumber = $derived(arena.branchSummaries.length);
 
   function validate() {
     if (!canValidate) return;
@@ -143,6 +187,62 @@
 
   {#if flowActive}
     <ReviewFlowStrip />
+  {/if}
+
+  {#if showPicker}
+    <div class="flex items-center gap-1.5 text-[11.5px]">
+      <span class="text-fg-3">reviewer</span>
+      <select
+        bind:value={aiReviewFilter.filter}
+        aria-label="Reviewer"
+        class="min-w-0 flex-1 h-6 px-1.5 rounded-[5px] border border-hairline bg-card text-[11.5px] text-fg outline-none"
+      >
+        <option value={ALL_REVIEWERS}>All reviewers</option>
+        {#each scope.labels as label (label)}
+          <option value={label}>{label}</option>
+        {/each}
+        {#if reviewer !== ALL_REVIEWERS && !scope.labels.includes(reviewer)}
+          <option value={reviewer}>{reviewer}</option>
+        {/if}
+      </select>
+      {#if reviewer !== ALL_REVIEWERS}
+        <button
+          type="button"
+          title="Show every reviewer's findings, here and in the diff"
+          class="px-[7px] py-px mono text-[11px] text-fg-3 hover:text-fg"
+          onclick={() => (aiReviewFilter.filter = ALL_REVIEWERS)}
+        >clear</button>
+      {/if}
+    </div>
+  {/if}
+
+  {#if summary}
+    <div class="grid gap-1 text-[12px] text-fg-2">
+      {#if leadWithNoFindings}
+        <b class="text-[12px] font-medium text-add-fg">{EMPTY_FINDINGS_STATUS}</b>
+      {/if}
+      {#if summaryExpanded}
+        <div class="max-h-80 overflow-y-auto">
+          {#if summary.markdown}
+            <MarkdownText text={summary.text} className="leading-relaxed" />
+          {:else if summary.text !== EMPTY_FINDINGS_STATUS}
+            <p class="m-0 leading-relaxed">{summary.text}</p>
+          {/if}
+        </div>
+      {:else}
+        <div class="line-clamp-2 leading-relaxed">
+          {#if summary.markdown}<MarkdownText text={summary.text} />{:else}<p class="m-0">{summary.text}</p>{/if}
+        </div>
+      {/if}
+      {#if view.openCount > 0}
+        <button
+          type="button"
+          class="justify-self-start mono text-[11px] text-fg-3 hover:text-fg"
+          aria-expanded={summaryOpen}
+          onclick={() => (summaryOpen = !summaryOpen)}
+        >{summaryOpen ? "hide summary" : "show summary"}</button>
+      {/if}
+    </div>
   {/if}
 
   <div class="grid grid-cols-3 gap-1.5">
@@ -266,29 +366,11 @@
       { glyph: "✓", label: "Validate findings", title: validateHint, disabled: !canValidate, run: validate },
       { glyph: "⧉", label: "Copy findings JSON", title: "Copy findings from review.json for an agent prompt", disabled: view.openCount === 0, run: copyFindingsJson },
       { glyph: "▢", label: "Reveal review files", title: "Open the review files folder", run: () => void invoke("reveal_er_folder").catch(() => {}) },
+      { glyph: "×", label: "Clear review", title: "Delete this view's review: its findings and summary", run: () => void clearReview() },
     ]}
   />
 {/if}
 
 {#if arena.enabled}
-  <div class="grid gap-1.5 justify-items-start rounded-[9px] border border-hairline bg-card px-3 py-2.5">
-    <div class="flex w-full items-center justify-between text-[10.5px] font-semibold uppercase tracking-[0.06em] text-periwinkle">
-      <span>AI review arena</span>
-      <button type="button" class="normal-case tracking-normal font-medium hover:underline" onclick={() => arena.openLauncher()}>New arena</button>
-    </div>
-    <p class="m-0 text-[12px] text-fg-3">
-      {#if latestArena}
-        Run #{arenaRunNumber} · {latestArena.reviewer_count} reviewers · {latestArena.finding_count} findings
-      {:else}
-        Several reviewers, one consensus on this diff.
-      {/if}
-    </p>
-    {#if latestArena}
-      <button
-        type="button"
-        class="h-[26px] px-2.5 rounded-md border border-border text-[12px] text-fg-2 hover:bg-hover hover:text-fg"
-        onclick={() => (arena.hasLiveRun ? arena.showRunningProgress() : void arena.openOverlay(latestArena.id))}
-      >{arena.hasLiveRun ? "View progress" : "Open arena"}</button>
-    {/if}
-  </div>
+  <ArenaPanelCard />
 {/if}

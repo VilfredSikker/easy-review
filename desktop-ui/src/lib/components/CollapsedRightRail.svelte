@@ -2,6 +2,9 @@
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { panelThreads } from "./rpanel/commentsPanel";
+  import { scopeToReviewer } from "./rpanel/findingsPanel";
+  import { useReviewerFilterSync } from "./rpanel/reviewerFilter.svelte";
+  import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import type { RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
@@ -13,9 +16,12 @@
 
   // The same counts the expanded panel's tabs show, so expanding never
   // changes a number under the reader's eye.
-  const totalFindings = $derived(ai?.findings.length ?? 0);
+  // Scoped to the reviewer filter, as the Findings tab and the diff are.
+  useReviewerFilterSync(() => ai);
+  const scopedFindings = $derived(scopeToReviewer(ai, aiReviewFilter.filter).open);
+  const totalFindings = $derived(scopedFindings.length);
   const worstSeverity = $derived.by((): "high" | "med" | "low" | null => {
-    const findings = ai?.findings ?? [];
+    const findings = scopedFindings;
     if (findings.some((f) => f.severity === "high")) return "high";
     if (findings.some((f) => f.severity === "med")) return "med";
     return findings.length > 0 ? "low" : null;

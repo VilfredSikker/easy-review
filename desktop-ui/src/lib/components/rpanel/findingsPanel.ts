@@ -1,5 +1,6 @@
 import type { Confidence, FlatFinding } from "$lib/types";
 import { findingPassesTrust, TRUST_RANK } from "$lib/diffAnnotations";
+import { ALL_REVIEWERS, filterByAgent, uniqueAgentLabels, type AgentFilter } from "$lib/aiReviewAgents";
 
 export type Severity = FlatFinding["severity"];
 export type SeverityFilter = "all" | Severity;
@@ -105,4 +106,35 @@ export function arbiterSummary(counts: {
     counts.arbiter_regraded > 0 ? `${counts.arbiter_regraded} regraded` : "",
   ].filter(Boolean);
   return parts.length > 0 ? `${parts.join(", ")} by arbiter` : null;
+}
+
+export interface ReviewerScope {
+  open: FlatFinding[];
+  resolved: FlatFinding[];
+  /** Reviewers the picker offers, in registry order. */
+  labels: string[];
+}
+
+/**
+ * The findings one reviewer raised, under the same filter the diff applies
+ * (`aiReviewFilter`), so the panel, its tab count and the collapsed rail never
+ * count rows the diff is hiding.
+ */
+export function scopeToReviewer(
+  ai: { findings: FlatFinding[]; resolved_findings?: FlatFinding[]; agent_summaries?: Record<string, string> } | null,
+  filter: AgentFilter,
+): ReviewerScope {
+  const findings = ai?.findings ?? [];
+  return {
+    open: filterByAgent(findings, filter),
+    resolved: filterByAgent(ai?.resolved_findings ?? [], filter),
+    labels: uniqueAgentLabels(findings, Object.keys(ai?.agent_summaries ?? {})),
+  };
+}
+
+/** A picker is worth showing when there is a choice, or a filter hiding rows.
+ *  A lone reviewer's own filter hides nothing, so it gets no picker. */
+export function showReviewerPicker(labels: readonly string[], filter: AgentFilter): boolean {
+  if (labels.length > 1) return true;
+  return filter !== ALL_REVIEWERS && !(labels.length === 1 && labels[0] === filter);
 }
