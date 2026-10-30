@@ -87,6 +87,7 @@
     commitNote,
     DIFF_EMPTY_TEXT,
     diffEmptyState,
+    nextVisibleFile,
     reviewedCount,
     visibleDiffFiles,
   } from "$lib/diffToolbarModel";
@@ -197,8 +198,9 @@
   const treeHidden = $derived(!layoutPanels.tree);
   const viewMode = $derived<DiffViewMode>(viewModeOverride ?? app.diffViewMode);
   const mode = $derived(snapshot?.mode ?? "branch");
-  /** What the column draws. Everything below, keyboard nav included, works on
-   *  this list, so `j`/`k` skip the files Hide reviewed took out. */
+  /** What the column draws. Keyboard nav (`moveFile` in keyboard.ts) still
+   *  orders from the snapshot's full list, so `j`/`k` can select a file Hide
+   *  reviewed took out; that is a known gap, not handled here. */
   const files = $derived(visibleDiffFiles(orderedFiles, app.hideReviewed, mode));
   const toolbarNote = $derived(
     commitNote(snapshot?.commits ?? [], snapshot?.selected_commit_sha, app.markLines),
@@ -1759,9 +1761,12 @@
     await new Promise<void>((resolve) => {
       requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
     });
-    const i = files.findIndex((f) => f.path === collapsedPath);
-    if (i === -1) return;
-    const target = files[i + 1] ?? files[i];
+    const target = nextVisibleFile(orderedFiles, files, collapsedPath);
+    if (!target) {
+      // Hide reviewed took out the last drawn file: the empty state shows from the top.
+      if (files.length === 0) applyScrollTop(0);
+      return;
+    }
     const rowIdx = crossFileModel.fileStartRow.get(target.path);
     if (rowIdx === undefined) return;
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;

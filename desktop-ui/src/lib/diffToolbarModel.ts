@@ -18,6 +18,26 @@ export function visibleDiffFiles<F extends Pick<FileSnapshot, "reviewed">>(
   return files.filter((f) => !f.reviewed);
 }
 
+/**
+ * Where the view lands after `path` collapses: the next file still drawn,
+ * else the nearest one before it, else nowhere (null: the column is empty).
+ * `path` may already be gone from `visible`, because checking off a file
+ * under Hide reviewed removes it before the scroll runs, and its rows are gone
+ * with it; without a target the reader ends up part-way into the next file.
+ */
+export function nextVisibleFile<F extends Pick<FileSnapshot, "path">>(
+  ordered: readonly F[],
+  visible: readonly F[],
+  path: string,
+): F | null {
+  const shown = new Set(visible.map((f) => f.path));
+  const at = ordered.findIndex((f) => f.path === path);
+  if (at === -1) return null;
+  for (let j = at + 1; j < ordered.length; j++) if (shown.has(ordered[j].path)) return ordered[j];
+  for (let j = at; j >= 0; j--) if (shown.has(ordered[j].path)) return ordered[j];
+  return null;
+}
+
 export type DiffEmptyState = "all-reviewed" | "nothing-staged" | "no-changes";
 
 /** Why the diff column is empty, which decides what it tells the reader to do. */

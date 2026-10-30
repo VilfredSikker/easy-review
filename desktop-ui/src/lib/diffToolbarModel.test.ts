@@ -3,6 +3,7 @@ import {
   commitNote,
   DIFF_EMPTY_TEXT,
   diffEmptyState,
+  nextVisibleFile,
   reviewedCount,
   visibleDiffFiles,
 } from "./diffToolbarModel";
@@ -29,6 +30,38 @@ describe("visibleDiffFiles", () => {
 
   it("leaves the Tour's files alone, since its pillars are laid out from all of them", () => {
     expect(visibleDiffFiles(files, true, "tour")).toBe(files);
+  });
+});
+
+describe("nextVisibleFile", () => {
+  const ordered = [
+    { path: "a.ts" },
+    { path: "b.ts" },
+    { path: "c.ts" },
+    { path: "d.ts" },
+  ];
+  const pick = (path: string, visible: string[]) =>
+    nextVisibleFile(ordered, ordered.filter((f) => visible.includes(f.path)), path)?.path ?? null;
+
+  it("moves to the next drawn file when the collapsed one is still drawn", () => {
+    expect(pick("b.ts", ["a.ts", "b.ts", "c.ts", "d.ts"])).toBe("c.ts");
+  });
+
+  it("stays on the last drawn file when nothing follows it", () => {
+    expect(pick("d.ts", ["a.ts", "d.ts"])).toBe("d.ts");
+  });
+
+  it("skips hidden files to reach the next drawn one after a hidden path", () => {
+    expect(pick("b.ts", ["a.ts", "d.ts"])).toBe("d.ts");
+  });
+
+  it("falls back to the nearest drawn file before a hidden path", () => {
+    expect(pick("c.ts", ["a.ts", "b.ts"])).toBe("b.ts");
+  });
+
+  it("returns null when nothing is drawn, or the path is unknown", () => {
+    expect(pick("b.ts", [])).toBeNull();
+    expect(pick("z.ts", ["a.ts"])).toBeNull();
   });
 });
 
