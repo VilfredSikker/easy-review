@@ -1,7 +1,6 @@
 <script lang="ts">
   import type { ArenaFinding, ArenaRunSnapshot } from "$lib/types/arena";
   import { arenaStats, finalTruthFindings, pendingAcceptanceFindings } from "$lib/arena/projections";
-  import { isSeededRunFromSnapshot, seededVerificationNotice } from "$lib/arena/runKind";
   import { basename, severityTone, verdictLabel, verdictPillClass } from "$lib/arena/display";
 
   import { arena } from "$lib/stores/arena.svelte";
@@ -19,15 +18,13 @@
 
   let expandedIds = $state<Set<string>>(new Set());
 
-  const readOnlyVerification = $derived(isSeededRunFromSnapshot(snapshot));
   const flowManaged = $derived(flowAcceptance || snapshot.run.config.run_kind === "review_flow");
   const readOnlyFlow = $derived(flowManaged && !flowAcceptance);
-  const verificationComplete = $derived(snapshot.run.status === "complete");
   const reviewerMap = $derived(
     Object.fromEntries(snapshot.run.reviewers.map((r) => [r.id, r])),
   );
   const truthFindings = $derived(
-    finalTruthFindings(snapshot.run.findings, flowManaged, readOnlyVerification),
+    finalTruthFindings(snapshot.run.findings, flowManaged),
   );
   const stats = $derived(arenaStats(flowManaged ? truthFindings : snapshot.run.findings));
 
@@ -91,24 +88,16 @@
 
 <aside
   class="flex min-h-0 flex-col border-l border-[var(--arena-border)] bg-[var(--arena-bg-1)]"
-  aria-label={readOnlyVerification ? "Verification results" : "Final truth"}
+  aria-label="Final truth"
 >
   <header class="shrink-0 border-b border-[var(--arena-border)] px-4 py-3">
     <h2 class="text-[13px] font-semibold text-[var(--arena-fg)]">
-      {readOnlyVerification ? "Verification results" : "Final truth"}
+      Final truth
     </h2>
     <p class="mt-0.5 text-[11px] text-[var(--arena-fg-subtle)]">
-      {#if readOnlyVerification}
-        {stats.verdicts.kept} kept · {stats.verdicts.escalated} escalated · {stats.verdicts.merged} merged · {stats.verdicts.dropped} dropped
-      {:else}
-        {stats.finalCount} shipped · {stats.verdicts.dropped} dropped
-      {/if}
+      {stats.finalCount} shipped · {stats.verdicts.dropped} dropped
     </p>
-    {#if readOnlyVerification}
-      <p class="mt-2 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-2.5 py-2 text-[11px] text-[var(--arena-fg-subtle)]">
-        {seededVerificationNotice(snapshot)}
-      </p>
-    {:else if readOnlyFlow}
+    {#if readOnlyFlow}
       <p class="mt-2 text-[11px] text-[var(--arena-fg-subtle)]">
         This historical flow result is read only. Start a new Review to accept findings.
       </p>
@@ -159,15 +148,7 @@
                 <p class="mono truncate text-[10px] text-[var(--arena-fg-subtle)]">
                   {basename(f.file)}{#if f.line}:{f.line}{/if}
                 </p>
-                {#if readOnlyVerification && verificationComplete && f.verdict !== "pending"}
-                  <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-ok)]">
-                    Verified
-                  </span>
-                {:else if readOnlyVerification}
-                  <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-fg-subtle)]">
-                    Read only
-                  </span>
-                {:else if readOnlyFlow}
+                {#if readOnlyFlow}
                   <span class="mt-1 inline-block text-[9px] text-[var(--arena-fg-subtle)]">Read only</span>
                 {:else if f.accepted_at || snapshot.run.accepted_finding_ids?.includes(f.id)}
                   <span class="mt-1 inline-block text-[9px] font-semibold uppercase tracking-wider text-[var(--arena-ok)]">

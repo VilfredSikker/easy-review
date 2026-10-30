@@ -15,6 +15,7 @@ import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
 import { reviewPage, type ReviewPage } from "./reviewPage.svelte";
 import { copyReviewExport } from "./quickExport";
+import { arena } from "./arena.svelte";
 
 /** Bare digits pick the review page, in the order the shell lists them. */
 const REVIEW_PAGE_KEYS: Partial<Record<string, ReviewPage>> = { "1": "overview", "2": "tour", "3": "diff" };
@@ -302,6 +303,8 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
 
 /** Single-key shortcuts, only outside fields and modals and without modifiers. */
 function handleBareKey(e: KeyboardEvent) {
+  // The arena is a full-window overlay with its own j/k; the review under it is hidden.
+  if (arena.overlayOpen) return;
   const page = REVIEW_PAGE_KEYS[e.key];
   if (page && reviewPage.available(page)) {
     e.preventDefault();
