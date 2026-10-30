@@ -493,12 +493,35 @@ describe("mergeChromeSnapshot", () => {
     expect(merged.staged_stat).toEqual({ files: 1, additions: 3, deletions: 0 });
   });
 
-  it("keeps the local-branch divergence a chrome-only stub omits", () => {
+  it("takes the PR head and ahead from chrome but keeps the last unstaged count", () => {
     const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
-    const divergence = { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 };
-    const prev = snap({ active_tab: 0, tabs, local_branch_divergence: divergence });
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
+    // The push moved the PR head; the chrome-only poll does not re-read the worktree.
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "def", ahead: 0 },
+    });
+    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toEqual({
+      pr_head_oid: "def",
+      ahead: 0,
+      unstaged_files: 2,
+    });
+  });
+
+  it("drops the local-branch divergence when chrome no longer has one", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
     const next = snap({ active_tab: 0, tabs });
-    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toEqual(divergence);
+    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toBeUndefined();
   });
 
   it("drops the local-branch divergence across a view change", () => {

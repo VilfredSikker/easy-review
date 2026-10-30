@@ -73,11 +73,24 @@ export function mergeChromeSnapshot(
     // `files` are what these counts describe.
     unstaged_stat: prev.unstaged_stat,
     staged_stat: prev.staged_stat,
-    // Also skipped on chrome-only builds. Across a view change the previous
-    // value describes another view (PR Diff has none), so it is not carried.
     local_branch_divergence:
-      aiSource === "next" ? next.local_branch_divergence : prev.local_branch_divergence,
+      aiSource === "next"
+        ? next.local_branch_divergence
+        : mergeLocalBranchDivergence(prev.local_branch_divergence, next.local_branch_divergence),
   };
+}
+
+/**
+ * A PR-list refresh after a push moves the PR head with no content change, so
+ * the head and `ahead` must come from the chrome-only poll. Only the unstaged
+ * count, which that poll does not re-read, is kept from the last full build.
+ */
+function mergeLocalBranchDivergence(
+  prev: AppSnapshot["local_branch_divergence"],
+  next: AppSnapshot["local_branch_divergence"],
+): AppSnapshot["local_branch_divergence"] {
+  if (!next || next.unstaged_files !== undefined) return next;
+  return prev?.unstaged_files === undefined ? next : { ...next, unstaged_files: prev.unstaged_files };
 }
 
 /** True when a chrome-style poll may merge onto `prev` (same view identity). */

@@ -488,8 +488,9 @@ pub struct AppSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_diff_head_oid: Option<String>,
     /// Set on a local PR tab in the local branch view with a live checkout.
-    /// Like `unstaged_stat`, it is only computed on full builds; a chrome-only
-    /// build sends None and the frontend keeps the previous value.
+    /// Built on every revision, chrome-only ones included, because a PR-list
+    /// refresh that moves the PR head is itself a chrome-only revision. Only
+    /// `unstaged_files` waits for a full build, like `unstaged_stat`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub local_branch_divergence: Option<LocalBranchDivergenceSnapshot>,
     /// Which background fetches are currently in-flight.
@@ -719,8 +720,9 @@ fn rev_list_count(repo_root: &str, from: &str, to: &str) -> Option<usize> {
 
 type CommitsBehindKey = (String, String, String);
 
-/// `diff_stale` is built on every revision event, chrome-only ones included,
-/// and stays set until a Sync. The count for two fixed oids never changes; only
+/// `diff_stale` and `local_branch_divergence` are built on every revision
+/// event, chrome-only ones included, and both count between two oids. The
+/// count for two fixed oids never changes; only
 /// an unknown one can resolve, once a fetch from outside the app brings the
 /// newer commit in, and the TTL bounds how long that takes to show.
 static COMMITS_BEHIND_CACHE: Mutex<Vec<(CommitsBehindKey, std::time::Instant, Option<usize>)>> =
@@ -769,22 +771,35 @@ pub struct LocalBranchDivergenceSnapshot {
     /// counting never fetches.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ahead: Option<usize>,
-    /// Files with unstaged changes in the worktree.
-    pub unstaged_files: usize,
+    /// Files with unstaged changes in the worktree. Absent on a chrome-only
+    /// build, which skips the shortstat; the frontend keeps the last count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unstaged_files: Option<usize>,
 }
 
-/// Head oid the PR-list cache reports for `pr_number`. Matches by number across
-/// every cached remote, the lookup the active tab's stale pill has always used,
-/// so the pill and the local-branch banner agree on which head is latest.
-fn cached_pr_head_oid(pr_cache: Option<&PrCache>, pr_number: u64) -> Option<String> {
-    pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
+/// Head oid the PR-list cache reports for a tab's PR: the one lookup behind the
+/// active tab's stale pill, every tab's stale dot and the local-branch banner,
+/// so the three agree. A tab with its own PR number resolves through
+/// `pr_info_for_tab`, which prefers the bucket of the tab's remote, because two
+/// cached repos can share a PR number. `detected_pr_number` names a local
+/// branch's PR found by head ref, so it is matched by number alone, and only
+/// for a tab without its own.
+fn tab_pr_head_oid(
+    tab: &TabState,
+    detected_pr_number: Option<u64>,
+    cache: Option<&HashMap<String, Vec<PrInfo>>>,
+) -> Option<String> {
+    let cache = cache?;
+    let pr = if tab.pr_number.is_some() {
+        pr_info_for_tab(tab, cache)
+    } else {
+        let number = detected_pr_number?;
         cache
             .values()
             .flat_map(|prs| prs.iter())
-            .find(|p| p.number == pr_number)
-            .map(|p| p.head_oid.clone())
-            .filter(|s| !s.is_empty())
-    })
+            .find(|p| p.number == number)
+    };
+    pr.map(|p| p.head_oid.clone()).filter(|s| !s.is_empty())
 }
 
 /// Whether an inactive PR tab's diff was built from an older head than the
@@ -795,13 +810,17 @@ fn cached_pr_head_oid(pr_cache: Option<&PrCache>, pr_number: u64) -> Option<Stri
 /// them bumps `desktop_revision`, which emits `er://revision` (ADR 0011, ADR
 /// 0016). A tab's `last_diff_head_oid` changes only on a diff load of that tab.
 fn pr_tab_is_stale(tab: &TabState, cache: Option<&HashMap<String, Vec<PrInfo>>>) -> bool {
-    if tab.pr_number.is_none() && !tab.is_remote() {
+    if tab.pr_number.is_none() {
         return false;
     }
-    let latest = cache
-        .and_then(|c| pr_info_for_tab(tab, c))
-        .map(|p| p.head_oid.as_str());
-    compute_oid_staleness(latest, tab.last_diff_head_oid.as_deref(), "pr_head", "").is_some()
+    let latest = tab_pr_head_oid(tab, None, cache);
+    compute_oid_staleness(
+        latest.as_deref(),
+        tab.last_diff_head_oid.as_deref(),
+        "pr_head",
+        "",
+    )
+    .is_some()
 }
 
 /// `LocalBranchDivergenceSnapshot` for a local PR tab in the local branch view
@@ -811,10 +830,14 @@ fn pr_tab_is_stale(tab: &TabState, cache: Option<&HashMap<String, Vec<PrInfo>>>)
 /// `pr_head` comes from the PR-list cache only. `last_diff_head_oid` is no
 /// substitute here: in the local branch view it can name the local branch's own
 /// head, which would report a worktree as never ahead.
+///
+/// `unstaged_stat` is None on a chrome-only build: `ahead` is still counted,
+/// since a PR-list refresh moves `pr_head` without a content revision, but the
+/// worktree is not re-read for unstaged files.
 fn local_branch_divergence_for(
     tab: &TabState,
     pr_head: &str,
-    unstaged_stat: &ScopeStat,
+    unstaged_stat: Option<&ScopeStat>,
 ) -> Option<LocalBranchDivergenceSnapshot> {
     if tab.is_remote()
         || matches!(tab.mode, DiffMode::PrDiff | DiffMode::Tour)
@@ -827,14 +850,19 @@ fn local_branch_divergence_for(
         (Some(_), Some(checkout)) => checkout.as_str(),
         (Some(_), None) => return None,
     };
-    let unstaged_files = if root == tab.repo_root {
-        unstaged_stat.files
-    } else {
-        er_engine::git::diff_shortstat(root, false).0
-    };
+    let unstaged_files = unstaged_stat.map(|stat| {
+        if root == tab.repo_root {
+            stat.files
+        } else {
+            er_engine::git::diff_shortstat(root, false).0
+        }
+    });
+    // Resolved so the cache key moves with a new commit or a checkout.
+    let ahead = er_engine::github::rev_parse_oid(root, "HEAD")
+        .and_then(|head| commits_behind_cached(root, pr_head, &head));
     Some(LocalBranchDivergenceSnapshot {
         pr_head_oid: pr_head.to_string(),
-        ahead: rev_list_count(root, pr_head, "HEAD"),
+        ahead,
         unstaged_files,
     })
 }
@@ -2983,6 +3011,10 @@ fn build_snapshot_inner(
     // PR-list cache (gh pr list, 10-min cadence); branch case reads a background
     // ls-remote cache + a local `git rev-parse`. Never fetches here. Any unknown
     // oid yields None (we don't guess), so the pill never wedges "stale".
+    let cached_pr_head = {
+        let guard = pr_cache.and_then(|pc| pc.lock().ok());
+        tab_pr_head_oid(tab, detected_pr_number, guard.as_deref())
+    };
     let diff_stale: Option<DiffStaleSnapshot> = {
         // Fire whenever the tab represents a PR — including a local PR tab
         // switched to Branch view (via set_mode), which matches neither
@@ -2994,17 +3026,15 @@ fn build_snapshot_inner(
         if pr_showing {
             // PR case (FREE): compare the head_oid the open diff was computed
             // against to the latest head_oid carried by the PR-list cache.
-            // Prefer the tab's own PR number — `detected_pr_number` is None for
-            // remote PR tabs, so keying off it alone would never light their pill.
-            tab.pr_number.or(detected_pr_number).and_then(|pr_number| {
-                let cached_head_oid = cached_pr_head_oid(pr_cache, pr_number);
-                compute_oid_staleness(
-                    cached_head_oid.as_deref(),
-                    tab.last_diff_head_oid.as_deref(),
-                    "pr_head",
-                    "PR head updated on origin — Sync to refresh",
-                )
-            })
+            // `tab_pr_head_oid` prefers the tab's own PR number —
+            // `detected_pr_number` is None for remote PR tabs, so keying off it
+            // alone would never light their pill.
+            compute_oid_staleness(
+                cached_pr_head.as_deref(),
+                tab.last_diff_head_oid.as_deref(),
+                "pr_head",
+                "PR head updated on origin — Sync to refresh",
+            )
         } else if tab.shows_branch_base_diff() {
             // Branch case (main checkout or read-only branch view): compare the
             // background-probed remote tip of the base branch to the oid the diff's
@@ -3061,14 +3091,9 @@ fn build_snapshot_inner(
         (ScopeStat::default(), ScopeStat::default())
     };
 
-    let local_branch_divergence = if chrome_only {
-        None
-    } else {
-        tab.pr_number
-            .or(detected_pr_number)
-            .and_then(|n| cached_pr_head_oid(pr_cache, n))
-            .and_then(|pr_head| local_branch_divergence_for(tab, &pr_head, &unstaged_stat))
-    };
+    let local_branch_divergence = cached_pr_head.as_deref().and_then(|pr_head| {
+        local_branch_divergence_for(tab, pr_head, (!chrome_only).then_some(&unstaged_stat))
+    });
 
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
@@ -5153,21 +5178,22 @@ mod tests {
             deletions: 2,
         };
 
-        let div = local_branch_divergence_for(&tab, &pr_head, &unstaged).expect("local PR tab");
+        let div =
+            local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).expect("local PR tab");
         assert_eq!(div.pr_head_oid, pr_head);
         assert_eq!(div.ahead, Some(1));
-        assert_eq!(div.unstaged_files, 1);
+        assert_eq!(div.unstaged_files, Some(1));
 
         // The PR diff view and the tour are not the local branch view.
         tab.mode = DiffMode::PrDiff;
-        assert!(local_branch_divergence_for(&tab, &pr_head, &unstaged).is_none());
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
         tab.mode = DiffMode::Tour;
-        assert!(local_branch_divergence_for(&tab, &pr_head, &unstaged).is_none());
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
 
         // A read-only branch view has no worktree to be ahead or dirty.
         tab.mode = DiffMode::Branch;
         tab.local_branch_view = Some("feature".to_string());
-        assert!(local_branch_divergence_for(&tab, &pr_head, &unstaged).is_none());
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
     }
 
     #[test]
@@ -5184,10 +5210,10 @@ mod tests {
 
         // The project root's counters describe another checkout, so they are
         // not reused.
-        let div = local_branch_divergence_for(&tab, &pr_head, &ScopeStat::default())
+        let div = local_branch_divergence_for(&tab, &pr_head, Some(&ScopeStat::default()))
             .expect("checked-out branch view");
         assert_eq!(div.ahead, Some(1));
-        assert_eq!(div.unstaged_files, 1);
+        assert_eq!(div.unstaged_files, Some(1));
     }
 
     #[test]
@@ -5975,6 +6001,86 @@ mod tests {
         app.active_tab = 1;
 
         assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+    }
+
+    /// Two cached repos can share a PR number. The tab's dot must read the
+    /// same head whether the tab is active (pill) or not, and that head is the
+    /// one in the tab's own remote's bucket, whatever the map's order.
+    #[test]
+    fn pr_tab_stale_flag_agrees_active_and_inactive_across_buckets() {
+        let pr = |head: &str| {
+            let mut p = minimal_pr_info(42, "PR");
+            p.head_oid = head.to_string();
+            p
+        };
+        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([
+            ("owner/a".to_string(), vec![pr("headA")]),
+            ("owner/b".to_string(), vec![pr("headB")]),
+        ])));
+        for (built_from, expect_stale) in [("headA", false), ("headB", true)] {
+            let mut app = App::new_for_test(vec![]);
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = "/tmp/test".to_string();
+                tab.remote_repo = Some("owner/a".to_string());
+                tab.pr_number = Some(42);
+                tab.mode = DiffMode::PrDiff;
+                tab.last_diff_head_oid = Some(built_from.to_string());
+            }
+            app.tabs.push(TabState::new_for_test(vec![]));
+
+            app.active_tab = 0;
+            let active = snapshot_with_cache(&app, &pr_cache);
+            app.active_tab = 1;
+            let inactive = snapshot_with_cache(&app, &pr_cache).tabs[0].stale;
+
+            assert_eq!(
+                active.tabs[0].stale, expect_stale,
+                "built from {built_from}"
+            );
+            assert_eq!(inactive, expect_stale, "built from {built_from}");
+            assert_eq!(active.diff_stale.is_some(), expect_stale);
+        }
+    }
+
+    /// Pushing moves the PR-list cache's head without touching the worktree, so
+    /// only a chrome-only build follows. That build must still recount `ahead`.
+    #[test]
+    fn chrome_only_build_recounts_ahead_when_the_pr_head_moves() {
+        let tmp = init_repo_with_feature_commit();
+        let main = rev_parse(tmp.path(), "main");
+        let feature = rev_parse(tmp.path(), "feature");
+        let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some(&main), &main);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = tmp.path().to_string_lossy().to_string();
+            tab.local_branch_view = None;
+        }
+        let sources = SnapshotSources {
+            pr_cache: Some(&pr_cache),
+            ..SnapshotSources::default()
+        };
+
+        let full = build_snapshot_with_delta(&app, &sources)
+            .local_branch_divergence
+            .expect("local PR tab in the local branch view");
+        assert_eq!(full.ahead, Some(1), "one unpushed commit");
+        assert_eq!(full.unstaged_files, Some(0));
+
+        if let Ok(mut cache) = pr_cache.lock() {
+            if let Some(prs) = cache.get_mut("owner/repo") {
+                prs[0].head_oid = feature.clone();
+            }
+        }
+        let chrome = build_chrome_snapshot(&app, &sources)
+            .local_branch_divergence
+            .expect("still a local PR tab");
+        assert_eq!(chrome.pr_head_oid, feature);
+        assert_eq!(chrome.ahead, Some(0), "the push landed");
+        assert_eq!(
+            chrome.unstaged_files, None,
+            "a chrome-only build does not re-read the worktree"
+        );
     }
 
     /// Equal oids → no pill (the diff is already at the latest head).

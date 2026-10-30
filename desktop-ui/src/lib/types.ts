@@ -654,7 +654,8 @@ export interface LocalBranchDivergenceSnapshot {
   pr_head_oid: string;
   /** Unpushed commits on the worktree's HEAD. Absent when the PR head is not local yet. */
   ahead?: number;
-  unstaged_files: number;
+  /** Absent on a chrome-only snapshot, which does not re-read the worktree. */
+  unstaged_files?: number;
 }
 
 export interface AppSnapshot {
@@ -678,8 +679,9 @@ export interface AppSnapshot {
    */
   pr_diff_head_oid?: string | null;
   /**
-   * Local PR tab in the local branch view of a live checkout. Full builds only:
-   * a chrome-only snapshot omits it and `mergeChromeSnapshot` keeps the last one.
+   * Local PR tab in the local branch view of a live checkout. Sent on every
+   * snapshot; a chrome-only one omits `unstaged_files`, which
+   * `mergeChromeSnapshot` carries over from the last full build.
    */
   local_branch_divergence?: LocalBranchDivergenceSnapshot | null;
   branch: string;
