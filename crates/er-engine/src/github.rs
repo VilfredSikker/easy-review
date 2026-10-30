@@ -90,6 +90,15 @@ pub fn parse_pr_commits_view_value(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // `gh pr view --json commits` has no diffstat; only the GraphQL
+            // listing (`gh_pr_commits_remote`) carries these fields.
+            let count = |key: &str| {
+                commit
+                    .get(key)
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| usize::try_from(n).ok())
+            };
+            let (adds, dels) = (count("additions"), count("deletions"));
             Some(crate::git::CommitInfo {
                 hash: oid.to_string(),
                 short_hash: oid.chars().take(7).collect(),
@@ -101,13 +110,78 @@ pub fn parse_pr_commits_view_value(
                 author,
                 date: date.clone(),
                 relative_date: date,
-                file_count: 0,
-                adds: 0,
-                dels: 0,
+                file_count: count("changedFiles").unwrap_or(0),
+                adds: adds.unwrap_or(0),
+                dels: dels.unwrap_or(0),
                 is_merge: false,
+                diffstat_known: adds.is_some() && dels.is_some(),
             })
         })
         .collect()
+}
+
+/// GraphQL query behind [`gh_pr_commits_remote`]. `gh pr view --json commits`
+/// cannot return a commit's diffstat, and a remote tab has no object DB to
+/// read one from, so the remote listing asks GraphQL directly — still one `gh`
+/// process per fetch, paginated by `gh api --paginate`.
+const PR_COMMITS_GRAPHQL: &str =
+    "query($owner: String!, $repo: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      commits(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          commit {
+            oid
+            messageHeadline
+            committedDate
+            additions
+            deletions
+            changedFilesIfAvailable
+            authors(first: 10) { nodes { name user { login } } }
+          }
+        }
+      }
+    }
+  }
+}";
+
+/// Parse `gh api graphql --paginate` output for [`PR_COMMITS_GRAPHQL`] — one
+/// JSON document per page, concatenated — into the newest-first list
+/// [`parse_pr_commits_view_value`] produces, each commit with its diffstat.
+pub fn parse_pr_commits_graphql(bytes: &[u8], limit: usize) -> Result<Vec<crate::git::CommitInfo>> {
+    let mut commits = Vec::new();
+    for page in serde_json::Deserializer::from_slice(bytes).into_iter::<serde_json::Value>() {
+        let page = page.context("Failed to parse PR commits GraphQL JSON")?;
+        let nodes = page
+            .pointer("/data/repository/pullRequest/commits/nodes")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for c in nodes.iter().filter_map(|node| node.get("commit")) {
+            let authors: Vec<serde_json::Value> = c
+                .pointer("/authors/nodes")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|a| serde_json::json!({ "login": a.pointer("/user/login"), "name": a.get("name") }))
+                .collect();
+            commits.push(serde_json::json!({
+                "oid": c.get("oid"),
+                "messageHeadline": c.get("messageHeadline"),
+                "committedDate": c.get("committedDate"),
+                "authors": authors,
+                "additions": c.get("additions"),
+                "deletions": c.get("deletions"),
+                "changedFiles": c.get("changedFilesIfAvailable"),
+            }));
+        }
+    }
+    Ok(parse_pr_commits_view_value(
+        &serde_json::json!({ "commits": commits }),
+        limit,
+    ))
 }
 
 /// Fetch the commits on a local-clone PR using the GitHub API via `gh`.
@@ -2740,10 +2814,9 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
 
 /// Fetch the list of commits on a remote PR (no local clone required).
 ///
-/// Returns commits in reverse-chronological order (newest first), capped at `limit`.
-/// Uses `gh pr view --json commits` which returns the PR's commit history via the
-/// GitHub API. Each commit exposes `oid`, `messageHeadline`, `authors`, and
-/// `committedDate` (ISO 8601).
+/// Returns commits in reverse-chronological order (newest first), capped at
+/// `limit`, each with its diffstat — see [`PR_COMMITS_GRAPHQL`] for why this one
+/// listing is GraphQL rather than `gh pr view --json commits`.
 ///
 /// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
 /// caller degrades gracefully.
@@ -2753,17 +2826,15 @@ pub fn gh_pr_commits_remote(
     number: u64,
     limit: usize,
 ) -> Vec<crate::git::CommitInfo> {
-    let repo_slug = format!("{}/{}", owner, repo);
     let output = match Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "commits",
-        ])
+        .args(["api", "graphql", "--paginate", "-f"])
+        .arg(format!("query={PR_COMMITS_GRAPHQL}"))
+        .arg("-f")
+        .arg(format!("owner={owner}"))
+        .arg("-f")
+        .arg(format!("repo={repo}"))
+        .arg("-F")
+        .arg(format!("number={number}"))
         .output_timed(crate::proc::GH_TIMEOUT)
     {
         Ok(o) => o,
@@ -2774,7 +2845,7 @@ pub fn gh_pr_commits_remote(
         return Vec::new();
     }
 
-    parse_pr_commits_view_json(&output.stdout, limit).unwrap_or_default()
+    parse_pr_commits_graphql(&output.stdout, limit).unwrap_or_default()
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
@@ -3623,6 +3694,47 @@ mod tests {
         assert_eq!(commits[0].author, "Grace Hopper");
         assert_eq!(commits[1].hash, "1111111111111111111111111111111111111111");
         assert_eq!(commits[1].author, "ada");
+    }
+
+    #[test]
+    fn parse_pr_commits_view_marks_diffstat_unknown() {
+        let raw = br#"{"commits": [{"oid": "1111111111111111111111111111111111111111"}]}"#;
+        let commits = parse_pr_commits_view_json(raw, 10).expect("parse commits");
+        assert!(!commits[0].diffstat_known);
+    }
+
+    #[test]
+    fn parse_pr_commits_graphql_reads_every_page_with_diffstat() {
+        let page = |oid: &str, subject: &str, adds: u64, more: bool| {
+            format!(
+                r#"{{"data":{{"repository":{{"pullRequest":{{"commits":{{
+                  "pageInfo":{{"hasNextPage":{more},"endCursor":"c"}},
+                  "nodes":[{{"commit":{{"oid":"{oid}","messageHeadline":"{subject}",
+                    "committedDate":"2026-06-01T10:00:00Z","additions":{adds},"deletions":2,
+                    "changedFilesIfAvailable":3,
+                    "authors":{{"nodes":[{{"name":"Ada","user":{{"login":"ada"}}}},
+                                         {{"name":"Ghost","user":null}}]}}}}}}]}}}}}}}}}}"#
+            )
+        };
+        // `gh api --paginate` concatenates one document per page.
+        let raw = format!(
+            "{}\n{}",
+            page("1111111111111111111111111111111111111111", "old", 5, true),
+            page("2222222222222222222222222222222222222222", "new", 0, false),
+        );
+
+        let commits = parse_pr_commits_graphql(raw.as_bytes(), 10).expect("parse commits");
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "new");
+        assert_eq!((commits[0].adds, commits[0].dels), (0, 2));
+        assert!(commits[0].diffstat_known);
+        assert_eq!(commits[1].subject, "old");
+        assert_eq!(
+            (commits[1].file_count, commits[1].adds, commits[1].dels),
+            (3, 5, 2)
+        );
+        assert_eq!(commits[1].author, "ada, Ghost");
     }
 
     #[test]

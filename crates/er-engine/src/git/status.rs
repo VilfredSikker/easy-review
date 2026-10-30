@@ -17,6 +17,11 @@ pub struct CommitInfo {
     pub adds: usize,
     pub dels: usize,
     pub is_merge: bool,
+    /// Whether `file_count`/`adds`/`dels` came from a real diffstat. `git log
+    /// --shortstat` always gives one; `gh pr view --json commits` never does,
+    /// and its zeros mean unknown, not an empty commit.
+    #[serde(default)]
+    pub diffstat_known: bool,
 }
 
 /// A git worktree entry
@@ -850,6 +855,7 @@ fn parse_git_log(output: &str) -> Result<Vec<CommitInfo>> {
             adds,
             dels,
             is_merge,
+            diffstat_known: true,
         });
     }
 

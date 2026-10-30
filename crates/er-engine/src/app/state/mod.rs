@@ -14186,6 +14186,7 @@ mod tests {
                 adds: 1,
                 dels: 0,
                 is_merge: false,
+                diffstat_known: true,
             }],
             selected_commit: 0,
             commit_files: vec![test_diff_file("commit-a.rs"), test_diff_file("commit-b.rs")],
@@ -14244,6 +14245,7 @@ mod tests {
             adds: 0,
             dels: 0,
             is_merge: false,
+            diffstat_known: false,
         }
     }
 

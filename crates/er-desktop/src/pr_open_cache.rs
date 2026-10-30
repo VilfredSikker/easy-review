@@ -127,6 +127,7 @@ mod tests {
             adds: 10,
             dels: 3,
             is_merge: false,
+            diffstat_known: true,
         }
     }
 
