@@ -2,7 +2,7 @@
   import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import type { AiProviderInfo, GetConfigHubResponse, ReviewModelGroups, ReviewModelRef } from "$lib/types";
-  import Button from "$lib/components/ui/Button.svelte";
+  import SettingsButton from "./SettingsButton.svelte";
   import {
     cloneReviewModelGroups,
     hasReviewModel,
@@ -26,40 +26,44 @@
   let saveError = $state("");
   let previousReviewModels = untrack(() => reviewModels);
 
-  const groupDetails: {
-    id: ReviewModelGroup;
-    title: string;
-    description: string;
-  }[] = [
-    { id: "fast", title: "Fast", description: "Triage and Quick reviews of changed files." },
-    { id: "standard", title: "Standard", description: "The models used for most reviews." },
-    {
-      id: "advanced",
-      title: "Advanced",
-      description: "Deep review, verification, and arbiter work.",
-    },
+  const groupDetails: { id: ReviewModelGroup; title: string; usage: string }[] = [
+    { id: "fast", title: "Fast", usage: "triage and Quick" },
+    { id: "standard", title: "Standard", usage: "most reviews" },
+    { id: "advanced", title: "Advanced", usage: "Deep, verification and the arbiter" },
   ];
 
   const dirty = $derived(!sameReviewModelGroups(draft, reviewModels));
   const availableKeys = $derived(
     new Set(
       providers.flatMap((provider) =>
-        provider.models.map((model) =>
-          reviewModelKey({ provider_id: provider.id, model_id: model.id }),
-        ),
+        provider.models.map((model) => reviewModelKey({ provider_id: provider.id, model_id: model.id })),
       ),
     ),
   );
 
-  function selectedModels(group: ReviewModelGroup): { key: string; label: string }[] {
+  function chips(group: ReviewModelGroup): { ref: ReviewModelRef; key: string; label: string; available: boolean }[] {
     return draft[group].map((ref) => {
       const provider = providers.find((item) => item.id === ref.provider_id);
       const model = provider?.models.find((item) => item.id === ref.model_id);
       return {
+        ref,
         key: reviewModelKey(ref),
         label: provider && model ? `${provider.label} / ${model.label}` : `${ref.provider_id} / ${ref.model_id}`,
+        available: availableKeys.has(reviewModelKey(ref)),
       };
     });
+  }
+
+  /** Models the group does not hold yet, grouped by provider for the add picker. */
+  function addable(group: ReviewModelGroup) {
+    return providers
+      .map((provider) => ({
+        provider,
+        models: provider.models.filter(
+          (model) => !hasReviewModel(draft, group, { provider_id: provider.id, model_id: model.id }),
+        ),
+      }))
+      .filter((entry) => entry.models.length > 0);
   }
 
   // Refreshing config while a draft is open must not erase the user's edits.
@@ -78,6 +82,12 @@
     draft = sameReviewModelGroups(next, reviewModels) ? cloneReviewModelGroups(reviewModels) : next;
     hasLocalEdits = !sameReviewModelGroups(draft, reviewModels);
     saveError = "";
+  }
+
+  function addFromPicker(group: ReviewModelGroup, select: HTMLSelectElement) {
+    const [providerId, modelId] = select.value.split("\u0000");
+    select.value = "";
+    if (providerId && modelId) toggle(group, { provider_id: providerId, model_id: modelId });
   }
 
   async function save() {
@@ -99,84 +109,73 @@
   }
 </script>
 
-<section class="mt-3 border-t border-hairline pt-3" aria-labelledby="review-model-groups-title">
-  <div class="mb-3">
-    <h3 id="review-model-groups-title" class="text-sm font-medium text-fg">Review model groups</h3>
-    <p class="mt-1 text-xs text-muted">
-      These models are eligible for each Review flow stage. Only installed providers run. Sign in through the provider CLI.
-      Standalone actions use the default model in Settings.
-    </p>
-  </div>
-
-  <div class="space-y-2">
-    {#each groupDetails as group (group.id)}
-      <fieldset class="rounded-lg border border-hairline bg-surface px-3 py-2">
-        <legend class="px-1 text-xs font-medium text-fg">{group.title}</legend>
-        <p class="mb-2 text-[11px] text-muted">{group.description}</p>
-        <p class="mb-2 text-[11px] text-fg-2">
-          <span class="text-muted">Selected</span>
-          {#if selectedModels(group.id).length > 0}
-            {#each selectedModels(group.id) as model (model.key)}
-              <span class="ml-1 inline-block rounded bg-hover px-1.5 py-0.5">{model.label}</span>
+<div class="grid grid-cols-1 min-[880px]:grid-cols-3">
+  {#each groupDetails as group, gi (group.id)}
+    <div
+      class="flex flex-wrap content-start gap-1.5 px-3.5 py-3 border-line {gi === 0
+        ? ''
+        : 'border-t min-[880px]:border-t-0 min-[880px]:border-l'}"
+      role="group"
+      aria-label="{group.title} models"
+    >
+      <div class="w-full grid text-xs mb-1">
+        <b class="font-semibold text-fg">{group.title}</b>
+        <span class="text-[11px] text-muted">{group.usage}</span>
+      </div>
+      {#each chips(group.id) as chip (chip.key)}
+        <span
+          class="inline-flex items-center gap-1 h-[22px] pl-2 pr-1 rounded-md bg-hover text-xs {chip.available
+            ? 'text-fg-2'
+            : 'text-muted line-through'}"
+          title={chip.available ? chip.ref.model_id : "Not offered by any configured provider"}
+        >
+          <span class="truncate max-w-[180px]">{chip.label}</span>
+          <button
+            type="button"
+            class="w-4 h-4 grid place-items-center rounded text-fg-3 hover:bg-ink-600 hover:text-fg"
+            aria-label="Remove {chip.label} from {group.title}"
+            disabled={saving}
+            onclick={() => toggle(group.id, chip.ref)}
+          >×</button>
+        </span>
+      {:else}
+        <span class="text-xs text-muted">No models</span>
+      {/each}
+      {#if addable(group.id).length > 0}
+        <label class="w-full">
+          <span class="sr-only">Add a model to {group.title}</span>
+          <select
+            class="mt-1 h-[22px] max-w-full px-1.5 rounded-[5px] border border-border bg-card text-[11px] text-fg-3 hover:text-fg outline-none"
+            disabled={saving}
+            value=""
+            onchange={(e) => addFromPicker(group.id, e.currentTarget as HTMLSelectElement)}
+          >
+            <option value="" disabled>+ Add model</option>
+            {#each addable(group.id) as entry (entry.provider.id)}
+              <optgroup label={entry.provider.label}>
+                {#each entry.models as model (model.id)}
+                  <option value={reviewModelKey({ provider_id: entry.provider.id, model_id: model.id })}>{model.label}</option>
+                {/each}
+              </optgroup>
             {/each}
-          {:else}
-            <span class="ml-1 text-muted">None</span>
-          {/if}
-        </p>
+          </select>
+        </label>
+      {/if}
+    </div>
+  {/each}
+</div>
 
-        <div class="max-h-44 space-y-2 overflow-y-auto pr-1">
-          {#if providers.length === 0}
-            <p class="text-[11px] text-muted">Add a provider and its models above.</p>
-          {:else}
-            {#each providers as provider (provider.id)}
-              {#if provider.models.length > 0}
-                <div>
-                  <p class="mb-1 text-[10px] font-medium text-muted">{provider.label}</p>
-                  <div class="grid grid-cols-1 gap-x-3 gap-y-1 sm:grid-cols-2">
-                    {#each provider.models as model (model.id)}
-                      {@const ref = { provider_id: provider.id, model_id: model.id }}
-                      <label class="flex min-w-0 items-center gap-2 rounded px-1 py-0.5 text-xs text-fg-2 hover:bg-hover">
-                        <input
-                          type="checkbox"
-                          class="accent-accent"
-                          checked={hasReviewModel(draft, group.id, ref)}
-                          disabled={saving}
-                          onchange={() => toggle(group.id, ref)}
-                        />
-                        <span class="truncate" title={model.id}>{model.label}</span>
-                      </label>
-                    {/each}
-                  </div>
-                </div>
-              {/if}
-            {/each}
-          {/if}
-
-          {#each draft[group.id].filter((ref) => !availableKeys.has(reviewModelKey(ref))) as ref (reviewModelKey(ref))}
-            <label class="flex items-center gap-2 rounded px-1 py-0.5 text-xs text-muted">
-              <input
-                type="checkbox"
-                class="accent-accent"
-                checked
-                disabled={saving}
-                onchange={() => toggle(group.id, ref)}
-              />
-              <span class="truncate">Unavailable: {ref.provider_id} / {ref.model_id}</span>
-            </label>
-          {/each}
-        </div>
-      </fieldset>
-    {/each}
-  </div>
-
-  {#if saveError}
-    <p class="mt-2 text-xs text-error" role="alert">Could not save Review model groups. {saveError}</p>
-  {/if}
-
-  <div class="mt-3 flex items-center justify-end gap-2">
-    <span class="mr-auto text-[11px] text-muted">Changes apply to Review flow only.</span>
-    <Button disabled={!dirty || saving} onclick={() => void save()}>
-      {saving ? "Saving…" : "Save groups"}
-    </Button>
-  </div>
-</section>
+<div class="flex flex-wrap items-center gap-2 px-3.5 py-2.5 border-t border-line">
+  <span class="mr-auto text-xs text-fg-3">
+    {#if saveError}
+      <span class="text-error" role="alert">Could not save. {saveError}</span>
+    {:else if dirty}
+      Unsaved changes. Groups apply to the Review flow only.
+    {:else}
+      Only installed providers run; sign in through the provider CLI.
+    {/if}
+  </span>
+  <SettingsButton disabled={!dirty || saving} onclick={() => void save()}>
+    {saving ? "Saving…" : "Save groups"}
+  </SettingsButton>
+</div>
