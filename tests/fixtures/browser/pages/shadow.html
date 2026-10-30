@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>shadow fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<open-example></open-example><closed-example></closed-example><script>customElements.define('open-example', class extends HTMLElement { connectedCallback() { this.attachShadow({mode:'open'}).innerHTML = '<button class="inner">Inner</button>'; } }); customElements.define('closed-example', class extends HTMLElement { connectedCallback() { this.attachShadow({mode:'closed'}).innerHTML = '<button class="inner">Closed Inner</button>'; } });</script>
+<script src="/common.js"></script></body></html>

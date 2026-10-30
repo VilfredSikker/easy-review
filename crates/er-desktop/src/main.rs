@@ -1053,6 +1053,7 @@ fn main() {
         tauri_app_handle: Arc::clone(&tauri_app_handle),
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         sent_files: Arc::new(Mutex::new(Default::default())),
+        line_commits_cache: Arc::default(),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -2000,6 +2001,8 @@ fn main() {
             commands::validate_with_ai,
             commands::elaborate_with_ai,
             commands::send_note_to_agent,
+            commands::line_commits::line_commits,
+            commands::run_standard_review_flow,
             commands::open_pr_url,
             commands::open_remote_pr,
             commands::open_worktree,

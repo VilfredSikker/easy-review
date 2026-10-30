@@ -98,6 +98,8 @@ commands.allow = [
   "validate_with_ai",
   "elaborate_with_ai",
   "send_note_to_agent",
+  "line_commits",
+  "run_standard_review_flow",
   "open_pr_url",
   "open_remote_pr",
   "open_worktree",
