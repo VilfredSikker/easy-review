@@ -36,3 +36,7 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   first engine/fixture slice; later snapshot work must use that updated base.
 - Started ER21 and ER32a in separate worktrees under the delegated model policy.
   The shared toolchain and check lock are ready; no native proof has run.
+- ER21 opened PR 330. Four Bun HTTP tests (84 assertions), redirect/host/port
+  curl checks and docs-check passed. Independent review found the hostile
+  synthetic-click fixture targeted the document rather than an element, weakening
+  the later trust test; returned to the same implementer for a focused fix.
