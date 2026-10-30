@@ -5284,6 +5284,182 @@ pub async fn elaborate_with_ai(
     .await
 }
 
+/// Tracked agent-command name for Send to agent. Single-flight per tab: two
+/// agents editing one working tree would race over the same files.
+const SEND_NOTE_COMMAND: &str = "send-to-agent";
+
+/// What the Send-to-agent prompt says about the note and where it sits.
+struct SendNotePromptParams<'a> {
+    repo_root: &'a str,
+    base_branch: &'a str,
+    current_branch: &'a str,
+    file: &'a str,
+    line_start: Option<usize>,
+    line_end: Option<usize>,
+    line_content: &'a str,
+    /// The note followed by its replies, oldest first. An Elaborate rewrite is
+    /// one of those replies, so the agent gets the expanded instruction too.
+    thread_body: &'a str,
+}
+
+/// "L8", "L8–9", or `None` for a file-level note.
+fn note_range_label(line_start: Option<usize>, line_end: Option<usize>) -> Option<String> {
+    let a = line_start?;
+    Some(match line_end {
+        Some(b) if b > a => format!("L{a}–{b}"),
+        _ => format!("L{a}"),
+    })
+}
+
+/// The prompt that hands a note to a coding agent, compiled in like every other
+/// prompt (ADR 0023). The agent edits the working tree and nothing else: the
+/// review's sidecars stay `er`'s to write, and committing stays the reviewer's
+/// call, since the diff under review is the working tree being changed.
+fn build_send_note_prompt(p: &SendNotePromptParams<'_>) -> String {
+    let location = match note_range_label(p.line_start, p.line_end) {
+        Some(range) => format!("{}, {range}", p.file),
+        None => format!("{} (the file as a whole)", p.file),
+    };
+    let anchor = if p.line_content.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "The anchored line currently reads:\n```\n{}\n```\n\n",
+            p.line_content
+        )
+    };
+    format!(
+        "You are a coding agent. A reviewer left the note below on a change under review and is handing it to you to carry out.
+
+Repository: {repo_root}
+Branch: {current_branch} (compared against {base_branch})
+Location: {location}
+
+{anchor}Note thread (the reviewer's note first, then any replies; a reply may restate the note as a fuller instruction):
+---
+{thread_body}
+---
+
+Do this:
+1. Read {file} and what it depends on before changing anything.
+2. Make the change the note asks for, in the working tree of {repo_root}. Keep to what the note asks; do not refactor around it.
+3. If the note no longer applies to the current code, or is too ambiguous to act on without guessing, change nothing and say why.
+
+Do not commit, push, stash, switch branches or reset. Do not write anything under the review tool's storage directory.
+
+Finish with a short markdown summary: the files you changed and what changed in each, or why you changed nothing.",
+        repo_root = p.repo_root,
+        current_branch = p.current_branch,
+        base_branch = p.base_branch,
+        file = p.file,
+        thread_body = p.thread_body.trim(),
+    )
+}
+
+/// Why this tab cannot send a note to an agent. The agent edits files, so the
+/// viewed branch has to be checked out at `repo_root`, which is where a tracked
+/// agent command runs. A remote PR tab has no working tree and opening one must
+/// not check anything out (ADR 0020); a local PR or branch view whose head is
+/// not checked out would have the agent edit some other branch.
+fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String> {
+    if tab.is_remote() {
+        return Err(
+            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
+                .to_string(),
+        );
+    }
+    // `local_checkout_root` treats a local PR tab as the main checkout; its
+    // branch only is one once the watcher has set the checkout root.
+    let checked_out = if tab.pr_number.is_some() || tab.is_local_branch_view() {
+        tab.local_branch_checkout_root.as_deref()
+    } else {
+        tab.local_checkout_root()
+    };
+    match checked_out {
+        Some(root) if root == tab.repo_root => Ok(()),
+        Some(root) => Err(format!(
+            "This branch is checked out at {root}. Open that worktree to send notes to an agent."
+        )),
+        None => Err(
+            "This branch is not checked out, so there is no working tree for an agent to edit."
+                .to_string(),
+        ),
+    }
+}
+
+/// Hand a note to the configured agent CLI to carry out (ADR 0031). It runs as
+/// a tracked agent command, so it shows in the running-jobs pill and the agent
+/// log, can be stopped, and waits for an agent slot like a review agent
+/// (ADR 0021). Its edits land in the working tree and reach the diff through
+/// the watcher; nothing is written back to the note.
+#[tauri::command]
+pub async fn send_note_to_agent(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !note_id.starts_with("n-") {
+            return Err("Send to agent works on notes only".to_string());
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        send_note_blocked_reason(app.tab())?;
+        if app.tab().command_status.get(SEND_NOTE_COMMAND)
+            == Some(&er_engine::app::CommandStatus::Running)
+        {
+            return Err(
+                "An agent is already working on a note in this tab. Wait for it to finish."
+                    .to_string(),
+            );
+        }
+
+        let (prompt, toast) = {
+            let tab = app.tab();
+            let notes: &[er_engine::ai::ReviewQuestion] = tab
+                .ai
+                .notes
+                .as_ref()
+                .map(|ns| ns.notes.as_slice())
+                .unwrap_or(&[]);
+            let note = notes
+                .iter()
+                .find(|n| n.id == note_id)
+                .ok_or_else(|| "Note not found".to_string())?;
+            let mut thread_body = note.text.clone();
+            for r in notes
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(note_id.as_str()))
+            {
+                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
+            }
+            let prompt = build_send_note_prompt(&SendNotePromptParams {
+                repo_root: &tab.repo_root,
+                base_branch: &tab.base_branch,
+                current_branch: &tab.current_branch,
+                file: &note.file,
+                line_start: note.line_start,
+                line_end: note.line_end,
+                line_content: &note.line_content,
+                thread_body: &thread_body,
+            });
+            let name = note.file.rsplit('/').next().unwrap_or(&note.file);
+            let toast = match note_range_label(note.line_start, note.line_end) {
+                Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
+                None => format!("Note sent to the agent with {name} as context"),
+            };
+            (prompt, toast)
+        };
+
+        app.spawn_agent_prompt(SEND_NOTE_COMMAND, &prompt)
+            .map_err(|e| e.to_string())?;
+        // Replaces the generic "started" notice with one that names the context.
+        app.notify(&toast);
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
 ///
 /// comment thread. The subprocess runs on a background thread so this command
@@ -11441,6 +11617,89 @@ mod tests {
         // GitHub comments are shared, so the one-click private actions skip them.
         assert_eq!(card_action_prompt("c-1", AI_ACTION_ELABORATE), None);
         assert_eq!(card_action_prompt("q-1", "unknown"), None);
+    }
+
+    fn send_note_params<'a>(
+        thread_body: &'a str,
+        line_content: &'a str,
+    ) -> SendNotePromptParams<'a> {
+        SendNotePromptParams {
+            repo_root: "/repo",
+            base_branch: "main",
+            current_branch: "feat/x",
+            file: ".github/workflows/ci.yml",
+            line_start: Some(8),
+            line_end: Some(9),
+            line_content,
+            thread_body,
+        }
+    }
+
+    #[test]
+    fn send_note_prompt_carries_the_note_its_replies_and_the_location() {
+        let body = "pin python\n\n**Claude** replied:\nAdd actions/setup-python@v5";
+        let prompt = build_send_note_prompt(&send_note_params(body, "  - run: python x.py"));
+        assert!(prompt.contains("Location: .github/workflows/ci.yml, L8–9"));
+        assert!(prompt.contains("Branch: feat/x (compared against main)"));
+        assert!(prompt.contains("pin python"));
+        assert!(prompt.contains("Add actions/setup-python@v5"));
+        assert!(prompt.contains("```\n  - run: python x.py\n```"));
+        // The reviewer commits; the agent only edits the working tree.
+        assert!(prompt.contains("Do not commit, push"));
+        assert!(prompt.contains("change nothing and say why"));
+    }
+
+    #[test]
+    fn send_note_prompt_handles_file_level_notes_without_an_anchor() {
+        let mut p = send_note_params("tidy this file", "   ");
+        p.line_start = None;
+        p.line_end = None;
+        let prompt = build_send_note_prompt(&p);
+        assert!(prompt.contains("Location: .github/workflows/ci.yml (the file as a whole)"));
+        assert!(!prompt.contains("anchored line"));
+    }
+
+    #[test]
+    fn note_range_label_matches_the_card() {
+        assert_eq!(note_range_label(Some(8), Some(9)).as_deref(), Some("L8–9"));
+        assert_eq!(note_range_label(Some(8), Some(8)).as_deref(), Some("L8"));
+        assert_eq!(note_range_label(Some(8), None).as_deref(), Some("L8"));
+        assert_eq!(note_range_label(None, Some(3)), None);
+    }
+
+    #[test]
+    fn send_note_needs_the_viewed_branch_checked_out_here() {
+        use er_engine::app::TabState;
+        let mut working = TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(send_note_blocked_reason(&working), Ok(()));
+
+        let mut remote = TabState::new_for_test(vec![]);
+        remote.repo_root = "/repo".into();
+        remote.remote_repo = Some("o/r".into());
+        remote.pr_number = Some(7);
+        assert!(send_note_blocked_reason(&remote)
+            .unwrap_err()
+            .contains("remote PR"));
+
+        // A local PR tab is only a working tree once its head is checked out.
+        let mut local_pr = TabState::new_for_test(vec![]);
+        local_pr.repo_root = "/repo".into();
+        local_pr.pr_number = Some(7);
+        assert!(send_note_blocked_reason(&local_pr)
+            .unwrap_err()
+            .contains("not checked out"));
+        local_pr.local_branch_checkout_root = Some("/repo".into());
+        assert_eq!(send_note_blocked_reason(&local_pr), Ok(()));
+
+        // Checked out in another worktree: the command would run in the wrong one.
+        let mut view = TabState::new_for_test(vec![]);
+        view.repo_root = "/repo".into();
+        view.local_branch_view = Some("feat/x".into());
+        view.local_branch_checkout_root = Some("/repo-wt".into());
+        assert!(send_note_blocked_reason(&view)
+            .unwrap_err()
+            .contains("/repo-wt"));
     }
 
     #[test]

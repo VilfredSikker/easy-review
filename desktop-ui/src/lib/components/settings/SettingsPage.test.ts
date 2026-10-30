@@ -3,32 +3,47 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const src = readFileSync(
-  join(dirname(fileURLToPath(import.meta.url)), "SettingsPage.svelte"),
-  "utf8",
-);
+const read = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), name), "utf8");
+const page = read("SettingsPage.svelte");
+const risk = read("RiskRulesSection.svelte");
 
-describe("SettingsPage file importance", () => {
-  it("reads the resolved files off the settings payload", () => {
-    expect(src).toContain("importanceFiles = res.settings.importanceFiles ?? [];");
-    expect(src).toContain("{#if importanceFiles.length > 0}");
+describe("SettingsPage risk rules", () => {
+  it("reads the merged rule table off the settings payload", () => {
+    expect(page).toContain("riskRules = settings.riskRules ?? [];");
+    expect(page).toContain("riskFiles = settings.riskFiles ?? [];");
   });
 
-  it("windows the rows through the tested helper rather than in the template", () => {
-    expect(src).toContain("importanceFileWindow(importanceFiles)");
-    expect(src).toContain("{#each importanceWindow.shown as file (file.path)}");
-    // The count of what was left out is drawn, not assumed away.
-    expect(src).toContain("{#if importanceWindow.hidden > 0}");
+  it("writes rules through the engine's one patch key", () => {
+    expect(page).toContain("send(RISK_RULE_PATCH_KEY, edit)");
+  });
+
+  it("checks a write landed, since the engine refuses a bad edit silently", () => {
+    expect(risk).toContain("ruleLanded(after, draft)");
+  });
+
+  it("windows the changed files through the tested helper and counts the rest", () => {
+    expect(risk).toContain("fileWindow(files)");
+    expect(risk).toContain("{#if fileRows.hidden > 0}");
   });
 
   it("answers why a file has its tier, not only what the tier is", () => {
-    // The rule key is the answer to the question the card exists for; a row
-    // showing the tier alone would be the declared table read back.
-    expect(src).toContain("matchedRuleLabel(file)");
-    expect(src).toContain("{file.tier}");
+    expect(risk).toContain("claimedBy(file)");
+    expect(risk).toContain("no rule matched");
+  });
+});
+
+describe("SettingsPage scope", () => {
+  it("says config is global and lives in managed app data (ADR 0005)", () => {
+    expect(page).toContain("No repo-local config.");
+  });
+});
+
+describe("SettingsPage review fixes", () => {
+  it("closes the add-rule form once a rule lands", () => {
+    expect(risk).toContain("editing = null;\n      adding = false;\n      return null;");
   });
 
-  it("says plainly when no rule matched", () => {
-    expect(src).toContain("no rule matched");
+  it("acts on the uninstall deep link once", () => {
+    expect(page).toContain("onuninstallfocused={() => (focusUninstall = false)}");
   });
 });

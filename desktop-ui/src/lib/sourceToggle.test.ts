@@ -1,5 +1,22 @@
 import { describe, expect, test } from "bun:test";
-import { sourceToggleState } from "./sourceToggle";
+import { activeDiffSource, sourceToggleState } from "./sourceToggle";
+
+describe("activeDiffSource", () => {
+  test("is the PR side in the PR diff view", () => {
+    expect(activeDiffSource("pr", undefined)).toBe("pr");
+  });
+
+  test("follows the tour's scope while the Tour is open", () => {
+    expect(activeDiffSource("tour", "pr")).toBe("pr");
+    expect(activeDiffSource("tour", "branch")).toBe("local");
+  });
+
+  test("is the local side for working-tree modes and before a snapshot", () => {
+    expect(activeDiffSource("branch", "pr")).toBe("local");
+    expect(activeDiffSource("unstaged", undefined)).toBe("local");
+    expect(activeDiffSource(undefined, undefined)).toBe("local");
+  });
+});
 
 describe("sourceToggleState", () => {
   test("enables both sides on a working tab with a PR", () => {

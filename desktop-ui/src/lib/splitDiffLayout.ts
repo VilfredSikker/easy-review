@@ -1,7 +1,7 @@
 import type { FileSnapshot } from "./types";
 
 /** Minimum line-number gutter width per panel; enough for three digits.
- *  The live width is `--er-split-gutter`, set by FlatDiffView from `gutterWidthPx`. */
+ *  The live width is `--er-split-gutter`, set by FlatDiffView from `diffGutterPx`. */
 export const SPLIT_GUTTER_PX = 40;
 
 /** Trailing pad inside a split annotation slot (posted card and composer). */
@@ -28,4 +28,14 @@ export function gutterWidthPx(maxLine: number, charWPx: number): number {
   const digits = String(Math.max(1, maxLine)).length;
   const charW = charWPx > 0 ? charWPx : FALLBACK_CHAR_PX;
   return Math.max(SPLIT_GUTTER_PX, Math.ceil(digits * charW + GUTTER_PAD_PX));
+}
+
+/** Gutter kept when line numbers are off: the add/del accent bar still needs
+ *  its lane, and the cell stays the click target that starts a comment. */
+export const HIDDEN_GUTTER_PX = 16;
+
+/** Gutter width for the current line-number setting. The rows, the split
+ *  annotation tracks and the wrap arithmetic all size from this one value. */
+export function diffGutterPx(maxLine: number, charWPx: number, lineNumbers: boolean): number {
+  return lineNumbers ? gutterWidthPx(maxLine, charWPx) : HIDDEN_GUTTER_PX;
 }
