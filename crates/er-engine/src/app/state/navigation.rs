@@ -910,9 +910,13 @@ impl TabState {
             Ok(raw) => Ok(raw),
             Err(first_err)
                 if self.pr_number.is_some()
-                    && self.local_branch_view.is_some()
+                    && (self.local_branch_view.is_some()
+                        || self.history_return_mode == DiffMode::PrDiff)
                     && !self.is_remote() =>
             {
+                // A PR commit missing from the object DB means the PR head was
+                // never fetched here. Fetching the head ref brings it in without
+                // touching the working tree (ADR 0020).
                 if let Some(pr_number) = self.pr_number {
                     if let Ok(head_ref) = crate::github::fetch_pr_head(pr_number, &self.repo_root) {
                         self.pr_head_ref = Some(head_ref);
