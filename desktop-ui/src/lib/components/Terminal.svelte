@@ -4,6 +4,7 @@
   import "@xterm/xterm/css/xterm.css";
   import { app } from "$lib/stores/app.svelte";
   import { terminal } from "$lib/stores/terminal.svelte";
+  import { terminalRepoName } from "$lib/stores/terminalTabs";
   import { themeByName, xtermThemeFor } from "$lib/themes";
 
   interface Props {
@@ -186,17 +187,23 @@
   });
 </script>
 
-<div class="w-full h-full flex flex-col bg-ink-900 overflow-hidden {visible ? '' : 'pointer-events-none'}">
+<div class="w-full h-full flex flex-col bg-bg overflow-hidden {visible ? '' : 'pointer-events-none'}">
   <div
-    class="h-6 shrink-0 border-b border-hairline bg-ink-870 flex items-center gap-2 px-2 text-[11px] mono"
+    class="shrink-0 border-b border-hairline flex items-center gap-0.5 px-2 py-1 text-[12px]"
+    role="tablist"
+    aria-label="Terminal tabs"
   >
-    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-muted shrink-0">
-      <polyline points="4 17 10 11 4 5" /><line x1="12" y1="19" x2="20" y2="19" />
-    </svg>
-    <span class="text-fg-3 truncate">{branch || "—"}</span>
+    <span
+      class="px-2.5 py-[3px] rounded-md bg-card text-fg truncate max-w-[220px]"
+      role="tab"
+      aria-selected="true"
+    >
+      zsh <span class="text-muted">· {terminalRepoName(cwd)}</span>
+    </span>
+    <span class="mono text-[11px] text-fg-3 truncate px-2">{branch || "—"}</span>
     <button
       type="button"
-      class="px-1.5 py-0.5 rounded text-fg-3 hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
+      class="mono text-[11px] px-1.5 py-0.5 rounded-md text-fg-3 hover:bg-hover hover:text-fg disabled:opacity-40 disabled:hover:bg-transparent"
       disabled={!branch}
       onclick={insertCheckoutCommand}
       title="Type 'git checkout {branch}' into the terminal (you press Enter)"
@@ -206,7 +213,7 @@
     <div class="flex-1"></div>
     <button
       type="button"
-      class="w-5 h-5 flex items-center justify-center rounded text-fg-3 hover:bg-hover hover:text-fg"
+      class="w-6 h-6 flex items-center justify-center rounded-md text-fg-3 hover:bg-hover hover:text-fg"
       onclick={() => void killSession()}
       title="End session (kills shell)"
       aria-label="End session"
@@ -217,7 +224,7 @@
     </button>
     <button
       type="button"
-      class="w-5 h-5 flex items-center justify-center rounded text-fg-3 hover:bg-hover hover:text-fg"
+      class="w-6 h-6 flex items-center justify-center rounded-md text-fg-3 hover:bg-hover hover:text-fg"
       onclick={() => terminal.toggle()}
       title="Hide terminal"
       aria-label="Hide terminal"
@@ -227,7 +234,7 @@
       </svg>
     </button>
   </div>
-  <div bind:this={containerEl} class="flex-1 min-h-0 overflow-hidden"></div>
+  <div bind:this={containerEl} class="flex-1 min-h-0 overflow-hidden px-3.5 py-2"></div>
 </div>
 
 <style>
