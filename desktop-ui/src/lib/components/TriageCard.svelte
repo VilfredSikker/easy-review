@@ -13,14 +13,13 @@
   import { canRunAdvancedFollowUp, reviewFlowControls, reviewFlowStage } from "$lib/reviewFlow";
   import ReviewFlowProgress from "$lib/components/ReviewFlowProgress.svelte";
   import {
-    evidencedGuard,
     filesPreview,
     followUpFor,
-    hasReachDetail,
     previewLine,
     priorityDotClass,
-    reachPreview,
     summaryPills,
+    takeaways,
+    triageFreshness,
     verdictLabel,
   } from "$lib/triageCard";
   import { tick } from "svelte";
@@ -33,23 +32,20 @@
 
   let open = $state(true);
 
-  // Every row starts collapsed: the pills and the row teasers are the first
-  // read, and a row opens only when the reader wants its reasoning.
+  // The verdict, pills, impression and takeaways are the first read; the
+  // reasoning rows stay collapsed until the reader wants them.
   let verdictOpen = $state(false);
   let filesOpen = $state(false);
-  let reachOpen = $state(false);
-  let impressionOpen = $state(false);
   let advancedFollowUpPending = $state(false);
 
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
   const label = $derived(verdictLabel(triage.verdict_primary));
   const pills = $derived(summaryPills(triage));
 
-  /** A guard counts only with the line where it is checked (ADR 0039). */
-  const guard = $derived(evidencedGuard(triage));
-  /** Triage from before reach existed, or a reach with nothing to say, gets no row. */
-  const showReach = $derived(hasReachDetail(triage));
-  const touchPoints = $derived(triage.touch_points ?? []);
+  const rows = $derived(takeaways(triage));
+  const freshness = $derived(
+    triageFreshness(triage, app.snapshot?.diff_stale?.built_from_oid),
+  );
   const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
   const flowControls = $derived(reviewFlowControls(reviewFlow));
 
@@ -127,37 +123,46 @@
   }
 </script>
 
-<Card class="triage-card group flex max-h-[360px] min-w-0 flex-col overflow-hidden">
+<Card class="triage-card group flex min-w-0 flex-col overflow-hidden">
   <div class="flex shrink-0 items-center justify-between gap-2">
     <button
       type="button"
-      class="flex min-w-0 flex-1 items-center justify-between gap-2 text-left"
+      class="flex min-w-0 flex-1 items-center gap-2 text-left"
       aria-expanded={open}
       onclick={() => (open = !open)}
     >
       <SectionLabel>Triage</SectionLabel>
-      <span class="rounded border px-1.5 py-0.5 text-[10px] uppercase tracking-wide
-        {triage.fresh ? 'border-info/30 bg-info/10 text-info' : 'border-warning/30 bg-warning/10 text-warning'}">
-        {triage.fresh ? label : "stale"}
-      </span>
+      <span
+        class="font-mono text-[11px] {freshness.stale
+          ? 'rounded border border-warning/30 bg-warning/10 px-1.5 text-warning'
+          : 'text-add-fg'}"
+        data-testid="triage-freshness"
+      >{freshness.text}</span>
     </button>
     <CardDeleteButton label="Discard triage" onDelete={discardTriage} />
   </div>
 
   {#if open}
-    <div class="mt-2.5 min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+    <div class="mt-2.5 min-h-0 flex-1 overflow-x-hidden">
       {#if reviewFlow}
         <div class="mb-3">
           <ReviewFlowProgress flow={reviewFlow} />
         </div>
       {/if}
-      {#if pills.length > 0}
-        <div class="flex flex-wrap gap-1" data-testid="triage-pills">
-          {#each pills as pill (pill.label)}
-            <Pill tone={pill.tone} title={pill.title}>{pill.label}</Pill>
-          {/each}
-        </div>
-      {/if}
+      <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
+        <p class="m-0 flex items-baseline gap-1.5 text-[14px] text-fg">
+          <span class="text-[11px] font-medium uppercase tracking-[0.06em] text-accent">Next</span>
+          <b class="font-semibold">{label}</b>
+          {#if triage.confidence}<span class="text-[12px] text-fg-3">· {triage.confidence} confidence</span>{/if}
+        </p>
+        {#if pills.length > 0}
+          <div class="flex flex-wrap gap-1.5" data-testid="triage-pills">
+            {#each pills as pill (pill.label)}
+              <Pill tone={pill.tone} title={pill.title}>{pill.label}</Pill>
+            {/each}
+          </div>
+        {/if}
+      </div>
 
       {#if triage.domains.length > 0}
         <ul class="mt-1.5 flex flex-wrap gap-1" aria-label="Domains">
@@ -167,7 +172,25 @@
         </ul>
       {/if}
 
-      <div class="mt-2.5 min-w-0">
+      {#if triage.first_impression}
+        <MarkdownText
+          text={triage.first_impression}
+          className="mt-2.5 mb-2 max-w-[68ch] text-[14px] leading-relaxed text-fg"
+        />
+      {/if}
+
+      <ul class="m-0 grid list-none p-0" aria-label="Takeaways">
+        {#each rows as row (row.key)}
+          <li class="grid grid-cols-1 gap-0.5 border-t border-hairline py-[7px] text-[13px] sm:grid-cols-[76px_minmax(0,1fr)] sm:gap-3">
+            <span class="pt-0.5 text-[11px] text-fg-3">{row.label}</span>
+            <span class="min-w-0 break-words {row.empty ? 'text-fg-3' : 'text-fg-2'}">
+              {row.text}{#if row.code}{row.text ? " · " : ""}<code class="font-mono text-[11.5px] text-fg">{row.code}</code>{/if}
+            </span>
+          </li>
+        {/each}
+      </ul>
+
+      <div class="mt-1 min-w-0">
         <Disclosure
           label="Verdict"
           preview={previewLine(triage.rationale) || verdictSummary}
@@ -217,46 +240,6 @@
                 </li>
               {/each}
             </ul>
-          </Disclosure>
-        {/if}
-
-        {#if showReach}
-          <Disclosure
-            label="Reach"
-            preview={reachPreview(triage)}
-            bind:open={reachOpen}
-          >
-            {#if triage.reach_reason}
-              <p class="text-[12px] leading-relaxed text-fg-2">{triage.reach_reason}</p>
-            {/if}
-            {#if guard}
-              <p class="mt-1 text-[11px] text-muted">
-                <span class="text-success">Guard</span>
-                · {guard.kind}{guard.name ? ` ${guard.name}` : ""}
-                · <span class="font-mono">{guard.evidence}</span>
-              </p>
-            {/if}
-            {#if touchPoints.length > 0}
-              <p class="mt-1.5 mb-0.5 text-[10px] uppercase tracking-wide text-muted">Touch points</p>
-              <ul class="space-y-1 font-mono text-[10px] leading-snug text-fg-2">
-                {#each touchPoints as tp, i (i)}
-                  <li class="break-words">{tp}</li>
-                {/each}
-              </ul>
-            {/if}
-          </Disclosure>
-        {/if}
-
-        {#if triage.first_impression}
-          <Disclosure
-            label="First impression"
-            preview={previewLine(triage.first_impression)}
-            bind:open={impressionOpen}
-          >
-            <MarkdownText
-              text={triage.first_impression}
-              className="text-[12px] leading-relaxed text-fg-2"
-            />
           </Disclosure>
         {/if}
       </div>

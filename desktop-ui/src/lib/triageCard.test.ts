@@ -9,6 +9,8 @@ import {
   priorityDotClass,
   reachPreview,
   summaryPills,
+  takeaways,
+  triageFreshness,
   verdictLabel,
 } from "./triageCard";
 import type { TriageSnapshot } from "./types";
@@ -262,5 +264,60 @@ describe("priorityDotClass", () => {
     expect(priorityDotClass("low")).toBe("bg-risk-low");
     expect(priorityDotClass("info")).toBe("bg-muted");
     expect(priorityDotClass("")).toBe("bg-muted");
+  });
+});
+
+describe("takeaways", () => {
+  it("always ends with Sensitive, dim when nothing is evidenced", () => {
+    const rows = takeaways(makeTriage());
+    expect(rows).toEqual([{ key: "sensitive", label: "Sensitive", text: "Nothing evidenced", empty: true }]);
+  });
+
+  it("reads reach, touch points and an evidenced guard from existing fields", () => {
+    const rows = takeaways(
+      makeTriage({
+        reach: "contained",
+        reach_reason: "Only deploy-db reads these names.",
+        touch_points: ["a.ts", "b.ts", "c.ts", "d.ts"],
+        guard: { kind: "check", name: "strict", evidence: "schema.sql:24558" },
+        sensitive: [{ kind: "auth", evidence: "token check", note: "" }],
+      }),
+    );
+    expect(rows.map((r) => r.key)).toEqual(["reach", "touch", "guard", "sensitive"]);
+    expect(rows[1].code).toBe("a.ts  b.ts  c.ts");
+    expect(rows[2]).toMatchObject({ text: "check strict", code: "schema.sql:24558" });
+    expect(rows[3]).toMatchObject({ text: "auth", code: "token check" });
+  });
+
+  it("drops a guard with no evidence and a reach with no reason", () => {
+    const rows = takeaways(
+      makeTriage({ reach: "broad", guard: { kind: "check", name: "", evidence: "" } }),
+    );
+    expect(rows.map((r) => r.key)).toEqual(["sensitive"]);
+  });
+});
+
+describe("triageFreshness", () => {
+  const now = Date.parse("2026-01-01T12:00:00Z");
+
+  it("reads fresh with its age", () => {
+    const f = triageFreshness(makeTriage({ created_at: "2026-01-01T11:58:00Z" }), null, now);
+    expect(f).toEqual({ stale: false, text: "fresh · 2 min ago" });
+  });
+
+  it("reads plain fresh when the sidecar has no time", () => {
+    expect(triageFreshness(makeTriage(), null, now).text).toBe("fresh");
+  });
+
+  it("names the commit a stale triage was built from, shortened", () => {
+    const f = triageFreshness(makeTriage({ fresh: false }), "7be0d14aabbccdd", now);
+    expect(f).toEqual({ stale: true, text: "stale · built from 7be0d14" });
+  });
+
+  it("falls back to the triage's diff hash, then to plain stale", () => {
+    expect(triageFreshness(makeTriage({ fresh: false, diff_hash: "3c9a1f7e5b" }), null, now).text).toBe(
+      "stale · built from 3c9a1f7",
+    );
+    expect(triageFreshness(makeTriage({ fresh: false }), undefined, now).text).toBe("stale");
   });
 });

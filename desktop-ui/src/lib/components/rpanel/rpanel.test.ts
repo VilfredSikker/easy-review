@@ -231,20 +231,15 @@ describe("comments panel", () => {
 
 describe("risksPanel", () => {
   const files = [
-    { path: "db/1.sql", reviewed: false },
-    { path: "src/app.ts", reviewed: true },
-    { path: "src/util.ts", reviewed: false, risk: "low" as const },
-    { path: "README.md", reviewed: false },
-  ];
-  const resolved = [
-    { path: "db/1.sql", tier: "high" as const, rule: { key: "db/**", label: "Migrations", source: "project" as const } },
-    { path: "src/app.ts", tier: "ai" as const, rule: { key: "*.ts", label: null, source: "user" as const } },
-    { path: "src/util.ts", tier: "ai" as const, rule: null },
+    { path: "db/1.sql", reviewed: false, risk_tier: "high" as const, risk_rule: { key: "db/**", label: "Migrations", source: "project" as const } },
+    { path: "src/app.ts", reviewed: true, risk_tier: "ai" as const, risk_rule: { key: "*.ts", label: null, source: "user" as const } },
+    { path: "src/util.ts", reviewed: false, risk: "low" as const, risk_tier: "ai" as const, risk_rule: null },
+    { path: "README.md", reviewed: false, risk_tier: "ai" as const },
   ];
   const ai = [{ path: "src/app.ts", risk: "high" as const, risk_reason: "Auth path", summary: "" }];
 
   it("lets a declared tier win and the review rate only ai files", () => {
-    const rows = riskRows(files, resolved, ai);
+    const rows = riskRows(files, ai);
     expect(rows.map((r) => [r.path, r.shown])).toEqual([
       ["db/1.sql", "high"],
       ["src/app.ts", "high"],
@@ -259,16 +254,19 @@ describe("risksPanel", () => {
 
   it("does not let the review override a declared tier", () => {
     const rows = riskRows(
-      [{ path: "db/1.sql", reviewed: false }],
-      resolved,
+      [files[0]],
       [{ path: "db/1.sql", risk: "low", risk_reason: "small", summary: "" }],
     );
     expect(rows[0].shown).toBe("high");
     expect(rows[0].aiReason).toBeNull();
   });
 
+  it("reads a file without a snapshot tier as ai", () => {
+    expect(riskRows([{ path: "x.ts", reviewed: false }], [])[0].shown).toBe("ai");
+  });
+
   it("groups by tier and counts the unreviewed high files", () => {
-    const rows = riskRows(files, resolved, ai);
+    const rows = riskRows(files, ai);
     expect(groupRiskRows(rows).map((g) => [g.tier, g.rows.length])).toEqual([
       ["high", 2],
       ["low", 1],

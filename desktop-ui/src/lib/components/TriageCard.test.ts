@@ -29,7 +29,7 @@ describe("TriageCard", () => {
   });
 
   it("starts every row collapsed", () => {
-    for (const flag of ["verdictOpen", "filesOpen", "reachOpen", "impressionOpen"]) {
+    for (const flag of ["verdictOpen", "filesOpen"]) {
       expect(src).toContain(`let ${flag} = $state(false);`);
       expect(src).toContain(`bind:open={${flag}}`);
     }
@@ -39,11 +39,8 @@ describe("TriageCard", () => {
     expect(row("Verdict")).toContain("{verdictSummary}");
     expect(row("Verdict")).toContain("{triage.rationale}");
     expect(row("Priority files")).toContain("navigateToPath(pf.path)");
-    expect(row("Reach")).toContain("{triage.reach_reason}");
-    expect(row("Reach")).toContain("{#each touchPoints as tp");
-    expect(row("First impression")).toContain("<MarkdownText");
     // Each paragraph is rendered once, so "inside its row" is also "nowhere else".
-    for (const marker of ["{triage.rationale}", "{triage.reach_reason}", "<MarkdownText", "{#each touchPoints"]) {
+    for (const marker of ["{triage.rationale}", "<MarkdownText"]) {
       expect(occurrences(marker)).toBe(1);
     }
   });
@@ -51,8 +48,6 @@ describe("TriageCard", () => {
   it("gives each collapsed row a one-line teaser", () => {
     expect(src).toContain("preview={previewLine(triage.rationale) || verdictSummary}");
     expect(src).toContain("preview={filesPreview(triage.priority_files)}");
-    expect(src).toContain("preview={reachPreview(triage)}");
-    expect(src).toContain("preview={previewLine(triage.first_impression)}");
     expect(src).toContain("badge={triage.priority_files.length}");
   });
 
@@ -73,12 +68,17 @@ describe("TriageCard", () => {
     expect(src).toContain("await app.cmd(next.command, next.args)");
   });
 
-  it("shows the reach row, and its guard, only with something to say", () => {
-    expect(src).toContain("const showReach = $derived(hasReachDetail(triage));");
-    expect(src).toContain("{#if showReach}");
-    expect(src).toContain("const guard = $derived(evidencedGuard(triage));");
-    expect(row("Reach")).toContain("{#if guard}");
+  it("states the impression and the takeaways from the tested helper, not from raw fields", () => {
+    expect(src).toContain("const rows = $derived(takeaways(triage));");
+    expect(src).toContain("{#each rows as row (row.key)}");
+    expect(src).toContain("text={triage.first_impression}");
     expect(src).not.toContain("triage.guard");
+    expect(src).not.toContain("triage.reach_reason");
+  });
+
+  it("shows the fresh or stale built-from chip beside the label", () => {
+    expect(src).toContain("triageFreshness(triage, app.snapshot?.diff_stale?.built_from_oid)");
+    expect(src).toContain("{freshness.text}");
   });
 
   it("lists domains as a list, so the label reaches assistive tech", () => {
@@ -87,7 +87,6 @@ describe("TriageCard", () => {
   });
 
   it("marks stale triage while routing its default follow-up through the review flow", () => {
-    expect(src).toContain('{triage.fresh ? label : "stale"}');
     expect(src).toContain('app.cmd("start_review_flow", { scope: reviewScope, erDir: snap.review_bucket_er_dir })');
     expect(src).toContain("flowControls.confirm");
     expect(src).toContain("flowControls.busy");
