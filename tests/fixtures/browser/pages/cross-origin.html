@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>cross-origin fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<iframe title="Other origin" id="other"></iframe><script>document.querySelector('#other').src = `http://127.0.0.1:${location.port}/landing.html`;</script>
+<script src="/common.js"></script></body></html>
