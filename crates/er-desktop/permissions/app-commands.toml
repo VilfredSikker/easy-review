@@ -11,6 +11,7 @@ commands.allow = [
   "request_file_content",
   "request_file_preview",
   "request_image_preview",
+  "fetch_github_image",
   "select_file",
   "next_file",
   "prev_file",
