@@ -187,7 +187,7 @@ Short-circuit obvious issues. Read source files to verify, not to expand scope."
 const fn general_review_instructions_read_analyze() -> &'static str {
     r#"4. Analyse every changed file. **Findings target only `+` or `-` lines** — context is for comprehension. Per file:
    - `risk`: "high" | "medium" | "low" | "info"
-   - `risk_reason`: why this risk level. Weigh reach as well as correctness: an edit to existing code much of the repo depends on outranks the same edit in new code nothing calls yet, and new code behind a guard you can point to (feature flag, permission check — cite `path:line`) ranks lower still. `change-facts.md` in the output directory, when present, lists which files are new, which existing files are edited, and their declared importance
+   - `risk_reason`: why this risk level. Weigh reach as well as correctness: an edit to existing code much of the repo depends on outranks the same edit in new code nothing calls yet, and new code behind a guard you can point to (feature flag, permission check — cite `path:line`) ranks lower still. `change-facts.md` in the output directory, when present, lists which files are new, which existing files are edited, and their declared risk tier
    - `summary`: one-line description of changes
    - `findings`: array of issues (within caps). On each finding set `line_content` to the exact text of the line it anchors to, copied from the diff; omit it for hunk-level findings (`line_start` unset)
 5. **Verify findings agentically** when significance depends on code outside the diff — read/grep sibling files, callers, tests; append `evidence` entries; mark `tentative` if budget runs out.
@@ -979,24 +979,27 @@ fn professor_output_section(output_dir: &str) -> String {
 pub const IMPORTANCE_JSON_BEGIN: &str = "===IMPORTANCE_JSON_BEGIN===";
 pub const IMPORTANCE_JSON_END: &str = "===IMPORTANCE_JSON_END===";
 
-/// Background task kind for the importance-rules agent. The worker recognises
-/// its own reply by this kind and merges the table itself.
+/// Background task kind for the risk-rules agent. The worker recognises its
+/// own reply by this kind and merges the table itself. Spelled `importance`
+/// because tasks already in logs and queues carry that kind (ADR 0048).
 pub const IMPORTANCE_TASK_KIND: &str = "importance";
 
-/// Prompt for the agent that proposes a repo's importance rules.
+/// Prompt for the agent that proposes a repo's risk rules.
 ///
 /// The agent reads the codebase and prints a rule table; the host validates it
-/// and merges it into `[importance.<repo>]`. Asking for a *rule table* rather
-/// than a ranking is what keeps the result inspectable: a number nobody can
-/// argue with is worse than no number at all
-/// (`docs/adr/0036-importance-as-declared-config.md`).
+/// and merges it into `[risk.<repo>]`. Asking for a *rule table* rather than a
+/// ranking is what keeps the result inspectable: a number nobody can argue with
+/// is worse than no number at all
+/// (`docs/adr/0036-importance-as-declared-config.md`,
+/// `docs/adr/0048-risk-rules-merge-importance.md`).
 pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
     let mut prompt = String::new();
     prompt.push_str(
-        "You are declaring which files in a repository are **foundational** — much of the tree \
-         depends on them — and which are **isolated**. A reviewer uses this to decide what \
-         deserves human attention, so the output is a small, readable rule table rather than a \
-         ranking of every file.\n\n## Steps\n1. Work in `",
+        "You are declaring how closely each part of a repository needs a human reviewer's \
+         reading: **high** where much of the tree depends on it or a mistake is costly, **low** \
+         where little or nothing reaches it. A reviewer uses this to decide what deserves \
+         attention, so the output is a small, readable rule table rather than a ranking of \
+         every file.\n\n## Steps\n1. Work in `",
     );
     prompt.push_str(&sanitize_for_shell(repo_root));
     prompt.push_str(
@@ -1019,10 +1022,11 @@ pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
     prompt.push_str(repo);
     prompt.push_str(
         r#"",
-  "default": "normal",
+  "default": "ai",
   "rules": {
-    "src/auth/**": "foundational",
-    "*.md": "isolated"
+    "src/auth/**": { "tier": "high", "label": "Auth" },
+    "src/features/**": "ai",
+    "*.md": { "tier": "low", "label": "Docs" }
   },
   "report": "<two or three lines: what share of the tree each tier covers, measured rather than guessed>"
 }
@@ -1033,9 +1037,12 @@ pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
         r#"
 
 ## Tiers
-- `foundational` — much of the tree reaches it: public API surface, auth, schemas, design systems.
-- `isolated` — little or nothing reaches it: docs, fixtures, one-off scripts.
-- `normal` — everything else. This is the `default`, and it is the right answer for most files.
+- `high` — much of the tree reaches it, or a mistake is expensive: public API surface, auth, schemas, migrations, design systems.
+- `med` — shared code with a moderate reach: utilities several features call.
+- `low` — little or nothing reaches it: docs, fixtures, one-off scripts.
+- `ai` — no fixed tier: the AI review rates each file from what its change does. This is the `default`, and it is the right answer for most application code, whose risk depends on the change rather than the path.
+
+A rule's value is either a bare tier or `{ "tier": ..., "label": ... }`. Give a short label (one to three words, e.g. `Migrations`) to every `high`, `med` and `low` rule: the reviewer sees it beside the file as the reason for its tier.
 
 ## Rule keys, in the precedence the harness applies (most specific first)
 1. `exact/path/to/file.rs` — one path.
@@ -1043,7 +1050,7 @@ pub fn build_importance_prompt(repo: &str, repo_root: &str) -> String {
 3. `*.md` — a bare extension, matched against the filename.
 
 ## What makes a table good
-- **Few and precise.** Six rules that each name a boundary beat thirty that tile the tree. A glob one directory too wide marks a whole crate foundational, parses perfectly, and quietly ruins the ranking.
+- **Few and precise.** Six rules that each name a boundary beat thirty that tile the tree. A glob one directory too wide marks a whole crate high, parses perfectly, and quietly ruins the ranking.
 - **Say why in the `report`.** It is read by a person deciding whether to trust the table, and an over-broad ruleset is visible in one line of distribution.
 - Only propose paths that exist. A rule for a path you did not see is a guess wearing a fact's clothes.
 - `"#,
@@ -1177,11 +1184,11 @@ fn reach_instructions() -> String {
     format!(
         r#"### Reach: how much existing code this change touches
 
-If `{CHANGE_FACTS_FILE}` exists in the output directory, read it first. It lists, computed from the diff and the repo's config, which code files are new, which existing files are edited or deleted, and each edited file's declared importance. Trust its counts over your own skim.
+If `{CHANGE_FACTS_FILE}` exists in the output directory, read it first. It lists, computed from the diff and the repo's config, which code files are new, which existing files are edited or deleted, and each edited file's declared risk tier. Trust its counts over your own skim.
 
 - `isolated` — the change is new code (new services, endpoints, tables, UI) that nothing existing calls into, apart from the wiring that registers it.
 - `contained` — it edits existing code, but code few other places depend on.
-- `broad` — it edits or deletes code much of the repo depends on: shared modules, base classes, schemas or migrations that alter existing tables, auth, routing, build or config files. An edit to a `foundational` file is broad.
+- `broad` — it edits or deletes code much of the repo depends on: shared modules, base classes, schemas or migrations that alter existing tables, auth, routing, build or config files. An edit to a file declared `high` is broad.
 
 **Wiring is the touch surface.** Ten new files plus one line in a central router, DI container, schema index or migration list is not "nothing existing changed": name each such edit in `touch_points` as `path:line — what it does`, and judge it on what breaks if that line is wrong. A new file can also be live with no edit at all when the framework picks it up by location (file-based routes, autoloaded classes, plugin or migration directories): check for that before calling new code unreached. A new migration that only creates new tables is isolated; one that alters an existing table is broad.
 
