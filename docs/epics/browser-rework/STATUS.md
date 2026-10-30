@@ -8,12 +8,12 @@ Legend: planned, implementing, reviewing, fixing, merged, blocked.
 
 | PR | Title | Lane | Model | Status | PR link | Notes |
 | --- | --- | --- | --- | --- | --- | --- |
-| ER21 | Browser fixtures | Fixtures | Terra | planned | — | No native prerequisite |
-| ER32a | Engine annotation storage | Storage | Sol | planned | — | Engine-only; snapshot wiring follows separately |
-| ER34a | Shared prompt renderer | Storage | Sol | blocked | — | Needs ER32a; preserves existing exports |
-| ER35 | Browser annotations MCP reader | Storage | Sol | blocked | — | Needs ER32a and ER34a |
-| ER32b | Desktop snapshot integration | Desktop | Terra | blocked | — | Needs ER32a; coordinate with other snapshot work |
-| ER22 | Parking proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
+| ER21 | Browser fixtures | Fixtures | Terra | merged | [#330](https://github.com/VilfredSikker/easy-review/pull/330) | HTTP checks passed; Safari/native observations pending |
+| ER32a | Engine annotation storage | Storage | Sol | merged | [#332](https://github.com/VilfredSikker/easy-review/pull/332) | Twelve storage tests, independent review and CI passed |
+| ER34a | Shared prompt renderer | Storage | Sol | reviewing | [#335](https://github.com/VilfredSikker/easy-review/pull/335) | Pure renderer; preserves existing exports |
+| ER35 | Browser annotations MCP reader | Storage | Sol | implementing | — | Stacked on renderer; ship after its review |
+| ER32b | Desktop snapshot integration | Desktop | Terra | implementing | — | PR 324 reconciled; source and UI contract checks underway |
+| ER22 | Parking proof | Native | Sol | implementing | — | Debug-only scaffold; native proof remains pending |
 | ER23 | Content-world proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
 | ER24 | Host editor surface proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
 | ER25 | Navigation capture data-store proof | Native | Sol | blocked | — | Needs ER22, ER23, ER24 and real macOS |

@@ -26,6 +26,7 @@ glob.workspace = true
 toml.workspace = true
 dirs.workspace = true
 tempfile = "3"
+png = "0.18"
 notify = { workspace = true, optional = true }
 notify-debouncer-mini = { workspace = true, optional = true }
 tui-textarea-2 = { version = "0.10.2", default-features = false, features = ["crossterm"], optional = true }

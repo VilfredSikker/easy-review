@@ -23,7 +23,9 @@
   let showProcess = $state(true);
   let openLogs = $state<Record<string, boolean>>({});
 
-  function control(command: "confirm_review_flow" | "decline_review_flow" | "cancel_review_flow") {
+  function control(
+    command: "confirm_review_flow" | "run_standard_review_flow" | "decline_review_flow" | "cancel_review_flow",
+  ) {
     if (!erDir) return;
     void app.cmd(command, { erDir });
   }
@@ -132,6 +134,16 @@
         >
           Run deep review
         </button>
+        {#if card.canRunStandard}
+          <button
+            type="button"
+            class="h-[26px] rounded-md border border-hairline px-2.5 text-[12px] hover:bg-hover disabled:opacity-50"
+            title="Run the same lenses as ordinary finders, without the multi-round arena"
+            onclick={() => control("run_standard_review_flow")}
+          >
+            Run standard instead
+          </button>
+        {/if}
         <button
           type="button"
           class="h-[26px] rounded-md px-2.5 text-[12px] text-fg-3 hover:bg-hover hover:text-fg disabled:opacity-50"

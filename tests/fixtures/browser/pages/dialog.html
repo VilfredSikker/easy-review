@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>dialog fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<button id="open">Open dialog</button><dialog id="dialog"><p>Native dialog</p><form method="dialog"><button>Close</button></form></dialog><script>document.querySelector('#open').onclick = () => document.querySelector('#dialog').showModal();</script>
+<script src="/common.js"></script></body></html>
