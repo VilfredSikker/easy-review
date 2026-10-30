@@ -582,6 +582,10 @@ pub struct TourPillar {
     /// Markdown description — the sticky header body for this pillar.
     #[serde(default)]
     pub description: String,
+    /// One-line pillar summary for the overview's pillar list. Absent in older
+    /// version-1 tours, which stay readable and fall back to `description`.
+    #[serde(default)]
+    pub summary: String,
     /// Lower sorts earlier.
     #[serde(default)]
     pub order: u32,
@@ -3830,11 +3834,21 @@ mod tests {
             id: id.to_string(),
             title: id.to_string(),
             description: String::new(),
+            summary: String::new(),
             order: 0,
             importance: 0,
             foundation: false,
             files,
         }
+    }
+
+    #[test]
+    fn tour_pillar_without_summary_still_deserializes() {
+        let p: TourPillar = serde_json::from_str(r#"{"id":"p-1","title":"T"}"#).unwrap();
+        assert_eq!(p.summary, "");
+        let p: TourPillar =
+            serde_json::from_str(r#"{"id":"p-1","title":"T","summary":"One line"}"#).unwrap();
+        assert_eq!(p.summary, "One line");
     }
 
     #[test]

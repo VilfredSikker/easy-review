@@ -14344,6 +14344,7 @@ mod tests {
                 description: String::new(),
                 order: 0,
                 importance: 0,
+                summary: String::new(),
                 foundation: false,
                 files: vec![
                     TourFile {
@@ -14407,6 +14408,7 @@ mod tests {
                 description: String::new(),
                 order: 0,
                 importance: 0,
+                summary: String::new(),
                 foundation: false,
                 files: vec![TourFile {
                     path: "a.ts".to_string(),
