@@ -1900,6 +1900,7 @@ fn main() {
             commands::request_file_content,
             commands::request_file_preview,
             commands::request_image_preview,
+            er_desktop::github_image::fetch_github_image,
             commands::select_file,
             commands::next_file,
             commands::prev_file,
