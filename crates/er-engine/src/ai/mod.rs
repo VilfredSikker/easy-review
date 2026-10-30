@@ -1,4 +1,5 @@
 pub mod browser_annotations;
+pub mod browser_prompt;
 pub mod change_facts;
 pub mod comments;
 pub mod diagrams;
