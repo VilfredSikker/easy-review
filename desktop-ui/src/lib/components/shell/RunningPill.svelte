@@ -3,7 +3,7 @@
   import { SvelteMap } from "svelte/reactivity";
   import { app } from "$lib/stores/app.svelte";
   import { aggregateJobs } from "$lib/runningJobs";
-  import { otherJobs, runningPillView } from "$lib/runningPill";
+  import { otherJobs, ownAgentCommands, runningPillView } from "$lib/runningPill";
   import JobsPopover from "./JobsPopover.svelte";
 
   /** The top bar's AI pill: hidden while nothing runs, opens the jobs popover. */
@@ -33,7 +33,7 @@
   const jobs = $derived(
     aggregateJobs({
       backgroundTasks: snapshot?.background_tasks,
-      agentCommands: snapshot?.agent_commands,
+      agentCommands: ownAgentCommands(snapshot?.agent_commands, snapshot?.background_tasks),
       arenaRuns: snapshot?.background_arena_runs,
       tabs: snapshot?.tabs ?? [],
       activeTabIdx: snapshot?.active_tab ?? null,

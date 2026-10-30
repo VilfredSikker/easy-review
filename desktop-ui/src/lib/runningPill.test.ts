@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
-import { otherJobs, reviewRing, runningPillView } from "./runningPill";
-import type { RunningJob } from "./runningJobs";
-import type { ReviewFlowSnapshot } from "./types";
+import { otherJobs, ownAgentCommands, reviewRing, runningPillView } from "./runningPill";
+import { aggregateJobs, type RunningJob } from "./runningJobs";
+import type { BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./types";
 
 const job = (id: string, status: RunningJob["status"]): RunningJob => ({
   id,
@@ -94,5 +94,46 @@ describe("reviewRing", () => {
     expect(reviewRing(0, 0).complete).toBe(false);
     expect(reviewRing(5, 4).label).toBe("4/4 reviewed");
     expect(reviewRing(5, 4).complete).toBe(true);
+  });
+});
+
+describe("ownAgentCommands", () => {
+  const reviewTask: BackgroundTaskSnapshot = {
+    id: "t1",
+    kind: "review",
+    label: "Review",
+    target_label: "feat",
+    scope: "branch",
+    repo_root: "/r",
+    branch_label: "feat",
+    status: "running",
+    started_at_ms: 0,
+  };
+  // What the snapshot puts in agent_commands for a task on the active tab.
+  const mirrored = { name: "review", status: "running", error: null };
+  const jobsFor = (commands: { name: string; status: string; error: null }[]) =>
+    aggregateJobs({
+      backgroundTasks: [reviewTask],
+      agentCommands: ownAgentCommands(commands, [reviewTask]),
+      tabs: [],
+      activeTabIdx: 0,
+      nowMs: 0,
+    });
+
+  it("counts a background task and its mirrored command once", () => {
+    expect(runningPillView(null, jobsFor([mirrored]))).toEqual({ tone: "running", text: "1 running", extra: 0 });
+  });
+
+  it("leaves no phantom job beside a review flow that owns the task", () => {
+    const f = flow("finding", { tasks: [{ background_task_id: "t1" } as never] });
+    const jobs = jobsFor([mirrored]);
+    expect(otherJobs(jobs, f)).toEqual([]);
+    expect(runningPillView(f, jobs)).toEqual({ tone: "running", text: "Review · finding", extra: 0 });
+  });
+
+  it("keeps a tab-local command that is not a copy", () => {
+    const own = { name: "explain", status: "running", error: null };
+    expect(ownAgentCommands([mirrored, own], [reviewTask])).toEqual([own]);
+    expect(runningPillView(null, jobsFor([mirrored, own]))?.text).toBe("2 running");
   });
 });

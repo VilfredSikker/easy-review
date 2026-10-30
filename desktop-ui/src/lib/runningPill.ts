@@ -1,6 +1,6 @@
 import { reviewRunVisible } from "./reviewRunCard";
 import { activeJobCount, type RunningJob } from "./runningJobs";
-import type { ReviewFlowSnapshot } from "./types";
+import type { AgentCommandStatus, BackgroundTaskSnapshot, ReviewFlowSnapshot } from "./types";
 
 export type PillTone = "running" | "need" | "done" | "failed";
 
@@ -16,6 +16,18 @@ const FLOW_STATE_LABEL: Partial<Record<ReviewFlowSnapshot["state"], string>> = {
   finding: "finding",
   verifying: "verifying",
 };
+
+/** Agent commands minus the copies of background tasks. The snapshot mirrors
+ *  each background task on the active tab into `agent_commands` under its
+ *  kind, for the per-tab badges; counting both would show one job as two. A
+ *  copy carries the task's kind and status verbatim, so match on both. */
+export function ownAgentCommands(
+  commands: readonly AgentCommandStatus[] | null | undefined,
+  tasks: readonly BackgroundTaskSnapshot[] | null | undefined,
+): AgentCommandStatus[] {
+  const mirrored = new Set((tasks ?? []).map((t) => `${t.kind}\u0000${t.status}`));
+  return (commands ?? []).filter((c) => !mirrored.has(`${c.name}\u0000${c.status}`));
+}
 
 /** Jobs that are not part of the review flow. Its finders run as background
  *  tasks and a Deep review runs as an arena run; both are already drawn on the
