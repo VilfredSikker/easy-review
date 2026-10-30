@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>popup fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<button id="open">Open popup</button><a href="/landing.html" target="_blank">Open new tab</a><p id="timer">Timer scheduled</p><script>document.querySelector('#open').onclick = () => window.open('/landing.html','p','width=400,height=400'); setTimeout(() => { const popup = window.open('/landing.html','timer','width=400,height=400'); document.querySelector('#timer').textContent = popup ? 'Timer popup opened' : 'Timer popup blocked'; }, 2000);</script>
+<script src="/common.js"></script></body></html>

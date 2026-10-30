@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>spa fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<p id="route"></p><button id="push">Push</button><button id="replace">Replace</button><button id="hash">Hash</button><script>const show = () => document.querySelector('#route').textContent = location.pathname + location.search + location.hash; document.querySelector('#push').onclick = () => { history.pushState({}, '', '?route=a'); show(); }; document.querySelector('#replace').onclick = () => { history.replaceState({}, '', '?route=b'); show(); }; document.querySelector('#hash').onclick = () => { location.hash = '#/route-b'; }; addEventListener('popstate', show); addEventListener('hashchange', show); show();</script>
+<script src="/common.js"></script></body></html>
