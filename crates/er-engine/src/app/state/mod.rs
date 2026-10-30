@@ -10086,7 +10086,11 @@ mod tests {
 
         let history = tab.history.as_ref().expect("history loaded");
         let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
-        assert_eq!(subjects, ["feature work"], "no checked-out commits appended");
+        assert_eq!(
+            subjects,
+            ["feature work"],
+            "no checked-out commits appended"
+        );
         assert!(history.all_loaded, "the PR head has no more commits");
     }
 
