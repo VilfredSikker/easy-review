@@ -7,6 +7,7 @@
   import { groupAllOn, groupInboxFields, groupPatches, inboxOnCount, type InboxGroup } from "./inboxGroups";
   import { matchesQuery } from "./settingsModel";
   import { useSettingsQuery } from "./settingsContext";
+  import { GENERAL_ROWS, rowTerms } from "./settingsSearch";
 
   interface Props {
     fields: ConfigHubField[];
@@ -20,7 +21,9 @@
   const query = useSettingsQuery();
   const groups = $derived(groupInboxFields(fields));
   const count = $derived(inboxOnCount(groups));
-  const keywords = $derived(groups.flatMap((g) => [g.title, ...g.rows.flatMap((r) => [r.label, r.description])]));
+  // The group headers are the only text outside a row.
+  const groupTitles = $derived(groups.map((g) => g.title));
+  const testVisible = $derived(matchesQuery(query(), "Inbox", ...groupTitles, ...rowTerms(GENERAL_ROWS.testNotification)));
   let busyGroup = $state<string | null>(null);
 
   function visibleRows(group: InboxGroup) {
@@ -42,16 +45,15 @@
   }
 </script>
 
-<SettingsSection title="Inbox" bare keywords={[...keywords, "Send test notification"]}>
+<SettingsSection title="Inbox" bare keywords={groupTitles}>
   {#snippet aside()}{count.on} of {count.total} on{/snippet}
-  <div class="bg-card border border-line rounded-[10px] overflow-hidden">
-    <SettingsRow
-      label="Test notification"
-      description="Send a system notification to check that er has permission to show one."
-    >
-      <SettingsButton disabled={testBusy} onclick={ontest}>Send test</SettingsButton>
-    </SettingsRow>
-  </div>
+  {#if testVisible}
+    <div class="bg-card border border-line rounded-[10px] overflow-hidden">
+      <SettingsRow {...GENERAL_ROWS.testNotification} always>
+        <SettingsButton disabled={testBusy} onclick={ontest}>Send test</SettingsButton>
+      </SettingsRow>
+    </div>
+  {/if}
   <div class="grid grid-cols-1 min-[880px]:grid-cols-2 gap-2.5 mt-2.5">
     {#each groups as group (group.title)}
       {@const rows = visibleRows(group)}

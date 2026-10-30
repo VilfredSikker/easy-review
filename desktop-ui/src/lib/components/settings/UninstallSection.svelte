@@ -1,17 +1,22 @@
 <script lang="ts">
+  import { untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import SettingsSection from "./SettingsSection.svelte";
   import SettingsRow from "./SettingsRow.svelte";
   import SettingsButton from "./SettingsButton.svelte";
   import { INPUT_CLASS } from "./settingsModel";
+  import { GENERAL_ROWS } from "./settingsSearch";
 
   interface Props {
     /** Load the preview on mount: the `er.focusUninstall` deep link lands here. */
     autoPreview?: boolean;
+    /** The deep link has been acted on; the page clears it so a later visit
+     *  to General does not preview and scroll again. */
+    onautopreviewed?: () => void;
   }
 
-  const { autoPreview = false }: Props = $props();
+  const { autoPreview = false, onautopreviewed }: Props = $props();
 
   interface UninstallPreview {
     targets: { kind: string; path: string; exists: boolean; description: string }[];
@@ -58,6 +63,7 @@
 
   $effect(() => {
     if (!autoPreview) return;
+    untrack(() => onautopreviewed?.());
     void loadPreview().then(() => {
       queueMicrotask(() => {
         document.getElementById("settings-uninstall")?.scrollIntoView({ behavior: "smooth", block: "start" });
@@ -66,11 +72,8 @@
   });
 </script>
 
-<SettingsSection id="settings-uninstall" title="Danger zone" danger keywords={["Uninstall", "Remove Easy Review"]}>
-  <SettingsRow
-    label="Uninstall Easy Review"
-    description="Removes config, review data, legacy cache and installed apps. Your repos are untouched; only Easy Review's own files are deleted."
-  >
+<SettingsSection id="settings-uninstall" title="Danger zone" danger>
+  <SettingsRow {...GENERAL_ROWS.uninstall}>
     {#if !confirming}
       <SettingsButton onclick={() => void loadPreview()}>
         {preview ? "Refresh list" : "Show what will be removed"}

@@ -1,7 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import type { ConfigHubField } from "$lib/types";
 import {
-  buildSearchIndex,
   fieldMap,
   isNumericCycle,
   matchesQuery,
@@ -9,7 +8,6 @@ import {
   pickFields,
   sectionsOf,
   stepOption,
-  tabMatchCounts,
   unclaimedSections,
 } from "./settingsModel";
 
@@ -29,11 +27,6 @@ const general: ConfigHubField[] = [
   { kind: "bool", key: "features.brand_new", label: "Brand new flag", description: "Something added later", value: true },
   { kind: "section", title: "Later section" },
   { kind: "bool", key: "later.flag", label: "Later flag", description: "", value: false },
-];
-
-const terminal: ConfigHubField[] = [
-  { kind: "section", title: "Display" },
-  { kind: "bool", key: "display.wrap_lines", label: "Wrap lines", description: "Wrap long lines", value: false },
 ];
 
 describe("settings fields", () => {
@@ -81,15 +74,6 @@ describe("settings search", () => {
     expect(matchesQuery("", "anything")).toBe(true);
     expect(matchesQuery("WRAP", "Wrap lines")).toBe(true);
     expect(matchesQuery("wrap", null, "Theme")).toBe(false);
-  });
-
-  it("counts matches per tab so the nav can point at another tab", () => {
-    const counts = tabMatchCounts(buildSearchIndex(general, terminal), "wrap");
-    expect(counts.terminal).toBe(2);
-    expect(counts.general).toBe(0);
-    expect(tabMatchCounts(buildSearchIndex(general, terminal), "parallel").ai).toBe(1);
-    expect(tabMatchCounts(buildSearchIndex(general, terminal), "brand new").general).toBe(1);
-    expect(tabMatchCounts(buildSearchIndex(general, terminal), "").ai).toBe(0);
   });
 });
 

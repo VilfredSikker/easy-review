@@ -129,68 +129,6 @@ export function matchesQuery(query: string, ...texts: (string | null | undefined
   return texts.some((t) => !!t && t.toLowerCase().includes(q));
 }
 
-/** Searchable text per tab: engine fields plus the rows each tab builds by hand. */
-export type SettingsSearchIndex = Record<SettingsTab, string[]>;
-
-const HAND_BUILT_TERMS: SettingsSearchIndex = {
-  general: ["Theme", "Appearance", "Send test notification", "Uninstall"],
-  ai: [
-    "Provider",
-    "Model",
-    "Effort",
-    "Refresh models",
-    "Edit providers",
-    "Model groups",
-    "Fast",
-    "Standard",
-    "Advanced",
-    "Concurrency",
-  ],
-  review: ["Review commands", "Risk rules", "Propose rules", "Changed files"],
-  projects: ["Location", "Run triage", "Size limit", "Review ignore patterns", "Ignore in AI reviews"],
-  terminal: [],
-};
-
-function fieldTerms(fields: ConfigHubField[]): string[] {
-  return fields.flatMap((f) => {
-    if (f.kind === "section") return [f.title];
-    if (f.kind === "bool" || f.kind === "cycle" || f.kind === "text") return [f.label, f.description];
-    return [f.label];
-  });
-}
-
-export function buildSearchIndex(general: ConfigHubField[], terminal: ConfigHubField[]): SettingsSearchIndex {
-  const sections = sectionsOf(general);
-  const termsIn = (prefixes: string[]) =>
-    fieldTerms(
-      sections.flatMap((s) => s.fields).filter((f) => prefixes.some((p) => f.key.startsWith(p))),
-    );
-  return {
-    general: [
-      ...HAND_BUILT_TERMS.general,
-      ...termsIn(["display.", "watched.", "inbox."]),
-      ...fieldTerms(unclaimedSections(general).flatMap((s) => s.fields)),
-    ],
-    ai: [...HAND_BUILT_TERMS.ai, ...termsIn(["agent.", "ai_hub.", "features.model_discovery"])],
-    review: [...HAND_BUILT_TERMS.review, ...termsIn(["commands.", "summary."])],
-    projects: HAND_BUILT_TERMS.projects,
-    terminal: fieldTerms(terminal),
-  };
-}
-
-/** How many indexed terms on each tab match, so the nav can point at the tab
- * holding a setting the open tab does not. */
-export function tabMatchCounts(index: SettingsSearchIndex, query: string): Record<SettingsTab, number> {
-  const count = (terms: string[]) => (query.trim() ? terms.filter((t) => matchesQuery(query, t)).length : 0);
-  return {
-    general: count(index.general),
-    ai: count(index.ai),
-    review: count(index.review),
-    projects: count(index.projects),
-    terminal: count(index.terminal),
-  };
-}
-
 /** Display text for an engine option such as `new-and-push` or `contrast-dark`. */
 export function optionLabel(option: string): string {
   if (option === "xhigh") return "XHigh";

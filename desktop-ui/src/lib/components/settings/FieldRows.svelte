@@ -69,7 +69,7 @@
       >×</button>
     </SettingsRow>
   {:else if field.kind === "listAdd"}
-    <SettingsRow always>
+    <SettingsRow always keywords={[field.label]}>
       <form
         class="flex flex-1 gap-2 min-w-0"
         onsubmit={(e) => {

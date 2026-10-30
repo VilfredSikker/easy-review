@@ -37,3 +37,13 @@ describe("SettingsPage scope", () => {
     expect(page).toContain("No repo-local config.");
   });
 });
+
+describe("SettingsPage review fixes", () => {
+  it("closes the add-rule form once a rule lands", () => {
+    expect(risk).toContain("editing = null;\n      adding = false;\n      return null;");
+  });
+
+  it("acts on the uninstall deep link once", () => {
+    expect(page).toContain("onuninstallfocused={() => (focusUninstall = false)}");
+  });
+});

@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
   import { matchesQuery } from "./settingsModel";
-  import { useSectionMatched, useSettingsQuery } from "./settingsContext";
+  import { useSectionSearch, useSettingsQuery } from "./settingsContext";
 
   interface Props {
     label?: string;
@@ -9,6 +9,9 @@
     /** `col` stacks the control under the label; `tight` is the inbox matrix density. */
     layout?: "row" | "col" | "tight";
     monoLabel?: boolean;
+    /** Controls the row carries that a reader might search for, such as a
+     *  button's label. */
+    keywords?: string[];
     /** Ignore the search: rows that are part of another row's control (an add form). */
     always?: boolean;
     labelSlot?: Snippet;
@@ -20,14 +23,25 @@
     description = "",
     layout = "row",
     monoLabel = false,
+    keywords = [],
     always = false,
     labelSlot,
     children,
   }: Props = $props();
 
   const query = useSettingsQuery();
-  const inMatchedSection = useSectionMatched();
-  const visible = $derived(always || inMatchedSection() || matchesQuery(query(), label, description));
+  const section = useSectionSearch();
+  const matched = $derived(!!(label || description || keywords.length) && matchesQuery(query(), label, description, ...keywords));
+  const visible = $derived(always || !!section?.showAll() || matched);
+
+  // An `always` row reports too: it renders its text whatever the query, so a
+  // match on it is a match the section shows.
+  const id = Symbol("settings-row");
+  $effect(() => {
+    if (!section) return;
+    section.report(id, matched);
+    return () => section.drop(id);
+  });
 
   const hasLabel = $derived(!!(label || description || labelSlot));
   const pad = $derived(layout === "tight" ? "py-2" : "py-[11px]");

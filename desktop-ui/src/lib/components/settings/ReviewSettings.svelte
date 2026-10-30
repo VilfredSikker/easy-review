@@ -4,6 +4,7 @@
   import FieldRows from "./FieldRows.svelte";
   import RiskRulesSection from "./RiskRulesSection.svelte";
   import { fieldMap, pickFields } from "./settingsModel";
+  import { COMMAND_DESCRIPTIONS, COMMAND_KEYS } from "./settingsSearch";
   import type { RiskFileRow, RiskRuleRow, RiskTier } from "./riskRules";
 
   interface Props {
@@ -21,28 +22,14 @@
   const { fields, warnings, riskRepo, riskRules, riskDefault, riskFiles, onpatch, onriskedit, onpropose }: Props =
     $props();
 
-  const COMMAND_KEYS = [
-    "commands.summary",
-    "commands.test",
-    "commands.lint",
-    "commands.typecheck",
-    "commands.security",
-    "summary.push_to_pr",
-  ] as const;
-
   const commandFields = $derived(pickFields(fieldMap(fields), COMMAND_KEYS));
 </script>
 
-<SettingsSection title="Review commands" keywords={commandFields.flatMap((f) => [f.label])}>
-  <FieldRows
-    fields={commandFields}
-    {warnings}
-    {onpatch}
-    descriptions={{
-      "summary.push_to_pr": "Write the review summary into the PR description.",
-    }}
-  />
-</SettingsSection>
+{#if commandFields.length > 0}
+  <SettingsSection title="Review commands">
+    <FieldRows fields={commandFields} {warnings} {onpatch} descriptions={COMMAND_DESCRIPTIONS} />
+  </SettingsSection>
+{/if}
 
 <RiskRulesSection
   repo={riskRepo}

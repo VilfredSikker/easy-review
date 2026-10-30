@@ -6,6 +6,7 @@
   import Segmented from "./Segmented.svelte";
   import Switch from "./Switch.svelte";
   import { INPUT_CLASS } from "./settingsModel";
+  import { PROJECT_ROWS } from "./settingsSearch";
 
   interface Props {
     project: ProjectSnapshot;
@@ -44,22 +45,19 @@
   }
 </script>
 
-<SettingsSection
-  title={project.name}
-  keywords={["Location", "Run triage", "Size limit", "Review ignore patterns", ...ignoreGlobs]}
->
-  <SettingsRow label="Location">
+<SettingsSection title={project.name}>
+  <SettingsRow {...PROJECT_ROWS.location}>
     <span class="font-mono text-xs text-fg-3 truncate max-w-[360px]" title={project.root_path || project.remote || ""}>
       {project.root_path || project.remote || "—"}
     </span>
   </SettingsRow>
 
   {#if project.remote}
-    <SettingsRow label="Auto-triage" description="Triage new and updated open PRs while the app is open.">
+    <SettingsRow {...PROJECT_ROWS.autoTriage}>
       <Switch label="Auto-triage" checked={autoTriage} onchange={(v) => void onpatch({ autoTriage: v })} />
     </SettingsRow>
     {#if autoTriage}
-      <SettingsRow label="Run triage" description="Which PRs start a triage run.">
+      <SettingsRow {...PROJECT_ROWS.runTriage}>
         <Segmented
           options={Object.keys(TRIAGE_WHEN)}
           value={project.auto_triage_when ?? "new-and-push"}
@@ -68,7 +66,7 @@
           onchange={(o) => void onpatch({ autoTriageWhen: o })}
         />
       </SettingsRow>
-      <SettingsRow label="Include my own PRs" description="Also triage PRs you opened.">
+      <SettingsRow {...PROJECT_ROWS.ownPrs}>
         <Switch
           label="Include my own PRs"
           checked={project.auto_triage_own_prs ?? false}
@@ -76,7 +74,7 @@
         />
       </SettingsRow>
     {/if}
-    <SettingsRow label="Size limit" description="Skip triage when the filtered diff is larger than this. Empty means no limit.">
+    <SettingsRow {...PROJECT_ROWS.sizeLimit}>
       <span class="inline-flex items-center gap-1.5">
         <input
           type="number"
@@ -94,11 +92,7 @@
     </SettingsRow>
   {/if}
 
-  <SettingsRow
-    label="Review ignore patterns"
-    description="Paths reviewers never see, in triage and full reviews. REVIEW.md on the base branch can add more."
-    layout="col"
-  >
+  <SettingsRow {...PROJECT_ROWS.ignore} keywords={ignoreGlobs} layout="col">
     {#if ignoreGlobs.length > 0}
       <ul class="w-full grid gap-px" aria-label="Ignore patterns">
         {#each ignoreGlobs as glob, index (glob + index)}

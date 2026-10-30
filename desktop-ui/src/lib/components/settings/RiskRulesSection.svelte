@@ -18,6 +18,7 @@
     type RiskRuleRow,
     type RiskTier,
   } from "./riskRules";
+  import { riskKeywords, riskRows } from "./settingsSearch";
 
   interface Props {
     repo: string;
@@ -41,7 +42,8 @@
 
   const rowId = (r: Pick<RiskRuleRow, "source" | "pattern">) => `${r.source}\u0000${r.pattern}`;
   const fileRows = $derived(fileWindow(files));
-  const keywords = $derived(["Risk rules", "Propose rules", "Changed files", ...rules.flatMap((r) => [r.pattern, r.label ?? ""])]);
+  const keywords = $derived(riskKeywords(rules, files));
+  const copy = $derived(riskRows(defaultTier));
 
   // The engine refuses a bad edit silently (the patch wire carries no reason),
   // so a write is checked by reading the rule back.
@@ -54,6 +56,7 @@
       if (after === null) return "Could not save the rule.";
       if (!ruleLanded(after, draft)) return `${draft.pattern.trim()} is not a pattern er can match.`;
       editing = null;
+      adding = false;
       return null;
     } finally {
       busy = false;
@@ -130,11 +133,7 @@
       {/each}
     </ul>
   {:else}
-    <SettingsRow
-      always
-      label="No rules declared"
-      description="Every file reads as {tierLabel(defaultTier)} until a rule claims it. Add one, or let an agent propose a table for this repo."
-    />
+    <SettingsRow always {...copy.empty} />
   {/if}
 
   {#if adding}
@@ -150,10 +149,7 @@
     </SettingsRow>
   {/if}
 
-  <SettingsRow
-    always
-    description="Most specific wins: exact path, then glob, then file type. This repo's rules come before yours, and anything unclaimed reads as {tierLabel(defaultTier)}."
-  >
+  <SettingsRow always {...copy.help}>
     {#if !adding}
       <SettingsButton
         onclick={() => {

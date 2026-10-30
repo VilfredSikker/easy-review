@@ -16,7 +16,8 @@
   import ReviewSettings from "./ReviewSettings.svelte";
   import ProjectsSettings from "./ProjectsSettings.svelte";
   import TerminalSettings from "./TerminalSettings.svelte";
-  import { SETTINGS_TABS, buildSearchIndex, tabMatchCounts } from "./settingsModel";
+  import { SETTINGS_TABS } from "./settingsModel";
+  import { buildSearchIndex, tabMatchCounts } from "./settingsSearch";
   import { provideSettingsQuery } from "./settingsContext";
   import {
     RISK_RULE_PATCH_KEY,
@@ -53,7 +54,17 @@
 
   const tab = $derived(SETTINGS_TABS.find((t) => t.id === activeTab) ?? SETTINGS_TABS[0]);
   const projects = $derived(app.snapshot?.projects ?? []);
-  const searchIndex = $derived(buildSearchIndex(generalFields, terminalFields));
+  const searchIndex = $derived(
+    buildSearchIndex({
+      general: generalFields,
+      terminal: terminalFields,
+      providers,
+      project: projects.find((p) => p.is_active) ?? projects[0] ?? null,
+      riskRules,
+      riskFiles,
+      riskDefault,
+    }),
+  );
   const matchCounts = $derived(tabMatchCounts(searchIndex, query));
   const otherMatches = $derived(
     query.trim() && matchCounts[activeTab] === 0 ? SETTINGS_TABS.filter((t) => matchCounts[t.id] > 0) : [],
@@ -261,6 +272,7 @@
             warnings={textWarnings}
             {testBusy}
             {focusUninstall}
+            onuninstallfocused={() => (focusUninstall = false)}
             onpatch={patch}
             ontest={() => void sendTestNotification()}
           />

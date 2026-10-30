@@ -18,6 +18,14 @@
   import AiProviderEditor from "./AiProviderEditor.svelte";
   import ReviewModelGroupsEditor from "./ReviewModelGroupsEditor.svelte";
   import { INPUT_CLASS, fieldMap, optionLabel, pickFields } from "./settingsModel";
+  import {
+    AGENT_DESCRIPTIONS,
+    AGENT_KEYS,
+    AI_ROWS,
+    CONCURRENCY_DESCRIPTIONS,
+    CONCURRENCY_KEYS,
+    MODEL_GROUP_KEYWORDS,
+  } from "./settingsSearch";
 
   interface Props {
     fields: ConfigHubField[];
@@ -44,13 +52,6 @@
     onUpdated,
     onProviders,
   }: Props = $props();
-
-  const AGENT_KEYS = ["agent.command", "agent.args", "agent.effort"] as const;
-  const CONCURRENCY_KEYS = [
-    "ai_hub.max_concurrent_reviews",
-    "ai_hub.max_concurrent_arena_reviews",
-    "ai_hub.max_concurrent_agents",
-  ] as const;
 
   const byKey = $derived(fieldMap(fields));
   const agentFields = $derived(pickFields(byKey, AGENT_KEYS));
@@ -120,19 +121,13 @@
   }
 </script>
 
-<SettingsSection
-  title="Default model"
-  keywords={["Provider", "Model", "Effort", "Model discovery", "Refresh models", "Edit providers"]}
->
+<SettingsSection title="Default model">
   {#if providers.length === 0}
-    <SettingsRow
-      label="No providers configured"
-      description="Add a provider to pick the model standalone actions use. Settings are saved to managed app data."
-    >
+    <SettingsRow {...AI_ROWS.noProviders}>
       <SettingsButton onclick={() => (editProviders = !editProviders)}>Edit providers…</SettingsButton>
     </SettingsRow>
   {:else}
-    <SettingsRow label="Provider" description="Used by standalone actions: Ask AI, Elaborate, Professor.">
+    <SettingsRow {...AI_ROWS.provider}>
       <Segmented
         options={providers.map((p) => p.id)}
         value={selectedProvider?.id ?? ""}
@@ -142,7 +137,7 @@
       />
     </SettingsRow>
     {#if models.length > 0}
-      <SettingsRow label="Model">
+      <SettingsRow {...AI_ROWS.model}>
         <select
           class="{INPUT_CLASS} font-sans max-w-[280px]"
           aria-label="Model"
@@ -156,7 +151,7 @@
         </select>
       </SettingsRow>
     {/if}
-    <SettingsRow label="Effort / reasoning" description="Auto uses the provider default.">
+    <SettingsRow {...AI_ROWS.effort}>
       <Segmented
         options={effortOptions}
         value={effort}
@@ -165,10 +160,7 @@
         onchange={(o) => void selectEffort(o)}
       />
     </SettingsRow>
-    <SettingsRow
-      label="Model discovery"
-      description="List models from provider CLIs, in the app and the terminal. Refresh to fetch the list now."
-    >
+    <SettingsRow {...AI_ROWS.discovery}>
       {#if discovery}
         {@const field = discovery}
         <Switch label="Model discovery" checked={field.value} onchange={(v) => void onpatch(field.key, v)} />
@@ -177,7 +169,7 @@
         {refreshing ? "Refreshing…" : "Refresh models"}
       </SettingsButton>
     </SettingsRow>
-    <SettingsRow label="Providers" description="Add, edit or remove providers and their models.">
+    <SettingsRow {...AI_ROWS.providers}>
       <SettingsButton onclick={() => (editProviders = !editProviders)}>
         {editProviders ? "Hide provider editor" : "Edit providers…"}
       </SettingsButton>
@@ -195,34 +187,19 @@
   {/if}
 </SettingsSection>
 
-<SettingsSection title="Model groups" keywords={["Fast", "Standard", "Advanced", "Add model"]}>
+<SettingsSection title="Model groups" keywords={MODEL_GROUP_KEYWORDS}>
   {#snippet aside()}Which models each review stage may use{/snippet}
   <ReviewModelGroupsEditor {providers} {reviewModels} {onUpdated} onError={(msg) => app.showToast("error", msg)} />
 </SettingsSection>
 
-<SettingsSection title="Agent" keywords={agentFields.flatMap((f) => [f.label])}>
-  <FieldRows
-    fields={agentFields}
-    {warnings}
-    {onpatch}
-    descriptions={{
-      "agent.command": "The CLI that runs review agents.",
-      "agent.args": "Arguments passed to it. {prompt} is replaced by the task.",
-      "agent.effort": "Effort the agent CLI is asked for, separate from the default model's.",
-    }}
-  />
-</SettingsSection>
+{#if agentFields.length > 0}
+  <SettingsSection title="Agent">
+    <FieldRows fields={agentFields} {warnings} {onpatch} descriptions={AGENT_DESCRIPTIONS} />
+  </SettingsSection>
+{/if}
 
-<SettingsSection title="Concurrency" keywords={concurrencyFields.map((f) => f.label)}>
-  <FieldRows
-    fields={concurrencyFields}
-    {warnings}
-    {onpatch}
-    descriptions={{
-      "ai_hub.max_concurrent_reviews": "Review agents running at once across tabs. Extra reviews queue.",
-      "ai_hub.max_concurrent_arena_reviews": "Reviewers an arena runs side by side, on a cap of their own.",
-      "ai_hub.max_concurrent_agents":
-        "The slot cap across both. It covers review agents only; other subprocesses take no slot.",
-    }}
-  />
-</SettingsSection>
+{#if concurrencyFields.length > 0}
+  <SettingsSection title="Concurrency">
+    <FieldRows fields={concurrencyFields} {warnings} {onpatch} descriptions={CONCURRENCY_DESCRIPTIONS} />
+  </SettingsSection>
+{/if}
