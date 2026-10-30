@@ -13,6 +13,11 @@ import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
+import { reviewPage, type ReviewPage } from "./reviewPage.svelte";
+import { copyReviewExport } from "./quickExport";
+
+/** Bare digits pick the review page, in the order the shell lists them. */
+const REVIEW_PAGE_KEYS: Partial<Record<string, ReviewPage>> = { "1": "overview", "2": "tour", "3": "diff" };
 
 interface OpenSourceResult {
   kind: string;
@@ -233,6 +238,12 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
     openExportReviewView();
     return true;
   },
+  (e) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "c")) return false;
+    e.preventDefault();
+    void copyReviewExport();
+    return true;
+  },
   (e, { inField }) => {
     if (!withMod(e) || e.shiftKey || e.key !== "o" || inField) return false;
     e.preventDefault();
@@ -291,6 +302,12 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
 
 /** Single-key shortcuts, only outside fields and modals and without modifiers. */
 function handleBareKey(e: KeyboardEvent) {
+  const page = REVIEW_PAGE_KEYS[e.key];
+  if (page) {
+    e.preventDefault();
+    reviewPage.show(page);
+    return;
+  }
   switch (e.key) {
     case "j":
       moveFile(1);

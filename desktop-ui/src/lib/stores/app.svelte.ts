@@ -44,6 +44,14 @@ import type { AppSnapshot, NotificationSnapshot, PollResponse } from "../types";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { rightRail } from "./rightRail.svelte";
+import { ReviewPageMemory, reviewPageTabKey } from "./reviewPageModel";
+import {
+  HIDE_REVIEWED_KEY,
+  LINE_NUMBERS_KEY,
+  MARK_LINES_KEY,
+  loadFlag,
+  saveFlag,
+} from "./viewPrefs";
 
 export type { CommentVisibility };
 
@@ -94,7 +102,14 @@ const MAX_LOGS = 500;
 const TOAST_LONG_MS = 8_000;
 
 export type DiffViewMode = "unified" | "split";
-export type MainViewMode = "diff" | "agent-output" | "export-review" | "settings";
+/** `overview` and `diff` show a review page (see `reviewPage`); the rest replace it. */
+export type MainViewMode =
+  | "overview"
+  | "diff"
+  | "inbox"
+  | "agent-output"
+  | "export-review"
+  | "settings";
 const DIFF_VIEW_MODE_KEY = "er.diffViewMode";
 const COMMENT_VISIBILITY_KEY = "er.commentVisibility";
 const COMPACT_LINES_KEY = "er.compactLines";
@@ -230,9 +245,18 @@ class AppStore {
    *  Persisted to localStorage. */
   wrapLines = $state<boolean>(loadWrapLines());
   commentVisibility = $state<CommentVisibility>(loadCommentVisibility());
+  /** Drop reviewed files from the diff column. Presentation only: the engine's
+   *  unreviewed filter would rebuild `files` on every checkmark, which the
+   *  reviewed-revision path exists to avoid (ADR 0016). */
+  hideReviewed = $state<boolean>(loadFlag(HIDE_REVIEWED_KEY, false));
+  /** Line-number gutters in the diff. */
+  lineNumbers = $state<boolean>(loadFlag(LINE_NUMBERS_KEY, true));
+  /** Color each changed line by the commit that introduced it. */
+  markLines = $state<boolean>(loadFlag(MARK_LINES_KEY, false));
   /** Shiki syntax theme id — picker UI wires here later. */
   currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
   mainView = $state<MainViewMode>("diff");
+  private reviewPages = new ReviewPageMemory();
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -289,6 +313,21 @@ class AppStore {
     if (typeof localStorage !== "undefined") {
       localStorage.setItem(WRAP_LINES_KEY, this.wrapLines ? "1" : "0");
     }
+  }
+
+  setHideReviewed(on: boolean) {
+    this.hideReviewed = on;
+    saveFlag(HIDE_REVIEWED_KEY, on);
+  }
+
+  setLineNumbers(on: boolean) {
+    this.lineNumbers = on;
+    saveFlag(LINE_NUMBERS_KEY, on);
+  }
+
+  setMarkLines(on: boolean) {
+    this.markLines = on;
+    saveFlag(MARK_LINES_KEY, on);
   }
 
   setCommentVisibility(next: Partial<CommentVisibility>) {
@@ -617,7 +656,14 @@ class AppStore {
     this.mainView = mode;
   }
 
+  /** Restore the review page the newly active tab was left on. */
+  private followReviewPage(snapshot: AppSnapshot | null): void {
+    const next = this.reviewPages.follow(reviewPageTabKey(snapshot), this.mainView);
+    if (next) this.mainView = next;
+  }
+
   private rememberSnapshot(snapshot: AppSnapshot | null): void {
+    this.followReviewPage(snapshot);
     diffPreview.sync(snapshot);
     annotationDrafts.sync(snapshot);
     if (!snapshot) return;
@@ -1091,6 +1137,7 @@ class AppStore {
       aiReviewFilter.reset();
     }
     this.snapshot = painted;
+    this.followReviewPage(painted);
     this.keepOptimisticOps();
     this.initialLoadDone = true;
     // Drop in-flight poll revisions from the previous tab.
