@@ -11,7 +11,7 @@ import { copyToClipboard } from "$lib/clipboard";
 import {
   buildExportOpts,
   collectExportItems,
-  exportItemCount,
+  countExportedItems,
   exportTabKey,
   markdownLineCount,
   parseExportPrefs,
@@ -48,9 +48,22 @@ class ExportOptionsStore {
   readonly items = $derived(collectExportItems(app.snapshot?.ai));
   readonly excluded = $derived(this.excludedByTab[exportTabKey(app.snapshot)] ?? NO_EXCLUSIONS);
   readonly current: ExportOpts = $derived(buildExportOpts(this.prefs, this.items, this.excluded));
-  readonly itemCount = $derived(
-    exportItemCount(this.prefs, this.items, this.excluded, app.snapshot?.ui_annotations ?? []),
+  // The last markdown rendered for these options on this tab. The count is
+  // read from it because the snapshot does not list every exported item.
+  private rendered = $state<{ key: string; body: string } | null>(null);
+  private readonly renderKey = $derived(JSON.stringify([exportTabKey(app.snapshot), this.current]));
+  /** Null until the current options have been rendered once. */
+  readonly itemCount: number | null = $derived(
+    this.rendered?.key === this.renderKey ? countExportedItems(this.rendered.body) : null,
   );
+
+  /** Renders the export with the current choices and remembers it for the count. */
+  async render(): Promise<string> {
+    const key = this.renderKey;
+    const body = await invoke<string>("export_review", { opts: this.current });
+    this.rendered = { key, body };
+    return body;
+  }
 
   toggleCategory(key: ExportCategory) {
     this.prefs = { ...this.prefs, include: { ...this.prefs.include, [key]: !this.prefs.include[key] } };
@@ -76,10 +89,10 @@ class ExportOptionsStore {
 
   /** Copies the export with the current choices, from anywhere in the app. */
   async quickCopy(): Promise<void> {
-    const count = this.itemCount;
     try {
-      const body = await invoke<string>("export_review", { opts: this.current });
+      const body = await this.render();
       await copyToClipboard(body);
+      const count = countExportedItems(body);
       app.showToast("success", `Export copied · ${count} items, ${markdownLineCount(body)} lines of markdown`);
     } catch (e) {
       app.showToast("error", `Export failed: ${String(e)}`);

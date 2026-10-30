@@ -39,11 +39,11 @@
     return String(app.snapshot?.ai?.checklist?.items.length ?? 0);
   }
 
-  async function refreshPreview(opts = exportOptions.current) {
+  async function refreshPreview() {
     const requestId = ++previewRequestId;
     loadingPreview = true;
     try {
-      const next = await invoke<string>("export_review", { opts });
+      const next = await exportOptions.render();
       if (requestId !== previewRequestId) return;
       preview = next;
       error = null;
@@ -78,13 +78,27 @@
   // while this page is open shows up without touching a toggle.
   $effect(() => {
     if (app.mainView !== "export-review") return;
-    const opts = exportOptions.current;
+    void exportOptions.current;
     void app.snapshot?.ai;
     void app.snapshot?.ui_annotations;
     void app.snapshot?.active_tab;
-    void refreshPreview(opts);
+    void refreshPreview();
   });
+
+  // The hint on Copy markdown. Bound here rather than globally: the shortcut
+  // belongs to this page, and outside it ⌘⇧C stays free.
+  function onKeydown(e: KeyboardEvent) {
+    if (app.mainView !== "export-review") return;
+    if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== "c") return;
+    // Ctrl+Shift+C is copy in a terminal and in text fields on Linux.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.(".xterm, input, textarea, select, [contenteditable='true']")) return;
+    e.preventDefault();
+    void exportOptions.quickCopy();
+  }
 </script>
+
+<svelte:window onkeydown={onKeydown} />
 
 {#snippet check(on: boolean)}
   <span class="cb" aria-hidden="true" data-on={on}>
@@ -100,7 +114,7 @@
       <p class="dim">Markdown for a PR description, a handoff, or an agent prompt.</p>
     </div>
     <span class="flex-1"></span>
-    <span class="faint text-[12px]" aria-live="polite">{exportOptions.itemCount} items</span>
+    <span class="faint text-[12px]" aria-live="polite">{exportOptions.itemCount ?? "…"} items</span>
     <button type="button" class="ex-btn" onclick={saveToFile}>Save to file</button>
     <button type="button" class="ex-btn primary" onclick={() => void exportOptions.quickCopy()}>
       <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
@@ -179,7 +193,7 @@
         <span class="sw"></span>Only unresolved
       </button>
       <p class="faint ex-help">
-        Turn a category off to drop its section; open it to leave out single items. These choices are what Copy export uses everywhere.
+        Turn a category off to drop its section; open it to leave out single items. These choices are remembered, and Copy markdown and ⌘⇧C use them.
       </p>
 
       <div class="ex-sec mt-3">Raw</div>

@@ -3,7 +3,7 @@ import {
   DEFAULT_EXPORT_PREFS,
   buildExportOpts,
   collectExportItems,
-  exportItemCount,
+  countExportedItems,
   exportTabKey,
   highlightMarkdown,
   itemLocation,
@@ -12,7 +12,7 @@ import {
   visibleItems,
   type ExportPrefs,
 } from "./exportOptions";
-import type { AiSnapshot, AppSnapshot, FlatFinding, ThreadSnapshot, UiAnnotation } from "./types";
+import type { AiSnapshot, AppSnapshot, FlatFinding, ThreadSnapshot } from "./types";
 
 function thread(id: string, kind: ThreadSnapshot["kind"], resolved = false): ThreadSnapshot {
   return {
@@ -49,8 +49,6 @@ const prefs = (over: Partial<ExportPrefs> = {}): ExportPrefs => ({
   onlyUnresolved: false,
   ...over,
 });
-
-const annotation = (stale: boolean) => ({ id: "u", stale }) as UiAnnotation;
 
 describe("parseExportPrefs", () => {
   it("defaults every category on, including the checklist", () => {
@@ -92,16 +90,21 @@ describe("collectExportItems", () => {
 describe("buildExportOpts", () => {
   const items = collectExportItems(ai());
 
-  it("sends no allow-list when nothing in a category is excluded", () => {
+  it("sends exclusions, never allow-lists, so items the snapshot hides still export", () => {
+    // The snapshot never lists resolved questions; an allow-list of q2 alone
+    // would silently drop them.
     const opts = buildExportOpts(prefs(), items, new Set(["q1"]));
-    expect(opts.includeQuestionIds).toEqual(["q2"]);
-    expect(opts.includeCommentIds).toBeUndefined();
-    expect(opts.includeFindingIds).toBeUndefined();
+    expect(opts.excludeQuestionIds).toEqual(["q1"]);
+    expect(opts.includeQuestionIds).toBeUndefined();
+    expect(opts.excludeCommentIds).toBeUndefined();
+    expect(opts.excludeFindingIds).toBeUndefined();
   });
 
-  it("keeps resolved findings in the allow-list so Only unresolved alone decides them", () => {
-    const opts = buildExportOpts(prefs(), items, new Set(["f1"]));
-    expect(opts.includeFindingIds).toEqual(["f2", "f3"]);
+  it("files each exclusion under its own category", () => {
+    const opts = buildExportOpts(prefs(), items, new Set(["f3", "n1"]));
+    expect(opts.excludeFindingIds).toEqual(["f3"]);
+    expect(opts.excludeNoteIds).toEqual(["n1"]);
+    expect(opts.excludeQuestionIds).toBeUndefined();
   });
 
   it("carries the category toggles and the checklist through", () => {
@@ -114,22 +117,39 @@ describe("buildExportOpts", () => {
   });
 });
 
-describe("exportItemCount", () => {
-  const items = collectExportItems(ai());
+describe("countExportedItems", () => {
+  const md = [
+    "# Review export — feature",
+    "",
+    "## Review checklist",
+    "",
+    "### tests",
+    "",
+    "- [ ] Tests cover it",
+    "",
+    "## src/a.ts",
+    "",
+    "### `src/a.ts:3` — Question (You) [resolved]",
+    "> ### `x:1` — Note (quoted, not an item)",
+    "### `src/a.ts:4` — Note (You)",
+    "### `src/a.ts:5` — Comment (alice) [stale]",
+    "### File-level finding — AI finding (high)",
+    "**### `y:2` — Comment (title, not an item)**",
+    "",
+    "## UI annotations",
+    "",
+    "### `http://localhost`",
+    "- **Pin #1** (`#btn` @ (1, 2)) — fix",
+    "- **Pin #2** — Approximate location — (no note)",
+  ].join("\n");
 
-  it("counts picked items and UI annotations, not the checklist", () => {
-    // c1, q1, q2, n1, f1, f2, f3 + 2 annotations
-    expect(exportItemCount(prefs(), items, new Set(), [annotation(false), annotation(true)])).toBe(9);
+  it("counts item headings and annotation pins, not the checklist or quoted text", () => {
+    expect(countExportedItems(md)).toBe(6);
   });
 
-  it("drops excluded items and disabled categories", () => {
-    const p = prefs();
-    p.include.findings = false;
-    expect(exportItemCount(p, items, new Set(["q1"]), [])).toBe(3);
-  });
-
-  it("leaves out resolved items and stale annotations under Only unresolved", () => {
-    expect(exportItemCount(prefs({ onlyUnresolved: true }), items, new Set(), [annotation(false), annotation(true)])).toBe(5);
+  it("is zero for an empty export", () => {
+    expect(countExportedItems("# Review export — x\nNo annotations.\n")).toBe(0);
+    expect(countExportedItems("")).toBe(0);
   });
 });
 

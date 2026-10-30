@@ -1,9 +1,11 @@
-import type { AiSnapshot, AppSnapshot, TabSummary, UiAnnotation } from "./types";
+import type { AiSnapshot, AppSnapshot, TabSummary } from "./types";
 
 /**
- * The one TS mirror of `ExportOpts` in `crates/er-engine/src/export.rs`
- * (camelCase over IPC). The `include*Ids` arrays are per-category allow-lists:
- * undefined exports the whole category.
+ * The one TS mirror of the desktop `ExportOpts` in
+ * `crates/er-desktop/src/export.rs` (camelCase over IPC): the engine's options
+ * plus per-category exclusions. The `include*Ids` arrays are the engine's
+ * allow-lists (undefined exports the whole category); the `exclude*Ids` arrays
+ * drop single items and leave everything else alone.
  */
 export type ExportOpts = {
   includeComments: boolean;
@@ -17,6 +19,10 @@ export type ExportOpts = {
   includeQuestionIds?: string[];
   includeNoteIds?: string[];
   includeFindingIds?: string[];
+  excludeCommentIds?: string[];
+  excludeQuestionIds?: string[];
+  excludeNoteIds?: string[];
+  excludeFindingIds?: string[];
 };
 
 export type ExportCategory = "comments" | "questions" | "notes" | "findings" | "annotations" | "checklist";
@@ -78,9 +84,11 @@ function oneLine(text: string): string {
 }
 
 /**
- * Every item the engine could export, per pickable category. Resolved and
- * arbiter-dropped findings arrive in their own snapshot lists but the engine
- * still exports them unless `onlyUnresolved` is on, so they belong here too.
+ * The items the snapshot lists, per pickable category — what the view can
+ * offer to leave out. Not everything the engine exports: the snapshot skips
+ * resolved questions and notes and arbiter-graded duplicate findings. That is
+ * why exclusions, never allow-lists, go over IPC, and why the item count comes
+ * from the rendered markdown.
  */
 export function collectExportItems(ai: AiSnapshot | null | undefined): ExportItems {
   const threads = ai?.threads ?? [];
@@ -106,9 +114,9 @@ export function visibleItems(items: ExportItem[], onlyUnresolved: boolean): Expo
   return onlyUnresolved ? items.filter((i) => !i.resolved) : items;
 }
 
-function allowList(items: ExportItem[], excluded: ReadonlySet<string>): string[] | undefined {
-  if (!items.some((i) => excluded.has(i.id))) return undefined;
-  return items.filter((i) => !excluded.has(i.id)).map((i) => i.id);
+function excludeList(items: ExportItem[], excluded: ReadonlySet<string>): string[] | undefined {
+  const ids = items.filter((i) => excluded.has(i.id)).map((i) => i.id);
+  return ids.length > 0 ? ids : undefined;
 }
 
 export function buildExportOpts(prefs: ExportPrefs, items: ExportItems, excluded: ReadonlySet<string>): ExportOpts {
@@ -120,32 +128,29 @@ export function buildExportOpts(prefs: ExportPrefs, items: ExportItems, excluded
     includeAnnotations: prefs.include.annotations,
     includeChecklist: prefs.include.checklist,
     onlyUnresolved: prefs.onlyUnresolved,
-    includeCommentIds: allowList(items.comments, excluded),
-    includeQuestionIds: allowList(items.questions, excluded),
-    includeNoteIds: allowList(items.notes, excluded),
-    includeFindingIds: allowList(items.findings, excluded),
+    excludeCommentIds: excludeList(items.comments, excluded),
+    excludeQuestionIds: excludeList(items.questions, excluded),
+    excludeNoteIds: excludeList(items.notes, excluded),
+    excludeFindingIds: excludeList(items.findings, excluded),
   };
 }
 
+// Item headings and UI annotation pins as `render_markdown` writes them in
+// `crates/er-engine/src/export.rs`. Item bodies are blockquoted and titles are
+// bold, so neither can start a line that matches.
+const ITEM_HEADING = /^### .* — (Question|Note|Comment|AI finding) \(/;
+const ANNOTATION_PIN = /^- \*\*Pin #\d+\*\*/;
+
 /**
- * Items the export will carry: picked annotations on the files, plus UI
- * annotations. The checklist is a summary of the review, not an item, so it
- * adds nothing — the same count the prototype shows.
+ * Items an export carries, counted from the markdown the engine rendered: the
+ * snapshot does not list every exported item, so a count from it would come up
+ * short. The checklist is a summary of the review, not an item, so it adds
+ * nothing.
  */
-export function exportItemCount(
-  prefs: ExportPrefs,
-  items: ExportItems,
-  excluded: ReadonlySet<string>,
-  uiAnnotations: readonly UiAnnotation[],
-): number {
+export function countExportedItems(md: string): number {
   let n = 0;
-  for (const key of PICKABLE_CATEGORIES) {
-    if (!prefs.include[key]) continue;
-    n += visibleItems(items[key], prefs.onlyUnresolved).filter((i) => !excluded.has(i.id)).length;
-  }
-  if (prefs.include.annotations) {
-    // The engine reads stale annotations as resolved under Only unresolved.
-    n += uiAnnotations.filter((a) => !(prefs.onlyUnresolved && a.stale)).length;
+  for (const line of md.split("\n")) {
+    if (ITEM_HEADING.test(line) || ANNOTATION_PIN.test(line)) n++;
   }
   return n;
 }
