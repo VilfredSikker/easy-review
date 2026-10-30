@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { tick, untrack } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import type {
@@ -17,6 +17,7 @@
   import ProjectsSettings from "./ProjectsSettings.svelte";
   import TerminalSettings from "./TerminalSettings.svelte";
   import { SETTINGS_TABS } from "./settingsModel";
+  import { settingsSectionDomId, type SettingsSectionId } from "$lib/settingsLink";
   import { buildSearchIndex, tabMatchCounts } from "./settingsSearch";
   import { provideSettingsQuery } from "./settingsContext";
   import {
@@ -49,6 +50,7 @@
   const textWarnings = $state<Record<string, string | null>>({});
   let testBusy = $state(false);
   let focusUninstall = $state(false);
+  let pendingSection = $state<SettingsSectionId | null>(null);
 
   provideSettingsQuery(() => query);
 
@@ -171,16 +173,29 @@
     void reload();
   });
 
-  onMount(() => {
-    try {
-      if (localStorage.getItem("er.focusUninstall") === "1") {
-        localStorage.removeItem("er.focusUninstall");
-        activeTab = "general";
-        focusUninstall = true;
-      }
-    } catch {
-      /* ignore */
-    }
+  // A deep link (`app.openSettings("risk-rules")`) can arrive on mount or
+  // while the page is already open; either way it is taken once and cleared.
+  $effect(() => {
+    const target = app.settingsTarget;
+    if (!target) return;
+    untrack(() => {
+      app.settingsTarget = null;
+      activeTab = target.tab;
+      if (target.section === "uninstall") focusUninstall = true;
+      pendingSection = target.section;
+      if (!target.section) document.getElementById("settings-main")?.scrollTo({ top: 0 });
+    });
+  });
+
+  // The sections render only once the config hub has loaded, so a link that
+  // lands on first mount scrolls when they exist rather than straight away.
+  $effect(() => {
+    const section = pendingSection;
+    if (!section || loading) return;
+    pendingSection = null;
+    void tick().then(() =>
+      document.getElementById(settingsSectionDomId(section))?.scrollIntoView({ block: "start" }),
+    );
   });
 </script>
 

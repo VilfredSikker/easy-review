@@ -49,3 +49,38 @@ otherwise have to dig out of a PR thread. One section per package.
   the per-tab badges, so the pill removes commands whose name and status match
   a background task before aggregating. A tab-local command that shares a
   task's kind and status is hidden with it; the task row still shows the work.
+
+## P24: Shell integration
+
+- **`TopBar`, `ViewBar` and the two banners replace `BranchContextBar`.** The
+  bar's other controls already live elsewhere: copy branch, worktree path,
+  reveal and PR link in the palette's Actions menu, the terminal and browser
+  toggles in the view bar. The floating `BackgroundTasks` mount went with it,
+  so `RunningPill` shows once, in the top bar.
+- **The top bar and view bar show on every page, as in the prototype; the
+  banners only on Overview, Tour and Diff.** A stale banner is about the diff,
+  so it has nothing to say over Settings or the Inbox; the view bar's Stale
+  pill still does.
+- **The findings panel shows beside Tour and Diff only**, and not while a tab
+  loads, matching the prototype's `renderRpanel`.
+- **A tab switch with no cached snapshot shows `TabPlaceholder`** for the tab
+  being opened instead of the old tab under a blurred spinner. The app store
+  records the target (`switchingTabIdx`) only for an uncached `select_tab`; a
+  cached one paints at once and needs no placeholder.
+- **Tour with no tour for the view is an empty state, not a pillar-less
+  diff.** When the other view of a local PR tab has a tour (`other_bucket`),
+  the copy names it and offers to switch; switching lands on that view's Tour,
+  not its Diff.
+- **Settings has a deep link**: `app.openSettings("risk-rules")` opens a tab
+  and scrolls to a named section once the config hub has loaded. It replaced
+  the `er.focusUninstall` localStorage flag, and the right panel's Edit risk
+  rules and the jobs popover's Concurrency… use it.
+- **Sidebar PR clicks ask with P1C's tab-open modal**, except when the PR is
+  already open in a tab (it switches there), when no tab is open, or on a
+  ⌘/middle-click. Branch rows keep the old replace-on-click default.
+- **A Sync leaves one toast.** `app.cmd` builds it for every
+  `force_refresh_diff` path: where the diff landed, plus the Reviewed marks
+  the engine cleared. `diffSync` no longer adds its own.
+- **The FlatDiffView Diff|Guide toggle and gear menu are gone.** The view bar
+  switches pages and `DisplayMenu` holds layout, wrap, line numbers and the
+  annotation layers. "Re-run guide" is now "Regenerate tour".

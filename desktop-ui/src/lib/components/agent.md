@@ -19,7 +19,7 @@ Route every modal through [`ui/ModalShell.svelte`](ui/ModalShell.svelte). It own
 
 ## State traps
 
-- `agent_commands` and `agent_log` are the **active tab's**; `background_tasks` is **session-wide, across all tabs**. `AgentOutputCard` reads the first pair, `BackgroundTasks` the second.
+- `agent_commands` and `agent_log` are the **active tab's**; `background_tasks` is **session-wide, across all tabs**. `AgentOutputCard` reads the first pair, the top bar's `RunningPill` the second.
 - **Effort-gated activation**: picking a model that advertises `effort_levels` opens an effort submenu rather than activating it. `set_ai_selection` fires with the chosen `effort`, or immediately when the model has none (`effortChoicesForModel`).
 - **Reviewed state is read live from the snapshot** (`files[].reviewed`, `reviewed_count`), never copied into local state: `app.cmd` mutates those in place optimistically and rolls back on failure (ADR 0017, ADR 0016).
 
