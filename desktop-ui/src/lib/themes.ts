@@ -407,9 +407,10 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-risk-med": t.yellow,
     "--color-risk-low": t.blue,
 
-    // Annotation kinds. Question takes purple and note amber so the three
-    // kinds never share a hue; finding keeps purple because it only ever
-    // appears under the Findings pillar, never beside a question chip.
+    // Annotation kinds, one hue each: comment blue, question purple, note
+    // amber, finding cyan. Findings and questions sit side by side (the
+    // collapsed right rail stacks AI Review over Notes), so they cannot share
+    // purple. The TUI pins the same mapping in themes.rs (ADR 0030).
     "--color-comment": t.blue,
     "--color-question": t.purple,
     "--color-question-surface": alpha(t.purple, 0.04),
@@ -418,7 +419,7 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-ai": t.yellow,
 
     "--color-tree-selected": alpha(t.blue, 0.14),
-    "--color-finding": t.purple,
+    "--color-finding": t.cyan,
 
     ...Object.fromEntries(
       commitSeriesFor(t).map((c, i) => [`--color-commit-${i + 1}`, c]),

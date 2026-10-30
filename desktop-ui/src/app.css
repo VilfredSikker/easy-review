@@ -76,7 +76,7 @@
   --color-ai: #fbbf24;
 
   --color-tree-selected: rgba(88, 166, 255, 0.14);
-  --color-finding: #c9a3f5;
+  --color-finding: #22d3ee;
 
   /* Diff row drag-selection (overridden per theme by themes.ts). */
   --color-row-select: rgba(59, 130, 246, 0.18);

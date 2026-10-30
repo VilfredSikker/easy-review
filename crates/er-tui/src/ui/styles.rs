@@ -83,6 +83,36 @@ pub fn ORANGE() -> Color {
     super::themes::current().orange
 }
 
+// ── Annotation kinds ──
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn COMMENT() -> Color {
+    super::themes::current().comment
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn QUESTION() -> Color {
+    super::themes::current().question
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn NOTE() -> Color {
+    super::themes::current().note
+}
+#[expect(
+    dead_code,
+    reason = "kind colour shared with the desktop; TUI call sites still use YELLOW/CYAN until they move"
+)]
+pub fn FINDING() -> Color {
+    super::themes::current().finding
+}
+
 // ── Diff colors ──
 pub fn ADD_BG() -> Color {
     super::themes::current().add_bg

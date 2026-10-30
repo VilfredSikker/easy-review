@@ -27,11 +27,26 @@ describe("derived ground and line", () => {
 });
 
 describe("kind colours", () => {
-  it("gives comment, question and note distinct colours on every theme", () => {
+  it("gives comment, question, note and finding distinct colours on every theme", () => {
     for (const t of APP_THEMES) {
       const v = cssVarsFor(t);
-      const kinds = [v["--color-comment"], v["--color-question"], v["--color-note"]];
-      expect(new Set(kinds).size).toBe(3);
+      const kinds = [
+        v["--color-comment"],
+        v["--color-question"],
+        v["--color-note"],
+        v["--color-finding"],
+      ];
+      expect(new Set(kinds).size).toBe(4);
+    }
+  });
+
+  it("uses the mapping the TUI pins in themes.rs (ADR 0030)", () => {
+    for (const t of APP_THEMES) {
+      const v = cssVarsFor(t);
+      expect(v["--color-comment"]).toBe(t.blue);
+      expect(v["--color-question"]).toBe(t.purple);
+      expect(v["--color-note"]).toBe(t.yellow);
+      expect(v["--color-finding"]).toBe(t.cyan);
     }
   });
 });

@@ -37,6 +37,14 @@ pub struct Theme {
     pub purple: Color,
     pub orange: Color,
 
+    // Annotation kinds — the same mapping `cssVarsFor` emits in themes.ts
+    // (ADR 0030): no two kinds share a hue, and a finding never wears a
+    // question's colour.
+    pub comment: Color,
+    pub question: Color,
+    pub note: Color,
+    pub finding: Color,
+
     // Diff layer
     pub add_bg: Color,
     pub add_text: Color,
@@ -212,6 +220,11 @@ fn build(t: &Tokens) -> Theme {
         purple: col(purple),
         orange: col(accent),
 
+        comment: col(blue),
+        question: col(purple),
+        note: col(amber),
+        finding: col(cyan),
+
         add_bg: col(over(add, 0.15, bg)),
         add_text: col(add),
         del_bg: col(over(del, 0.15, bg)),
@@ -222,9 +235,9 @@ fn build(t: &Tokens) -> Theme {
         selected_bg: col(bg3),
         finding_bg: col(over(amber, 0.10, bg)),
         finding_focus_bg: col(over(amber, 0.18, bg)),
-        comment_bg: col(over(cyan, 0.08, bg)),
-        inline_comment_bg: col(over(cyan, 0.11, bg)),
-        comment_focus_bg: col(over(cyan, 0.20, bg)),
+        comment_bg: col(over(blue, 0.08, bg)),
+        inline_comment_bg: col(over(blue, 0.11, bg)),
+        comment_focus_bg: col(over(blue, 0.20, bg)),
 
         stale: col(amber),
         watched_text: col(blue),
@@ -652,5 +665,32 @@ mod tests {
             panic!("themes are truecolor");
         };
         assert!(gr < br && br - gr < 30, "light ground stays close to bg");
+    }
+
+    #[test]
+    fn annotation_kinds_match_the_desktop_mapping() {
+        // Mirrors cssVarsFor in desktop-ui/src/lib/themes.ts and its test
+        // (ADR 0030): comment blue, question purple, note amber, finding cyan.
+        for t in [
+            graphite(),
+            slate(),
+            midnight(),
+            ember(),
+            paper(),
+            daylight(),
+            contrast_dark(),
+            contrast_light(),
+        ] {
+            assert_eq!(t.comment, t.blue, "{}", t.name);
+            assert_eq!(t.question, t.purple, "{}", t.name);
+            assert_eq!(t.note, t.yellow, "{}", t.name);
+            assert_eq!(t.finding, t.cyan, "{}", t.name);
+            let kinds = [t.comment, t.question, t.note, t.finding];
+            for (i, a) in kinds.iter().enumerate() {
+                for b in &kinds[i + 1..] {
+                    assert_ne!(a, b, "{}: two annotation kinds share a colour", t.name);
+                }
+            }
+        }
     }
 }
