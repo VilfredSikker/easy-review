@@ -181,31 +181,29 @@ export default meta;
 type Story = StoryObj<typeof meta>;
 
 /**
- * In-rail teaser view: shows the top 2 unread items inline and a
- * "See N more" button. The popover is closed.
+ * The rail's Inbox row with its unread-PR badge. Clicking it opens the page.
  */
-export const Teaser: Story = {
+export const NavRow: Story = {
   args: {
     inboxItems: allKindsItems,
     projects: inboxProjects,
-    autoOpenPopover: false,
+    page: false,
   },
 };
 
 /**
- * Popover open with category groups and quick-filter chips.
+ * The Inbox page: one row per PR, type chips, and the selected PR's timeline.
  */
-export const PopoverOpen: Story = {
+export const Page: Story = {
   args: {
     inboxItems: allKindsItems,
     projects: inboxProjects,
-    autoOpenPopover: true,
+    page: true,
   },
 };
 
 /**
- * Popover open with more items than the viewport so the list must scroll,
- * including a long Merged / closed group.
+ * More PRs than the viewport, so the list scrolls across day separators.
  */
 function manyInboxItems(): InboxItemSnapshot[] {
   const comments: InboxItemSnapshot[] = Array.from({ length: 15 }, (_, i) => ({
@@ -242,20 +240,20 @@ function manyInboxItems(): InboxItemSnapshot[] {
   ];
 }
 
-export const PopoverManyItems: Story = {
+export const PageManyItems: Story = {
   args: {
     inboxItems: manyInboxItems(),
     projects: inboxProjects,
-    autoOpenPopover: true,
+    page: true,
   },
 };
 
 /**
- * Empty state: no inbox items — renders the "No notifications" quiet state.
+ * Empty state: "Inbox zero for this filter."
  */
 export const Empty: Story = {
   args: {
     inboxItems: [],
-    autoOpenPopover: false,
+    page: true,
   },
 };
