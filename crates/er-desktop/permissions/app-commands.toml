@@ -114,6 +114,7 @@ commands.allow = [
   "export_to_agent",
   "open_commit_composer",
   "select_commit",
+  "exit_history",
   "poll",
   "open_local_branch",
   "open_pr_branch",

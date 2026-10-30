@@ -2016,6 +2016,7 @@ fn main() {
             commands::export_to_agent,
             commands::open_commit_composer,
             commands::select_commit,
+            commands::exit_history,
             commands::poll,
             commands::open_local_branch,
             commands::open_pr_branch,

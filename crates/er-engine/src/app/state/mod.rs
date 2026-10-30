@@ -897,6 +897,14 @@ pub struct TabState {
     /// loads from (`tour_bucket_er_dir`) and which mode the Diff toggle returns to.
     pub tour_is_pr: bool,
 
+    /// The view History was entered from, and the one leaving it returns to:
+    /// `PrDiff` or `Branch`. The single-commit view hides which of the two the
+    /// user was in, so without it "All changes" from a PR's commit lands on the
+    /// local branch diff — a different diff in a different review bucket
+    /// (ADR 0020). It also picks the commit source: the PR head's commits when
+    /// entered from the PR diff, the branch's own log otherwise.
+    pub history_return_mode: DiffMode,
+
     // ── Watched files state ──
     /// Configuration for watched files
     pub watched_config: WatchedConfig,
@@ -1674,6 +1682,7 @@ impl TabState {
             raw_diff: Some(raw),
             symbol_refs: None,
             pending_unmark_count: 0,
+            history_return_mode: DiffMode::Branch,
             reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
@@ -1807,6 +1816,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            history_return_mode: DiffMode::Branch,
             reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
@@ -1936,6 +1946,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            history_return_mode: DiffMode::Branch,
             reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
@@ -2077,6 +2088,7 @@ impl TabState {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            history_return_mode: DiffMode::Branch,
             reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
@@ -4879,6 +4891,57 @@ impl TabState {
         });
     }
 
+    /// The commits History lists, and whether that list is already complete.
+    ///
+    /// Entered from the PR diff, the list is the PR's own commits: the local
+    /// branch log would list whatever HEAD is checked out, which on a local PR
+    /// tab is usually not the PR. Without a fetched commit list it logs the
+    /// fetched PR head ref — never a checkout (ADR 0020).
+    fn history_commits(&self) -> (Vec<CommitInfo>, bool) {
+        let is_pr_review_tab = self.pr_number.is_some() && self.local_branch_view.is_some();
+        let from_pr = self.history_return_mode == DiffMode::PrDiff;
+        if is_pr_review_tab || (from_pr && (self.is_remote() || !self.pr_commits.is_empty())) {
+            return (self.pr_commits.clone(), true);
+        }
+        let (head_ref, log_root) = self.history_log_source();
+        let commits =
+            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0).unwrap_or_default();
+        (commits, false)
+    }
+
+    /// The `(head ref, root)` History logs `base..head` in. The first page and
+    /// every later page must share it, or paging past the PR's last commit
+    /// appends the checked-out branch's commits to the PR's list.
+    pub(crate) fn history_log_source(&self) -> (String, String) {
+        match self.pr_head_ref.as_deref() {
+            Some(pr_head) if self.history_return_mode == DiffMode::PrDiff => {
+                (pr_head.to_string(), self.repo_root.clone())
+            }
+            _ => (
+                self.commit_head_ref().to_string(),
+                self.commit_log_root().to_string(),
+            ),
+        }
+    }
+
+    /// Leave the single-commit view for the view it was entered from.
+    pub fn exit_history(&mut self) {
+        if self.mode == DiffMode::History {
+            self.set_mode(self.history_return_mode);
+        }
+    }
+
+    /// Sync (see [`Self::refetch_and_refresh_diff`]) and return how many
+    /// Reviewed marks it cleared because their file's diff changed.
+    ///
+    /// Zeroes the pending count first so a count an earlier refresh left
+    /// undrained is not reported as this Sync's.
+    pub fn refetch_and_refresh_diff_counting_cleared(&mut self) -> Result<usize> {
+        self.pending_unmark_count = 0;
+        self.refetch_and_refresh_diff()?;
+        Ok(std::mem::take(&mut self.pending_unmark_count))
+    }
+
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
             // Remember current position to restore after mode switch
@@ -4897,6 +4960,22 @@ impl TabState {
             if mode == DiffMode::Tour {
                 self.tour_is_pr = prev_mode == DiffMode::PrDiff || self.is_remote();
             }
+            if mode == DiffMode::History {
+                let from_pr = prev_mode == DiffMode::PrDiff
+                    || (prev_mode == DiffMode::Tour && self.tour_is_pr)
+                    || self.is_remote();
+                let return_mode = if from_pr {
+                    DiffMode::PrDiff
+                } else {
+                    DiffMode::Branch
+                };
+                // The cached commit list was built for the other source; a
+                // sha from this view's list would miss in it.
+                if return_mode != self.history_return_mode {
+                    self.history = None;
+                }
+                self.history_return_mode = return_mode;
+            }
 
             self.mode = mode;
             self.committed_unpushed = false;
@@ -4913,41 +4992,24 @@ impl TabState {
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
-                    let log_root = self.commit_log_root().to_string();
-                    let is_pr_review_tab =
-                        self.pr_number.is_some() && self.local_branch_view.is_some();
-                    let commits = if is_pr_review_tab {
-                        self.pr_commits.clone()
-                    } else {
-                        let head_ref = self.commit_head_ref().to_string();
-                        git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0)
-                            .unwrap_or_default()
-                    };
-
-                    let first_diff = if let Some(c) = commits.first() {
-                        let raw = git::git_diff_commit(&c.hash, &log_root).unwrap_or_default();
-                        git::parse_diff(&raw)
-                    } else {
-                        vec![]
-                    };
-
-                    let mut cache = DiffCache::new(5);
-                    if let Some(c) = commits.first() {
-                        cache.insert(c.hash.clone(), first_diff.clone());
-                    }
-
+                    let (commits, all_loaded) = self.history_commits();
                     self.history = Some(HistoryState {
                         commits,
                         selected_commit: 0,
-                        commit_files: first_diff,
+                        commit_files: vec![],
                         selected_file: 0,
                         current_hunk: 0,
                         current_line: None,
                         diff_scroll: 0,
                         h_scroll: 0,
-                        all_loaded: is_pr_review_tab,
-                        diff_cache: cache,
+                        all_loaded,
+                        diff_cache: DiffCache::new(5),
                     });
+                    // A remote PR has no object DB to diff a commit in, so its
+                    // commits stay display-only.
+                    if !self.is_remote() {
+                        self.history_load_selected_diff();
+                    }
                 }
             } else if mode == DiffMode::Tour {
                 self.current_hunk = 0;
@@ -9618,6 +9680,7 @@ mod tests {
             raw_diff: None,
             symbol_refs: None,
             pending_unmark_count: 0,
+            history_return_mode: DiffMode::Branch,
             reviewed_revision: 0,
             committed_unpushed: false,
             context_overrides: HashMap::new(),
@@ -9920,6 +9983,215 @@ mod tests {
             after, tab.branch_diff_hash,
             "an unchanged branch must not re-derive a different hash"
         );
+    }
+
+    /// Point `refs/er/pr/<n>/head` at `feature`'s tip, the way a PR head
+    /// fetch does, while `main` stays checked out.
+    fn add_pr_head_ref(root: &str, pr_number: u64) -> String {
+        let ref_name = format!("refs/er/pr/{pr_number}/head");
+        std::process::Command::new("git")
+            .args(["update-ref", &ref_name, "feature"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        ref_name
+    }
+
+    #[test]
+    fn history_from_the_pr_diff_lists_the_pr_heads_commits() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.base_branch = "main".to_string();
+        tab.pr_number = Some(7);
+        tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
+        tab.pr_refs_fetched = true;
+        tab.mode = DiffMode::PrDiff;
+
+        tab.set_mode(DiffMode::History);
+        let history = tab.history.as_ref().expect("history loaded");
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        let files: Vec<&str> = history
+            .commit_files
+            .iter()
+            .map(|f| f.path.as_str())
+            .collect();
+        assert_eq!(subjects, ["feature work"], "main..main would list nothing");
+        assert_eq!(files, ["a.txt"]);
+        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+
+        let head = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&head.stdout).trim(),
+            "main",
+            "History must not check out the PR head"
+        );
+
+        tab.exit_history();
+        std::env::remove_var("ER_STORAGE_ROOT");
+        assert_eq!(
+            tab.mode,
+            DiffMode::PrDiff,
+            "All changes returns to the PR diff"
+        );
+    }
+
+    #[test]
+    fn history_from_the_pr_diff_pages_the_pr_head_not_the_checkout() {
+        use std::process::Command;
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        // Base sits at the fork point and the checked-out `main` moves past it,
+        // so `fork..main` lists commits that are not in the PR.
+        git(&["tag", "fork", "main"]);
+        for n in 1..=2 {
+            std::fs::write(dir.path().join("m.txt"), format!("{n}\n")).unwrap();
+            git(&["add", "m.txt"]);
+            git(&["commit", "-qm", &format!("main work {n}")]);
+        }
+
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.base_branch = "fork".to_string();
+        tab.pr_number = Some(7);
+        tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
+        tab.pr_refs_fetched = true;
+        tab.mode = DiffMode::PrDiff;
+
+        tab.set_mode(DiffMode::History);
+        tab.history_load_more();
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        let history = tab.history.as_ref().expect("history loaded");
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(
+            subjects,
+            ["feature work"],
+            "no checked-out commits appended"
+        );
+        assert!(history.all_loaded, "the PR head has no more commits");
+    }
+
+    #[test]
+    fn history_rebuilds_its_commits_when_entered_from_the_other_view() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        tab.pr_commits = vec![CommitInfo {
+            hash: "abc".to_string(),
+            short_hash: "abc".to_string(),
+            subject: "pr commit".to_string(),
+            author: "a".to_string(),
+            date: String::new(),
+            relative_date: String::new(),
+            file_count: 0,
+            adds: 0,
+            dels: 0,
+            is_merge: false,
+            diffstat_known: false,
+        }];
+
+        tab.mode = DiffMode::PrDiff;
+        tab.set_mode(DiffMode::History);
+        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+        assert_eq!(tab.history.as_ref().unwrap().commits.len(), 1);
+
+        // From the branch view the PR's list is the wrong source: it must be
+        // rebuilt from the branch log (empty in this repo-less tab).
+        tab.mode = DiffMode::Branch;
+        tab.set_mode(DiffMode::History);
+        assert_eq!(tab.history_return_mode, DiffMode::Branch);
+        assert!(tab.history.as_ref().unwrap().commits.is_empty());
+
+        tab.exit_history();
+        assert_eq!(tab.mode, DiffMode::Branch);
+    }
+
+    #[test]
+    fn history_from_a_pr_scoped_tour_returns_to_the_pr_diff() {
+        let mut tab = make_test_tab(vec![]);
+        tab.pr_number = Some(7);
+        tab.mode = DiffMode::Tour;
+        tab.tour_is_pr = true;
+        tab.set_mode(DiffMode::History);
+        assert_eq!(tab.history_return_mode, DiffMode::PrDiff);
+    }
+
+    #[test]
+    fn exit_history_outside_history_is_a_no_op() {
+        let mut tab = make_test_tab(vec![]);
+        tab.mode = DiffMode::Unstaged;
+        tab.history_return_mode = DiffMode::PrDiff;
+        tab.exit_history();
+        assert_eq!(tab.mode, DiffMode::Unstaged);
+    }
+
+    #[test]
+    fn sync_counts_only_the_reviewed_marks_it_cleared() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.local_branch_view = Some("feature".to_string());
+        tab.local_branch_checkout_root = None;
+        tab.base_branch = "main".to_string();
+        tab.refresh_diff().expect("full refresh");
+
+        let hash = tab.per_file_hash("a.txt");
+        assert!(!hash.is_empty());
+        tab.reviewed.insert("a.txt".to_string(), hash);
+
+        // A count an earlier refresh left undrained is not this Sync's.
+        tab.pending_unmark_count = 9;
+        assert_eq!(tab.refetch_and_refresh_diff_counting_cleared().unwrap(), 0);
+        assert!(tab.reviewed.contains_key("a.txt"));
+
+        for args in [
+            vec!["checkout", "-q", "feature"],
+            vec!["commit", "-qam", "more"],
+            vec!["checkout", "-q", "main"],
+        ] {
+            if args[1] == "-qam" {
+                std::fs::write(dir.path().join("a.txt"), "base\nfeature\nmore\n").unwrap();
+            }
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+        }
+
+        let cleared = tab.refetch_and_refresh_diff_counting_cleared();
+        std::env::remove_var("ER_STORAGE_ROOT");
+        assert_eq!(cleared.unwrap(), 1);
+        assert!(tab.reviewed.is_empty());
+        assert_eq!(tab.pending_unmark_count, 0, "the count is drained");
     }
 
     fn make_hunk(lines: Vec<DiffLine>) -> DiffHunk {

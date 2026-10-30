@@ -3044,16 +3044,30 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
     })
 }
 
+/// A Sync's snapshot plus how many Reviewed marks it cleared.
+///
+/// The snapshot is flattened so the reply still applies as a plain
+/// `AppSnapshot`; `reviewed_cleared` rides alongside for the "Reviewed cleared
+/// on N changed files" toast. The count cannot be recovered afterwards: the
+/// marks are gone from the reviewed set by the time the snapshot is built.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncOutcome {
+    #[serde(flatten)]
+    pub snapshot: AppSnapshot,
+    pub reviewed_cleared: usize,
+}
+
 #[tauri::command]
-pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcome, String> {
     let state = state.inner().clone();
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
     // window stays responsive for the whole fetch.
     run_blocking(move || {
-        let root = {
+        let (root, reviewed_cleared) = {
             let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.tab_mut()
-                .refetch_and_refresh_diff()
+            let reviewed_cleared = app
+                .tab_mut()
+                .refetch_and_refresh_diff_counting_cleared()
                 .map_err(|e| e.to_string())?;
 
             // Clear the stale pill on a completed sync by aligning the tab's
@@ -3087,11 +3101,15 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapsho
             }
 
             crate::tabs::persist_app_tabs(&app);
-            repo_root
+            (repo_root, reviewed_cleared)
         };
         kick_meta_refresh(&state, root);
         refresh_active_status_after_sync(&state);
-        snap!(state)
+        let snapshot: Result<AppSnapshot, String> = snap!(state);
+        Ok(SyncOutcome {
+            snapshot: snapshot?,
+            reviewed_cleared,
+        })
     })
     .await
 }
@@ -9532,24 +9550,48 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 // ── History: select commit ──────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        // Switching into History mode lazily initializes HistoryState with the
-        // first 50 commits — needed when the user clicks a commit from
-        // Branch/Unstaged/Staged where history was never loaded.
-        if tab.mode != DiffMode::History {
-            tab.set_mode(DiffMode::History);
-        }
-        if let Some(history) = tab.history.as_mut() {
-            if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
-                history.selected_commit = pos;
-                tab.history_load_selected_diff();
+pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // A commit row is a primary click target, and loading it runs git log and
+    // git diff under the App lock — on the main thread that freezes the window.
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        {
+            let tab = app.tab_mut();
+            if tab.is_remote() {
+                return Err("Commits on a remote PR are display-only: there is no local clone to diff them in".to_string());
+            }
+            // Switching into History mode lazily initializes HistoryState —
+            // needed when the user clicks a commit from Branch/Unstaged/Staged
+            // or the PR diff, where history was never loaded.
+            if tab.mode != DiffMode::History {
+                tab.set_mode(DiffMode::History);
+            }
+            if let Some(history) = tab.history.as_mut() {
+                if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
+                    history.selected_commit = pos;
+                    tab.history_load_selected_diff();
+                }
             }
         }
-    }
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// "All changes" from the single-commit view. The engine recorded which view
+/// History was entered from, so the frontend does not have to guess between
+/// `pr_diff` and `branch`.
+#[tauri::command]
+pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Leaving History re-runs the view's git diff under the App lock.
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().exit_history();
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -12809,6 +12851,10 @@ mod tests {
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
+            // Commit rows are primary click targets; both run git diff under
+            // the App lock.
+            "select_commit",
+            "exit_history",
             // These must be async: a sync command would lock App, reload every
             // AI sidecar, and rebuild the snapshot on the main thread — a
             // freeze and a spinner per inline comment, though the comment is
