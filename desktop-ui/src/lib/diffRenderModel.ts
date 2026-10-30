@@ -1,6 +1,6 @@
 import { splitRows } from "$lib/splitRows";
 import { lineTotalCols, wrappedLineCount } from "$lib/lineWrap";
-import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
+import type { FileKind, FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
 import { imagePreviewKey, isImagePreview } from "$lib/imagePreview";
 import type { SplitRow } from "$lib/splitRows";
 import {
@@ -175,6 +175,12 @@ export type CrossFileFlatRow =
       identity: string;
       additions: number;
       deletions: number;
+      /** Rename/copy source. Part of the row, never of reviewed state, so
+       *  toggling reviewed stays a block-cache hit (ADR 0013). */
+      oldPath: string | null;
+      similarity: number | null;
+      kind: FileKind | null;
+      isNew: boolean;
     }
   | {
       type: "hunk-header";
@@ -232,8 +238,10 @@ export type CrossFileFlatRow =
       sourceIndex: number;
       height: number;
       identity: string;
-      /** Pure rename (no content change) — render "File renamed without changes." */
+      /** Pure rename (no content change) — render the compact renamed row */
       renamed: boolean;
+      oldPath: string | null;
+      similarity: number | null;
     }
   | {
       type: "inline-thread";
@@ -550,9 +558,22 @@ function stubRow(file: FileSnapshot, fileIndex: number): CrossFileFlatRow | null
       height: NO_CHANGES_HEIGHT,
       identity: `nochanges:${file.path}`,
       renamed: file.status === "renamed",
+      oldPath: file.old_path ?? null,
+      similarity: file.similarity ?? null,
     };
   }
   return null;
+}
+
+/** What the file header shows beyond path and counts. Keyed into the block
+ *  cache so a rename or kind change rebuilds the header; `reviewed` stays out. */
+function headerIdentity(file: FileSnapshot) {
+  return {
+    oldPath: file.old_path ?? null,
+    similarity: file.similarity ?? null,
+    kind: file.kind ?? null,
+    isNew: file.status === "added",
+  };
 }
 
 /** Per-hunk state the row builders share, created once per hunk. */
@@ -774,7 +795,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   const previewKey = documentPreviewKey(file, input.previewPaths);
   const preview = previewKey !== null;
   const imageKey = imagePreviewKey(file);
-  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|i${JSON.stringify(imageKey)}|s${sideBySide ? 1 : 0}`;
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|i${JSON.stringify(imageKey)}|s${sideBySide ? 1 : 0}|h${JSON.stringify(headerIdentity(file))}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -798,6 +819,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     identity: `fh:${file.path}`,
     additions: file.additions,
     deletions: file.deletions,
+    ...headerIdentity(file),
   });
 
   const lead = leadRow(file, fileIndex, previewKey, imageKey);

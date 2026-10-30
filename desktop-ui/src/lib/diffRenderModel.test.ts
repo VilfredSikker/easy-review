@@ -83,6 +83,9 @@ function file(opts: Partial<FileSnapshot> & { path: string; hunks: HunkSnapshot[
     source_index: opts.source_index ?? 0,
     cache_key: opts.cache_key ?? `${opts.path}#0`,
     preview_key: opts.preview_key,
+    old_path: opts.old_path,
+    similarity: opts.similarity,
+    kind: opts.kind,
   };
 }
 
@@ -310,6 +313,75 @@ describe("getFileBlock — bypass cases", () => {
     const modifiedRow = getFileBlock(mkInputs(modified, [modified], emptyAi())).rows[1];
     if (modifiedRow.type !== "no-changes") throw new Error(`expected no-changes, got ${modifiedRow.type}`);
     expect(modifiedRow.renamed).toBe(false);
+  });
+});
+
+describe("getFileBlock — file header identity (ADR 0013)", () => {
+  const ctx = (path: string) =>
+    hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1, text: path })] });
+
+  it("carries rename, similarity, kind and new-ness on the header row", () => {
+    const f = file({
+      path: "tests/new_name.test.ts",
+      hunks: [ctx("hdr-a")],
+      status: "renamed",
+      old_path: "tests/old_name.test.ts",
+      similarity: 92,
+      kind: "test",
+      cache_key: "hdr-a#0",
+    });
+    const header = getFileBlock(mkInputs(f, [f], emptyAi())).rows[0];
+    if (header.type !== "file-header") throw new Error(`expected file-header, got ${header.type}`);
+    expect(header.oldPath).toBe("tests/old_name.test.ts");
+    expect(header.similarity).toBe(92);
+    expect(header.kind).toBe("test");
+    expect(header.isNew).toBe(false);
+
+    const added = file({ path: "fresh.ts", hunks: [ctx("hdr-b")], status: "added", cache_key: "hdr-b#0" });
+    const addedHeader = getFileBlock(mkInputs(added, [added], emptyAi())).rows[0];
+    if (addedHeader.type !== "file-header") throw new Error(`expected file-header, got ${addedHeader.type}`);
+    expect(addedHeader.isNew).toBe(true);
+    expect(addedHeader.oldPath).toBeNull();
+    expect(addedHeader.kind).toBeNull();
+  });
+
+  it("carries the rename source on the no-changes row", () => {
+    const f = file({
+      path: "b/moved.ts",
+      hunks: [],
+      status: "renamed",
+      old_path: "a/moved.ts",
+      similarity: 100,
+    });
+    const row = getFileBlock(mkInputs(f, [f], emptyAi())).rows[1];
+    if (row.type !== "no-changes") throw new Error(`expected no-changes, got ${row.type}`);
+    expect(row.renamed).toBe(true);
+    expect(row.oldPath).toBe("a/moved.ts");
+    expect(row.similarity).toBe(100);
+  });
+
+  it("toggling only reviewed is a block-cache hit", () => {
+    const base = { path: "hdr/reviewed.ts", hunks: [ctx("hdr-c")], cache_key: "hdr-c#0", old_path: "hdr/was.ts", status: "renamed" as const };
+    const a = file({ ...base, reviewed: false });
+    const b = file({ ...base, reviewed: true });
+    const first = getFileBlock(mkInputs(a, [a], emptyAi()));
+    expect(getFileBlock(mkInputs(b, [b], emptyAi()))).toBe(first);
+  });
+
+  it("changing old_path or kind rebuilds the block", () => {
+    const base = { path: "hdr/rebuild.ts", hunks: [ctx("hdr-d")], cache_key: "hdr-d#0", status: "renamed" as const };
+    const first = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/one.ts" }), [], emptyAi()));
+    const moved = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/two.ts" }), [], emptyAi()));
+    expect(moved).not.toBe(first);
+    const movedHeader = moved.rows[0];
+    if (movedHeader.type !== "file-header") throw new Error(`expected file-header, got ${movedHeader.type}`);
+    expect(movedHeader.oldPath).toBe("hdr/two.ts");
+
+    const asTest = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/two.ts", kind: "test" }), [], emptyAi()));
+    expect(asTest).not.toBe(moved);
+    const testHeader = asTest.rows[0];
+    if (testHeader.type !== "file-header") throw new Error(`expected file-header, got ${testHeader.type}`);
+    expect(testHeader.kind).toBe("test");
   });
 });
 
