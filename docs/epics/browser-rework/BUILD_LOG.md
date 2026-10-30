@@ -40,3 +40,8 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   curl checks and docs-check passed. Independent review found the hostile
   synthetic-click fixture targeted the document rather than an element, weakening
   the later trust test; returned to the same implementer for a focused fix.
+- Reviewed the focused ER21 synthetic-click fix at `83437941` and merged PR 330
+  with a merge commit after the routing suite passed again. The proof log remains
+  pending and the fixture's Safari DOM check remains an owner action.
+- Corrected GNU/BSD stat fallback order in the installed shared-check helper so
+  Linux waiters can read the lock age. The repository's locking policy is unchanged.
