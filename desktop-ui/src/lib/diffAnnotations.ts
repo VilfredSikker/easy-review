@@ -200,7 +200,8 @@ export function annotationVersion(
       (vis.hideOutdated ? 4 : 0) +
       (vis.hideComments ? 8 : 0) +
       (vis.hideFindings ? 16 : 0) +
-      (vis.hideQuestions ? 32 : 0)) |
+      (vis.hideQuestions ? 32 : 0) +
+      (vis.hideNotes ? 64 : 0)) |
     0;
   h = (h * 31 + hashStr(mode)) | 0;
   h = (h * 31 + hashStr(agentFilter)) | 0;
@@ -405,6 +406,7 @@ function visibleThreads(
       !findingThreadIds.has(t.id) &&
       !(vis.hideComments && t.kind === "comment") &&
       !(vis.hideQuestions && t.kind === "question") &&
+      !(vis.hideNotes && t.kind === "note") &&
       !(vis.hideResolved && t.resolved) &&
       !(vis.hideOutdated && t.stale),
   );

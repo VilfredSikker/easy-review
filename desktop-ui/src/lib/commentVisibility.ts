@@ -10,6 +10,8 @@ export interface CommentVisibility {
   hideFindings: boolean;
   /** Hide personal question threads (kind === "question"). */
   hideQuestions: boolean;
+  /** Hide private note threads (kind === "note"). */
+  hideNotes: boolean;
 }
 
 /** App default: hide resolved + outdated in the Branch panel / badge. */
@@ -20,6 +22,7 @@ export const DEFAULT_COMMENT_VISIBILITY: CommentVisibility = {
   hideComments: false,
   hideFindings: false,
   hideQuestions: false,
+  hideNotes: false,
 };
 
 /** All annotations visible — used as a fallback in diff annotation helpers. */
@@ -30,6 +33,7 @@ export const ALL_VISIBLE: CommentVisibility = {
   hideComments: false,
   hideFindings: false,
   hideQuestions: false,
+  hideNotes: false,
 };
 
 /** Top-level GitHub comment threads (Branch tab badge / CommentsCard). */
