@@ -105,6 +105,13 @@
           ></textarea>
         </label>
 
+        {#if kind === "finding"}
+          <!-- ADR 0009: promotion moves the finding, it does not copy it. -->
+          <div class="rounded-md border border-risk-med/40 bg-risk-med/10 px-2.5 py-2 text-[12px] text-fg-2" role="note">
+            Promoting deletes this finding and any validation replies on it. This cannot be undone.
+          </div>
+        {/if}
+
         <div class="text-[10px] text-muted font-mono">
           ⌘+Enter to promote · Esc to cancel
         </div>
