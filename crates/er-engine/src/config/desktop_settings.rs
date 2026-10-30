@@ -193,8 +193,12 @@ pub fn desktop_settings_snapshot(
         agent_effort: agent_effort_label(&config.agent.effort),
         repo_root: repo_root.to_string(),
         risk_repo: repo_key.to_string(),
+        // The pre-merge card keys its list by pattern and only knows this
+        // repo's table, so it gets the project rows alone: a user rule with the
+        // same pattern would duplicate a key and show a shadowed rule as live.
         importance_rules: risk_rules
             .iter()
+            .filter(|r| r.source == RiskRuleSource::Project)
             .map(|r| ImportanceRuleDto {
                 matcher: r.pattern.clone(),
                 tier: r.tier.clone(),
@@ -676,6 +680,29 @@ mod tests {
         assert_eq!(row("docs/**").tier, "critical");
         assert!(!row("docs/**").readable);
         assert_eq!(snap.risk_files.len(), 3);
+    }
+
+    #[test]
+    fn the_importance_shim_lists_project_rules_once_per_pattern() {
+        let mut config = ErConfig::default();
+        config.risk.items.insert(
+            "er".into(),
+            risk_rules(&[("*.lock", "high"), ("src/**", "med")], None).project,
+        );
+        config.user_risk = risk_rules(&[("*.lock", "low"), ("*.md", "low")], None).project;
+        let snap = desktop_settings_snapshot(&config, "/repo", "er", &[]);
+
+        let matchers: Vec<&str> = snap
+            .importance_rules
+            .iter()
+            .map(|r| r.matcher.as_str())
+            .collect();
+        assert_eq!(matchers, ["*.lock", "src/**"], "unique, project only");
+        assert_eq!(
+            snap.importance_rules[0].tier, "high",
+            "the project row wins"
+        );
+        assert_eq!(snap.risk_rules.len(), 4, "the full list keeps both sources");
     }
 
     #[test]

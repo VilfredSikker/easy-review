@@ -78,22 +78,53 @@ impl From<&str> for RiskRule {
     }
 }
 
+/// Every shape a rule value can take on disk, including the wrong ones.
+///
+/// An unreadable shape (a typo'd `teir` key, a number, a non-text label) still
+/// deserializes: it becomes a rule with no readable tier, which is listed as
+/// unreadable and claims nothing. Failing here would fail the whole config
+/// parse, and a save after that writes the defaults back over the user's file.
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum RiskRuleWire {
     Tier(String),
     Labelled {
-        tier: String,
         #[serde(default)]
-        label: Option<String>,
+        tier: Option<WireText>,
+        #[serde(default)]
+        label: Option<WireText>,
     },
+    Other(serde::de::IgnoredAny),
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WireText {
+    Text(String),
+    Other(serde::de::IgnoredAny),
+}
+
+impl WireText {
+    fn into_text(self) -> Option<String> {
+        match self {
+            Self::Text(text) => Some(text),
+            Self::Other(_) => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for RiskRule {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         Ok(match RiskRuleWire::deserialize(deserializer)? {
             RiskRuleWire::Tier(tier) => Self { tier, label: None },
-            RiskRuleWire::Labelled { tier, label } => Self { tier, label },
+            RiskRuleWire::Labelled { tier, label } => Self {
+                tier: tier.and_then(WireText::into_text).unwrap_or_default(),
+                label: label.and_then(WireText::into_text),
+            },
+            RiskRuleWire::Other(_) => Self {
+                tier: String::new(),
+                label: None,
+            },
         })
     }
 }
@@ -717,6 +748,38 @@ mod tests {
 
     /// Once a repo has a `[risk]` table it is the one table; a stale
     /// `[importance]` table beside it is not consulted.
+    /// A malformed rule value must not fail the parse: a failed parse loads the
+    /// defaults, and the next save writes them over every other section.
+    #[test]
+    fn a_malformed_rule_is_unreadable_and_the_rest_of_the_config_loads() {
+        let config: ErConfig = toml::from_str(
+            r#"
+            [features]
+            view_branch = false
+            [risk.er]
+            "db/**" = { teir = "high" }
+            "src/**" = { tier = "high", label = 7 }
+            "lib/**" = 3
+            "docs/**" = "low"
+            "#,
+        )
+        .expect("a malformed rule does not fail the load");
+        assert!(!config.features.view_branch, "other sections survive");
+
+        let rules = config.risk_rules("er");
+        assert_eq!(rules.project.rules["db/**"].tier(), None);
+        assert_eq!(rules.project.rules["lib/**"].tier(), None);
+        assert_eq!(rules.tier_of("db/0001.sql"), RiskTier::Ai);
+        assert_eq!(rules.resolve("db/0001.sql").rule, None, "claims nothing");
+        assert_eq!(rules.tier_of("lib/x.rs"), RiskTier::Ai);
+        let src = &rules.project.rules["src/**"];
+        assert_eq!(
+            (src.tier(), src.label.as_deref()),
+            (Some(RiskTier::High), None)
+        );
+        assert_eq!(rules.tier_of("docs/a.md"), RiskTier::Low);
+    }
+
     #[test]
     fn a_risk_table_shadows_the_importance_table_for_the_same_repo() {
         let config: ErConfig = toml::from_str(
