@@ -1,24 +1,30 @@
 <script lang="ts">
-  import { invoke } from "@tauri-apps/api/core";
   import type { AiSnapshot, PrSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
-  import { copyToClipboard } from "$lib/clipboard";
   import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
   import { resolveContextIdentity } from "$lib/contextIdentity";
-  import { visibleCommentThreads } from "$lib/commentVisibility";
-  import { totalReviewFindings } from "$lib/aiReviewAgents";
+  import { panelThreads } from "./rpanel/commentsPanel";
+  import { scopeToReviewer } from "./rpanel/findingsPanel";
+  import { useReviewerFilterSync } from "./rpanel/reviewerFilter.svelte";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
   import BranchCard from "./BranchCard.svelte";
-  import AiReviewCard from "./AiReviewCard.svelte";
-  import FileRisksCard from "./FileRisksCard.svelte";
   import ChecklistCard from "./ChecklistCard.svelte";
   import TriageCard from "./TriageCard.svelte";
   import CommentsCard from "./CommentsCard.svelte";
-  import UiAnnotationsCard from "./UiAnnotationsCard.svelte";
   import AgentOutputCard from "./AgentOutputCard.svelte";
   import DiagramsCard from "./DiagramsCard.svelte";
-  import InlineThread from "./InlineThread.svelte";
-  import { rightPanelTab, type RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
+  import FindingsTab from "./rpanel/FindingsTab.svelte";
+  import RisksTab from "./rpanel/RisksTab.svelte";
+  import CommentsTab from "./rpanel/CommentsTab.svelte";
+  import { useCommentAutoPull } from "./rpanel/commentAutoPull.svelte";
+  import {
+    PRIMARY_TABS,
+    SECONDARY_TABS,
+    SECONDARY_TAB_LABELS,
+    isSecondaryTab,
+    type PrimaryRightPanelTab,
+  } from "./rpanel/rightPanelTabs";
+  import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
@@ -32,76 +38,55 @@
   const {
     ai,
     pr,
-    width = 340,
+    width = 300,
     dragging = false,
     onResizeStart,
     onCollapseToggle,
   }: Props = $props();
 
-  // ── Tab state (shared store, persisted to localStorage) ───────────────────
-  // The store lets the command palette and collapsed rail switch the tab even
-  // while the panel is already mounted.
-  type Tab = RightPanelTab;
   const activeTab = $derived(rightPanelTab.active);
 
-  function setTab(t: Tab) {
-    rightPanelTab.set(t);
-  }
+  useCommentAutoPull();
+  useReviewerFilterSync(() => ai);
 
-  // ── Derived counts for tab badges ──────────────────────────────────────────
-  const totalFindings = $derived(
-    ai ? totalReviewFindings(ai, aiReviewFilter.filter) : 0,
-  );
-  const identity = $derived(resolveContextIdentity(app.snapshot));
-  const questionThreads = $derived(
-    ai?.threads.filter((t) => t.kind === "question") ?? []
-  );
-  const noteThreads = $derived(ai?.threads.filter((t) => t.kind === "note") ?? []);
-  const questionCount = $derived(questionThreads.length);
-  const noteCount = $derived(noteThreads.length);
+  const currentFile = $derived(app.snapshot?.files[app.snapshot.selected_file]?.path ?? null);
 
-  // ── Notes-tab sub-filter (All | Notes | Questions) ──────────────────────────
-  const NOTES_SUBTAB_KEY = "notesPanelSubTab";
-  type NotesSubTab = "all" | "notes" | "questions";
-  function readStoredNotesSubTab(): NotesSubTab {
-    try {
-      const raw = localStorage.getItem(NOTES_SUBTAB_KEY);
-      if (raw === "all" || raw === "notes" || raw === "questions") return raw;
-    } catch { /* ignore */ }
-    return "all";
-  }
-  let notesSubTab = $state<NotesSubTab>(readStoredNotesSubTab());
-  function setNotesSubTab(t: NotesSubTab) {
-    notesSubTab = t;
-    try {
-      localStorage.setItem(NOTES_SUBTAB_KEY, t);
-    } catch { /* ignore */ }
-  }
-  const visibleNotesThreads = $derived.by(() => {
-    if (notesSubTab === "notes") return noteThreads;
-    if (notesSubTab === "questions") return questionThreads;
-    return [...noteThreads, ...questionThreads];
-  });
-  const NOTES_SUBTAB_COPY: Record<NotesSubTab, { label: string; empty: string }> = {
-    notes: { label: "Notes", empty: "No notes yet — select lines in the diff and choose Note." },
-    questions: { label: "Questions", empty: "No questions yet." },
-    all: { label: "All notes & questions", empty: "No notes or questions yet." },
+  // Tab counts are of what each tab lists: open findings (under the reviewer
+  // filter the diff applies), changed files, and
+  // the threads the Comments tab shows (GitHub ones under the diff's filters).
+  const files = $derived(app.snapshot?.files);
+  const findingCount = $derived(scopeToReviewer(ai, aiReviewFilter.filter).open.length);
+  const fileCount = $derived(files?.length ?? 0);
+  const threadCount = $derived(panelThreads(ai?.threads, app.commentVisibility, files).length);
+  const TAB_LABEL: Record<PrimaryRightPanelTab, string> = {
+    findings: "Findings",
+    risks: "Risks",
+    comments: "Comments",
   };
+  const tabCount = $derived<Record<PrimaryRightPanelTab, number>>({
+    findings: findingCount,
+    risks: fileCount,
+    comments: threadCount,
+  });
 
-  const currentWorktree = $derived(
-    app.snapshot?.worktrees.find((w) => w.is_current) ?? null
-  );
+  let moreOpen = $state(false);
+  let moreEl = $state<HTMLDivElement | null>(null);
 
+  function closeMoreOnOutside(e: MouseEvent) {
+    if (moreOpen && moreEl && !moreEl.contains(e.target as Node)) moreOpen = false;
+  }
+
+  // ── Branch & PR (until the Overview aside carries it) ──────────────────────
+  const identity = $derived(resolveContextIdentity(app.snapshot));
+  const currentWorktree = $derived(app.snapshot?.worktrees.find((w) => w.is_current) ?? null);
   const activeAppTab = $derived(app.snapshot?.tabs?.find((t) => t.is_active) ?? null);
   const displayPrNumber = $derived(resolveActivePrNumber(app.snapshot));
   const displayPrUrl = $derived(resolveActivePrUrl(app.snapshot));
   const githubForTab = $derived(githubStatusForActiveTab(app.snapshot));
   const tabOwnsPr = $derived(activeAppTab?.pr_number != null);
   const isMerged = $derived(
-    githubForTab?.state === "MERGED" ||
-      (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
+    githubForTab?.state === "MERGED" || (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
   );
-
   const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
     const checks = githubForTab?.checks;
     if (!checks || checks.length === 0) return null;
@@ -109,131 +94,24 @@
     if (checks.some((c) => c.status === "PENDING")) return "pending";
     return "success";
   });
-
   // Whole-diff counts from the engine, so a file filter never shrinks them.
   const totalAdds = $derived(app.snapshot?.diff_stats?.total.additions ?? 0);
   const totalDels = $derived(app.snapshot?.diff_stats?.total.deletions ?? 0);
-
-  // ── Tab definitions ─────────────────────────────────────────────────────────
-  interface TabDef {
-    id: Tab;
-    label: string;
-    badge: number | null;
-  }
-
-  const commentCount = $derived(
-    visibleCommentThreads(ai?.threads, app.commentVisibility, app.snapshot?.files).length
-  );
-
-  const diagramCount = $derived(ai?.diagrams?.length ?? 0);
-
-  const tabs: TabDef[] = $derived([
-    { id: "branch", label: "Branch", badge: commentCount > 0 ? commentCount : null },
-    { id: "review", label: "Review", badge: totalFindings > 0 ? totalFindings : null },
-    { id: "notes",  label: "Notes",  badge: noteCount + questionCount > 0 ? noteCount + questionCount : null },
-    { id: "context", label: "Context", badge: diagramCount > 0 ? diagramCount : null },
-  ]);
-
-  // ── Per-tab export ───────────────────────────────────────────────────────────
-  // The shared `export_review` backend command renders selected sections to
-  // markdown. Each tab exports only the sections it shows, so the clipboard
-  // content lands ready to paste into a coding agent.
-  //
-  // NOTE: This mirrors the Rust `ExportOpts` struct in
-  // `crates/er-desktop/src/export.rs` (camelCase over IPC). There are no
-  // generated Tauri bindings, so keep these fields in sync with that struct —
-  // `ExportReviewView.svelte` keeps its own copy for the same reason.
-  type ExportOpts = {
-    includeComments: boolean;
-    includeQuestions: boolean;
-    includeNotes: boolean;
-    includeFindings: boolean;
-    includeAnnotations: boolean;
-    includeChecklist: boolean;
-    onlyUnresolved: boolean;
-    includeCommentIds?: string[];
-    includeQuestionIds?: string[];
-    includeNoteIds?: string[];
-    includeFindingIds?: string[];
-  };
-
-  const NO_SECTIONS: ExportOpts = {
-    includeComments: false,
-    includeQuestions: false,
-    includeNotes: false,
-    includeFindings: false,
-    includeAnnotations: false,
-    includeChecklist: false,
-    onlyUnresolved: false,
-  };
-
-  // The Notes tab mirrors its active sub-tab (All | Notes | Questions) so the
-  // clipboard export matches exactly what the user is looking at. Annotations
-  // only render under "All", so they ride along only there.
-  function exportOptsForTab(t: Tab): ExportOpts {
-    switch (t) {
-      case "branch":
-        return { ...NO_SECTIONS, includeComments: true };
-      case "review":
-        // The checklist lives on this tab, and a checked-outcome list is what
-        // you paste into a pull request description.
-        return { ...NO_SECTIONS, includeFindings: true, includeChecklist: true };
-      case "context":
-        // Handled client-side in copyTabToClipboard (mermaid fences, not the
-        // export_review sections).
-        return NO_SECTIONS;
-      case "notes":
-        switch (notesSubTab) {
-          case "notes":
-            return { ...NO_SECTIONS, includeNotes: true };
-          case "questions":
-            return { ...NO_SECTIONS, includeQuestions: true };
-          case "all":
-            return { ...NO_SECTIONS, includeNotes: true, includeQuestions: true, includeAnnotations: true };
-        }
-    }
-  }
-
-  function exportLabel(): string {
-    if (activeTab !== "notes") return tabs.find((t) => t.id === activeTab)?.label ?? "section";
-    return NOTES_SUBTAB_COPY[notesSubTab].label;
-  }
-
-  let copying = $state(false);
-
-  async function copyTabToClipboard() {
-    if (copying) return;
-    copying = true;
-    const label = exportLabel();
-    try {
-      // The Context tab has no `export_review` section — build its markdown
-      // (title + mermaid fence per diagram) client-side.
-      const body = activeTab === "context"
-        ? (ai?.diagrams ?? [])
-            .map((d) => `## ${d.title || d.kind}\n\n\`\`\`mermaid\n${d.mermaid}\n\`\`\``)
-            .join("\n\n")
-        : await invoke<string>("export_review", { opts: exportOptsForTab(activeTab) });
-      if (!body.trim()) {
-        app.showToast("info", `Nothing to export from the ${label} tab`);
-        return;
-      }
-      await copyToClipboard(body);
-      app.showToast("success", `Copied ${label} to clipboard (${body.length} chars)`);
-    } catch (e) {
-      app.showToast("error", `Export failed: ${e}`);
-    } finally {
-      copying = false;
-    }
-  }
 </script>
 
+<svelte:window
+  onclick={closeMoreOnOutside}
+  onkeydown={(e) => {
+    if (moreOpen && e.key === "Escape") moreOpen = false;
+  }}
+/>
+
 <aside
-  class="shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col relative"
+  class="shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col relative
+    max-[880px]:absolute max-[880px]:right-0 max-[880px]:inset-y-0 max-[880px]:z-20 max-[880px]:max-w-[92%] max-[880px]:shadow-2xl"
   style="width: {width}px"
+  aria-label="Findings, risks and comments"
 >
-  <!--
-    4px drag handle along the panel's left edge.
-  -->
   {#if onResizeStart}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
     <div
@@ -245,206 +123,110 @@
     ></div>
   {/if}
 
-  <!-- ── Tab header row ──────────────────────────────────────────────────── -->
-  <div class="flex items-stretch border-b border-hairline bg-surface shrink-0">
-    {#each tabs as tab (tab.id)}
-      {@const isActive = tab.id === activeTab}
+  <div class="flex items-center gap-0.5 pt-2 pr-2 pl-2.5 border-b border-hairline shrink-0" role="tablist">
+    {#each PRIMARY_TABS as tab (tab)}
+      {@const selected = activeTab === tab}
       <button
         type="button"
-        onclick={() => setTab(tab.id)}
-        class="relative flex-1 flex items-center justify-center gap-1.5 px-1.5 py-2.5 text-[11px] font-medium transition-colors
-          {isActive ? 'text-fg' : 'text-fg-3 hover:text-fg-2'}"
-      >
-        <!-- icon -->
-        {#if tab.id === "branch"}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            class={isActive ? "text-accent" : "text-fg-3"}>
-            <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/>
-            <path d="M18 9a9 9 0 0 1-9 9"/>
-          </svg>
-        {:else if tab.id === "review"}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"
-            class={isActive ? "text-accent" : "text-fg-3"}>
-            <path d="M12 2l2.4 7.2H22l-6.2 4.5 2.4 7.2L12 17l-6.2 3.9 2.4-7.2L2 9.2h7.6z"/>
-          </svg>
-        {:else if tab.id === "context"}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            class={isActive ? "text-accent" : "text-fg-3"}>
-            <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5a2 2 0 0 1 2 2V14"/>
-          </svg>
-        {:else}
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
-            class={isActive ? "text-accent" : "text-fg-3"}>
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-        {/if}
-
-        <span>{tab.label}</span>
-
-        {#if tab.badge !== null}
-          <span class="min-w-[14px] h-[14px] px-1 flex items-center justify-center rounded-full text-[9px] font-bold leading-none
-            {isActive ? 'bg-accent/20 text-accent' : 'bg-hairline text-fg-3'}">
-            {tab.badge}
-          </span>
-        {/if}
-
-        <!-- active underline -->
-        {#if isActive}
-          <span class="absolute inset-x-3 bottom-0 h-[2px] bg-accent rounded-t"></span>
-        {/if}
-      </button>
+        role="tab"
+        aria-selected={selected}
+        onclick={() => rightPanelTab.set(tab)}
+        class="px-2 pt-1.5 pb-2 -mb-px text-[12.5px] font-medium border-b-2 transition-colors
+          {selected ? 'text-fg border-accent' : 'text-fg-2 border-transparent hover:text-fg'}"
+      >{TAB_LABEL[tab]} <span class="text-fg-3 font-normal">{tabCount[tab]}</span></button>
     {/each}
-
-    <!-- Collapse toggle — always shows "collapse" chevron (panel is expanded when visible) -->
+    {#if isSecondaryTab(activeTab)}
+      <button
+        type="button"
+        role="tab"
+        aria-selected="true"
+        class="px-2 pt-1.5 pb-2 -mb-px text-[12.5px] font-medium border-b-2 text-fg border-accent truncate"
+      >{SECONDARY_TAB_LABELS[activeTab]}</button>
+    {/if}
+    <span class="flex-1"></span>
+    <div class="relative self-center" bind:this={moreEl}>
+      <button
+        type="button"
+        onclick={() => (moreOpen = !moreOpen)}
+        aria-haspopup="menu"
+        aria-expanded={moreOpen}
+        title="Branch & PR, triage and diagrams"
+        aria-label="More panels"
+        class="w-6 h-6 rounded-md flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg"
+      >⋯</button>
+      {#if moreOpen}
+        <div
+          role="menu"
+          class="absolute right-0 top-7 z-30 min-w-40 py-1 rounded-lg border border-border bg-card shadow-xl"
+        >
+          {#each SECONDARY_TABS as tab (tab)}
+            <button
+              type="button"
+              role="menuitem"
+              onclick={() => {
+                rightPanelTab.set(tab);
+                moreOpen = false;
+              }}
+              class="w-full text-left px-3 py-1.5 text-[12px] hover:bg-hover {activeTab === tab ? 'text-fg' : 'text-fg-2'}"
+            >{SECONDARY_TAB_LABELS[tab]}</button>
+          {/each}
+        </div>
+      {/if}
+    </div>
     {#if onCollapseToggle}
       <button
         type="button"
         onclick={onCollapseToggle}
-        title="Collapse right panel"
-        aria-label="Collapse right panel"
-        class="w-8 flex items-center justify-center text-muted hover:text-fg-2 transition-colors shrink-0 border-l border-hairline"
-      >
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <polyline points="9 18 15 12 9 6"/>
-        </svg>
-      </button>
+        title="Close panel (])"
+        aria-label="Close panel"
+        class="w-6 h-6 rounded-md flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg text-[15px] leading-none self-center"
+      >×</button>
     {/if}
   </div>
 
-  <!-- ── Tab content ─────────────────────────────────────────────────────── -->
-  <!-- pb-14 clears the absolutely-positioned export action bar below. -->
-  <div class="flex-1 overflow-y-auto pb-14">
-    <!-- Branch tab -->
-    {#if activeTab === "branch"}
-      <div class="p-4 space-y-4 pb-8">
-        {#if app.snapshot}
-          <BranchCard
-            branch={identity.branch}
-            base={identity.base}
-            {pr}
-            reviewed_count={app.snapshot.reviewed_count}
-            total_count={app.snapshot.total_count}
-            additions={totalAdds}
-            deletions={totalDels}
-            checks_status={checksStatus}
-            pr_number={displayPrNumber}
-            is_merged={isMerged}
-            github_url={displayPrUrl}
-            github={githubForTab}
-          />
-        {/if}
-        {#if ai}
-          <CommentsCard {ai} active={activeTab === "branch"} />
-        {/if}
-      </div>
-
-    <!-- Review tab -->
-    {:else if activeTab === "review"}
-      <div class="p-4 space-y-4 pb-8">
-        {#if ai}
-          {#if ai.triage}
-            <TriageCard triage={ai.triage} />
-          {/if}
-          {#if (ai.file_risks ?? []).length > 0}
-            <FileRisksCard risks={ai.file_risks} />
-          {/if}
-          <!-- The TUI shows the checklist whenever the AI panel is up, with a
-               fallback when the bucket has none — same gate here. -->
-          {#if ai.checklist || ai.has_review_json}
-            <ChecklistCard checklist={ai.checklist} />
-          {/if}
-          <AiReviewCard {ai} />
-        {/if}
-        <AgentOutputCard />
-      </div>
-
-    <!-- Notes tab -->
-    {:else if activeTab === "notes"}
-      <div class="pb-8">
-        <!-- Sub-tab filter: All | Notes | Questions -->
-        <div class="flex items-stretch border-b border-hairline bg-surface px-3 gap-1 sticky top-0 z-10">
-          {#each [
-            { id: "all", label: "All", count: noteCount + questionCount },
-            { id: "notes", label: "Notes", count: noteCount },
-            { id: "questions", label: "Questions", count: questionCount },
-          ] as sub (sub.id)}
-            {@const active = notesSubTab === sub.id}
-            <button
-              type="button"
-              onclick={() => setNotesSubTab(sub.id as NotesSubTab)}
-              class="relative px-2.5 py-2 text-[11px] font-medium transition-colors flex items-center gap-1.5
-                {active ? 'text-fg' : 'text-fg-3 hover:text-fg-2'}"
-            >
-              <span>{sub.label}</span>
-              {#if sub.count > 0}
-                <span class="min-w-[14px] h-[14px] px-1 flex items-center justify-center rounded-full text-[9px] font-bold leading-none
-                  {active ? 'bg-question/20 text-question' : 'bg-hairline text-fg-3'}">
-                  {sub.count}
-                </span>
-              {/if}
-              {#if active}
-                <span class="absolute inset-x-2 bottom-0 h-[2px] bg-question rounded-t"></span>
-              {/if}
-            </button>
-          {/each}
-        </div>
-
-        <div class="p-3 space-y-3">
-          <p class="text-[11px] text-muted leading-relaxed">
-            Notes and questions stay on your machine. Notes are actionable hand-offs for an
-            AI agent; questions are for your own review. Neither is pushed to GitHub.
-          </p>
-          {#if visibleNotesThreads.length === 0}
-            <p class="text-[11px] text-muted">
-              {NOTES_SUBTAB_COPY[notesSubTab].empty}
-            </p>
-          {:else}
-            {#each visibleNotesThreads as thread (thread.id)}
-              <InlineThread {thread} hunk_idx={0} variant="panel" />
-            {/each}
-          {/if}
-          {#if notesSubTab === "all"}
-            <UiAnnotationsCard />
-          {/if}
-        </div>
-      </div>
-
-    <!-- Context tab (mermaid diagrams of the diff) -->
+  <div class="flex-1 overflow-auto p-3 grid gap-3 content-start" role="tabpanel">
+    {#if activeTab === "findings"}
+      <FindingsTab {ai} {currentFile} />
+    {:else if activeTab === "risks"}
+      <RisksTab {ai} {currentFile} />
+    {:else if activeTab === "comments"}
+      <CommentsTab {ai} {currentFile} />
+    {:else if activeTab === "branch"}
+      {#if app.snapshot}
+        <BranchCard
+          branch={identity.branch}
+          base={identity.base}
+          {pr}
+          reviewed_count={app.snapshot.reviewed_count}
+          total_count={app.snapshot.total_count}
+          additions={totalAdds}
+          deletions={totalDels}
+          checks_status={checksStatus}
+          pr_number={displayPrNumber}
+          is_merged={isMerged}
+          github_url={displayPrUrl}
+          github={githubForTab}
+        />
+      {/if}
+      {#if ai}
+        <!-- The panel already auto-pulls; this card keeps the push and
+             submit-review controls. -->
+        <CommentsCard {ai} active={false} />
+      {/if}
+    {:else if activeTab === "triage"}
+      {#if ai?.triage}
+        <TriageCard triage={ai.triage} />
+      {/if}
+      <!-- The TUI shows the checklist whenever the AI panel is up, with a
+           fallback when the bucket has none — same gate here. -->
+      {#if ai && (ai.checklist || ai.has_review_json)}
+        <ChecklistCard checklist={ai.checklist} />
+      {/if}
+      <AgentOutputCard />
     {:else if activeTab === "context"}
-      <div class="p-4 space-y-4 pb-8">
-        {#if ai}
-          <DiagramsCard {ai} />
-        {/if}
-      </div>
+      {#if ai}
+        <DiagramsCard {ai} />
+      {/if}
     {/if}
-  </div>
-
-  <!-- ── Per-tab export actions (pinned to panel bottom) ──────────────────── -->
-  <div class="absolute inset-x-0 bottom-0 flex items-center gap-2 px-3 py-2 border-t border-hairline bg-surface">
-    <button
-      type="button"
-      onclick={copyTabToClipboard}
-      disabled={copying}
-      title="Copy this section as markdown, ready to paste into a coding agent"
-      class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium rounded border border-border text-fg-2 hover:bg-hover hover:text-fg transition-colors disabled:opacity-50 disabled:cursor-default"
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <rect x="9" y="9" width="13" height="13" rx="2"/>
-        <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
-      </svg>
-      <span>{copying ? "Copying…" : "Export to clipboard"}</span>
-    </button>
-    <button
-      type="button"
-      onclick={() => app.setMainView("export-review")}
-      title="Open the full export panel"
-      class="flex items-center gap-1.5 px-2 py-1 text-[11px] font-medium rounded border border-border text-fg-2 hover:bg-hover hover:text-fg transition-colors"
-    >
-      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-        <polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/>
-      </svg>
-      <span>Open export panel</span>
-    </button>
   </div>
 </aside>
