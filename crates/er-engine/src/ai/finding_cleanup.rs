@@ -147,8 +147,9 @@ pub fn remove_finding_from_sidecars(er_dir: &str, finding_id: &str) -> std::io::
 
 /// Set or clear a person's resolution of a finding in whichever sidecar owns
 /// it. Only the status fields move; the claim is left as the AI wrote it
-/// (ADR 0047). Clearing also drops a note the validate pass left, because a
-/// reopened finding has no resolution left to explain.
+/// (ADR 0047). Clearing also drops any `resolved_note` a legacy or
+/// hand-written sidecar carries, because a reopened finding has no resolution
+/// left to explain.
 /// Returns false when no sidecar holds the finding.
 pub fn set_finding_resolved(
     er_dir: &str,
@@ -502,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn unresolving_clears_the_validate_note() {
+    fn unresolving_clears_a_leftover_resolved_note() {
         let dir = tempdir().unwrap();
         let er = dir.path().to_str().unwrap();
         let mut finding = sample_finding("f-1");
