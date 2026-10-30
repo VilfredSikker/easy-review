@@ -27,3 +27,25 @@ otherwise have to dig out of a PR thread. One section per package.
   thread read; under the Unread filter it stays in place until another row is
   chosen or the read filter changes, so the detail pane and Enter stay on the
   row the reader picked.
+
+## P22: Top bar, running-AI pill and jobs popover
+
+- **`TopBar` is built but not mounted yet.** `App.svelte` is outside P22, and
+  `BranchContextBar` still carries controls the top bar does not: copy branch,
+  worktree and PR links, the terminal and browser toggles, Sync for a stale
+  diff and the local/PR source toggle. Swapping the bars now would drop all of
+  them. The package that assembles the shell mounts `TopBar` in place of
+  `BranchContextBar`, rehomes those controls, and removes the floating
+  `BackgroundTasks` mount in the same change. Until then `BackgroundTasks`
+  floats the one `RunningPill`, so the pill never shows twice.
+- **No "Run standard instead" on the Deep confirmation.** The prototype offers
+  it, but the engine cannot start a review at a chosen depth:
+  `start_review_flow` takes only a scope and triage picks the depth, so
+  declining and restarting lands on Deep again. The card offers Run deep
+  review and Skip. The button needs an engine command that confirms the
+  pending flow at standard depth; it is not faked from existing commands.
+- **The pill drops mirrored agent commands.** The snapshot copies every
+  background task on the active tab into `agent_commands` under its kind for
+  the per-tab badges, so the pill removes commands whose name and status match
+  a background task before aggregating. A tab-local command that shares a
+  task's kind and status is hidden with it; the task row still shows the work.

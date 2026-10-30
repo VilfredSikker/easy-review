@@ -1,4 +1,7 @@
 <script lang="ts">
+  import SettingsRow from "./SettingsRow.svelte";
+  import { INPUT_CLASS } from "./settingsModel";
+
   interface Props {
     label: string;
     description?: string;
@@ -21,28 +24,29 @@
 
   // Editable draft; resets whenever the committed value changes.
   let draft = $derived(value);
-
-  const inputId = $derived("settings-field-" + label.toLowerCase().replace(/[^a-z0-9]+/g, "-"));
 </script>
 
-<div class="py-3">
-  <label class="block text-sm text-fg mb-0.5" for={inputId}>{label}</label>
-  {#if description}
-    <p class="text-xs text-muted mb-1.5">{description}</p>
-  {/if}
-  <input
-    id={inputId}
-    type="text"
-    class="w-full bg-ink-850 border border-hairline rounded-md px-2.5 py-1.5 text-sm text-fg outline-none font-mono transition-colors placeholder:text-ink-300 hover:border-border focus:border-accent/60"
-    {placeholder}
-    bind:value={draft}
-    onblur={() => oncommit(draft)}
-    onkeydown={(e) => e.key === "Enter" && (e.currentTarget as HTMLInputElement).blur()}
-  />
-  {#if strict && warning}
-    <p class="flex items-center gap-1.5 text-xs text-risk-med mt-1.5">
-      <span aria-hidden="true">⚠</span>
-      {warning}
-    </p>
-  {/if}
-</div>
+<SettingsRow {label} {description}>
+  <div class="flex flex-col items-stretch gap-1 min-w-[240px] flex-1">
+    <input
+      type="text"
+      aria-label={label}
+      class={INPUT_CLASS}
+      {placeholder}
+      bind:value={draft}
+      onblur={() => {
+        if (draft !== value) oncommit(draft);
+      }}
+      onkeydown={(e) => {
+        e.stopPropagation();
+        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+      }}
+    />
+    {#if strict && warning}
+      <p class="flex items-center gap-1.5 text-xs text-risk-med">
+        <span aria-hidden="true">⚠</span>
+        {warning}
+      </p>
+    {/if}
+  </div>
+</SettingsRow>

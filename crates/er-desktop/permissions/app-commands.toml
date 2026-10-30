@@ -97,6 +97,7 @@ commands.allow = [
   "ask_ai",
   "validate_with_ai",
   "elaborate_with_ai",
+  "send_note_to_agent",
   "open_pr_url",
   "open_remote_pr",
   "open_worktree",
