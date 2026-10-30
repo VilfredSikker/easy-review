@@ -1409,6 +1409,7 @@ dependencies = [
  "libc",
  "notify",
  "notify-debouncer-mini",
+ "png 0.18.1",
  "serde",
  "serde_json",
  "sha1",
