@@ -18,6 +18,8 @@ const LOCAL_FIRST_COMMANDS = [
   "delete_thread",
   "update_thread_message",
   "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
   "promote_to_comment",
   "promote_to_note",
   "bulk_review_pillar",

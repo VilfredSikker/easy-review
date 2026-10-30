@@ -313,6 +313,78 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ai.high).toBe(1);
   });
 
+  it("moves a resolved finding to resolved_findings and back on rollback", () => {
+    const finding: FlatFinding = {
+      id: "f-1",
+      file: "src/a.ts",
+      line: 3,
+      hunk_index: 0,
+      severity: "high",
+      expert_label: null,
+      agent_label: "General",
+      raised_by: [],
+      providers: [],
+      security_stage: false,
+      title: "bug",
+      message_markdown: "nope",
+      promoted_to: null,
+      thread_id: null,
+      resolved: false,
+    } as FlatFinding;
+    const view = snap({
+      files: [file({ finding_count: 1 })],
+      ai: emptyAi({ findings: [finding], high: 1 }),
+    });
+    const op = buildOptimisticOp("resolve_finding", { findingId: "f-1" }, view, { id: "opt-r" });
+    expect(op?.type).toBe("resolve-finding");
+    applyOptimisticOp(view, op!);
+    // Reapplying onto a snapshot that already shows the move is a no-op.
+    applyOptimisticOp(view, op!);
+    expect(view.ai.findings).toEqual([]);
+    expect(view.ai.resolved_findings.map((f) => [f.id, f.resolved])).toEqual([["f-1", true]]);
+    expect(view.ai.high).toBe(0);
+    expect(view.files[0].finding_count).toBe(0);
+    rollbackOptimisticOp(view, op!);
+    expect(view.ai.findings.map((f) => [f.id, f.resolved])).toEqual([["f-1", false]]);
+    expect(view.ai.resolved_findings).toEqual([]);
+    expect(view.ai.high).toBe(1);
+  });
+
+  it("reopens a resolved finding and restores it as resolved on rollback", () => {
+    const finding = {
+      id: "f-2",
+      file: "src/a.ts",
+      line: 3,
+      hunk_index: 0,
+      severity: "low",
+      expert_label: null,
+      agent_label: "General",
+      raised_by: [],
+      providers: [],
+      security_stage: false,
+      title: "bug",
+      message_markdown: "nope",
+      promoted_to: null,
+      thread_id: null,
+      resolved: true,
+    } as FlatFinding;
+    const view = snap({
+      files: [file({ finding_count: 0 })],
+      ai: emptyAi({ resolved_findings: [finding] }),
+    });
+    expect(buildOptimisticOp("resolve_finding", { findingId: "f-2" }, view)).toBeNull();
+    const op = buildOptimisticOp("unresolve_finding", { findingId: "f-2" }, view, { id: "opt-u" });
+    applyOptimisticOp(view, op!);
+    expect(view.ai.findings.map((f) => [f.id, f.resolved])).toEqual([["f-2", false]]);
+    expect(view.ai.resolved_findings).toEqual([]);
+    expect(view.ai.low).toBe(1);
+    expect(view.files[0].finding_count).toBe(1);
+    rollbackOptimisticOp(view, op!);
+    expect(view.ai.findings).toEqual([]);
+    expect(view.ai.resolved_findings.map((f) => [f.id, f.resolved])).toEqual([["f-2", true]]);
+    expect(view.ai.low).toBe(0);
+  });
+
   it("promotes a question to a comment and restores the question on rollback", () => {
     const q: ThreadSnapshot = {
       ...commentThread("q-1"),

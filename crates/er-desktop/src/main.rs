@@ -2003,6 +2003,8 @@ fn main() {
             commands::open_remote_pr,
             commands::open_worktree,
             commands::dismiss_finding,
+            commands::resolve_finding,
+            commands::unresolve_finding,
             commands::toggle_checklist_item,
             commands::delete_review_artifact,
             commands::remove_finding_thread,
