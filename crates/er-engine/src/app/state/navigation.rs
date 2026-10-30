@@ -1149,8 +1149,7 @@ impl TabState {
 
         // Runs synchronously on the event loop thread — a slow `git log` blocks the UI
         // for its full duration.
-        let log_root = self.commit_log_root().to_string();
-        let head_ref = self.commit_head_ref().to_string();
+        let (head_ref, log_root) = self.history_log_source();
         let new_commits = git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, skip)
             .unwrap_or_default();
 

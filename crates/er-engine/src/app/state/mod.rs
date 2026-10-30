@@ -4903,16 +4903,25 @@ impl TabState {
         if is_pr_review_tab || (from_pr && (self.is_remote() || !self.pr_commits.is_empty())) {
             return (self.pr_commits.clone(), true);
         }
-        let (head_ref, log_root) = match self.pr_head_ref.as_deref() {
-            Some(pr_head) if from_pr => (pr_head.to_string(), self.repo_root.clone()),
+        let (head_ref, log_root) = self.history_log_source();
+        let commits =
+            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0).unwrap_or_default();
+        (commits, false)
+    }
+
+    /// The `(head ref, root)` History logs `base..head` in. The first page and
+    /// every later page must share it, or paging past the PR's last commit
+    /// appends the checked-out branch's commits to the PR's list.
+    pub(crate) fn history_log_source(&self) -> (String, String) {
+        match self.pr_head_ref.as_deref() {
+            Some(pr_head) if self.history_return_mode == DiffMode::PrDiff => {
+                (pr_head.to_string(), self.repo_root.clone())
+            }
             _ => (
                 self.commit_head_ref().to_string(),
                 self.commit_log_root().to_string(),
             ),
-        };
-        let commits =
-            git::git_log_range(&self.base_branch, &head_ref, &log_root, 50, 0).unwrap_or_default();
-        (commits, false)
+        }
     }
 
     /// Leave the single-commit view for the view it was entered from.
@@ -10035,6 +10044,50 @@ mod tests {
             DiffMode::PrDiff,
             "All changes returns to the PR diff"
         );
+    }
+
+    #[test]
+    fn history_from_the_pr_diff_pages_the_pr_head_not_the_checkout() {
+        use std::process::Command;
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let git = |args: &[&str]| {
+            Command::new("git")
+                .args(args)
+                .current_dir(&root)
+                .output()
+                .unwrap()
+        };
+        // Base sits at the fork point and the checked-out `main` moves past it,
+        // so `fork..main` lists commits that are not in the PR.
+        git(&["tag", "fork", "main"]);
+        for n in 1..=2 {
+            std::fs::write(dir.path().join("m.txt"), format!("{n}\n")).unwrap();
+            git(&["add", "m.txt"]);
+            git(&["commit", "-qm", &format!("main work {n}")]);
+        }
+
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.base_branch = "fork".to_string();
+        tab.pr_number = Some(7);
+        tab.pr_head_ref = Some(add_pr_head_ref(&root, 7));
+        tab.pr_refs_fetched = true;
+        tab.mode = DiffMode::PrDiff;
+
+        tab.set_mode(DiffMode::History);
+        tab.history_load_more();
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        let history = tab.history.as_ref().expect("history loaded");
+        let subjects: Vec<&str> = history.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["feature work"], "no checked-out commits appended");
+        assert!(history.all_loaded, "the PR head has no more commits");
     }
 
     #[test]
