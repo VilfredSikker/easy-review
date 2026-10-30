@@ -42,7 +42,11 @@ pub fn store_fetched(
     true
 }
 
-const GH_STATUS_CACHE_SCHEMA_VERSION: u32 = 1;
+/// Version 2: entries carry PR metadata (opened time, review requests, commit
+/// count, check timings). A version-1 entry would load with those empty and
+/// show "0 commits" and no durations until the first refetch, so it is
+/// dropped instead.
+const GH_STATUS_CACHE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedGhStatusFile {
@@ -316,6 +320,21 @@ mod tests {
             entries: Vec::new(),
         };
         let json = serde_json::to_string_pretty(&payload).expect("serialize");
+        assert!(parse_persisted(&json).is_none());
+    }
+
+    #[test]
+    fn a_version_one_cache_file_is_dropped() {
+        let mut cache: GithubStatusCache = HashMap::new();
+        cache.insert(
+            ("o".to_string(), "r".to_string(), 1),
+            make_snapshot("o", "r", 1),
+        );
+        let payload = PersistedGhStatusFile {
+            version: 1,
+            entries: build_persisted_entries(&cache),
+        };
+        let json = serde_json::to_string(&payload).expect("serialize");
         assert!(parse_persisted(&json).is_none());
     }
 
