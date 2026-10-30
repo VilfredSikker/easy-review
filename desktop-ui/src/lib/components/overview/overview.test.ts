@@ -184,6 +184,19 @@ describe("overview writes", () => {
     expect(fn.indexOf('draft = "";')).toBeLessThan(fn.indexOf("catch"));
   });
 
+  it("scrolls to a pillar only after the tour mode has landed", () => {
+    const src = read("OverviewTour.svelte");
+    const fn = src.slice(src.indexOf("async function openPillar"), src.indexOf("</script>"));
+    const setMode = fn.indexOf('await app.cmd("set_mode", { mode: "tour" })');
+    expect(setMode).toBeGreaterThan(-1);
+    expect(fn).not.toContain('reviewPage.show("tour")');
+    expect(fn.indexOf('if (!reviewPage.available("tour")) return;')).toBeGreaterThan(-1);
+    expect(fn.indexOf('app.snapshot?.mode !== "tour") return;')).toBeGreaterThan(setMode);
+    expect(fn.indexOf("await diffNav.scrollToFile(first)")).toBeGreaterThan(setMode);
+    const row = src.slice(src.indexOf('data-testid="overview-tour-row"'));
+    expect(row.slice(0, row.indexOf("onclick"))).toContain("disabled={!tourAvailable}");
+  });
+
   it("draws avatars from theme tokens, never hex (ADR 0030)", () => {
     for (const name of ["OverviewActivity.svelte", "OverviewFindings.svelte", "OverviewTour.svelte", "EmptyBucket.svelte"]) {
       expect(read(name)).not.toMatch(/#[0-9a-fA-F]{6}\b/);

@@ -33,10 +33,20 @@
     return p.totalCount > 0 ? Math.min(1, p.reviewedCount / p.totalCount) : 0;
   }
 
+  const tourAvailable = $derived(reviewPage.available("tour"));
+
+  /** The tour regroups and pads files by pillar, so a file's offset is only
+   *  right once the tour snapshot is in: scrolling before `set_mode` lands
+   *  computes a branch-layout offset that the mode-change restore then uses. */
   async function openPillar(p: PillarSnapshot) {
-    reviewPage.show("tour");
+    if (!reviewPage.available("tour")) return;
+    app.setMainView("diff");
+    if (app.snapshot?.mode !== "tour") await app.cmd("set_mode", { mode: "tour" });
     const first = p.files[0]?.path;
-    if (!first) return;
+    if (!first || app.snapshot?.mode !== "tour") return;
+    // One flush mounts the diff and runs its mode-change scroll restore; the
+    // second lets that restore's deferred write land before ours.
+    await tick();
     await tick();
     await diffNav.scrollToFile(first);
   }
@@ -58,7 +68,7 @@
       <button
         type="button"
         class="inline-flex h-7 items-center gap-1.5 rounded-[7px] border border-border bg-surface px-2.5 text-[12.5px] font-medium text-fg hover:border-fg-3"
-        disabled={!reviewPage.available("tour")}
+        disabled={!tourAvailable}
         onclick={() => reviewPage.show("tour")}
       >Start tour <kbd class="mono text-[10px] text-fg-3">2</kbd></button>
     {/if}
@@ -78,8 +88,9 @@
       {#each pillars as pillar, i (pillar.id)}
         <button
           type="button"
-          class="grid grid-cols-[34px_minmax(0,1fr)_auto] items-center gap-3 border-t border-line px-4 py-3 text-left first:border-t-0 hover:bg-hover"
+          class="grid grid-cols-[34px_minmax(0,1fr)_auto] items-center gap-3 border-t border-line px-4 py-3 text-left first:border-t-0 enabled:hover:bg-hover disabled:cursor-default"
           data-testid="overview-tour-row"
+          disabled={!tourAvailable}
           onclick={() => void openPillar(pillar)}
         >
           <span class="mono text-[11px] text-fg-3">{i + 1} / {pillars.length}</span>
