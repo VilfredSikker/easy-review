@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { moveHighlight, visibleSuggestions } from "./filterSuggestions";
+import { moveHighlight, suggestionFooter, suggestionLabel, visibleSuggestions } from "./filterSuggestions";
 import type { FilterSuggestionSnapshot } from "./types";
 
 const all: FilterSuggestionSnapshot[] = [
@@ -56,5 +56,20 @@ describe("moveHighlight", () => {
 
   test("an empty list has nothing to highlight", () => {
     expect(moveHighlight(0, 0, 1)).toBe(-1);
+  });
+});
+
+describe("suggestionLabel", () => {
+  test("tags each kind, calling stored queries RECENT", () => {
+    expect(suggestionLabel({ kind: "kind" })).toBe("KIND");
+    expect(suggestionLabel({ kind: "preset" })).toBe("PRESET");
+    expect(suggestionLabel({ kind: "history" })).toBe("RECENT");
+  });
+});
+
+describe("suggestionFooter", () => {
+  test("shows files shown and reviewed against the whole diff", () => {
+    expect(suggestionFooter(3, 1, 9)).toBe("3 files · 1/9 reviewed");
+    expect(suggestionFooter(1, 0, 1)).toBe("1 file · 0/1 reviewed");
   });
 });
