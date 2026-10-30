@@ -19,6 +19,7 @@ const state = {
   modalOpen: false,
   focusedField: false,
   overviewRendered: false,
+  arenaOverlayOpen: false,
 };
 
 mock.module("@tauri-apps/api/core", () => ({
@@ -122,6 +123,13 @@ mock.module("./reviewPage.svelte", () => ({
   },
 }));
 mock.module("./quickExport", () => ({ copyReviewExport: log("copyReviewExport") }));
+mock.module("./arena.svelte", () => ({
+  arena: {
+    get overlayOpen() {
+      return state.arenaOverlayOpen;
+    },
+  },
+}));
 
 let handler: ((e: KeyboardEvent) => void) | null = null;
 const fieldEl = {
@@ -373,6 +381,14 @@ describe("bare keys", () => {
     expect(press({ key: "1", metaKey: true }).calls).toEqual(["cmd:select_tab:0"]);
     state.modalOpen = true;
     expect(press({ key: "2" }).calls).toEqual([]);
+  });
+
+  it("leave j/k and page digits to the arena overlay while it is open", () => {
+    state.arenaOverlayOpen = true;
+    state.overviewRendered = true;
+    expect(press({ key: "j" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "k" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "1" })).toEqual({ calls: [], prevented: false });
   });
 
   it("are ignored in a field, under a modal, or with a modifier", () => {
