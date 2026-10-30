@@ -30,3 +30,15 @@ export function sourceToggleState(input: {
     prReason: prAvailable ? null : "No PR for this branch",
   };
 }
+
+export type DiffSource = "local" | "pr";
+
+/** The side of the toggle the open diff belongs to. A tour reads as the side
+ *  it was generated for, so opening a PR tour never flips the toggle to Local
+ *  Branch. */
+export function activeDiffSource(
+  mode: string | undefined,
+  tourScope: string | undefined,
+): DiffSource {
+  return mode === "pr" || (mode === "tour" && tourScope === "pr") ? "pr" : "local";
+}
