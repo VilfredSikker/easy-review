@@ -44,7 +44,7 @@
 
   const rows = $derived(takeaways(triage));
   const freshness = $derived(
-    triageFreshness(triage, app.snapshot?.diff_stale?.built_from_oid),
+    triageFreshness(triage, app.snapshot?.diff_stale),
   );
   const reviewFlow = $derived(app.snapshot?.review_flow ?? null);
   const flowControls = $derived(reviewFlowControls(reviewFlow));

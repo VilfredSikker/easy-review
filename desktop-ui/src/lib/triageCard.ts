@@ -1,4 +1,4 @@
-import type { TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/types";
+import type { DiffStaleSnapshot, TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/types";
 import type { PillTone } from "$lib/components/ui/Pill.svelte";
 import { longAge } from "$lib/relativeTime";
 
@@ -290,19 +290,28 @@ export interface TriageFreshness {
 }
 
 /**
- * Whether the triage still describes the diff on screen, and what to call the
- * commit it was built from. The built-from commit comes from the diff-stale
- * state when the diff has moved, else from the triage's own diff hash.
+ * Whether the triage still describes what origin has, and what to call it.
+ *
+ * Two signals: `triage.fresh` says whether the triage matches the on-screen
+ * diff, and `diffStale` says whether origin has moved past the commit that diff
+ * was built from. A fresh triage on a stale diff was built from that commit, so
+ * the chip names it. A triage that no longer matches the on-screen diff was not
+ * built from `built_from_oid`, and its own `diff_hash` is a diff hash, not a
+ * commit, so the chip labels it as a diff rather than "built from".
  */
 export function triageFreshness(
   triage: TriageSnapshot,
-  builtFromOid: string | null | undefined,
+  diffStale: Pick<DiffStaleSnapshot, "built_from_oid"> | null | undefined,
   now: number = Date.now(),
 ): TriageFreshness {
-  if (triage.fresh) {
-    const age = triage.created_at ? longAge(triage.created_at, now) : "";
-    return { stale: false, text: age ? `fresh · ${age}` : "fresh" };
+  if (!triage.fresh) {
+    const hash = (triage.diff_hash ?? "").slice(0, OID_DISPLAY_LEN);
+    return { stale: true, text: hash ? `stale · diff ${hash}` : "stale" };
   }
-  const built = (builtFromOid || triage.diff_hash || "").slice(0, OID_DISPLAY_LEN);
-  return { stale: true, text: built ? `stale · built from ${built}` : "stale" };
+  if (diffStale) {
+    const built = diffStale.built_from_oid.slice(0, OID_DISPLAY_LEN);
+    return { stale: true, text: built ? `stale · built from ${built}` : "stale" };
+  }
+  const age = triage.created_at ? longAge(triage.created_at, now) : "";
+  return { stale: false, text: age ? `fresh · ${age}` : "fresh" };
 }

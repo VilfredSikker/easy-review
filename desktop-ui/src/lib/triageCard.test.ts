@@ -309,15 +309,31 @@ describe("triageFreshness", () => {
     expect(triageFreshness(makeTriage(), null, now).text).toBe("fresh");
   });
 
-  it("names the commit a stale triage was built from, shortened", () => {
-    const f = triageFreshness(makeTriage({ fresh: false }), "7be0d14aabbccdd", now);
+  it("names the built-from commit when the triage is fresh but origin moved", () => {
+    const f = triageFreshness(
+      makeTriage({ created_at: "2026-01-01T11:58:00Z" }),
+      { built_from_oid: "7be0d14aabbccdd" },
+      now,
+    );
     expect(f).toEqual({ stale: true, text: "stale · built from 7be0d14" });
   });
 
-  it("falls back to the triage's diff hash, then to plain stale", () => {
-    expect(triageFreshness(makeTriage({ fresh: false, diff_hash: "3c9a1f7e5b" }), null, now).text).toBe(
-      "stale · built from 3c9a1f7",
+  it("labels a mismatched triage's hash as a diff, never as the built-from commit", () => {
+    const f = triageFreshness(
+      makeTriage({ fresh: false, diff_hash: "3c9a1f7e5b" }),
+      { built_from_oid: "7be0d14aabbccdd" },
+      now,
     );
+    expect(f).toEqual({ stale: true, text: "stale · diff 3c9a1f7" });
+    expect(triageFreshness(makeTriage({ fresh: false, diff_hash: "3c9a1f7e5b" }), null, now).text).toBe(
+      "stale · diff 3c9a1f7",
+    );
+  });
+
+  it("reads plain stale when a mismatched triage has no diff hash", () => {
     expect(triageFreshness(makeTriage({ fresh: false }), undefined, now).text).toBe("stale");
+    expect(
+      triageFreshness(makeTriage({ fresh: false }), { built_from_oid: "7be0d14aabbccdd" }, now).text,
+    ).toBe("stale");
   });
 });

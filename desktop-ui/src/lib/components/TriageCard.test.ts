@@ -77,7 +77,7 @@ describe("TriageCard", () => {
   });
 
   it("shows the fresh or stale built-from chip beside the label", () => {
-    expect(src).toContain("triageFreshness(triage, app.snapshot?.diff_stale?.built_from_oid)");
+    expect(src).toContain("triageFreshness(triage, app.snapshot?.diff_stale)");
     expect(src).toContain("{freshness.text}");
   });
 
