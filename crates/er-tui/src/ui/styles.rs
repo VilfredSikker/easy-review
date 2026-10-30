@@ -16,6 +16,27 @@ pub fn SURFACE() -> Color {
 pub fn PANEL() -> Color {
     super::themes::current().panel
 }
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn GROUND() -> Color {
+    super::themes::current().ground
+}
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn LINE() -> Color {
+    super::themes::current().line
+}
+#[expect(
+    dead_code,
+    reason = "palette parity with the desktop tokens; no TUI surface draws it yet"
+)]
+pub fn COMMIT_SERIES() -> [Color; 6] {
+    super::themes::current().commit_series
+}
 pub fn BORDER() -> Color {
     super::themes::current().border
 }

@@ -25,10 +25,14 @@ export interface AppTheme {
   syntaxThemeId: string;
 
   // Background layer
+  /** Canvas beneath the app frame — one step deeper than `bg`. */
+  ground: string;
   bg: string;
   surface: string;
   panel: string;
   border: string;
+  /** Hairline divider, fainter than `border` (which maps to the prototype's line2). */
+  line: string;
 
   // Text layer (textBright is always the strongest body color)
   text: string;
@@ -136,7 +140,31 @@ export const WORD_DIFF_HIGHLIGHT_ALPHA = 0.3;
 /** Opacity of the add/del line tint composited over the canvas. */
 const DIFF_LINE_ALPHA = 0.15;
 
+/**
+ * Ground and line are derived, not authored per theme (ADR 0030): ground
+ * recedes from the canvas toward black (barely on light palettes, where a
+ * dark ground would read as a different theme), and the hairline is the
+ * border pulled back toward the canvas so dividers stay quieter than outlines.
+ */
+const GROUND_DEPTH_DARK = 0.5;
+const GROUND_DEPTH_LIGHT = 0.065;
+const HAIRLINE_STRENGTH = 0.55;
+
+function deriveGround(bg: string, light: boolean): string {
+  return mix(bg, "#000000", light ? GROUND_DEPTH_LIGHT : GROUND_DEPTH_DARK);
+}
+
+/**
+ * Categorical series for per-commit marks (blame stripes, sha chips). Reuses
+ * the accent ladder so it follows every theme without new hex; order keeps
+ * neighbours maximally distinct in hue.
+ */
+export function commitSeriesFor(t: AppTheme): string[] {
+  return [t.orange, t.blue, t.purple, t.green, t.cyan, t.yellow];
+}
+
 function buildTheme(t: ThemeTokens): AppTheme {
+  const border = over(t.line2, t.bg);
   const addBg = overAt(t.add, DIFF_LINE_ALPHA, t.bg);
   const delBg = overAt(t.del, DIFF_LINE_ALPHA, t.bg);
   return {
@@ -144,10 +172,12 @@ function buildTheme(t: ThemeTokens): AppTheme {
     light: t.light,
     syntaxThemeId: t.syntaxThemeId,
 
+    ground: deriveGround(t.bg, t.light),
     bg: t.bg,
     surface: t.bg1,
     panel: t.bg2,
-    border: over(t.line2, t.bg),
+    border,
+    line: mix(t.bg, border, HAIRLINE_STRENGTH),
 
     text: t.tx,
     textBright: t.tx,
@@ -330,6 +360,8 @@ function mix(a: string, b: string, t: number): string {
 export function cssVarsFor(t: AppTheme): Record<string, string> {
   return {
     // Ink ladder: bg → surface → panel → border → text, interpolated between anchors.
+    "--color-ground": t.ground,
+    "--color-line": t.line,
     "--color-ink-900": t.bg,
     "--color-ink-880": t.surface,
     "--color-ink-870": mix(t.surface, t.panel, 0.2),
@@ -375,14 +407,22 @@ export function cssVarsFor(t: AppTheme): Record<string, string> {
     "--color-risk-med": t.yellow,
     "--color-risk-low": t.blue,
 
-    "--color-comment": t.cyan,
-    "--color-question": t.yellow,
-    "--color-question-surface": alpha(t.yellow, 0.04),
-    "--color-question-border": alpha(t.yellow, 0.25),
+    // Annotation kinds. Question takes purple and note amber so the three
+    // kinds never share a hue; finding keeps purple because it only ever
+    // appears under the Findings pillar, never beside a question chip.
+    "--color-comment": t.blue,
+    "--color-question": t.purple,
+    "--color-question-surface": alpha(t.purple, 0.04),
+    "--color-question-border": alpha(t.purple, 0.25),
+    "--color-note": t.yellow,
     "--color-ai": t.yellow,
 
     "--color-tree-selected": alpha(t.blue, 0.14),
     "--color-finding": t.purple,
+
+    ...Object.fromEntries(
+      commitSeriesFor(t).map((c, i) => [`--color-commit-${i + 1}`, c]),
+    ),
 
     "--color-row-select": alpha(t.blue, 0.18),
     "--color-row-select-weak": alpha(t.blue, 0.1),
