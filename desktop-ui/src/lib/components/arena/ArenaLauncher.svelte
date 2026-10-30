@@ -1,21 +1,22 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
-  import Button from "$lib/components/ui/Button.svelte";
   import { openDiffFilePicker } from "$lib/components/AiReviewFilesModal.svelte";
   import { arena, type ArenaStartConfig } from "$lib/stores/arena.svelte";
   import { app } from "$lib/stores/app.svelte";
   import { triageRecommendedPaths } from "$lib/triageSuggestions";
-  import ArenaAgentPicker from "$lib/components/arena/ArenaAgentPicker.svelte";
   import type { AiProviderInfo, ReviewerInfo } from "$lib/types";
   import type { ArenaEstimate, ArenaLauncherScope, ArenaScope, ReviewerRef } from "$lib/types/arena";
-  import type { LauncherReviewerMode } from "$lib/stores/arena.svelte";
-  import {
-    formatModelPricePer1k,
-    modelLabel,
-    pickMostExpensiveModel,
-  } from "$lib/arena/estimate";
+  import { modelLabel, pickMostExpensiveModel } from "$lib/arena/estimate";
   import { effortLabel, effortLevelsForModel, modelSupportsEffort } from "$lib/arena/effort";
+  import {
+    agentPickKey,
+    lensColorVar,
+    modelPickKey,
+    picksToReviewers,
+    reviewerToPickKey,
+    triageRecommends,
+  } from "$lib/arena/arenaView";
   import { arenaError, arenaLog, arenaWarn } from "$lib/arena/log";
 
   interface Props {
@@ -26,14 +27,23 @@
 
   const { open, onClose, preset = [] }: Props = $props();
 
+  const MAX_REVIEWERS = 6;
+
   let providers = $state<AiProviderInfo[]>([]);
-  let selected = $state<Set<string>>(new Set());
+  let agents = $state<ReviewerInfo[]>([]);
+  let loadingProviders = $state(false);
+  /** Model picks (`m:provider::model`) and lens picks (`a:kind`) in one set. */
+  let picks = $state<Set<string>>(new Set());
+  /** `provider::model` every lens runs on. */
+  let agentModelKey = $state<string | null>(null);
   let rounds = $state(3);
   let costApproved = $state(false);
   let scope = $state<ArenaLauncherScope>("branch");
   let selectedPaths = $state<string[]>([]);
-  let title = $state("");
-  let loadingProviders = $state(false);
+  /** `provider::model` for the arbiter's ruling after the last round. */
+  let arbiterKey = $state<string | null>(null);
+  let effortUseGlobal = $state(true);
+  let effortOverride = $state("high");
 
   let estimate = $state<ArenaEstimate | null>(null);
   let estimateLoading = $state(false);
@@ -42,22 +52,11 @@
 
   /**
    * The engine clamps rounds to its own maximum (`effective_arena_rounds`), so
-   * a picker that offers more than this reports rounds nobody will run. The
-   * limit comes from the estimate rather than a hardcoded number so the two
-   * cannot drift apart again; 3 is only the pre-load fallback.
+   * the picker takes its limit from the estimate rather than a hardcoded
+   * number; 3 is only the pre-load fallback.
    */
   const maxRounds = $derived(estimate?.max_rounds ?? 3);
-  const ROUND_OPTIONS = $derived(
-    Array.from({ length: maxRounds }, (_, i) => i + 1),
-  );
-  /** `provider::model` for round-final arbiter (independent of reviewers). */
-  let arbiterKey = $state<string | null>(null);
-  let reviewerMode = $state<LauncherReviewerMode>("models");
-  let agents = $state<ReviewerInfo[]>([]);
-  /** agent_kind → selected provider::model keys */
-  let agentSelection = $state<Record<string, Set<string>>>({});
-  let effortUseGlobal = $state(true);
-  let effortOverride = $state("high");
+  const roundOptions = $derived(Array.from({ length: maxRounds }, (_, i) => i + 1));
 
   const SCOPE_OPTIONS: { id: ArenaLauncherScope; label: string }[] = [
     { id: "branch", label: "Branch" },
@@ -66,227 +65,138 @@
     { id: "selected", label: "Selected" },
   ];
 
+  const isSingleMode = $derived(arena.launcherMode === "single");
+  const minReviewers = $derived(isSingleMode ? 1 : 2);
+  const maxReviewers = $derived(isSingleMode ? 1 : MAX_REVIEWERS);
 
-  function pairKey(p: string, m: string) {
-    return `${p}::${m}`;
-  }
-
-  function parseKey(key: string): ReviewerRef {
-    const [provider_id, model_id] = key.split("::");
-    return { provider_id: provider_id ?? "", model_id: model_id ?? "" };
-  }
-
-  const launcherMode = $derived(arena.launcherMode);
-  const isSingleMode = $derived(launcherMode === "single");
-
-  function toggle(key: string) {
-    if (isSingleMode) {
-      selected = selected.has(key) ? new Set() : new Set([key]);
-    } else if (selected.has(key)) {
-      selected = new Set([...selected].filter((k) => k !== key));
-    } else if (selected.size < 6) {
-      selected = new Set([...selected, key]);
-    } else {
-      selected = new Set(selected);
-    }
-    costApproved = false;
-    arenaLog("launcher: toggled model", { key, count: selected.size, isSingleMode });
+  function refFromKey(key: string): ReviewerRef {
+    const [provider_id = "", model_id = ""] = key.split("::");
+    return { provider_id, model_id };
   }
 
   const sortedProviders = $derived(
     [...providers]
       .sort((a, b) => a.label.localeCompare(b.label))
-      .map((p) => ({
-        ...p,
-        models: [...p.models].sort((a, b) => a.label.localeCompare(b.label)),
-      })),
+      .map((p) => ({ ...p, models: [...p.models].sort((a, b) => a.label.localeCompare(b.label)) })),
   );
-
-  const picked = $derived([...selected].map(parseKey));
-
-  const agentGroups = $derived.by(() => {
-    const groups: { agent_kind: string; models: ReviewerRef[] }[] = [];
-    for (const [kind, keys] of Object.entries(agentSelection)) {
-      if (!keys.size) continue;
-      groups.push({
-        agent_kind: kind,
-        models: [...keys].map((k) => {
-          const ref = parseKey(k);
-          return { ...ref, agent_kind: kind };
-        }),
-      });
-    }
-    return groups;
-  });
-
-  const agentModelCount = $derived(
-    agentGroups.reduce((n, g) => n + g.models.length, 0),
+  const modelRows = $derived(
+    sortedProviders.flatMap((p) => p.models.map((m) => ({ key: modelPickKey(p.id, m.id), provider: p, model: m }))),
   );
-  const agentArenaCount = $derived(agentGroups.filter((g) => g.models.length >= 2).length);
-  const agentSingleCount = $derived(agentGroups.filter((g) => g.models.length === 1).length);
+  const agentModel = $derived(agentModelKey ? refFromKey(agentModelKey) : null);
+  const reviewers = $derived(picksToReviewers(picks, agentModel));
+  const isArena = $derived(!isSingleMode && reviewers.length >= 2);
+  const effectiveRounds = $derived(isArena ? Math.min(maxRounds, Math.max(1, rounds)) : 1);
+  /** ADR 0024: a multi-round run always ends with an arbiter, a one-round run never does. */
+  const arbiterOn = $derived(effectiveRounds >= 2);
+  const arbiterRef = $derived(arbiterKey ? refFromKey(arbiterKey) : null);
+  const arbiterLabel = $derived(arbiterRef && providers.length ? modelLabel(providers, arbiterRef) : "—");
+  const triageExperts = $derived(app.snapshot?.ai.triage?.fresh ? app.snapshot.ai.triage.experts : []);
 
-  function modelInfo(modelId: string, providerId?: string) {
-    return providers
-      .filter((provider) => !providerId || provider.id === providerId)
-      .flatMap((provider) => provider.models)
-      .find((model) => model.id === modelId) ?? null;
+  function modelInfo(ref: ReviewerRef) {
+    return providers.find((p) => p.id === ref.provider_id)?.models.find((m) => m.id === ref.model_id) ?? null;
   }
 
-  const isAgentsMode = $derived(reviewerMode === "agents");
-  const isArena = $derived(
-    isAgentsMode
-      ? agentArenaCount > 0 || (agentSingleCount > 0 && agentModelCount > 1)
-      : !isSingleMode && picked.length >= 2,
+  function modelName(ref: ReviewerRef | null): string {
+    if (!ref) return "—";
+    return modelInfo(ref)?.label ?? ref.model_id;
+  }
+
+  const effortModels = $derived(
+    reviewers
+      .filter((r) => (r.provider_id === "claude" || r.provider_id === "codex") && modelSupportsEffort(modelInfo(r)))
+      .map((r) => modelInfo(r)),
   );
-  const minReviewers = $derived(isSingleMode ? 1 : 2);
-  const maxReviewers = $derived(isSingleMode ? 1 : 6);
-
-  const effortCapableModelIds = $derived.by(() => {
-    if (isAgentsMode) {
-      const ids: string[] = [];
-      for (const g of agentGroups) {
-        for (const m of g.models) {
-          if (
-            (m.provider_id === "claude" || m.provider_id === "codex") &&
-            modelSupportsEffort(modelInfo(m.model_id, m.provider_id))
-          ) {
-            ids.push(m.model_id);
-          }
-        }
-      }
-      return ids;
-    }
-    return picked
-      .filter(
-        (reviewer) =>
-          (reviewer.provider_id === "claude" || reviewer.provider_id === "codex") &&
-          modelSupportsEffort(modelInfo(reviewer.model_id, reviewer.provider_id)),
-      )
-      .map((reviewer) => reviewer.model_id);
-  });
-
-  const usesEffortCapableModels = $derived(effortCapableModelIds.length > 0);
-
-  const effortLevelsForRun = $derived.by(() => {
-    const [first, ...rest] = effortCapableModelIds;
-    if (first === undefined) return [] as readonly string[];
-    let levels = [...effortLevelsForModel(modelInfo(first))];
-    for (const id of rest) {
-      const next = effortLevelsForModel(modelInfo(id));
+  const effortLevels = $derived.by(() => {
+    const [first, ...rest] = effortModels;
+    if (!first) return [] as readonly string[];
+    let levels = [...effortLevelsForModel(first)];
+    for (const m of rest) {
+      const next = effortLevelsForModel(m);
       levels = levels.filter((l) => next.includes(l));
     }
     return levels;
   });
-
   const globalEffortLabel = $derived(
-    app.snapshot?.active_ai_effort
-      ? effortLabel(app.snapshot.active_ai_effort)
-      : "CLI default",
+    app.snapshot?.active_ai_effort ? effortLabel(app.snapshot.active_ai_effort) : "CLI default",
   );
 
-  function arenaRunEffort(): string | undefined {
-    if (!usesEffortCapableModels || effortUseGlobal) return undefined;
+  function runEffort(): string | undefined {
+    if (effortModels.length === 0 || effortUseGlobal) return undefined;
     return effortOverride;
   }
-  const exceedsCostLimit = $derived(
-    estimate != null && estimate.cost_usd > estimate.cost_limit_usd,
-  );
+
+  const exceedsCostLimit = $derived(estimate != null && estimate.cost_usd > estimate.cost_limit_usd);
   const noDiff = $derived(estimate != null && estimate.diff_bytes === 0);
 
   /** PR tabs and read-only branch views have no working-tree unstaged/staged diff. */
   const arenaDiffReadOnly = $derived(
-    app.snapshot?.pr != null ||
-      (app.snapshot?.local_branch != null && !app.snapshot?.local_branch_checked_out),
+    app.snapshot?.pr != null || (app.snapshot?.local_branch != null && !app.snapshot?.local_branch_checked_out),
   );
-
   const scopeOptions = $derived(
-    arenaDiffReadOnly
-      ? SCOPE_OPTIONS.filter((o) => o.id === "branch" || o.id === "selected")
-      : SCOPE_OPTIONS,
+    arenaDiffReadOnly ? SCOPE_OPTIONS.filter((o) => o.id === "branch" || o.id === "selected") : SCOPE_OPTIONS,
   );
 
   const canStart = $derived(
-    (isAgentsMode
-      ? agentModelCount >= 1
-      : picked.length >= minReviewers && picked.length <= maxReviewers) &&
+    reviewers.length >= minReviewers &&
+      reviewers.length <= maxReviewers &&
       !arena.loading &&
       !noDiff &&
       (scope !== "selected" || selectedPaths.length > 0) &&
       (!exceedsCostLimit || costApproved),
   );
 
-  const selectedScopeLabel = $derived(
-    selectedPaths.length > 0
-      ? `Selected (${selectedPaths.length})`
-      : "Selected files…",
-  );
-
   const suggestedTitle = $derived.by(() => {
-    if (picked.length === 0) return "New review run";
-    const labels: string[] = [];
-    for (const p of sortedProviders) {
-      for (const m of p.models) {
-        if (selected.has(pairKey(p.id, m.id))) labels.push(m.label);
-      }
-    }
-    const body =
-      labels.length <= 3
-        ? labels.join(" × ")
-        : `${labels.slice(0, 2).join(" × ")} +${labels.length - 2}`;
-    return `${roundsPrefix(rounds)} · ${body}`;
+    if (reviewers.length === 0) return "New review run";
+    const labels = reviewers.map((r) =>
+      r.agent_kind ? agents.find((a) => a.kind === r.agent_kind)?.label ?? r.agent_kind : modelName(r),
+    );
+    const body = labels.length <= 3 ? labels.join(" × ") : `${labels.slice(0, 2).join(" × ")} +${labels.length - 2}`;
+    return isArena ? `${effectiveRounds} rounds · ${body}` : body;
   });
 
-  function roundsPrefix(n: number): string {
-    if (n >= 4) return "Deep";
-    if (n === 3) return "Standard";
-    if (n === 2) return "Quick";
-    return "Light";
-  }
-
-  const gitPoolLabel = $derived.by(() => {
-    const mode = app.snapshot?.mode;
-    if (mode === "unstaged") return "unstaged";
-    if (mode === "staged") return "staged";
-    if (mode === "pr") return "PR Diff";
-    return "branch";
-  });
-
-  const scopeHint = $derived.by(() => {
-    if (scope === "branch") return "Every file on this branch vs base";
-    if (scope === "unstaged") return "Working tree changes not yet staged";
-    if (scope === "staged") return "Staged changes ready to commit";
-    if (selectedPaths.length > 0) {
-      return `${selectedPaths.length} file${selectedPaths.length === 1 ? "" : "s"} · from ${gitPoolLabel} view`;
-    }
-    return `Pick files from the current ${gitPoolLabel} view`;
-  });
-
-  const arbiterRef = $derived(
-    arbiterKey ? parseKey(arbiterKey) : null,
+  const triagePaths = $derived(triageRecommendedPaths(app.snapshot?.ai.triage));
+  const triageSelected = $derived(
+    scope === "selected" &&
+      triagePaths.length > 0 &&
+      selectedPaths.length === triagePaths.length &&
+      triagePaths.every((p) => selectedPaths.includes(p)),
   );
-
-  const arbiterLabel = $derived(
-    arbiterRef && providers.length ? modelLabel(providers, arbiterRef) : "—",
-  );
-
-  const roundsHint = $derived.by(() => {
-    if (rounds <= 1) return "Propose only — no cross-check or arbiter";
-    if (rounds === 2) return "Propose + 1 cross-check, then arbiter";
-    return `Propose + ${rounds - 1} cross-checks, then arbiter`;
-  });
 
   const footerEstimate = $derived.by(() => {
     if (estimateLoading) return "Estimating…";
     if (estimateError) return "Estimate unavailable";
-    if (!estimate) return "—";
-    if (noDiff) return "No diff in this scope — try Unstaged, Staged, or file selection";
-    return `~${estimate.latency_sec}s · ${(estimate.diff_bytes / 1024).toFixed(1)} KB · est. $${estimate.cost_usd.toFixed(2)}`;
+    if (noDiff) return "No diff in this scope — try Unstaged, Staged, or selected files";
+    const shape = isArena
+      ? `${reviewers.length} reviewers × ${effectiveRounds} round${effectiveRounds === 1 ? "" : "s"}`
+      : `${reviewers.length} reviewer`;
+    if (!estimate) return shape;
+    const min = Math.max(1, Math.ceil(estimate.latency_sec / 60));
+    return `≈ $${estimate.cost_usd.toFixed(2)} · ~${min} min · ${shape}`;
   });
 
-  function startScopePayload(): { scope: ArenaScope; files?: string[] } {
-    if (scope === "selected") {
-      return { scope: scopeFromMode(app.snapshot?.mode), files: selectedPaths };
+  function touch() {
+    costApproved = false;
+  }
+
+  function togglePick(key: string) {
+    if (isSingleMode) {
+      picks = picks.has(key) ? new Set() : new Set([key]);
+    } else if (picks.has(key)) {
+      picks = new Set([...picks].filter((k) => k !== key));
+    } else if (picks.size < MAX_REVIEWERS) {
+      picks = new Set([...picks, key]);
     }
+    touch();
+    arenaLog("launcher: toggled reviewer", { key, count: picks.size, isSingleMode });
+  }
+
+  function setArbiter(on: boolean) {
+    rounds = on ? Math.max(2, Math.min(maxRounds, rounds >= 2 ? rounds : 3)) : 1;
+    touch();
+  }
+
+  function startScopePayload(): { scope: ArenaScope; files?: string[] } {
+    if (scope === "selected") return { scope: scopeFromMode(app.snapshot?.mode), files: selectedPaths };
     return { scope };
   }
 
@@ -296,81 +206,32 @@
       onConfirm: (paths) => {
         selectedPaths = paths;
         scope = "selected";
-        costApproved = false;
-        arenaLog("launcher: files selected", { count: paths.length });
+        touch();
       },
     });
   }
-
-  /** Files Triage flagged for review — a one-click scope for the current diff. */
-  const triagePaths = $derived(triageRecommendedPaths(app.snapshot?.ai.triage));
-
-  const triageSelected = $derived(
-    scope === "selected" &&
-      triagePaths.length > 0 &&
-      selectedPaths.length === triagePaths.length &&
-      triagePaths.every((p) => selectedPaths.includes(p)),
-  );
 
   function useTriageFiles() {
     if (triagePaths.length === 0) return;
     selectedPaths = [...triagePaths];
     scope = "selected";
-    costApproved = false;
-    arenaLog("launcher: used triage files", { count: triagePaths.length });
+    touch();
   }
 
   function selectScope(next: ArenaLauncherScope) {
-    if (arenaDiffReadOnly && (next === "unstaged" || next === "staged")) {
-      return;
-    }
-    if (next === scope && next === "selected") {
+    if (arenaDiffReadOnly && (next === "unstaged" || next === "staged")) return;
+    // The picker sets the scope itself once files are confirmed.
+    if (next === "selected" && (scope === "selected" || selectedPaths.length === 0)) {
       openFilePicker();
       return;
     }
     scope = next;
-    costApproved = false;
-    arenaLog("launcher: scope", next);
-    if (next === "selected" && selectedPaths.length === 0) {
-      openFilePicker();
-    }
-  }
-
-  function toggleAgent(kind: string) {
-    const next = { ...agentSelection };
-    if (next[kind]?.size) {
-      delete next[kind];
-    } else {
-      const def = providers.flatMap((p) =>
-        p.models.map((m) => pairKey(p.id, m.id)),
-      );
-      const first = def[0];
-      if (first) next[kind] = new Set([first]);
-    }
-    agentSelection = next;
-    costApproved = false;
-  }
-
-  function toggleAgentModel(kind: string, key: string) {
-    const cur = agentSelection[kind] ?? new Set<string>();
-    if (isSingleMode) {
-      agentSelection = { ...agentSelection, [kind]: cur.has(key) ? new Set() : new Set([key]) };
-    } else if (cur.has(key)) {
-      agentSelection = { ...agentSelection, [kind]: new Set([...cur].filter((k) => k !== key)) };
-    } else {
-      agentSelection = { ...agentSelection, [kind]: new Set([...cur, key]) };
-    }
-    costApproved = false;
+    touch();
   }
 
   async function refreshEstimate() {
     if (!open) return;
-    if (isAgentsMode) {
-      if (agentModelCount < 1) {
-        estimate = null;
-        return;
-      }
-    } else if (picked.length < minReviewers) {
+    if (reviewers.length < minReviewers) {
       estimate = null;
       estimateError = null;
       estimateLoading = false;
@@ -381,32 +242,18 @@
     estimateError = null;
     const { scope: gitScope, files } = startScopePayload();
     try {
-      const result = isAgentsMode
-        ? await invoke<ArenaEstimate>("arena_estimate_batch", {
-            req: {
-              scope: gitScope,
-              files: scope === "selected" ? files : undefined,
-              rounds: Math.min(maxRounds, Math.max(1, Number(rounds))),
-              arbiter: rounds >= 2 ? arbiterRef ?? undefined : undefined,
-              groups: agentGroups.map((g) => ({
-                agent_kind: g.agent_kind,
-                models: g.models,
-              })),
-            },
-          })
-        : await invoke<ArenaEstimate>("arena_estimate", {
-            req: {
-              reviewers: picked,
-              scope: gitScope,
-              files: scope === "selected" ? files : undefined,
-              rounds: isArena ? Math.min(maxRounds, Math.max(1, Number(rounds))) : 1,
-              arbiter: isArena && rounds >= 2 ? arbiterRef ?? undefined : undefined,
-            },
-          });
+      const result = await invoke<ArenaEstimate>("arena_estimate", {
+        req: {
+          reviewers,
+          scope: gitScope,
+          files: scope === "selected" ? files : undefined,
+          rounds: effectiveRounds,
+          arbiter: arbiterOn ? arbiterRef ?? undefined : undefined,
+        },
+      });
       if (seq !== estimateSeq) return;
       estimate = result;
       costApproved = false;
-      arenaLog("launcher: estimate", result);
     } catch (e) {
       if (seq !== estimateSeq) return;
       estimate = null;
@@ -419,46 +266,30 @@
 
   $effect(() => {
     if (!open) return;
-    if (arenaDiffReadOnly && (scope === "unstaged" || scope === "staged")) {
-      scope = "branch";
-    }
+    if (arenaDiffReadOnly && (scope === "unstaged" || scope === "staged")) scope = "branch";
   });
 
   $effect(() => {
     if (!open) return;
-    arenaLog("launcher: opened");
     const mode = app.snapshot?.mode;
     scope = mode === "unstaged" || mode === "staged" ? mode : "branch";
     selectedPaths = [];
     costApproved = false;
     if (preset.length) {
-      const keys = new Set(
-        preset
-          .slice(0, isSingleMode ? 1 : 6)
-          .map((r) => pairKey(r.provider_id, r.model_id)),
-      );
-      selected = keys;
+      picks = new Set(preset.slice(0, isSingleMode ? 1 : MAX_REVIEWERS).map(reviewerToPickKey));
+      const lens = preset.find((r) => r.agent_kind);
+      if (lens) agentModelKey = `${lens.provider_id}::${lens.model_id}`;
       rounds = isSingleMode || preset.length < 2 ? 1 : 3;
-      arenaLog("launcher: applied preset", { reviewers: preset.length, rounds, isSingleMode });
-    } else if (isSingleMode && selected.size > 1) {
-      const first = [...selected][0];
-      selected = first ? new Set([first]) : new Set();
+    } else if (isSingleMode && picks.size > 1) {
+      const first = [...picks][0];
+      picks = first ? new Set([first]) : new Set();
     }
   });
 
   $effect(() => {
     if (!open) return;
-    const _deps = [
-      scope,
-      selectedPaths,
-      picked.length,
-      rounds,
-      isArena,
-      arbiterKey,
-      reviewerMode,
-      agentModelCount,
-    ];
-    void _deps;
+    const deps = [scope, selectedPaths, reviewers, effectiveRounds, arbiterKey];
+    void deps;
     const t = setTimeout(() => void refreshEstimate(), 300);
     return () => clearTimeout(t);
   });
@@ -466,30 +297,27 @@
   $effect(() => {
     if (!open) return;
     loadingProviders = true;
-    arenaLog("launcher: loading providers");
-    Promise.all([
-      invoke<AiProviderInfo[]>("list_ai_providers"),
-      invoke<ReviewerInfo[]>("list_ai_reviewers"),
-    ])
+    Promise.all([invoke<AiProviderInfo[]>("list_ai_providers"), invoke<ReviewerInfo[]>("list_ai_reviewers")])
       .then(([list, reviewerList]) => {
         providers = list;
         agents = reviewerList;
-        arenaLog("launcher: providers loaded", { count: list.length });
-        if (selected.size === 0) {
+        const sorted = [...list].sort((a, b) => a.label.localeCompare(b.label));
+        if (!agentModelKey) {
+          const p = sorted.find((x) => x.is_selected) ?? sorted[0];
+          const m = p?.models.find((x) => x.is_selected) ?? p?.models[0];
+          if (p && m) agentModelKey = `${p.id}::${m.id}`;
+        }
+        if (picks.size === 0) {
           const pre: string[] = [];
-          for (const p of [...list].sort((a, b) => a.label.localeCompare(b.label))) {
+          for (const p of sorted) {
             const m = p.models.find((x) => x.is_selected) ?? p.models[0];
-            if (m) pre.push(pairKey(p.id, m.id));
+            if (m) pre.push(modelPickKey(p.id, m.id));
           }
-          if (pre.length) {
-            const cap = arena.launcherMode === "single" ? 1 : 3;
-            selected = new Set(pre.slice(0, cap));
-          }
-          arenaLog("launcher: default selection", { keys: [...selected] });
+          picks = new Set(pre.slice(0, arena.launcherMode === "single" ? 1 : 3));
         }
         if (!arbiterKey) {
           const def = pickMostExpensiveModel(list);
-          if (def) arbiterKey = pairKey(def.provider_id, def.model_id);
+          if (def) arbiterKey = `${def.provider_id}::${def.model_id}`;
         }
       })
       .catch((e) => {
@@ -501,62 +329,25 @@
       });
   });
 
-  function startBlockedReason(): string {
-    if (exceedsCostLimit && !costApproved) return "cost not approved";
-    if (scope === "selected" && selectedPaths.length === 0) return "no files selected";
-    if (picked.length < minReviewers) {
-      return isSingleMode ? "pick one model" : "need at least 2 reviewers";
-    }
-    if (arena.loading) return "already starting";
-    return "unknown";
-  }
-
-  const startLabel = $derived.by(() => {
-    if (arena.loading) return "Starting…";
-    if (isAgentsMode) return `Start (${agentArenaCount} arena · ${agentSingleCount} single)`;
-    return isArena ? "Start arena" : "Start review";
-  });
-
   function handleStart() {
-    arenaLog("launcher: Start clicked", {
-      canStart,
-      picked: picked.length,
-      loading: arena.loading,
-      scope,
-      rounds,
-      costApproved,
-      exceedsCostLimit,
-    });
     if (!canStart) {
-      arenaWarn("launcher: start blocked", {
-        reason: startBlockedReason(),
-      });
+      arenaWarn("launcher: start blocked", { reviewers: reviewers.length, scope, costApproved, noDiff });
       return;
     }
-
     const { scope: gitScope, files } = startScopePayload();
-    const config: ArenaStartConfig = isAgentsMode
-      ? {
-          mode: "agents",
-          agent_groups: agentGroups,
-          scope: gitScope,
-          files,
-          rounds: Math.min(maxRounds, Math.max(1, Number(rounds))),
-          arbiter: rounds >= 2 ? arbiterRef ?? undefined : undefined,
-          confirm: exceedsCostLimit && costApproved,
-          effort: arenaRunEffort(),
-        }
-      : {
-          mode: "models",
-          title: title.trim() || suggestedTitle,
-          reviewers: picked,
-          scope: gitScope,
-          files,
-          rounds: isArena ? Math.min(maxRounds, Math.max(1, Number(rounds))) : 1,
-          arbiter: isArena && rounds >= 2 ? arbiterRef ?? undefined : undefined,
-          confirm: exceedsCostLimit && costApproved,
-          effort: arenaRunEffort(),
-        };
+    const soleLens = isSingleMode ? reviewers[0]?.agent_kind : undefined;
+    const config: ArenaStartConfig = {
+      mode: "models",
+      title: suggestedTitle,
+      reviewers,
+      agent_kind: soleLens,
+      scope: gitScope,
+      files,
+      rounds: effectiveRounds,
+      arbiter: arbiterOn ? arbiterRef ?? undefined : undefined,
+      confirm: exceedsCostLimit && costApproved,
+      effort: runEffort(),
+    };
     arenaLog("launcher: dispatching startRun", config);
     void arena.startRun(config).catch((e) => {
       const msg = e instanceof Error ? e.message : String(e);
@@ -564,362 +355,202 @@
         costApproved = false;
         app.showToast(
           "error",
-          `Estimated cost exceeds $${estimate?.cost_limit_usd.toFixed(0) ?? "25"} — check the approval box after the estimate updates`,
+          `Estimated cost exceeds $${estimate?.cost_limit_usd.toFixed(0) ?? "25"} — approve it once the estimate updates`,
         );
       }
     });
   }
 </script>
 
+{#snippet check(on: boolean)}
+  <span class="cb" data-on={on} aria-hidden="true">
+    <svg width="9" height="9" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 6.5l2.5 2.5 4.5-6" /></svg>
+  </span>
+{/snippet}
+
 <ModalShell
   {open}
-  ariaLabel={isSingleMode ? "Start single AI review" : "Start AI Review Arena"}
+  ariaLabel={isSingleMode ? "New single review" : "New arena"}
   {onClose}
-  backdropClass="fixed inset-0 z-[250] bg-[color-mix(in_srgb,var(--arena-bg-app)_66%,transparent)]"
-  backdropStyle="backdrop-filter: blur(4px); -webkit-backdrop-filter: blur(4px);"
-  panelClass="left-1/2 top-1/2 w-full max-w-[720px] -translate-x-1/2 -translate-y-1/2"
+  backdropClass="fixed inset-0 z-[250] bg-[color-mix(in_srgb,var(--color-ground)_55%,transparent)]"
+  panelClass="left-1/2 top-12 w-[calc(100%-32px)] max-w-[560px] -translate-x-1/2"
 >
-  <div
-    class="flex max-h-[90vh] flex-col overflow-hidden rounded-[14px] border border-[var(--arena-border)] bg-[var(--arena-bg-1)] shadow-2xl"
-  >
-    <header
-      class="flex shrink-0 items-center justify-between border-b border-[var(--arena-border)] px-5 py-3"
-    >
-      <div>
-        <h2 class="text-[14px] font-semibold text-[var(--arena-fg)]">
-          {isSingleMode ? "Single AI review" : "AI Review Arena"}
-        </h2>
-        <p class="text-[11px] text-[var(--arena-fg-subtle)]">
-          {#if isSingleMode}
-            Pick one model · 1 round
-          {:else if isArena}
-            {picked.length} reviewers · {rounds} rounds
-          {:else}
-            Pick at least 2 models for arena
-          {/if}
-        </p>
-      </div>
-      <button
-        type="button"
-        class="text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]"
-        onclick={onClose}
-        aria-label="Close"
-      >✕</button>
-    </header>
+  <div class="ar-launch">
+    <div class="al-h">
+      <b>{isSingleMode ? "New single review" : "New arena"}</b>
+      <span class="flex-1"></span>
+      <button type="button" class="x" onclick={onClose} aria-label="Close">✕</button>
+    </div>
 
-    <div class="flex-1 overflow-y-auto px-5 py-4 space-y-4">
-      <div class="grid grid-cols-2 gap-2">
-        {#each [
-          { id: "models" as const, label: "General models", desc: "Same prompt across frontier LLMs" },
-          { id: "agents" as const, label: "Specialized agents", desc: "A different agent for each lens" },
-        ] as opt (opt.id)}
-          <button
-            type="button"
-            onclick={() => {
-              reviewerMode = opt.id;
-              costApproved = false;
-            }}
-            class="rounded-lg border px-3 py-2.5 text-left transition-colors
-              {reviewerMode === opt.id
-              ? 'border-[var(--arena-periwinkle)] bg-[var(--arena-bg-2)]'
-              : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)]'}"
-          >
-            <p class="text-[12px] font-semibold text-[var(--arena-fg)]">{opt.label}</p>
-            <p class="text-[10px] text-[var(--arena-fg-subtle)]">{opt.desc}</p>
+    <div class="al-body">
+      <div class="al-sec">Scope</div>
+      <div class="seg" role="group" aria-label="Diff scope">
+        {#each scopeOptions as opt (opt.id)}
+          <button type="button" aria-pressed={scope === opt.id} onclick={() => selectScope(opt.id)}>
+            {opt.id === "selected" && selectedPaths.length > 0 ? `Selected (${selectedPaths.length})` : opt.label}
           </button>
         {/each}
       </div>
+      {#if triagePaths.length > 0}
+        <button type="button" class="link" aria-pressed={triageSelected} onclick={useTriageFiles}>
+          ◎ Review the {triagePaths.length} file{triagePaths.length === 1 ? "" : "s"} Triage flagged
+        </button>
+      {/if}
 
-      <label class="block text-[11px] text-[var(--arena-fg-subtle)]">
-        Title
-        <input
-          bind:value={title}
-          placeholder={suggestedTitle}
-          class="mt-1 w-full rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2 text-[12px] text-[var(--arena-fg)]"
-        />
-      </label>
-
-      <fieldset>
-        <legend class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-fg-faint)]">
-          {isAgentsMode ? "Choose agents" : "Choose models"}
-        </legend>
-        {#if loadingProviders}
-          <p class="text-[12px] text-[var(--arena-fg-muted)]">Loading providers…</p>
-        {:else if isAgentsMode}
-          <ArenaAgentPicker
-            {agents}
-            {providers}
-            selection={agentSelection}
-            {isSingleMode}
-            onToggleAgent={toggleAgent}
-            onToggleModel={toggleAgentModel}
-          />
-        {:else}
-          <div class="space-y-4">
-            {#each sortedProviders as p (p.id)}
-              <div>
-                <p
-                  class="mb-2 text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-fg-faint)]"
-                >
-                  {p.label}
-                </p>
-                <div class="grid gap-2 sm:grid-cols-2">
-                  {#each p.models as m (m.id)}
-                    {@const key = pairKey(p.id, m.id)}
-                    {@const on = selected.has(key)}
-                    <button
-                      type="button"
-                      onclick={() => toggle(key)}
-                      class="rounded-lg border px-3 py-2 text-left transition-colors
-                        {on
-                        ? 'border-[var(--arena-periwinkle)] bg-[var(--arena-bg-3)]'
-                        : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)] hover:bg-[var(--arena-bg-2)]'}"
-                    >
-                      <p class="text-[12px] font-medium text-[var(--arena-fg)]">{m.label}</p>
-                      {#if m.description}
-                        <p class="text-[10px] text-[var(--arena-fg-subtle)]">{m.description}</p>
-                      {/if}
-                      <p class="font-mono text-[10px] text-[var(--arena-fg-faint)]">
-                        {p.label} · {formatModelPricePer1k(m)}
-                      </p>
-                    </button>
-                  {/each}
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </fieldset>
-
-      <div class="space-y-2">
-        <p
-          class="text-[10px] font-semibold uppercase tracking-wider text-[var(--arena-fg-faint)]"
-        >
-          Run settings
-        </p>
-
-        <div
-          class="grid grid-cols-[minmax(0,7.5rem)_1fr] items-center gap-3 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2.5"
-        >
-          <div class="min-w-0">
-            <p class="text-[11px] font-medium text-[var(--arena-fg)]">Scope</p>
-            <p class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">{scopeHint}</p>
-          </div>
-          <div
-            class="inline-flex flex-wrap justify-end gap-1 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] p-0.5"
-            role="group"
-            aria-label="Diff scope"
-          >
-            {#each scopeOptions as opt (opt.id)}
-              {@const label = opt.id === "selected" ? selectedScopeLabel : opt.label}
-              <button
-                type="button"
-                aria-pressed={scope === opt.id}
-                title={arenaDiffReadOnly && opt.id === "branch"
-                  ? "Branch diff for this PR or remote branch view"
-                  : undefined}
-                onclick={() => selectScope(opt.id)}
-                class="h-7 min-w-[4.5rem] rounded px-2.5 text-[11px] font-medium transition-colors
-                  {scope === opt.id
-                  ? 'bg-[var(--arena-bg-3)] text-[var(--arena-fg)] shadow-sm'
-                  : 'text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]'}"
-              >
-                {label}
-              </button>
-            {/each}
-          </div>
-        </div>
-
-        {#if triagePaths.length > 0}
-          <button
-            type="button"
-            aria-pressed={triageSelected}
-            onclick={useTriageFiles}
-            class="flex w-full items-center gap-2 rounded-lg border px-3 py-2 text-left text-[11px] transition-colors
-              {triageSelected
-              ? 'border-[var(--arena-periwinkle)] bg-[var(--arena-bg-2)]'
-              : 'border-[var(--arena-border)] bg-[var(--arena-bg-0)] hover:bg-[var(--arena-bg-2)]'}"
-          >
-            <span class="text-[var(--arena-info)]">◎</span>
-            <span class="font-medium text-[var(--arena-fg)]">
-              Review {triagePaths.length} triage-recommended file{triagePaths.length === 1 ? "" : "s"}
-            </span>
-            <span class="ml-auto text-[var(--arena-fg-subtle)]">from Triage</span>
+      <div class="al-sec">
+        Reviewers <span class="faint">{reviewers.length} picked · {isSingleMode ? "1" : `2–${MAX_REVIEWERS}`}</span>
+      </div>
+      {#if loadingProviders && providers.length === 0}
+        <p class="faint">Loading providers…</p>
+      {:else}
+        <div class="al-g">General models</div>
+        {#each modelRows as row, i (row.key)}
+          {@const on = picks.has(row.key)}
+          <button type="button" class="al-rev" role="checkbox" aria-checked={on} onclick={() => togglePick(row.key)}>
+            {@render check(on)}
+            <i style="background:{lensColorVar(undefined, i)}"></i>
+            <span class="n">{row.model.label}</span>
+            <span class="faint trunc">{row.model.description || row.provider.label}</span>
+            <span class="mono faint right">{row.provider.label}</span>
           </button>
+        {/each}
+        {#if agents.length > 0}
+          <div class="al-g row">
+            Specialized agents
+            <label class="faint agent-model">
+              run on
+              <select
+                value={agentModelKey ?? ""}
+                onchange={(e) => {
+                  agentModelKey = e.currentTarget.value || null;
+                  touch();
+                }}
+              >
+                {#each sortedProviders as p (p.id)}
+                  <optgroup label={p.label}>
+                    {#each p.models as m (m.id)}<option value="{p.id}::{m.id}">{m.label}</option>{/each}
+                  </optgroup>
+                {/each}
+              </select>
+            </label>
+          </div>
+          {#each agents as a, i (a.kind)}
+            {@const key = agentPickKey(a.kind)}
+            {@const on = picks.has(key)}
+            <button type="button" class="al-rev" role="checkbox" aria-checked={on} onclick={() => togglePick(key)}>
+              {@render check(on)}
+              <i style="background:{lensColorVar(a.kind, i)}"></i>
+              <span class="n">{a.label}</span>
+              <span class="faint trunc">{a.description}</span>
+              {#if triageRecommends(a.kind, triageExperts)}<span class="chip">◎ from Triage</span>{/if}
+              <span class="mono faint right">{modelName(agentModel)}</span>
+            </button>
+          {/each}
         {/if}
+      {/if}
 
-        {#if isArena || (isAgentsMode && agentArenaCount > 0)}
-          <div
-            class="grid grid-cols-[minmax(0,7.5rem)_1fr] items-center gap-3 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2.5"
-          >
-            <div class="min-w-0">
-              <p class="text-[11px] font-medium text-[var(--arena-fg)]">Rounds</p>
-              <p class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">{roundsHint}</p>
-            </div>
-            <div
-              class="inline-flex justify-end gap-0.5 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] p-0.5"
-              role="group"
-              aria-label="Arena rounds"
-            >
-              {#each ROUND_OPTIONS as n (n)}
+      {#if !isSingleMode}
+        <div class="al-grid">
+          <div>
+            <div class="al-sec">Rounds</div>
+            <div class="seg" role="group" aria-label="Arena rounds">
+              {#each roundOptions as n (n)}
                 <button
                   type="button"
-                  aria-pressed={rounds === n}
+                  aria-pressed={effectiveRounds === n}
+                  disabled={!isArena}
                   onclick={() => {
                     rounds = n;
-                    costApproved = false;
-                    arenaLog("launcher: rounds", n);
-                  }}
-                  class="h-6 w-7 rounded text-[11px] font-semibold mono transition-colors
-                    {rounds === n
-                    ? 'bg-[var(--arena-periwinkle)] text-[var(--arena-bg-0)]'
-                    : 'text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]'}"
+                    touch();
+                  }}>{n}</button
                 >
-                  {n}
-                </button>
               {/each}
             </div>
           </div>
-
-          {#if rounds >= 2}
-            <div
-              class="grid grid-cols-[minmax(0,7.5rem)_1fr] items-center gap-3 rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2.5"
-            >
-              <div class="min-w-0">
-                <p class="text-[11px] font-medium text-[var(--arena-fg)]">Arbiter</p>
-                <p class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">
-                  Final verdicts after round {rounds} — can differ from reviewers
-                </p>
-              </div>
-              <div class="flex min-w-0 flex-col items-end gap-1">
+          <div>
+            <div class="al-sec">Arbiter</div>
+            <div class="arb">
+              <button
+                type="button"
+                class="toggle"
+                role="switch"
+                aria-checked={arbiterOn}
+                disabled={!isArena}
+                title="A run with two or more rounds always ends with an arbiter ruling; one round has none"
+                onclick={() => setArbiter(!arbiterOn)}
+              >
+                <span class="sw"></span>{arbiterOn ? arbiterLabel : "Off · one round"}
+              </button>
+              {#if arbiterOn}
                 <select
-                  class="max-w-full rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] px-2 py-1.5 text-[11px] text-[var(--arena-fg)]"
+                  aria-label="Arbiter model"
                   value={arbiterKey ?? ""}
                   onchange={(e) => {
                     arbiterKey = e.currentTarget.value || null;
-                    costApproved = false;
+                    touch();
                   }}
                 >
                   {#each sortedProviders as p (p.id)}
                     <optgroup label={p.label}>
-                      {#each p.models as m (m.id)}
-                        {@const key = pairKey(p.id, m.id)}
-                        <option value={key}>{m.label}</option>
-                      {/each}
+                      {#each p.models as m (m.id)}<option value="{p.id}::{m.id}">{m.label}</option>{/each}
                     </optgroup>
                   {/each}
                 </select>
-                <button
-                  type="button"
-                  class="text-[10px] text-[var(--arena-periwinkle)] hover:underline"
-                  onclick={() => {
-                    const def = pickMostExpensiveModel(providers);
-                    if (def) {
-                      arbiterKey = pairKey(def.provider_id, def.model_id);
-                      costApproved = false;
-                    }
-                  }}
-                >
-                  Use most expensive ({arbiterLabel})
-                </button>
-              </div>
+              {/if}
             </div>
-          {/if}
-        {/if}
-
-        {#if usesEffortCapableModels && effortLevelsForRun.length > 0}
-          <div
-            class="rounded-lg border border-[var(--arena-border)] bg-[var(--arena-bg-0)] px-3 py-2.5 space-y-2"
-          >
-            <div class="min-w-0">
-              <p class="text-[11px] font-medium text-[var(--arena-fg)]">Effort</p>
-              <p class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">
-                Claude and Codex reasoning depth for this run
-              </p>
-            </div>
-            <label class="flex items-center gap-2 text-[11px] text-[var(--arena-fg-muted)]">
-              <input
-                type="checkbox"
-                checked={effortUseGlobal}
-                onchange={(e) => {
-                  effortUseGlobal = e.currentTarget.checked;
-                  costApproved = false;
-                }}
-                class="rounded border-[var(--arena-border)]"
-              />
-              Use global ({globalEffortLabel})
-            </label>
-            {#if !effortUseGlobal}
-              <div
-                class="inline-flex flex-wrap gap-1 rounded-md border border-[var(--arena-border)] bg-[var(--arena-bg-2)] p-0.5"
-                role="group"
-                aria-label="Arena effort override"
-              >
-                {#each effortLevelsForRun as level (level)}
-                  <button
-                    type="button"
-                    aria-pressed={effortOverride === level}
-                    onclick={() => {
-                      effortOverride = level;
-                      costApproved = false;
-                    }}
-                    class="rounded px-2 py-1 text-[11px] font-medium transition-colors
-                      {effortOverride === level
-                      ? 'bg-[var(--arena-periwinkle)] text-[var(--arena-bg-0)]'
-                      : 'text-[var(--arena-fg-muted)] hover:text-[var(--arena-fg)]'}"
-                  >
-                    {effortLabel(level)}
-                  </button>
-                {/each}
-              </div>
-            {/if}
           </div>
-        {/if}
-      </div>
-    </div>
+        </div>
+      {/if}
 
-    <footer
-      class="flex shrink-0 flex-col gap-2 border-t border-[var(--arena-border)] px-5 py-3"
-    >
-      <div class="flex items-center justify-between gap-3">
-        <p class="text-[11px] text-[var(--arena-fg-subtle)]" title={estimateError ?? undefined}>
-          {footerEstimate}
-          {#if exceedsCostLimit && estimate}
-            <span class="text-[var(--arena-warn)]">
-              · over ${estimate.cost_limit_usd.toFixed(0)} limit
-            </span>
-          {/if}
-        </p>
-        <div class="flex shrink-0 items-center gap-2">
-          {#if exceedsCostLimit && estimate}
-            <label
-              class="flex max-w-[220px] cursor-pointer items-start gap-2 rounded-md border border-[var(--arena-warn)]/40 bg-[color-mix(in_srgb,var(--arena-warn)_8%,transparent)] px-2.5 py-1.5"
-            >
-              <input
-                type="checkbox"
-                class="mt-0.5 h-3.5 w-3.5 shrink-0 accent-[var(--arena-periwinkle)]"
-                checked={costApproved}
-                onchange={(e) => {
-                  costApproved = e.currentTarget.checked;
-                }}
-              />
-              <span class="text-[10px] leading-snug text-[var(--arena-fg-subtle)]">
-                Approve ~${estimate.cost_usd.toFixed(2)} est. cost
-              </span>
-            </label>
-          {/if}
-          <Button variant="secondary" onclick={onClose}>Cancel</Button>
+      {#if effortLevels.length > 0}
+        <div class="al-sec">Effort</div>
+        <div class="effort">
           <button
             type="button"
-            disabled={!canStart || estimateLoading}
-            onclick={handleStart}
-            class="inline-flex h-9 items-center rounded-md bg-[var(--arena-periwinkle)] px-4 text-[12px] font-semibold text-[var(--arena-bg-0)] disabled:opacity-40"
+            class="toggle"
+            role="switch"
+            aria-checked={effortUseGlobal}
+            onclick={() => {
+              effortUseGlobal = !effortUseGlobal;
+              touch();
+            }}
           >
-            {startLabel}
+            <span class="sw"></span>Use global ({globalEffortLabel})
           </button>
+          {#if !effortUseGlobal}
+            <div class="seg" role="group" aria-label="Arena effort override">
+              {#each effortLevels as level (level)}
+                <button
+                  type="button"
+                  aria-pressed={effortOverride === level}
+                  onclick={() => {
+                    effortOverride = level;
+                    touch();
+                  }}>{effortLabel(level)}</button
+                >
+              {/each}
+            </div>
+          {/if}
         </div>
-      </div>
-    </footer>
+      {/if}
+    </div>
+
+    <div class="al-foot">
+      <span class="mono faint est" title={estimateError ?? undefined}>
+        {footerEstimate}{#if exceedsCostLimit && estimate}<span class="warn"> · over ${estimate.cost_limit_usd.toFixed(0)} limit</span>{/if}
+      </span>
+      <span class="flex-1"></span>
+      {#if exceedsCostLimit && estimate}
+        <label class="approve">
+          <input type="checkbox" bind:checked={costApproved} />
+          Approve ≈ ${estimate.cost_usd.toFixed(2)}
+        </label>
+      {/if}
+      <button type="button" class="btn ghost" onclick={onClose}>Cancel</button>
+      <button type="button" class="btn primary" disabled={!canStart || estimateLoading} onclick={handleStart}>
+        {#if arena.loading}Starting…{:else if isArena}Start arena{:else}Start review{/if}
+      </button>
+    </div>
   </div>
 </ModalShell>
 
@@ -930,3 +561,279 @@
     return "branch";
   }
 </script>
+
+<style>
+  .ar-launch {
+    width: 100%;
+    max-height: calc(100vh - 64px);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: 12px;
+    box-shadow: 0 24px 60px color-mix(in srgb, var(--color-ground) 60%, transparent);
+    display: flex;
+    flex-direction: column;
+    color: var(--color-fg);
+    font-size: 12.5px;
+  }
+  .al-h,
+  .al-foot {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 12px 16px;
+  }
+  .al-h {
+    border-bottom: 1px solid var(--color-hairline);
+  }
+  .al-foot {
+    border-top: 1px solid var(--color-hairline);
+    flex-wrap: wrap;
+  }
+  .al-body {
+    padding: 4px 16px 16px;
+    display: grid;
+    gap: 6px;
+    overflow-y: auto;
+    min-height: 0;
+  }
+  .al-sec {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-muted);
+    margin-top: 12px;
+    display: flex;
+    gap: 8px;
+  }
+  .al-sec .faint {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+  }
+  .al-g {
+    font-size: 11px;
+    color: var(--color-muted);
+    margin-top: 4px;
+  }
+  .al-g.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+  .agent-model {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .al-rev {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 7px;
+    text-align: left;
+    min-width: 0;
+  }
+  .al-rev:hover {
+    background: var(--color-card);
+  }
+  .al-rev i {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex: none;
+  }
+  .n {
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .trunc {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .right {
+    margin-left: auto;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+  .faint {
+    color: var(--color-muted);
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    height: 16px;
+    padding: 0 6px;
+    border-radius: 5px;
+    font-size: 10px;
+    white-space: nowrap;
+    color: var(--color-fg-3);
+    background: var(--color-card);
+  }
+  .cb {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1.5px solid var(--color-border);
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    color: var(--color-surface);
+  }
+  .cb svg {
+    opacity: 0;
+  }
+  .cb[data-on="true"] {
+    background: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .cb[data-on="true"] svg {
+    opacity: 1;
+  }
+  .al-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .arb,
+  .effort {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 6px;
+  }
+  .seg {
+    display: inline-flex;
+    padding: 2px;
+    border-radius: 7px;
+    background: var(--color-card);
+    justify-self: start;
+    margin-top: 6px;
+  }
+  .effort .seg {
+    margin-top: 0;
+  }
+  .seg button {
+    padding: 2px 9px;
+    border-radius: 5px;
+    color: var(--color-fg-3);
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .seg button:disabled {
+    opacity: 0.5;
+  }
+  .seg button[aria-pressed="true"] {
+    background: var(--color-surface);
+    color: var(--color-fg);
+    box-shadow: 0 0 0 1px var(--color-border);
+  }
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-fg-3);
+  }
+  .toggle:disabled {
+    opacity: 0.5;
+  }
+  .sw {
+    width: 26px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--color-hover);
+    position: relative;
+    transition: background 0.15s;
+    flex: none;
+  }
+  .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-fg);
+    transition: transform 0.15s;
+  }
+  .toggle[aria-checked="true"] .sw {
+    background: var(--color-accent);
+  }
+  .toggle[aria-checked="true"] .sw::after {
+    transform: translateX(10px);
+  }
+  select {
+    max-width: 180px;
+    border-radius: 6px;
+    border: 1px solid var(--color-border);
+    background: var(--color-card);
+    color: var(--color-fg);
+    padding: 2px 6px;
+    font-size: 11.5px;
+  }
+  .link {
+    justify-self: start;
+    font-size: 11.5px;
+    color: var(--color-fg-3);
+  }
+  .link:hover,
+  .link[aria-pressed="true"] {
+    color: var(--color-info);
+  }
+  .est {
+    font-size: 11.5px;
+  }
+  .warn {
+    color: var(--color-warning);
+  }
+  .approve {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11.5px;
+    color: var(--color-warning);
+  }
+  .x {
+    color: var(--color-fg-3);
+    padding: 2px 6px;
+    border-radius: 5px;
+  }
+  .x:hover {
+    background: var(--color-card);
+    color: var(--color-fg);
+  }
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid var(--color-border);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .btn:disabled {
+    opacity: 0.45;
+  }
+  .btn.primary {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    border-color: transparent;
+  }
+  .btn.ghost {
+    border-color: transparent;
+    background: none;
+    color: var(--color-fg-3);
+  }
+  .btn.ghost:hover {
+    background: var(--color-card);
+    color: var(--color-fg);
+  }
+</style>
