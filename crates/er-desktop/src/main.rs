@@ -1999,6 +1999,7 @@ fn main() {
             commands::ask_ai,
             commands::validate_with_ai,
             commands::elaborate_with_ai,
+            commands::send_note_to_agent,
             commands::open_pr_url,
             commands::open_remote_pr,
             commands::open_worktree,
