@@ -73,6 +73,10 @@ export function mergeChromeSnapshot(
     // `files` are what these counts describe.
     unstaged_stat: prev.unstaged_stat,
     staged_stat: prev.staged_stat,
+    // Also skipped on chrome-only builds. Across a view change the previous
+    // value describes another view (PR Diff has none), so it is not carried.
+    local_branch_divergence:
+      aiSource === "next" ? next.local_branch_divergence : prev.local_branch_divergence,
   };
 }
 

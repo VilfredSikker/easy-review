@@ -3,7 +3,9 @@ import type {
   AppSnapshot,
   ChecklistSnapshot,
   CommitSummary,
+  DiffStaleSnapshot,
   FileSnapshot,
+  LocalBranchDivergenceSnapshot,
   HunkSnapshot,
   LineSnapshot,
   PrInfo,
@@ -798,6 +800,7 @@ export const tabsWorkingActive: TabSummary[] = [
     repo_root: "/Users/vilfred/Projects/discovery-platform",
     is_active: true,
     change_token: "",
+    stale: false,
   },
 ];
 
@@ -897,6 +900,52 @@ const baseSnapshot: AppSnapshot = {
 /** Snapshot used for full-page mock recreation. */
 export const richSnapshot: AppSnapshot = { ...baseSnapshot };
 
+/** PR head moved on origin two commits past the diff on screen (stale banner, Stale pill). */
+export const diffStalePrHead: DiffStaleSnapshot = {
+  kind: "pr_head",
+  message: "PR head updated on origin — Sync to refresh",
+  built_from_oid: "7be0d14c2a9f5e3b8d61f0a4c7e2b9d3a5f81c60",
+  latest_oid: "9f3e1a2b7c4d8e6f0a1b2c3d4e5f6a7b8c9d0e1f",
+  commits_behind: 2,
+};
+
+export const staleSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  mode: "pr",
+  diff_stale: diffStalePrHead,
+  tabs: tabsWorkingActive.map((t) => ({ ...t, stale: true })),
+};
+
+/** Inactive PR tabs whose dots differ: the second one's PR head moved. */
+export const tabsWithStalePr: TabSummary[] = [
+  ...tabsWorkingActive,
+  {
+    idx: 1,
+    label: "fix-auth-callback",
+    kind: "remote_pr",
+    branch: null,
+    pr_number: 123,
+    remote: "owner/repo",
+    repo_root: "",
+    is_active: false,
+    change_token: "",
+    stale: true,
+  },
+];
+
+/** Local PR tab, local branch view: one unpushed commit and one unstaged file (info banner). */
+export const localBranchDivergence: LocalBranchDivergenceSnapshot = {
+  pr_head_oid: "7be0d14c2a9f5e3b8d61f0a4c7e2b9d3a5f81c60",
+  ahead: 1,
+  unstaged_files: 1,
+};
+
+export const localBranchBannerSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  mode: "branch",
+  local_branch_divergence: localBranchDivergence,
+};
+
 const remoteOnlyRecentPr: PrInfo = {
   number: 123,
   title: "Fix flaky auth callback",
@@ -948,6 +997,7 @@ export const remoteOnlyProjectSnapshot: AppSnapshot = {
       repo_root: "",
       is_active: true,
       change_token: "",
+      stale: false,
     },
   ],
   active_tab: 0,

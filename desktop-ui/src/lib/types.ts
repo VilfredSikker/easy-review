@@ -501,6 +501,12 @@ export interface TabSummary {
   repo_root: string;
   is_active: boolean;
   change_token: string;
+  /**
+   * Diff built from an older commit than origin has. Active tab: same as
+   * `AppSnapshot.diff_stale` being set. Other tabs: PR tabs only, so an
+   * inactive branch tab reads false even when its base moved.
+   */
+  stale?: boolean;
 }
 
 export interface CheckSummary {
@@ -632,6 +638,25 @@ export interface ScopeStat {
   deletions: number;
 }
 
+export interface DiffStaleSnapshot {
+  kind: "pr_head" | "base";
+  message: string;
+  /** The PR head ("pr_head") or local base ref ("base") the on-screen diff was built from. */
+  built_from_oid: string;
+  /** What origin reports now; a Sync rebuilds against it. */
+  latest_oid: string;
+  /** Commits `latest_oid` adds. Absent when either commit is not local yet (never fetched for). */
+  commits_behind?: number;
+}
+
+export interface LocalBranchDivergenceSnapshot {
+  /** PR head from the PR-list cache that the worktree is compared to. */
+  pr_head_oid: string;
+  /** Unpushed commits on the worktree's HEAD. Absent when the PR head is not local yet. */
+  ahead?: number;
+  unstaged_files: number;
+}
+
 export interface AppSnapshot {
   /** Retained source context for read-only document requests. */
   preview_context_key?: string;
@@ -645,13 +670,18 @@ export interface AppSnapshot {
   staged_stat?: ScopeStat;
   /** PR detected for the active branch (PR-list cache). Drives the Local|PR Diff toggle. */
   detected_pr_number?: number | null;
-  /** Set when the active diff is behind origin. Drives the "stale" pill + Sync. */
-  diff_stale?: { kind: string; message: string } | null;
+  /** Set when the active diff is behind origin. Drives the "stale" pill, banner and Sync. */
+  diff_stale?: DiffStaleSnapshot | null;
   /**
    * Head commit the on-screen PR diff was built from. Set only on PR Diff and
    * remote PR views; absent on a local-branch view.
    */
   pr_diff_head_oid?: string | null;
+  /**
+   * Local PR tab in the local branch view of a live checkout. Full builds only:
+   * a chrome-only snapshot omits it and `mergeChromeSnapshot` keeps the last one.
+   */
+  local_branch_divergence?: LocalBranchDivergenceSnapshot | null;
   branch: string;
   base: string;
   input_mode: "normal" | "search" | "comment" | "filter" | "commit" | "confirm";

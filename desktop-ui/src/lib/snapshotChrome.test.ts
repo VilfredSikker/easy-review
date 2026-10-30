@@ -492,6 +492,45 @@ describe("mergeChromeSnapshot", () => {
     expect(merged.unstaged_stat).toEqual({ files: 2, additions: 10, deletions: 4 });
     expect(merged.staged_stat).toEqual({ files: 1, additions: 3, deletions: 0 });
   });
+
+  it("keeps the local-branch divergence a chrome-only stub omits", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const divergence = { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 };
+    const prev = snap({ active_tab: 0, tabs, local_branch_divergence: divergence });
+    const next = snap({ active_tab: 0, tabs });
+    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toEqual(divergence);
+  });
+
+  it("drops the local-branch divergence across a view change", () => {
+    const prev = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })],
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
+    const next = snap({
+      active_tab: 1,
+      tabs: [tab({ idx: 1, label: "pr-8", pr_number: 8, is_active: true })],
+    });
+    expect(mergeChromeSnapshot(prev, next, "next").local_branch_divergence).toBeUndefined();
+  });
+
+  it("takes the per-tab stale flags from next chrome", () => {
+    const prev = snap({
+      active_tab: 0,
+      tabs: [
+        tab({ idx: 0, label: "feat", kind: "working", is_active: true }),
+        tab({ idx: 1, label: "pr-8", pr_number: 8, stale: false }),
+      ],
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs: [
+        tab({ idx: 0, label: "feat", kind: "working", is_active: true }),
+        tab({ idx: 1, label: "pr-8", pr_number: 8, stale: true }),
+      ],
+    });
+    expect(mergeChromeSnapshot(prev, next, "prev").tabs[1].stale).toBe(true);
+  });
 });
 
 describe("shouldDeferChromeIdentityChange", () => {
