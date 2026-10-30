@@ -93,13 +93,17 @@
   data-row-identity={row.identity}
   data-row-idx={rowIdx}
 >
-  <div class="leading-6 text-right pr-2 gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
-    {line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}
+  <div class="leading-6 text-right gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
+    <!-- The number is the click target (prototype `lnCell`): no hover-only "+"
+         to aim for, and shift-click extends the range from the same cell. -->
     {#if ln !== null && line.kind !== "fold"}
       <button type="button"
-        class="add-comment-btn"
+        class="block w-full pr-2 text-right cursor-pointer {isSelected ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {ln}"
         onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, { file: filePath, side, startRowIdx: rowIdx })}
-      >+</button>
+      >{line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}</button>
+    {:else}
+      <span class="pr-2">{line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}</span>
     {/if}
   </div>
   <div class="leading-6 pr-3 {wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" onclick={onCodeClick}>
