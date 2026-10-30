@@ -58,6 +58,7 @@ record!(FrameLocator {
     fingerprint: Fingerprint,
 });
 record!(Fingerprint {
+    tag: Option<String>,
     role: Option<String>,
     name: Option<String>,
     text_excerpt: Option<String>,

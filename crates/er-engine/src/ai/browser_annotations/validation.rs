@@ -37,9 +37,16 @@ fn rect(value: &Rect) -> bool {
     coordinate(value.x) && coordinate(value.y) && dimension(value.width) && dimension(value.height)
 }
 fn fingerprint(value: &Fingerprint) -> bool {
-    optional(value.role.as_deref(), 256)
-        && optional(value.name.as_deref(), 1024)
-        && optional(value.text_excerpt.as_deref(), 2048)
+    optional(value.tag.as_deref(), 128)
+        && optional(value.role.as_deref(), 256)
+        && value
+            .name
+            .as_deref()
+            .is_none_or(|v| bounded(v, 320) && v.chars().count() <= 80)
+        && value
+            .text_excerpt
+            .as_deref()
+            .is_none_or(|v| bounded(v, 320) && v.chars().count() <= 80)
 }
 fn selectors(value: &[String]) -> bool {
     value.len() <= MAX_CHAIN && value.iter().all(|v| !v.is_empty() && bounded(v, 2048))

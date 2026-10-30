@@ -31,8 +31,8 @@ fn fixture() -> Value {
         "id":"ba-0123456789abcdef", "number":1, "idempotency_key":"draft-1",
         "created_at":"2026-10-30T20:00:00Z", "author":"reviewer", "text":"Fix alignment",
         "page":{"origin":"http://localhost:5173", "path":"/settings", "query":"b=2&a=1", "hash_route":"/preferences"},
-        "locator":{"frames":[{"selector":"iframe", "shadow_hosts":["app-root"], "fingerprint":{"role":"document"}}],
-            "shadow_hosts":["settings-panel"], "selector":"button.save", "fingerprint":{"role":"button", "name":"Save", "text_excerpt":"Save changes"}},
+        "locator":{"frames":[{"selector":"iframe", "shadow_hosts":["app-root"], "fingerprint":{"tag":"iframe", "role":"document"}}],
+            "shadow_hosts":["settings-panel"], "selector":"button.save", "fingerprint":{"tag":"button", "role":"button", "name":"Save", "text_excerpt":"Save changes"}},
         "target":{"kind":"element", "role":"button", "name":"Save", "text_excerpt":"Save changes"},
         "captured":{"rect":{"x":10.0,"y":20.0,"width":80.0,"height":24.0},
             "viewport":{"width":1024.0,"height":768.0}, "scroll":{"x":0.0,"y":100.0}, "device_scale":2.0, "zoom":1.25},
@@ -372,6 +372,11 @@ fn invalid_records_and_nonfinite_geometry_cannot_commit() -> Result<()> {
     variants.push(new);
     let mut new = draft("bad")?;
     new.page.origin = "http://localhost:5173/path".into();
+    variants.push(new);
+    let mut new = draft("bad-fingerprint")?;
+    if let Some(locator) = &mut new.locator {
+        locator.fingerprint.name = Some("界".repeat(81));
+    }
     variants.push(new);
     for new in variants {
         assert!(save_browser_annotation(temp.path(), new, None).is_err());
