@@ -20,6 +20,7 @@
   import ArenaFindingDetail from "$lib/components/arena/ArenaFindingDetail.svelte";
   import ArenaStatsStrip from "$lib/components/arena/ArenaStatsStrip.svelte";
   import ArenaVoteLegend from "$lib/components/arena/ArenaVoteLegend.svelte";
+  import VerificationView from "$lib/components/arena/VerificationView.svelte";
   import { startWindowDrag } from "$lib/windowDrag";
 
   export type ArenaLayoutMode = "bracket" | "matrix" | "funnel";
@@ -62,6 +63,8 @@
     }),
   );
   const readOnlyFlow = $derived(access.readOnlyFlow);
+  // A seeded run and a review flow's Deep pass are both an arbiter ruling on findings already made.
+  const isVerificationPage = $derived(isReadOnlyVerification || run.config.run_kind === "review_flow");
   const readOnly = $derived(access.readOnly);
 
   // The page always shows a detail; a stale pick from another run falls back to the first finding.
@@ -126,7 +129,7 @@
   );
 
   const heading = $derived.by(() => {
-    if (isReadOnlyVerification) return "Verification";
+    if (isVerificationPage) return "Verification results";
     if (isSingleReview) return "AI review";
     return "AI review arena";
   });
@@ -177,6 +180,9 @@
 
 {#if open}
   <div class="ar fixed inset-0 z-[100]" role="dialog" aria-modal="true" aria-label={heading}>
+    {#if isVerificationPage && !ended}
+    <VerificationView {snapshot} {flowAcceptance} {onClose} />
+    {:else}
     <!-- Tauri window-drag region (platform chrome, mouse-only by design); the dialog is aria-labelled -->
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <header
@@ -317,6 +323,7 @@
         {/if}
       {/if}
     </div>
+    {/if}
   </div>
 {/if}
 
