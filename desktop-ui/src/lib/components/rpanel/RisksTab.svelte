@@ -168,7 +168,7 @@
 
 <PanelActions
   actions={[
-    { glyph: "✎", label: "Edit risk rules", title: "Settings → Review", run: () => app.setMainView("settings") },
+    { glyph: "✎", label: "Edit risk rules", title: "Settings → Review → Risk rules", run: () => app.openSettings("risk-rules") },
     {
       glyph: "✦",
       label: "Suggest rules for this repo",

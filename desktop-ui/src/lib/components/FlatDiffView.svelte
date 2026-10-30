@@ -161,7 +161,7 @@
     const all = snapshot?.files ?? [];
     if (all.length === 0) return [];
     const byPath = new Map(all.map((f) => [f.path, f]));
-    // Guide mode: order files by the tour's pillar sequence so each pillar's
+    // Tour mode: order files by the tour's pillar sequence so each pillar's
     // files are contiguous (its header is injected before the first one).
     if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
       const out: FileSnapshot[] = [];
@@ -205,33 +205,12 @@
   const toolbarNote = $derived(
     commitNote(snapshot?.commits ?? [], snapshot?.selected_commit_sha, app.markLines),
   );
-  /** Guide/Diff toggle is offered once a tour exists for the current view
-   *  context (PR vs local branch). */
+  /** A tour exists for the current view context (PR vs local branch). */
   const tourAvailable = $derived(
     (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
   );
-  /** Whether the current view's guide is attached to the PR diff. Drives where
-   *  the Diff toggle returns to so leaving the Guide doesn't switch diffs. */
-  const tourIsPr = $derived(snapshot?.tour?.scope === "pr");
-  /** False when new changes have landed since the guide was generated. */
+  /** False when new changes have landed since the tour was generated. */
   const tourFresh = $derived(snapshot?.tour?.fresh ?? true);
-  /** PR number for returning to the PR diff from a PR-scoped guide. */
-  const tourPrNumber = $derived(
-    snapshot?.detected_pr_number ??
-      snapshot?.github?.number ??
-      snapshot?.pr?.number ??
-      null,
-  );
-  function exitGuideToDiff() {
-    if (mode !== "tour") return;
-    if (tourIsPr) {
-      void app.cmd("set_mode", { mode: "pr_diff", prNumber: tourPrNumber });
-    } else {
-      void app.cmd("set_mode", { mode: "branch" });
-    }
-  }
-
-  let settingsOpen = $state(false);
 
   const snapshotKey = $derived(
     snapshot ? `${snapshot.active_tab}:${snapshot.mode}:${snapshot.base}:${snapshot.branch}` : mode,
@@ -351,7 +330,7 @@
   let overlayHeights = $state(new Map<string, number>());
   let overlaySerial = $state(0);
 
-  // Guide mode: measured rendered height of each pillar's rail (keyed by pillar
+  // Tour mode: measured rendered height of each pillar's rail (keyed by pillar
   // id). Drives pillarPadByRowIdentity so a pillar's region is never shorter
   // than its rail (no overlap when files are short/collapsed).
   let railHeights = $state(new Map<string, number>());
@@ -519,7 +498,7 @@
 
   // ── Effective geometry (model + overlay) ──────────────────────────────────
   // baseGeometry = model row heights + measured overlay heights (threads/findings),
-  // WITHOUT the Guide pillar padding (so pillar-pad can be derived from it without
+  // WITHOUT the Tour pillar padding (so pillar-pad can be derived from it without
   // feeding back into itself).
   const baseGeometry = $derived.by<EffectiveGeometry>(() => {
     overlaySerial; // reactive on overlay changes
@@ -556,7 +535,7 @@
 
   const tourActive = $derived(snapshot?.mode === "tour");
 
-  // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
+  // Tour mode: extra bottom padding for each pillar's LAST row so the pillar's
   // region is at least as tall as its (measured) rail — keyed by that row's
   // identity. Derived from baseGeometry (never effectiveGeometry) to avoid a
   // feedback loop. Empty outside tour mode.
@@ -592,7 +571,7 @@
     return pad;
   });
 
-  // effectiveGeometry = baseGeometry + Guide pillar padding + composer reserve.
+  // effectiveGeometry = baseGeometry + Tour pillar padding + composer reserve.
   // Everything downstream (virtual window, pillarSpans, scroll mapping) uses this.
   const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
     const base = baseGeometry;
@@ -862,8 +841,8 @@
     !stickyHeaderHidden && visibleFileHeaderRow !== null,
   );
 
-  // ── Guide mode: Split View pillar lane ───────────────────────────────────
-  /** Width of the left pillar rail lane in Guide mode. */
+  // ── Tour mode: Split View pillar lane ───────────────────────────────────
+  /** Width of the left pillar rail lane in Tour mode. */
   const RAIL_W = 320;
 
   /**
@@ -945,8 +924,8 @@
     return m;
   });
 
-  // Guide mode: auto-collapse a file to a compact row once it's reviewed. Acts
-  // only on the false→true transition (and on already-reviewed files when Guide
+  // Tour mode: auto-collapse a file to a compact row once it's reviewed. Acts
+  // only on the false→true transition (and on already-reviewed files when Tour
   // is first entered), so a user who manually re-expands a reviewed file isn't
   // fought.
   let _prevReviewedTour = new Set<string>();
@@ -2168,36 +2147,15 @@
       <span class="mono text-xs text-fg-3">{orderedFiles.length} {orderedFiles.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
         {#if tourAvailable && !tourFresh}
-          <!-- New changes landed since the guide was generated — offer a re-run. -->
+          <!-- New changes landed since the tour was generated — offer a re-run. -->
           <button type="button"
             class="flex items-center gap-1 h-[22px] px-2 mr-1 rounded text-[11px] font-medium border border-risk-med/40 text-risk-med hover:bg-risk-med/10 transition-colors shrink-0"
-            onclick={() => { app.showToast("info", "Regenerating guide…"); void app.cmd("generate_tour"); }}
-            title="The diff changed since this guide was generated — regenerate it"
+            onclick={() => { app.showToast("info", "Regenerating tour…"); void app.cmd("generate_tour"); }}
+            title="The diff changed since this tour was generated — regenerate it"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Re-run guide
+            Regenerate tour
           </button>
-        {/if}
-        {#if tourAvailable}
-          <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
-            <button type="button"
-              role="tab"
-              aria-selected={mode !== "tour"}
-              onclick={exitGuideToDiff}
-              class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode !== 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
-            >
-              Diff
-            </button>
-            <button type="button"
-              role="tab"
-              aria-selected={mode === "tour"}
-              onclick={() => { if (mode !== "tour") void app.cmd("set_mode", { mode: "tour" }); }}
-              class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode === 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
-              Guide
-            </button>
-          </div>
         {/if}
         <button
           type="button"
@@ -2221,119 +2179,6 @@
             <path d="m6 9 6 6 6-6"/>
           </svg>
         </button>
-        <div class="relative">
-          <button type="button"
-            class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded flex items-center"
-            onclick={() => (settingsOpen = !settingsOpen)}
-            title="View settings"
-            aria-label="View settings"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
-          {#if settingsOpen}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="fixed inset-0 z-40" onclick={() => (settingsOpen = false)}></div>
-            <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-52 py-1">
-              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Layout</div>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => { app.setDiffViewMode("unified"); settingsOpen = false; }}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if viewMode === "unified"}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Unified
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => { app.setDiffViewMode("split"); settingsOpen = false; }}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if viewMode === "split"}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Split
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.toggleWrapLines()}
-                title="Wrap long lines instead of scrolling them horizontally inside each panel"
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if app.wrapLines}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Wrap long lines
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setLineNumbers(!app.lineNumbers)}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if app.lineNumbers}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Line numbers
-              </button>
-              <div class="border-t border-ink-600 my-1"></div>
-              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideComments: !app.commentVisibility.hideComments })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideComments}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Comments
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideFindings: !app.commentVisibility.hideFindings })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideFindings}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Findings
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideQuestions: !app.commentVisibility.hideQuestions })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideQuestions}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Questions
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => findingsVisibility.toggleResolved()}
-                title="Session-only, like the other layer toggles"
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if findingsVisibility.showResolved}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Resolved findings
-              </button>
-            </div>
-          {/if}
-        </div>
         <button type="button"
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
           onclick={async () => {
@@ -2394,7 +2239,7 @@
       {/if}
     {:else}
       <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
-           In Guide mode it's inset past the pillar rail lane so it pins over the
+           In Tour mode it's inset past the pillar rail lane so it pins over the
            diff column (column 2) without covering the rail. -->
       <StickyFileHeader
         row={visibleFileHeaderRow}
@@ -2432,7 +2277,7 @@
 
       <!-- Row band surface: viewport-width (always a fixed 50/50 split in split
            view). Long lines wrap or pan inside their panel — the band itself
-           never scrolls horizontally. (Column 2 in Guide.) -->
+           never scrolls horizontally. (Column 2 in Tour.) -->
       <div
         bind:this={hscrollEl}
         class="hscroll"
@@ -2468,7 +2313,7 @@
               {@render rowBody(row, rowIdx, false)}
             {/if}
             {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
-              <!-- Guide mode: pad the pillar's last row down to the rail height so
+              <!-- Tour mode: pad the pillar's last row down to the rail height so
                    the next pillar's files start below the (taller) rail. -->
               <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
             {/if}

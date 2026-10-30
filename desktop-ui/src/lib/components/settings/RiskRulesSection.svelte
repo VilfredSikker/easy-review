@@ -73,7 +73,7 @@
   }
 </script>
 
-<SettingsSection title="Risk rules" {keywords}>
+<SettingsSection id="settings-risk-rules" title="Risk rules" {keywords}>
   {#snippet aside()}<span class="font-mono" title="The repo these project rules belong to">{repo || "no repo open"}</span>{/snippet}
   {#if rules.length > 0}
     <div

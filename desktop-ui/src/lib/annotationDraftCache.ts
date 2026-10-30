@@ -7,8 +7,6 @@ function reviewKey(tab: TabSummary): string {
 export interface AnnotationDraft {
   replyText: string;
   showReply: boolean;
-  askAiText: string;
-  showAskAi: boolean;
 }
 
 /** Review-owned drafts outlive virtualized annotation cards. */
@@ -16,7 +14,7 @@ export class AnnotationDraftCache {
   private drafts = new Map<string, AnnotationDraft>();
 
   get(snapshot: AppSnapshot | null, kind: "thread" | "finding", id: string,
-    create: () => AnnotationDraft = () => ({ replyText: "", showReply: false, askAiText: "", showAskAi: false }),
+    create: () => AnnotationDraft = () => ({ replyText: "", showReply: false }),
   ): AnnotationDraft {
     const tab = snapshot?.tabs.find((t) => t.is_active) ?? snapshot?.tabs[snapshot.active_tab];
     const review = tab ? reviewKey(tab) : "no-review";
