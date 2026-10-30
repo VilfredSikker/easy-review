@@ -149,7 +149,7 @@ describe("optimistic local-write call sites", () => {
 
   it("fires app-wide chrome writes without waiting on the backend", () => {
     const inbox = component("InboxView.svelte");
-    for (const command of ["mark_inbox_items_read", "mark_all_inbox_read", "clear_read_inbox_items"]) {
+    for (const command of ["mark_inbox_items_read", "clear_inbox_items"]) {
       expect(inbox).toContain(`void app.cmd("${command}"`);
     }
 

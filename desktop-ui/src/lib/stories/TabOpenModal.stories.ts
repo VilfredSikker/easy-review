@@ -19,6 +19,7 @@ const COMMENT_ICON = "M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2
 export const FromComment: Story = {
   args: {
     request: {
+      key: "pr:p1#1756",
       title: "Reorder db migrations to unblock deployment",
       ref: "discovery #1756",
       context: "Comment on your PR · 9 min ago",
@@ -36,6 +37,7 @@ export const FromComment: Story = {
 export const NoQuote: Story = {
   args: {
     request: {
+      key: "pr:p1#1752",
       title: "Plate maps: well picker keyboard support",
       ref: "discovery #1752",
       context: "Review requested · 3 h ago",

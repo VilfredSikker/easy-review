@@ -20,13 +20,16 @@
     inboxTypeChips,
     isQuotedCategory,
     isThreadUnread,
+    keepSelectedListed,
+    readThreadItemIds,
     selectedInboxThread,
     stepInboxSelection,
     threadLatestCategory,
     withDaySeparators,
+    type InboxReadFilter,
     type InboxThread,
   } from "$lib/inboxThreads";
-  import { resolvePrOpen, saveAlwaysNewTab, type TabOpenRequest } from "$lib/prOpen";
+  import { loadAlwaysNewTab, resolvePrOpen, saveAlwaysNewTab, type TabOpenRequest } from "$lib/prOpen";
   import { longAge, shortAge } from "$lib/relativeTime";
   import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 
@@ -50,11 +53,34 @@
     inboxTypeChips(filterInboxThreads(inProject, { read: inboxView.read, projectId: "all", category: "all" })),
   );
   const category = $derived(chips.some((c) => c.category === inboxView.category) ? inboxView.category : "all");
-  const visible = $derived(filterInboxThreads(inProject, { read: inboxView.read, projectId: "all", category }));
+  const inCategory = $derived(filterInboxThreads(inProject, { read: "all", projectId: "all", category }));
+  const visible = $derived(
+    keepSelectedListed(
+      filterInboxThreads(inCategory, { read: inboxView.read, projectId: "all", category: "all" }),
+      inCategory,
+      inboxView.selectedKey,
+    ),
+  );
   const rows = $derived(withDaySeparators(visible));
   const selected = $derived(selectedInboxThread(visible, inboxView.selectedKey));
 
   let pendingOpen = $state<InboxThread | null>(null);
+  let alwaysNewTab = $state(loadAlwaysNewTab());
+
+  function setReadFilter(value: InboxReadFilter) {
+    inboxView.read = value;
+    // A switch of filter is a fresh look: drop a selection the new filter
+    // would only show because it is pinned.
+    const sel = inboxView.selectedKey ? threads.find((t) => t.key === inboxView.selectedKey) : null;
+    if (sel && filterInboxThreads([sel], { read: value, projectId: "all", category: "all" }).length === 0) {
+      inboxView.selectedKey = null;
+    }
+  }
+
+  function askBeforeOpening() {
+    saveAlwaysNewTab(false);
+    alwaysNewTab = false;
+  }
 
   function markThreadRead(thread: InboxThread) {
     if (thread.unreadIds.length === 0) return;
@@ -105,15 +131,18 @@
       leaveInbox();
       return;
     }
-    const choice = resolvePrOpen(e instanceof MouseEvent ? e : null);
+    const choice = resolvePrOpen(e instanceof MouseEvent ? e : null, alwaysNewTab);
     if (choice === "ask") pendingOpen = thread;
     else await openTarget(thread, choice === "new-tab");
   }
 
-  function chooseOpen(newTab: boolean, alwaysNewTab: boolean) {
+  function chooseOpen(newTab: boolean, remember: boolean) {
     const thread = pendingOpen;
     pendingOpen = null;
-    if (alwaysNewTab) saveAlwaysNewTab(true);
+    if (remember) {
+      saveAlwaysNewTab(true);
+      alwaysNewTab = true;
+    }
     if (thread) void openTarget(thread, newTab);
   }
 
@@ -121,6 +150,7 @@
     const cat = threadLatestCategory(thread);
     const body = thread.latest.body.trim();
     return {
+      key: thread.key,
       title: inboxThreadTitle(thread, projects),
       ref: inboxThreadRef(thread, projects),
       context: `${INBOX_CATEGORY_LABELS[cat]} · ${longAge(thread.latest.created_at_ms)}`,
@@ -130,18 +160,23 @@
     };
   }
 
+  const openReq = $derived(pendingOpen ? openRequest(pendingOpen) : null);
   const activeTabLabel = $derived(tabs.find((t) => t.is_active)?.label ?? null);
 
+  // Both act on the rows shown, not the whole inbox: they sit beside the
+  // project and type filters, and the toast counts what was shown.
   function markAllRead() {
-    const n = counts.unread;
-    void app.cmd("mark_all_inbox_read");
-    if (n > 0) app.showToast("success", `Marked ${n} read`);
+    const unread = visible.filter(isThreadUnread);
+    if (unread.length === 0) return;
+    void app.cmd("mark_inbox_items_read", { ids: unread.flatMap((t) => t.unreadIds) });
+    app.showToast("success", `Marked ${unread.length} read`);
   }
 
   function clearRead() {
-    const n = counts.read;
-    void app.cmd("clear_read_inbox_items");
-    if (n > 0) app.showToast("success", `Cleared ${n} read`);
+    const n = visible.filter((t) => !isThreadUnread(t)).length;
+    if (n === 0) return;
+    void app.cmd("clear_inbox_items", { ids: readThreadItemIds(visible) });
+    app.showToast("success", `Cleared ${n} read`);
   }
 
   // Registered after the global handler (keyboard.ts), which leaves bare keys
@@ -182,7 +217,7 @@
   <button
     type="button"
     aria-pressed={inboxView.read === value}
-    onclick={() => (inboxView.read = value)}
+    onclick={() => setReadFilter(value)}
     class="h-[22px] px-2 rounded-sm text-[11.5px] font-medium flex items-center gap-1 {inboxView.read === value ? 'bg-hover text-fg' : 'text-muted hover:text-fg-3'}"
   >{label} <span class="text-muted">{n}</span></button>
 {/snippet}
@@ -310,6 +345,15 @@
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">j</kbd><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">k</kbd> move</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">u</kbd> mark read</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">↵</kbd> open review</span>
+      {#if alwaysNewTab}
+        <span class="flex-1"></span>
+        <button
+          type="button"
+          onclick={askBeforeOpening}
+          title="Reviews open in a new tab without asking. Click to be asked again."
+          class="hover:text-fg underline decoration-dotted underline-offset-2"
+        >Ask before opening</button>
+      {/if}
     </footer>
   </section>
 
@@ -372,7 +416,7 @@
 </div>
 
 <TabOpenModal
-  request={pendingOpen ? openRequest(pendingOpen) : null}
+  request={openReq}
   tabCount={tabs.length}
   currentTabLabel={activeTabLabel}
   onChoose={chooseOpen}

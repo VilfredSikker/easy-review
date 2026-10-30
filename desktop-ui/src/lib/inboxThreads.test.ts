@@ -9,6 +9,8 @@ import {
   inboxThreadRole,
   inboxThreadTitle,
   inboxTypeChips,
+  keepSelectedListed,
+  readThreadItemIds,
   selectedInboxThread,
   stepInboxSelection,
   withDaySeparators,
@@ -210,5 +212,48 @@ describe("selection", () => {
     expect(stepInboxSelection(threads, threads[2].key, 1)?.prNumber).toBe(3);
     expect(stepInboxSelection(threads, threads[0].key, -1)?.prNumber).toBe(1);
     expect(stepInboxSelection(threads, null, 1)?.prNumber).toBe(1);
+  });
+});
+
+describe("selection under the Unread filter", () => {
+  const all = groupInboxThreads(
+    [1, 2, 3].map((n) => item(`i${n}`, { target: { project_id: "p1", pr_number: n }, created_at_ms: NOW - n * HOUR })),
+    [project()],
+  );
+  // PR 2 was just selected, so marking it read dropped it from the Unread list.
+  const markedRead = all.map((t) => (t.prNumber === 2 ? { ...t, unreadIds: [] } : t));
+  const unread = filterInboxThreads(markedRead, { read: "unread", projectId: "all", category: "all" });
+
+  it("keeps the selected row listed in place so the detail pane and Enter stay on it", () => {
+    const listed = keepSelectedListed(unread, markedRead, all[1].key);
+    expect(listed.map((t) => t.prNumber)).toEqual([1, 2, 3]);
+    expect(selectedInboxThread(listed, all[1].key)?.prNumber).toBe(2);
+  });
+
+  it("steps j/k from the selected row, not from the first", () => {
+    const listed = keepSelectedListed(unread, markedRead, all[1].key);
+    expect(stepInboxSelection(listed, all[1].key, 1)?.prNumber).toBe(3);
+    expect(stepInboxSelection(listed, all[1].key, -1)?.prNumber).toBe(1);
+  });
+
+  it("falls back to the first row once the selected thread is gone", () => {
+    const listed = keepSelectedListed(unread, markedRead, "missing");
+    expect(listed).toBe(unread);
+    expect(selectedInboxThread(listed, "missing")?.prNumber).toBe(1);
+  });
+});
+
+describe("readThreadItemIds", () => {
+  it("returns only the items of fully read threads", () => {
+    const threads = groupInboxThreads(
+      [
+        item("a1", { target: { project_id: "p1", pr_number: 1 }, read_at_ms: NOW }),
+        item("a2", { target: { project_id: "p1", pr_number: 1 }, read_at_ms: NOW }),
+        item("b1", { target: { project_id: "p1", pr_number: 2 }, read_at_ms: NOW }),
+        item("b2", { target: { project_id: "p1", pr_number: 2 } }),
+      ],
+      [project()],
+    );
+    expect(readThreadItemIds(threads).sort()).toEqual(["a1", "a2"]);
   });
 });

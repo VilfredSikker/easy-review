@@ -7,6 +7,7 @@ import {
   resolvePrOpen,
   saveAlwaysNewTab,
   shouldReplaceTab,
+  tabOpenKeyChoice,
 } from "./prOpen";
 import type { PrInfo } from "./types";
 
@@ -85,6 +86,31 @@ describe("always-new-tab preference", () => {
     const throwing = { getItem: blocked, setItem: blocked, removeItem: blocked };
     expect(loadAlwaysNewTab(throwing)).toBe(false);
     expect(() => saveAlwaysNewTab(true, throwing)).not.toThrow();
+  });
+});
+
+describe("tabOpenKeyChoice", () => {
+  const key = (o: Partial<KeyboardEvent> = {}) => ({ key: "Enter", metaKey: false, ctrlKey: false, ...o });
+  const el = (tagName: string, attrs: string[] = []) => ({ tagName, hasAttribute: (n: string) => attrs.includes(n) });
+
+  it("takes the new-tab default from the panel or the primary button", () => {
+    expect(tabOpenKeyChoice(key(), el("DIV"))).toBe("new-tab");
+    expect(tabOpenKeyChoice(key(), null)).toBe("new-tab");
+    expect(tabOpenKeyChoice(key(), el("BUTTON", ["data-tm-primary"]))).toBe("new-tab");
+  });
+
+  it("leaves a bare Enter on any other button to that button", () => {
+    expect(tabOpenKeyChoice(key(), el("BUTTON"))).toBeNull();
+  });
+
+  it("replaces on Cmd/Ctrl+Enter from anywhere but the checkbox", () => {
+    expect(tabOpenKeyChoice(key({ metaKey: true }), el("BUTTON"))).toBe("replace");
+    expect(tabOpenKeyChoice(key({ ctrlKey: true }), el("DIV"))).toBe("replace");
+    expect(tabOpenKeyChoice(key({ metaKey: true }), el("INPUT"))).toBeNull();
+  });
+
+  it("ignores other keys", () => {
+    expect(tabOpenKeyChoice(key({ key: "a" }), el("DIV"))).toBeNull();
   });
 });
 

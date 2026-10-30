@@ -256,6 +256,30 @@ export function selectedInboxThread(threads: InboxThread[], key: string | null):
   return threads.find((t) => t.key === key) ?? threads[0] ?? null;
 }
 
+/**
+ * Selecting a row marks it read, so under the Unread filter it would vanish
+ * the moment it is chosen and the detail pane, Enter and j/k would jump to a
+ * PR the reader never picked. The selected thread therefore stays listed, in
+ * its own place, while it is selected, as long as it still matches every
+ * filter except read state (`candidates`).
+ */
+export function keepSelectedListed(
+  visible: InboxThread[],
+  candidates: InboxThread[],
+  key: string | null,
+): InboxThread[] {
+  if (key == null || visible.some((t) => t.key === key)) return visible;
+  if (!candidates.some((t) => t.key === key)) return visible;
+  const shown = new Set(visible.map((t) => t.key));
+  shown.add(key);
+  return candidates.filter((t) => shown.has(t.key));
+}
+
+/** Item ids of the threads with nothing unread: what "Clear read" removes. */
+export function readThreadItemIds(threads: InboxThread[]): string[] {
+  return threads.filter((t) => !isThreadUnread(t)).flatMap((t) => t.items.map((i) => i.id));
+}
+
 /** j/k: the neighbour of the current row, clamped at both ends. */
 export function stepInboxSelection(
   threads: InboxThread[],

@@ -1,7 +1,7 @@
 <script lang="ts">
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { inboxToneStyle } from "$lib/inboxThreads";
-  import type { TabOpenRequest } from "$lib/prOpen";
+  import { tabOpenKeyChoice, type TabOpenRequest } from "$lib/prOpen";
 
   interface Props {
     request: TabOpenRequest | null;
@@ -17,8 +17,12 @@
   let remember = $state(false);
   let highlighted = $state<"new" | "here">("new");
 
+  // A string, so a snapshot that rebuilds the request object for the same open
+  // does not untick the checkbox the reader just ticked.
+  const openKey = $derived(request?.key ?? null);
+
   $effect(() => {
-    if (!request) return;
+    if (openKey === null) return;
     remember = false;
     highlighted = "new";
   });
@@ -27,14 +31,12 @@
     onChoose(newTab, remember);
   }
 
-  // Enter takes the default (new tab); Cmd/Ctrl+Enter is the deliberate
-  // "replace what I am looking at". preventDefault stops the focused button
-  // from also firing its own click.
+  // preventDefault stops the focused button from also firing its own click.
   function handleKeydown(e: KeyboardEvent) {
-    if (e.key !== "Enter") return;
-    if ((e.target as HTMLElement | null)?.tagName === "INPUT") return;
+    const choice = tabOpenKeyChoice(e, e.target instanceof HTMLElement ? e.target : null);
+    if (!choice) return;
     e.preventDefault();
-    choose(!(e.metaKey || e.ctrlKey));
+    choose(choice === "new-tab");
   }
 
   const current = $derived(currentTabLabel ? `“${currentTabLabel}”` : "the current tab");

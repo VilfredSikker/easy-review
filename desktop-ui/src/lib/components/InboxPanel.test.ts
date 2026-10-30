@@ -33,12 +33,36 @@ describe("InboxView", () => {
     expect(view).toContain("<TabOpenModal");
     expect(view).toContain("saveAlwaysNewTab(true)");
   });
+
+  it("offers a way back from 'always open in a new tab'", () => {
+    expect(view).toContain("saveAlwaysNewTab(false)");
+    expect(view).toContain("Ask before opening");
+  });
+
+  it("keeps the selected row while marking it read drops it from the Unread filter", () => {
+    expect(view).toContain("keepSelectedListed(");
+  });
+
+  it("marks read and clears only the threads shown, not the whole inbox", () => {
+    expect(view).not.toContain("mark_all_inbox_read");
+    expect(view).not.toContain("clear_read_inbox_items");
+    expect(view).toContain('app.cmd("clear_inbox_items", { ids: readThreadItemIds(visible) })');
+  });
+
+  it("builds the modal request once per open, not on every snapshot", () => {
+    expect(view).toContain("const openReq = $derived(");
+    expect(view).toContain("key: thread.key");
+  });
 });
 
 describe("TabOpenModal", () => {
-  it("defaults Enter to a new tab and keeps Cmd+Enter for replacing", () => {
-    expect(modal).toContain("choose(!(e.metaKey || e.ctrlKey))");
+  it("routes Enter through tabOpenKeyChoice so other buttons keep their own Enter", () => {
+    expect(modal).toContain("tabOpenKeyChoice(");
     expect(modal).toContain("Always open in a new tab, don't ask again");
     expect(modal).toContain("data-tm-primary");
+  });
+
+  it("resets its choices on a new open, not on a new request object", () => {
+    expect(modal).toContain("request?.key");
   });
 });

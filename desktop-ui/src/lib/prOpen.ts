@@ -64,14 +64,45 @@ export function resolvePrOpen(
   return alwaysNewTab ? "new-tab" : "ask";
 }
 
-/** For open paths that have no modal to ask with: a plain click replaces the
- *  active tab unless the reader chose "always open in a new tab". */
+/**
+ * The old default, kept for open paths that do not mount the tab-open modal:
+ * a plain click replaces the active tab, Cmd/Ctrl-click and middle-click open
+ * a new one. Only the Inbox asks; the sidebar's PR and branch rows still call
+ * this and so still replace on a plain click. The one thing they share with
+ * the Inbox is the "always open in a new tab" preference, which turns a plain
+ * click into a new tab here too.
+ */
 export function shouldReplaceTab(e: MouseEvent, alwaysNewTab: boolean = loadAlwaysNewTab()): boolean {
   return resolvePrOpen(e, alwaysNewTab) === "ask";
 }
 
+/** The element a keydown landed on, as far as the tab-open modal cares. */
+export interface KeyTarget {
+  tagName: string;
+  hasAttribute(name: string): boolean;
+}
+
+/**
+ * What Enter means inside the tab-open modal. Cmd/Ctrl+Enter replaces from
+ * anywhere. A bare Enter takes the default (new tab) only from the panel or
+ * the primary button; on any other button it is that button's own press, so
+ * null leaves the click to the browser.
+ */
+export function tabOpenKeyChoice(
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey">,
+  target: KeyTarget | null,
+): "new-tab" | "replace" | null {
+  if (e.key !== "Enter") return null;
+  if (target?.tagName === "INPUT") return null;
+  if (e.metaKey || e.ctrlKey) return "replace";
+  if (target?.tagName === "BUTTON" && !target.hasAttribute("data-tm-primary")) return null;
+  return "new-tab";
+}
+
 /** What the tab-open modal shows about the thing being opened. */
 export interface TabOpenRequest {
+  /** Identity of this open; the modal resets its choices only when it changes. */
+  key: string;
   title: string;
   /** "repo #123", in mono. */
   ref: string;
