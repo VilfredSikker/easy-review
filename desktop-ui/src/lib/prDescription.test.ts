@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { fenceLanguage, imageRoute, prMarkdownHtml, renderPrDescription } from "./prDescription";
+import { onExternalLinkClick } from "./openExternalUrl";
+import { fenceLanguage, imageRoute, prMarkdownHtml, refClickTarget, renderPrDescription } from "./prDescription";
 
 const ctx = { owner: "acme", repo: "web" };
 
@@ -93,5 +94,96 @@ describe("fenceLanguage", () => {
 describe("renderPrDescription", () => {
   it("fails closed outside a browser DOM", () => {
     expect(renderPrDescription('<img src=x onerror="alert(1)">')).toBe("&lt;img src=x onerror=&quot;alert(1)&quot;&gt;");
+  });
+});
+
+describe("ref links under the app's external-link guard", () => {
+  // Stand-ins for the anchors renderPrDescription emits: a ref link keeps its
+  // URL in data attributes, an ordinary link keeps its href.
+  class FakeAnchor {
+    dataset: Record<string, string>;
+    private href: string | null;
+    constructor(href: string | null, dataset: Record<string, string> = {}) {
+      this.href = href;
+      this.dataset = dataset;
+    }
+    getAttribute(name: string) {
+      return name === "href" ? this.href : null;
+    }
+    closest(selector: string) {
+      if (selector === "a[href]") return this.href === null ? null : this;
+      if (selector === "a[data-er-ref]") return this.dataset.erRef === undefined ? null : this;
+      return null;
+    }
+  }
+
+  function click(target: FakeAnchor, init: Partial<MouseEvent> = {}) {
+    let prevented = false;
+    return {
+      button: 0,
+      metaKey: false,
+      ctrlKey: false,
+      shiftKey: false,
+      altKey: false,
+      ...init,
+      target,
+      get defaultPrevented() {
+        return prevented;
+      },
+      preventDefault() {
+        prevented = true;
+      },
+      stopPropagation() {},
+    } as unknown as MouseEvent;
+  }
+
+  async function withGuardGlobals(run: (opened: string[]) => Promise<void>) {
+    const saved = { window: globalThis.window, HTMLAnchorElement: globalThis.HTMLAnchorElement };
+    const opened: string[] = [];
+    Object.assign(globalThis, {
+      HTMLAnchorElement: FakeAnchor,
+      window: { location: { href: "http://localhost/" }, open: (url: string) => opened.push(url) },
+    });
+    try {
+      await run(opened);
+    } finally {
+      Object.assign(globalThis, saved);
+    }
+  }
+
+  const refAnchor = () =>
+    new FakeAnchor(null, { erRef: "acme/web#12", erRefKind: "unknown", erHref: "https://github.com/acme/web/issues/12" });
+
+  it("lets a ref click past the capture guard to the description's handler", async () => {
+    await withGuardGlobals(async (opened) => {
+      const e = click(refAnchor());
+      onExternalLinkClick(e);
+      expect(e.defaultPrevented).toBe(false);
+      expect(opened).toEqual([]);
+      expect(refClickTarget(e)).toEqual({
+        ref: { owner: "acme", repo: "web", number: 12, kind: "unknown" },
+        url: "https://github.com/acme/web/issues/12",
+        plain: true,
+      });
+    });
+  });
+
+  it("sends modified and middle clicks on a ref to the browser", async () => {
+    await withGuardGlobals(async () => {
+      expect(refClickTarget(click(refAnchor(), { metaKey: true }))?.plain).toBe(false);
+      expect(refClickTarget(click(refAnchor(), { button: 1 }))?.plain).toBe(false);
+      expect(refClickTarget(click(refAnchor(), { button: 2 }))).toBeNull();
+    });
+  });
+
+  it("still hands ordinary links to the guard", async () => {
+    await withGuardGlobals(async (opened) => {
+      const e = click(new FakeAnchor("https://github.com/acme/web/issues/7"));
+      onExternalLinkClick(e);
+      expect(e.defaultPrevented).toBe(true);
+      expect(refClickTarget(e)).toBeNull();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(opened).toEqual(["https://github.com/acme/web/issues/7"]);
+    });
   });
 });

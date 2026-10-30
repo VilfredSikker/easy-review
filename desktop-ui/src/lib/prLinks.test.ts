@@ -7,8 +7,44 @@ import {
   githubRefUrl,
   isBotAuthor,
   linearKeys,
+  openGithubRef,
   parseGithubRef,
+  type GithubRef,
 } from "./prLinks";
+
+describe("openGithubRef", () => {
+  function openers(prOpens: boolean) {
+    const calls: string[] = [];
+    return {
+      calls,
+      openPr: async (ref: GithubRef) => {
+        calls.push(`tab ${ref.owner}/${ref.repo}#${ref.number}`);
+        if (!prOpens) throw new Error("not a pull request");
+      },
+      openUrl: async (url: string) => {
+        calls.push(`browser ${url}`);
+      },
+    };
+  }
+
+  it("opens a pull request as a tab", async () => {
+    const o = openers(true);
+    expect(await openGithubRef({ owner: "acme", repo: "web", number: 12, kind: "pull" }, o)).toBe("tab");
+    expect(o.calls).toEqual(["tab acme/web#12"]);
+  });
+
+  it("sends an issue straight to the browser", async () => {
+    const o = openers(true);
+    expect(await openGithubRef({ owner: "acme", repo: "web", number: 7, kind: "issue" }, o)).toBe("browser");
+    expect(o.calls).toEqual(["browser https://github.com/acme/web/issues/7"]);
+  });
+
+  it("falls back to GitHub when a bare ref is not a PR the app can open", async () => {
+    const o = openers(false);
+    expect(await openGithubRef({ owner: "acme", repo: "web", number: 7, kind: "unknown" }, o)).toBe("browser");
+    expect(o.calls).toEqual(["tab acme/web#7", "browser https://github.com/acme/web/issues/7"]);
+  });
+});
 
 const self = { owner: "acme", repo: "web", number: 1756 };
 

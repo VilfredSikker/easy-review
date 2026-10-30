@@ -4,8 +4,8 @@
   import { highlightLines } from "$lib/highlightClient";
   import { syntaxThemeById } from "$lib/syntaxThemes";
   import { onExternalLinkClick, openExternalUrl } from "$lib/openExternalUrl";
-  import { fenceLanguage, renderPrDescription } from "$lib/prDescription";
-  import { parseGithubRef, type GithubRef } from "$lib/prLinks";
+  import { fenceLanguage, refClickTarget, renderPrDescription } from "$lib/prDescription";
+  import { openGithubRef, type GithubRef } from "$lib/prLinks";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
 
   interface Props {
@@ -20,8 +20,11 @@
      * requests a private attachment itself.
      */
     loadImage?: (url: string) => Promise<string>;
-    /** A `#12` or PR link was clicked. The default opens the PR in a new tab. */
-    onOpenRef?: (ref: GithubRef, e: MouseEvent) => void;
+    /**
+     * A `#12` or PR link was clicked. The default opens the PR in a new tab,
+     * and the page on GitHub when it is not a PR the app can open.
+     */
+    onOpenRef?: (ref: GithubRef, url: string, e: MouseEvent) => void;
   }
 
   const {
@@ -29,7 +32,16 @@
     owner,
     repo,
     loadImage = (url) => invoke<string>("fetch_github_image", { url }),
-    onOpenRef = (ref) => void app.cmd("open_remote_pr", { owner: ref.owner, repo: ref.repo, number: ref.number, replace: false }),
+    onOpenRef = (ref, url) =>
+      void openGithubRef(
+        ref,
+        {
+          openPr: (r) =>
+            app.cmd("open_remote_pr", { owner: r.owner, repo: r.repo, number: r.number, replace: false }, { throwOnError: true }),
+          openUrl: openExternalUrl,
+        },
+        url,
+      ),
   }: Props = $props();
 
   const html = $derived(renderPrDescription(body ?? "", { owner, repo }));
@@ -130,17 +142,28 @@
       zoom = { src: img.src, alt: img.alt };
       return;
     }
-    const anchor = target?.closest?.("a[data-er-ref]");
-    if (anchor instanceof HTMLAnchorElement && e.button === 0 && !e.metaKey && !e.ctrlKey) {
-      const ref = parseGithubRef(anchor.dataset.erRef ?? "");
-      if (ref) {
-        e.preventDefault();
-        e.stopPropagation();
-        onOpenRef(ref, e);
-        return;
-      }
-    }
+    if (openRefClick(e)) return;
     onExternalLinkClick(e);
+  }
+
+  // Ref links carry no href (see renderPrDescription), so the app's external
+  // link guard lets them through and the middle button needs its own handler.
+  function openRefClick(e: MouseEvent): boolean {
+    const hit = refClickTarget(e);
+    if (!hit) return false;
+    e.preventDefault();
+    e.stopPropagation();
+    if (hit.plain) onOpenRef(hit.ref, hit.url, e);
+    else void openExternalUrl(hit.url);
+    return true;
+  }
+
+  function onKeydown(e: KeyboardEvent) {
+    if (e.key !== "Enter") return;
+    const anchor = (e.target as HTMLElement | null)?.closest?.("a[data-er-ref]");
+    if (!(anchor instanceof HTMLElement)) return;
+    e.preventDefault();
+    anchor.click();
   }
 </script>
 
@@ -148,9 +171,8 @@
 {#if (body ?? "").trim()}
   <!-- Clicks are delegated: links open outside, refs open a tab, images zoom.
        Every one of those targets is itself a link or an image. -->
-  <!-- svelte-ignore a11y_click_events_have_key_events -->
   <!-- svelte-ignore a11y_no_static_element_interactions -->
-  <div class="pr-description" bind:this={root} onclick={onClick}>
+  <div class="pr-description" bind:this={root} onclick={onClick} onauxclick={openRefClick} onkeydown={onKeydown}>
     <!-- Keyed: the effects below swap nodes inside the rendered HTML (a failed
          image, highlighted code), so a new body replaces the block whole. -->
     {#key html}
@@ -214,6 +236,7 @@
   .pr-description :global(li > p) { margin: 0 0 4px; }
   .pr-description :global(a) { color: var(--color-action); text-decoration: none; }
   .pr-description :global(a:hover) { text-decoration: underline; }
+  .pr-description :global(a[data-er-ref]) { cursor: pointer; }
   .pr-description :global(a.md-mention), .pr-description :global(a.md-ref) { font-weight: 500; }
   .pr-description :global(code) {
     font-family: "JetBrains Mono", monospace;

@@ -76,6 +76,35 @@ export function githubRefUrl(ref: GithubRef): string {
   return `https://${GITHUB_HOST}/${ref.owner}/${ref.repo}/${ref.kind === "pull" ? "pull" : "issues"}/${ref.number}`;
 }
 
+/** How a ref is opened: as a review tab, or on GitHub in the system browser. */
+export interface RefOpeners {
+  /** Opens the PR as a review tab; rejects when it cannot (an issue, no access). */
+  openPr: (ref: GithubRef) => Promise<void>;
+  openUrl: (url: string) => Promise<void>;
+}
+
+/**
+ * Open a PR in a review tab, or its page on GitHub when it is not one. An issue
+ * goes straight to the browser: `open_remote_pr` only caches PRs. A bare `#12`
+ * may be either, so it tries the tab and falls back to the GitHub page.
+ */
+export async function openGithubRef(
+  ref: GithubRef,
+  openers: RefOpeners,
+  url: string = githubRefUrl(ref),
+): Promise<"tab" | "browser"> {
+  if (ref.kind !== "issue") {
+    try {
+      await openers.openPr(ref);
+      return "tab";
+    } catch {
+      // Not a PR this app can open; GitHub can still show it.
+    }
+  }
+  await openers.openUrl(url);
+  return "browser";
+}
+
 /** A bot's login: GitHub apps end in `[bot]`; some post as plain users. */
 export function isBotAuthor(author: string): boolean {
   const login = author.toLowerCase();

@@ -209,6 +209,40 @@ function httpUrl(value: string | null): value is string {
 }
 
 /**
+ * The ref a link opens as a tab, or null for a plain external link. Pull URLs
+ * and the refs the `ghref` extension drew (a `#12` may be a PR) qualify; an
+ * issue URL does not, since only PRs open as review tabs.
+ */
+function tabRef(anchor: Element, href: string): GithubRef | null {
+  const ref = parseGithubRef(href);
+  if (!ref) return null;
+  if (anchor.classList.contains("md-ref")) return { ...ref, kind: "unknown" };
+  return ref.kind === "pull" ? ref : null;
+}
+
+/** A click on a description link that opens a tab, as the component acts on it. */
+export interface RefClick {
+  ref: GithubRef;
+  /** The link's GitHub URL, for the browser. */
+  url: string;
+  /** A plain left click opens a tab; a modified or middle click opens the browser. */
+  plain: boolean;
+}
+
+/** The tab ref a click or auxclick landed on, or null when it is not on one. */
+export function refClickTarget(e: MouseEvent): RefClick | null {
+  if (e.button > 1) return null;
+  const anchor = (e.target as Element | null)?.closest?.("a[data-er-ref]") as HTMLElement | null | undefined;
+  if (!anchor) return null;
+  const parsed = parseGithubRef(anchor.dataset.erRef ?? "");
+  const url = anchor.dataset.erHref ?? null;
+  if (!parsed || !httpUrl(url)) return null;
+  const ref: GithubRef = { ...parsed, kind: anchor.dataset.erRefKind === "pull" ? "pull" : "unknown" };
+  const plain = e.button === 0 && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey;
+  return { ref, url, plain };
+}
+
+/**
  * Render a PR description: GitHub-flavoured markdown, then DOMPurify, then the
  * attributes the component acts on. Those `data-er-*` attributes are set only
  * after sanitizing, from values this function checked, so a body cannot plant
@@ -237,8 +271,18 @@ export function renderPrDescription(body: string, ctx: DescriptionContext = {}):
     }
     anchor.setAttribute("rel", "noopener noreferrer");
     anchor.setAttribute("target", "_blank");
-    const ref = parseGithubRef(href);
-    if (ref) anchor.dataset.erRef = `${ref.owner}/${ref.repo}#${ref.number}`;
+    const ref = tabRef(anchor, href);
+    if (!ref) continue;
+    // The app's external-link guard (a document capture listener) sends every
+    // `a[href]` to the system browser before this component sees the click, so
+    // a link that should open a tab carries its URL in data attributes instead.
+    anchor.removeAttribute("href");
+    anchor.removeAttribute("target");
+    anchor.dataset.erRef = `${ref.owner}/${ref.repo}#${ref.number}`;
+    anchor.dataset.erRefKind = ref.kind;
+    anchor.dataset.erHref = href;
+    anchor.setAttribute("role", "link");
+    anchor.setAttribute("tabindex", "0");
   }
 
   // <picture> sources would let the browser pick an unchecked URL.

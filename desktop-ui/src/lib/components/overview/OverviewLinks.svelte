@@ -4,7 +4,7 @@
   import { browser } from "$lib/stores/browser.svelte";
   import { copyToClipboard } from "$lib/clipboard";
   import { openExternalUrl } from "$lib/openExternalUrl";
-  import { ACTION_LABEL, extractPrLinks, type PrLink, type PrLinkAction, type PrLinkKind } from "$lib/prLinks";
+  import { ACTION_LABEL, extractPrLinks, openGithubRef, type PrLink, type PrLinkAction, type PrLinkKind } from "$lib/prLinks";
 
   interface Props {
     body: string;
@@ -39,7 +39,15 @@
         return;
       case "open-tab":
         if (link.ref) {
-          void app.cmd("open_remote_pr", { owner: link.ref.owner, repo: link.ref.repo, number: link.ref.number, replace: false });
+          void openGithubRef(
+            link.ref,
+            {
+              openPr: (r) =>
+                app.cmd("open_remote_pr", { owner: r.owner, repo: r.repo, number: r.number, replace: false }, { throwOnError: true }),
+              openUrl: openExternalUrl,
+            },
+            link.url,
+          );
         } else {
           void openExternalUrl(link.url);
         }
