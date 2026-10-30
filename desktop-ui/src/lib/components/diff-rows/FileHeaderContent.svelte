@@ -7,6 +7,9 @@
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import { documentPreviewKind } from "$lib/documentPreview";
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
+  import { langForPath } from "$lib/extToLang";
+  import { baseName } from "$lib/shortFileName";
+  import { renameSpans, splitSpan } from "$lib/renameDiff";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
@@ -82,6 +85,11 @@
     return { dir: row.filePath.slice(0, i + 1), name: row.filePath.slice(i + 1) };
   });
 
+  const lang = $derived(langForPath(row.filePath));
+  const spans = $derived(row.oldPath ? renameSpans(baseName(row.oldPath), pathParts.name) : null);
+  const oldParts = $derived(row.oldPath && spans ? splitSpan(baseName(row.oldPath), spans.old) : ["", "", ""]);
+  const newParts = $derived(spans ? splitSpan(pathParts.name, spans.new) : ["", "", ""]);
+
   async function openSource(e: MouseEvent) {
     e.stopPropagation();
     try {
@@ -117,15 +125,31 @@
   </svg>
 </button>
 
-<!-- Breadcrumb path: dir muted (truncate start), filename always visible -->
-<div class="mono text-xs flex flex-1 min-w-0 items-center overflow-hidden" title={row.filePath}>
+<!-- Language chip, then filename first: the name is what a reviewer scans for,
+     the directory trails dimmed and truncates from its start. -->
+{#if lang}
+  <span class="lang-chip mono shrink-0 {reviewed ? 'opacity-60' : ''}">{lang}</span>
+{/if}
+<span class="mono text-xs font-medium text-fg shrink-0 max-w-[60%] truncate {reviewed ? 'opacity-60' : ''}" title={row.filePath}>
+  {#if row.oldPath && spans}
+    <span class="text-fg-3">{oldParts[0]}<mark class="mark-old">{oldParts[1]}</mark>{oldParts[2]}</span><span class="text-fg-3 mx-1.5">→</span>{newParts[0]}<mark class="mark-new">{newParts[1]}</mark>{newParts[2]}
+  {:else}
+    {pathParts.name}
+  {/if}
+</span>
+<div class="mono text-[11px] flex flex-1 min-w-0 items-center overflow-hidden" title={row.filePath}>
   {#if pathParts.dir}
     <span class="text-muted truncate-start min-w-0 flex-1">
       <span class="truncate-start-inner">{pathParts.dir}</span>
     </span>
   {/if}
-  <span class="text-fg font-medium min-w-0 truncate">{pathParts.name}</span>
 </div>
+{#if row.kind === "test"}
+  <span class="chip chip-test mono">TEST</span>
+{/if}
+{#if row.isNew}
+  <span class="chip chip-new">new</span>
+{/if}
 
 <!-- +N/−N totals -->
 {#if documentKind}
@@ -139,17 +163,21 @@
     {/each}
   </div>
 {/if}
-<span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
-<span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
+{#if row.oldPath && row.additions === 0 && row.deletions === 0}
+  <span class="mono text-xs text-fg-3 shrink-0" title="Renamed">R</span>
+{:else}
+  <span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
+  <span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
+{/if}
 
-<!-- Reviewed toggle (icon only) -->
+<!-- Reviewed toggle, labelled: an icon-only box was easy to miss. -->
 <button
   type="button"
+  role="checkbox"
+  aria-checked={reviewed}
   onclick={toggleReviewed}
   title={reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
-  aria-label={reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
-  aria-pressed={reviewed}
-  class="shrink-0 w-6 h-6 rounded flex items-center justify-center transition hover:bg-hover group
+  class="shrink-0 h-6 px-1.5 rounded flex items-center gap-1.5 text-xs transition hover:bg-hover group
     {reviewed ? 'text-periwinkle' : 'text-fg-3 hover:text-fg'}"
 >
   <span
@@ -160,6 +188,7 @@
       <polyline points="20 6 9 17 4 12" />
     </svg>
   </span>
+  <span>Reviewed</span>
 </button>
 
 <!-- Open source (icon only) -->
@@ -176,3 +205,12 @@
     <line x1="10" y1="14" x2="21" y2="3" />
   </svg>
 </button>
+
+<style>
+  .lang-chip { font-size: 9.5px; font-weight: 500; letter-spacing: .02em; color: var(--color-fg-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px; line-height: 15px; }
+  .chip { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 5px; font-size: 10px; font-weight: 500; flex: none; }
+  .chip-test { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 13%, transparent); }
+  .chip-new { color: var(--color-fg-2); background: var(--color-hover); }
+  .mark-old { background: color-mix(in srgb, var(--color-del-fg) 22%, transparent); color: inherit; border-radius: 2px; }
+  .mark-new { background: color-mix(in srgb, var(--color-add-fg) 22%, transparent); color: inherit; border-radius: 2px; }
+</style>
