@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram } from "./sidebarModel";
+import { contrastRatio } from "./diffContrast";
+import { prCiState, prNeedsMyReview, projectColorIndex, projectColorVar, projectMonogram, projectTileInk } from "./sidebarModel";
+import { APP_THEMES, commitSeriesFor } from "./themes";
 
 describe("projectMonogram", () => {
   test("uppercases the first letter", () => expect(projectMonogram("easy-review")).toBe("E"));
@@ -9,7 +11,21 @@ describe("projectMonogram", () => {
 describe("projectColorVar", () => {
   test("is stable per name and a theme token", () => {
     expect(projectColorVar("discovery")).toBe(projectColorVar("discovery"));
-    expect(projectColorVar("discovery")).toMatch(/^var\(--color-[a-z]+\)$/);
+    expect(projectColorVar("discovery")).toMatch(/^var\(--color-commit-[1-6]\)$/);
+  });
+});
+
+describe("projectTileInk", () => {
+  test("monogram clears 4.5:1 on every series swatch in every theme", () => {
+    // One name per series slot, so every swatch is exercised.
+    const names = new Map<number, string>();
+    for (let i = 0; names.size < 6; i++) names.set(projectColorIndex(`p${i}`), `p${i}`);
+    for (const theme of APP_THEMES) {
+      for (const [slot, name] of names) {
+        const swatch = commitSeriesFor(theme)[slot];
+        expect(contrastRatio(projectTileInk(theme, name), swatch)).toBeGreaterThanOrEqual(4.5);
+      }
+    }
   });
 });
 

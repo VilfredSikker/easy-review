@@ -10,7 +10,8 @@
   import { orderedByIds } from "$lib/projectOrder";
   import { orderPrsByStack } from "$lib/prStacks";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
-  import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram } from "$lib/sidebarModel";
+  import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram, projectTileInk } from "$lib/sidebarModel";
+  import { themeByName } from "$lib/themes";
   import { installAppUpdate, type UpdatePhase } from "$lib/appUpdate";
 
   interface PinnedItem {
@@ -28,6 +29,7 @@
   const { collapsed = false, pinnedOverride }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
+  const theme = $derived(themeByName(app.snapshot?.theme));
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
@@ -955,8 +957,8 @@
                 </svg>
                 <!-- Monogram tile: colour is a hash of the name so it survives reorder and search. -->
                 <span
-                  class="w-4 h-4 rounded-[4px] grid place-items-center text-[9.5px] font-bold shrink-0 text-on-accent"
-                  style="background:{projectColorVar(project.name)}"
+                  class="w-4 h-4 rounded-[4px] grid place-items-center text-[9.5px] font-bold shrink-0"
+                  style="background:{projectColorVar(project.name)};color:{projectTileInk(theme, project.name)}"
                   aria-hidden="true"
                 >{projectMonogram(project.name)}</span>
                 <span class="truncate font-semibold text-[12.5px]">{project.name}</span>
