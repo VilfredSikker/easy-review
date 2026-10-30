@@ -2869,9 +2869,10 @@ struct OtherBucketFacts {
 
 impl OtherBucketFacts {
     fn read(dir: &str) -> Self {
-        // No diff hash: freshness is judged against the active view's hashes
-        // in `summarize_other_bucket`, not by the loader.
-        let ai = er_engine::ai::load_ai_state(dir, "", None);
+        // Loaded as of the bucket's own generation, so the loader merges the
+        // expert and professor sidecars its own view would. Freshness against
+        // the active view is judged in `summarize_other_bucket`.
+        let ai = er_engine::ai::load_ai_state(dir, &bucket_generation_hash(dir), None);
         let tour = er_engine::ai::load_tour_sidecar(dir, "tour.json");
         Self {
             triage_hash: ai.triage.as_ref().map(|t| t.diff_hash.clone()),
@@ -2886,6 +2887,37 @@ impl OtherBucketFacts {
             tour: tour.map(|t| (t.diff_hash, t.created_at, t.pillars.len())),
         }
     }
+}
+
+/// The diff hash the bucket's sidecars were generated against: `review.json`'s,
+/// else the newest expert, professor or triage sidecar's. The loader merges only
+/// sidecars matching the hash it is given, so an empty one drops a review built
+/// from experts or professor alone.
+fn bucket_generation_hash(dir: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct HashOnly {
+        diff_hash: String,
+    }
+    let review_hash = std::fs::read_to_string(std::path::Path::new(dir).join("review.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<HashOnly>(&content).ok())
+        .map(|review| review.diff_hash)
+        .filter(|hash| !hash.is_empty());
+    if let Some(hash) = review_hash {
+        return hash;
+    }
+    let experts = er_engine::ai::load_expert_reviews(dir)
+        .into_iter()
+        .map(|e| (e.created_at, e.diff_hash));
+    let professor = er_engine::ai::load_professor_review(dir).map(|p| (p.created_at, p.diff_hash));
+    let triage = er_engine::ai::load_triage_review(dir).map(|t| (t.created_at, t.diff_hash));
+    experts
+        .chain(professor)
+        .chain(triage)
+        .filter(|(_, hash)| !hash.is_empty())
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, hash)| hash)
+        .unwrap_or_default()
 }
 
 /// The pure half of the summary, so it can be tested without managed storage.
@@ -7612,6 +7644,47 @@ mod tests {
             ..OtherBucketFacts::default()
         };
         assert!(!summarize_other_bucket("pr", &empty, None, &["", "x"]).same_diff);
+    }
+
+    #[test]
+    fn other_bucket_facts_count_expert_and_professor_findings_without_review_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let finding = |id: &str, line: u32| {
+            serde_json::json!({
+                "id": id, "severity": "medium", "category": "logic",
+                "title": format!("finding {id}"), "description": "d",
+                "hunk_index": 0, "line_start": line, "line_end": line
+            })
+        };
+        std::fs::create_dir_all(dir.join("experts")).unwrap();
+        std::fs::write(
+            dir.join("experts/security.json"),
+            serde_json::json!({
+                "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:00:00Z",
+                "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("professor.json"),
+            serde_json::json!({
+                "version": 1, "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:05:00Z",
+                "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let facts = OtherBucketFacts::read(dir.to_str().unwrap());
+        assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));
+        assert_eq!(facts.finding_count, 3);
+        let summary = summarize_other_bucket("pr", &facts, None, &["pr-hash"]);
+        assert!(summary.has_review);
+        assert!(summary.same_diff);
     }
 
     #[test]
