@@ -61,7 +61,15 @@ describe("reviewRunCard", () => {
     expect(card.confirm?.lenses.map((l) => l.label)).toEqual(["General", "Security"]);
     expect(card.confirm?.estimate).toBe("Estimated cost ~$0.82 · time ~240 s");
     expect(card.canConfirm).toBe(true);
+    expect(card.canRunStandard).toBe(true);
     expect(card.canCancel).toBe(true);
+  });
+
+  it("offers Standard instead only for a pending Deep plan", () => {
+    const pending = flow("awaiting_confirmation", { depth: "deep" });
+    expect(reviewRunCard({ ...pending, draining: true }).canRunStandard).toBe(false);
+    expect(reviewRunCard(flow("finding", { depth: "deep" })).canRunStandard).toBe(false);
+    expect(reviewRunCard(flow("awaiting_confirmation", { depth: "standard" })).canRunStandard).toBe(false);
   });
 
   it("fills a stage by counted rows, never an estimate", () => {
