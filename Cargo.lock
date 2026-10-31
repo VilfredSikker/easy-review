@@ -1438,6 +1438,7 @@ name = "er-mcp"
 version = "0.5.11"
 dependencies = [
  "anyhow",
+ "base64 0.22.1",
  "dirs 6.0.0",
  "er-engine",
  "rmcp",

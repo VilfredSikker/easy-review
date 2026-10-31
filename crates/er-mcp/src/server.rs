@@ -176,6 +176,18 @@ pub struct PrFeedbackGetArgs {
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
+pub struct PrBrowserAnnotationsArgs {
+    #[serde(flatten)]
+    pub target: PrRefFields,
+    /// `pr` (default) or `local` for the current checked-out branch's branch bucket.
+    #[serde(default)]
+    pub bucket: Option<String>,
+    /// Include screenshots as PNG image items (default true).
+    #[serde(default)]
+    pub include_images: Option<bool>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
 pub struct PrFeedbackReplyArgs {
     #[serde(flatten)]
     pub target: PrRefFields,
@@ -1061,6 +1073,27 @@ impl ErMcp {
     }
 
     #[tool(
+        description = "Read the reviewer's browser annotations for a PR, with screenshots. bucket=local reads the current checked-out branch's local branch bucket. include_images defaults to true; images beyond 16 MiB total are explicitly omitted."
+    )]
+    async fn pr_browser_annotations(
+        &self,
+        Parameters(args): Parameters<PrBrowserAnnotationsArgs>,
+    ) -> Result<CallToolResult, McpError> {
+        tokio::task::spawn_blocking(move || {
+            let bucket = feedback_bucket(args.bucket.as_deref())?;
+            let pr = resolve_feedback_target(&args.target, bucket).map_err(|_| {
+                tool_err("could not resolve browser annotation target; check the PR reference and bucket (local requires a checked-out branch and no explicit PR reference)")
+            })?;
+            crate::browser_annotations::read_response(
+                std::path::Path::new(&pr.bucket_path),
+                args.include_images.unwrap_or(true),
+            )
+        })
+        .await
+        .map_err(|_| McpError::internal_error("browser annotation reader failed", None))?
+    }
+
+    #[tool(
         description = "Read review questions, notes, and AI findings for a PR. bucket=local reads the current checked-out branch's local branch bucket."
     )]
     async fn pr_feedback_get(
@@ -1415,7 +1448,7 @@ impl ServerHandler for ErMcp {
                  Query queues with prs_query. Review: pr_prepare → pr_upload. \
                  Guided tour: pr_guide (prepare → upload tour.json). \
                  Diagrams: pr_diagram (list | prepare → upload diagram JSON). \
-                 Feedback: pr_feedback_get / pr_feedback_reply / pr_feedback_resolve. Saved: pr_saved. \
+                 Feedback: pr_feedback_get / pr_feedback_reply / pr_feedback_resolve / pr_browser_annotations. Saved: pr_saved. \
                  Skills: er-review, er-guide, er-queue, er-low-hanging-fruit, er-get-feedback, er-respond, er-saved.",
             )
     }
@@ -1501,3 +1534,7 @@ mod tests {
         assert!(resolve_feedback_target(&target, "local").is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "server/browser_annotations_tests.rs"]
+mod browser_annotations_tests;
