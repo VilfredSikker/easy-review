@@ -9,6 +9,7 @@
   import ChecklistCard from "$lib/components/ChecklistCard.svelte";
   import FileRisksCard from "$lib/components/FileRisksCard.svelte";
   import DiagramsCard from "$lib/components/DiagramsCard.svelte";
+  import AgentOutputCard from "$lib/components/AgentOutputCard.svelte";
   import QuickActions from "./QuickActions.svelte";
   import OverviewDescription from "./OverviewDescription.svelte";
   import OverviewLinks from "./OverviewLinks.svelte";
@@ -48,6 +49,11 @@
   // (ADR 0004); with this view's bucket empty and the other's not, one card
   // says where they are instead of four empty sections.
   const bucketEmpty = $derived(emptyBucketCopy(snap) !== null);
+  // AgentOutputCard reads the live snapshot and draws nothing while idle; the
+  // same test here keeps its wrapper's margin from leaving a gap.
+  const hasAgentActivity = $derived(
+    (app.snapshot?.agent_commands?.length ?? 0) > 0 || (app.snapshot?.agent_log?.length ?? 0) > 0,
+  );
 
   const authorStyle = $derived.by(() => {
     if (!header.author) return "";
@@ -142,6 +148,15 @@
 
         <div class="mt-8">
           <OverviewTour tour={snap?.tour ?? null} />
+        </div>
+      {/if}
+
+      <!-- The active tab's agent commands and log, which the old Triage tab
+           carried. Outside the bucket gate: a run in flight belongs to the
+           tab, not to one view's artifacts. -->
+      {#if hasAgentActivity}
+        <div class="mt-8">
+          <AgentOutputCard />
         </div>
       {/if}
 
