@@ -29,6 +29,7 @@
   import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
   import { showOverviewSection, type OverviewSection } from "$lib/components/overview/overviewNav";
   import { isSecondaryTab, type SecondaryRightPanelTab } from "$lib/components/rpanel/rightPanelTabs";
@@ -241,6 +242,11 @@
   const reviewLayers = $derived(reviewPage.layers);
   $effect(() => {
     if (app.mainView === "overview") reviewPage.noteOverviewShown();
+  });
+  // The usages popover is anchored in the diff and listens on `window`; left
+  // open under a hidden diff it would keep claiming the arrows and Enter.
+  $effect(() => {
+    if (reviewLayers.diff !== "shown") refHighlight.closePopover();
   });
   /** The tab an uncached switch is loading; the review area names it until it lands. */
   const placeholderTab = $derived(

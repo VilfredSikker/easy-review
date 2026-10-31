@@ -3600,11 +3600,16 @@ impl TabState {
         }
 
         // Branch diff hash for AI staleness detection (and tour freshness).
-        // In Branch mode, reuse — no second git call needed.
+        // In Branch mode, and in a Tour entered from it (whose `raw` is the
+        // branch diff), reuse — no second git call needed. A quick refresh must
+        // re-derive the hash here too: a Tour -> Branch switch reuses this diff
+        // and trusts `ai_state_is_current`, which compares against this hash.
         // In other modes, only run the extra git diff on a full refresh when there's a
         // consumer — AI data, questions, or a tour (whose stale pill compares against it).
         // Skipping otherwise avoids a redundant git diff call with no consumer.
-        let branch_raw_owned: Option<String> = if self.mode == DiffMode::Branch {
+        let raw_is_branch_diff =
+            self.mode == DiffMode::Branch || (self.mode == DiffMode::Tour && !self.tour_is_pr);
+        let branch_raw_owned: Option<String> = if raw_is_branch_diff {
             // Always use SHA-256 for branch_diff_hash (used by .er/questions.json).
             // diff_hash may be a fast hash during quick refresh, but branch_diff_hash
             // must always be SHA-256 for compatibility with external skills.
@@ -10118,6 +10123,57 @@ mod tests {
         commit_to_feature_behind_the_apps_back(&root, "c.txt");
         tab.set_mode(DiffMode::Branch);
         assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn a_tour_round_trip_keeps_the_branch_hash_in_step_with_the_reused_diff() {
+        // The plain working-tree tab: no local-branch view, not remote. A
+        // watcher refresh during the Tour replaces the diff, and the switch
+        // back to Branch reuses it, so the hash AI staleness compares against
+        // must already describe that diff -- or findings render as current
+        // against a diff they no longer match.
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        std::process::Command::new("git")
+            .args(["checkout", "-q", "feature"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        let mut tab = TabState::new(root.clone()).expect("tab for the temp repo");
+        tab.base_branch = "main".to_string();
+        tab.mode = DiffMode::Branch;
+        tab.refresh_diff().expect("full refresh");
+        tab.set_mode(DiffMode::Tour);
+
+        std::fs::write(dir.path().join("b.txt"), "new work\n").unwrap();
+        for args in [
+            vec!["add", "b.txt"],
+            vec!["commit", "-qm", "from a terminal"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&root)
+                .output()
+                .unwrap();
+        }
+        tab.refresh_diff_quick_with_unmark()
+            .expect("watcher refresh");
+        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+
+        tab.set_mode(DiffMode::Branch);
+        let raw = tab.raw_diff.clone().expect("the reused diff");
+        assert_eq!(
+            tab.branch_diff_hash,
+            ai::compute_diff_hash(&raw),
+            "the branch hash must describe the diff the Branch view reuses"
+        );
 
         std::env::remove_var("ER_STORAGE_ROOT");
     }
