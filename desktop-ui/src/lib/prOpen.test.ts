@@ -2,10 +2,10 @@ import { describe, expect, it } from "bun:test";
 import {
   buildPrHint,
   createPrPrefetch,
-  loadAlwaysNewTab,
+  loadAlwaysOpenHere,
   remoteParts,
   resolvePrOpen,
-  saveAlwaysNewTab,
+  saveAlwaysOpenHere,
   shouldReplaceTab,
   tabOpenKeyChoice,
 } from "./prOpen";
@@ -30,14 +30,10 @@ const click = (o: Partial<MouseEvent>) => ({ metaKey: false, ctrlKey: false, but
 
 describe("shouldReplaceTab", () => {
   it("replaces on a plain click and opens a new tab on modifier or middle click", () => {
-    expect(shouldReplaceTab(click({}), false)).toBe(true);
-    expect(shouldReplaceTab(click({ metaKey: true }), false)).toBe(false);
-    expect(shouldReplaceTab(click({ ctrlKey: true }), false)).toBe(false);
-    expect(shouldReplaceTab(click({ button: 1 }), false)).toBe(false);
-  });
-
-  it("never replaces once the reader chose to always open in a new tab", () => {
-    expect(shouldReplaceTab(click({}), true)).toBe(false);
+    expect(shouldReplaceTab(click({}))).toBe(true);
+    expect(shouldReplaceTab(click({ metaKey: true }))).toBe(false);
+    expect(shouldReplaceTab(click({ ctrlKey: true }))).toBe(false);
+    expect(shouldReplaceTab(click({ button: 1 }))).toBe(false);
   });
 });
 
@@ -53,13 +49,18 @@ describe("resolvePrOpen", () => {
     expect(resolvePrOpen(click({ button: 1 }), false)).toBe("new-tab");
   });
 
-  it("stops asking once the preference is set", () => {
-    expect(resolvePrOpen(click({}), true)).toBe("new-tab");
-    expect(resolvePrOpen(null, true)).toBe("new-tab");
+  it("opens here without asking once the preference is set", () => {
+    expect(resolvePrOpen(click({}), true)).toBe("replace");
+    expect(resolvePrOpen(null, true)).toBe("replace");
+  });
+
+  it("still opens a new tab on Cmd/Ctrl-click with the preference set", () => {
+    expect(resolvePrOpen(click({ metaKey: true }), true)).toBe("new-tab");
+    expect(resolvePrOpen(click({ button: 1 }), true)).toBe("new-tab");
   });
 });
 
-describe("always-new-tab preference", () => {
+describe("always-open-here preference", () => {
   function memoryStorage() {
     const data = new Map<string, string>();
     return {
@@ -71,21 +72,21 @@ describe("always-new-tab preference", () => {
 
   it("round-trips and clears", () => {
     const s = memoryStorage();
-    expect(loadAlwaysNewTab(s)).toBe(false);
-    saveAlwaysNewTab(true, s);
-    expect(loadAlwaysNewTab(s)).toBe(true);
-    saveAlwaysNewTab(false, s);
-    expect(loadAlwaysNewTab(s)).toBe(false);
+    expect(loadAlwaysOpenHere(s)).toBe(false);
+    saveAlwaysOpenHere(true, s);
+    expect(loadAlwaysOpenHere(s)).toBe(true);
+    saveAlwaysOpenHere(false, s);
+    expect(loadAlwaysOpenHere(s)).toBe(false);
   });
 
   it("treats missing or throwing storage as unset", () => {
-    expect(loadAlwaysNewTab(null)).toBe(false);
+    expect(loadAlwaysOpenHere(null)).toBe(false);
     const blocked = () => {
       throw new Error("blocked");
     };
     const throwing = { getItem: blocked, setItem: blocked, removeItem: blocked };
-    expect(loadAlwaysNewTab(throwing)).toBe(false);
-    expect(() => saveAlwaysNewTab(true, throwing)).not.toThrow();
+    expect(loadAlwaysOpenHere(throwing)).toBe(false);
+    expect(() => saveAlwaysOpenHere(true, throwing)).not.toThrow();
   });
 });
 

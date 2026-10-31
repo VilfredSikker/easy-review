@@ -32,14 +32,14 @@ describe("InboxView", () => {
     expect(view).toContain('app.cmd("select_tab", { idx: existing.idx })');
   });
 
-  it("asks through the tab-open modal unless a modifier or the preference says new tab", () => {
+  it("asks through the tab-open modal unless a modifier or the preference already decides", () => {
     expect(view).toContain("resolvePrOpen(");
     expect(view).toContain("<TabOpenModal");
-    expect(view).toContain("saveAlwaysNewTab(true)");
+    expect(view).toContain("saveAlwaysOpenHere(true)");
   });
 
-  it("offers a way back from 'always open in a new tab'", () => {
-    expect(view).toContain("saveAlwaysNewTab(false)");
+  it("offers a way back from 'always open here'", () => {
+    expect(view).toContain("saveAlwaysOpenHere(false)");
     expect(view).toContain("Ask before opening");
   });
 
@@ -62,7 +62,7 @@ describe("InboxView", () => {
 describe("TabOpenModal", () => {
   it("routes Enter through tabOpenKeyChoice so other buttons keep their own Enter", () => {
     expect(modal).toContain("tabOpenKeyChoice(");
-    expect(modal).toContain("Always open in a new tab, don't ask again");
+    expect(modal).toContain("Always open here, don't ask again");
     expect(modal).toContain("data-tm-primary");
   });
 

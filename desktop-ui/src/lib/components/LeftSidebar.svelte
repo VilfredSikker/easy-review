@@ -10,7 +10,7 @@
     createPrPrefetch,
     remoteParts,
     resolvePrOpen,
-    saveAlwaysNewTab,
+    saveAlwaysOpenHere,
     shouldReplaceTab,
     yieldForPendingPaint,
   } from "$lib/prOpen";
@@ -798,7 +798,7 @@
   function choosePrOpen(newTab: boolean, remember: boolean) {
     const p = pendingPrOpen;
     pendingPrOpen = null;
-    if (remember) saveAlwaysNewTab(true);
+    if (remember) saveAlwaysOpenHere(true);
     if (p) void openPrIn(p.project, p.prNumber, !newTab, p.hint);
   }
 
