@@ -55,6 +55,7 @@ import {
   loadFlag,
   saveFlag,
 } from "./viewPrefs";
+import { inboxReturnView } from "../inboxNav";
 
 export type { CommentVisibility };
 
@@ -266,6 +267,8 @@ class AppStore {
   /** Shiki syntax theme id — picker UI wires here later. */
   currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
   mainView = $state<MainViewMode>("diff");
+  /** The main view the Inbox was opened from; leaving the Inbox returns there. */
+  private viewBeforeInbox: MainViewMode | null = null;
   /** Where the next Settings mount should land; the page takes it and clears it. */
   settingsTarget = $state<SettingsTarget | null>(null);
   private reviewPages = new ReviewPageMemory();
@@ -672,7 +675,19 @@ class AppStore {
   }
 
   setMainView(mode: MainViewMode) {
+    if (mode === "inbox" && this.mainView !== "inbox") this.viewBeforeInbox = this.mainView;
     this.mainView = mode;
+  }
+
+  closeInbox() {
+    if (this.mainView !== "inbox") return;
+    this.mainView = inboxReturnView(this.viewBeforeInbox, reviewPage.available("overview"));
+  }
+
+  /** The Inbox nav rows: open it, or close it when it is already open. */
+  toggleInbox() {
+    if (this.mainView === "inbox") this.closeInbox();
+    else this.setMainView("inbox");
   }
 
   /** Open Settings, optionally at a tab or a named section ("risk-rules"). */

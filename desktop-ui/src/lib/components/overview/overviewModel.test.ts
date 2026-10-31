@@ -6,6 +6,7 @@ import {
   checkRows,
   formatDuration,
   generatorStates,
+  reviewFlowCommand,
   langTag,
   latestArenaRun,
   overviewHeader,
@@ -97,6 +98,26 @@ describe("checks", () => {
   });
 });
 
+describe("reviewFlowCommand", () => {
+  const base = { review_bucket_er_dir: "/er", review_flow: null } as Pick<AppSnapshot, "review_flow" | "review_bucket_er_dir">;
+  const flow = (state: string) => ({ ...base, review_flow: { state, draining: false } as unknown as AppSnapshot["review_flow"] });
+
+  it("starts the review flow, the same review the palette runs", () => {
+    expect(reviewFlowCommand(base, "branch")).toEqual({ command: "start_review_flow", args: { scope: "branch", erDir: "/er" } });
+  });
+  it("confirms a Deep estimate that is waiting", () => {
+    expect(reviewFlowCommand(flow("awaiting_confirmation"), "branch")).toEqual({ command: "confirm_review_flow", args: { erDir: "/er" } });
+  });
+  it("does not confirm a flow that is draining", () => {
+    const draining = { ...base, review_flow: { state: "awaiting_confirmation", draining: true } as unknown as AppSnapshot["review_flow"] };
+    expect(reviewFlowCommand(draining, "branch")).toBeNull();
+  });
+  it("does nothing while a flow runs or with no scope", () => {
+    expect(reviewFlowCommand(flow("finding"), "branch")).toBeNull();
+    expect(reviewFlowCommand(base, null)).toBeNull();
+  });
+});
+
 describe("generatorStates", () => {
   const task = (over: Partial<BackgroundTaskSnapshot>): BackgroundTaskSnapshot => ({
     id: "t",
@@ -118,6 +139,14 @@ describe("generatorStates", () => {
     };
     const busy = Object.fromEntries(generatorStates(snap).map((g) => [g.id, g.busy]));
     expect(busy).toEqual({ triage: false, review: true, tour: false });
+  });
+
+  it("spins the review button while the review flow runs, and offers confirm when it waits", () => {
+    const withFlow = (state: string) =>
+      generatorStates({ ...richSnapshot, background_tasks: [], review_flow: { state, draining: false } as unknown as AppSnapshot["review_flow"] }).find((g) => g.id === "review");
+    expect(withFlow("finding")).toMatchObject({ busy: true, confirm: false });
+    expect(withFlow("awaiting_confirmation")).toMatchObject({ busy: false, confirm: true });
+    expect(withFlow("done")).toMatchObject({ busy: false, confirm: false });
   });
 
   it("dates each artifact, and a tour only when there is one", () => {

@@ -4,6 +4,7 @@ import { githubStatusForActiveTab } from "$lib/prUrl";
 import { mergeBoxModel, type MergeBoxTone } from "$lib/prMergeBox";
 import { filesByPillar } from "$lib/pillarFiles";
 import { baseName } from "$lib/shortFileName";
+import { reviewFlowControls } from "$lib/reviewFlow";
 
 // ── Header ──────────────────────────────────────────────────────────────────
 
@@ -125,17 +126,31 @@ export interface GeneratorState {
   /** When this view's artifact was made; null when it has none. */
   at: string | null;
   busy: boolean;
+  /** A Deep review flow is waiting for the reviewer to confirm its estimate. */
+  confirm?: boolean;
 }
 
 type GeneratorSnapshot = Pick<
   AppSnapshot,
-  "ai" | "tour" | "background_tasks" | "tabs" | "local_branch" | "branch"
+  "ai" | "tour" | "background_tasks" | "tabs" | "local_branch" | "branch" | "review_flow"
 >;
 
 // A review fans out into expert finders, each its own task.
 function taskMatches(kind: string, id: Generator): boolean {
   if (id === "review") return kind === "review" || kind.startsWith("expert:");
   return kind === id;
+}
+
+// The review flow is the review ⌘K → a → r runs; a Deep estimate waiting on
+// confirmation is not busy, it is the button's next click.
+function reviewGenerator(snap: GeneratorSnapshot | null, taskBusy: boolean): GeneratorState {
+  const flow = reviewFlowControls(snap?.review_flow);
+  return {
+    id: "review",
+    at: snap?.ai?.review_created_at ?? null,
+    busy: taskBusy || (flow.busy && !flow.confirm),
+    confirm: flow.confirm,
+  };
 }
 
 /**
@@ -155,9 +170,26 @@ export function generatorStates(snap: GeneratorSnapshot | null): GeneratorState[
   const busy = (id: Generator) => live.some((t) => taskMatches(t.kind, id));
   return [
     { id: "triage", at: snap?.ai?.triage?.created_at ?? null, busy: busy("triage") },
-    { id: "review", at: snap?.ai?.review_created_at ?? null, busy: busy("review") },
+    reviewGenerator(snap, busy("review")),
     { id: "tour", at: snap?.tour?.available ? (snap.tour.createdAt ?? null) : null, busy: busy("tour") },
   ];
+}
+
+/**
+ * The command the Overview's AI review button sends: the same review flow
+ * (triage, finders, verification) as the palette's Review entry, not the
+ * single general review.
+ */
+export function reviewFlowCommand(
+  snap: Pick<AppSnapshot, "review_flow" | "review_bucket_er_dir"> | null,
+  scope: string | null,
+): { command: "start_review_flow" | "confirm_review_flow"; args: Record<string, unknown> } | null {
+  const erDir = snap?.review_bucket_er_dir;
+  if (!scope || !erDir) return null;
+  const controls = reviewFlowControls(snap?.review_flow);
+  if (controls.confirm) return { command: "confirm_review_flow", args: { erDir } };
+  if (controls.busy) return null;
+  return { command: "start_review_flow", args: { scope, erDir } };
 }
 
 /** The newest arena run and how many there are, for the Arena button's caption. */

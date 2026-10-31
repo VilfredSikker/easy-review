@@ -8,7 +8,7 @@ git-show commands before editing. An owner ADDENDUM overrides the plan. Read roo
 
 ## Work boundaries
 
-- Base and PR target are `release/v0.6.0`; branch names are exactly those in PLAN.
+- Base and PR target are `release/v0.6.1`; branch names are exactly those in PLAN.
   The old planning branch is a source, not an implementation base.
 - The orchestrator commits planning docs before dispatch and assigns a worktree
   outside the checkout, normally `/workspace/easy-review-worktrees/er21` or its
