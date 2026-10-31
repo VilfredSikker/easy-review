@@ -12,6 +12,7 @@ use super::{gh_pr_head_oid_remote, gh_pr_submit_review_remote, review_comment_js
 use crate::proc::CommandTimeoutExt;
 use anyhow::{Context, Result};
 use serde::Serialize;
+use std::collections::HashMap;
 use std::process::Command;
 
 /// The viewer's pending review on one PR, plus the request that asked for it.
@@ -55,7 +56,8 @@ const PENDING_REVIEW_QUERY: &str = r#"query($owner:String!,$repo:String!,$pr:Int
   repository(owner:$owner,name:$repo){
     pullRequest(number:$pr){
       reviews(states:PENDING,first:10){nodes{id databaseId viewerDidAuthor
-        comments(first:100){nodes{id databaseId path line startLine originalLine originalStartLine diffSide body}}}}
+        comments(first:100){nodes{id databaseId path line startLine originalLine originalStartLine body}}}}
+      reviewThreads(last:100){nodes{diffSide comments(last:50){nodes{id}}}}
       timelineItems(itemTypes:[REVIEW_REQUESTED_EVENT],last:50){nodes{
         ... on ReviewRequestedEvent{createdAt actor{login} requestedReviewer{... on User{login}}}}}
     }
@@ -224,11 +226,19 @@ fn parse_pending_review(json: &str) -> Result<PendingReview> {
             .find(|r| r["viewerDidAuthor"].as_bool() != Some(false))
     });
     if let Some(review) = review {
+        // GitHub keeps the side on the thread, not on the comment: asking a
+        // comment for `diffSide` fails the whole query.
+        let sides = thread_sides(&pr["reviewThreads"]["nodes"]);
         out.review_id = review["databaseId"].as_u64();
         out.review_node_id = review["id"].as_str().map(str::to_string);
         out.comments = review["comments"]["nodes"]
             .as_array()
-            .map(|nodes| nodes.iter().filter_map(parse_pending_comment).collect())
+            .map(|nodes| {
+                nodes
+                    .iter()
+                    .filter_map(|n| parse_pending_comment(n, &sides))
+                    .collect()
+            })
             .unwrap_or_default();
     }
 
@@ -252,7 +262,27 @@ fn parse_pending_review(json: &str) -> Result<PendingReview> {
     Ok(out)
 }
 
-fn parse_pending_comment(n: &serde_json::Value) -> Option<PendingReviewComment> {
+/// Comment node id -> the `diffSide` of the thread it belongs to.
+fn thread_sides(threads: &serde_json::Value) -> HashMap<String, String> {
+    let mut sides = HashMap::new();
+    for thread in threads.as_array().into_iter().flatten() {
+        let Some(side) = thread["diffSide"].as_str() else {
+            continue;
+        };
+        for c in thread["comments"]["nodes"].as_array().into_iter().flatten() {
+            if let Some(id) = c["id"].as_str() {
+                sides.insert(id.to_string(), side.to_string());
+            }
+        }
+    }
+    sides
+}
+
+fn parse_pending_comment(
+    n: &serde_json::Value,
+    sides: &HashMap<String, String>,
+) -> Option<PendingReviewComment> {
+    let id = n["id"].as_str()?.to_string();
     // A pending comment's `line` is null once the head moves past it; the
     // original anchor is still the one GitHub will post it on.
     let line = n["line"].as_u64().or_else(|| n["originalLine"].as_u64());
@@ -260,12 +290,15 @@ fn parse_pending_comment(n: &serde_json::Value) -> Option<PendingReviewComment> 
         .as_u64()
         .or_else(|| n["originalStartLine"].as_u64());
     Some(PendingReviewComment {
-        id: n["id"].as_str()?.to_string(),
+        side: sides
+            .get(&id)
+            .cloned()
+            .unwrap_or_else(|| "RIGHT".to_string()),
+        id,
         database_id: n["databaseId"].as_u64(),
         path: n["path"].as_str()?.to_string(),
         line,
         start_line,
-        side: n["diffSide"].as_str().unwrap_or("RIGHT").to_string(),
         body: n["body"].as_str().unwrap_or_default().to_string(),
     })
 }
@@ -321,6 +354,29 @@ fn gh_failure_detail(stdout: &[u8], stderr: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn query_reads_side_from_threads_not_comments() {
+        let comments = PENDING_REVIEW_QUERY
+            .split("comments(first:100)")
+            .nth(1)
+            .and_then(|rest| rest.split('}').next())
+            .unwrap();
+        assert!(!comments.contains("diffSide"));
+        assert!(PENDING_REVIEW_QUERY.contains("reviewThreads"));
+    }
+
+    #[test]
+    fn comment_without_a_thread_defaults_to_right() {
+        let json = r#"{"data":{"viewer":{"login":"vsd"},"repository":{"pullRequest":{
+          "reviews":{"nodes":[{"id":"PRR_1","databaseId":1,"viewerDidAuthor":true,"comments":{"nodes":[
+            {"id":"PRRC_z","databaseId":9,"path":"a.rs","line":3,"body":"x"}]}}]},
+          "reviewThreads":{"nodes":[]},"timelineItems":{"nodes":[]}}}}}"#;
+        assert_eq!(
+            parse_pending_review(json).unwrap().comments[0].side,
+            "RIGHT"
+        );
+    }
+
     fn entry(line: usize, start: Option<usize>, side: &str) -> ReviewBatchEntry {
         ReviewBatchEntry {
             file: "src/lib.rs".into(),
@@ -333,9 +389,13 @@ mod tests {
 
     const RESPONSE: &str = r#"{"data":{"viewer":{"login":"vsd"},"repository":{"pullRequest":{
       "reviews":{"nodes":[{"id":"PRR_1","databaseId":77,"viewerDidAuthor":true,"comments":{"nodes":[
-        {"id":"PRRC_a","databaseId":5,"path":"src/a.rs","line":12,"startLine":10,"originalLine":12,"originalStartLine":10,"diffSide":"RIGHT","body":"range"},
-        {"id":"PRRC_b","databaseId":6,"path":"src/b.rs","line":null,"startLine":null,"originalLine":4,"originalStartLine":null,"diffSide":"LEFT","body":"moved"}
+        {"id":"PRRC_a","databaseId":5,"path":"src/a.rs","line":12,"startLine":10,"originalLine":12,"originalStartLine":10,"body":"range"},
+        {"id":"PRRC_b","databaseId":6,"path":"src/b.rs","line":null,"startLine":null,"originalLine":4,"originalStartLine":null,"body":"moved"}
       ]}}]},
+      "reviewThreads":{"nodes":[
+        {"diffSide":"RIGHT","comments":{"nodes":[{"id":"PRRC_a"}]}},
+        {"diffSide":"LEFT","comments":{"nodes":[{"id":"PRRC_b"}]}}
+      ]},
       "timelineItems":{"nodes":[
         {"createdAt":"2026-10-01T10:00:00Z","actor":{"login":"sune"},"requestedReviewer":{"login":"VSD"}},
         {"createdAt":"2026-10-02T10:00:00Z","actor":{"login":"martin"},"requestedReviewer":{"login":"someone"}},
