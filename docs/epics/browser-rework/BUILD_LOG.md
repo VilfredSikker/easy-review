@@ -1,47 +1,111 @@
-# Browser rework status
+# Browser rework build log
 
-Release branch: `release/v0.6.1`. Implementation PRs target that branch.
-Plan: [PLAN.md](./PLAN.md). Resume notes: [BUILD_LOG.md](./BUILD_LOG.md).
-Updated by the orchestrator only. Last update: 2026-10-31.
+Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
 
-Legend: planned, implementing, reviewing, fixing, merged, blocked.
+## How to resume
 
-| PR | Title | Lane | Model | Status | PR link | Notes |
-| --- | --- | --- | --- | --- | --- | --- |
-| ER21 | Browser fixtures | Fixtures | Terra | merged | [#330](https://github.com/VilfredSikker/easy-review/pull/330) | HTTP checks passed; Safari/native observations pending |
-| ER32a | Engine annotation storage | Storage | Sol | merged | [#332](https://github.com/VilfredSikker/easy-review/pull/332) | Twelve storage tests, independent review and CI passed |
-| ER34a | Shared prompt renderer | Storage | Sol | merged | [#335](https://github.com/VilfredSikker/easy-review/pull/335) | Review and CI passed; existing exports preserved |
-| ER35 | Browser annotations MCP reader | Storage | Sol | merged | [#352](https://github.com/VilfredSikker/easy-review/pull/352) | Review, 25 MCP tests and CI passed |
-| ER32b | Desktop snapshot integration | Desktop | Sol | merged | [#353](https://github.com/VilfredSikker/easy-review/pull/353) | Repair re-review and full desktop CI passed |
-| ER22 | Parking proof | Native | Sol | draft | [#354](https://github.com/VilfredSikker/easy-review/pull/354) | Source reviewed; macOS proof remains pending |
-| ER23 | Content-world proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
-| ER24 | Host editor surface proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
-| ER25 | Navigation capture data-store proof | Native | Sol | blocked | — | Needs ER22, ER23, ER24 and real macOS |
-| ER26 | Stable browser identity | Desktop | Sol | blocked | — | Native proof gate |
-| ER27 | Native navigation state | Desktop | Sol | blocked | — | Needs ER26 and reliable native observations |
-| ER28 | Sender validation | Desktop | Sol | blocked | — | Needs ER26 and ER27 |
-| ER29 | Presentation leases | Desktop | Sol | blocked | — | Needs ER22 and ER26 |
-| ER30-31 | Runtime and host drafts | Desktop | Sol | blocked | — | One combined PR; native and storage gates |
-| ER33 | Screenshot capture | Desktop | Sol | blocked | — | Native, runtime, draft and storage gates |
-| ER34b | Export integration | Handoff | Terra | blocked | — | Wait for active v2 host flow |
-| ER36 | Cutover and acceptance | Release | Sol | blocked | — | All predecessors and recorded macOS acceptance |
+1. Read [PLAN.md](./PLAN.md), [AGENT_BRIEF.md](./AGENT_BRIEF.md), STATUS and the
+   latest log entries. Fetch the current release branch before starting a lane.
+2. Inspect open browser rework PRs against `release/v0.6.1` and their reviews.
+   Resume an existing implementer when possible; do not duplicate a PR.
+3. Use worktrees outside the main checkout. In this cloud session, source
+   `/workspace/scratch/browser-tool-env.sh` before Rust, Bun or just commands.
+4. Run heavy checks sequentially under the shared lock documented in the brief.
+5. Native proof results must come from the real macOS application. Never promote
+   a pending result to yes based on unit tests or a headless browser.
+6. Update STATUS and append outcomes here after each reviewed integration.
 
-## Owner actions
+## Log
 
-The native proof tasks require mouse and keyboard checks in a macOS Tauri app.
-The current Linux environment cannot supply that evidence. Their proof results
-remain pending until recorded in the proof log; compilation is not a substitute.
+### 2026-10-30
 
-## Release target
+- The owner resumed implementation using the epic-orchestration skill. General
+  work uses Terra; complex implementation and architectural judgment use Sol.
+- Cloned the correct Easy Review repository. The current release was verified as
+  `release/v0.6.0`, initially at `db43ec6c`; the unrelated Ink Booking checkout is
+  untouched. The existing planning branch remains unmerged at `98f11917`.
+- Original task and reference documents are available from the planning branch.
+  The first execution slice is fixtures and engine-only v2 storage, followed by
+  a renderer and MCP reader that do not remove the working v1 host flow.
+- The runtime and host editor tasks must land in one combined PR. Live native
+  integration remains gated on the macOS proof tasks.
+- Installed a workspace-local Rust, Bun and just toolchain. Tool setup changed
+  no application sources. Desktop system libraries have not been installed.
+- Planning documents committed and pushed as `a51849b6`, after incorporating the
+  concurrent merge of PR 324 at `3e32955e`. Its snapshot changes do not overlap the
+  first engine/fixture slice; later snapshot work must use that updated base.
+- Started ER21 and ER32a in separate worktrees under the delegated model policy.
+  The shared toolchain and check lock are ready; no native proof has run.
+- ER21 opened PR 330. Four Bun HTTP tests (84 assertions), redirect/host/port
+  curl checks and docs-check passed. Independent review found the hostile
+  synthetic-click fixture targeted the document rather than an element, weakening
+  the later trust test; returned to the same implementer for a focused fix.
+- Reviewed the focused ER21 synthetic-click fix at `83437941` and merged PR 330
+  with a merge commit after the routing suite passed again. The proof log remains
+  pending and the fixture's Safari DOM check remains an owner action.
+- Corrected GNU/BSD stat fallback order in the installed shared-check helper so
+  Linux waiters can read the lock age. The repository's locking policy is unchanged.
+- ER32a PR 332 passed independent review and twelve storage tests, formatting,
+  headless compilation and scoped engine Clippy. PR CI passed. Merged the reviewed
+  head `d71588bd` as `1ba952af`; v1 callers remain unchanged.
+- ER34a pure renderer PR 335 is under independent review. Eight renderer golden
+  tests and fourteen existing export tests passed; no existing reader switched.
+  ER35 implementation is stacked on that renderer and cannot ship ahead of it.
+- Started ER32b against the reconciled PR 324 snapshot. Its read path remains
+  separate from live draft/save integration.
+- Started ER22 debug-only parking proof scaffolding. Its dedicated probe child
+  avoids the product modal teardown confounder; this changes the experiment
+  driver, not the release browser behavior. Mac compile and native observations
+  remain required before the proof can pass.
 
-The owner directed creating `release/v0.6.1` from `release/v0.6.0` and targeting
-every new PR at it. See the [addendum](./ADDENDUM-release-0.6.1.md). Remaining
-snapshot, MCP and parking-probe branches will merge this base before publication.
-The parking-probe PR stays a draft until macOS validation.
+### 2026-10-31
 
-## Pending design decisions
-
-Before the corresponding live feature is wired, reconcile screenshot numbering,
-query sanitization, document activation and native failure/popup attribution with
-the original reference spec. Independent storage and rendering work does not
-decide these product contracts.
+- The owner resumed the paused epic. Rechecked the current release branch, open
+  PRs, saved worktrees, toolchain and existing reviews before resuming agents.
+- Renderer PR 335 retained its reviewed head and passing CI. Merged it as
+  `b22019ff`; this adds the renderer without switching production export readers.
+- ER32b was rebased and checked locally. Independent review found a missing
+  Debug derive, a cache-publication/sent-revision race and unrecoverable cached
+  read errors. Assigned the repair to Sol before further publication.
+- ER35 is locally committed at `ed37a5c4`; independent review found no blocker.
+  Its 25 MCP tests, formatting and scoped Clippy passed, with no external writes.
+- ER22 debug-only probe scaffolding is locally reviewed for a draft. macOS
+  compilation and native behavior remain unverified; all 18 proof cells remain
+  pending. The dedicated probe leaves product modal teardown unchanged.
+- Automatic approval review rejected snapshot PR creation for public source
+  disclosure. Verified the original repository is public, owned by VilfredSikker,
+  and writable by the connected account; a supported retry with this evidence was
+  also rejected for lack of explicit source-disclosure approval. Put remaining
+  publication on hold while completing local checks and reviews.
+- ER32b repair `09e5abf2` passed independent re-review. Added Debug and one
+  library-owned cache; App-serialized publication keeps disk work outside App,
+  retries errors, revalidates stable reads and discards changed-bucket reads.
+  Five actual-source Rust regressions and strict harness lint passed; 46 focused
+  UI tests and UI type checking passed. Full UI retained the previously proven
+  defaultDevUrl baseline failure. Full desktop verification still needs GTK/CI.
+- ER22 recovery guidance is finalized at `0aa3d32d`, reviewed as suitable only
+  for a draft pending Mac compilation and native scenarios. ER35 remains reviewed
+  at `ed37a5c4`. Prepared exact patch artifacts for the three local branch heads
+  before requesting explicit publication approval.
+- The owner directed branching from `release/v0.6.0` to a new `release/v0.6.1`
+  and targeting every new PR at 0.6.1. Created the new remote branch from the
+  verified latest 0.6.0 head `e668531f`; inherited merged fixtures, engine storage
+  and renderer. Moved the unpublished tracking updates onto the new branch.
+  Future work follows the release-target addendum; macOS proof gates remain.
+- Merged release/v0.6.1 into the three prepared branches; all feature diffs
+  remained byte-for-byte identical to reviewed versions. Opened ER35 PR 352,
+  ER32b PR 353 and draft ER22 PR 354 against that release branch and attached
+  all three to the chat. Published the independent review summaries.
+- New-base MCP tests passed 25/25. UI type checks and 22 isolated browser tests
+  passed; the known full-suite interaction and missing local GTK stack remained
+  documented. PR 352 and PR 353 then passed CI, including desktop tests and lint.
+- Merged PR 352 and PR 353 as `07e47f1c` and `4831d2a6` into release/v0.6.1.
+  Removed their clean implementation worktrees; branches and reviews remain.
+- Draft PR 354 CI exposed two non-macOS unused-async diagnostics. Reviewed the
+  focused repair `8a559ca8`: target-scoped expectations preserve the async API
+  and grow no lint baseline. Isolated lint, formatting and comments checks pass;
+  full CI rerun is pending. macOS compilation and all native proof cells remain
+  pending regardless of Linux results.
+- A status update accidentally replaced the build-log content. Restored the full
+  append-only history from `4831d2a6` and appended these events; application code
+  was unaffected.
