@@ -9,5 +9,6 @@ describe("inboxReturnView", () => {
   it("falls back to the Overview, or the Diff when the Overview is unavailable", () => {
     expect(inboxReturnView(null, true)).toBe("overview");
     expect(inboxReturnView("inbox", false)).toBe("diff");
+    expect(inboxReturnView("overview", false)).toBe("diff");
   });
 });

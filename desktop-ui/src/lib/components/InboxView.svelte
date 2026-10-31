@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { inboxView } from "$lib/stores/inboxView.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
@@ -183,18 +184,14 @@
   // alone while the Inbox is the main view so j/k move rows, not diff files.
   $effect(() => {
     function onKeydown(e: KeyboardEvent) {
-      if (app.mainView !== "inbox" || commandPalette.open) return;
+      // Full-window overlays own Esc and the bare keys while they are up.
+      if (app.mainView !== "inbox" || commandPalette.open || arena.overlayOpen || app.showEmptyState) return;
       if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[data-modal]")) return;
       const target = e.target as HTMLElement;
-      if (e.key === "Escape") {
-        // Esc in the filter field clears focus first; a second Esc leaves.
-        if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) target.blur();
-        else app.closeInbox();
-        e.preventDefault();
-        return;
-      }
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
-      if (e.key === "j" || e.key === "k") void step(e.key === "j" ? 1 : -1);
+      // Esc in a field only blurs it (the global handler does that); a second Esc leaves.
+      if (e.key === "Escape") app.closeInbox();
+      else if (e.key === "j" || e.key === "k") void step(e.key === "j" ? 1 : -1);
       else if (e.key === "u" && selected) markThreadRead(selected);
       else if (e.key === "Enter" && selected) void openThread(selected, null);
       else return;

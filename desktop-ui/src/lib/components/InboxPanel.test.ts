@@ -13,6 +13,10 @@ describe("InboxPanel nav row", () => {
     expect(panel).toContain("app.toggleInbox()");
     expect(panel).not.toContain("ModalShell");
   });
+
+  it("leaves Esc to full-window overlays open over the Inbox", () => {
+    expect(view).toContain("commandPalette.open || arena.overlayOpen || app.showEmptyState");
+  });
 });
 
 describe("InboxView", () => {

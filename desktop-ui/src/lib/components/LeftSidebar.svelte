@@ -52,6 +52,11 @@
       ? groupInboxThreads(snapshot?.inbox_items ?? [], projects).filter(isThreadUnread).length
       : 0,
   );
+  // The collapsed-rail Inbox button closes the Inbox when it is open.
+  const inboxOpen = $derived(app.mainView === "inbox");
+  const inboxUnread = $derived(unreadPrs > 0 ? `${unreadPrs} unread` : "");
+  const inboxTitle = $derived(inboxOpen ? "Close Inbox (Esc)" : ["Inbox", inboxUnread].filter(Boolean).join(" · "));
+  const inboxLabel = $derived(inboxOpen ? "Close Inbox" : ["Inbox", inboxUnread].filter(Boolean).join(", "));
   const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
 
   interface AppUpdateInfo {
@@ -860,8 +865,8 @@
     </button>
     <button
       type="button"
-      title={unreadPrs > 0 ? `Inbox · ${unreadPrs} unread` : "Inbox"}
-      aria-label={unreadPrs > 0 ? `Inbox, ${unreadPrs} unread` : "Inbox"}
+      title={inboxTitle}
+      aria-label={inboxLabel}
       aria-current={app.mainView === "inbox" ? "page" : undefined}
       onclick={() => app.toggleInbox()}
       class="relative w-7 h-7 rounded flex items-center justify-center {app.mainView === 'inbox' ? 'bg-hover text-fg' : 'text-fg-3 hover:bg-hover'}"
