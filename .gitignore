@@ -7,11 +7,13 @@ desktop-ui/storybook-static/
 .playwright-mcp/
 .cursor/
 
-# Override global gitignore for project-level Claude Code commands
+# Override global gitignore for project-level Claude Code commands and skills
 !.claude/
 .claude/*
 !.claude/commands/
 !.claude/commands/*.md
+!.claude/skills/
+!.claude/skills/**/*.md
 !.claude/settings.json
 
 .scratch/
