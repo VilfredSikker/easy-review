@@ -1,5 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(debug_assertions)]
+use er_desktop::browser_native;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
@@ -1785,6 +1787,8 @@ fn main() {
                 return;
             }
             match event {
+                #[cfg(all(debug_assertions, target_os = "macos"))]
+                tauri::WindowEvent::Destroyed => browser_native::clear(),
                 tauri::WindowEvent::CloseRequested { .. } => {
                     if let Ok(guard) = persist_app_on_close.lock() {
                         tabs::persist_app_tabs(&guard);
@@ -2078,6 +2082,8 @@ fn main() {
             commands::detect_dev_url,
             commands::get_background_task_log,
             browser_webview::browser_ensure,
+            #[cfg(debug_assertions)]
+            browser_native::browser_probe_park,
             browser_webview::browser_hide,
             browser_webview::browser_suspend_for_overlay,
             browser_webview::browser_set_bounds,

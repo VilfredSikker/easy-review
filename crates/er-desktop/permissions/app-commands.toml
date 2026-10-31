@@ -176,6 +176,7 @@ commands.allow = [
   "detect_dev_url",
   "get_background_task_log",
   "browser_ensure",
+  "browser_probe_park",
   "browser_hide",
   "browser_suspend_for_overlay",
   "browser_set_bounds",
