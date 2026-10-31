@@ -767,7 +767,7 @@ pub fn start_seeded_run(
             Ok(ArbiterOutcome::Cancelled) => {}
             Ok(ArbiterOutcome::Judged) => {
                 // The review's copy of the verdicts: the overlay the review
-                // loads, so `review.json` keeps its three writers (ADR 0001).
+                // loads, so `review.json` keeps its three writers (ADR 0035).
                 // Written before the run reads Complete, so anything that sees
                 // Complete can also load the verdicts.
                 let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
