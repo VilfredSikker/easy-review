@@ -1,5 +1,7 @@
 pub mod arena_commands;
 pub mod auto_triage;
+#[cfg(debug_assertions)]
+pub mod browser_native;
 pub mod browser_proxy;
 pub mod browser_webview;
 pub mod commands;
