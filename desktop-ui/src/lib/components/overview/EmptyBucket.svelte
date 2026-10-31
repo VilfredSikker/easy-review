@@ -5,6 +5,8 @@
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { sourceToggleState } from "$lib/sourceToggle";
   import { emptyBucketCopy } from "./emptyBucket";
+  import { reviewFlowCommand } from "./overviewModel";
+  import { reviewFlowControls } from "$lib/reviewFlow";
 
   interface Props {
     /** Defaults to the live snapshot; stories pass one. */
@@ -16,6 +18,9 @@
   const copy = $derived(emptyBucketCopy(snap));
   const scope = $derived(reviewScopeFromMode(snap?.mode));
   const prNumber = $derived(resolveActivePrNumber(snap ?? null));
+  // The same review flow as the Overview's AI review button and ⌘K → a → r.
+  const reviewCmd = $derived(reviewFlowCommand(snap ?? null, scope));
+  const flowBusy = $derived(reviewFlowControls(snap?.review_flow).busy);
   const toggle = $derived(
     sourceToggleState({
       prNumber,
@@ -52,8 +57,9 @@
       <button
         type="button"
         class="inline-flex h-7 items-center rounded-[7px] border border-border bg-surface px-2.5 text-[12.5px] font-medium text-fg hover:border-fg-3 disabled:opacity-50"
-        disabled={!scope}
-        onclick={() => scope && void app.cmd("run_ai_review", { scope })}
+        disabled={reviewCmd?.command !== "start_review_flow"}
+        title={flowBusy ? "A review is running or waiting for confirmation" : undefined}
+        onclick={() => reviewCmd && void app.cmd(reviewCmd.command, reviewCmd.args)}
       >Run review</button>
       {#if canSwitch}
         <button

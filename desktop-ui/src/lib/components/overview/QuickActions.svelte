@@ -4,6 +4,7 @@
   import { arena } from "$lib/stores/arena.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import { reviewFlowEstimate } from "$lib/reviewFlow";
   import { shortAge } from "$lib/relativeTime";
   import { generatorStates, latestArenaRun, reviewFlowCommand, type Generator, type GeneratorState } from "./overviewModel";
 
@@ -35,7 +36,7 @@
   function buttonTitle(g: GeneratorState): string {
     if (!scope) return "Not available in this view";
     if (g.busy) return "Running";
-    if (g.confirm) return "Confirm the Deep review estimate";
+    if (g.confirm) return `Confirm Deep review: ${reviewFlowEstimate(snap?.review_flow) ?? "estimate unavailable"}`;
     return `${g.at ? "Regenerate" : "Run"} ${LABEL[g.id].toLowerCase()}`;
   }
 
@@ -82,7 +83,9 @@
         </svg>
       </span>
       {caption(g)}
-      {#if !g.busy && !g.confirm}
+      {#if g.confirm}
+        <span class="mono text-[11px] font-normal text-fg-3">{reviewFlowEstimate(snap?.review_flow) ?? ""}</span>
+      {:else if !g.busy}
         <span class="mono text-[11px] font-normal text-fg-3">{g.at ? shortAge(g.at) : "not run"}</span>
       {/if}
     </button>

@@ -141,11 +141,6 @@ function taskMatches(kind: string, id: Generator): boolean {
   return kind === id;
 }
 
-/**
- * Triage, AI review and Tour as the quick actions show them: the age of what
- * this view already has, and whether a run for this branch is in flight. A run
- * for another tab does not spin this page's button.
- */
 // The review flow is the review ⌘K → a → r runs; a Deep estimate waiting on
 // confirmation is not busy, it is the button's next click.
 function reviewGenerator(snap: GeneratorSnapshot | null, taskBusy: boolean): GeneratorState {
@@ -158,6 +153,11 @@ function reviewGenerator(snap: GeneratorSnapshot | null, taskBusy: boolean): Gen
   };
 }
 
+/**
+ * Triage, AI review and Tour as the quick actions show them: the age of what
+ * this view already has, and whether a run for this branch is in flight. A run
+ * for another tab does not spin this page's button.
+ */
 export function generatorStates(snap: GeneratorSnapshot | null): GeneratorState[] {
   const tab = snap?.tabs.find((t) => t.is_active);
   const branch = snap?.local_branch ?? snap?.branch;
