@@ -13,6 +13,11 @@ const results = new SvelteMap<string, LineCommits>();
  *  retried for the same content: the window effect would ask on every scroll. */
 // eslint-disable-next-line svelte/prefer-svelte-reactivity -- request bookkeeping nothing renders; reactive, it would make the window effect depend on its own writes
 const asked = new Set<string>();
+/** The newest `cacheKey` requested per path. Replies can finish in any order;
+ *  an older one landing last would replace the current result, and no effect
+ *  would ask again, so it is dropped. */
+// eslint-disable-next-line svelte/prefer-svelte-reactivity -- request bookkeeping nothing renders, same as `asked`
+const latest = new Map<string, string>();
 /** Bumped by `clear`, so a reply for the previous diff is dropped. */
 let generation = 0;
 
@@ -29,10 +34,17 @@ function request(path: string, cacheKey: string, fetcher = fetchLineCommits): vo
     const key = `${path}\0${cacheKey}`;
     if (asked.has(key)) return;
     asked.add(key);
+    latest.set(path, cacheKey);
     const gen = generation;
     fetcher(path, cacheKey).then(
       (reply) => {
-        if (gen !== generation || !lineCommitsCurrent(reply, path, cacheKey)) return;
+        if (gen !== generation) return;
+        if (latest.get(path) !== cacheKey) {
+          // Superseded, not failed: the file may come back to this content.
+          asked.delete(key);
+          return;
+        }
+        if (!lineCommitsCurrent(reply, path, cacheKey)) return;
         results.set(path, reply);
         asked.delete(key);
       },
@@ -44,6 +56,7 @@ function request(path: string, cacheKey: string, fetcher = fetchLineCommits): vo
 function clear(): void {
   generation++;
   asked.clear();
+  latest.clear();
   untrack(() => {
     if (results.size > 0) results.clear();
   });
