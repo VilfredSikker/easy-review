@@ -12,7 +12,7 @@ Legend: planned, implementing, reviewing, fixing, merged, blocked.
 | ER32a | Engine annotation storage | Storage | Sol | merged | [#332](https://github.com/VilfredSikker/easy-review/pull/332) | Twelve storage tests, independent review and CI passed |
 | ER34a | Shared prompt renderer | Storage | Sol | merged | [#335](https://github.com/VilfredSikker/easy-review/pull/335) | Review and CI passed; existing exports preserved |
 | ER35 | Browser annotations MCP reader | Storage | Sol | awaiting publication | — | Local review passed; 25 MCP tests passed |
-| ER32b | Desktop snapshot integration | Desktop | Sol | fixing | — | Repairing compile, cache recovery and revision-publication issues from review |
+| ER32b | Desktop snapshot integration | Desktop | Sol | awaiting publication | — | Repairs passed local re-review; desktop CI still needed |
 | ER22 | Parking proof | Native | Sol | draft prepared locally | — | Source review complete; publication and macOS proof pending |
 | ER23 | Content-world proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
 | ER24 | Host editor surface proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |

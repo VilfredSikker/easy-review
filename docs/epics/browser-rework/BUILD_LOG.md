@@ -77,3 +77,13 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   and writable by the connected account; a supported retry with this evidence was
   also rejected for lack of explicit source-disclosure approval. Put remaining
   publication on hold while completing local checks and reviews.
+- ER32b repair `09e5abf2` passed independent re-review. Added Debug and one
+  library-owned cache; App-serialized publication keeps disk work outside App,
+  retries errors, revalidates stable reads and discards changed-bucket reads.
+  Five actual-source Rust regressions and strict harness lint passed; 46 focused
+  UI tests and UI type checking passed. Full UI retained the previously proven
+  defaultDevUrl baseline failure. Full desktop verification still needs GTK/CI.
+- ER22 recovery guidance is finalized at `0aa3d32d`, reviewed as suitable only
+  for a draft pending Mac compilation and native scenarios. ER35 remains reviewed
+  at `ed37a5c4`. Prepared exact patch artifacts for the three local branch heads
+  before requesting explicit publication approval.
