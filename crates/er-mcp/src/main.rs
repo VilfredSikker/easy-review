@@ -7,6 +7,7 @@
 // stdout is the JSON-RPC channel: one stray print breaks every client.
 #![deny(clippy::print_stdout)]
 
+mod browser_annotations;
 mod projects;
 mod server;
 
