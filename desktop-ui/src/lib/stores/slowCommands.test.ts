@@ -69,6 +69,26 @@ describe("SLOW_COMMANDS", () => {
     }
   });
 
+  it("keeps pending-review commands off the overlay and out of the optimistic writer", () => {
+    // Each is a GitHub round trip that can be refused, and none switches the
+    // view: they neither paint ahead nor cover the window while they run.
+    const block = src.slice(src.indexOf("const SLOW_COMMANDS"), src.indexOf("function timingSegmentMs"));
+    const optimistic = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "optimisticLocal.ts"),
+      "utf8",
+    );
+    for (const command of [
+      "get_pending_review",
+      "add_pending_review_comment",
+      "remove_pending_review_comment",
+      "submit_pending_review",
+      "post_github_line_comment",
+    ]) {
+      expect(block.includes(`"${command}"`)).toBe(false);
+      expect(optimistic.includes(`"${command}"`)).toBe(false);
+    }
+  });
+
   it("routes local sidecar writes through the optimistic writer", () => {
     expect(src).toContain("if (isOptimisticCommand(command))");
     expect(src).toContain("return this.cmdOptimistic(command, args ?? {});");
@@ -191,6 +211,13 @@ describe("optimistic local-write call sites", () => {
     const clearIdx = composer.indexOf("diffSel.clear();");
     expect(cmdIdx).toBeGreaterThan(-1);
     expect(clearIdx).toBeGreaterThan(cmdIdx);
+    // A GitHub comment is not painted ahead, so its draft waits for GitHub.
+    const postFn = composer.slice(
+      composer.indexOf("async function postToGithub"),
+      composer.indexOf("function submitPrimary"),
+    );
+    expect(postFn.indexOf("await pendingReview.add(")).toBeGreaterThan(-1);
+    expect(postFn.indexOf("if (ok &&")).toBeGreaterThan(postFn.indexOf("await pendingReview.add("));
 
     const thread = component("InlineThread.svelte");
     const replyFn = thread.slice(

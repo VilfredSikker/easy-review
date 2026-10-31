@@ -15,12 +15,15 @@
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { activeDiffSource, sourceToggleState, type DiffSource } from "$lib/sourceToggle";
   import { applyTheme, themeByName } from "$lib/themes";
-  import { approveGate, themeToggleTarget } from "$lib/viewBarModel";
+  import { themeToggleTarget } from "$lib/viewBarModel";
+  import { pendingReviewKey, reviewGate } from "$lib/reviewSubmit";
+  import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import DisplayMenu from "./DisplayMenu.svelte";
+  import ReviewSubmitPopover from "./ReviewSubmitPopover.svelte";
   import { diffSync } from "./diffSync.svelte";
 
   /** The row under the top bar: which review page is open, where the diff
-   *  comes from, how it is drawn, the panel toggles, and Approve. */
+   *  comes from, how it is drawn, the panel toggles, and Review. */
   const snapshot = $derived(app.snapshot);
   const activeTab = $derived(
     snapshot?.tabs.find((t) => t.is_active) ?? snapshot?.tabs[snapshot?.active_tab ?? 0],
@@ -92,37 +95,13 @@
     app.currentSyntaxTheme = theme.syntaxThemeId;
   }
 
-  let submitting = $state(false);
-  // Approving publishes to GitHub and cannot be taken back from here, so the
-  // first click arms the button and only a second one submits.
-  let approveArmed = $state(false);
-  let disarmTimer: ReturnType<typeof setTimeout> | null = null;
-  const approve = $derived(approveGate(snapshot?.github, submitting));
-
-  function disarm() {
-    approveArmed = false;
-    if (disarmTimer) clearTimeout(disarmTimer);
-    disarmTimer = null;
-  }
-
-  async function onApprove() {
-    if (!approve.enabled) return;
-    if (!approveArmed) {
-      approveArmed = true;
-      disarmTimer = setTimeout(disarm, 4000);
-      return;
-    }
-    disarm();
-    submitting = true;
-    try {
-      await app.cmd("submit_github_pr_decision", { mode: "APPROVE", summary: "" });
-    } finally {
-      submitting = false;
-    }
-  }
-
-  $effect(() => () => {
-    if (disarmTimer) clearTimeout(disarmTimer);
+  // The decision is picked in the popover, so a click only opens it; nothing
+  // reaches GitHub until Submit review.
+  const review = $derived(reviewGate(prNumber, snapshot?.github));
+  const reviewKey = $derived(pendingReviewKey(prNumber, snapshot?.github));
+  let reviewButton = $state<HTMLButtonElement | null>(null);
+  $effect(() => {
+    pendingReview.follow(reviewKey);
   });
 
   const iconBtn =
@@ -279,17 +258,32 @@
     </svg>
   </button>
 
-  {#if approve.visible}
-    <button
-      type="button"
-      class="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[7px] bg-accent px-2.5 font-medium text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-      disabled={!approve.enabled}
-      title={approve.reason ?? (approveArmed ? "Click again to approve on GitHub" : "Approve this PR on GitHub")}
-      data-testid="approve-button"
-      onclick={onApprove}
-      onblur={disarm}
-    >
-      {#if submitting}Approving…{:else if approveArmed}Confirm approve{:else}Approve{/if}
-    </button>
+  <button
+    type="button"
+    bind:this={reviewButton}
+    class="inline-flex h-7 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-[7px] bg-accent px-2.5 font-medium text-on-accent hover:bg-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
+    disabled={!review.enabled}
+    aria-haspopup="dialog"
+    aria-expanded={pendingReview.open}
+    title={review.reason ??
+      (pendingReview.count
+        ? `${pendingReview.count} pending comment${pendingReview.count === 1 ? "" : "s"} · submit your review`
+        : "Comment, approve or request changes")}
+    data-testid="review-button"
+    onclick={() => pendingReview.toggle()}
+  >
+    Review
+    {#if pendingReview.count > 0}
+      <span
+        class="inline-grid h-[17px] min-w-[17px] place-items-center rounded-[9px] bg-on-accent px-1 font-mono text-[10.5px] text-accent"
+        data-testid="review-count">{pendingReview.count}</span
+      >
+    {/if}
+    <svg width="10" height="10" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+      <path d="M4 6l4 4 4-4" />
+    </svg>
+  </button>
+  {#if review.enabled && prNumber != null}
+    <ReviewSubmitPopover {prNumber} anchor={reviewButton} />
   {/if}
 </div>
