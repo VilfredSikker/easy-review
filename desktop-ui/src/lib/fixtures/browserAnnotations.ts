@@ -12,4 +12,3 @@ export const expected = {
   }],
   load_error: null,
 } satisfies BrowserAnnotationsSnapshot;
-
