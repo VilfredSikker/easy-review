@@ -32,10 +32,6 @@
     rulerFiles,
   }: Props = $props();
 
-  /** Matches `.tour-rail` width: the ruler sits on the column's edge, next to
-   *  the rail, positioned against the rail's parent. */
-  const RAIL_WIDTH = "296px";
-
   let railEl: HTMLElement | null = $state(null);
 
   // Scroll-spy moves the active pillar as the column scrolls; keep it in view
@@ -86,9 +82,10 @@
   </div>
 </aside>
 <!-- A sibling, not a child: the rail scrolls and clips, and the ruler's
-     popover must open over the column. -->
+     popover must open over the column. It takes its own strip between rail
+     and column, so its ticks never sit on the column's code. -->
 {#if rulerPillars && rulerFiles}
-  <TourRuler pillars={rulerPillars} files={rulerFiles} {currentPath} onGoto={onjump} left={RAIL_WIDTH} />
+  <TourRuler pillars={rulerPillars} files={rulerFiles} {currentPath} onGoto={onjump} />
 {/if}
 
 <!-- Two sibling buttons, as in the file rail: the checkbox toggles reviewed,

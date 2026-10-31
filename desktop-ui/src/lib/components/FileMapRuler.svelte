@@ -10,11 +10,10 @@
     currentPath: string | null;
     onGoto: (path: string) => void;
     filter?: RulerFilter;
-    left?: string;
   }
-  const { files, currentPath, onGoto, filter, left }: Props = $props();
+  const { files, currentPath, onGoto, filter }: Props = $props();
 
   const groups = $derived(fileMapGroups(files, currentPath, filter));
 </script>
 
-<RulerBase {groups} {onGoto} {left} label="File map" heading="Files changed" />
+<RulerBase {groups} {onGoto} label="File map" heading="Files changed" />

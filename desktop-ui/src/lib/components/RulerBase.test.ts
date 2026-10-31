@@ -27,3 +27,30 @@ describe("RulerBase popover", () => {
     expect(src).toContain("onkeydown={onKeydown}");
   });
 });
+
+function rule(selector: string): string {
+  const start = style.indexOf(`${selector} {`);
+  expect(start).toBeGreaterThanOrEqual(0);
+  return style.slice(start, style.indexOf("}", start));
+}
+
+describe("RulerBase placement", () => {
+  it("takes its own strip in the host's row instead of overlaying the code", () => {
+    expect(src).toContain('<div class="ruler-gutter"');
+    const gutter = rule(".ruler-gutter");
+    expect(gutter).toContain("flex: none;");
+    expect(gutter).toMatch(/width: \d+px;/);
+    expect(gutter).not.toContain("position: absolute");
+    expect(rule(".ruler")).not.toContain("position: absolute");
+  });
+
+  it("stacks over the sticky file header (z-30) but under app menus (z-40)", () => {
+    const z = Number(/z-index: (\d+);/.exec(rule(".ruler-gutter"))?.[1]);
+    expect(z).toBeGreaterThan(30);
+    expect(z).toBeLessThan(40);
+  });
+
+  it("keeps the popover inside the strip's height", () => {
+    expect(rule(".rpop")).toContain("calc(100% - 16px)");
+  });
+});

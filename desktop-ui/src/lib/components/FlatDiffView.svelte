@@ -2170,6 +2170,11 @@
       rulerFiles={files}
     />
   {/if}
+  {#if !tourActive && files.length > 0}
+    <!-- Its own strip left of the column, outside the scroll viewport, so the
+         ticks never cover code. The Tour mounts its ruler beside the rail. -->
+    <FileMapRuler {files} currentPath={visibleFilePath} onGoto={jumpToFile} />
+  {/if}
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
@@ -2411,10 +2416,6 @@
       activeIdx={refHighlight.searchActiveIdx}
       onNavigate={navigateSearch}
     />
-  {/if}
-  {#if !tourActive && files.length > 0}
-    <!-- The Tour mounts its own ruler beside the pillar rail. -->
-    <FileMapRuler {files} currentPath={visibleFilePath} onGoto={jumpToFile} />
   {/if}
   {#if usageMarks.length > 0}
     <ReferenceRuler
