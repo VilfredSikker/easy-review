@@ -154,6 +154,11 @@ const parser = new Marked({
     },
   ],
   renderer: {
+    // Bots hide bookkeeping in comments (`<!-- linear-linkback -->`). DOMPurify
+    // drops them too; doing it here keeps the unsanitized HTML honest for tests.
+    html({ text }) {
+      return text.replace(/<!--[\s\S]*?(?:-->|$)/g, "");
+    },
     checkbox({ checked }) {
       return `<span class="md-tb" aria-label="${checked ? "done" : "to do"}">${checked ? "✓" : ""}</span>`;
     },
@@ -283,6 +288,17 @@ export function renderPrDescription(body: string, ctx: DescriptionContext = {}):
     anchor.dataset.erHref = href;
     anchor.setAttribute("role", "link");
     anchor.setAttribute("tabindex", "0");
+  }
+
+  // A table written as raw HTML (bots post these) never went through the
+  // `table` renderer; it gets the same scrolling wrapper so it cannot widen
+  // the column it sits in.
+  for (const table of fragment.querySelectorAll("table")) {
+    if (table.parentElement?.classList.contains("md-table-wrap")) continue;
+    const wrap = document.createElement("div");
+    wrap.className = "md-table-wrap";
+    table.replaceWith(wrap);
+    wrap.append(table);
   }
 
   // <picture> sources would let the browser pick an unchecked URL.
