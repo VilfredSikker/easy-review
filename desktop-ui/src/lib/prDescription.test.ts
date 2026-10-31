@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import { onExternalLinkClick } from "./openExternalUrl";
 import { fenceLanguage, imageRoute, prMarkdownHtml, refClickTarget, renderPrDescription } from "./prDescription";
+import { LINEAR_COMMENT_BODY, VERCEL_COMMENT_BODY, VERCEL_HTML_COMMENT_BODY } from "./stories/botCommentFixtures";
 
 const ctx = { owner: "acme", repo: "web" };
 
@@ -88,6 +89,31 @@ describe("fenceLanguage", () => {
     expect(fenceLanguage("SQL extra")).toBe("sql");
     expect(fenceLanguage("brainfuck")).toBeNull();
     expect(fenceLanguage("")).toBeNull();
+  });
+});
+
+describe("bot comments", () => {
+  it("hides Vercel's state line and keeps its table and skipped-deploys fold", () => {
+    const html = prMarkdownHtml(VERCEL_COMMENT_BODY);
+    expect(html).not.toContain("[vc]");
+    expect(html).not.toContain("eyJpc01vbm9yZXBv");
+    expect(html).toContain("<strong>The latest updates on your projects</strong>");
+    expect(html).toContain('<div class="md-table-wrap"><table>');
+    expect(html).toContain("<details><summary>2 Skipped Deployments</summary>");
+  });
+
+  it("drops HTML comments, block and inline, and keeps the HTML around them", () => {
+    const html = prMarkdownHtml(LINEAR_COMMENT_BODY);
+    expect(html).not.toContain("<!--");
+    expect(html).not.toContain("linear-linkback");
+    expect(html).toContain('<p><a href="https://linear.app/acme/issue/DEV-298/');
+    expect(prMarkdownHtml("a <!-- hidden --> b")).toBe("<p>a  b</p>\n");
+    expect(prMarkdownHtml("<!-- never closed\nstill hidden")).not.toContain("hidden");
+    expect(prMarkdownHtml(VERCEL_HTML_COMMENT_BODY)).not.toContain("vercel-deployment-summary");
+  });
+
+  it("leaves a comment written inside code alone", () => {
+    expect(prMarkdownHtml("`<!-- x -->`")).toContain("<code>&lt;!-- x --&gt;</code>");
   });
 });
 
