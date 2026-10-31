@@ -373,10 +373,12 @@ describe("mergeChromeSnapshot", () => {
         stale: false,
       },
     ];
+    const prevV2 = { annotations: [], load_error: "invalid metadata" };
     const prev = snap({
       active_tab: 0,
       tabs: [tab({ idx: 0, label: "pr-1434", pr_number: 1434, is_active: true })],
       ui_annotations: prevAnn,
+      browser_annotations: prevV2,
       browser: { url: "https://old.example", layout: "split", split_ratio: 0.4, annotate_mode: false, show_tooltips: false },
     });
     const next = snap({
@@ -387,6 +389,7 @@ describe("mergeChromeSnapshot", () => {
     });
     const merged = mergeChromeSnapshot(prev, next, "prev");
     expect(merged.ui_annotations).toBe(prevAnn);
+    expect(merged.browser_annotations).toBe(prevV2);
     expect(merged.browser?.url).toBe("https://old.example");
   });
 

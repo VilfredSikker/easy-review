@@ -500,6 +500,8 @@ pub struct AppSnapshot {
     /// each snapshot — keeps the source of truth in `ui-annotations.json`.
     #[serde(default)]
     pub ui_annotations: Vec<UiAnnotationSnapshot>,
+    #[serde(default)]
+    pub browser_annotations: crate::browser_annotation_cache::BrowserAnnotationsSnapshot,
     /// Per-tab browser pane state for the active tab.
     #[serde(default)]
     pub browser: BrowserSnapshot,
@@ -3484,6 +3486,11 @@ fn build_snapshot_inner(
         tabs,
         active_tab,
         ui_annotations,
+        browser_annotations: if chrome_only {
+            Default::default()
+        } else {
+            crate::browser_annotation_cache::get(&tab.comments_dir()).0
+        },
         browser: browser_snapshot_from_tab(tab),
         github,
         stack,

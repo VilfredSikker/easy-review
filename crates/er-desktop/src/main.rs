@@ -10,9 +10,10 @@ use er_desktop::snapshot::{
     LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
 };
 use er_desktop::{
-    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
-    gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
-    pr_open_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
+    arena_commands, browser_annotation_cache, browser_proxy, browser_webview, commands,
+    config_commands, dev_log, gh_pr_actions, gh_status_cache, inbox, main_webview_policy,
+    native_notify, pr_cache, pr_open_cache, profile_log, projects, snapshot, tabs, terminal,
+    window_placement,
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
@@ -1483,6 +1484,18 @@ fn main() {
             }
         });
     }
+
+    // Read annotation metadata off the App lock and wake the normal revision path.
+    std::thread::spawn({
+        let app = Arc::clone(&app_arc);
+        let revision = Arc::clone(&desktop_revision);
+        move || loop {
+            if browser_annotation_cache::refresh(&app) {
+                profile_log::bump_desktop_revision(&revision, "browser_annotations");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(400));
+        }
+    });
 
     // Spawn the desktop active-branch watcher. Follows the currently active
     // tab's local-branch checkout (project root or linked worktree) and

@@ -11491,6 +11491,9 @@ fn compute_content_revision(app: &App) -> u64 {
     app.active_tab.hash(&mut h);
     let review_bucket_er_dir = tab.er_dir();
     review_bucket_er_dir.hash(&mut h);
+    crate::browser_annotation_cache::get(&tab.comments_dir())
+        .1
+        .hash(&mut h);
     app.review_flow_revision().hash(&mut h);
     if let Some(flow) = app.review_flow_for(&review_bucket_er_dir) {
         format!("{:?}", flow.state).hash(&mut h);
