@@ -30,7 +30,7 @@
     type InboxReadFilter,
     type InboxThread,
   } from "$lib/inboxThreads";
-  import { loadAlwaysNewTab, resolvePrOpen, saveAlwaysNewTab, type TabOpenRequest } from "$lib/prOpen";
+  import { loadAlwaysOpenHere, resolvePrOpen, saveAlwaysOpenHere, type TabOpenRequest } from "$lib/prOpen";
   import { longAge, shortAge } from "$lib/relativeTime";
   import type { InboxItemSnapshot, ProjectSnapshot, TabSummary } from "$lib/types";
 
@@ -66,7 +66,7 @@
   const selected = $derived(selectedInboxThread(visible, inboxView.selectedKey));
 
   let pendingOpen = $state<InboxThread | null>(null);
-  let alwaysNewTab = $state(loadAlwaysNewTab());
+  let alwaysOpenHere = $state(loadAlwaysOpenHere());
 
   function setReadFilter(value: InboxReadFilter) {
     inboxView.read = value;
@@ -79,8 +79,8 @@
   }
 
   function askBeforeOpening() {
-    saveAlwaysNewTab(false);
-    alwaysNewTab = false;
+    saveAlwaysOpenHere(false);
+    alwaysOpenHere = false;
   }
 
   function markThreadRead(thread: InboxThread) {
@@ -132,7 +132,7 @@
       leaveInbox();
       return;
     }
-    const choice = resolvePrOpen(e instanceof MouseEvent ? e : null, alwaysNewTab);
+    const choice = resolvePrOpen(e instanceof MouseEvent ? e : null, alwaysOpenHere);
     if (choice === "ask") pendingOpen = thread;
     else await openTarget(thread, choice === "new-tab");
   }
@@ -141,8 +141,8 @@
     const thread = pendingOpen;
     pendingOpen = null;
     if (remember) {
-      saveAlwaysNewTab(true);
-      alwaysNewTab = true;
+      saveAlwaysOpenHere(true);
+      alwaysOpenHere = true;
     }
     if (thread) void openTarget(thread, newTab);
   }
@@ -350,12 +350,12 @@
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">u</kbd> mark read</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">esc</kbd> close</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">↵</kbd> open review</span>
-      {#if alwaysNewTab}
+      {#if alwaysOpenHere}
         <span class="flex-1"></span>
         <button
           type="button"
           onclick={askBeforeOpening}
-          title="Reviews open in a new tab without asking. Click to be asked again."
+          title="Reviews open in the current tab without asking; Cmd-click opens a new tab. Click to be asked again."
           class="hover:text-fg underline decoration-dotted underline-offset-2"
         >Ask before opening</button>
       {/if}

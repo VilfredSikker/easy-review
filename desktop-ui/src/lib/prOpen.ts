@@ -17,7 +17,7 @@ export type PrOpenChoice = "ask" | "new-tab" | "replace";
 
 /** A per-viewer UI preference, so localStorage rather than config.toml: it
  *  only changes which dialog this window shows, never what the engine does. */
-const ALWAYS_NEW_TAB_KEY = "er.alwaysOpenInNewTab";
+const ALWAYS_OPEN_HERE_KEY = "er.alwaysOpenHere";
 
 type PrefStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
@@ -29,18 +29,18 @@ function defaultStorage(): PrefStorage | null {
   }
 }
 
-export function loadAlwaysNewTab(storage: PrefStorage | null = defaultStorage()): boolean {
+export function loadAlwaysOpenHere(storage: PrefStorage | null = defaultStorage()): boolean {
   try {
-    return storage?.getItem(ALWAYS_NEW_TAB_KEY) === "1";
+    return storage?.getItem(ALWAYS_OPEN_HERE_KEY) === "1";
   } catch {
     return false;
   }
 }
 
-export function saveAlwaysNewTab(on: boolean, storage: PrefStorage | null = defaultStorage()): void {
+export function saveAlwaysOpenHere(on: boolean, storage: PrefStorage | null = defaultStorage()): void {
   try {
-    if (on) storage?.setItem(ALWAYS_NEW_TAB_KEY, "1");
-    else storage?.removeItem(ALWAYS_NEW_TAB_KEY);
+    if (on) storage?.setItem(ALWAYS_OPEN_HERE_KEY, "1");
+    else storage?.removeItem(ALWAYS_OPEN_HERE_KEY);
   } catch {
     // Blocked storage only means the modal asks again next time.
   }
@@ -51,29 +51,27 @@ function wantsNewTab(e: Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: num
 }
 
 /**
- * A plain open asks, unless the reader said "always open in a new tab". This
- * inverts the old default, where a plain click silently replaced the current
- * tab and lost its place. Cmd/Ctrl-click and middle-click still skip the
- * question and open a new tab.
+ * A plain open asks, unless the reader said "always open here", which makes it
+ * replace the current tab. Cmd/Ctrl-click and middle-click always skip the
+ * question and open a new tab, so remembering "here" never loses the way to a
+ * new tab — the modal says so.
  */
 export function resolvePrOpen(
   e: (Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: number }) | null,
-  alwaysNewTab: boolean = loadAlwaysNewTab(),
+  alwaysOpenHere: boolean = loadAlwaysOpenHere(),
 ): PrOpenChoice {
   if (e && wantsNewTab(e)) return "new-tab";
-  return alwaysNewTab ? "new-tab" : "ask";
+  return alwaysOpenHere ? "replace" : "ask";
 }
 
 /**
- * The old default, kept for open paths that do not mount the tab-open modal:
- * a plain click replaces the active tab, Cmd/Ctrl-click and middle-click open
- * a new one. The Inbox and the sidebar's PR rows ask; the sidebar's branch
- * rows still call this and so still replace on a plain click. The one thing
- * they share with the asking paths is the "always open in a new tab"
- * preference, which turns a plain click into a new tab here too.
+ * For open paths that do not mount the tab-open modal (the sidebar's branch
+ * rows): a plain click replaces the active tab, Cmd/Ctrl-click and
+ * middle-click open a new one — what the asking paths do once the reader
+ * chose "always open here".
  */
-export function shouldReplaceTab(e: MouseEvent, alwaysNewTab: boolean = loadAlwaysNewTab()): boolean {
-  return resolvePrOpen(e, alwaysNewTab) === "ask";
+export function shouldReplaceTab(e: MouseEvent): boolean {
+  return !wantsNewTab(e);
 }
 
 /** The element a keydown landed on, as far as the tab-open modal cares. */
