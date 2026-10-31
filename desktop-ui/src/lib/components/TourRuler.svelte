@@ -11,9 +11,8 @@
     currentPath: string | null;
     onGoto: (path: string) => void;
     filter?: RulerFilter;
-    left?: string;
   }
-  const { pillars, files, currentPath, onGoto, filter, left }: Props = $props();
+  const { pillars, files, currentPath, onGoto, filter }: Props = $props();
 
   const groups = $derived(tourGroups(pillars, files, currentPath, filter));
   const pillarCount = $derived(pillars.length);
@@ -22,7 +21,6 @@
 <RulerBase
   {groups}
   {onGoto}
-  {left}
   label="Tour map"
   heading="Tour · {pillarCount} pillar{pillarCount === 1 ? '' : 's'}"
 />
