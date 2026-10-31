@@ -186,6 +186,13 @@
       if (app.mainView !== "inbox" || commandPalette.open) return;
       if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[data-modal]")) return;
       const target = e.target as HTMLElement;
+      if (e.key === "Escape") {
+        // Esc in the filter field clears focus first; a second Esc leaves.
+        if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) target.blur();
+        else app.closeInbox();
+        e.preventDefault();
+        return;
+      }
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
       if (e.key === "j" || e.key === "k") void step(e.key === "j" ? 1 : -1);
       else if (e.key === "u" && selected) markThreadRead(selected);
@@ -344,6 +351,7 @@
     <footer class="flex gap-3 px-3.5 py-2 border-t border-hairline text-[11px] text-muted">
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">j</kbd><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">k</kbd> move</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">u</kbd> mark read</span>
+      <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">esc</kbd> close</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">↵</kbd> open review</span>
       {#if alwaysNewTab}
         <span class="flex-1"></span>
