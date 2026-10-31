@@ -30,11 +30,13 @@ function request(path: string, cacheKey: string, fetcher = fetchLineCommits): vo
   // Called from the diff view's window effect: reading `results` here must not
   // make that effect depend on the map this request is about to write.
   untrack(() => {
+    // Recorded before the early returns: a file that changes and changes back
+    // must move `latest` back too, or the reply for the abandoned key wins.
+    latest.set(path, cacheKey);
     if (get(path, cacheKey)) return;
     const key = `${path}\0${cacheKey}`;
     if (asked.has(key)) return;
     asked.add(key);
-    latest.set(path, cacheKey);
     const gen = generation;
     fetcher(path, cacheKey).then(
       (reply) => {

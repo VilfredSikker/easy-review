@@ -73,6 +73,34 @@ describe("lineCommitStore", () => {
     expect(calls).toEqual(["v.rs@A", "v.rs@B", "v.rs@A"]);
   });
 
+  it("keeps the stored reply when the file reverts before a newer reply lands", async () => {
+    const { fetcher, settle } = controlledFetcher();
+    lineCommitStore.request("u.rs", "A", fetcher);
+    settle("u.rs@A").resolve(reply("u.rs", "A"));
+    await flush();
+    lineCommitStore.request("u.rs", "B", fetcher);
+    lineCommitStore.request("u.rs", "A", fetcher);
+    settle("u.rs@B").resolve(reply("u.rs", "B"));
+    await flush();
+
+    expect(lineCommitStore.get("u.rs", "A")?.cache_key).toBe("A");
+    expect(lineCommitStore.get("u.rs", "B")).toBeNull();
+  });
+
+  it("stores the in-flight reply when the file reverts to it", async () => {
+    const { fetcher, settle } = controlledFetcher();
+    lineCommitStore.request("t.rs", "A", fetcher);
+    lineCommitStore.request("t.rs", "B", fetcher);
+    lineCommitStore.request("t.rs", "A", fetcher);
+    settle("t.rs@B").resolve(reply("t.rs", "B"));
+    await flush();
+    settle("t.rs@A").resolve(reply("t.rs", "A"));
+    await flush();
+
+    expect(lineCommitStore.get("t.rs", "A")?.cache_key).toBe("A");
+    expect(lineCommitStore.get("t.rs", "B")).toBeNull();
+  });
+
   it("drops a reply that was in flight when the store was cleared", async () => {
     const { fetcher, settle } = controlledFetcher();
     lineCommitStore.request("z.rs", "A", fetcher);
