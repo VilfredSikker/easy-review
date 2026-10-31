@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   NO_PR_REASON,
   OWN_PR_REASON,
+  PENDING_REVIEW_SINGLE_REASON,
   composerReviewLabel,
   decisionEvent,
   initialDecision,
@@ -9,6 +10,7 @@ import {
   pendingReviewKey,
   pendingThreadIds,
   reviewGate,
+  singleCommentBlockedReason,
   submitBlockedReason,
   submitFootnote,
   submittedToast,
@@ -99,5 +101,35 @@ describe("pending identity", () => {
     expect(pendingReviewKey(null, gh())).toBeNull();
     expect(pendingReviewKey(7, gh())).toBe("o/r#7");
     expect(pendingReviewKey(9, gh())).toBe("#9");
+  });
+});
+
+describe("singleCommentBlockedReason", () => {
+  const open = { enabled: true, reason: null };
+  const review = (over: Partial<PendingReview> = {}): PendingReview => ({
+    pr_number: 7,
+    review_id: null,
+    comments: [],
+    viewer: "me",
+    review_request: null,
+    ...over,
+  });
+
+  it("allows a single comment when no review has been started", () => {
+    expect(singleCommentBlockedReason(open, null)).toBeNull();
+    expect(singleCommentBlockedReason(open, review())).toBeNull();
+  });
+
+  it("refuses while a pending review exists, even once its comments are removed", () => {
+    expect(singleCommentBlockedReason(open, review({ review_id: 5, comments: [comment()] }))).toBe(
+      PENDING_REVIEW_SINGLE_REASON,
+    );
+    expect(singleCommentBlockedReason(open, review({ review_id: 5 }))).toBe(PENDING_REVIEW_SINGLE_REASON);
+  });
+
+  it("gives the gate's reason first", () => {
+    expect(singleCommentBlockedReason({ enabled: false, reason: NO_PR_REASON }, review({ review_id: 5 }))).toBe(
+      NO_PR_REASON,
+    );
   });
 });

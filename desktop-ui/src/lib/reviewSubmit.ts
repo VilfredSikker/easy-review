@@ -73,6 +73,20 @@ export function reviewGate(prNumber: number | null, github: GithubStatusSnapshot
   return { enabled: true, reason: null };
 }
 
+export const PENDING_REVIEW_SINGLE_REASON =
+  "You have a pending review — add this to it or submit the review first";
+
+/**
+ * Why "Add single comment" is refused. GitHub keeps one pending review per
+ * reviewer per PR and rejects a standalone review comment while it exists,
+ * even an empty one, so the button waits until the review is submitted.
+ */
+export function singleCommentBlockedReason(gate: Gate, review: PendingReview | null): string | null {
+  if (!gate.enabled) return gate.reason;
+  if (review?.review_id != null) return PENDING_REVIEW_SINGLE_REASON;
+  return null;
+}
+
 /** Why one decision cannot be picked, if it cannot. */
 export function decisionBlockedReason(
   decision: ReviewDecision,

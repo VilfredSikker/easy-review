@@ -5,7 +5,7 @@
   import { diffSel, type SelectionKind } from "$lib/stores/diffSelection.svelte";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import { resolveActivePrNumber } from "$lib/prUrl";
-  import { composerReviewLabel, reviewGate, type ReviewLineTarget } from "$lib/reviewSubmit";
+  import { composerReviewLabel, reviewGate, singleCommentBlockedReason, type ReviewLineTarget } from "$lib/reviewSubmit";
 
   /**
    * How the card sits in the diff:
@@ -110,6 +110,8 @@
   // pending review; both wait for GitHub, so the draft stays until it lands.
   const github = $derived(reviewGate(resolveActivePrNumber(app.snapshot), app.snapshot?.github));
   const canPost = $derived(canSubmit && github.enabled && !pendingReview.busy);
+  const singleBlocked = $derived(singleCommentBlockedReason(github, pendingReview.review));
+  const canPostSingle = $derived(canPost && singleBlocked === null);
 
   const GITHUB_SIDE = { old: "LEFT", new: "RIGHT" } as const;
 
@@ -127,7 +129,7 @@
 
   async function postToGithub(single: boolean) {
     const target = lineTarget();
-    if (!canPost || !target) return;
+    if (!(single ? canPostSingle : canPost) || !target) return;
     const text = diffSel.text.trim();
     const ok = single
       ? await pendingReview.postSingle(target, text)
@@ -228,8 +230,8 @@
         {#if diffSel.kind === "comment"}
           <button type="button"
             onclick={() => void postToGithub(true)}
-            disabled={!canPost}
-            title={github.reason ?? "Post this comment to GitHub now, outside a review"}
+            disabled={!canPostSingle}
+            title={singleBlocked ?? "Post this comment to GitHub now, outside a review"}
             class="rounded-md border border-border bg-surface px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
             data-testid="composer-single"
           >Add single comment</button>

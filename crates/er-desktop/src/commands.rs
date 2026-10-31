@@ -659,6 +659,17 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
         || lower.contains("cannot approve your own pull request")
 }
 
+/// GitHub keeps one pending review per reviewer per PR and refuses a
+/// standalone review comment while it exists, so "Add single comment" has to
+/// wait until the review is submitted (as github.com hides it meanwhile).
+fn pending_review_blocks_single_comment() -> String {
+    "You have a pending review — add this to it or submit the review first".to_string()
+}
+
+fn is_one_pending_review_error(raw: &str) -> bool {
+    raw.to_lowercase().contains("one pending review")
+}
+
 fn process_ai_task_inbox(app: &App, state: &AppState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
@@ -4044,6 +4055,13 @@ pub async fn post_github_line_comment(
     run_blocking(move || {
         let entry = target.batch_entry(&review_comment_body(&text)?)?;
         let (owner, repo, number) = active_pr_or_err(&state)?;
+        // Ask first rather than make a call GitHub will refuse. If the check
+        // itself fails, the post still goes and its error is mapped below.
+        if er_engine::github::gh_pending_review(&owner, &repo, number)
+            .is_ok_and(|p| p.review_id.is_some())
+        {
+            return Err(pending_review_blocks_single_comment());
+        }
         let comment = er_engine::github::NewLineComment {
             path: &entry.file,
             line_start: entry.start_line.unwrap_or(entry.line),
@@ -4051,8 +4069,16 @@ pub async fn post_github_line_comment(
             body: &entry.body,
             side: &entry.side,
         };
-        er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment)
-            .map_err(|e| format!("{e:#}"))?;
+        er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment).map_err(
+            |e| {
+                let raw = format!("{e:#}");
+                if is_one_pending_review_error(&raw) {
+                    pending_review_blocks_single_comment()
+                } else {
+                    raw
+                }
+            },
+        )?;
         after_github_write(&state, owner, repo, number);
         let app = state.app.lock().map_err(|e| e.to_string())?;
         Ok(snap_from(&app, &state))
@@ -12749,6 +12775,15 @@ mod tests {
 
         assert!(t(None, Some("BOTH")).batch_entry("x").is_err());
         assert!(review_comment_body("  \n").is_err());
+    }
+
+    #[test]
+    fn one_pending_review_refusal_is_detected_from_github_422() {
+        let raw = r#"gh: Unprocessable Entity (HTTP 422) ({"message":"Unprocessable Entity","errors":["user_id can only have one pending review per pull request"]})"#;
+        assert!(is_one_pending_review_error(raw));
+        assert!(!is_one_pending_review_error(
+            "gh: Unprocessable Entity (HTTP 422) pull_request_review_thread.line must be part of the diff"
+        ));
     }
 
     #[test]
