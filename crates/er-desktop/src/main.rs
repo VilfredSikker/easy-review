@@ -1,7 +1,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod browser_annotation_cache;
-
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu};
@@ -12,9 +10,10 @@ use er_desktop::snapshot::{
     LoadingFlags, LoadingState, PrInfo, ProjectMeta, WatchStatusSnapshot, WatchStatusState,
 };
 use er_desktop::{
-    arena_commands, browser_proxy, browser_webview, commands, config_commands, dev_log,
-    gh_pr_actions, gh_status_cache, inbox, main_webview_policy, native_notify, pr_cache,
-    pr_open_cache, profile_log, projects, snapshot, tabs, terminal, window_placement,
+    arena_commands, browser_annotation_cache, browser_proxy, browser_webview, commands,
+    config_commands, dev_log, gh_pr_actions, gh_status_cache, inbox, main_webview_policy,
+    native_notify, pr_cache, pr_open_cache, profile_log, projects, snapshot, tabs, terminal,
+    window_placement,
 };
 use er_desktop::{browser_webview::BrowserWebviewState, commands::AppState};
 use er_engine::app::App;
@@ -1491,11 +1490,8 @@ fn main() {
         let app = Arc::clone(&app_arc);
         let revision = Arc::clone(&desktop_revision);
         move || loop {
-            let dir = app.lock().ok().map(|g| g.tab().comments_dir());
-            if let Some(dir) = dir {
-                if browser_annotation_cache::refresh(std::path::Path::new(&dir)) {
-                    profile_log::bump_desktop_revision(&revision, "browser_annotations");
-                }
+            if browser_annotation_cache::refresh(&app) {
+                profile_log::bump_desktop_revision(&revision, "browser_annotations");
             }
             std::thread::sleep(std::time::Duration::from_millis(400));
         }
