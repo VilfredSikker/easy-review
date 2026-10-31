@@ -36,6 +36,8 @@
     is_merged?: boolean;
     github_url?: string | null;
     github?: GithubStatusSnapshot | null;
+    /** False where the host already shows the merge box (the Overview aside). */
+    mergeBox?: boolean;
   }
 
   const {
@@ -51,6 +53,7 @@
     is_merged: _is_merged = false,
     github_url = null,
     github = null,
+    mergeBox = true,
   }: Props = $props();
 
   let expandChecks = $state(false);
@@ -522,7 +525,7 @@
           {/if}
 
           <!-- Merge box: merge, update branch, delete/restore branch, … -->
-          <PrMergeBox {github} />
+          {#if mergeBox}<PrMergeBox {github} />{/if}
 
           <!-- Labels -->
           {#if github.labels.length > 0}

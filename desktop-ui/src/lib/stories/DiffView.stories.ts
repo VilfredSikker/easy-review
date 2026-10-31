@@ -1,6 +1,7 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import DiffViewHarness from "./DiffViewHarness.svelte";
 import { richSnapshot, commentThread } from "./fixtures";
+import { tourSnapshot } from "./tourFixtures";
 import type {
   AppSnapshot,
   FileSnapshot,
@@ -256,4 +257,15 @@ export const LongLinesSplit: Story = {
     snap.reviewed_count = 0;
     return { snapshot: snap, viewModeOverride: "split" as const };
   })(),
+};
+
+/** The Tour: the pillar rail beside one column, each pillar opened by a
+ *  pillar-header row whose narrative links into the diff. */
+export const Tour: Story = {
+  args: { snapshot: tourSnapshot(), viewModeOverride: "unified" },
+};
+
+/** A tour generated before the latest changes: stale chips, dimmed prose. */
+export const TourStale: Story = {
+  args: { snapshot: tourSnapshot(false), viewModeOverride: "unified" },
 };

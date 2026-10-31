@@ -6,7 +6,6 @@
   import { baseName } from "$lib/shortFileName";
   import { copyReviewExport } from "$lib/stores/quickExport";
   import type { ExportOpts } from "$lib/exportOptions";
-  import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import UiAnnotationsCard from "$lib/components/UiAnnotationsCard.svelte";
   import { clip } from "./findingsPanel";
   import {
@@ -22,6 +21,10 @@
     type ThreadKind,
   } from "./commentsPanel";
   import { rightPanelFilters } from "./panelFilters.svelte";
+  import { commentsAuthorFilter } from "./commentsAuthorFilter.svelte";
+  import { threadsByAuthor } from "./commentsAuthor";
+  import { reviewPageTabKey } from "$lib/stores/reviewPageModel";
+  import { showOverviewSection } from "$lib/components/overview/overviewNav";
   import PanelActions from "./PanelActions.svelte";
 
   interface Props {
@@ -47,9 +50,15 @@
   const files = $derived(app.snapshot?.files);
   const fileOrder = $derived((files ?? []).map((f) => f.path));
 
-  const threads = $derived(panelThreads(ai?.threads, app.commentVisibility, files));
+  // Set from the Overview's reviewer popover. It narrows the counts too, so the
+  // chips describe the list on screen.
+  const author = $derived(commentsAuthorFilter.authorFor(reviewPageTabKey(app.snapshot)));
+  const threads = $derived(threadsByAuthor(panelThreads(ai?.threads, app.commentVisibility, files), author));
+  // Under an author filter the gap is that filter's doing, not resolved threads.
   const hiddenGithub = $derived(
-    commentThreadsFromDiff(ai?.threads, files).length - threads.filter((t) => t.kind === "comment").length,
+    author
+      ? 0
+      : commentThreadsFromDiff(ai?.threads, files).length - threads.filter((t) => t.kind === "comment").length,
   );
   const counts = $derived(kindCounts(threads));
   const rows = $derived(commentRows(threads, rightPanelFilters.kind, fileOrder));
@@ -106,6 +115,19 @@
   {/each}
 </div>
 
+{#if author}
+  <div class="flex items-center gap-1.5 -mt-1.5 text-[11.5px] text-fg-2">
+    <span>From <b class="font-semibold text-fg">{author}</b></span>
+    <button
+      type="button"
+      onclick={() => commentsAuthorFilter.set(null, null)}
+      class="rounded px-1 text-fg-3 hover:bg-hover hover:text-fg"
+      aria-label="Show everyone's comments"
+      title="Show everyone's comments"
+    >×</button>
+  </div>
+{/if}
+
 {#if hiddenGithub > 0 && rightPanelFilters.kind !== "question" && rightPanelFilters.kind !== "note"}
   <p class="m-0 -mt-1.5 text-[11px] text-fg-3">
     {hiddenGithub} resolved or outdated GitHub comment{hiddenGithub === 1 ? "" : "s"} hidden
@@ -145,7 +167,7 @@
   actions={[
     { glyph: "↻", label: "Pull GitHub comments", disabled: pulling || manualPulling, run: () => void pull() },
     ...(pushable > 0
-      ? [{ glyph: "↑", label: `Push ${pushable} to GitHub…`, title: "Submit as a review or push one by one", run: () => rightPanelTab.set("branch") }]
+      ? [{ glyph: "↑", label: `Push ${pushable} to GitHub…`, title: "Submit as a review or push one by one", run: () => showOverviewSection("branch") }]
       : []),
     { glyph: "⧉", label: "Quick copy export", title: "Copy this list as markdown, ready to paste into a coding agent", run: quickCopy },
     { glyph: "↗", label: "Open export…", run: () => app.setMainView("export-review") },

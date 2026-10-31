@@ -1,34 +1,22 @@
 <script lang="ts">
-  import type { AiSnapshot, PrSnapshot } from "$lib/types";
+  import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
-  import { resolveActivePrUrl, githubStatusForActiveTab, resolveActivePrNumber } from "$lib/prUrl";
-  import { resolveContextIdentity } from "$lib/contextIdentity";
   import { panelThreads } from "./rpanel/commentsPanel";
+  import { threadsByAuthor } from "./rpanel/commentsAuthor";
+  import { commentsAuthorFilter } from "./rpanel/commentsAuthorFilter.svelte";
+  import { reviewPageTabKey } from "$lib/stores/reviewPageModel";
   import { scopeToReviewer } from "./rpanel/findingsPanel";
   import { useReviewerFilterSync } from "./rpanel/reviewerFilter.svelte";
   import { aiReviewFilter } from "$lib/stores/aiReviewFilter.svelte";
-  import BranchCard from "./BranchCard.svelte";
-  import ChecklistCard from "./ChecklistCard.svelte";
-  import TriageCard from "./TriageCard.svelte";
-  import CommentsCard from "./CommentsCard.svelte";
-  import AgentOutputCard from "./AgentOutputCard.svelte";
-  import DiagramsCard from "./DiagramsCard.svelte";
   import FindingsTab from "./rpanel/FindingsTab.svelte";
   import RisksTab from "./rpanel/RisksTab.svelte";
   import CommentsTab from "./rpanel/CommentsTab.svelte";
   import { useCommentAutoPull } from "./rpanel/commentAutoPull.svelte";
-  import {
-    PRIMARY_TABS,
-    SECONDARY_TABS,
-    SECONDARY_TAB_LABELS,
-    isSecondaryTab,
-    type PrimaryRightPanelTab,
-  } from "./rpanel/rightPanelTabs";
+  import { PRIMARY_TABS, isSecondaryTab, type PrimaryRightPanelTab } from "./rpanel/rightPanelTabs";
   import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
 
   interface Props {
     ai: AiSnapshot | null;
-    pr: PrSnapshot | null;
     width?: number;
     dragging?: boolean;
     onResizeStart?: (e: MouseEvent) => void;
@@ -37,14 +25,17 @@
 
   const {
     ai,
-    pr,
     width = 300,
     dragging = false,
     onResizeStart,
     onCollapseToggle,
   }: Props = $props();
 
-  const activeTab = $derived(rightPanelTab.active);
+  // Branch & PR, Triage and Diagrams live on the Overview now; a tab name left
+  // in storage from before shows Findings rather than an empty panel.
+  const activeTab = $derived<PrimaryRightPanelTab>(
+    isSecondaryTab(rightPanelTab.active) ? "findings" : rightPanelTab.active,
+  );
 
   useCommentAutoPull();
   useReviewerFilterSync(() => ai);
@@ -57,7 +48,12 @@
   const files = $derived(app.snapshot?.files);
   const findingCount = $derived(scopeToReviewer(ai, aiReviewFilter.filter).open.length);
   const fileCount = $derived(files?.length ?? 0);
-  const threadCount = $derived(panelThreads(ai?.threads, app.commentVisibility, files).length);
+  const threadCount = $derived(
+    threadsByAuthor(
+      panelThreads(ai?.threads, app.commentVisibility, files),
+      commentsAuthorFilter.authorFor(reviewPageTabKey(app.snapshot)),
+    ).length,
+  );
   const TAB_LABEL: Record<PrimaryRightPanelTab, string> = {
     findings: "Findings",
     risks: "Risks",
@@ -68,43 +64,7 @@
     risks: fileCount,
     comments: threadCount,
   });
-
-  let moreOpen = $state(false);
-  let moreEl = $state<HTMLDivElement | null>(null);
-
-  function closeMoreOnOutside(e: MouseEvent) {
-    if (moreOpen && moreEl && !moreEl.contains(e.target as Node)) moreOpen = false;
-  }
-
-  // ── Branch & PR (until the Overview aside carries it) ──────────────────────
-  const identity = $derived(resolveContextIdentity(app.snapshot));
-  const currentWorktree = $derived(app.snapshot?.worktrees.find((w) => w.is_current) ?? null);
-  const activeAppTab = $derived(app.snapshot?.tabs?.find((t) => t.is_active) ?? null);
-  const displayPrNumber = $derived(resolveActivePrNumber(app.snapshot));
-  const displayPrUrl = $derived(resolveActivePrUrl(app.snapshot));
-  const githubForTab = $derived(githubStatusForActiveTab(app.snapshot));
-  const tabOwnsPr = $derived(activeAppTab?.pr_number != null);
-  const isMerged = $derived(
-    githubForTab?.state === "MERGED" || (!tabOwnsPr && (currentWorktree?.is_merged ?? false)),
-  );
-  const checksStatus = $derived.by((): "success" | "pending" | "failure" | null => {
-    const checks = githubForTab?.checks;
-    if (!checks || checks.length === 0) return null;
-    if (checks.some((c) => c.conclusion === "FAILURE" || c.conclusion === "fail")) return "failure";
-    if (checks.some((c) => c.status === "PENDING")) return "pending";
-    return "success";
-  });
-  // Whole-diff counts from the engine, so a file filter never shrinks them.
-  const totalAdds = $derived(app.snapshot?.diff_stats?.total.additions ?? 0);
-  const totalDels = $derived(app.snapshot?.diff_stats?.total.deletions ?? 0);
 </script>
-
-<svelte:window
-  onclick={closeMoreOnOutside}
-  onkeydown={(e) => {
-    if (moreOpen && e.key === "Escape") moreOpen = false;
-  }}
-/>
 
 <aside
   class="shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col relative
@@ -135,44 +95,7 @@
           {selected ? 'text-fg border-accent' : 'text-fg-2 border-transparent hover:text-fg'}"
       >{TAB_LABEL[tab]} <span class="text-fg-3 font-normal">{tabCount[tab]}</span></button>
     {/each}
-    {#if isSecondaryTab(activeTab)}
-      <button
-        type="button"
-        role="tab"
-        aria-selected="true"
-        class="px-2 pt-1.5 pb-2 -mb-px text-[12.5px] font-medium border-b-2 text-fg border-accent truncate"
-      >{SECONDARY_TAB_LABELS[activeTab]}</button>
-    {/if}
     <span class="flex-1"></span>
-    <div class="relative self-center" bind:this={moreEl}>
-      <button
-        type="button"
-        onclick={() => (moreOpen = !moreOpen)}
-        aria-haspopup="menu"
-        aria-expanded={moreOpen}
-        title="Branch & PR, triage and diagrams"
-        aria-label="More panels"
-        class="w-6 h-6 rounded-md flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg"
-      >⋯</button>
-      {#if moreOpen}
-        <div
-          role="menu"
-          class="absolute right-0 top-7 z-30 min-w-40 py-1 rounded-lg border border-border bg-card shadow-xl"
-        >
-          {#each SECONDARY_TABS as tab (tab)}
-            <button
-              type="button"
-              role="menuitem"
-              onclick={() => {
-                rightPanelTab.set(tab);
-                moreOpen = false;
-              }}
-              class="w-full text-left px-3 py-1.5 text-[12px] hover:bg-hover {activeTab === tab ? 'text-fg' : 'text-fg-2'}"
-            >{SECONDARY_TAB_LABELS[tab]}</button>
-          {/each}
-        </div>
-      {/if}
-    </div>
     {#if onCollapseToggle}
       <button
         type="button"
@@ -191,42 +114,6 @@
       <RisksTab {ai} {currentFile} />
     {:else if activeTab === "comments"}
       <CommentsTab {ai} {currentFile} />
-    {:else if activeTab === "branch"}
-      {#if app.snapshot}
-        <BranchCard
-          branch={identity.branch}
-          base={identity.base}
-          {pr}
-          reviewed_count={app.snapshot.reviewed_count}
-          total_count={app.snapshot.total_count}
-          additions={totalAdds}
-          deletions={totalDels}
-          checks_status={checksStatus}
-          pr_number={displayPrNumber}
-          is_merged={isMerged}
-          github_url={displayPrUrl}
-          github={githubForTab}
-        />
-      {/if}
-      {#if ai}
-        <!-- The panel already auto-pulls; this card keeps the push and
-             submit-review controls. -->
-        <CommentsCard {ai} active={false} />
-      {/if}
-    {:else if activeTab === "triage"}
-      {#if ai?.triage}
-        <TriageCard triage={ai.triage} />
-      {/if}
-      <!-- The TUI shows the checklist whenever the AI panel is up, with a
-           fallback when the bucket has none — same gate here. -->
-      {#if ai && (ai.checklist || ai.has_review_json)}
-        <ChecklistCard checklist={ai.checklist} />
-      {/if}
-      <AgentOutputCard />
-    {:else if activeTab === "context"}
-      {#if ai}
-        <DiagramsCard {ai} />
-      {/if}
     {/if}
   </div>
 </aside>

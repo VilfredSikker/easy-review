@@ -203,3 +203,40 @@ describe("overview writes", () => {
     }
   });
 });
+
+describe("overview jumps", () => {
+  const card = (name: string) => readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", name), "utf8");
+  const SHOW_DIFF = 'reviewPage.show("diff");';
+
+  /** The body of one function, from its declaration to the next one. */
+  function fnBody(src: string, decl: string): string {
+    const start = src.indexOf(decl);
+    expect(start).toBeGreaterThan(-1);
+    const next = src.indexOf("function ", start + decl.length);
+    return src.slice(start, next === -1 ? undefined : next);
+  }
+
+  // These cards used to sit beside the diff; on the Overview no diff is
+  // mounted, so a jump that only selects a file changes nothing on screen.
+  it.each([
+    ["TriageCard.svelte", "async function navigateToPath", 'await app.cmd("select_file"'],
+    ["FileRisksCard.svelte", "async function jumpTo(", 'await app.cmd("select_file"'],
+    ["ChecklistCard.svelte", "async function jumpToFile", 'await app.cmd("select_file"'],
+    ["ChecklistCard.svelte", "async function jumpToFinding", "await navigateToFinding(finding)"],
+    ["overview/OverviewFindings.svelte", "async function open(", "await navigateToFinding(finding)"],
+    ["overview/OverviewAside.svelte", "async function openFile", 'void app.cmd("select_file"'],
+  ])("%s switches the main view to the diff before %s jumps", (name, decl, jump) => {
+    const fn = fnBody(card(name), decl);
+    const show = fn.indexOf(SHOW_DIFF);
+    const settle = fn.indexOf("await tick();", show);
+    expect(show).toBeGreaterThan(-1);
+    expect(settle).toBeGreaterThan(show);
+    expect(fn.indexOf(jump)).toBeGreaterThan(settle);
+  });
+
+  it("keeps the active tab's agent output reachable from the Overview", () => {
+    const src = read("OverviewView.svelte");
+    expect(src).toContain('import AgentOutputCard from "$lib/components/AgentOutputCard.svelte";');
+    expect(src).toContain("<AgentOutputCard />");
+  });
+});
