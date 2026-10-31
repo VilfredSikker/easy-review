@@ -1,3 +1,55 @@
+# Easy Review v0.6.0
+
+## In plain terms
+
+- **What changed.** The desktop app is redesigned around three review pages: **Overview** (what the PR is and what to look at), **Tour** (the change in reading order) and **Diff** (every file), switched with 1, 2 and 3. A new top bar and view bar replace the branch bar, the right panel splits into Findings, Risks and Comments, and most screens are restyled: the file list, comment and finding cards, the composer, the command palette, toasts, the side menu, the Inbox, Settings, the Arena and the verification results.
+- **What you need to do.** Nothing. Update as usual; reviews, comments and settings carry over. Importance rules keep working: they are now risk rules with the tiers high, med, low and ai (ADR 0048).
+- **TL;DR.** A new review layout with an Overview page, a section-by-section Tour, a GitHub-style review popup, risk rules you edit in Settings, and faster switching between pages.
+
+## Highlights
+
+- **Overview page.** The PR description rendered like GitHub (images, alerts, task lists, tables, `<details>`), a Links section for preview, Linear and CI links, Triage takeaways, File risks, findings, the Tour sections, an activity timeline with bot comments rendered properly, and quick actions for Triage, AI review, Tour, Copy export, Export and Arena. New PR tabs open here.
+- **Tour.** Each section starts with its own header and summary, the section list on the left expands the one you are reading, `]` jumps to the next section, `r` marks the current file reviewed, and file names in the tour text are links.
+- **Diff.** A file rail with reviewed checkboxes and a Commits section, file headers with rename highlighting, a toolbar with Hide reviewed and line numbers, **Mark lines** to colour each line by the commit that introduced it, and hover rulers beside the code that list every file or section.
+- **Reviewing on GitHub.** The Approve button became **Review**: your review request, your pending line comments, and Comment / Approve / Request changes in one popup. The comment box offers "Add single comment" or "Start a review" (ADR 0049).
+- **Findings.** Resolve and Reopen findings (ADR 0047), one-click Ask AI, and Elaborate rewrites a question or note into a self-contained one. The redesigned verification results screen filters by kept, escalated, merged and dropped.
+- **One rule set for importance and risk.** Each file takes the tier of its most specific rule; "ai" means the AI review rates it from what the code does. Edit the rules in Settings → Review (ADR 0048).
+- **Faster page switching.** Moving between Tour and Diff reuses the loaded diff when nothing changed, and the Diff stays loaded behind the Overview (ADR 0050).
+
+## What's Changed
+
+### Features
+- Overview / Tour / Diff review pages with 1/2/3 keys, a top bar (breadcrumb, Live state, running-AI pill and jobs panel) and a view bar (display menu, stale and local-branch banners) (#301, #323, #326, #334, #339).
+- Overview sections: Triage takeaways, File risks, findings, Tour list, activity timeline, rich PR description, Links, reviewer comments popover (#331, #333, #337, #339).
+- Tour view with section headers, an accordion section list, `]` / `r` keys and narrative file links; tour sections carry a one-line summary (#319, #340, #342).
+- Diff: file rail rows and filter, scope segment and Commits section, file card headers, diff toolbar, Mark lines, rulers (#306, #307, #312, #325, #336, #338, #342).
+- Comments and findings: restyled cards, composer and line-number click target, Resolve / Reopen for findings, one-click Ask AI, Elaborate rewrite (#305, #309, #310, #311).
+- Review popup with pending review comments, "Start a review" vs "Add single comment" (#341).
+- Right panel Findings / Risks / Comments tabs, with a reviewer filter on Comments (#327, #339).
+- Risk rules: importance and risk merged into one declared rule system, editable in Settings (#320, #322).
+- Restyled command palette with lettered menus, toasts, side menu groups, window tab strip, Inbox page with an open-in-new-tab dialog, terminal and browser panes, Settings, Arena and verification results (#313, #314, #315, #317, #318, #321, #322, #316, #329).
+- Export view redesign with per-item picks and Copy export (#303).
+- "Run standard instead" for a Deep review waiting on confirmation; per-line commit attribution (#338).
+- Close the Inbox with Esc or a second click (#350).
+
+### Fixes
+- Local commits showed 0/0 lines changed in the commit list (#297).
+- The Review popup failed with "Field 'diffSide' doesn't exist" even with no pending comments, and so did "Start a review" (#348).
+- The Overview's AI review button ran the single general review instead of the review flow ⌘K → a → r runs (#349).
+- Bot comments from Vercel and Linear showed as raw HTML in the activity timeline and pushed the page sideways (#344).
+- Rulers no longer sit on top of the code or hide under sticky file names (#346).
+- A seeded arena run could read Complete before its verdicts were written (#351).
+- Inside the side menu's To review group, rows show the CI status instead of repeating the "review" tag (#350).
+
+### Performance
+- Tour ↔ Diff switches reuse the loaded diff when its inputs are unchanged: 110 ms → under 1 ms on a 400-file diff, and no `gh pr diff` call on PR tabs; Overview ↔ Diff keeps the Diff mounted (#347).
+- Commit selection no longer blocks the UI (#304).
+
+### Chores
+- Shared theme tokens for notes, questions, comments and commit colours across the TUI and desktop (#298).
+- GitHub PR metadata: opened date, review requests, commit count, check durations (#299, #324).
+- Formatting fix for CI (#343).
+
 # Easy Review v0.5.11
 
 ## In plain terms
