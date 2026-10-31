@@ -208,7 +208,6 @@
         {#if rightRail === "expanded"}
           <RightPanel
             ai={app.snapshot?.ai ?? null}
-            pr={app.snapshot?.pr ?? null}
             width={rightPanelWidth}
             dragging={false}
             onResizeStart={undefined}
