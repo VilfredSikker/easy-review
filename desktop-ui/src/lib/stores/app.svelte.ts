@@ -46,6 +46,7 @@ import { syncToastMessage, type SyncReply } from "../syncToast";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { rightRail } from "./rightRail.svelte";
+import { reviewPage } from "./reviewPage.svelte";
 import { ReviewPageMemory, reviewPageTabKey } from "./reviewPageModel";
 import {
   HIDE_REVIEWED_KEY,
@@ -682,7 +683,10 @@ class AppStore {
 
   /** Restore the review page the newly active tab was left on. */
   private followReviewPage(snapshot: AppSnapshot | null): void {
-    const next = this.reviewPages.follow(reviewPageTabKey(snapshot), this.mainView);
+    const next = this.reviewPages.follow(reviewPageTabKey(snapshot),
+      this.mainView,
+      reviewPage.available("overview"),
+    );
     if (next) this.mainView = next;
   }
 
