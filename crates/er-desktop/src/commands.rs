@@ -1316,6 +1316,7 @@ pub async fn set_mode(
                 return Ok(snap_from_command(&app, &state));
             }
         }
+        let t_switch = std::time::Instant::now();
         if matches!(mode.as_str(), "pr" | "pr_diff") {
             // Only enter PrDiff when not already there (avoids re-fetching refs
             // on a tab that is already in PrDiff from construction).
@@ -1330,7 +1331,7 @@ pub async fn set_mode(
                 }
                 app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
             }
-            return Ok(snap_from_command(&app, &state));
+            return Ok(set_mode_snapshot(&app, &state, &mode, t_switch));
         }
         let diff_mode = match mode.as_str() {
             "unstaged" => DiffMode::Unstaged,
@@ -1342,9 +1343,33 @@ pub async fn set_mode(
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
-        Ok(snap_from_command(&app, &state))
+        Ok(set_mode_snapshot(&app, &state, &mode, t_switch))
     })
     .await
+}
+
+/// The snapshot a mode switch returns, with the switch and the snapshot build
+/// logged apart: a slow switch is either a re-fetched diff or a large snapshot,
+/// and the fix for each is different.
+fn set_mode_snapshot(
+    app: &App,
+    state: &AppState,
+    mode: &str,
+    t_switch: std::time::Instant,
+) -> AppSnapshot {
+    let switch_ms = t_switch.elapsed().as_millis();
+    let t_snap = std::time::Instant::now();
+    let snap = snap_from_command(app, state);
+    crate::profile_log::profile_log(
+        "set_mode",
+        &[
+            ("mode", mode.to_string()),
+            ("switch_ms", switch_ms.to_string()),
+            ("snap_ms", t_snap.elapsed().as_millis().to_string()),
+            ("files", snap.files.len().to_string()),
+        ],
+    );
+    snap
 }
 
 /// Change the compare/base branch the active tab diffs against. Only valid on

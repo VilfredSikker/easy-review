@@ -31,6 +31,7 @@
     clampPopoverPosition,
     groupUsagesByFile,
     usagePreview,
+    usagesPopoverKeyAction,
     type UsageContextLine,
     type UsageLine,
   } from "$lib/referenceUsages";
@@ -133,29 +134,22 @@
   // Keyboard navigation while open. The global capture handler in keyboard.ts
   // owns Esc (popover-close precedence); arrows/Enter are unclaimed there.
   // Keys typed into an input (e.g. the Cmd+F search bar, which can be open at
-  // the same time as the popover) belong to that field, not to popover nav.
+  // the same time as the popover) belong to that field, not to popover nav;
+  // keys pressed while the diff is hidden belong to the page on screen.
   $effect(() => {
     function onKeydown(e: KeyboardEvent) {
       const t = e.target as HTMLElement | null;
-      if (
-        t &&
-        (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable)
-      ) {
-        return;
-      }
-      if (e.key === "ArrowDown") {
-        e.preventDefault();
-        e.stopPropagation();
-        void move(1);
-      } else if (e.key === "ArrowUp") {
-        e.preventDefault();
-        e.stopPropagation();
-        void move(-1);
-      } else if (e.key === "Enter") {
-        e.preventDefault();
-        e.stopPropagation();
-        jump(selectedIdx);
-      }
+      const action = usagesPopoverKeyAction(e.key, {
+        inField:
+          !!t && (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable),
+        diffOnScreen: !el?.closest("[inert]"),
+      });
+      if (action === null) return;
+      e.preventDefault();
+      e.stopPropagation();
+      if (action === "next") void move(1);
+      else if (action === "prev") void move(-1);
+      else jump(selectedIdx);
     }
     window.addEventListener("keydown", onKeydown);
     return () => window.removeEventListener("keydown", onKeydown);

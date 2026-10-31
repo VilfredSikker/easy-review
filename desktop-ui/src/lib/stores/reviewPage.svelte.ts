@@ -1,14 +1,17 @@
 import { app } from "./app.svelte";
 import {
   currentReviewPage,
+  reviewLayers,
   reviewPageAvailable,
   setModeArgsFor,
+  type ReviewLayers,
   type ReviewPage,
 } from "./reviewPageModel";
 
 export type { ReviewPage };
 
 let overviewRendered = $state(false);
+let overviewVisited = $state(false);
 
 /**
  * Overview / Tour / Diff for the active tab. Derived from `app.mainView` and
@@ -19,6 +22,11 @@ let overviewRendered = $state(false);
 export const reviewPage = {
   get current(): ReviewPage | null {
     return currentReviewPage(app.mainView, app.snapshot?.mode);
+  },
+
+  /** Which review pages the shell keeps mounted, and which one is on screen. */
+  get layers(): ReviewLayers {
+    return reviewLayers(app.mainView, overviewVisited);
   },
 
   available(page: ReviewPage): boolean {
@@ -32,6 +40,11 @@ export const reviewPage = {
    */
   registerOverview(): void {
     overviewRendered = true;
+  },
+
+  /** Called by the shell once the Overview has been on screen, so it stays mounted. */
+  noteOverviewShown(): void {
+    overviewVisited = true;
   },
 
   show(page: ReviewPage): void {

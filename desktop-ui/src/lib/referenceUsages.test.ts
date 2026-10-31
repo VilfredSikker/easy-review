@@ -7,6 +7,7 @@ import {
   groupUsagesByFile,
   usageContext,
   usagePreview,
+  usagesPopoverKeyAction,
   type UsageLine,
   type UsageSource,
 } from "./referenceUsages";
@@ -400,5 +401,27 @@ describe("clampPopoverPosition", () => {
 
   it("prefers the top-left edge when the box cannot fit", () => {
     expect(clampPopoverPosition({ x: 100, y: 100 }, { w: 2000, h: 2000 }, { w: 1280, h: 800 })).toEqual({ left: 8, top: 8 });
+  });
+});
+
+describe("usagesPopoverKeyAction", () => {
+  const onScreen = { inField: false, diffOnScreen: true };
+
+  it("navigates and jumps while the diff is on screen", () => {
+    expect(usagesPopoverKeyAction("ArrowDown", onScreen)).toBe("next");
+    expect(usagesPopoverKeyAction("ArrowUp", onScreen)).toBe("prev");
+    expect(usagesPopoverKeyAction("Enter", onScreen)).toBe("jump");
+    expect(usagesPopoverKeyAction("a", onScreen)).toBeNull();
+  });
+
+  it("leaves Enter and the arrows to the Overview once the diff is hidden", () => {
+    const hidden = { inField: false, diffOnScreen: false };
+    expect(usagesPopoverKeyAction("Enter", hidden)).toBeNull();
+    expect(usagesPopoverKeyAction("ArrowDown", hidden)).toBeNull();
+    expect(usagesPopoverKeyAction("ArrowUp", hidden)).toBeNull();
+  });
+
+  it("leaves keys typed into a field to that field", () => {
+    expect(usagesPopoverKeyAction("Enter", { inField: true, diffOnScreen: true })).toBeNull();
   });
 });
