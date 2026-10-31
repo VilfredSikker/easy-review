@@ -29,6 +29,7 @@ function makeModel(overrides: Partial<CrossFileModel> = {}): CrossFileModel {
     cumulativeOffsets: [0],
     totalHeight: 0,
     fileStartRow: new Map(),
+    pillarStartRow: new Map(),
     rowFile: new Uint32Array(0),
     threadRowIndex: () => null,
     findingRowIndex: () => null,
@@ -224,4 +225,54 @@ it("reveals Raw before resolving hunk and finding positions, but preserves file-
   raw = false;
   await diffNav.scrollToFinding("finding-one");
   expect(scrollToRow.mock.calls.at(-1)).toEqual([2,"center"]);
+});
+
+describe("Tour pillars", () => {
+  function registerTour(active: string | null) {
+    const scrollToRow = mock(() => {});
+    const model = makeModel({
+      cumulativeOffsets: [0, 120, 160, 280, 320],
+      pillarStartRow: new Map([
+        ["p1", 0],
+        ["p2", 2],
+      ]),
+    });
+    diffNav.register({
+      scrollToRow,
+      scrollToEdge: () => {},
+      scrollAfterCollapse: async () => {},
+      requestFileContent: async () => {},
+      getModel: () => model,
+      getFiles: () => [makeFile("b.ts"), makeFile("a.ts")],
+      getActivePillarId: () => active,
+      getVisibleFilePath: () => "a.ts",
+    } satisfies DiffNavigator);
+    return scrollToRow;
+  }
+
+  it("scrolls a pillar header to the top", () => {
+    const scrollToRow = registerTour(null);
+    expect(diffNav.scrollToPillar("p2")).toBe(true);
+    expect(scrollToRow).toHaveBeenCalledWith(2, "start");
+    expect(diffNav.pendingScrollPx).toBe(160);
+    expect(diffNav.scrollToPillar("missing")).toBe(false);
+  });
+
+  it("steps to the pillar after the active one", () => {
+    const scrollToRow = registerTour("p1");
+    expect(diffNav.scrollToNextPillar()).toBe(true);
+    expect(scrollToRow).toHaveBeenCalledWith(2, "start");
+  });
+
+  it("exposes the drawn order and the file being read", () => {
+    registerTour(null);
+    expect(diffNav.drawnFilePaths()).toEqual(["b.ts", "a.ts"]);
+    expect(diffNav.visibleFilePath()).toBe("a.ts");
+  });
+
+  it("does nothing unregistered", () => {
+    expect(diffNav.scrollToNextPillar()).toBe(false);
+    expect(diffNav.drawnFilePaths()).toEqual([]);
+    expect(diffNav.visibleFilePath()).toBeNull();
+  });
 });
