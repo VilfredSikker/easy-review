@@ -1,6 +1,7 @@
 pub mod arena;
 pub mod background;
 pub(super) mod comments;
+mod diff_reuse;
 pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
@@ -1053,6 +1054,9 @@ pub struct TabState {
     /// Validation happens on consume: if any input (base, PR, checkout, branch
     /// name) moved, the slot is dropped and the normal fetch runs.
     pub preloaded_branch_raw: Option<preload::PreloadedBranchRaw>,
+    /// What the diff in `files` was loaded from, so a Tour ↔ source switch can
+    /// keep it instead of fetching it again (ADR 0050). Runtime-only.
+    loaded_diff_source: Option<diff_reuse::DiffSourceKey>,
     /// Background-loaded AI sidecar state for the branch view bucket (adopted
     /// by `reload_ai_state` when the bucket dir + diff hash still match).
     pub preloaded_branch_ai: Option<preload::BranchAiPreload>,
@@ -1366,6 +1370,7 @@ impl TabState {
         base_branch: String,
         head_oid: Option<String>,
     ) {
+        self.loaded_diff_source = None;
         let compaction_config = self.compaction_config.clone();
         if raw.len() > 200_000 {
             let headers = crate::git::parse_diff_headers(raw);
@@ -1698,6 +1703,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            loaded_diff_source: None,
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -1833,6 +1839,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            loaded_diff_source: None,
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -1964,6 +1971,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            loaded_diff_source: None,
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -2107,6 +2115,7 @@ impl TabState {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            loaded_diff_source: None,
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -2645,6 +2654,13 @@ impl TabState {
             .pr_number
             .ok_or_else(|| anyhow::anyhow!("No PR number set for this tab"))?;
 
+        // Leaving a PR tour for its own diff: the refs are already fetched and
+        // the tour holds the PR diff, so this is a plain mode switch.
+        if self.pr_refs_fetched && self.can_reuse_loaded_diff(self.mode, DiffMode::PrDiff) {
+            self.set_mode(DiffMode::PrDiff);
+            return Ok(());
+        }
+
         if !self.pr_refs_fetched {
             // First entry: fetch and cache the refs. Errors surface to the caller.
             let t = Instant::now();
@@ -3045,6 +3061,7 @@ impl TabState {
     /// files), marks unresolved files as `FileStatus::Unmerged`, and sorts with
     /// unresolved files first then alphabetically.
     pub fn refresh_conflicts(&mut self) {
+        self.loaded_diff_source = None;
         self.merge_active = git::is_merge_in_progress(&self.repo_root);
 
         let raw = git::git_diff_conflicts(&self.repo_root).unwrap_or_default();
@@ -3251,6 +3268,9 @@ impl TabState {
         compute_per_file_hashes: bool,
     ) -> Result<()> {
         let t_total = Instant::now();
+        // Cleared before anything can fail, so a refresh that errors halfway
+        // never leaves a key vouching for a half-replaced diff.
+        self.loaded_diff_source = None;
 
         self.sync_storage_if_checkout_branch_changed()?;
 
@@ -3378,6 +3398,7 @@ impl TabState {
             if self.mode == DiffMode::Tour {
                 self.rebuild_tour_state();
             }
+            self.record_loaded_diff_source();
             log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
             return Ok(());
         }
@@ -3453,6 +3474,7 @@ impl TabState {
                 if self.mode == DiffMode::Tour {
                     self.rebuild_tour_state();
                 }
+                self.record_loaded_diff_source();
 
                 return Ok(());
             }
@@ -3683,6 +3705,7 @@ impl TabState {
         if self.mode == DiffMode::Tour {
             self.rebuild_tour_state();
         }
+        self.record_loaded_diff_source();
 
         log_branch_profile_phase(self, "refresh_diff_impl_total", t_total);
         Ok(())
@@ -4957,6 +4980,7 @@ impl TabState {
 
     pub fn set_mode(&mut self, mode: DiffMode) {
         if self.mode != mode {
+            let t_switch = Instant::now();
             // Remember current position to restore after mode switch
             let prev_path = self.files.get(self.selected_file).map(|f| f.path.clone());
             let prev_hunk = self.current_hunk;
@@ -5002,6 +5026,15 @@ impl TabState {
                 self.reload_ai_state();
             }
 
+            // The Tour and the view it regroups show one diff; when nothing that
+            // decides it has moved, re-fetching it only repeats the bytes in
+            // memory (ADR 0050).
+            let reuse_diff =
+                self.review_bucket() == prev_bucket && self.can_reuse_loaded_diff(prev_mode, mode);
+            if reuse_diff && !self.ai_state_is_current() {
+                self.reload_ai_state();
+            }
+
             if mode == DiffMode::History {
                 // Initialize history state if first time
                 if self.history.is_none() {
@@ -5030,7 +5063,9 @@ impl TabState {
                 self.selected_watched = None;
                 self.diff_scroll = 0;
                 // Tour reorders the branch diff — load it first (fetch_scope == "branch").
-                let _ = self.refresh_diff_mode_switch();
+                if !reuse_diff {
+                    let _ = self.refresh_diff_mode_switch();
+                }
                 self.rebuild_tour_state();
             } else if mode == DiffMode::Conflicts {
                 self.current_hunk = 0;
@@ -5048,6 +5083,7 @@ impl TabState {
                 self.watched_config = er_config.watched;
                 // Hidden mode shows only watched/gitignored files — clear regular diff
                 self.files.clear();
+                self.loaded_diff_source = None;
                 self.show_watched = true;
                 self.refresh_watched_files();
                 if !self.watched_files.is_empty() {
@@ -5058,7 +5094,9 @@ impl TabState {
                 self.current_line = None;
                 self.selected_watched = None;
                 self.diff_scroll = 0;
-                let _ = self.refresh_diff_mode_switch();
+                if !reuse_diff {
+                    let _ = self.refresh_diff_mode_switch();
+                }
 
                 // Restore selection by path (file order may differ between modes)
                 let prev_idx =
@@ -5076,6 +5114,12 @@ impl TabState {
                 self.snap_to_visible();
                 self.scroll_to_current_hunk();
             }
+            let phase = if reuse_diff {
+                "set_mode.reused_diff"
+            } else {
+                "set_mode"
+            };
+            log_branch_profile_phase(self, phase, t_switch);
         }
     }
 
@@ -9702,6 +9746,7 @@ mod tests {
             local_branch_view: None,
             local_branch_checkout_root: None,
             preloaded_branch_raw: None,
+            loaded_diff_source: None,
             preloaded_branch_ai: None,
             command_rx: std::collections::HashMap::new(),
             command_status: std::collections::HashMap::new(),
@@ -9997,6 +10042,198 @@ mod tests {
             after, tab.branch_diff_hash,
             "an unchanged branch must not re-derive a different hash"
         );
+    }
+
+    /// Commit `name` to `feature` the way a terminal would: nothing in the app
+    /// is told, so only a fresh `git diff` can see it.
+    fn commit_to_feature_behind_the_apps_back(root: &str, name: &str) {
+        std::fs::write(std::path::Path::new(root).join(name), "new work\n").unwrap();
+        for args in [
+            vec!["checkout", "-q", "feature"],
+            vec!["add", name],
+            vec!["commit", "-qm", "from a terminal"],
+            vec!["checkout", "-q", "main"],
+        ] {
+            std::process::Command::new("git")
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .unwrap();
+        }
+    }
+
+    fn file_paths(tab: &TabState) -> Vec<String> {
+        tab.files.iter().map(|f| f.path.clone()).collect()
+    }
+
+    /// A read-only view of `feature` against `main`, loaded once.
+    fn loaded_feature_view(root: &str) -> TabState {
+        let mut tab = TabState::new(root.to_string()).expect("tab for the temp repo");
+        tab.local_branch_view = Some("feature".to_string());
+        tab.local_branch_checkout_root = None;
+        tab.base_branch = "main".to_string();
+        tab.mode = DiffMode::Branch;
+        tab.refresh_diff().expect("full refresh");
+        tab
+    }
+
+    #[test]
+    fn a_tour_round_trip_reuses_the_loaded_diff() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = loaded_feature_view(&root);
+        assert_eq!(file_paths(&tab), vec!["a.txt"]);
+
+        // A commit only a re-diff could see: if either switch below ran
+        // `git diff`, b.txt would appear.
+        commit_to_feature_behind_the_apps_back(&root, "b.txt");
+
+        tab.set_mode(DiffMode::Tour);
+        assert_eq!(tab.mode, DiffMode::Tour);
+        assert_eq!(
+            file_paths(&tab),
+            vec!["a.txt"],
+            "entering the Tour re-ran the diff"
+        );
+
+        tab.set_mode(DiffMode::Branch);
+        assert_eq!(tab.mode, DiffMode::Branch);
+        assert_eq!(
+            file_paths(&tab),
+            vec!["a.txt"],
+            "leaving the Tour re-ran the diff"
+        );
+
+        // The watcher's refresh is what brings the commit in, in either view,
+        // and the round trip after it reuses the refreshed diff.
+        tab.set_mode(DiffMode::Tour);
+        tab.refresh_diff_quick_with_unmark()
+            .expect("watcher refresh");
+        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+        commit_to_feature_behind_the_apps_back(&root, "c.txt");
+        tab.set_mode(DiffMode::Branch);
+        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt"]);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn a_tour_round_trip_refreshes_when_the_source_moved() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let dir = init_repo_with_a_feature_branch();
+        let root = dir.path().to_string_lossy().to_string();
+        let mut tab = loaded_feature_view(&root);
+        tab.set_mode(DiffMode::Tour);
+
+        commit_to_feature_behind_the_apps_back(&root, "b.txt");
+        // A base change that skipped its own refresh: the loaded diff no
+        // longer answers for the refs the next refresh would read.
+        std::process::Command::new("git")
+            .args(["branch", "main2", "main"])
+            .current_dir(&root)
+            .output()
+            .unwrap();
+        tab.base_branch = "main2".to_string();
+
+        tab.set_mode(DiffMode::Branch);
+        assert_eq!(
+            file_paths(&tab),
+            vec!["a.txt", "b.txt"],
+            "a moved diff source must be re-fetched on the switch"
+        );
+
+        // A refresh that failed halfway vouches for nothing either.
+        commit_to_feature_behind_the_apps_back(&root, "c.txt");
+        tab.loaded_diff_source = None;
+        tab.set_mode(DiffMode::Tour);
+        assert_eq!(file_paths(&tab), vec!["a.txt", "b.txt", "c.txt"]);
+
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    fn loaded_test_tab(mode: DiffMode, tour_is_pr: bool) -> TabState {
+        let mut tab = make_test_tab(vec![]);
+        tab.repo_root = "/nonexistent/er-test-repo".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+        tab.set_raw_diff_for_test("diff --git a/a b/a\n");
+        tab.mode = mode;
+        tab.tour_is_pr = tour_is_pr;
+        tab
+    }
+
+    #[test]
+    fn only_the_tour_and_its_own_source_share_a_diff() {
+        let mut tab = loaded_test_tab(DiffMode::Branch, false);
+        tab.record_loaded_diff_source();
+
+        assert!(tab.can_reuse_loaded_diff(DiffMode::Branch, DiffMode::Tour));
+        assert!(tab.can_reuse_loaded_diff(DiffMode::Tour, DiffMode::Branch));
+        assert!(
+            !tab.can_reuse_loaded_diff(DiffMode::Unstaged, DiffMode::Tour),
+            "Unstaged is a different diff from the one the Tour regroups"
+        );
+        assert!(
+            !tab.can_reuse_loaded_diff(DiffMode::Tour, DiffMode::PrDiff),
+            "a branch tour is not the PR diff's source"
+        );
+
+        // A pending background preload is newer data than the loaded diff.
+        tab.preloaded_branch_raw = Some(preload::PreloadedBranchRaw {
+            raw: String::new(),
+            preview_head_oid: None,
+            base_branch: tab.base_branch.clone(),
+            pr_number: None,
+            local_branch_view: tab.local_branch_view.clone(),
+            checkout_root: None,
+            remote_repo: None,
+            pr_head_ref: None,
+            parity: false,
+        });
+        assert!(!tab.can_reuse_loaded_diff(DiffMode::Branch, DiffMode::Tour));
+    }
+
+    /// A checked-out PR's Branch view is the working tree, but its Tour is the
+    /// PR's parity diff: the two only look like the same view.
+    #[test]
+    fn a_checked_out_prs_branch_view_does_not_lend_its_diff_to_the_tour() {
+        let mut tab = loaded_test_tab(DiffMode::Branch, false);
+        tab.local_branch_checkout_root = Some("/nonexistent/er-test-repo".to_string());
+        tab.pr_number = Some(7);
+        tab.record_loaded_diff_source();
+        assert!(!tab.can_reuse_loaded_diff(DiffMode::Branch, DiffMode::Tour));
+
+        // Entered from the PR Diff, the Tour and its source are one diff.
+        tab.mode = DiffMode::PrDiff;
+        tab.tour_is_pr = true;
+        tab.record_loaded_diff_source();
+        assert!(tab.can_reuse_loaded_diff(DiffMode::PrDiff, DiffMode::Tour));
+        assert!(tab.can_reuse_loaded_diff(DiffMode::Tour, DiffMode::PrDiff));
+    }
+
+    /// Leaving a PR tour through `enter_pr_diff` (the PR Diff toggle) must not
+    /// re-fetch refs or the diff when the tour already holds it.
+    #[test]
+    fn enter_pr_diff_from_a_pr_tour_keeps_the_loaded_diff() {
+        let mut tab = loaded_test_tab(DiffMode::PrDiff, true);
+        tab.pr_number = Some(7);
+        tab.pr_refs_fetched = true;
+        tab.record_loaded_diff_source();
+        tab.mode = DiffMode::Tour;
+        let files_before = file_paths(&tab);
+
+        // Any fetch would fail against the nonexistent repo and surface here.
+        tab.enter_pr_diff().expect("no fetch on a reused switch");
+        assert_eq!(tab.mode, DiffMode::PrDiff);
+        assert_eq!(file_paths(&tab), files_before);
     }
 
     /// Point `refs/er/pr/<n>/head` at `feature`'s tip, the way a PR head

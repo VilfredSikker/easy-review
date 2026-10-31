@@ -109,3 +109,26 @@ export class ReviewPageMemory {
     return next === view ? null : next;
   }
 }
+
+/** How a review page's component sits in the shell: on screen, kept but hidden, or unmounted. */
+export type ReviewLayer = "shown" | "hidden" | "absent";
+
+export interface ReviewLayers {
+  diff: ReviewLayer;
+  overview: ReviewLayer;
+}
+
+/**
+ * Which review pages stay mounted under `view`. Unmounting the diff for the
+ * Overview threw away its row model, measured heights and scroll, so coming
+ * back rebuilt all three from a snapshot it already had; hiding it keeps them.
+ * The Overview mounts on its first visit and then stays, for its own scroll.
+ * Every other main view still replaces both.
+ */
+export function reviewLayers(view: MainViewMode, overviewVisited: boolean): ReviewLayers {
+  if (view === "diff") {
+    return { diff: "shown", overview: overviewVisited ? "hidden" : "absent" };
+  }
+  if (view === "overview") return { diff: "hidden", overview: "shown" };
+  return { diff: "absent", overview: "absent" };
+}
