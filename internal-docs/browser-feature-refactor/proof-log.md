@@ -19,10 +19,13 @@ superview. Unpark restores the recorded native frame, sibling position when
 reattaching, visibility, then saved first responder. Unlike a future product
 adapter, it restores recorded geometry rather than taking new shell bounds.
 Only one child can be parked at a time; duplicate park and variant changes fail.
-Close the probe after any error that prevents restoration. Retained native state
-is discarded on explicit fixture close or main-window destruction. Existing tab
-children can also be targeted; stale identity or a missing child discards their
-metadata when next probed.
+After a dedicated-fixture restoration error, use `close: true` to close that
+fixture and discard its retained state. This command cleans only `parking-proof`.
+For a supplementary existing-tab restoration failure, destroy the main window
+to clear retained state, or close that tab's child and probe its now-missing
+`tabIdx` without fixtureUrl. A stale native identity also discards that tab's
+metadata when next probed. Merely closing the dedicated fixture does not clear
+retained state for an existing tab.
 
 The product still destroys its registered browser children before real modals.
 To avoid confusing that destruction with a parking failure, `fixtureUrl` creates
