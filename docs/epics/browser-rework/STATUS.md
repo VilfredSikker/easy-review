@@ -2,7 +2,7 @@
 
 Release branch: `release/v0.6.0`. Implementation PRs target that branch.
 Plan: [PLAN.md](./PLAN.md). Resume notes: [BUILD_LOG.md](./BUILD_LOG.md).
-Updated by the orchestrator only. Last update: 2026-10-30.
+Updated by the orchestrator only. Last update: 2026-10-31.
 
 Legend: planned, implementing, reviewing, fixing, merged, blocked.
 
@@ -10,10 +10,10 @@ Legend: planned, implementing, reviewing, fixing, merged, blocked.
 | --- | --- | --- | --- | --- | --- | --- |
 | ER21 | Browser fixtures | Fixtures | Terra | merged | [#330](https://github.com/VilfredSikker/easy-review/pull/330) | HTTP checks passed; Safari/native observations pending |
 | ER32a | Engine annotation storage | Storage | Sol | merged | [#332](https://github.com/VilfredSikker/easy-review/pull/332) | Twelve storage tests, independent review and CI passed |
-| ER34a | Shared prompt renderer | Storage | Sol | reviewing | [#335](https://github.com/VilfredSikker/easy-review/pull/335) | Pure renderer; preserves existing exports |
-| ER35 | Browser annotations MCP reader | Storage | Sol | implementing | — | Stacked on renderer; ship after its review |
-| ER32b | Desktop snapshot integration | Desktop | Terra | implementing | — | PR 324 reconciled; source and UI contract checks underway |
-| ER22 | Parking proof | Native | Sol | implementing | — | Debug-only scaffold; native proof remains pending |
+| ER34a | Shared prompt renderer | Storage | Sol | merged | [#335](https://github.com/VilfredSikker/easy-review/pull/335) | Review and CI passed; existing exports preserved |
+| ER35 | Browser annotations MCP reader | Storage | Sol | awaiting publication | — | Local review passed; 25 MCP tests passed |
+| ER32b | Desktop snapshot integration | Desktop | Sol | fixing | — | Repairing compile, cache recovery and revision-publication issues from review |
+| ER22 | Parking proof | Native | Sol | draft prepared locally | — | Source review complete; publication and macOS proof pending |
 | ER23 | Content-world proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
 | ER24 | Host editor surface proof | Native | Sol | blocked | — | Needs ER21 and real macOS window |
 | ER25 | Navigation capture data-store proof | Native | Sol | blocked | — | Needs ER22, ER23, ER24 and real macOS |
@@ -31,6 +31,13 @@ Legend: planned, implementing, reviewing, fixing, merged, blocked.
 The native proof tasks require mouse and keyboard checks in a macOS Tauri app.
 The current Linux environment cannot supply that evidence. Their proof results
 remain pending until recorded in the proof log; compilation is not a substitute.
+
+## Publication hold
+
+Automatic approval review rejected creating the snapshot PR, requiring explicit
+owner approval to publish the source changes to the public Easy Review repository.
+Remaining snapshot, MCP and parking-probe work is preserved in local branches;
+no further publication is attempted until that approval is available.
 
 ## Pending design decisions
 

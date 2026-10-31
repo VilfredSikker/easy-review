@@ -57,3 +57,23 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   avoids the product modal teardown confounder; this changes the experiment
   driver, not the release browser behavior. Mac compile and native observations
   remain required before the proof can pass.
+
+### 2026-10-31
+
+- The owner resumed the paused epic. Rechecked the current release branch, open
+  PRs, saved worktrees, toolchain and existing reviews before resuming agents.
+- Renderer PR 335 retained its reviewed head and passing CI. Merged it as
+  `b22019ff`; this adds the renderer without switching production export readers.
+- ER32b was rebased and checked locally. Independent review found a missing
+  Debug derive, a cache-publication/sent-revision race and unrecoverable cached
+  read errors. Assigned the repair to Sol before further publication.
+- ER35 is locally committed at `ed37a5c4`; independent review found no blocker.
+  Its 25 MCP tests, formatting and scoped Clippy passed, with no external writes.
+- ER22 debug-only probe scaffolding is locally reviewed for a draft. macOS
+  compilation and native behavior remain unverified; all 18 proof cells remain
+  pending. The dedicated probe leaves product modal teardown unchanged.
+- Automatic approval review rejected snapshot PR creation for public source
+  disclosure. Verified the original repository is public, owned by VilfredSikker,
+  and writable by the connected account; a supported retry with this evidence was
+  also rejected for lack of explicit source-disclosure approval. Put remaining
+  publication on hold while completing local checks and reviews.
