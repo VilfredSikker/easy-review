@@ -54,6 +54,13 @@ fn fixture_url(value: &str) -> Result<tauri::Url, String> {
 /// Supplying fixtureUrl selects a separate child that product modal teardown does
 /// not own. Repeated calls never navigate an existing child. Close it explicitly
 /// before choosing another fixture; this keeps document replacement observable.
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unused_async,
+        reason = "macOS awaits main-thread completion; unsupported platforms retain the async command boundary"
+    )
+)]
 #[tauri::command]
 pub async fn browser_probe_park(
     app: AppHandle,
@@ -109,6 +116,13 @@ pub async fn unpark(view: &tauri::Webview, variant: Variant) -> Result<Observati
     change(view, variant, false).await
 }
 
+#[cfg_attr(
+    not(target_os = "macos"),
+    expect(
+        clippy::unused_async,
+        reason = "macOS awaits native callback completion; unsupported platforms retain the same async adapter API"
+    )
+)]
 async fn change(
     view: &tauri::Webview,
     variant: Variant,
