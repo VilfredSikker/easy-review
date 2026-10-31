@@ -29,6 +29,7 @@
   import { tabPlaceholderTarget } from "$lib/tabPlaceholder";
   import { isReviewMainView } from "$lib/stores/reviewPageModel";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
+  import { refHighlight } from "$lib/stores/referenceHighlight.svelte";
   import OverviewView from "$lib/components/overview/OverviewView.svelte";
   import { showOverviewSection, type OverviewSection } from "$lib/components/overview/overviewNav";
   import { isSecondaryTab, type SecondaryRightPanelTab } from "$lib/components/rpanel/rightPanelTabs";
@@ -238,6 +239,15 @@
   }
 
   const isReviewView = $derived(isReviewMainView(app.mainView));
+  const reviewLayers = $derived(reviewPage.layers);
+  $effect(() => {
+    if (app.mainView === "overview") reviewPage.noteOverviewShown();
+  });
+  // The usages popover is anchored in the diff and listens on `window`; left
+  // open under a hidden diff it would keep claiming the arrows and Enter.
+  $effect(() => {
+    if (reviewLayers.diff !== "shown") refHighlight.closePopover();
+  });
   /** The tab an uncached switch is loading; the review area names it until it lands. */
   const placeholderTab = $derived(
     isReviewView ? tabPlaceholderTarget(app.snapshot?.tabs, app.switchingTabIdx) : null,
@@ -382,17 +392,42 @@
               >
                 {#if placeholderTab}
                   <TabPlaceholder tab={placeholderTab} status={app.switchingLabel} />
-                {:else if app.mainView === "diff"}
-                  {#if tourMissing}
-                    <TourEmptyState />
-                  {:else}
-                    {#if !inTour}
-                      <FileTree collapsed={!layoutPanels.tree} />
+                {:else if isReviewView}
+                  <!-- Both review pages share one grid cell; the one not on
+                       screen stays mounted so switching back is instant. -->
+                  <div class="grid flex-1 min-w-0 min-h-0 grid-cols-[minmax(0,1fr)] grid-rows-[minmax(0,1fr)]">
+                    {#if reviewLayers.diff !== "absent"}
+                      {@const hidden = reviewLayers.diff === "hidden"}
+                      <div
+                        class="[grid-area:1/1] flex min-w-0 min-h-0"
+                        class:invisible={hidden}
+                        inert={hidden}
+                        aria-hidden={hidden}
+                        data-testid="review-layer-diff"
+                      >
+                        {#if tourMissing}
+                          <TourEmptyState />
+                        {:else}
+                          {#if !inTour}
+                            <FileTree collapsed={!layoutPanels.tree} />
+                          {/if}
+                          <DiffView />
+                        {/if}
+                      </div>
                     {/if}
-                    <DiffView />
-                  {/if}
-                {:else if app.mainView === "overview"}
-                  <OverviewView />
+                    {#if reviewLayers.overview !== "absent"}
+                      {@const hidden = reviewLayers.overview === "hidden"}
+                      <div
+                        class="[grid-area:1/1] flex min-w-0 min-h-0"
+                        class:invisible={hidden}
+                        inert={hidden}
+                        aria-hidden={hidden}
+                        data-testid="review-layer-overview"
+                      >
+                        <OverviewView />
+                      </div>
+                    {/if}
+                  </div>
                 {:else if app.mainView === "agent-output"}
                   <AgentOutputView />
                 {:else if app.mainView === "inbox"}

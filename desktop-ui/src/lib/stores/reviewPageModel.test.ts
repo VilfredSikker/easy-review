@@ -3,6 +3,7 @@ import type { AppSnapshot, TabSummary } from "../types";
 import {
   ReviewPageMemory,
   currentReviewPage,
+  reviewLayers,
   reviewPageAvailable,
   reviewPageTabKey,
   setModeArgsFor,
@@ -158,5 +159,23 @@ describe("ReviewPageMemory", () => {
     const m = new ReviewPageMemory();
     m.follow("a", "overview");
     expect(m.follow("a", "diff")).toBeNull();
+  });
+});
+
+describe("reviewLayers", () => {
+  it("keeps the diff mounted under the Overview", () => {
+    expect(reviewLayers("overview", false)).toEqual({ diff: "hidden", overview: "shown" });
+    expect(reviewLayers("overview", true)).toEqual({ diff: "hidden", overview: "shown" });
+  });
+
+  it("mounts the Overview behind the diff only once it has been visited", () => {
+    expect(reviewLayers("diff", false)).toEqual({ diff: "shown", overview: "absent" });
+    expect(reviewLayers("diff", true)).toEqual({ diff: "shown", overview: "hidden" });
+  });
+
+  it("unmounts both under a page that replaces the review", () => {
+    for (const view of ["settings", "inbox", "export-review", "agent-output"] as const) {
+      expect(reviewLayers(view, true)).toEqual({ diff: "absent", overview: "absent" });
+    }
   });
 });
