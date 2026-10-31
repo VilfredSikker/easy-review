@@ -4,7 +4,13 @@
    * scroll edge, and a popover that lists them on hover or keyboard focus.
    * The two rulers differ only in how files are grouped and what the popover
    * heading says, so those arrive as props and the geometry lives in
-   * `rulerGeometry`. Prop-driven so the host owns navigation and placement.
+   * `rulerGeometry`. Prop-driven so the host owns navigation.
+   *
+   * The root is a reserved strip the host lays out beside the code column,
+   * never an overlay on it: an overlay painted its ticks over line numbers
+   * and code, and stacked under the sticky file header (z-30) so the header
+   * covered both ticks and popover. As a flex sibling the code column simply
+   * gets narrower, and the band width the row model measures follows.
    */
   import { extChip } from "$lib/fileTreeModel";
   import { baseName, shortFileName } from "$lib/shortFileName";
@@ -15,16 +21,14 @@
     heading: string;
     label: string;
     onGoto: (path: string) => void;
-    /** CSS `left` of the ruler inside its positioned parent. */
-    left?: string;
   }
-  const { groups, heading, label, onGoto, left = "0" }: Props = $props();
+  const { groups, heading, label, onGoto }: Props = $props();
 
   let height = $state(0);
 
   const total = $derived(rulerFileCount(groups));
-  // The ruler is vertically centred and may use most of its parent, so the
-  // parent height is the budget a crowded diff has to fit in.
+  // The ruler is vertically centred and may use most of the strip, so the
+  // strip's height is the budget a crowded diff has to fit in.
   const gap = $derived(tickGap(total, groups.length, height * 0.8));
 
   function dir(path: string): string {
@@ -57,58 +61,67 @@
   }
 </script>
 
-<svelte:window bind:innerHeight={height} />
-
 {#if total > 0}
-  <div class="ruler" style="left:{left}" role="toolbar" aria-label={label} tabindex="0" onkeydown={onKeydown}>
-    <div class="rticks" style="gap:{gap}px">
-      {#each groups as g, gi (gi)}
-        {#if gi > 0}<i class="rgap"></i>{/if}
-        {#each g.items as it (it.path)}
-          <i class="rt {tickState(it)}"></i>
-        {/each}
-      {/each}
-    </div>
-    <div class="rpop" role="menu">
-      <div class="rpop-h">
-        {heading}<span class="count">{total}</span>
-      </div>
-      <div class="rpop-l">
+  <div class="ruler-gutter" bind:clientHeight={height}>
+    <div class="ruler" role="toolbar" aria-label={label} tabindex="0" onkeydown={onKeydown}>
+      <div class="rticks" style="gap:{gap}px">
         {#each groups as g, gi (gi)}
-          {#if g.title}<div class="rp-g">{g.title}</div>{/if}
+          {#if gi > 0}<i class="rgap"></i>{/if}
           {#each g.items as it (it.path)}
-            {@const short = shortFileName(baseName(it.path))}
-            {@const chip = chipOf(it.path)}
-            <button
-              type="button"
-              role="menuitem"
-              class="rp-file {it.current ? 'cur' : ''} {it.reviewed ? 'rev' : ''} {g.title ? 'ind' : ''}"
-              title={rowTitle(it)}
-              onclick={(e) => goto(e, it.path)}
-            >
-              <span
-                class="chip"
-                style="background: color-mix(in srgb, {chip.color} 13%, transparent); color: {chip.color}"
-                aria-hidden="true">{chip.label}</span
-              >
-              <span class="nm">{short.main}</span>
-              {#if !g.title}<span class="dir">{dir(it.path)}</span>{/if}
-              {#if it.annotations > 0}<span class="rp-n">{it.annotations}</span>{/if}
-            </button>
+            <i class="rt {tickState(it)}"></i>
           {/each}
         {/each}
+      </div>
+      <div class="rpop" role="menu">
+        <div class="rpop-h">
+          {heading}<span class="count">{total}</span>
+        </div>
+        <div class="rpop-l">
+          {#each groups as g, gi (gi)}
+            {#if g.title}<div class="rp-g">{g.title}</div>{/if}
+            {#each g.items as it (it.path)}
+              {@const short = shortFileName(baseName(it.path))}
+              {@const chip = chipOf(it.path)}
+              <button
+                type="button"
+                role="menuitem"
+                class="rp-file {it.current ? 'cur' : ''} {it.reviewed ? 'rev' : ''} {g.title ? 'ind' : ''}"
+                title={rowTitle(it)}
+                onclick={(e) => goto(e, it.path)}
+              >
+                <span
+                  class="chip"
+                  style="background: color-mix(in srgb, {chip.color} 13%, transparent); color: {chip.color}"
+                  aria-hidden="true">{chip.label}</span
+                >
+                <span class="nm">{short.main}</span>
+                {#if !g.title}<span class="dir">{dir(it.path)}</span>{/if}
+                {#if it.annotations > 0}<span class="rp-n">{it.annotations}</span>{/if}
+              </button>
+            {/each}
+          {/each}
+        </div>
       </div>
     </div>
   </div>
 {/if}
 
 <style>
+  /* Wide enough for a hovered current tick (14px) plus the ruler's inset.
+   * The strip, not the ruler, is the positioned box: the popover centres on
+   * the strip and caps its height to it, so a short column cannot push the
+   * list past its top or bottom. z-index 35 clears the sticky file header
+   * (z-30) and stays under app menus and their backdrops (z-40+). */
+  .ruler-gutter {
+    position: relative;
+    z-index: 35;
+    flex: none;
+    width: 20px;
+    display: flex;
+    align-items: center;
+  }
   .ruler {
-    position: absolute;
-    top: 50%;
-    transform: translateY(-50%);
-    z-index: 12;
-    padding: 6px 8px 6px 4px;
+    padding: 6px 2px 6px 4px;
     outline: none;
   }
   .rticks {
@@ -156,7 +169,7 @@
     top: 50%;
     transform: translateY(-50%);
     width: 340px;
-    max-height: min(70vh, 640px);
+    max-height: min(70vh, 640px, calc(100% - 16px));
     display: none;
     flex-direction: column;
     background: var(--color-card);
@@ -265,8 +278,10 @@
     color: var(--color-accent);
     flex: none;
   }
+  /* Narrow windows stack the Tour rail above the column and have no width to
+   * spare for the strip. */
   @media (max-width: 880px) {
-    .ruler {
+    .ruler-gutter {
       display: none;
     }
   }

@@ -66,7 +66,7 @@ export const PillarDone: Story = {
   },
 };
 
-/** Mounted as in the Tour: the ruler sits on the column edge beside the rail,
+/** Mounted as in the Tour: the ruler takes its own strip beside the rail,
  *  vertically centred, with ticks grouped by pillar. Hover it for the list. */
 export const WithRuler: Story = {
   args: { ...base, rulerPillars: pillars, rulerFiles: files },
