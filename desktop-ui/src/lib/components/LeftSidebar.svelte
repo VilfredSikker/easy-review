@@ -52,6 +52,11 @@
       ? groupInboxThreads(snapshot?.inbox_items ?? [], projects).filter(isThreadUnread).length
       : 0,
   );
+  // The collapsed-rail Inbox button closes the Inbox when it is open.
+  const inboxOpen = $derived(app.mainView === "inbox");
+  const inboxUnread = $derived(unreadPrs > 0 ? `${unreadPrs} unread` : "");
+  const inboxTitle = $derived(inboxOpen ? "Close Inbox (Esc)" : ["Inbox", inboxUnread].filter(Boolean).join(" · "));
+  const inboxLabel = $derived(inboxOpen ? "Close Inbox" : ["Inbox", inboxUnread].filter(Boolean).join(", "));
   const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
 
   interface AppUpdateInfo {
@@ -860,10 +865,10 @@
     </button>
     <button
       type="button"
-      title={unreadPrs > 0 ? `Inbox · ${unreadPrs} unread` : "Inbox"}
-      aria-label={unreadPrs > 0 ? `Inbox, ${unreadPrs} unread` : "Inbox"}
+      title={inboxTitle}
+      aria-label={inboxLabel}
       aria-current={app.mainView === "inbox" ? "page" : undefined}
-      onclick={() => app.setMainView("inbox")}
+      onclick={() => app.toggleInbox()}
       class="relative w-7 h-7 rounded flex items-center justify-center {app.mainView === 'inbox' ? 'bg-hover text-fg' : 'text-fg-3 hover:bg-hover'}"
     >
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
@@ -1186,7 +1191,7 @@
                 </div>
               {/snippet}
 
-              {#snippet prRow(pr: PrInfo, depth = 0)}
+              {#snippet prRow(pr: PrInfo, depth = 0, inToReview = false)}
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
@@ -1226,7 +1231,7 @@
                         <path d="M21 3v5h-5"/>
                       </svg>
                     {/if}
-                    {#if prNeedsMyReview(pr, project.prs_to_review.some((q) => q.number === pr.number))}
+                    {#if !inToReview && prNeedsMyReview(pr, project.prs_to_review.some((q) => q.number === pr.number))}
                       <span class="shrink-0 font-mono text-[10px] leading-4 px-1.5 rounded-full text-accent bg-accent/15">review</span>
                     {:else if pr.state === "OPEN" && ciDot(pr)}
                       {@const dot = ciDot(pr)}
@@ -1357,7 +1362,7 @@
                   {#if isSectionOpen(project.id, "to_review")}
                   {@const toReviewVisible = visibleToReviewPrs(project).slice(0, revealCount(prRevealCountByProject, project.id))}
                   {#each toReviewVisible as pr (pr.number)}
-                    {@render prRow(pr)}
+                    {@render prRow(pr, 0, true)}
                   {/each}
                   {#if visibleToReviewPrs(project).length > toReviewVisible.length}
                     <button

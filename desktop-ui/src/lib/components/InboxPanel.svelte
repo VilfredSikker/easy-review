@@ -14,9 +14,9 @@
 <div class="px-2 pt-2">
   <button
     type="button"
-    onclick={() => app.setMainView("inbox")}
+    onclick={() => app.toggleInbox()}
     aria-current={on ? "page" : undefined}
-    title="Inbox"
+    title={on ? "Close Inbox (Esc)" : "Inbox"}
     class="w-full flex items-center gap-2 px-2 py-[5px] rounded-md text-[12.5px] text-left min-w-0 {on ? 'bg-hover text-fg shadow-[inset_0_0_0_1px_var(--color-hairline)]' : 'text-fg-2 hover:bg-hover hover:text-fg'}"
   >
     <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0">
