@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import {
   activePillarAt,
+  fileEntryRow,
   linkFileRefs,
   narrativeHtml,
   nextPillarId,
@@ -175,5 +176,30 @@ describe("pad2", () => {
   it("pads to two digits", () => {
     expect(pad2(3)).toBe("03");
     expect(pad2(12)).toBe("12");
+  });
+});
+
+describe("fileEntryRow", () => {
+  const rows = [
+    { type: "pillar-header" },
+    { type: "file-header" },
+    { type: "diff-line" },
+    { type: "file-header" },
+    { type: "diff-line" },
+    { type: "pillar-header" },
+    { type: "file-header" },
+  ];
+
+  it("opens a pillar's first file at the pillar header", () => {
+    expect(fileEntryRow(rows, 6)).toBe(5);
+    expect(fileEntryRow(rows, 1)).toBe(0);
+  });
+
+  it("lands on the file header mid-pillar", () => {
+    expect(fileEntryRow(rows, 3)).toBe(3);
+  });
+
+  it("leaves the Diff view, which has no pillar headers, unchanged", () => {
+    expect(fileEntryRow([{ type: "file-header" }, { type: "diff-line" }], 0)).toBe(0);
   });
 });

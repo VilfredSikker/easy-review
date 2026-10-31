@@ -29,7 +29,7 @@
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
   import PillarHeaderRow from "./diff-rows/PillarHeaderRow.svelte";
   import TourRail from "./TourRail.svelte";
-  import { activePillarAt, pillarHeaderSpecs, railPillars } from "$lib/tourModel";
+  import { activePillarAt, fileEntryRow, pillarHeaderSpecs, railPillars } from "$lib/tourModel";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
   import DiffSearchBar from "./DiffSearchBar.svelte";
@@ -1658,8 +1658,9 @@
       if (files.length === 0) applyScrollTop(0);
       return;
     }
-    const rowIdx = crossFileModel.fileStartRow.get(target.path);
-    if (rowIdx === undefined) return;
+    const fileRow = crossFileModel.fileStartRow.get(target.path);
+    if (fileRow === undefined) return;
+    const rowIdx = fileEntryRow(crossFileModel.rows, fileRow);
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
     // Skip the scroll (and the diff-viewport repaint it triggers) when the next
     // header is already on screen below the sticky overlay.

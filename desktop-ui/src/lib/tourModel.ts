@@ -76,6 +76,17 @@ export function activePillarAt(
   return best ?? first;
 }
 
+/**
+ * The row to scroll to when moving on to the file whose header is `fileRow`.
+ * The first file of a pillar sits under that pillar's header, and landing on
+ * the file would put the pillar's narrative above the viewport.
+ */
+export function fileEntryRow(rows: readonly { type: string }[], fileRow: number): number {
+  let row = fileRow;
+  while (row > 0 && rows[row - 1]?.type === "pillar-header") row--;
+  return row;
+}
+
 /** Pillar ids in reading order. */
 export function pillarOrder(pillarStartRow: ReadonlyMap<string, number>): string[] {
   return [...pillarStartRow.entries()].sort((a, b) => a[1] - b[1]).map(([id]) => id);
