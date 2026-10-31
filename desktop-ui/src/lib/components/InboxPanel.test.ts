@@ -9,9 +9,13 @@ const view = readFileSync(join(dir, "InboxView.svelte"), "utf8");
 const modal = readFileSync(join(dir, "TabOpenModal.svelte"), "utf8");
 
 describe("InboxPanel nav row", () => {
-  it("opens the Inbox main view instead of a popover", () => {
-    expect(panel).toContain('app.setMainView("inbox")');
+  it("toggles the Inbox main view instead of opening a popover", () => {
+    expect(panel).toContain("app.toggleInbox()");
     expect(panel).not.toContain("ModalShell");
+  });
+
+  it("leaves Esc to full-window overlays open over the Inbox", () => {
+    expect(view).toContain("commandPalette.open || arena.overlayOpen || app.showEmptyState");
   });
 });
 
