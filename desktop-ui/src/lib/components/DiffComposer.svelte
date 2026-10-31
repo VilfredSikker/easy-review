@@ -3,6 +3,9 @@
   import { SPLIT_ANNOTATION_TRAIL_PAD_PX } from "$lib/splitDiffLayout";
   import { app } from "$lib/stores/app.svelte";
   import { diffSel, type SelectionKind } from "$lib/stores/diffSelection.svelte";
+  import { pendingReview } from "$lib/stores/pendingReview.svelte";
+  import { resolveActivePrNumber } from "$lib/prUrl";
+  import { composerReviewLabel, reviewGate, type ReviewLineTarget } from "$lib/reviewSubmit";
 
   /**
    * How the card sits in the diff:
@@ -78,10 +81,9 @@
     note: "Write a note / instruction for an agent… (only you see this)",
     comment: "Add a review comment…",
   };
-  const SUBMIT_LABEL: Record<SelectionKind, string> = {
+  const SUBMIT_LABEL: Record<Exclude<SelectionKind, "comment">, string> = {
     question: "Save question",
     note: "Save note",
-    comment: "Add comment",
   };
 
   function submit() {
@@ -104,6 +106,41 @@
     diffSel.clear();
   }
 
+  // A GitHub comment goes to the PR, either now on its own or into the
+  // pending review; both wait for GitHub, so the draft stays until it lands.
+  const github = $derived(reviewGate(resolveActivePrNumber(app.snapshot), app.snapshot?.github));
+  const canPost = $derived(canSubmit && github.enabled && !pendingReview.busy);
+
+  const GITHUB_SIDE = { old: "LEFT", new: "RIGHT" } as const;
+
+  function lineTarget(): ReviewLineTarget | null {
+    if (diffSel.file === null || diffSel.start === null) return null;
+    const lineStart = diffSel.first();
+    const lineEnd = diffSel.last();
+    return {
+      file: diffSel.file,
+      lineNum: lineStart,
+      lineNumEnd: lineStart !== lineEnd ? lineEnd : null,
+      side: diffSel.side ? GITHUB_SIDE[diffSel.side] : null,
+    };
+  }
+
+  async function postToGithub(single: boolean) {
+    const target = lineTarget();
+    if (!canPost || !target) return;
+    const text = diffSel.text.trim();
+    const ok = single
+      ? await pendingReview.postSingle(target, text)
+      : await pendingReview.add(target, text);
+    // Only clear the draft that was sent; a new selection made meanwhile stays.
+    if (ok && diffSel.file === target.file && diffSel.text.trim() === text) diffSel.clear();
+  }
+
+  function submitPrimary() {
+    if (diffSel.kind === "comment") void postToGithub(false);
+    else submit();
+  }
+
   function handleKeydown(e: KeyboardEvent) {
     if (e.key === "Escape") {
       e.preventDefault();
@@ -113,7 +150,7 @@
       diffSel.kind = NEXT_KIND[diffSel.kind];
     } else if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      submit();
+      submitPrimary();
     }
   }
 
@@ -188,15 +225,36 @@
         <span><span class="kbd">esc</span> cancel</span>
         <span class="flex-1"></span>
         <button type="button" onclick={() => diffSel.clear()} class="rounded-md px-2.5 py-1.5 text-xs text-fg-2 hover:bg-bg">Cancel</button>
-        <button type="button"
-          onclick={submit}
-          disabled={!canSubmit}
-          class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-          style="background:{KIND_VAR[diffSel.kind]}"
-        >
-          <span>{SUBMIT_LABEL[diffSel.kind]}</span>
-          <span class="mono opacity-60">⌘⏎</span>
-        </button>
+        {#if diffSel.kind === "comment"}
+          <button type="button"
+            onclick={() => void postToGithub(true)}
+            disabled={!canPost}
+            title={github.reason ?? "Post this comment to GitHub now, outside a review"}
+            class="rounded-md border border-border bg-surface px-3 py-1.5 text-xs font-medium text-fg hover:bg-hover disabled:cursor-not-allowed disabled:opacity-40"
+            data-testid="composer-single"
+          >Add single comment</button>
+          <button type="button"
+            onclick={() => void postToGithub(false)}
+            disabled={!canPost}
+            title={github.reason ?? "Add to your pending review; it posts when you submit from Review"}
+            class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            style="background:{KIND_VAR.comment}"
+            data-testid="composer-review"
+          >
+            <span>{pendingReview.busy ? "Sending…" : composerReviewLabel(pendingReview.count)}</span>
+            <span class="mono opacity-60">⌘⏎</span>
+          </button>
+        {:else}
+          <button type="button"
+            onclick={submit}
+            disabled={!canSubmit}
+            class="flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium text-on-accent transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            style="background:{KIND_VAR[diffSel.kind]}"
+          >
+            <span>{SUBMIT_LABEL[diffSel.kind]}</span>
+            <span class="mono opacity-60">⌘⏎</span>
+          </button>
+        {/if}
       </div>
     </div>
   </div>

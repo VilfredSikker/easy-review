@@ -9,6 +9,8 @@
   import { countChecks } from "$lib/checkCounts";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import { resolveActivePrNumber } from "$lib/prUrl";
+  import { reviewGate } from "$lib/reviewSubmit";
+  import { pendingReview } from "$lib/stores/pendingReview.svelte";
   import {
     selectablePrNumber,
     shouldShowStackControl,
@@ -53,9 +55,6 @@
 
   let expandChecks = $state(false);
   let descriptionOpen = $state(false);
-  let actionsOpen = $state(false);
-  let reviewBody = $state("");
-  let submitting = $state(false);
 
   // First non-empty paragraph of the body, stripped of markdown syntax.
   function descriptionPreview(body: string): string {
@@ -74,33 +73,11 @@
       .trim();
   }
 
-  const ownPrApprovalBlocked = $derived(github?.is_authored_by_me === true);
   const effectiveGithubUrl = $derived(github?.url ?? github_url ?? pr?.url ?? null);
 
-  const canSubmit = $derived.by(() => ({
-    comment: !submitting && reviewBody.trim().length > 0,
-    approve: !submitting && !ownPrApprovalBlocked,
-    changes: !submitting && reviewBody.trim().length > 0,
-  }));
-
-  async function submitAction(kind: "comment" | "approve" | "changes") {
-    if (submitting) return;
-    if (kind === "approve" && !canSubmit.approve) return;
-    const body = reviewBody.trim();
-    submitting = true;
-    try {
-      if (kind === "comment") {
-        await app.cmd("post_github_pr_comment", { body });
-      } else {
-        const mode = kind === "approve" ? "APPROVE" : "REQUEST_CHANGES";
-        await app.cmd("submit_github_pr_decision", { mode, summary: body });
-      }
-      reviewBody = "";
-      actionsOpen = false;
-    } finally {
-      submitting = false;
-    }
-  }
+  // Comment / Approve / Request changes live in the Review popover, where the
+  // pending line comments go out with the decision; this opens it.
+  const reviewEntry = $derived(reviewGate(resolveActivePrNumber(app.snapshot), github));
 
   const watchStatus = $derived(app.snapshot?.watch_status ?? null);
   const isWatching = $derived(watchStatus?.active === true);
@@ -644,64 +621,24 @@
       </div>
     {/if}
 
-    <!-- ── (f) Composer button ─────────────────────────────────────────────── -->
+    <!-- ── (f) Review ─────────────────────────────────────────────────────── -->
     {#if github}
       <div class="border-t border-hairline pt-3">
-        {#if !actionsOpen}
-          <button
-            type="button"
-            onclick={() => (actionsOpen = true)}
-            class="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-bg border border-hairline text-[12px] text-muted hover:text-fg-2 hover:border-border transition-colors text-left"
-          >
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
-            </svg>
-            Comment or review…
-          </button>
-        {:else}
-          <textarea
-            bind:value={reviewBody}
-            placeholder="Leave a PR-wide comment. Required for Comment and Request changes; optional for Approve."
-            rows="3"
-            class="w-full text-[12px] bg-bg border border-hairline rounded px-2 py-1.5 focus:border-accent outline-none resize-y placeholder:text-muted"
-            disabled={submitting}
-          ></textarea>
-          <div class="flex items-center gap-1.5 mt-2 flex-wrap">
-            <button
-              type="button"
-              onclick={() => submitAction("comment")}
-              disabled={!canSubmit.comment}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-accent text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Post a PR-wide comment"
-            >Comment</button>
-            <button
-              type="button"
-              onclick={() => submitAction("approve")}
-              disabled={!canSubmit.approve}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-add-fg text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              title={ownPrApprovalBlocked ? "GitHub does not allow approving your own PR" : "Submit an approving review"}
-            >Approve</button>
-            <button
-              type="button"
-              onclick={() => submitAction("changes")}
-              disabled={!canSubmit.changes}
-              class="px-2 py-1 rounded text-[11px] font-medium bg-del-fg text-on-accent hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-              title="Submit a Request changes review"
-            >Request changes</button>
-            <button
-              type="button"
-              onclick={() => { actionsOpen = false; reviewBody = ""; }}
-              disabled={submitting}
-              class="ml-auto text-[11px] text-muted hover:text-fg-2 px-2 py-1 rounded disabled:opacity-50"
-            >Cancel</button>
-          </div>
-          {#if ownPrApprovalBlocked}
-            <div class="mt-1.5 text-[10px] text-muted">GitHub does not allow approving your own PR.</div>
+        <button
+          type="button"
+          onclick={() => pendingReview.show()}
+          disabled={!reviewEntry.enabled}
+          title={reviewEntry.reason ?? "Comment, approve or request changes"}
+          class="w-full flex items-center gap-2 px-2.5 py-2 rounded-md bg-bg border border-hairline text-[12px] text-muted hover:text-fg-2 hover:border-border transition-colors text-left disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/>
+          </svg>
+          Comment or review…
+          {#if pendingReview.count > 0}
+            <span class="ml-auto font-mono text-[10.5px] text-accent">{pendingReview.count} pending</span>
           {/if}
-          {#if submitting}
-            <div class="mt-1.5 text-[10px] text-muted">Submitting…</div>
-          {/if}
-        {/if}
+        </button>
       </div>
     {/if}
 
