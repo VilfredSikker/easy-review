@@ -1,13 +1,15 @@
-/** Semantic accent tokens cycled per commit, in order of appearance, so a
- *  commit keeps one colour across the strip, file rows and blame gutter.
+/** The categorical `--color-commit-1..6` series, cycled per commit in order of
+ *  appearance, so a commit keeps one colour across the commits list, the
+ *  Mark lines bars and the per-file chip. A series of its own rather than the
+ *  semantic status tokens, so a commit never reads as "warning" or "success".
  *  Tokens, not hex (ADR 0030): they follow the active theme. */
 export const COMMIT_COLOR_TOKENS = [
-  "--color-periwinkle",
-  "--color-info",
-  "--color-warning",
-  "--color-success",
-  "--color-emphasis",
-  "--color-action",
+  "--color-commit-1",
+  "--color-commit-2",
+  "--color-commit-3",
+  "--color-commit-4",
+  "--color-commit-5",
+  "--color-commit-6",
 ] as const;
 
 export function commitColorToken(index: number): string {

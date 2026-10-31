@@ -3,6 +3,7 @@
   import { commitColorVar } from "$lib/commitColors";
   import { commitDiffstat } from "$lib/scopeRail";
   import { timeAgo } from "$lib/time";
+  import { app } from "$lib/stores/app.svelte";
 
   interface Props {
     commits: CommitSummary[];
@@ -21,6 +22,10 @@
     totalCount: number;
     onSelectCommit: (sha: string) => void;
     onAllChanges: () => void;
+    /** Mark lines state and setter; default to the saved view preference, so
+     *  the host only passes them to override it (stories). */
+    markLines?: boolean;
+    onMarkLines?: (on: boolean) => void;
   }
 
   const {
@@ -36,7 +41,15 @@
     totalCount,
     onSelectCommit,
     onAllChanges,
+    markLines,
+    onMarkLines,
   }: Props = $props();
+
+  const markOn = $derived(markLines ?? app.markLines);
+  function toggleMarkLines() {
+    if (onMarkLines) onMarkLines(!markOn);
+    else app.setMarkLines(!markOn);
+  }
 
   const ON = "bg-[color-mix(in_srgb,var(--color-accent)_9%,var(--color-hover))]";
 </script>
@@ -65,6 +78,16 @@
 
     <div class="flex items-center justify-between px-2 pt-2 pb-[2px] text-[10.5px] font-semibold tracking-[0.06em] uppercase text-muted">
       <span>Commits {commits.length}</span>
+      <button
+        type="button"
+        class="toggle"
+        role="switch"
+        aria-checked={markOn}
+        title="Colour each changed line by the commit that introduced it"
+        onclick={toggleMarkLines}
+      >
+        <span class="sw" aria-hidden="true"></span>Mark lines
+      </button>
     </div>
 
     <div class="grid gap-[2px] max-h-[240px] overflow-y-auto">
@@ -108,3 +131,48 @@
     <span><span class="kbd">j</span>/<span class="kbd">k</span> files</span>
   </div>
 </section>
+
+<style>
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    font-weight: 400;
+    letter-spacing: 0;
+    text-transform: none;
+    color: var(--color-fg-2);
+  }
+  .sw {
+    position: relative;
+    width: 26px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--color-border);
+    transition: background 0.15s;
+  }
+  .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-card);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--color-bg) 60%, transparent);
+    transition: transform 0.15s;
+  }
+  .toggle[aria-checked="true"] .sw {
+    background: var(--color-accent);
+  }
+  .toggle[aria-checked="true"] .sw::after {
+    transform: translateX(10px);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sw,
+    .sw::after {
+      transition: none;
+    }
+  }
+</style>

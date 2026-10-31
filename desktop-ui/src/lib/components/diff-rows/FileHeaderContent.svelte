@@ -9,6 +9,8 @@
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
   import { langForPath } from "$lib/extToLang";
   import { renameHeader } from "$lib/renameDiff";
+  import { lineCommitStore } from "$lib/stores/lineCommits.svelte";
+  import { fileCommitChip, fileLocalState, markLinesActive } from "$lib/lineCommitMarks";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
@@ -30,9 +32,18 @@
 
   // Read reviewed live from the snapshot, not from the baked-in row: the diff
   // render model intentionally ignores `reviewed` so toggling it is a cache hit.
-  const reviewed = $derived(
-    app.snapshot?.files.find((f) => f.path === row.filePath)?.reviewed ?? false,
+  const file = $derived(app.snapshot?.files.find((f) => f.path === row.filePath) ?? null);
+  const reviewed = $derived(file?.reviewed ?? false);
+
+  // Both chips read the attribution the diff view requested for its window.
+  const attribution = $derived(file ? lineCommitStore.get(file.path, file.cache_key) : null);
+  const commits = $derived(app.snapshot?.commits ?? []);
+  const commitChip = $derived(
+    markLinesActive(app.markLines, app.snapshot?.selected_commit_sha, app.snapshot?.mode === "tour")
+      ? fileCommitChip(attribution, commits)
+      : null,
   );
+  const localState = $derived(fileLocalState(attribution, commits));
 
   const collapsed = $derived.by(() => {
     diffFileCollapse.revision;
@@ -144,14 +155,18 @@
     </span>
   {/if}
 </div>
+{#if commitChip}
+  <span class="sha-chip mono" style="--cc:{commitChip.color}" title={commitChip.title}>{commitChip.sha}</span>
+{/if}
 {#if row.kind === "test"}
   <span class="chip chip-test mono">TEST</span>
+{/if}
+{#if localState}
+  <span class="chip chip-local" title="Touched by a commit that is not on a remote yet">{localState}</span>
 {/if}
 {#if row.isNew}
   <span class="chip chip-new">new</span>
 {/if}
-<!-- No "local" chip yet: FileSnapshot carries no per-file unpushed signal, and
-     CommitSummary.unpushed has no file list to derive one from. -->
 
 <!-- +N/−N totals -->
 {#if documentKind}
@@ -214,6 +229,8 @@
   .chip { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 5px; font-size: 10px; font-weight: 500; flex: none; }
   .chip-test { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 13%, transparent); }
   .chip-new { color: var(--color-fg-2); background: var(--color-hover); }
+  .chip-local { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 14%, transparent); }
+  .sha-chip { flex: none; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--cc); background: color-mix(in srgb, var(--cc) 15%, transparent); }
   .mark-old { background: color-mix(in srgb, var(--color-del-fg) 22%, transparent); color: inherit; border-radius: 2px; }
   .mark-new { background: color-mix(in srgb, var(--color-add-fg) 22%, transparent); color: inherit; border-radius: 2px; }
   /* Narrow widths keep the controls, not their labels: the checkbox stays named
