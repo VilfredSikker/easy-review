@@ -7,6 +7,10 @@
   import type { CrossFileFlatRow } from "$lib/diffRenderModel";
   import { documentPreviewKind } from "$lib/documentPreview";
   import type { DocumentViewMode } from "$lib/documentPreviewCache";
+  import { langForPath } from "$lib/extToLang";
+  import { renameHeader } from "$lib/renameDiff";
+  import { lineCommitStore } from "$lib/stores/lineCommits.svelte";
+  import { fileCommitChip, fileLocalState, markLinesActive } from "$lib/lineCommitMarks";
 
   interface Props {
     row: Extract<CrossFileFlatRow, { type: "file-header" }>;
@@ -28,9 +32,18 @@
 
   // Read reviewed live from the snapshot, not from the baked-in row: the diff
   // render model intentionally ignores `reviewed` so toggling it is a cache hit.
-  const reviewed = $derived(
-    app.snapshot?.files.find((f) => f.path === row.filePath)?.reviewed ?? false,
+  const file = $derived(app.snapshot?.files.find((f) => f.path === row.filePath) ?? null);
+  const reviewed = $derived(file?.reviewed ?? false);
+
+  // Both chips read the attribution the diff view requested for its window.
+  const attribution = $derived(file ? lineCommitStore.get(file.path, file.cache_key) : null);
+  const commits = $derived(app.snapshot?.commits ?? []);
+  const commitChip = $derived(
+    markLinesActive(app.markLines, app.snapshot?.selected_commit_sha, app.snapshot?.mode === "tour")
+      ? fileCommitChip(attribution, commits)
+      : null,
   );
+  const localState = $derived(fileLocalState(attribution, commits));
 
   const collapsed = $derived.by(() => {
     diffFileCollapse.revision;
@@ -82,6 +95,10 @@
     return { dir: row.filePath.slice(0, i + 1), name: row.filePath.slice(i + 1) };
   });
 
+  const lang = $derived(langForPath(row.filePath));
+  const rename = $derived(row.oldPath ? renameHeader(row.oldPath, row.filePath) : null);
+  const title = $derived(row.oldPath ? `${row.oldPath} → ${row.filePath}` : row.filePath);
+
   async function openSource(e: MouseEvent) {
     e.stopPropagation();
     try {
@@ -117,19 +134,43 @@
   </svg>
 </button>
 
-<!-- Breadcrumb path: dir muted (truncate start), filename always visible -->
-<div class="mono text-xs flex flex-1 min-w-0 items-center overflow-hidden" title={row.filePath}>
-  {#if pathParts.dir}
+<!-- Language chip, then filename first: the name is what a reviewer scans for,
+     the directory trails dimmed and truncates from its start. -->
+{#if lang}
+  <span class="lang-chip mono shrink-0 {reviewed ? 'opacity-60' : ''}">{lang}</span>
+{/if}
+<!-- The name may shrink (to its truncation) but keeps priority over the
+     directory, which gives up its width first. -->
+<span class="mono text-xs font-medium text-fg min-w-[4ch] max-w-[60%] truncate {reviewed ? 'opacity-60' : ''}" style="flex-shrink:0.25" {title}>
+  {#if rename}
+    <span class="text-fg-3">{rename.old[0]}<mark class="mark-old">{rename.old[1]}</mark>{rename.old[2]}</span><span class="text-fg-3 mx-1.5">→</span>{rename.new[0]}<mark class="mark-new">{rename.new[1]}</mark>{rename.new[2]}
+  {:else}
+    {pathParts.name}
+  {/if}
+</span>
+<div class="mono text-[11px] flex flex-1 min-w-0 items-center overflow-hidden" {title}>
+  {#if pathParts.dir && !rename?.crossDir}
     <span class="text-muted truncate-start min-w-0 flex-1">
       <span class="truncate-start-inner">{pathParts.dir}</span>
     </span>
   {/if}
-  <span class="text-fg font-medium min-w-0 truncate">{pathParts.name}</span>
 </div>
+{#if commitChip}
+  <span class="sha-chip mono" style="--cc:{commitChip.color}" title={commitChip.title}>{commitChip.sha}</span>
+{/if}
+{#if row.kind === "test"}
+  <span class="chip chip-test mono">TEST</span>
+{/if}
+{#if localState}
+  <span class="chip chip-local" title="Touched by a commit that is not on a remote yet">{localState}</span>
+{/if}
+{#if row.isNew}
+  <span class="chip chip-new">new</span>
+{/if}
 
 <!-- +N/−N totals -->
 {#if documentKind}
-  <div class="flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
+  <div class="doc-modes flex shrink-0 gap-1 text-xs" role="group" aria-label="Document view">
     {#each viewModes as [mode, label] (mode)}
       <button type="button" aria-pressed={viewMode === mode}
         class="rounded px-1.5 py-1 hover:bg-hover {viewMode === mode ? 'bg-hover text-fg' : 'text-fg-3'}"
@@ -139,17 +180,22 @@
     {/each}
   </div>
 {/if}
-<span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
-<span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
+{#if row.oldPath && row.additions === 0 && row.deletions === 0}
+  <span class="mono text-xs text-fg-3 shrink-0" title="Renamed">R</span>
+{:else}
+  <span class="mono text-xs text-add-fg shrink-0">+{row.additions}</span>
+  <span class="mono text-xs text-del-fg shrink-0">−{row.deletions}</span>
+{/if}
 
-<!-- Reviewed toggle (icon only) -->
+<!-- Reviewed toggle, labelled: an icon-only box was easy to miss. -->
 <button
   type="button"
+  role="checkbox"
+  aria-checked={reviewed}
+  aria-label="Mark as reviewed"
   onclick={toggleReviewed}
   title={reviewed ? "Marked reviewed — click to unmark" : "Mark file reviewed"}
-  aria-label={reviewed ? "Unmark as reviewed" : "Mark as reviewed"}
-  aria-pressed={reviewed}
-  class="shrink-0 w-6 h-6 rounded flex items-center justify-center transition hover:bg-hover group
+  class="shrink-0 h-6 px-1.5 rounded flex items-center gap-1.5 text-xs transition hover:bg-hover group
     {reviewed ? 'text-periwinkle' : 'text-fg-3 hover:text-fg'}"
 >
   <span
@@ -160,6 +206,7 @@
       <polyline points="20 6 9 17 4 12" />
     </svg>
   </span>
+  <span class="rev-label">Reviewed</span>
 </button>
 
 <!-- Open source (icon only) -->
@@ -176,3 +223,18 @@
     <line x1="10" y1="14" x2="21" y2="3" />
   </svg>
 </button>
+
+<style>
+  .lang-chip { font-size: 9.5px; font-weight: 500; letter-spacing: .02em; color: var(--color-fg-2); border: 1px solid var(--color-border); border-radius: 4px; padding: 0 4px; line-height: 15px; }
+  .chip { display: inline-flex; align-items: center; height: 16px; padding: 0 5px; border-radius: 5px; font-size: 10px; font-weight: 500; flex: none; }
+  .chip-test { color: var(--color-info); background: color-mix(in srgb, var(--color-info) 13%, transparent); }
+  .chip-new { color: var(--color-fg-2); background: var(--color-hover); }
+  .chip-local { color: var(--color-warning); background: color-mix(in srgb, var(--color-warning) 14%, transparent); }
+  .sha-chip { flex: none; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 4px; color: var(--cc); background: color-mix(in srgb, var(--cc) 15%, transparent); }
+  .mark-old { background: color-mix(in srgb, var(--color-del-fg) 22%, transparent); color: inherit; border-radius: 2px; }
+  .mark-new { background: color-mix(in srgb, var(--color-add-fg) 22%, transparent); color: inherit; border-radius: 2px; }
+  /* Narrow widths keep the controls, not their labels: the checkbox stays named
+     through aria-label, and the document view falls back to its current mode. */
+  @media (max-width: 520px) { .rev-label { display: none; } }
+  @media (max-width: 880px) { .doc-modes { display: none; } }
+</style>

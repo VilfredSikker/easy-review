@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Characterisation of the global keydown handler: which action each key
 // reaches, in precedence order, and whether it calls preventDefault.
@@ -18,7 +18,11 @@ const state = {
   terminalOpen: false,
   modalOpen: false,
   focusedField: false,
+  overviewRendered: false,
+  arenaOverlayOpen: false,
+  inTour: false,
 };
+let visiblePath: string | null = null;
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (cmd: string) => {
@@ -36,12 +40,14 @@ mock.module("./app.svelte", () => ({
       tabs: [{}, {}],
       selected_file: 0,
       files: [
-        { path: "a.ts", source_index: 0 },
-        { path: "b.ts", source_index: 1 },
+        { path: "a.ts", source_index: 0, reviewed: false },
+        { path: "b.ts", source_index: 1, reviewed: true },
       ],
     },
     cmd: (name: string, args?: Record<string, unknown>) => {
-      calls.push(`cmd:${name}${args && "idx" in args ? `:${String(args.idx)}` : ""}`);
+      const arg =
+        args && "idx" in args ? `:${String(args.idx)}` : args && "path" in args ? `:${String(args.path)}` : "";
+      calls.push(`cmd:${name}${arg}`);
       return Promise.resolve();
     },
     togglePanel: (p: string) => calls.push(`togglePanel:${p}`),
@@ -110,10 +116,37 @@ mock.module("./commandPalette.svelte", () => ({
 mock.module("$lib/stores/fileTreeCollapse.svelte", () => ({
   fileTreeCollapse: { collapsed: new Set<string>() },
 }));
-mock.module("$lib/stores/diffNav.svelte", () => ({
-  diffNav: { scrollToFile: (p: string) => calls.push(`diffNav.scrollToFile:${p}`) },
-}));
+// Spied, not module-mocked: bun keeps a module mock for the whole run, which
+// left diffNav.test.ts holding this stub. Spies are restored in afterAll.
+const { diffNav } = await import("$lib/stores/diffNav.svelte");
+spyOn(diffNav, "scrollToFile").mockImplementation(async (p: string) => {
+  calls.push(`diffNav.scrollToFile:${p}`);
+});
+spyOn(diffNav, "scrollToNextPillar").mockImplementation(() => {
+  calls.push("diffNav.scrollToNextPillar");
+  return true;
+});
+// The Tour has drawn only a.ts, so j there stays put where the tree would move on.
+spyOn(diffNav, "drawnFilePaths").mockImplementation(() => ["a.ts"]);
+spyOn(diffNav, "visibleFilePath").mockImplementation(() => visiblePath);
 mock.module("$lib/stores/rightRail.svelte", () => ({ rightRail: { toggle: log("rightRail.toggle") } }));
+mock.module("./reviewPage.svelte", () => ({
+  reviewPage: {
+    get current() {
+      return state.inTour ? "tour" : "diff";
+    },
+    available: (page: string) => page !== "overview" || state.overviewRendered,
+    show: (page: string) => calls.push(`reviewPage.show:${page}`),
+  },
+}));
+mock.module("./quickExport", () => ({ copyReviewExport: log("copyReviewExport") }));
+mock.module("./arena.svelte", () => ({
+  arena: {
+    get overlayOpen() {
+      return state.arenaOverlayOpen;
+    },
+  },
+}));
 
 let handler: ((e: KeyboardEvent) => void) | null = null;
 const fieldEl = {
@@ -126,6 +159,7 @@ const fieldEl = {
 const realGlobals = { window: globalThis.window, document: globalThis.document };
 afterAll(() => {
   Object.assign(globalThis, realGlobals);
+  mock.restore();
 });
 
 Object.assign(globalThis, {
@@ -191,6 +225,7 @@ function press(init: KeyInit): { calls: string[]; prevented: boolean } {
 
 beforeEach(() => {
   for (const k of Object.keys(state) as (keyof typeof state)[]) state[k] = false;
+  visiblePath = null;
 });
 
 describe("Escape precedence", () => {
@@ -263,6 +298,18 @@ describe("modifier shortcuts", () => {
     expect(press({ key: "e", metaKey: true, shiftKey: true }).calls).toEqual(["setMainView:export-review"]);
   });
 
+  it("Cmd+Shift+C copies the export, from a field too", () => {
+    expect(press({ key: "C", metaKey: true, shiftKey: true })).toEqual({
+      calls: ["copyReviewExport"],
+      prevented: true,
+    });
+    expect(press({ key: "c", ctrlKey: true, shiftKey: true, inField: true }).calls).toEqual(["copyReviewExport"]);
+  });
+
+  it("Cmd+C without Shift is left to the platform copy", () => {
+    expect(press({ key: "c", metaKey: true })).toEqual({ calls: [], prevented: false });
+  });
+
   it("Cmd+O opens a worktree, Cmd+Shift+O the PR URL modal", () => {
     expect(press({ key: "o", metaKey: true }).calls).toEqual(["cmd:open_worktree"]);
     expect(press({ key: "O", metaKey: true, shiftKey: true }).calls).toEqual(["openPrUrlModal"]);
@@ -309,6 +356,13 @@ describe("panel toggles", () => {
     expect(press({ key: "\\" }).calls).toEqual(["togglePanel:tree"]);
   });
 
+  it("] steps to the next pillar in the Tour; Cmd+] still toggles the panel there", () => {
+    state.inTour = true;
+    expect(press({ key: "]" })).toEqual({ calls: ["diffNav.scrollToNextPillar"], prevented: true });
+    expect(press({ key: "]", metaKey: true }).calls).toEqual(["rightRail.toggle"]);
+    expect(press({ key: "[" }).calls).toEqual(["togglePanel:left"]);
+  });
+
   it("are blocked by a modal unless Cmd is held", () => {
     state.modalOpen = true;
     expect(press({ key: "[" }).calls).toEqual([]);
@@ -328,11 +382,50 @@ describe("bare keys", () => {
     expect(press({ key: "k" }).calls).toEqual(["cmd:select_file:1"]);
   });
 
+  it("j/k follow the drawn pillar order in the Tour", () => {
+    state.inTour = true;
+    expect(press({ key: "j" }).calls).toEqual(["cmd:select_file:0"]);
+  });
+
+  it("r toggles reviewed on the file being read, else the selected one", () => {
+    expect(press({ key: "r" })).toEqual({ calls: ["cmd:mark_reviewed:a.ts"], prevented: true });
+    visiblePath = "b.ts";
+    expect(press({ key: "r" }).calls).toEqual(["cmd:unmark_reviewed:b.ts"]);
+  });
+
   it("d, R, / and e reach their actions", () => {
     expect(press({ key: "d" })).toEqual({ calls: ["toggleDiffViewMode"], prevented: true });
     expect(press({ key: "R" }).calls).toEqual(["cmd:refresh_diff"]);
     expect(press({ key: "/" }).calls).toEqual(['querySelector:input[placeholder^="Filter files"]']);
     expect(press({ key: "e" }).calls).toEqual(["invoke:open_in_vscode"]);
+  });
+
+  it("1, 2 and 3 pick Overview, Tour and Diff", () => {
+    state.overviewRendered = true;
+    expect(press({ key: "1" })).toEqual({ calls: ["reviewPage.show:overview"], prevented: true });
+    expect(press({ key: "2" })).toEqual({ calls: ["reviewPage.show:tour"], prevented: true });
+    expect(press({ key: "3" })).toEqual({ calls: ["reviewPage.show:diff"], prevented: true });
+    expect(press({ key: "4" })).toEqual({ calls: [], prevented: false });
+  });
+
+  it("1 does nothing while no Overview page is registered", () => {
+    expect(press({ key: "1" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "2" }).calls).toEqual(["reviewPage.show:tour"]);
+  });
+
+  it("leave digits to fields and modals, and Cmd+digit to tab selection", () => {
+    expect(press({ key: "1", inField: true }).calls).toEqual([]);
+    expect(press({ key: "1", metaKey: true }).calls).toEqual(["cmd:select_tab:0"]);
+    state.modalOpen = true;
+    expect(press({ key: "2" }).calls).toEqual([]);
+  });
+
+  it("leave j/k and page digits to the arena overlay while it is open", () => {
+    state.arenaOverlayOpen = true;
+    state.overviewRendered = true;
+    expect(press({ key: "j" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "k" })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "1" })).toEqual({ calls: [], prevented: false });
   });
 
   it("are ignored in a field, under a modal, or with a modifier", () => {

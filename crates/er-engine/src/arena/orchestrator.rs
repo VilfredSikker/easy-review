@@ -766,17 +766,18 @@ pub fn start_seeded_run(
         match outcome {
             Ok(ArbiterOutcome::Cancelled) => {}
             Ok(ArbiterOutcome::Judged) => {
-                run.status = RunStatus::Complete;
-                run.completed_at = Some(crate::app::chrono_now());
-                *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
-                let _ = save_run(&paths_clone, &run);
-                // The review's copy of the verdicts. The run record above is the
-                // arena's; this is the overlay the review loads, so `review.json`
-                // keeps its three writers (ADR 0001).
+                // The review's copy of the verdicts: the overlay the review
+                // loads, so `review.json` keeps its three writers (ADR 0035).
+                // Written before the run reads Complete, so anything that sees
+                // Complete can also load the verdicts.
                 let arbiter = arbiter_review_from_run(&run, &run_id_thread, &diff_hash);
                 if let Err(e) = crate::ai::write_arbiter_review(&er_dir, &arbiter) {
                     crate::dev_log::arena_line(format!("seeded {run_id_thread}: {e:#}"));
                 }
+                run.status = RunStatus::Complete;
+                run.completed_at = Some(crate::app::chrono_now());
+                *status.lock().expect("arena lock poisoned") = RunStatus::Complete;
+                let _ = save_run(&paths_clone, &run);
                 emit(
                     &registry_thread,
                     &paths_clone,

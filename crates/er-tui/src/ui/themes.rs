@@ -13,10 +13,14 @@ pub struct Theme {
     pub name: String,
 
     // Background layer
+    /// Canvas beneath the app frame — one step deeper than `bg`.
+    pub ground: Color,
     pub bg: Color,
     pub surface: Color,
     pub panel: Color,
     pub border: Color,
+    /// Hairline divider, fainter than `border`.
+    pub line: Color,
 
     // Text layer
     pub text: Color,
@@ -32,6 +36,14 @@ pub struct Theme {
     pub red: Color,
     pub purple: Color,
     pub orange: Color,
+
+    // Annotation kinds — the same mapping `cssVarsFor` emits in themes.ts
+    // (ADR 0030): no two kinds share a hue, and a finding never wears a
+    // question's colour.
+    pub comment: Color,
+    pub question: Color,
+    pub note: Color,
+    pub finding: Color,
 
     // Diff layer
     pub add_bg: Color,
@@ -64,6 +76,10 @@ pub struct Theme {
         reason = "the name of a syntect theme, which is not this struct"
     )]
     pub syntect_theme: String,
+
+    /// Categorical series for per-commit marks; the accent ladder, so it
+    /// follows every theme without new hex.
+    pub commit_series: [Color; 6],
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -144,6 +160,18 @@ fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
     (f(a.0, b.0), f(a.1, b.1), f(a.2, b.2))
 }
 
+/// Ground recedes from the canvas toward black (barely on light palettes) and
+/// the hairline is the border pulled back toward the canvas — derived, not
+/// authored per theme (ADR 0030). Keep in step with `themes.ts`.
+const GROUND_DEPTH_DARK: f32 = 0.5;
+const GROUND_DEPTH_LIGHT: f32 = 0.065;
+const HAIRLINE_STRENGTH: f32 = 0.55;
+
+/// Tokens carry no light flag, so lightness is read off the canvas itself.
+fn is_light(bg: Rgb) -> bool {
+    u16::from(bg.0) + u16::from(bg.1) + u16::from(bg.2) > 384
+}
+
 fn build(t: &Tokens) -> Theme {
     let bg = hex(t.bg);
     let bg1 = hex(t.bg1);
@@ -162,14 +190,22 @@ fn build(t: &Tokens) -> Theme {
     let add = hex(t.add);
     let del = hex(t.del);
     let (line2_rgb, line2_a) = hexa(t.line2);
+    let border = over(line2_rgb, line2_a, bg);
+    let ground_depth = if is_light(bg) {
+        GROUND_DEPTH_LIGHT
+    } else {
+        GROUND_DEPTH_DARK
+    };
 
     Theme {
         name: t.name.to_string(),
 
+        ground: col(mix(bg, (0, 0, 0), ground_depth)),
         bg: col(bg),
         surface: col(bg1),
         panel: col(bg2),
-        border: col(over(line2_rgb, line2_a, bg)),
+        border: col(border),
+        line: col(mix(bg, border, HAIRLINE_STRENGTH)),
 
         text: col(tx),
         text_bright: col(tx),
@@ -184,6 +220,11 @@ fn build(t: &Tokens) -> Theme {
         purple: col(purple),
         orange: col(accent),
 
+        comment: col(blue),
+        question: col(purple),
+        note: col(amber),
+        finding: col(cyan),
+
         add_bg: col(over(add, 0.15, bg)),
         add_text: col(add),
         del_bg: col(over(del, 0.15, bg)),
@@ -194,9 +235,9 @@ fn build(t: &Tokens) -> Theme {
         selected_bg: col(bg3),
         finding_bg: col(over(amber, 0.10, bg)),
         finding_focus_bg: col(over(amber, 0.18, bg)),
-        comment_bg: col(over(cyan, 0.08, bg)),
-        inline_comment_bg: col(over(cyan, 0.11, bg)),
-        comment_focus_bg: col(over(cyan, 0.20, bg)),
+        comment_bg: col(over(blue, 0.08, bg)),
+        inline_comment_bg: col(over(blue, 0.11, bg)),
+        comment_focus_bg: col(over(blue, 0.20, bg)),
 
         stale: col(amber),
         watched_text: col(blue),
@@ -207,6 +248,15 @@ fn build(t: &Tokens) -> Theme {
         lost_indicator: col(red),
 
         syntect_theme: t.syntect.to_string(),
+
+        commit_series: [
+            col(accent),
+            col(blue),
+            col(purple),
+            col(green),
+            col(cyan),
+            col(amber),
+        ],
     }
 }
 
@@ -596,5 +646,51 @@ mod tests {
         assert_eq!(t.border, Color::Rgb(47, 47, 49));
         assert_eq!(t.selected_bg, Color::Rgb(0x28, 0x28, 0x2f)); // bg3
         assert_eq!(t.syntect_theme, "OneHalfDark");
+    }
+
+    #[test]
+    fn ground_line_and_commit_series_derive_from_anchors() {
+        let g = graphite();
+        // Same numbers are pinned in desktop-ui/src/lib/themes.test.ts, so a
+        // derivation changed on one side alone fails there (ADR 0030).
+        assert_eq!(g.ground, Color::Rgb(6, 6, 7));
+        assert_eq!(g.line, Color::Rgb(31, 31, 33));
+        assert_eq!(
+            g.commit_series,
+            [g.orange, g.blue, g.purple, g.green, g.cyan, g.yellow]
+        );
+
+        let light = paper();
+        let (Color::Rgb(gr, ..), Color::Rgb(br, ..)) = (light.ground, light.bg) else {
+            panic!("themes are truecolor");
+        };
+        assert!(gr < br && br - gr < 30, "light ground stays close to bg");
+    }
+
+    #[test]
+    fn annotation_kinds_match_the_desktop_mapping() {
+        // Mirrors cssVarsFor in desktop-ui/src/lib/themes.ts and its test
+        // (ADR 0030): comment blue, question purple, note amber, finding cyan.
+        for t in [
+            graphite(),
+            slate(),
+            midnight(),
+            ember(),
+            paper(),
+            daylight(),
+            contrast_dark(),
+            contrast_light(),
+        ] {
+            assert_eq!(t.comment, t.blue, "{}", t.name);
+            assert_eq!(t.question, t.purple, "{}", t.name);
+            assert_eq!(t.note, t.yellow, "{}", t.name);
+            assert_eq!(t.finding, t.cyan, "{}", t.name);
+            let kinds = [t.comment, t.question, t.note, t.finding];
+            for (i, a) in kinds.iter().enumerate() {
+                for b in &kinds[i + 1..] {
+                    assert_ne!(a, b, "{}: two annotation kinds share a colour", t.name);
+                }
+            }
+        }
     }
 }

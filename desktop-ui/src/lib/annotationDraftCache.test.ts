@@ -9,11 +9,9 @@ describe("review annotation drafts", () => {
     const draft = cache.get(richSnapshot, "thread", "one");
     draft.replyText = "Unsent reply";
     draft.showReply = true;
-    draft.askAiText = "Unsent AI context";
-    draft.showAskAi = true;
     const refreshed = { ...richSnapshot, preview_context_key: "updated-content" };
     expect(cache.get(refreshed, "thread", "one")).toBe(draft);
-    expect(cache.get(refreshed, "thread", "one")).toEqual({ replyText: "Unsent reply", showReply: true, askAiText: "Unsent AI context", showAskAi: true });
+    expect(cache.get(refreshed, "thread", "one")).toEqual({ replyText: "Unsent reply", showReply: true });
   });
   test("isolates annotations, reviews, diff scopes and History commits", () => {
     const cache = new AnnotationDraftCache();

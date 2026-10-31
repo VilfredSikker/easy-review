@@ -1,5 +1,5 @@
 use crate::ai::{ErReview, RiskLevel};
-use crate::config::{FileKindRepoConfig, ImportanceRepoConfig, ImportanceTier};
+use crate::config::{FileKindRepoConfig, RiskRules, RiskTier};
 use crate::git::{classify_path, DiffFile, FileKind, FileStatus};
 use glob::{MatchOptions, Pattern};
 
@@ -46,11 +46,12 @@ pub enum FilterRule {
         include: bool,
         levels: Vec<RiskLevel>,
     },
-    /// Declared tiers from the global config, so unlike `Risk` this ranks a
-    /// diff no review has run against.
+    /// Declared risk tiers from the repo's risk rules, so unlike `Risk` this
+    /// ranks a diff no review has run against. Spelled `importance:` because
+    /// saved filters name that prefix (ADR 0048).
     Importance {
         include: bool,
-        tiers: Vec<ImportanceTier>,
+        tiers: Vec<RiskTier>,
     },
     /// File kind (`kind:production` is the header's code count), after the
     /// repo's `[file_kinds]` overrides.
@@ -250,7 +251,7 @@ fn try_parse_risk(include: bool, body: &str) -> Option<FilterRule> {
 }
 
 fn try_parse_importance(include: bool, body: &str) -> Option<FilterRule> {
-    let tier = ImportanceTier::parse(body.strip_prefix("importance:")?)?;
+    let tier = RiskTier::parse(body.strip_prefix("importance:")?)?;
     Some(FilterRule::Importance {
         include,
         tiers: vec![tier],
@@ -278,9 +279,9 @@ fn parse_list_rule(include: bool, body: &str) -> Option<FilterRule> {
 fn extend_value_list(rule: &mut FilterRule, value: &str) -> bool {
     match rule {
         FilterRule::Risk { levels, .. } => risk_value(value).map(|l| levels.push(l)).is_some(),
-        FilterRule::Importance { tiers, .. } => ImportanceTier::parse(value)
-            .map(|t| tiers.push(t))
-            .is_some(),
+        FilterRule::Importance { tiers, .. } => {
+            RiskTier::parse(value).map(|t| tiers.push(t)).is_some()
+        }
         FilterRule::Kind { kinds, .. } => kind_value(value).map(|k| kinds.push(k)).is_some(),
         _ => false,
     }
@@ -338,15 +339,15 @@ pub fn apply_filter(rules: &[FilterRule], file: &DiffFile) -> bool {
 /// Apply filter rules to a file with the rule data that does not come from the
 /// diff itself.
 ///
-/// `importance` is the active repo's declared rule table. Absent, or absent for
-/// this repo, leaves every path at [`ImportanceTier::Normal`] — the answer the
-/// config's own default gives — so `importance:normal` selects the whole diff
-/// and any other tier selects none of it.
+/// `importance` is the active repo's risk rules. Absent, or with nothing
+/// declared, leaves every path at [`RiskTier::Ai`] — the answer for a path no
+/// rule claims — so `importance:ai` selects the whole diff and any other tier
+/// selects none of it.
 pub fn apply_filter_with_context(
     rules: &[FilterRule],
     file: &DiffFile,
     review: Option<&ErReview>,
-    importance: Option<&ImportanceRepoConfig>,
+    importance: Option<&RiskRules>,
 ) -> bool {
     apply_filter_with_kinds(rules, file, review, importance, None)
 }
@@ -358,7 +359,7 @@ pub fn apply_filter_with_kinds(
     rules: &[FilterRule],
     file: &DiffFile,
     review: Option<&ErReview>,
-    importance: Option<&ImportanceRepoConfig>,
+    importance: Option<&RiskRules>,
     file_kinds: Option<&FileKindRepoConfig>,
 ) -> bool {
     if rules.is_empty() {
@@ -393,7 +394,7 @@ fn matches_rule_with_context(
     rule: &FilterRule,
     file: &DiffFile,
     review: Option<&ErReview>,
-    importance: Option<&ImportanceRepoConfig>,
+    importance: Option<&RiskRules>,
     file_kinds: Option<&FileKindRepoConfig>,
 ) -> bool {
     match rule {
@@ -406,7 +407,7 @@ fn matches_rule_with_context(
             false
         }
         FilterRule::Importance { tiers, .. } => {
-            let tier = importance.map_or(ImportanceTier::Normal, |rules| rules.resolve(&file.path));
+            let tier = importance.map_or(RiskTier::Ai, |rules| rules.tier_of(&file.path));
             tiers.contains(&tier)
         }
         FilterRule::Kind { kinds, .. } => {
@@ -438,8 +439,8 @@ fn matches_rule(rule: &FilterRule, file: &DiffFile) -> bool {
             true
         }
         // Nothing to resolve a tier against here, which is the case a repo with
-        // no declared rules is in anyway: every path reads as `Normal`.
-        FilterRule::Importance { tiers, .. } => tiers.contains(&ImportanceTier::Normal),
+        // no declared rules is in anyway: every path reads as `Ai`.
+        FilterRule::Importance { tiers, .. } => tiers.contains(&RiskTier::Ai),
         FilterRule::Kind { kinds, .. } => kinds.contains(&classify_path(&file.path)),
     }
 }
@@ -468,6 +469,7 @@ mod tests {
             dels,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -979,7 +981,7 @@ mod tests {
 
     // ── Importance filter tests ──
 
-    use crate::config::test_support::importance_rules;
+    use crate::config::test_support::risk_rules;
 
     fn review_with_risk(path: &str, risk: RiskLevel) -> ErReview {
         use std::collections::HashMap;
@@ -1012,7 +1014,7 @@ mod tests {
         match &rules[0] {
             FilterRule::Importance { include, tiers } => {
                 assert!(*include);
-                assert_eq!(tiers, &[ImportanceTier::Foundational]);
+                assert_eq!(tiers, &[RiskTier::High]);
             }
             _ => panic!("expected Importance rule"),
         }
@@ -1025,7 +1027,7 @@ mod tests {
         match &rules[0] {
             FilterRule::Importance { include, tiers } => {
                 assert!(!*include);
-                assert_eq!(tiers, &[ImportanceTier::Isolated]);
+                assert_eq!(tiers, &[RiskTier::Low]);
             }
             _ => panic!("expected Importance rule"),
         }
@@ -1044,7 +1046,7 @@ mod tests {
         // The case `risk:*` cannot serve: nothing has been reviewed, so every
         // call passes no review, and the declared tier still decides.
         let rules = parse_filter_expr("+importance:foundational");
-        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")], "normal");
+        let importance = risk_rules(&[("crates/er-engine/src/**", "foundational")], None);
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,
@@ -1069,7 +1071,7 @@ mod tests {
     #[test]
     fn importance_exclude_hides_only_the_tier_it_names() {
         let rules = parse_filter_expr("-importance:isolated");
-        let importance = importance_rules(&[("*.md", "isolated")], "normal");
+        let importance = risk_rules(&[("*.md", "isolated")], None);
         let doc = make_file("docs/readme.md", FileStatus::Modified, 2, 0);
         let code = make_file("src/main.rs", FileStatus::Modified, 5, 3);
         assert!(!apply_filter_with_context(
@@ -1091,7 +1093,7 @@ mod tests {
         // A review exists here, which is what a risk rule needs and an
         // importance rule must not: the tier answers the same either way.
         let rules = parse_filter_expr("+importance:foundational");
-        let importance = importance_rules(&[("crates/er-engine/src/**", "foundational")], "normal");
+        let importance = risk_rules(&[("crates/er-engine/src/**", "foundational")], None);
         let core = make_file(
             "crates/er-engine/src/app/filter.rs",
             FileStatus::Modified,
@@ -1108,10 +1110,10 @@ mod tests {
     }
 
     #[test]
-    fn importance_without_declared_rules_resolves_every_path_to_normal() {
-        // With no generated rules, every path resolves through the config's own
-        // default, so only a rule naming `normal` matches anything.
-        let foundational = parse_filter_expr("+importance:foundational");
+    fn importance_without_declared_rules_resolves_every_path_to_ai() {
+        // With no declared rules, every path is left to the review, so only a
+        // rule naming `ai` matches anything. `normal` is the `[importance]` spelling.
+        let foundational = parse_filter_expr("+importance:high");
         let normal = parse_filter_expr("+importance:normal");
         let file = make_file("src/main.rs", FileStatus::Modified, 5, 3);
         assert!(!apply_filter_with_context(&foundational, &file, None, None));
@@ -1213,7 +1215,7 @@ mod tests {
         assert!(matches!(
             parse_filter_expr("importance:foundational,isolated").as_slice(),
             [FilterRule::Importance { tiers, .. }]
-                if tiers == &[ImportanceTier::Foundational, ImportanceTier::Isolated]
+                if tiers == &[RiskTier::High, RiskTier::Low]
         ));
     }
 

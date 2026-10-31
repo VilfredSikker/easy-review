@@ -1,7 +1,8 @@
 import { splitRows } from "$lib/splitRows";
 import { lineTotalCols, wrappedLineCount } from "$lib/lineWrap";
-import type { FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
+import type { FileKind, FileSnapshot, FlatFinding, HunkSnapshot, LineSnapshot, ThreadSnapshot } from "$lib/types";
 import { imagePreviewKey, isImagePreview } from "$lib/imagePreview";
+import type { PillarHeaderSpec } from "$lib/tourModel";
 import type { SplitRow } from "$lib/splitRows";
 import {
   fallbackFindings,
@@ -51,6 +52,22 @@ export const NO_CHANGES_HEIGHT = 44;
 export const DOCUMENT_PREVIEW_HEIGHT = 120;
 /** The image row renders at exactly this height in every state. */
 export const IMAGE_PREVIEW_HEIGHT = 300;
+/** Eyebrow, title and padding of a pillar header, before its narrative. */
+export const PILLAR_HEADER_BASE_HEIGHT = 108;
+/** Narrative line height and the characters one line holds, for the first
+ *  estimate only: the row is measured once drawn. */
+const PILLAR_NARRATIVE_LINE_PX = 22;
+const PILLAR_NARRATIVE_COLS = 100;
+
+export function estimatePillarHeaderHeight(narrativeMarkdown: string): number {
+  const text = narrativeMarkdown.trim();
+  if (!text) return PILLAR_HEADER_BASE_HEIGHT;
+  let lines = 0;
+  for (const para of text.split(/\n\s*\n/)) {
+    lines += Math.max(1, Math.ceil(para.length / PILLAR_NARRATIVE_COLS));
+  }
+  return PILLAR_HEADER_BASE_HEIGHT + lines * PILLAR_NARRATIVE_LINE_PX + 12;
+}
 
 const LEGACY_CACHE_LIMIT = 100;
 const _legacyCache = new Map<string, FileRenderModel>();
@@ -143,17 +160,21 @@ export function getFileRenderModel(file: FileSnapshot): FileRenderModel {
 
 // ---------------- Flat cross-file row block ----------------
 
-/** Data for a Guide pillar group (drives the left rail lane in Split View). */
-export interface PillarHeaderInfo {
-  pillarId: string;
-  title: string;
-  descriptionMarkdown: string;
-  reviewedCount: number;
-  totalCount: number;
-  foundation: boolean;
-}
-
 export type CrossFileFlatRow =
+  | {
+      /** Opens a Tour pillar: eyebrow, title and narrative. It belongs to no
+       *  file, so `filePath` is empty. Reviewed counts are read live by the
+       *  row, never stored here, so ticking a file keeps the model cached. */
+      type: "pillar-header";
+      filePath: "";
+      pillarId: string;
+      index: number;
+      total: number;
+      title: string;
+      narrativeMarkdown: string;
+      height: number;
+      identity: string;
+    }
   | {
       type: "document-preview";
       filePath: string;
@@ -175,6 +196,12 @@ export type CrossFileFlatRow =
       identity: string;
       additions: number;
       deletions: number;
+      /** Rename/copy source. Part of the row, never of reviewed state, so
+       *  toggling reviewed stays a block-cache hit (ADR 0013). */
+      oldPath: string | null;
+      similarity: number | null;
+      kind: FileKind | null;
+      isNew: boolean;
     }
   | {
       type: "hunk-header";
@@ -232,8 +259,10 @@ export type CrossFileFlatRow =
       sourceIndex: number;
       height: number;
       identity: string;
-      /** Pure rename (no content change) — render "File renamed without changes." */
+      /** Pure rename (no content change) — render the compact renamed row */
       renamed: boolean;
+      oldPath: string | null;
+      similarity: number | null;
     }
   | {
       type: "inline-thread";
@@ -408,7 +437,8 @@ function visBits(v: CommentVisibility): number {
     (v.hideOutdated ? 4 : 0) |
     (v.hideComments ? 8 : 0) |
     (v.hideFindings ? 16 : 0) |
-    (v.hideQuestions ? 32 : 0)
+    (v.hideQuestions ? 32 : 0) |
+    (v.hideNotes ? 64 : 0)
   );
 }
 
@@ -549,9 +579,22 @@ function stubRow(file: FileSnapshot, fileIndex: number): CrossFileFlatRow | null
       height: NO_CHANGES_HEIGHT,
       identity: `nochanges:${file.path}`,
       renamed: file.status === "renamed",
+      oldPath: file.old_path ?? null,
+      similarity: file.similarity ?? null,
     };
   }
   return null;
+}
+
+/** What the file header shows beyond path and counts. Keyed into the block
+ *  cache so a rename or kind change rebuilds the header; `reviewed` stays out. */
+function headerIdentity(file: FileSnapshot) {
+  return {
+    oldPath: file.old_path ?? null,
+    similarity: file.similarity ?? null,
+    kind: file.kind ?? null,
+    isNew: file.status === "added",
+  };
 }
 
 /** Per-hunk state the row builders share, created once per hunk. */
@@ -773,7 +816,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
   const previewKey = documentPreviewKey(file, input.previewPaths);
   const preview = previewKey !== null;
   const imageKey = imagePreviewKey(file);
-  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|i${JSON.stringify(imageKey)}|s${sideBySide ? 1 : 0}`;
+  const modelKey = `${viewMode}|${annFp}|${visBits(commentVisibility)}|${fileIndex}|${file.cache_key}|${diffLineCount(file)}|${file.is_lazy_stub ? 1 : 0}|${file.compacted ? 1 : 0}|w${wrapCols ?? 0}|p${JSON.stringify(previewKey)}|i${JSON.stringify(imageKey)}|s${sideBySide ? 1 : 0}|h${JSON.stringify(headerIdentity(file))}`;
 
   let perFile = _blockCache.get(file.path);
   if (!perFile) {
@@ -797,6 +840,7 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
     identity: `fh:${file.path}`,
     additions: file.additions,
     deletions: file.deletions,
+    ...headerIdentity(file),
   });
 
   const lead = leadRow(file, fileIndex, previewKey, imageKey);
@@ -886,6 +930,8 @@ export interface CrossFileModel {
   fileStartRow: Map<string, number>;
   /** filePath → row index of each hunk's header row, indexed by hunkIdx */
   hunkStartRow: Map<string, number[]>;
+  /** Tour pillar id → row index of its header. Empty outside the Tour. */
+  pillarStartRow: Map<string, number>;
   rowFile: Uint32Array;
   threadRowIndex(threadId: string): number | null;
   findingRowIndex(findingId: string): number | null;
@@ -909,6 +955,8 @@ export interface CrossFileInputs {
   /** See {@link RenderModelInputs.sidePaths}. */
   sidePaths?: ReadonlySet<string>;
   sideWrapCols?: number | null;
+  /** Tour only: one header row per pillar, placed above its anchor file. */
+  pillarHeaders?: readonly PillarHeaderSpec[];
 }
 
 const CROSS_FILE_LRU_LIMIT = 4;
@@ -922,6 +970,7 @@ function emptyCrossFileModel(identity: string): CrossFileModel {
     totalHeight: 0,
     fileStartRow: new Map(),
     hunkStartRow: new Map(),
+    pillarStartRow: new Map(),
     rowFile: new Uint32Array(0),
     threadRowIndex: () => null,
     findingRowIndex: () => null,
@@ -943,7 +992,9 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   );
   const sideFingerprint = JSON.stringify(files.filter((f) => input.sidePaths?.has(f.path)).map((f) => f.path));
   const imageFingerprint = JSON.stringify(files.filter(isImagePreview).map((f) => [f.path, f.preview_key]));
-  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}|i${imageFingerprint}|s${sideFingerprint}|sw${input.sideWrapCols ?? 0}`;
+  const pillarHeaders = input.pillarHeaders ?? [];
+  const pillarFingerprint = pillarHeaders.length ? hashStr(JSON.stringify(pillarHeaders)) : 0;
+  const identity = `${snapshotKey}|${viewMode}|${annotationIndex.version}|${annFp}|${visBits(commentVisibility)}|w${wrapCols ?? 0}|${filesRenderFingerprint(files)}|p${previewFingerprint}|i${imageFingerprint}|s${sideFingerprint}|sw${input.sideWrapCols ?? 0}|t${pillarFingerprint}`;
 
   const cached = _crossFileLru.get(identity);
   if (cached) {
@@ -978,12 +1029,16 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     totalRowCount += blocks[i].rows.length;
   }
 
+  const { headersBefore, trailingHeaders } = placePillarHeaders(pillarHeaders, files);
+  totalRowCount += pillarHeaders.length;
+
   const rows: CrossFileFlatRow[] = new Array(totalRowCount);
   const rowFile = new Uint32Array(totalRowCount);
   const cumulativeOffsets = new Array<number>(totalRowCount + 1);
   cumulativeOffsets[0] = 0;
   const fileStartRow = new Map<string, number>();
   const hunkStartRow = new Map<string, number[]>();
+  const pillarStartRow = new Map<string, number>();
   const threadIdx = new Map<string, number>();
   const findingIdx = new Map<string, number>();
   const unifiedPairsByFile = new Map<string, UnifiedPair[][]>();
@@ -991,8 +1046,17 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
   const maxColsByFile = new Map<string, MaxLineCols>();
 
   let writeIdx = 0;
+  const writeHeader = (spec: PillarHeaderSpec, fi: number) => {
+    const row = pillarHeaderRow(spec);
+    rows[writeIdx] = row;
+    rowFile[writeIdx] = fi;
+    cumulativeOffsets[writeIdx + 1] = cumulativeOffsets[writeIdx] + row.height;
+    pillarStartRow.set(spec.pillarId, writeIdx);
+    writeIdx++;
+  };
   for (let fi = 0; fi < blocks.length; fi++) {
     const block = blocks[fi];
+    for (const spec of headersBefore.get(block.filePath) ?? []) writeHeader(spec, fi);
     fileStartRow.set(block.filePath, writeIdx);
     const hunkStarts: number[] = [];
     hunkStartRow.set(block.filePath, hunkStarts);
@@ -1013,6 +1077,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
       writeIdx++;
     }
   }
+  for (const spec of trailingHeaders) writeHeader(spec, blocks.length - 1);
   const totalHeight = cumulativeOffsets[totalRowCount];
 
   const model: CrossFileModel = {
@@ -1022,6 +1087,7 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
     totalHeight,
     fileStartRow,
     hunkStartRow,
+    pillarStartRow,
     rowFile,
     threadRowIndex: (id) => {
       const v = threadIdx.get(id);
@@ -1038,6 +1104,41 @@ export function getCrossFileModel(input: CrossFileInputs): CrossFileModel {
 
   insertLru(identity, model);
   return model;
+}
+
+/** Groups headers by the file they sit above; an undrawn anchor goes last. */
+function placePillarHeaders(
+  pillarHeaders: readonly PillarHeaderSpec[],
+  files: readonly FileSnapshot[],
+): { headersBefore: Map<string, PillarHeaderSpec[]>; trailingHeaders: PillarHeaderSpec[] } {
+  const drawn = new Set(files.map((f) => f.path));
+  const headersBefore = new Map<string, PillarHeaderSpec[]>();
+  const trailingHeaders: PillarHeaderSpec[] = [];
+  for (const spec of pillarHeaders) {
+    const anchor = spec.anchorPath;
+    if (anchor === null || !drawn.has(anchor)) {
+      trailingHeaders.push(spec);
+      continue;
+    }
+    const list = headersBefore.get(anchor);
+    if (list) list.push(spec);
+    else headersBefore.set(anchor, [spec]);
+  }
+  return { headersBefore, trailingHeaders };
+}
+
+function pillarHeaderRow(spec: PillarHeaderSpec): CrossFileFlatRow {
+  return {
+    type: "pillar-header",
+    filePath: "",
+    pillarId: spec.pillarId,
+    index: spec.index,
+    total: spec.total,
+    title: spec.title,
+    narrativeMarkdown: spec.narrativeMarkdown,
+    height: estimatePillarHeaderHeight(spec.narrativeMarkdown),
+    identity: `pillar-header:${spec.pillarId}`,
+  };
 }
 
 function insertLru(identity: string, model: CrossFileModel): void {
@@ -1084,7 +1185,12 @@ export function applyCollapsedFiles(
   let skipBody = false;
   for (let i = 0; i < model.rows.length; i++) {
     const row = model.rows[i];
-    if (row.type === "file-header") {
+    if (row.type === "pillar-header") {
+      // Opens the next pillar even when the file above it is collapsed.
+      skipBody = false;
+      filteredRows.push(row);
+      filteredRowFile.push(model.rowFile[i]);
+    } else if (row.type === "file-header") {
       skipBody = collapsedPaths.has(row.filePath);
       filteredRows.push(row);
       filteredRowFile.push(model.rowFile[i]);
@@ -1101,6 +1207,7 @@ export function applyCollapsedFiles(
   cumulativeOffsets[0] = 0;
   const fileStartRow = new Map<string, number>();
   const hunkStartRow = new Map<string, number[]>();
+  const pillarStartRow = new Map<string, number>();
   const threadIdx = new Map<string, number>();
   const findingIdx = new Map<string, number>();
   const rowFile = new Uint32Array(rowCount);
@@ -1116,6 +1223,8 @@ export function applyCollapsedFiles(
       fileStartRow.set(row.filePath, i);
       hunkStarts = [];
       hunkStartRow.set(row.filePath, hunkStarts);
+    } else if (row.type === "pillar-header") {
+      pillarStartRow.set(row.pillarId, i);
     } else if (row.type === "hunk-header") {
       hunkStarts.push(i);
     } else if (row.type === "inline-thread" || row.type === "fallback-thread") {
@@ -1134,6 +1243,7 @@ export function applyCollapsedFiles(
     totalHeight: cumulativeOffsets[rowCount],
     fileStartRow,
     hunkStartRow,
+    pillarStartRow,
     rowFile,
     threadRowIndex: (id) => {
       const v = threadIdx.get(id);

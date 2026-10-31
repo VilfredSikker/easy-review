@@ -40,17 +40,31 @@ import {
   tabSnapshotCacheKey,
   tabSnapshotCacheKeyFromTab,
 } from "../tabSnapshotCache";
-import type { AppSnapshot, NotificationSnapshot, PollResponse } from "../types";
+import type { AppSnapshot, NotificationSnapshot, PollResponse, SettingsTab } from "../types";
+import { resolveSettingsTarget, type SettingsSectionId, type SettingsTarget } from "../settingsLink";
+import { syncToastMessage, type SyncReply } from "../syncToast";
 import { aiReviewFilter } from "./aiReviewFilter.svelte";
 import { layoutPanels } from "./layoutPanels.svelte";
 import { rightRail } from "./rightRail.svelte";
+import { reviewPage } from "./reviewPage.svelte";
+import { ReviewPageMemory, reviewPageTabKey } from "./reviewPageModel";
+import {
+  HIDE_REVIEWED_KEY,
+  LINE_NUMBERS_KEY,
+  MARK_LINES_KEY,
+  loadFlag,
+  saveFlag,
+} from "./viewPrefs";
+import { inboxReturnView } from "../inboxNav";
 
 export type { CommentVisibility };
 
 export interface ToastMessage {
   id: number;
-  kind: "success" | "error" | "info" | "warn";
+  kind: "success" | "error" | "info" | "warn" | "progress";
   message: string;
+  /** Auto-dismiss delay this toast was shown with; absent when it persists. */
+  durationMs?: number;
   /** If true, the toast will not auto-dismiss (errors always persist). */
   persist?: boolean;
   /** Optional action button shown in the toast footer. */
@@ -69,6 +83,8 @@ interface CmdRun {
   modeTabIdx: number | undefined;
   isSlow: boolean;
   isForceRefresh: boolean;
+  /** Tab a `select_tab` is switching to; null for every other command. */
+  selectIdx: number | null;
 }
 
 const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
@@ -76,6 +92,7 @@ const TOAST_DURATION_MS: Record<ToastMessage["kind"], number> = {
   success: 4_200,
   info: 3_200,
   warn: 3_200,
+  progress: 4_200,
 };
 
 export interface LogEntry {
@@ -94,7 +111,14 @@ const MAX_LOGS = 500;
 const TOAST_LONG_MS = 8_000;
 
 export type DiffViewMode = "unified" | "split";
-export type MainViewMode = "diff" | "agent-output" | "export-review" | "settings";
+/** `overview` and `diff` show a review page (see `reviewPage`); the rest replace it. */
+export type MainViewMode =
+  | "overview"
+  | "diff"
+  | "inbox"
+  | "agent-output"
+  | "export-review"
+  | "settings";
 const DIFF_VIEW_MODE_KEY = "er.diffViewMode";
 const COMMENT_VISIBILITY_KEY = "er.commentVisibility";
 const COMPACT_LINES_KEY = "er.compactLines";
@@ -170,7 +194,7 @@ function timingSegmentMs(start: number, end: number): number {
 }
 
 /**
- * Optimistically adjust the `reviewedCount` of every Guide-tour pillar that
+ * Optimistically adjust the `reviewedCount` of every Tour pillar that
  * contains `path` by `delta` (clamped to [0, totalCount]). Lets the rail badge
  * track a file's reviewed flip before the backend round-trip lands; the next
  * `mergeChromeSnapshot` overwrites `tour` with the authoritative backend value.
@@ -215,6 +239,8 @@ class AppStore {
   private tabChangeGeneration = 0;
   /** User-facing label for the active slow command. */
   switchingLabel = $state<string | null>(null);
+  /** Tab an uncached `select_tab` is switching to, so the shell can name it while it loads. */
+  switchingTabIdx = $state<number | null>(null);
   /** True while force_refresh_diff is fetching from the remote. */
   refreshing = $state(false);
   error = $state<string | null>(null);
@@ -230,9 +256,22 @@ class AppStore {
    *  Persisted to localStorage. */
   wrapLines = $state<boolean>(loadWrapLines());
   commentVisibility = $state<CommentVisibility>(loadCommentVisibility());
+  /** Drop reviewed files from the diff column. Presentation only: the engine's
+   *  unreviewed filter would rebuild `files` on every checkmark, which the
+   *  reviewed-revision path exists to avoid (ADR 0016). */
+  hideReviewed = $state<boolean>(loadFlag(HIDE_REVIEWED_KEY, false));
+  /** Line-number gutters in the diff. */
+  lineNumbers = $state<boolean>(loadFlag(LINE_NUMBERS_KEY, true));
+  /** Color each changed line by the commit that introduced it. */
+  markLines = $state<boolean>(loadFlag(MARK_LINES_KEY, false));
   /** Shiki syntax theme id — picker UI wires here later. */
   currentSyntaxTheme = $state(DEFAULT_SYNTAX_THEME_ID);
   mainView = $state<MainViewMode>("diff");
+  /** The main view the Inbox was opened from; leaving the Inbox returns there. */
+  private viewBeforeInbox: MainViewMode | null = null;
+  /** Where the next Settings mount should land; the page takes it and clears it. */
+  settingsTarget = $state<SettingsTarget | null>(null);
+  private reviewPages = new ReviewPageMemory();
 
   private pollTimer: ReturnType<typeof setTimeout> | null = null;
   private toastTimers = new Map<number, ReturnType<typeof setTimeout>>();
@@ -291,6 +330,21 @@ class AppStore {
     }
   }
 
+  setHideReviewed(on: boolean) {
+    this.hideReviewed = on;
+    saveFlag(HIDE_REVIEWED_KEY, on);
+  }
+
+  setLineNumbers(on: boolean) {
+    this.lineNumbers = on;
+    saveFlag(LINE_NUMBERS_KEY, on);
+  }
+
+  setMarkLines(on: boolean) {
+    this.markLines = on;
+    saveFlag(MARK_LINES_KEY, on);
+  }
+
   setCommentVisibility(next: Partial<CommentVisibility>) {
     this.commentVisibility = { ...this.commentVisibility, ...next };
     if (typeof localStorage !== "undefined") {
@@ -326,7 +380,14 @@ class AppStore {
     const id = ++this.toastId;
     // Errors always persist; warn persists if not explicitly overridden.
     const persist = opts?.persist ?? (kind === "error");
-    this.toasts = [...this.toasts, { id, kind, message, persist, action: opts?.action }];
+    this.toasts = [...this.toasts, {
+      id,
+      kind,
+      message,
+      persist,
+      durationMs: persist ? undefined : durationMs,
+      action: opts?.action,
+    }];
     if (this.toasts.length > 4) this.toasts = this.toasts.slice(-4);
     if (!persist) {
       const timer = setTimeout(() => {
@@ -614,10 +675,38 @@ class AppStore {
   }
 
   setMainView(mode: MainViewMode) {
+    if (mode === "inbox" && this.mainView !== "inbox") this.viewBeforeInbox = this.mainView;
     this.mainView = mode;
   }
 
+  closeInbox() {
+    if (this.mainView !== "inbox") return;
+    this.mainView = inboxReturnView(this.viewBeforeInbox, reviewPage.available("overview"));
+  }
+
+  /** The Inbox nav rows: open it, or close it when it is already open. */
+  toggleInbox() {
+    if (this.mainView === "inbox") this.closeInbox();
+    else this.setMainView("inbox");
+  }
+
+  /** Open Settings, optionally at a tab or a named section ("risk-rules"). */
+  openSettings(to?: SettingsTab | SettingsSectionId) {
+    this.settingsTarget = resolveSettingsTarget(to);
+    this.mainView = "settings";
+  }
+
+  /** Restore the review page the newly active tab was left on. */
+  private followReviewPage(snapshot: AppSnapshot | null): void {
+    const next = this.reviewPages.follow(reviewPageTabKey(snapshot),
+      this.mainView,
+      reviewPage.available("overview"),
+    );
+    if (next) this.mainView = next;
+  }
+
   private rememberSnapshot(snapshot: AppSnapshot | null): void {
+    this.followReviewPage(snapshot);
     diffPreview.sync(snapshot);
     annotationDrafts.sync(snapshot);
     if (!snapshot) return;
@@ -1019,6 +1108,7 @@ class AppStore {
       modeTabIdx,
       isSlow: SLOW_COMMANDS.has(command) && cachedTab === null,
       isForceRefresh: command === "force_refresh_diff",
+      selectIdx,
     };
   }
 
@@ -1028,6 +1118,7 @@ class AppStore {
       this.inflightSlow += 1;
       this.switching = true;
       this.switchingLabel = switchingLabelForCommand(command);
+      if (run.selectIdx !== null) this.switchingTabIdx = run.selectIdx;
     }
     if (run.isForceRefresh) this.refreshing = true;
     return run.isSlow || run.isForceRefresh;
@@ -1070,6 +1161,7 @@ class AppStore {
 
   /** Ingest a command's snapshot and toast success unless the backend already did. */
   private applyCmdSnapshot(command: string, snapshot: AppSnapshot, run: CmdRun): boolean {
+    const before = this.snapshot;
     const applied = this.ingestCommandSnapshot(snapshot, {
       allowTabChange: run.isTabChange,
       tabChangeGen: run.myTabChangeGen ?? undefined,
@@ -1077,7 +1169,12 @@ class AppStore {
     if (!applied) return false;
     const hadBackendToast = snapshot.notification != null;
     if (!hadBackendToast) {
-      const message = successToastForCommand(command);
+      // A Sync says where it landed and which Reviewed marks it cost in one
+      // toast; a second one for the marks would stack on top of it.
+      const message =
+        command === "force_refresh_diff"
+          ? syncToastMessage(before, snapshot as SyncReply)
+          : successToastForCommand(command);
       if (message) this.showToast("success", message);
     }
     return true;
@@ -1091,6 +1188,7 @@ class AppStore {
       aiReviewFilter.reset();
     }
     this.snapshot = painted;
+    this.followReviewPage(painted);
     this.keepOptimisticOps();
     this.initialLoadDone = true;
     // Drop in-flight poll revisions from the previous tab.
@@ -1110,6 +1208,7 @@ class AppStore {
       if (this.inflightSlow === 0) {
         this.switching = false;
         this.switchingLabel = null;
+        this.switchingTabIdx = null;
       }
     }
     if (isForceRefresh) this.refreshing = false;
@@ -1134,8 +1233,6 @@ function logSlowCmdTiming(
 
 function successToastForCommand(command: string): string | null {
   switch (command) {
-    case "force_refresh_diff":
-      return "Diff force refreshed";
     case "refresh_github_status":
       return "GitHub status refreshed";
     case "pull_github_comments":

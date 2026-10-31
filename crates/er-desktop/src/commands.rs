@@ -7,6 +7,8 @@ use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
+pub mod line_commits;
+
 use crate::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
     InboxItem, InboxNotification, InboxState, InboxTarget, NotificationInboxCtx, PrInboxView,
@@ -42,11 +44,9 @@ Reply in markdown with:
 
 Be concise. If the concern is already addressed in the current diff, say so clearly."#;
 
-/// Per-question elaboration: answer / expand on a reviewer's question by reading
-/// the surrounding code. Used by the `elaborate_with_ai` command (questions),
-/// where "validate" doesn't fit — there is nothing to confirm/refute, the
-/// reviewer wants the AI to investigate and explain.
-const ELABORATE_CARD_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
+/// One-click Ask AI on a question: investigate and answer. "Validate" does not
+/// fit a question — there is nothing to confirm or refute.
+const ANSWER_QUESTION_AI_PROMPT: &str = r#"Answer and elaborate on this review question against the current code.
 
 Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence.
 
@@ -56,6 +56,68 @@ Reply in markdown with:
 3. **Follow-ups**: Anything the reviewer should double-check or decide.
 
 Be concise and concrete."#;
+
+/// One-click Ask AI on a note. A note is an instruction for a coding agent, so
+/// the useful answer is whether the change is right and what it would touch —
+/// not the change itself, which stays the agent's job once the note is sent.
+const ANSWER_NOTE_AI_PROMPT: &str = r#"Assess this review note against the current code. The note is an instruction the reviewer intends to hand to a coding agent.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) before answering. Up to ~10 reads; cite file:line evidence. Do not edit any file.
+
+Reply in markdown with:
+1. **Assessment**: Whether the requested change is right, and why.
+2. **Details**: What the change would touch (cite file:line when possible).
+3. **Risks**: Anything that could break, or that the note leaves undecided.
+
+Be concise and concrete."#;
+
+/// Elaborate on a question: rewrite it, do not answer it. A terse question
+/// written mid-review ("why fetch-depth?") only makes sense next to the line it
+/// sits on; the rewrite has to survive export and being read by someone, or
+/// some agent, who never saw that line.
+const ELABORATE_QUESTION_AI_PROMPT: &str = r#"Rewrite this review question so it stands on its own, without the diff beside it.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the question refers to. Up to ~10 reads.
+
+The rewritten question must:
+- name the file and the lines or symbol it is about;
+- state the relevant facts from the code that make the question worth asking;
+- say what a good answer has to settle.
+
+Do not answer the question. Keep the reviewer's intent and tone; do not add concerns they did not raise.
+Reply with only the rewritten question in markdown — no preamble, no heading."#;
+
+/// Elaborate on a note: rewrite it into an instruction a coding agent can carry
+/// out without the review open. Same reason as the question variant; the note
+/// variant names the change and its outcome instead of what to settle.
+const ELABORATE_NOTE_AI_PROMPT: &str = r#"Rewrite this review note into a self-contained instruction for a coding agent that will not see the diff.
+
+Use Read / grep / rg in the repository (see system context for repo_root and diff excerpt) to learn what the note refers to. Up to ~10 reads. Do not edit any file.
+
+The instruction must:
+- name the file and the lines, job, function or other symbol to change;
+- state the exact change to make;
+- state the expected outcome, and anything that must stay unchanged when the note implies it.
+
+Keep the reviewer's intent; do not widen the change beyond what the note asks.
+Reply with only the instruction in markdown — no preamble, no heading."#;
+
+/// The prompt for a one-click AI action on a question or note, keyed on the
+/// thread id prefix the stores use (`q-` question, `n-` note). `None` for any
+/// other thread: Ask AI and Elaborate act on the private stores only.
+fn card_action_prompt(thread_id: &str, ai_action: &str) -> Option<&'static str> {
+    let is_note = thread_id.starts_with("n-");
+    if !is_note && !thread_id.starts_with("q-") {
+        return None;
+    }
+    match (ai_action, is_note) {
+        (er_engine::ai::AI_ACTION_ELABORATE, false) => Some(ELABORATE_QUESTION_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ELABORATE, true) => Some(ELABORATE_NOTE_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ASK, false) => Some(ANSWER_QUESTION_AI_PROMPT),
+        (er_engine::ai::AI_ACTION_ASK, true) => Some(ANSWER_NOTE_AI_PROMPT),
+        _ => None,
+    }
+}
 
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct PollResponse {
@@ -152,6 +214,8 @@ pub struct AppState {
     /// Differential snapshots: per-file content keys the frontend currently
     /// holds, so unchanged hunks can be omitted from later snapshots.
     pub sent_files: crate::snapshot::SentFilesHandle,
+    /// Per-file "Mark lines" attribution, outside the snapshot on purpose.
+    pub line_commits_cache: line_commits::LineCommitsCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -595,6 +659,17 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
         || lower.contains("cannot approve your own pull request")
 }
 
+/// GitHub keeps one pending review per reviewer per PR and refuses a
+/// standalone review comment while it exists, so "Add single comment" has to
+/// wait until the review is submitted (as github.com hides it meanwhile).
+fn pending_review_blocks_single_comment() -> String {
+    "You have a pending review — add this to it or submit the review first".to_string()
+}
+
+fn is_one_pending_review_error(raw: &str) -> bool {
+    raw.to_lowercase().contains("one pending review")
+}
+
 fn process_ai_task_inbox(app: &App, state: &AppState) {
     let now = now_ms();
     let tasks = app.background_task_snapshots();
@@ -753,15 +828,8 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         })
         .collect();
 
-    let check_summaries: Vec<CheckSummary> = checks
-        .into_iter()
-        .map(|c| CheckSummary {
-            name: c.name,
-            status: c.status,
-            conclusion: c.conclusion,
-            url: c.url,
-        })
-        .collect();
+    let check_summaries: Vec<CheckSummary> = checks.into_iter().map(CheckSummary::from).collect();
+    let reviewers = crate::snapshot::github_reviewers(&overview, &reviews);
 
     // ISO-8601-ish timestamp using only std. Format: seconds since epoch as
     // string — frontend renders as "x sec ago". Avoids pulling in chrono.
@@ -801,6 +869,9 @@ pub fn fetch_github_status(owner: &str, repo: &str, number: u64) -> Option<Githu
         in_merge_queue,
         base_has_merge_queue,
         can_bypass_rules,
+        created_at: overview.created_at,
+        commit_count: overview.commit_count,
+        reviewers,
         fetch_ticket: 0,
     })
 }
@@ -1245,6 +1316,7 @@ pub async fn set_mode(
                 return Ok(snap_from_command(&app, &state));
             }
         }
+        let t_switch = std::time::Instant::now();
         if matches!(mode.as_str(), "pr" | "pr_diff") {
             // Only enter PrDiff when not already there (avoids re-fetching refs
             // on a tab that is already in PrDiff from construction).
@@ -1259,7 +1331,7 @@ pub async fn set_mode(
                 }
                 app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
             }
-            return Ok(snap_from_command(&app, &state));
+            return Ok(set_mode_snapshot(&app, &state, &mode, t_switch));
         }
         let diff_mode = match mode.as_str() {
             "unstaged" => DiffMode::Unstaged,
@@ -1271,9 +1343,33 @@ pub async fn set_mode(
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
-        Ok(snap_from_command(&app, &state))
+        Ok(set_mode_snapshot(&app, &state, &mode, t_switch))
     })
     .await
+}
+
+/// The snapshot a mode switch returns, with the switch and the snapshot build
+/// logged apart: a slow switch is either a re-fetched diff or a large snapshot,
+/// and the fix for each is different.
+fn set_mode_snapshot(
+    app: &App,
+    state: &AppState,
+    mode: &str,
+    t_switch: std::time::Instant,
+) -> AppSnapshot {
+    let switch_ms = t_switch.elapsed().as_millis();
+    let t_snap = std::time::Instant::now();
+    let snap = snap_from_command(app, state);
+    crate::profile_log::profile_log(
+        "set_mode",
+        &[
+            ("mode", mode.to_string()),
+            ("switch_ms", switch_ms.to_string()),
+            ("snap_ms", t_snap.elapsed().as_millis().to_string()),
+            ("files", snap.files.len().to_string()),
+        ],
+    );
+    snap
 }
 
 /// Change the compare/base branch the active tab diffs against. Only valid on
@@ -3044,16 +3140,30 @@ fn pr_cache_head_oid_for_pr(state: &AppState, pr_number: u64) -> Option<String> 
     })
 }
 
+/// A Sync's snapshot plus how many Reviewed marks it cleared.
+///
+/// The snapshot is flattened so the reply still applies as a plain
+/// `AppSnapshot`; `reviewed_cleared` rides alongside for the "Reviewed cleared
+/// on N changed files" toast. The count cannot be recovered afterwards: the
+/// marks are gone from the reviewed set by the time the snapshot is built.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SyncOutcome {
+    #[serde(flatten)]
+    pub snapshot: AppSnapshot,
+    pub reviewed_cleared: usize,
+}
+
 #[tauri::command]
-pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<SyncOutcome, String> {
     let state = state.inner().clone();
     // Heavy: shells out to git/gh fetches. Run off the main thread so the
     // window stays responsive for the whole fetch.
     run_blocking(move || {
-        let root = {
+        let (root, reviewed_cleared) = {
             let mut app = state.app.lock().map_err(|e| e.to_string())?;
-            app.tab_mut()
-                .refetch_and_refresh_diff()
+            let reviewed_cleared = app
+                .tab_mut()
+                .refetch_and_refresh_diff_counting_cleared()
                 .map_err(|e| e.to_string())?;
 
             // Clear the stale pill on a completed sync by aligning the tab's
@@ -3087,11 +3197,15 @@ pub async fn force_refresh_diff(state: State<'_, AppState>) -> Result<AppSnapsho
             }
 
             crate::tabs::persist_app_tabs(&app);
-            repo_root
+            (repo_root, reviewed_cleared)
         };
         kick_meta_refresh(&state, root);
         refresh_active_status_after_sync(&state);
-        snap!(state)
+        let snapshot: Result<AppSnapshot, String> = snap!(state);
+        Ok(SyncOutcome {
+            snapshot: snapshot?,
+            reviewed_cleared,
+        })
     })
     .await
 }
@@ -3781,6 +3895,220 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
 
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from(&app, state))
+}
+
+// ── Pending review ───────────────────────────────────────────────────────────
+//
+// The composer's "Start a review" collects line comments in the reviewer's
+// GitHub pending review; the Review popover submits them with one decision.
+// GitHub holds the draft, so every command here is a `gh` round trip and runs
+// off the lock, which is held only to read which PR the tab is on (ADR 0015).
+
+/// The pending review as the Review popover reads it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingReviewView {
+    pub pr_number: u64,
+    #[serde(flatten)]
+    pub review: er_engine::github::PendingReview,
+}
+
+/// A line the composer selected, in the numbering of its side.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewLineTarget {
+    pub file: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    /// "LEFT" | "RIGHT"
+    pub side: Option<String>,
+}
+
+impl ReviewLineTarget {
+    fn batch_entry(&self, body: &str) -> Result<er_engine::github::ReviewBatchEntry, String> {
+        if self.file.is_empty() {
+            return Err("A review comment needs a file and line".to_string());
+        }
+        let side = match self.side.as_deref() {
+            None | Some("RIGHT") => "RIGHT",
+            Some("LEFT") => "LEFT",
+            Some(other) => return Err(format!("Invalid diff side: {other}")),
+        };
+        let end = self
+            .line_num_end
+            .filter(|e| *e > self.line_num)
+            .unwrap_or(self.line_num);
+        Ok(er_engine::github::ReviewBatchEntry {
+            file: self.file.clone(),
+            line: end,
+            start_line: (end > self.line_num).then_some(self.line_num),
+            body: body.to_string(),
+            side: side.to_string(),
+        })
+    }
+}
+
+fn review_comment_body(text: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Comment body cannot be empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    active_github_key(&app, state)
+        .ok_or_else(|| "No pull request for this view — open a PR to review on GitHub".to_string())
+}
+
+fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
+    let (owner, repo, number) = active_pr_or_err(state)?;
+    let review = er_engine::github::gh_pending_review(&owner, &repo, number)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(PendingReviewView {
+        pr_number: number,
+        review,
+    })
+}
+
+/// A posted or submitted comment changes what `pull_github_comments` should
+/// return, so drop its cache and let the status card recount.
+fn after_github_write(state: &AppState, owner: String, repo: String, number: u64) {
+    er_engine::github::invalidate_pr_comments_cache();
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner,
+        repo,
+        number,
+    );
+}
+
+#[tauri::command]
+pub async fn get_pending_review(state: State<'_, AppState>) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || read_pending_review(&state)).await
+}
+
+#[tauri::command]
+pub async fn add_pending_review_comment(
+    target: ReviewLineTarget,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let entry = target.batch_entry(&review_comment_body(&text)?)?;
+        let (owner, repo, number) = active_pr_or_err(&state)?;
+        er_engine::github::gh_pending_review_add_comment(&owner, &repo, number, &entry)
+            .map_err(gh_review_submit_err)?;
+        after_github_write(&state, owner, repo, number);
+        read_pending_review(&state)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_pending_review_comment(
+    comment_id: String,
+    state: State<'_, AppState>,
+) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        er_engine::github::gh_pending_review_remove_comment(&comment_id)
+            .map_err(|e| format!("{e:#}"))?;
+        read_pending_review(&state)
+    })
+    .await
+}
+
+/// Submit the pending review with a decision. Without pending comments this
+/// is the bare decision the Branch card's Approve used to send.
+#[tauri::command]
+pub async fn submit_pending_review(
+    mode: String,
+    summary: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let event = match mode.as_str() {
+            "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.clone(),
+            _ => {
+                return Err(format!(
+                    "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
+                ));
+            }
+        };
+        let (owner, repo, number) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let (owner, repo, number) = active_github_key(&app, &state).ok_or_else(|| {
+                "No pull request for this view — open a PR to review on GitHub".to_string()
+            })?;
+            if event == "APPROVE" {
+                let me = state.gh_user.lock().ok().and_then(|login| login.clone());
+                if let (Some(me), Some(author)) =
+                    (me, active_pr_author(&app, &state, &owner, &repo, number))
+                {
+                    if author.eq_ignore_ascii_case(&me) {
+                        return Err(own_pr_approval_error());
+                    }
+                }
+            }
+            (owner, repo, number)
+        };
+        er_engine::github::gh_pending_review_submit(&owner, &repo, number, &event, summary.trim())
+            .map_err(gh_review_submit_err)?;
+        after_github_write(&state, owner, repo, number);
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// "Add single comment": one line comment posted to the PR now, outside any
+/// review.
+#[tauri::command]
+pub async fn post_github_line_comment(
+    target: ReviewLineTarget,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let entry = target.batch_entry(&review_comment_body(&text)?)?;
+        let (owner, repo, number) = active_pr_or_err(&state)?;
+        // Ask first rather than make a call GitHub will refuse. If the check
+        // itself fails, the post still goes and its error is mapped below.
+        if er_engine::github::gh_pending_review(&owner, &repo, number)
+            .is_ok_and(|p| p.review_id.is_some())
+        {
+            return Err(pending_review_blocks_single_comment());
+        }
+        let comment = er_engine::github::NewLineComment {
+            path: &entry.file,
+            line_start: entry.start_line.unwrap_or(entry.line),
+            line_end: Some(entry.line),
+            body: &entry.body,
+            side: &entry.side,
+        };
+        er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment).map_err(
+            |e| {
+                let raw = format!("{e:#}");
+                if is_one_pending_review_error(&raw) {
+                    pending_review_blocks_single_comment()
+                } else {
+                    raw
+                }
+            },
+        )?;
+        after_github_write(&state, owner, repo, number);
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── AI integration ───────────────────────────────────────────────────────────
@@ -5174,22 +5502,233 @@ pub async fn validate_with_ai(
         }
         let resolved_thread =
             thread_id.ok_or_else(|| "thread_id or finding_id is required".to_string())?;
-        ask_ai_impl(resolved_thread, VALIDATE_CARD_AI_PROMPT.to_string(), &state)
+        ask_ai_impl(
+            resolved_thread,
+            VALIDATE_CARD_AI_PROMPT.to_string(),
+            None,
+            &state,
+        )
     })
     .await
 }
 
-/// Ask AI to elaborate on / answer a question thread — adds a local reply.
-///
-/// This is the question-flavored counterpart to `validate_with_ai`: questions
-/// get "Elaborate" (investigate + answer) rather than "Validate" (confirm/refute).
+/// Elaborate on a question or note: the AI rewrites it into a self-contained
+/// question or instruction and adds that as a local reply. It does not answer;
+/// a one-click `ask_ai` does.
 #[tauri::command]
 pub async fn elaborate_with_ai(
     thread_id: String,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || ask_ai_impl(thread_id, ELABORATE_CARD_AI_PROMPT.to_string(), &state)).await
+    run_blocking(move || {
+        let prompt = card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ELABORATE)
+            .ok_or_else(|| "Elaborate works on questions and notes only".to_string())?;
+        ask_ai_impl(
+            thread_id,
+            prompt.to_string(),
+            Some(er_engine::ai::AI_ACTION_ELABORATE),
+            &state,
+        )
+    })
+    .await
+}
+
+/// Tracked agent-command name for Send to agent. Single-flight per tab: two
+/// agents editing one working tree would race over the same files.
+const SEND_NOTE_COMMAND: &str = "send-to-agent";
+
+/// What the Send-to-agent prompt says about the note and where it sits.
+struct SendNotePromptParams<'a> {
+    repo_root: &'a str,
+    base_branch: &'a str,
+    current_branch: &'a str,
+    file: &'a str,
+    line_start: Option<usize>,
+    line_end: Option<usize>,
+    line_content: &'a str,
+    /// The note followed by its replies, oldest first. An Elaborate rewrite is
+    /// one of those replies, so the agent gets the expanded instruction too.
+    thread_body: &'a str,
+}
+
+/// "L8", "L8–9", or `None` for a file-level note.
+fn note_range_label(line_start: Option<usize>, line_end: Option<usize>) -> Option<String> {
+    let a = line_start?;
+    Some(match line_end {
+        Some(b) if b > a => format!("L{a}–{b}"),
+        _ => format!("L{a}"),
+    })
+}
+
+/// The prompt that hands a note to a coding agent, compiled in like every other
+/// prompt (ADR 0023). The agent edits the working tree and nothing else: the
+/// review's sidecars stay `er`'s to write, and committing stays the reviewer's
+/// call, since the diff under review is the working tree being changed.
+fn build_send_note_prompt(p: &SendNotePromptParams<'_>) -> String {
+    let location = match note_range_label(p.line_start, p.line_end) {
+        Some(range) => format!("{}, {range}", p.file),
+        None => format!("{} (the file as a whole)", p.file),
+    };
+    let anchor = if p.line_content.trim().is_empty() {
+        String::new()
+    } else {
+        format!(
+            "The anchored line currently reads:\n```\n{}\n```\n\n",
+            p.line_content
+        )
+    };
+    format!(
+        "You are a coding agent. A reviewer left the note below on a change under review and is handing it to you to carry out.
+
+Repository: {repo_root}
+Branch: {current_branch} (compared against {base_branch})
+Location: {location}
+
+{anchor}Note thread (the reviewer's note first, then any replies; a reply may restate the note as a fuller instruction):
+---
+{thread_body}
+---
+
+Do this:
+1. Read {file} and what it depends on before changing anything.
+2. Make the change the note asks for, in the working tree of {repo_root}. Keep to what the note asks; do not refactor around it.
+3. If the note no longer applies to the current code, or is too ambiguous to act on without guessing, change nothing and say why.
+
+Do not commit, push, stash, switch branches or reset. Do not write anything under the review tool's storage directory.
+
+Finish with a short markdown summary: the files you changed and what changed in each, or why you changed nothing.",
+        repo_root = p.repo_root,
+        current_branch = p.current_branch,
+        base_branch = p.base_branch,
+        file = p.file,
+        thread_body = p.thread_body.trim(),
+    )
+}
+
+/// Why this tab cannot send a note to an agent. The agent edits files, so the
+/// viewed branch has to be checked out at `repo_root`, which is where a tracked
+/// agent command runs. A remote PR tab has no working tree and opening one must
+/// not check anything out (ADR 0020); a local PR or branch view whose head is
+/// not checked out would have the agent edit some other branch.
+fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String> {
+    if tab.is_remote() {
+        return Err(
+            "Send to agent edits the working tree, so it is off on a remote PR tab. Check the PR out locally to use it."
+                .to_string(),
+        );
+    }
+    // `local_checkout_root` treats a local PR tab as the main checkout; its
+    // branch only is one once the watcher has set the checkout root.
+    let checked_out = if tab.pr_number.is_some() || tab.is_local_branch_view() {
+        tab.local_branch_checkout_root.as_deref()
+    } else {
+        tab.local_checkout_root()
+    };
+    match checked_out {
+        Some(root) if root == tab.repo_root => Ok(()),
+        Some(root) => Err(format!(
+            "This branch is checked out at {root}. Open that worktree to send notes to an agent."
+        )),
+        None => Err(
+            "This branch is not checked out, so there is no working tree for an agent to edit."
+                .to_string(),
+        ),
+    }
+}
+
+/// "Run standard instead" on a pending Deep confirmation: the triaged lenses
+/// run as Standard finders, each queued for an agent slot (ADR 0021), with the
+/// prompts the flow already builds in Rust (ADR 0023). Declining cancels, and
+/// starting a new flow re-triages, which is why neither stands in for this.
+#[tauri::command]
+pub async fn run_standard_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        crate::arena_commands::validate_review_flow_bucket(&app, &er_dir)?;
+        app.run_review_flow_standard(&er_dir)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
+}
+
+/// Hand a note to the configured agent CLI to carry out (ADR 0031). It runs as
+/// a tracked agent command, so it shows in the running-jobs pill and the agent
+/// log, can be stopped, and waits for an agent slot like a review agent
+/// (ADR 0021). Its edits land in the working tree and reach the diff through
+/// the watcher; nothing is written back to the note.
+#[tauri::command]
+pub async fn send_note_to_agent(
+    note_id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        if !note_id.starts_with("n-") {
+            return Err("Send to agent works on notes only".to_string());
+        }
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        send_note_blocked_reason(app.tab())?;
+        if app.tab().command_status.get(SEND_NOTE_COMMAND)
+            == Some(&er_engine::app::CommandStatus::Running)
+        {
+            return Err(
+                "An agent is already working on a note in this tab. Wait for it to finish."
+                    .to_string(),
+            );
+        }
+
+        let (prompt, toast) = {
+            let tab = app.tab();
+            let notes: &[er_engine::ai::ReviewQuestion] = tab
+                .ai
+                .notes
+                .as_ref()
+                .map(|ns| ns.notes.as_slice())
+                .unwrap_or(&[]);
+            let note = notes
+                .iter()
+                .find(|n| n.id == note_id)
+                .ok_or_else(|| "Note not found".to_string())?;
+            let mut thread_body = note.text.clone();
+            for r in notes
+                .iter()
+                .filter(|r| r.in_reply_to.as_deref() == Some(note_id.as_str()))
+            {
+                thread_body.push_str(&format!("\n\n**{}** replied:\n{}", r.author, r.text));
+            }
+            let prompt = build_send_note_prompt(&SendNotePromptParams {
+                repo_root: &tab.repo_root,
+                base_branch: &tab.base_branch,
+                current_branch: &tab.current_branch,
+                file: &note.file,
+                line_start: note.line_start,
+                line_end: note.line_end,
+                line_content: &note.line_content,
+                thread_body: &thread_body,
+            });
+            let name = note.file.rsplit('/').next().unwrap_or(&note.file);
+            let toast = match note_range_label(note.line_start, note.line_end) {
+                Some(range) => format!("Note sent to the agent with {range} of {name} as context"),
+                None => format!("Note sent to the agent with {name} as context"),
+            };
+            (prompt, toast)
+        };
+
+        app.spawn_agent_prompt(SEND_NOTE_COMMAND, &prompt)
+            .map_err(|e| e.to_string())?;
+        // Replaces the generic "started" notice with one that names the context.
+        app.notify(&toast);
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 /// Invoke the configured AI agent (`claude` CLI by default) on a question or
@@ -5205,13 +5744,35 @@ pub async fn ask_ai(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || ask_ai_impl(thread_id, prompt, &state)).await
+    run_blocking(move || {
+        // An empty prompt is the one-click Ask AI: answer with the kind's own
+        // prompt. Typed text is the reviewer's own question and goes as written.
+        let prompt = if prompt.trim().is_empty() {
+            card_action_prompt(&thread_id, er_engine::ai::AI_ACTION_ASK)
+                .map_or(prompt, str::to_string)
+        } else {
+            prompt
+        };
+        ask_ai_impl(
+            thread_id,
+            prompt,
+            Some(er_engine::ai::AI_ACTION_ASK),
+            &state,
+        )
+    })
+    .await
 }
 
 /// Body of `ask_ai`; also reached from `validate_with_ai`, `elaborate_with_ai`
 /// and `reply_to_finding`. Blocking: builds the prompt context (raw diff,
 /// files) under the app lock, so callers run it on the blocking pool.
-fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<AppSnapshot, String> {
+/// `ai_action` is stamped on the reply when the thread is a question or note.
+fn ask_ai_impl(
+    thread_id: String,
+    prompt: String,
+    ai_action: Option<&'static str>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
     app.sync_ai_selection();
 
@@ -5402,7 +5963,13 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(thread_id.clone(), started_at);
+        p.insert(
+            thread_id.clone(),
+            crate::snapshot::PendingAiReply {
+                started_at_ms: started_at,
+                ai_action,
+            },
+        );
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
@@ -5436,7 +6003,11 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
         );
         // Take App lock to submit the reply.
         if let Ok(mut app) = app_arc.lock() {
-            let _ = app.submit_comment_text_as_author(
+            let ai_action = match comment_type {
+                CommentType::Question | CommentType::Note => ai_action,
+                CommentType::GitHubComment => None,
+            };
+            let _ = app.submit_ai_reply(
                 CommentTarget {
                     file,
                     hunk_idx,
@@ -5446,8 +6017,7 @@ fn ask_ai_impl(thread_id: String, prompt: String, state: &AppState) -> Result<Ap
                 body,
                 comment_type,
                 Some(thread_id_for_thread.clone()),
-                None,
-                "ai".to_string(),
+                ai_action,
             );
         }
         if let Ok(mut p) = pending_arc.lock() {
@@ -5628,7 +6198,13 @@ fn ask_ai_for_finding(
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     if let Ok(mut p) = state.pending_ai_replies.lock() {
-        p.insert(pending_key, started_at);
+        p.insert(
+            pending_key,
+            crate::snapshot::PendingAiReply {
+                started_at_ms: started_at,
+                ai_action: None,
+            },
+        );
     }
     state.desktop_revision.fetch_add(1, Ordering::Relaxed);
 
@@ -9133,6 +9709,56 @@ pub async fn dismiss_finding(
     .await
 }
 
+/// A person marks a finding resolved: it stays on record, dimmed, instead of
+/// being removed as `dismiss_finding` does. ADR 0047.
+#[tauri::command]
+pub async fn resolve_finding(
+    finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        write_finding_resolved(&mut app, &finding_id, true)?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// Reopen a finding a person, or the validate pass, resolved. ADR 0047.
+#[tauri::command]
+pub async fn unresolve_finding(
+    finding_id: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+            return early;
+        }
+        write_finding_resolved(&mut app, &finding_id, false)?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+fn write_finding_resolved(app: &mut App, finding_id: &str, resolved: bool) -> Result<(), String> {
+    let er_dir = app.tab().er_dir();
+    let found = er_engine::ai::set_finding_resolved(&er_dir, finding_id, resolved)
+        .map_err(|e| format!("Failed to update finding: {e}"))?;
+    if !found {
+        return Err(format!("Finding not found: {finding_id}"));
+    }
+    app.tab_mut().reload_ai_state();
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn promote_finding_to_comment(
     finding_id: String,
@@ -9334,7 +9960,12 @@ fn reply_to_finding_impl(
                 .ok_or_else(|| "Failed to create finding comment thread".to_string())?
         };
         drop(app);
-        return ask_ai_impl(root_id, enriched_prompt, state);
+        return ask_ai_impl(
+            root_id,
+            enriched_prompt,
+            Some(er_engine::ai::AI_ACTION_ASK),
+            state,
+        );
     }
 
     let root_id = er_engine::ai::find_finding_thread_root(&app.tab().ai, &finding_id);
@@ -9532,24 +10163,48 @@ pub fn open_commit_composer(state: State<AppState>) -> Result<AppSnapshot, Strin
 // ── History: select commit ──────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn select_commit(sha: String, state: State<AppState>) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    {
-        let tab = app.tab_mut();
-        // Switching into History mode lazily initializes HistoryState with the
-        // first 50 commits — needed when the user clicks a commit from
-        // Branch/Unstaged/Staged where history was never loaded.
-        if tab.mode != DiffMode::History {
-            tab.set_mode(DiffMode::History);
-        }
-        if let Some(history) = tab.history.as_mut() {
-            if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
-                history.selected_commit = pos;
-                tab.history_load_selected_diff();
+pub async fn select_commit(sha: String, state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // A commit row is a primary click target, and loading it runs git log and
+    // git diff under the App lock — on the main thread that freezes the window.
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        {
+            let tab = app.tab_mut();
+            if tab.is_remote() {
+                return Err("Commits on a remote PR are display-only: there is no local clone to diff them in".to_string());
+            }
+            // Switching into History mode lazily initializes HistoryState —
+            // needed when the user clicks a commit from Branch/Unstaged/Staged
+            // or the PR diff, where history was never loaded.
+            if tab.mode != DiffMode::History {
+                tab.set_mode(DiffMode::History);
+            }
+            if let Some(history) = tab.history.as_mut() {
+                if let Some(pos) = history.commits.iter().position(|c| c.hash == sha) {
+                    history.selected_commit = pos;
+                    tab.history_load_selected_diff();
+                }
             }
         }
-    }
-    Ok(snap_from(&app, &state))
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// "All changes" from the single-commit view. The engine recorded which view
+/// History was entered from, so the frontend does not have to guess between
+/// `pr_diff` and `branch`.
+#[tauri::command]
+pub async fn exit_history(state: State<'_, AppState>) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    // Leaving History re-runs the view's git diff under the App lock.
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.tab_mut().exit_history();
+        Ok(snap_from(&app, &state))
+    })
+    .await
 }
 
 // ── Tab management ──────────────────────────────────────────────────────────
@@ -11223,6 +11878,123 @@ mod tests {
         GitHubReviewComment, ReviewQuestion, UiAnnotation,
     };
 
+    #[test]
+    fn card_action_prompt_picks_the_kind_and_action() {
+        use er_engine::ai::{AI_ACTION_ASK, AI_ACTION_ELABORATE};
+        assert_eq!(
+            card_action_prompt("q-1", AI_ACTION_ELABORATE),
+            Some(ELABORATE_QUESTION_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("n-1", AI_ACTION_ELABORATE),
+            Some(ELABORATE_NOTE_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("q-1", AI_ACTION_ASK),
+            Some(ANSWER_QUESTION_AI_PROMPT)
+        );
+        assert_eq!(
+            card_action_prompt("n-1", AI_ACTION_ASK),
+            Some(ANSWER_NOTE_AI_PROMPT)
+        );
+        // GitHub comments are shared, so the one-click private actions skip them.
+        assert_eq!(card_action_prompt("c-1", AI_ACTION_ELABORATE), None);
+        assert_eq!(card_action_prompt("q-1", "unknown"), None);
+    }
+
+    fn send_note_params<'a>(
+        thread_body: &'a str,
+        line_content: &'a str,
+    ) -> SendNotePromptParams<'a> {
+        SendNotePromptParams {
+            repo_root: "/repo",
+            base_branch: "main",
+            current_branch: "feat/x",
+            file: ".github/workflows/ci.yml",
+            line_start: Some(8),
+            line_end: Some(9),
+            line_content,
+            thread_body,
+        }
+    }
+
+    #[test]
+    fn send_note_prompt_carries_the_note_its_replies_and_the_location() {
+        let body = "pin python\n\n**Claude** replied:\nAdd actions/setup-python@v5";
+        let prompt = build_send_note_prompt(&send_note_params(body, "  - run: python x.py"));
+        assert!(prompt.contains("Location: .github/workflows/ci.yml, L8–9"));
+        assert!(prompt.contains("Branch: feat/x (compared against main)"));
+        assert!(prompt.contains("pin python"));
+        assert!(prompt.contains("Add actions/setup-python@v5"));
+        assert!(prompt.contains("```\n  - run: python x.py\n```"));
+        // The reviewer commits; the agent only edits the working tree.
+        assert!(prompt.contains("Do not commit, push"));
+        assert!(prompt.contains("change nothing and say why"));
+    }
+
+    #[test]
+    fn send_note_prompt_handles_file_level_notes_without_an_anchor() {
+        let mut p = send_note_params("tidy this file", "   ");
+        p.line_start = None;
+        p.line_end = None;
+        let prompt = build_send_note_prompt(&p);
+        assert!(prompt.contains("Location: .github/workflows/ci.yml (the file as a whole)"));
+        assert!(!prompt.contains("anchored line"));
+    }
+
+    #[test]
+    fn note_range_label_matches_the_card() {
+        assert_eq!(note_range_label(Some(8), Some(9)).as_deref(), Some("L8–9"));
+        assert_eq!(note_range_label(Some(8), Some(8)).as_deref(), Some("L8"));
+        assert_eq!(note_range_label(Some(8), None).as_deref(), Some("L8"));
+        assert_eq!(note_range_label(None, Some(3)), None);
+    }
+
+    #[test]
+    fn send_note_needs_the_viewed_branch_checked_out_here() {
+        use er_engine::app::TabState;
+        let mut working = TabState::new_for_test(vec![]);
+        working.repo_root = "/repo".into();
+        assert_eq!(send_note_blocked_reason(&working), Ok(()));
+
+        let mut remote = TabState::new_for_test(vec![]);
+        remote.repo_root = "/repo".into();
+        remote.remote_repo = Some("o/r".into());
+        remote.pr_number = Some(7);
+        assert!(send_note_blocked_reason(&remote)
+            .unwrap_err()
+            .contains("remote PR"));
+
+        // A local PR tab is only a working tree once its head is checked out.
+        let mut local_pr = TabState::new_for_test(vec![]);
+        local_pr.repo_root = "/repo".into();
+        local_pr.pr_number = Some(7);
+        assert!(send_note_blocked_reason(&local_pr)
+            .unwrap_err()
+            .contains("not checked out"));
+        local_pr.local_branch_checkout_root = Some("/repo".into());
+        assert_eq!(send_note_blocked_reason(&local_pr), Ok(()));
+
+        // Checked out in another worktree: the command would run in the wrong one.
+        let mut view = TabState::new_for_test(vec![]);
+        view.repo_root = "/repo".into();
+        view.local_branch_view = Some("feat/x".into());
+        view.local_branch_checkout_root = Some("/repo-wt".into());
+        assert!(send_note_blocked_reason(&view)
+            .unwrap_err()
+            .contains("/repo-wt"));
+    }
+
+    #[test]
+    fn elaborate_prompts_rewrite_rather_than_answer() {
+        for prompt in [ELABORATE_QUESTION_AI_PROMPT, ELABORATE_NOTE_AI_PROMPT] {
+            assert!(prompt.starts_with("Rewrite"));
+            assert!(prompt.contains("Reply with only"));
+        }
+        assert!(ELABORATE_QUESTION_AI_PROMPT.contains("Do not answer"));
+        assert!(ELABORATE_NOTE_AI_PROMPT.contains("Do not edit any file"));
+    }
+
     struct ReviewFlowTestDir(std::path::PathBuf);
 
     impl ReviewFlowTestDir {
@@ -11379,6 +12151,7 @@ mod tests {
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             sent_files: Arc::new(Mutex::new(Default::default())),
+            line_commits_cache: Arc::default(),
         }
     }
 
@@ -12006,6 +12779,39 @@ mod tests {
     }
 
     #[test]
+    fn review_line_target_maps_ranges_and_sides() {
+        let t = |end: Option<usize>, side: Option<&str>| ReviewLineTarget {
+            file: "src/a.rs".into(),
+            line_num: 10,
+            line_num_end: end,
+            side: side.map(str::to_string),
+        };
+        let single = t(None, None).batch_entry("x").unwrap();
+        assert_eq!((single.line, single.start_line), (10, None));
+        assert_eq!(single.side, "RIGHT");
+
+        let range = t(Some(12), Some("LEFT")).batch_entry("x").unwrap();
+        assert_eq!((range.line, range.start_line), (12, Some(10)));
+        assert_eq!(range.side, "LEFT");
+
+        // An end at or before the start is a single line, not a reversed range.
+        let flat = t(Some(10), None).batch_entry("x").unwrap();
+        assert_eq!(flat.start_line, None);
+
+        assert!(t(None, Some("BOTH")).batch_entry("x").is_err());
+        assert!(review_comment_body("  \n").is_err());
+    }
+
+    #[test]
+    fn one_pending_review_refusal_is_detected_from_github_422() {
+        let raw = r#"gh: Unprocessable Entity (HTTP 422) ({"message":"Unprocessable Entity","errors":["user_id can only have one pending review per pull request"]})"#;
+        assert!(is_one_pending_review_error(raw));
+        assert!(!is_one_pending_review_error(
+            "gh: Unprocessable Entity (HTTP 422) pull_request_review_thread.line must be part of the diff"
+        ));
+    }
+
+    #[test]
     fn own_pr_approval_error_is_detected_from_github_422() {
         let raw = r#"Failed to submit review: gh: Unprocessable Entity (HTTP 422) ({"errors":["Review Can not approve your own pull request"]})"#;
         assert!(is_own_pr_approval_error(raw));
@@ -12045,6 +12851,7 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                ai_action: None,
             }],
         };
         std::fs::write(&q_path, serde_json::to_string_pretty(&questions).unwrap()).unwrap();
@@ -12809,6 +13616,10 @@ mod tests {
             "export_to_agent",
             "refresh_diff",
             "force_refresh_diff",
+            // Commit rows are primary click targets; both run git diff under
+            // the App lock.
+            "select_commit",
+            "exit_history",
             // These must be async: a sync command would lock App, reload every
             // AI sidecar, and rebuild the snapshot on the main thread — a
             // freeze and a spinner per inline comment, though the comment is
@@ -12821,6 +13632,8 @@ mod tests {
             "resolve_thread",
             "update_thread_message",
             "dismiss_finding",
+            "resolve_finding",
+            "unresolve_finding",
             "promote_to_comment",
             "promote_to_note",
             "bulk_review_pillar",
@@ -12848,6 +13661,11 @@ mod tests {
             "push_github_comment_thread",
             "push_github_comment_reply",
             "post_github_pr_comment",
+            "get_pending_review",
+            "add_pending_review_comment",
+            "remove_pending_review_comment",
+            "submit_pending_review",
+            "post_github_line_comment",
             "export_review",
             "export_review_to_file",
             // App-wide chrome writes (inbox, pins, ignores): painted optimistically,
@@ -12916,6 +13734,8 @@ mod tests {
                     | "resolve_thread"
                     | "update_thread_message"
                     | "dismiss_finding"
+                    | "resolve_finding"
+                    | "unresolve_finding"
                     | "promote_to_comment"
                     | "promote_to_note"
                     | "bulk_review_pillar"

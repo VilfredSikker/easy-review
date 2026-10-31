@@ -13,6 +13,12 @@ import { buildTree, flattenForNav } from "$lib/treeFromPaths";
 import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
+import { reviewPage, type ReviewPage } from "./reviewPage.svelte";
+import { copyReviewExport } from "./quickExport";
+import { arena } from "./arena.svelte";
+
+/** Bare digits pick the review page, in the order the shell lists them. */
+const REVIEW_PAGE_KEYS: Partial<Record<string, ReviewPage>> = { "1": "overview", "2": "tour", "3": "diff" };
 
 interface OpenSourceResult {
   kind: string;
@@ -87,7 +93,10 @@ function togglePanelForKey(e: KeyboardEvent): boolean {
     return true;
   }
   if (e.key === "]" || e.code === "BracketRight") {
-    rightRail.toggle();
+    // The Tour gives bare `]` to the next pillar, as its rail footer says;
+    // Cmd+] still reaches the right panel there.
+    if (!e.metaKey && !e.ctrlKey && reviewPage.current === "tour") diffNav.scrollToNextPillar();
+    else rightRail.toggle();
     e.preventDefault();
     return true;
   }
@@ -102,13 +111,15 @@ function togglePanelForKey(e: KeyboardEvent): boolean {
 /**
  * Move file selection in visual tree order (not flat `files` order, which is
  * path-sorted from `git diff`). The snapshot's `files` already reflects any
- * active filter, so we build the tree directly from it.
+ * active filter, so we build the tree directly from it. The Tour hides the
+ * tree and reads in pillar order, so there `j`/`k` follow the column instead.
  */
 function moveFile(direction: 1 | -1) {
   const snap = app.snapshot;
   if (!snap || snap.files.length === 0) return;
-  const tree = buildTree(snap.files);
-  const order = flattenForNav(tree, fileTreeCollapse.collapsed);
+  const tourOrder = reviewPage.current === "tour" ? diffNav.drawnFilePaths() : [];
+  const order =
+    tourOrder.length > 0 ? tourOrder : flattenForNav(buildTree(snap.files), fileTreeCollapse.collapsed);
   if (order.length === 0) return;
   const cur = snap.files[snap.selected_file]?.path;
   let i = cur ? order.indexOf(cur) : -1;
@@ -119,6 +130,17 @@ function moveFile(direction: 1 | -1) {
   void app.cmd("select_file", { idx: next.source_index }).then(() => {
     void diffNav.scrollToFile(next.path);
   });
+}
+
+/** `r` toggles reviewed on the file being read, falling back to the selected
+ *  one when the reading line sits on a Tour pillar header. */
+function toggleReviewedHere() {
+  const snap = app.snapshot;
+  if (!snap) return;
+  const path = diffNav.visibleFilePath() ?? snap.files[snap.selected_file]?.path;
+  const file = snap.files.find((f) => f.path === path);
+  if (!file) return;
+  void app.cmd(file.reviewed ? "unmark_reviewed" : "mark_reviewed", { path: file.path });
 }
 
 async function openInVsCode() {
@@ -233,6 +255,12 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
     openExportReviewView();
     return true;
   },
+  (e) => {
+    if (!withMod(e) || !e.shiftKey || !isLetter(e, "c")) return false;
+    e.preventDefault();
+    void copyReviewExport();
+    return true;
+  },
   (e, { inField }) => {
     if (!withMod(e) || e.shiftKey || e.key !== "o" || inField) return false;
     e.preventDefault();
@@ -291,6 +319,16 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
 
 /** Single-key shortcuts, only outside fields and modals and without modifiers. */
 function handleBareKey(e: KeyboardEvent) {
+  // The arena is a full-window overlay with its own j/k; the review under it is hidden.
+  if (arena.overlayOpen) return;
+  const page = REVIEW_PAGE_KEYS[e.key];
+  if (page && reviewPage.available(page)) {
+    e.preventDefault();
+    reviewPage.show(page);
+    return;
+  }
+  // The Inbox page binds its own j/k/u/Enter; diff keys would act on a hidden diff.
+  if (app.mainView === "inbox") return;
   switch (e.key) {
     case "j":
       moveFile(1);
@@ -305,6 +343,13 @@ function handleBareKey(e: KeyboardEvent) {
     case "d":
       e.preventDefault();
       app.toggleDiffViewMode();
+      break;
+    case "r":
+      // Tour and Diff only: the Overview lists files but reads none.
+      if (reviewPage.current === "tour" || reviewPage.current === "diff") {
+        e.preventDefault();
+        toggleReviewedHere();
+      }
       break;
     case "R":
       app.cmd("refresh_diff");

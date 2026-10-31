@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>nested-scroll fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<div id="scroller" style="height:400px;overflow:auto;border:1px solid"><div id="items"></div></div><script>document.querySelector('#items').innerHTML = Array.from({length:50}, (_, i) => `<p><button class="item">Item ${i + 1}</button></p>`).join('');</script>
+<script src="/common.js"></script></body></html>

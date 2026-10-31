@@ -4,12 +4,12 @@
 //! Reach (how much existing code a change touches) is judged by the agent, but
 //! the inputs to that judgement are facts the engine already has: which files
 //! are new, which existing files are edited or deleted, what kind each file is,
-//! and the repo's declared importance. Computing them here means every agent
+//! and the repo's declared risk tiers. Computing them here means every agent
 //! starts from the same numbers rather than estimating them from a skim of the
 //! diff. Why the agent and not the engine makes the call:
 //! `docs/adr/0039-reach-is-judged-from-engine-facts.md`.
 
-use crate::config::{FileKindRepoConfig, ImportanceRepoConfig};
+use crate::config::{FileKindRepoConfig, RiskRules, RiskTier};
 use crate::git::{DiffFileHeader, FileKind, FileStatus};
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -25,19 +25,18 @@ const MAX_NEW_DIRS: usize = 20;
 #[derive(Clone, Copy)]
 pub struct RepoRules<'a> {
     pub file_kinds: &'a FileKindRepoConfig,
-    /// `None` when the repo declares no importance table at all — distinct
-    /// from a table whose rules happen not to claim a path.
-    pub importance: Option<&'a ImportanceRepoConfig>,
+    /// `None` when nothing declares a risk rule for the repo — distinct from
+    /// rules that happen not to claim a path.
+    pub risk: Option<&'a RiskRules>,
 }
 
 impl<'a> RepoRules<'a> {
-    /// An empty importance table is no declaration at all: a repo with none
-    /// gets an empty one, and the facts must say "undeclared", not "normal".
-    pub fn new(file_kinds: &'a FileKindRepoConfig, importance: &'a ImportanceRepoConfig) -> Self {
-        let declared = importance.default.is_some() || !importance.rules.is_empty();
+    /// Empty rules are no declaration at all: a repo with none gets empty
+    /// ones, and the facts must say "undeclared", not "ai".
+    pub fn new(file_kinds: &'a FileKindRepoConfig, risk: &'a RiskRules) -> Self {
         Self {
             file_kinds,
-            importance: declared.then_some(importance),
+            risk: risk.is_declared().then_some(risk),
         }
     }
 }
@@ -47,7 +46,7 @@ impl<'a> RepoRules<'a> {
 #[derive(Debug, Clone, Default)]
 pub struct OwnedRepoRules {
     pub file_kinds: FileKindRepoConfig,
-    pub importance: ImportanceRepoConfig,
+    pub risk: RiskRules,
 }
 
 impl OwnedRepoRules {
@@ -55,12 +54,12 @@ impl OwnedRepoRules {
     pub fn from_config(config: &crate::config::ErConfig, key: &str) -> Self {
         Self {
             file_kinds: config.file_kinds.repo(key).cloned().unwrap_or_default(),
-            importance: config.importance.repo(key).cloned().unwrap_or_default(),
+            risk: config.risk_rules(key),
         }
     }
 
     pub fn as_rules(&self) -> RepoRules<'_> {
-        RepoRules::new(&self.file_kinds, &self.importance)
+        RepoRules::new(&self.file_kinds, &self.risk)
     }
 }
 
@@ -68,7 +67,7 @@ impl OwnedRepoRules {
 ///
 /// Written on every call, unlike `diff-tmp`: the facts depend on the repo's
 /// rule tables as well as the diff, so an unchanged diff after a
-/// `[file_kinds]` or `[importance]` edit still needs a fresh file.
+/// `[file_kinds]` or `[risk]` edit still needs a fresh file.
 pub fn write_change_facts(er_dir: &str, raw: &str, rules: RepoRules<'_>) -> Result<(), String> {
     let facts = render_change_facts(&crate::git::parse_diff_headers(raw), rules);
     super::prepared_diff::atomic_write(std::path::Path::new(er_dir), CHANGE_FACTS_FILE, &facts)
@@ -76,7 +75,7 @@ pub fn write_change_facts(er_dir: &str, raw: &str, rules: RepoRules<'_>) -> Resu
 
 struct Existing<'h> {
     header: &'h DiffFileHeader,
-    importance: String,
+    tier: String,
     rank: u8,
 }
 
@@ -97,10 +96,10 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
         if is_new(&h.status) {
             new_code.push(h);
         } else {
-            let (importance, rank) = importance_of(rules.importance, &h.path);
+            let (tier, rank) = risk_of(rules.risk, &h.path);
             existing.push(Existing {
                 header: h,
-                importance,
+                tier,
                 rank,
             });
         }
@@ -145,11 +144,12 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
     }
     let _ = writeln!(
         out,
-        "- Importance: {}\n",
-        if rules.importance.is_some() {
-            "declared for this repo (`[importance]`); tiers below are the declared ones."
+        "- Risk tiers: {}\n",
+        if rules.risk.is_some() {
+            "declared for this repo (`[risk]`); tiers below are the declared ones. `ai` means no \
+             tier was declared for that path: rate it from what the code does."
         } else {
-            "not declared for this repo. Tiers are unknown — do not read `undeclared` as `normal`."
+            "not declared for this repo. Tiers are unknown — do not read `undeclared` as `low`."
         }
     );
 
@@ -166,7 +166,7 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
         });
         let _ = writeln!(
             out,
-            "| path | change | lines | importance |\n|---|---|---|---|"
+            "| path | change | lines | risk tier |\n|---|---|---|---|"
         );
         for e in existing.iter().take(MAX_EXISTING_ROWS) {
             let _ = writeln!(
@@ -176,7 +176,7 @@ pub fn render_change_facts(headers: &[DiffFileHeader], rules: RepoRules<'_>) -> 
                 status_word(&e.header.status),
                 e.header.adds,
                 e.header.dels,
-                e.importance
+                e.tier
             );
         }
         if existing.len() > MAX_EXISTING_ROWS {
@@ -226,23 +226,24 @@ const fn status_word(status: &FileStatus) -> &'static str {
     }
 }
 
-/// Label and sort rank: foundational first, undeclared last.
-fn importance_of(table: Option<&ImportanceRepoConfig>, path: &str) -> (String, u8) {
-    use crate::config::ImportanceTier;
-    let Some(table) = table else {
-        return ("undeclared".to_string(), 3);
+/// Label and sort rank: high first, then the tiers a reader should open next,
+/// undeclared last. `ai` sorts above `low` — an unrated file may turn out to
+/// matter, a declared-low one was judged not to.
+fn risk_of(rules: Option<&RiskRules>, path: &str) -> (String, u8) {
+    let Some(rules) = rules else {
+        return ("undeclared".to_string(), 4);
     };
-    let (tier, label) = match table.matching_rule(path) {
-        Some((_, tier)) => (tier, tier.as_str().to_string()),
-        None => {
-            let tier = table.default_tier();
-            (tier, format!("{} (default)", tier.as_str()))
-        }
+    let resolved = rules.resolve(path);
+    let tier = resolved.tier;
+    let label = match resolved.rule {
+        Some(_) => tier.as_str().to_string(),
+        None => format!("{} (default)", tier.as_str()),
     };
     let rank = match tier {
-        ImportanceTier::Foundational => 0,
-        ImportanceTier::Normal => 1,
-        ImportanceTier::Isolated => 2,
+        RiskTier::High => 0,
+        RiskTier::Med => 1,
+        RiskTier::Ai => 2,
+        RiskTier::Low => 3,
     };
     (label, rank)
 }
@@ -261,6 +262,7 @@ mod tests {
             hunk_count: 1,
             byte_offset: 0,
             byte_length: 0,
+            similarity: None,
         }
     }
 
@@ -280,7 +282,7 @@ mod tests {
             &headers,
             RepoRules {
                 file_kinds: &kinds,
-                importance: None,
+                risk: None,
             },
         );
         assert!(facts.contains("- New files: 2 (+380)."), "{facts}");
@@ -306,7 +308,7 @@ mod tests {
             &headers,
             RepoRules {
                 file_kinds: &kinds,
-                importance: None,
+                risk: None,
             },
         );
         assert!(
@@ -322,7 +324,7 @@ mod tests {
             "{facts}"
         );
         assert!(
-            facts.contains("do not read `undeclared` as `normal`"),
+            facts.contains("do not read `undeclared` as `low`"),
             "{facts}"
         );
     }
@@ -335,27 +337,24 @@ mod tests {
             header("src/router.ts", FileStatus::Modified, 2, 0),
             header("src/util.ts", FileStatus::Modified, 9, 0),
         ];
-        let importance = ImportanceRepoConfig {
-            default: None,
-            rules: BTreeMap::from([("src/router.ts".to_string(), "foundational".to_string())]),
-        };
+        let risk = crate::config::test_support::risk_rules(&[("src/router.ts", "high")], None);
         let kinds = no_rules();
         let facts = render_change_facts(
             &headers,
             RepoRules {
                 file_kinds: &kinds,
-                importance: Some(&importance),
+                risk: Some(&risk),
             },
         );
         assert!(
-            facts.contains("| `src/router.ts` | edited | +2 −0 | foundational |"),
+            facts.contains("| `src/router.ts` | edited | +2 −0 | high |"),
             "{facts}"
         );
         assert!(
-            facts.contains("| `src/util.ts` | edited | +9 −0 | normal (default) |"),
+            facts.contains("| `src/util.ts` | edited | +9 −0 | ai (default) |"),
             "{facts}"
         );
-        // Foundational sorts first even with less churn.
+        // High sorts first even with less churn.
         let router = facts.find("src/router.ts").unwrap();
         let util = facts.find("src/util.ts").unwrap();
         assert!(router < util);
@@ -372,7 +371,7 @@ mod tests {
             &headers,
             RepoRules {
                 file_kinds: &kinds,
-                importance: None,
+                risk: None,
             },
         );
         assert!(facts.contains("generated 1 (+900 −10)"), "{facts}");
@@ -383,30 +382,24 @@ mod tests {
     }
 
     /// The tab path and the config path must agree on what "declared" means:
-    /// an empty `[importance.<repo>]` table declares nothing.
+    /// an empty `[risk.<repo>]` table declares nothing, but a user rule does.
     #[test]
-    fn empty_importance_table_is_undeclared_on_every_path() {
+    fn empty_risk_rules_are_undeclared_on_every_path() {
         let kinds = no_rules();
-        let empty = ImportanceRepoConfig::default();
-        assert!(RepoRules::new(&kinds, &empty).importance.is_none());
+        let empty = RiskRules::default();
+        assert!(RepoRules::new(&kinds, &empty).risk.is_none());
 
         let mut config = crate::config::ErConfig::default();
         config
-            .importance
+            .risk
             .items
-            .insert("svc".to_string(), ImportanceRepoConfig::default());
+            .insert("svc".to_string(), crate::config::RiskRuleTable::default());
         let owned = OwnedRepoRules::from_config(&config, "svc");
-        assert!(owned.as_rules().importance.is_none());
+        assert!(owned.as_rules().risk.is_none());
 
-        config.importance.items.insert(
-            "svc".to_string(),
-            ImportanceRepoConfig {
-                default: Some("isolated".to_string()),
-                rules: BTreeMap::new(),
-            },
-        );
+        config.user_risk.default = Some("low".to_string());
         let owned = OwnedRepoRules::from_config(&config, "svc");
-        assert!(owned.as_rules().importance.is_some());
+        assert!(owned.as_rules().risk.is_some());
     }
 
     #[test]
@@ -420,24 +413,24 @@ mod tests {
             raw,
             RepoRules {
                 file_kinds: &kinds,
-                importance: None,
+                risk: None,
             },
         )
         .unwrap();
         let first = std::fs::read_to_string(dir.path().join(CHANGE_FACTS_FILE)).unwrap();
         assert!(first.contains("undeclared"));
 
-        let importance = ImportanceRepoConfig::default();
+        let risk = crate::config::test_support::risk_rules(&[], Some("low"));
         write_change_facts(
             er_dir,
             raw,
             RepoRules {
                 file_kinds: &kinds,
-                importance: Some(&importance),
+                risk: Some(&risk),
             },
         )
         .unwrap();
         let second = std::fs::read_to_string(dir.path().join(CHANGE_FACTS_FILE)).unwrap();
-        assert!(second.contains("normal (default)"), "{second}");
+        assert!(second.contains("low (default)"), "{second}");
     }
 }

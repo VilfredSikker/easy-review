@@ -1,88 +1,51 @@
 <script lang="ts">
   import { invoke } from "@tauri-apps/api/core";
   import { copyToClipboard } from "$lib/clipboard";
-  import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import {
+    EXPORT_CATEGORIES,
+    highlightMarkdown,
+    isPickable,
+    itemLocation,
+    previewSize,
+    visibleItems,
+    type ExportCategory,
+    type ExportItem,
+  } from "$lib/exportOptions";
   import { app } from "$lib/stores/app.svelte";
-
-  // Mirrors `ExportOpts` in `crates/er-engine/src/export.rs` (camelCase over IPC).
-  // The `include*Ids` arrays are per-category allow-lists: undefined = whole
-  // category; otherwise only the listed item ids are exported.
-  type ExportOpts = {
-    includeComments: boolean;
-    includeQuestions: boolean;
-    includeNotes: boolean;
-    includeFindings: boolean;
-    includeAnnotations: boolean;
-    includeChecklist: boolean;
-    onlyUnresolved: boolean;
-    includeCommentIds?: string[];
-    includeQuestionIds?: string[];
-    includeNoteIds?: string[];
-    includeFindingIds?: string[];
-  };
-  type ExportOptionKey = keyof ExportOpts;
-
-  let includeComments = $state(true);
-  let includeQuestions = $state(true);
-  let includeNotes = $state(true);
-  let includeFindings = $state(true);
-  let includeAnnotations = $state(true);
-  const includeChecklist = $state(true);
-  let onlyUnresolved = $state(false);
-
-  // Per-item exclusions. Empty set = export the whole category (no allow-list
-  // sent); any exclusions produce an allow-list of the remaining known ids.
-  let excludedCommentIds = $state<Set<string>>(new Set());
-  let excludedQuestionIds = $state<Set<string>>(new Set());
-  let excludedNoteIds = $state<Set<string>>(new Set());
-  let excludedFindingIds = $state<Set<string>>(new Set());
+  import { exportOptions } from "$lib/stores/exportOptions.svelte";
 
   let preview = $state("");
   let loadingPreview = $state(false);
   let error = $state<string | null>(null);
-  let savedPath = $state<string | null>(null);
-  let savedAt = $state(0);
   let previewRequestId = 0;
-  let lastPreviewTab = $state(-1);
+  // Which item lists are expanded is view state only; it resets with the page.
+  let open = $state<Partial<Record<ExportCategory, boolean>>>({});
 
-  const ai = $derived(app.snapshot?.ai);
-  const commentItems = $derived(
-    (ai?.threads ?? []).filter((t) => t.kind === "comment"),
-  );
-  const questionItems = $derived(
-    (ai?.threads ?? []).filter((t) => t.kind === "question"),
-  );
-  const noteItems = $derived((ai?.threads ?? []).filter((t) => t.kind === "note"));
-  const findingItems = $derived(ai?.findings ?? []);
+  const prefs = $derived(exportOptions.prefs);
+  const highlighted = $derived(highlightMarkdown(preview));
+  const size = $derived(preview ? previewSize(preview) : "");
 
-  function allowList(excluded: Set<string>, known: string[]): string[] | undefined {
-    if (excluded.size === 0) return undefined;
-    return known.filter((id) => !excluded.has(id));
+  function rowItems(key: ExportCategory): ExportItem[] | null {
+    return isPickable(key) ? visibleItems(exportOptions.items[key], prefs.onlyUnresolved) : null;
   }
 
-  function currentExportOpts(): ExportOpts {
-    return {
-      includeComments,
-      includeQuestions,
-      includeNotes,
-      includeFindings,
-      includeAnnotations,
-      includeChecklist,
-      onlyUnresolved,
-      includeCommentIds: allowList(excludedCommentIds, commentItems.map((t) => t.id)),
-      includeQuestionIds: allowList(excludedQuestionIds, questionItems.map((t) => t.id)),
-      includeNoteIds: allowList(excludedNoteIds, noteItems.map((t) => t.id)),
-      includeFindingIds: allowList(excludedFindingIds, findingItems.map((f) => f.id)),
-    };
+  // Annotations and the checklist cannot be picked item by item, so their row
+  // shows a plain total instead of picked/total.
+  function rowCount(key: ExportCategory, items: ExportItem[] | null): string {
+    if (items) return `${items.filter((i) => !exportOptions.isExcluded(i.id)).length}/${items.length}`;
+    if (key === "annotations") {
+      return String((app.snapshot?.ui_annotations ?? []).filter((a) => !(prefs.onlyUnresolved && a.stale)).length);
+    }
+    return String(app.snapshot?.ai?.checklist?.items.length ?? 0);
   }
 
-  async function refreshPreview(optsSnapshot = currentExportOpts()) {
+  async function refreshPreview() {
     const requestId = ++previewRequestId;
     loadingPreview = true;
     try {
-      const nextPreview = await invoke<string>("export_review", { opts: optsSnapshot });
+      const next = await exportOptions.render();
       if (requestId !== previewRequestId) return;
-      preview = nextPreview;
+      preview = next;
       error = null;
     } catch (e) {
       if (requestId !== previewRequestId) return;
@@ -92,128 +55,12 @@
     }
   }
 
-  function applyExportOpts(nextOpts: ExportOpts) {
-    includeComments = nextOpts.includeComments;
-    includeQuestions = nextOpts.includeQuestions;
-    includeNotes = nextOpts.includeNotes;
-    includeFindings = nextOpts.includeFindings;
-    includeAnnotations = nextOpts.includeAnnotations;
-    onlyUnresolved = nextOpts.onlyUnresolved;
-    void refreshPreview(nextOpts);
-  }
-
-  function setExportOption(key: ExportOptionKey, checked: boolean) {
-    applyExportOpts({ ...currentExportOpts(), [key]: checked });
-  }
-
-  // Toggle a single item in a category. The category master must be on; the
-  // exclusion set drives the per-category allow-list. `excluded` is a Svelte
-  // $state-proxied Set, so in-place mutation is reactive.
-  function toggleItem(excluded: Set<string>, id: string) {
-    if (excluded.has(id)) {
-      excluded.delete(id);
-    } else {
-      excluded.add(id);
-    }
-    void refreshPreview();
-  }
-
-  function masterToggle(
-    masterOn: boolean,
-    setMaster: (v: boolean) => void,
-    excluded: Set<string>,
-  ) {
-    setMaster(masterOn);
-    if (masterOn) {
-      // Re-enabling the category exports everything again.
-      excluded.clear();
-    }
-    void refreshPreview();
-  }
-
-  function includeAllOptions() {
-    includeComments = true;
-    includeQuestions = true;
-    includeNotes = true;
-    includeFindings = true;
-    includeAnnotations = true;
-    onlyUnresolved = false;
-    excludedCommentIds = new Set();
-    excludedQuestionIds = new Set();
-    excludedNoteIds = new Set();
-    excludedFindingIds = new Set();
-    void refreshPreview();
-  }
-
-  function excludeAllOptions() {
-    includeComments = false;
-    includeQuestions = false;
-    includeNotes = false;
-    includeFindings = false;
-    includeAnnotations = false;
-    onlyUnresolved = false;
-    excludedCommentIds = new Set();
-    excludedQuestionIds = new Set();
-    excludedNoteIds = new Set();
-    excludedFindingIds = new Set();
-    void refreshPreview();
-  }
-
-  function onExportOptionChange(key: ExportOptionKey, e: Event) {
-    const checked = (e.currentTarget as HTMLInputElement).checked;
-    switch (key) {
-      case "includeComments":
-        masterToggle(checked, (v) => (includeComments = v), excludedCommentIds);
-        break;
-      case "includeQuestions":
-        masterToggle(checked, (v) => (includeQuestions = v), excludedQuestionIds);
-        break;
-      case "includeNotes":
-        masterToggle(checked, (v) => (includeNotes = v), excludedNoteIds);
-        break;
-      case "includeFindings":
-        masterToggle(checked, (v) => (includeFindings = v), excludedFindingIds);
-        break;
-      default:
-        setExportOption(key, checked);
-    }
-  }
-
-  function itemChecked(excluded: Set<string>, id: string): boolean {
-    return !excluded.has(id);
-  }
-
-  function threadLabel(t: { file: string; line: number; root: { body_markdown?: string } }): string {
-    const loc = t.line > 0 ? `${t.file}:${t.line}` : t.file;
-    const body = (t.root.body_markdown ?? "").replace(/\s+/g, " ").trim();
-    return body ? `${loc} — ${body.slice(0, 60)}${body.length > 60 ? "…" : ""}` : loc;
-  }
-
-  async function handleCopyToClipboard() {
-    try {
-      const body = await invoke<string>("export_review", { opts: currentExportOpts() });
-      await copyToClipboard(body);
-      app.pushLog("info", "clipboard", `Copied ${body.length} chars`);
-      savedPath = "Copied to clipboard";
-      savedAt = Date.now();
-      setTimeout(() => {
-        if (Date.now() - savedAt >= 1900) savedPath = null;
-      }, 2000);
-    } catch (e) {
-      error = String(e);
-    }
-  }
-
   async function saveToFile() {
     try {
-      const target = await invoke<string>("export_review_to_file", { opts: currentExportOpts(), path: "" });
-      savedPath = `Saved to ${target}`;
-      savedAt = Date.now();
-      setTimeout(() => {
-        if (Date.now() - savedAt >= 2900) savedPath = null;
-      }, 3000);
+      const target = await invoke<string>("export_review_to_file", { opts: exportOptions.current, path: "" });
+      app.showToast("success", `Saved to ${target}`);
     } catch (e) {
-      error = String(e);
+      app.showToast("error", `Save failed: ${String(e)}`);
     }
   }
 
@@ -227,258 +74,450 @@
     }
   }
 
+  // The preview follows the options and the review itself: a comment added
+  // while this page is open shows up without touching a toggle.
   $effect(() => {
-    if (app.mainView !== "export-review") {
-      lastPreviewTab = -1;
-      return;
-    }
-    const tab = app.snapshot?.active_tab ?? -1;
-    if (tab === lastPreviewTab) return;
-    lastPreviewTab = tab;
+    if (app.mainView !== "export-review") return;
+    void exportOptions.current;
+    void app.snapshot?.ai;
+    void app.snapshot?.ui_annotations;
+    void app.snapshot?.active_tab;
     void refreshPreview();
   });
+
+  // The hint on Copy markdown. Bound here rather than globally: the shortcut
+  // belongs to this page, and outside it ⌘⇧C stays free.
+  function onKeydown(e: KeyboardEvent) {
+    if (app.mainView !== "export-review") return;
+    if (!(e.metaKey || e.ctrlKey) || !e.shiftKey || e.altKey || e.key.toLowerCase() !== "c") return;
+    // Ctrl+Shift+C is copy in a terminal and in text fields on Linux.
+    const target = e.target as HTMLElement | null;
+    if (target?.closest?.(".xterm, input, textarea, select, [contenteditable='true']")) return;
+    e.preventDefault();
+    void exportOptions.quickCopy();
+  }
 </script>
 
-<div class="flex-1 min-w-0 min-h-0 overflow-hidden flex flex-col bg-ink-900">
-  <div class="h-10 px-4 border-b border-hairline bg-ink-870 flex items-center gap-2 text-sm">
-    <span class="text-fg-2">Export Review</span>
-    {#if loadingPreview}
-      <span class="text-[11px] text-muted mono">Refreshing…</span>
-    {/if}
-    <button type="button"
-      class="ml-auto px-2 py-1 text-xs border border-border rounded hover:bg-hover"
-      onclick={handleCopyToClipboard}
-      disabled={loadingPreview && !preview}
-    >
-      Copy to clipboard
-    </button>
-    <button type="button"
-      class="px-2 py-1 text-xs border border-border rounded hover:bg-hover"
-      onclick={saveToFile}
-      disabled={loadingPreview && !preview}
-    >
-      Save to file
-    </button>
-    <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={copyReviewJson}>
-      Copy review.json
-    </button>
-    <button type="button" class="px-2 py-1 text-xs border border-border rounded hover:bg-hover" onclick={() => app.setMainView("diff")}>
-      Back to diff
-    </button>
-  </div>
+<svelte:window onkeydown={onKeydown} />
 
-  <div class="px-4 py-3 border-b border-hairline bg-card flex flex-wrap items-center gap-x-5 gap-y-2">
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeComments}
-        onchange={(e) => onExportOptionChange("includeComments", e)}
-      />
-      <span>Comments</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeQuestions}
-        onchange={(e) => onExportOptionChange("includeQuestions", e)}
-      />
-      <span>Questions</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeNotes}
-        onchange={(e) => onExportOptionChange("includeNotes", e)}
-      />
-      <span>Notes</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeFindings}
-        onchange={(e) => onExportOptionChange("includeFindings", e)}
-      />
-      <span>AI findings</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeAnnotations}
-        onchange={(e) => onExportOptionChange("includeAnnotations", e)}
-      />
-      <span>UI annotations</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={includeChecklist}
-        onchange={(e) => onExportOptionChange("includeChecklist", e)}
-      />
-      <span>Review checklist</span>
-    </label>
-    <label class="flex items-center gap-2 text-sm text-fg-2 cursor-pointer">
-      <input
-        type="checkbox"
-        checked={onlyUnresolved}
-        onchange={(e) => onExportOptionChange("onlyUnresolved", e)}
-      />
-      <span>Only unresolved</span>
-    </label>
-    <span class="w-px h-4 bg-hairline" aria-hidden="true"></span>
-    <button
-      type="button"
-      class="px-2 py-0.5 text-xs border border-border rounded hover:bg-hover text-fg-2"
-      onclick={includeAllOptions}
-    >
-      Include all
-    </button>
-    <button
-      type="button"
-      class="px-2 py-0.5 text-xs border border-border rounded hover:bg-hover text-fg-2"
-      onclick={excludeAllOptions}
-    >
-      Exclude all
-    </button>
-    {#if savedPath}
-      <span class="text-[11px] text-add-fg mono">{savedPath}</span>
-    {/if}
-    {#if error}
-      <span class="text-[11px] text-del-fg mono">{error}</span>
-    {/if}
-  </div>
+{#snippet check(on: boolean)}
+  <span class="cb" aria-hidden="true" data-on={on}>
+    <svg width="9" height="9" viewBox="0 0 10 10" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 5.2l2 2L8 3" /></svg>
+  </span>
+{/snippet}
 
-  <!-- Per-item toggles: every individual comment / question / note / finding
-       appears as a sub-option so the user can exclude a single item without
-       dropping the whole category. -->
-  <div class="px-4 py-2 border-b border-hairline bg-bg flex flex-wrap items-start gap-x-6 gap-y-2 max-h-40 overflow-y-auto">
-    {#if includeComments && commentItems.length > 0}
-      <div class="min-w-[240px] max-w-[320px]">
-        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Comments ({commentItems.length})</div>
-        <ul class="space-y-0.5">
-          {#each commentItems as t (t.id)}
-            <li>
-              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="mt-0.5"
-                  checked={itemChecked(excludedCommentIds, t.id)}
-                  onchange={() => toggleItem(excludedCommentIds, t.id)}
-                />
-                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
-              </label>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-    {#if includeQuestions && questionItems.length > 0}
-      <div class="min-w-[240px] max-w-[320px]">
-        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Questions ({questionItems.length})</div>
-        <ul class="space-y-0.5">
-          {#each questionItems as t (t.id)}
-            <li>
-              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="mt-0.5"
-                  checked={itemChecked(excludedQuestionIds, t.id)}
-                  onchange={() => toggleItem(excludedQuestionIds, t.id)}
-                />
-                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
-              </label>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-    {#if includeNotes && noteItems.length > 0}
-      <div class="min-w-[240px] max-w-[320px]">
-        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Notes ({noteItems.length})</div>
-        <ul class="space-y-0.5">
-          {#each noteItems as t (t.id)}
-            <li>
-              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="mt-0.5"
-                  checked={itemChecked(excludedNoteIds, t.id)}
-                  onchange={() => toggleItem(excludedNoteIds, t.id)}
-                />
-                <span class="truncate" title={threadLabel(t)}>{threadLabel(t)}</span>
-              </label>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-    {#if includeFindings && findingItems.length > 0}
-      <div class="min-w-[240px] max-w-[320px]">
-        <div class="text-[10px] uppercase tracking-wider text-muted mb-1">AI findings ({findingItems.length})</div>
-        <ul class="space-y-0.5">
-          {#each findingItems as f (f.id)}
-            <li>
-              <label class="flex items-start gap-1.5 text-[11px] text-fg-2 cursor-pointer">
-                <input
-                  type="checkbox"
-                  class="mt-0.5"
-                  checked={itemChecked(excludedFindingIds, f.id)}
-                  onchange={() => toggleItem(excludedFindingIds, f.id)}
-                />
-                <span class="truncate" title={`${f.file}:${f.line ?? "—"} — ${f.title}`}>
-                  {f.file}:{f.line ?? "—"} — {f.title}
-                </span>
-              </label>
-            </li>
-          {/each}
-        </ul>
-      </div>
-    {/if}
-    {#if !includeComments && !includeQuestions && !includeNotes && !includeFindings}
-      <span class="text-[11px] text-muted">Enable a category above to see its individual items.</span>
-    {/if}
-  </div>
+<section class="ex flex-1 min-w-0 min-h-0 overflow-hidden" aria-label="Export review">
+  <header class="ex-head">
+    <button type="button" class="ex-btn ghost" onclick={() => app.setMainView("diff")}>‹ Back</button>
+    <div class="min-w-0">
+      <h2>Export review</h2>
+      <p class="dim">Markdown for a PR description, a handoff, or an agent prompt.</p>
+    </div>
+    <span class="flex-1"></span>
+    <span class="faint text-[12px]" aria-live="polite">{exportOptions.itemCount ?? "…"} items</span>
+    <button type="button" class="ex-btn" onclick={saveToFile}>Save to file</button>
+    <button type="button" class="ex-btn primary" onclick={() => void exportOptions.quickCopy()}>
+      <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true">
+        <path d="M5.5 5.5V3.25c0-.4.35-.75.75-.75h6.5c.4 0 .75.35.75.75v6.5c0 .4-.35.75-.75.75H10.5" />
+        <rect x="2.5" y="5.5" width="8" height="8" rx=".75" />
+      </svg>
+      Copy markdown <span class="mono kbd-hint">⌘⇧C</span>
+    </button>
+  </header>
 
-  <div class="flex-1 min-h-0 overflow-y-auto p-4">
-    <div class="text-[10px] uppercase tracking-wider text-muted mb-1">Preview</div>
-    <div class="min-h-full text-[12px] text-fg-2 bg-bg border border-hairline rounded p-3 break-words export-preview">
-      {#if preview}
-        <MarkdownText text={preview} className="export-preview-markdown" />
-      {:else if loadingPreview}
-        <p class="text-muted mono">(loading…)</p>
-      {:else if error}
-        <p class="text-del-fg mono">(error) {error}</p>
+  <div class="ex-body">
+    <div class="ex-opts">
+      <div class="ex-sec">Include</div>
+      {#each EXPORT_CATEGORIES as cat (cat.key)}
+        {@const on = prefs.include[cat.key]}
+        {@const items = rowItems(cat.key)}
+        {@const expanded = !!open[cat.key]}
+        <div class="ex-cat" class:off={!on}>
+          <div class="ex-row">
+            <button
+              type="button"
+              class="ex-cbx"
+              role="checkbox"
+              aria-checked={on}
+              aria-label={cat.label}
+              onclick={() => exportOptions.toggleCategory(cat.key)}
+            >
+              {@render check(on)}
+            </button>
+            <span class="ex-l">{cat.label}</span>
+            <span class="faint mono text-[11px]">{rowCount(cat.key, items)}</span>
+            {#if items && items.length > 0}
+              <button
+                type="button"
+                class="chev"
+                aria-expanded={expanded}
+                aria-label="Pick {cat.label}"
+                onclick={() => (open = { ...open, [cat.key]: !expanded })}
+              >
+                <svg width="12" height="12" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6l4 4 4-4" /></svg>
+              </button>
+            {:else}
+              <span class="chev-slot"></span>
+            {/if}
+          </div>
+          {#if items && expanded && on}
+            <div class="ex-items">
+              {#each items as item (item.id)}
+                {@const picked = !exportOptions.isExcluded(item.id)}
+                <button
+                  type="button"
+                  class="ex-item"
+                  role="checkbox"
+                  aria-checked={picked}
+                  title="{item.file}:{item.line ?? '—'} — {item.label}"
+                  onclick={() => exportOptions.toggleItem(item.id)}
+                >
+                  {@render check(picked)}
+                  <span class="mono faint">{itemLocation(item)}</span>
+                  <span class="t">{item.label || "(empty)"}</span>
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
+      {/each}
+
+      <div class="ex-sec mt-3">Filter</div>
+      <button
+        type="button"
+        class="toggle"
+        role="switch"
+        aria-checked={prefs.onlyUnresolved}
+        onclick={() => exportOptions.toggleOnlyUnresolved()}
+      >
+        <span class="sw"></span>Only unresolved
+      </button>
+      <p class="faint ex-help">
+        Turn a category off to drop its section; open it to leave out single items. These choices are remembered, and Copy markdown and ⌘⇧C use them.
+      </p>
+
+      <div class="ex-sec mt-3">Raw</div>
+      <button type="button" class="ex-btn ghost self-start" onclick={copyReviewJson}>Copy review.json</button>
+    </div>
+
+    <div class="ex-prev">
+      <div class="ex-prev-h">
+        <span>Preview{loadingPreview ? " · refreshing…" : ""}</span>
+        <span class="faint mono">{size}</span>
+      </div>
+      {#if error}
+        <pre class="ex-md err">{error}</pre>
+      {:else if preview}
+        <!-- highlightMarkdown escapes the source before adding its spans. -->
+        <!-- eslint-disable-next-line svelte/no-at-html-tags -- escaped in highlightMarkdown -->
+        <pre class="ex-md">{@html highlighted}</pre>
       {:else}
-        <p class="text-muted">No preview.</p>
+        <pre class="ex-md faint">{loadingPreview ? "Loading…" : "No preview."}</pre>
       {/if}
     </div>
   </div>
-</div>
+</section>
 
 <style>
-  .export-preview :global(.export-preview-markdown h1) {
-    font-size: 1.15rem;
-    color: var(--color-fg);
+  .ex {
+    display: flex;
+    flex-direction: column;
+    background: var(--color-bg);
+    font-size: 13px;
   }
-  .export-preview :global(.export-preview-markdown h2) {
-    font-size: 0.95rem;
-    color: var(--color-fg-2);
-    font-family: "JetBrains Mono", monospace;
-  }
-  .export-preview :global(.export-preview-markdown h3) {
-    font-size: 0.85rem;
+  .dim {
     color: var(--color-fg-2);
   }
-  .export-preview :global(.export-preview-markdown blockquote) {
+  .faint {
     color: var(--color-fg-3);
   }
-  .export-preview :global(.export-preview-markdown code) {
-    color: var(--color-add-fg);
-    background: color-mix(in srgb, var(--color-add-fg) 8%, transparent);
-    padding: 0.05rem 0.25rem;
-    border-radius: 3px;
+  .ex-head {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--color-hairline);
+    flex-wrap: wrap;
   }
-  .export-preview :global(.export-preview-markdown pre) {
-    background: var(--color-ink-870);
-    font-size: 0.9em;
+  .ex-head h2 {
+    margin: 0;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    color: var(--color-fg);
+  }
+  .ex-head p {
+    margin: 2px 0 0;
+    font-size: 12px;
+  }
+  .ex-btn {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 28px;
+    padding: 0 10px;
+    border-radius: 7px;
+    border: 1px solid var(--color-border);
+    background: var(--color-card);
+    color: var(--color-fg-2);
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .ex-btn:hover {
+    border-color: color-mix(in srgb, var(--color-fg) 25%, transparent);
+  }
+  .ex-btn.primary {
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    border-color: transparent;
+  }
+  .ex-btn.ghost {
+    height: 26px;
+    border-color: transparent;
+    background: none;
+  }
+  .ex-btn.ghost:hover {
+    background: var(--color-hover);
+    color: var(--color-fg);
+  }
+  .kbd-hint {
+    opacity: 0.6;
+    font-size: 10.5px;
+  }
+  .ex-body {
+    flex: 1;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: 320px minmax(0, 1fr);
+  }
+  .ex-opts {
+    border-right: 1px solid var(--color-hairline);
+    overflow: auto;
+    padding: 14px 14px 24px;
+    display: grid;
+    gap: 4px;
+    align-content: start;
+  }
+  .ex-sec {
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-fg-3);
+    padding: 2px 4px 4px;
+  }
+  .ex-cat {
+    border: 1px solid var(--color-hairline);
+    border-radius: 8px;
+    background: var(--color-card);
+  }
+  .ex-cat.off {
+    background: none;
+  }
+  .ex-cat.off .ex-l {
+    color: var(--color-fg-3);
+  }
+  .ex-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 6px 6px 10px;
+  }
+  .ex-l {
+    flex: 1;
+    font-weight: 500;
+    color: var(--color-fg);
+  }
+  .ex-cbx {
+    display: inline-grid;
+  }
+  .cb {
+    width: 14px;
+    height: 14px;
+    border-radius: 4px;
+    border: 1.5px solid var(--color-border);
+    display: inline-grid;
+    place-items: center;
+    flex: none;
+    background: var(--color-card);
+    color: var(--color-card);
+  }
+  .cb svg {
+    opacity: 0;
+  }
+  .cb[data-on="true"] {
+    background: var(--color-add-fg);
+    border-color: var(--color-add-fg);
+  }
+  .cb[data-on="true"] svg {
+    opacity: 1;
+  }
+  .chev,
+  .chev-slot {
+    width: 22px;
+    height: 22px;
+    flex: none;
+  }
+  .chev {
+    display: grid;
+    place-items: center;
+    border-radius: 5px;
+    color: var(--color-fg-3);
+  }
+  .chev:hover {
+    background: var(--color-hover);
+  }
+  .chev svg {
+    transition: transform 0.15s;
+  }
+  .chev[aria-expanded="false"] svg {
+    transform: rotate(-90deg);
+  }
+  .ex-items {
+    border-top: 1px solid var(--color-hairline);
+    padding: 4px;
+    display: grid;
+    gap: 1px;
+  }
+  .ex-item {
+    display: grid;
+    grid-template-columns: 14px auto minmax(0, 1fr);
+    gap: 8px;
+    align-items: center;
+    padding: 5px 6px;
+    border-radius: 5px;
+    text-align: left;
+    font-size: 12px;
+    color: var(--color-fg-2);
+  }
+  .ex-item:hover {
+    background: var(--color-hover);
+  }
+  .ex-item .mono {
+    font-size: 10.5px;
+    white-space: nowrap;
+  }
+  .ex-item .t {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ex-item[aria-checked="false"] .t {
+    color: var(--color-fg-3);
+    text-decoration: line-through;
+  }
+  .toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--color-fg-2);
+    justify-self: start;
+    padding: 2px 4px;
+  }
+  .sw {
+    width: 26px;
+    height: 16px;
+    border-radius: 8px;
+    background: var(--color-border);
+    position: relative;
+    transition: background 0.15s;
+  }
+  .sw::after {
+    content: "";
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--color-card);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--color-bg) 60%, transparent);
+    transition: transform 0.15s;
+  }
+  .toggle[aria-checked="true"] .sw {
+    background: var(--color-accent);
+  }
+  .toggle[aria-checked="true"] .sw::after {
+    transform: translateX(10px);
+  }
+  .ex-help {
+    font-size: 11.5px;
+    margin: 10px 0 0;
+    line-height: 1.5;
+    padding: 0 4px;
+  }
+  .ex-prev {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    padding: 14px 20px 20px;
+  }
+  .ex-prev-h {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-fg-3);
+    padding-bottom: 8px;
+  }
+  .ex-prev-h .mono {
+    text-transform: none;
+    letter-spacing: 0;
+    font-weight: 400;
+    font-size: 11px;
+  }
+  .ex-md {
+    flex: 1;
+    margin: 0;
+    overflow: auto;
+    padding: 16px 18px;
+    border: 1px solid var(--color-hairline);
+    border-radius: 10px;
+    background: var(--color-card);
+    font-family: "JetBrains Mono", monospace;
+    font-size: 12px;
+    line-height: 1.65;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    color: var(--color-fg-2);
+  }
+  .ex-md.err {
+    color: var(--color-del-fg);
+  }
+  .ex-md :global(.mh) {
+    color: var(--color-fg);
+    font-weight: 600;
+  }
+  .ex-md :global(.mq) {
+    color: var(--color-fg-2);
+  }
+  .ex-md :global(.mc) {
+    color: var(--color-add-fg);
+  }
+  .ex-md :global(.mcode) {
+    color: var(--color-syntax-string);
+  }
+  .ex-md :global(b) {
+    color: var(--color-fg);
+    font-weight: 600;
+  }
+  @media (max-width: 880px) {
+    .ex {
+      overflow: auto;
+    }
+    .ex-body {
+      grid-template-columns: minmax(0, 1fr);
+    }
+    .ex-opts {
+      border-right: 0;
+      border-bottom: 1px solid var(--color-hairline);
+    }
+    .ex-md {
+      min-height: 420px;
+    }
   }
 </style>

@@ -20,6 +20,9 @@
     commentVisibility: CommentVisibility;
     /** Cell column capacity when word wrap is on; null = no wrap (in-panel pan). */
     wrapCols?: number | null;
+    /** Mark lines colour of the commit behind each side's line; null leaves the add/del bar. */
+    commitColorLeft?: string | null;
+    commitColorRight?: string | null;
   }
   const {
     row,
@@ -29,6 +32,8 @@
     annotationIndex,
     commentVisibility,
     wrapCols = null,
+    commitColorLeft = null,
+    commitColorRight = null,
   }: Props = $props();
 
   const wrap = $derived(wrapCols !== null);
@@ -107,11 +112,17 @@
 >
   <!-- Left gutter -->
   <div
-    class="leading-6 text-right pr-2 gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''} {commitColorLeft ? 'commit-mark' : ''}"
+    style={commitColorLeft ? `--cc:${commitColorLeft}` : undefined}
   >
-    {left?.old_num ?? ""}
     {#if left && leftLn !== null && left.kind !== "fold"}
-      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, { file: filePath, side: "old", startRowIdx: rowIdx })}>+</button>
+      <button type="button"
+        class="block w-full pr-2 text-right cursor-pointer {selLeft(leftLn) ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {leftLn}"
+        onmousedown={(e) => diffSel.begin(leftLn, e.shiftKey, e, { file: filePath, side: "old", startRowIdx: rowIdx })}
+      >{left.old_num}</button>
+    {:else}
+      <span class="pr-2">{left?.old_num ?? ""}</span>
     {/if}
   </div>
   <!-- Left code -->
@@ -143,11 +154,17 @@
   </div>
   <!-- Right gutter -->
   <div
-    class="leading-6 text-right pr-2 gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''} {commitColorRight ? 'commit-mark' : ''}"
+    style={commitColorRight ? `--cc:${commitColorRight}` : undefined}
   >
-    {right?.new_num ?? ""}
     {#if right && rightLn !== null && right.kind !== "fold"}
-      <button type="button" class="add-comment-btn" onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, { file: filePath, side: "new", startRowIdx: rowIdx })}>+</button>
+      <button type="button"
+        class="block w-full pr-2 text-right cursor-pointer {selRight(rightLn) ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {rightLn}"
+        onmousedown={(e) => diffSel.begin(rightLn, e.shiftKey, e, { file: filePath, side: "new", startRowIdx: rowIdx })}
+      >{right.new_num}</button>
+    {:else}
+      <span class="pr-2">{right?.new_num ?? ""}</span>
     {/if}
   </div>
   <!-- Right code -->
@@ -178,3 +195,11 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* Mark lines: the gutter's add/del bar takes the colour of the commit that
+     introduced (or removed) the line. A selection keeps its own bar. */
+  .diff-row:not(.is-selected) > .gutter.commit-mark {
+    box-shadow: inset 3px 0 0 0 var(--cc);
+  }
+</style>

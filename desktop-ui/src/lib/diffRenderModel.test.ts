@@ -7,6 +7,8 @@ import {
   HUNK_HEADER_HEIGHT,
   LINE_HEIGHT,
   NO_CHANGES_HEIGHT,
+  PILLAR_HEADER_BASE_HEIGHT,
+  estimatePillarHeaderHeight,
   estimateLazyStubHeight,
   estimateThreadHeight,
   estimateFindingHeight,
@@ -20,6 +22,7 @@ import {
   type RenderModelInputs,
 } from "./diffRenderModel";
 import { splitRows } from "./splitRows";
+import type { PillarHeaderSpec } from "./tourModel";
 import { rowIndexAtOffset, windowFromScrollVariable } from "./virtualWindow";
 import {
   buildAnnotationIndex,
@@ -83,6 +86,9 @@ function file(opts: Partial<FileSnapshot> & { path: string; hunks: HunkSnapshot[
     source_index: opts.source_index ?? 0,
     cache_key: opts.cache_key ?? `${opts.path}#0`,
     preview_key: opts.preview_key,
+    old_path: opts.old_path,
+    similarity: opts.similarity,
+    kind: opts.kind,
   };
 }
 
@@ -153,6 +159,7 @@ const VIS_DEFAULT: CommentVisibility = {
   hideComments: false,
   hideFindings: false,
   hideQuestions: false,
+  hideNotes: false,
 };
 
 interface MkInputsOptions {
@@ -309,6 +316,75 @@ describe("getFileBlock — bypass cases", () => {
     const modifiedRow = getFileBlock(mkInputs(modified, [modified], emptyAi())).rows[1];
     if (modifiedRow.type !== "no-changes") throw new Error(`expected no-changes, got ${modifiedRow.type}`);
     expect(modifiedRow.renamed).toBe(false);
+  });
+});
+
+describe("getFileBlock — file header identity (ADR 0013)", () => {
+  const ctx = (path: string) =>
+    hunk({ lines: [line({ kind: "context", old_num: 1, new_num: 1, text: path })] });
+
+  it("carries rename, similarity, kind and new-ness on the header row", () => {
+    const f = file({
+      path: "tests/new_name.test.ts",
+      hunks: [ctx("hdr-a")],
+      status: "renamed",
+      old_path: "tests/old_name.test.ts",
+      similarity: 92,
+      kind: "test",
+      cache_key: "hdr-a#0",
+    });
+    const header = getFileBlock(mkInputs(f, [f], emptyAi())).rows[0];
+    if (header.type !== "file-header") throw new Error(`expected file-header, got ${header.type}`);
+    expect(header.oldPath).toBe("tests/old_name.test.ts");
+    expect(header.similarity).toBe(92);
+    expect(header.kind).toBe("test");
+    expect(header.isNew).toBe(false);
+
+    const added = file({ path: "fresh.ts", hunks: [ctx("hdr-b")], status: "added", cache_key: "hdr-b#0" });
+    const addedHeader = getFileBlock(mkInputs(added, [added], emptyAi())).rows[0];
+    if (addedHeader.type !== "file-header") throw new Error(`expected file-header, got ${addedHeader.type}`);
+    expect(addedHeader.isNew).toBe(true);
+    expect(addedHeader.oldPath).toBeNull();
+    expect(addedHeader.kind).toBeNull();
+  });
+
+  it("carries the rename source on the no-changes row", () => {
+    const f = file({
+      path: "b/moved.ts",
+      hunks: [],
+      status: "renamed",
+      old_path: "a/moved.ts",
+      similarity: 100,
+    });
+    const row = getFileBlock(mkInputs(f, [f], emptyAi())).rows[1];
+    if (row.type !== "no-changes") throw new Error(`expected no-changes, got ${row.type}`);
+    expect(row.renamed).toBe(true);
+    expect(row.oldPath).toBe("a/moved.ts");
+    expect(row.similarity).toBe(100);
+  });
+
+  it("toggling only reviewed is a block-cache hit", () => {
+    const base = { path: "hdr/reviewed.ts", hunks: [ctx("hdr-c")], cache_key: "hdr-c#0", old_path: "hdr/was.ts", status: "renamed" as const };
+    const a = file({ ...base, reviewed: false });
+    const b = file({ ...base, reviewed: true });
+    const first = getFileBlock(mkInputs(a, [a], emptyAi()));
+    expect(getFileBlock(mkInputs(b, [b], emptyAi()))).toBe(first);
+  });
+
+  it("changing old_path or kind rebuilds the block", () => {
+    const base = { path: "hdr/rebuild.ts", hunks: [ctx("hdr-d")], cache_key: "hdr-d#0", status: "renamed" as const };
+    const first = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/one.ts" }), [], emptyAi()));
+    const moved = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/two.ts" }), [], emptyAi()));
+    expect(moved).not.toBe(first);
+    const movedHeader = moved.rows[0];
+    if (movedHeader.type !== "file-header") throw new Error(`expected file-header, got ${movedHeader.type}`);
+    expect(movedHeader.oldPath).toBe("hdr/two.ts");
+
+    const asTest = getFileBlock(mkInputs(file({ ...base, old_path: "hdr/two.ts", kind: "test" }), [], emptyAi()));
+    expect(asTest).not.toBe(moved);
+    const testHeader = asTest.rows[0];
+    if (testHeader.type !== "file-header") throw new Error(`expected file-header, got ${testHeader.type}`);
+    expect(testHeader.kind).toBe("test");
   });
 });
 
@@ -742,6 +818,7 @@ function mkCross(
     previewPaths?: ReadonlySet<string>;
     sidePaths?: ReadonlySet<string>;
     sideWrapCols?: number | null;
+    pillarHeaders?: readonly PillarHeaderSpec[];
   } = {},
 ) {
   const viewMode = opts.viewMode ?? "unified";
@@ -758,6 +835,7 @@ function mkCross(
     previewPaths: opts.previewPaths,
     sidePaths: opts.sidePaths,
     sideWrapCols: opts.sideWrapCols,
+    pillarHeaders: opts.pillarHeaders,
   });
 }
 
@@ -1356,5 +1434,81 @@ describe("side-by-side document rows", () => {
     });
     expect(side.identity).not.toBe(plain.identity);
     expect(side.rows[2].height).toBeGreaterThan(plain.rows[2].height);
+  });
+});
+
+describe("pillar-header rows", () => {
+  const spec = (pillarId: string, index: number, anchorPath: string | null): PillarHeaderSpec => ({
+    pillarId,
+    index,
+    total: 2,
+    title: `Pillar ${pillarId}`,
+    narrativeMarkdown: "Reads the schema first.",
+    anchorPath,
+  });
+
+  it("sit above their anchor file and index into pillarStartRow", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const b = makeSimpleFile("b.ts", 1);
+    const m = mkCross([a, b], emptyAi(), {
+      snapshotKey: "pillars",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "b.ts")],
+    });
+    expect(m.rows.map((r) => r.type)).toEqual([
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+    ]);
+    expect(m.pillarStartRow.get("p1")).toBe(0);
+    expect(m.pillarStartRow.get("p2")).toBe(4);
+    expect(m.fileStartRow.get("b.ts")).toBe(5);
+    expect(m.rows[0].filePath).toBe("");
+    expect(m.cumulativeOffsets[1]).toBe(m.rows[0].height);
+  });
+
+  it("go last when their anchor is not drawn", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const m = mkCross([a], emptyAi(), {
+      snapshotKey: "pillars-trailing",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "gone.ts")],
+    });
+    expect(m.pillarStartRow.get("p2")).toBe(m.rows.length - 1);
+  });
+
+  it("change the model identity, and none outside the Tour leave it as before", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const plain = mkCross([a], emptyAi(), { snapshotKey: "pillars-id" });
+    const toured = mkCross([a], emptyAi(), { snapshotKey: "pillars-id", pillarHeaders: [spec("p1", 1, "a.ts")] });
+    expect(toured.identity).not.toBe(plain.identity);
+    expect(plain.pillarStartRow.size).toBe(0);
+  });
+
+  it("survive collapsing the file above them", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const b = makeSimpleFile("b.ts", 1);
+    const m = mkCross([a, b], emptyAi(), {
+      snapshotKey: "pillars-collapse",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "b.ts")],
+    });
+    const collapsed = applyCollapsedFiles(m, new Set(["a.ts"]));
+    expect(collapsed.rows.map((r) => r.type)).toEqual([
+      "pillar-header",
+      "file-header",
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+    ]);
+    expect(collapsed.pillarStartRow.get("p2")).toBe(2);
+  });
+
+  it("estimate more height for a longer narrative", () => {
+    expect(estimatePillarHeaderHeight("")).toBe(PILLAR_HEADER_BASE_HEIGHT);
+    expect(estimatePillarHeaderHeight("x".repeat(400))).toBeGreaterThan(estimatePillarHeaderHeight("short"));
   });
 });

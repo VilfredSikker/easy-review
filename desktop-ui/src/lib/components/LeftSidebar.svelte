@@ -5,11 +5,24 @@
   import InboxPanel from "$lib/components/InboxPanel.svelte";
   import type { BackgroundTaskSnapshot, ProjectSnapshot, PrInfo } from "$lib/types";
   import { invoke } from "@tauri-apps/api/core";
-  import { buildPrHint, createPrPrefetch, remoteParts, shouldReplaceTab, yieldForPendingPaint } from "$lib/prOpen";
+  import {
+    buildPrHint,
+    createPrPrefetch,
+    remoteParts,
+    resolvePrOpen,
+    saveAlwaysNewTab,
+    shouldReplaceTab,
+    yieldForPendingPaint,
+  } from "$lib/prOpen";
+  import { findPrTab, sidebarPrOpenRequest } from "$lib/sidebarPrOpen";
+  import { groupInboxThreads, isThreadUnread } from "$lib/inboxThreads";
+  import TabOpenModal from "$lib/components/TabOpenModal.svelte";
   import { destIndexAfterRemove, dropSlot, movedIds } from "$lib/listReorder";
   import { orderedByIds } from "$lib/projectOrder";
   import { orderPrsByStack } from "$lib/prStacks";
   import { sectionOrder, type SidebarSection } from "$lib/stores/sectionOrder.svelte";
+  import { prCiState, prNeedsMyReview, projectColorVar, projectMonogram, projectTileInk } from "$lib/sidebarModel";
+  import { themeByName } from "$lib/themes";
   import { installAppUpdate, type UpdatePhase } from "$lib/appUpdate";
 
   interface PinnedItem {
@@ -27,10 +40,23 @@
   const { collapsed = false, pinnedOverride }: Props = $props();
 
   const snapshot = $derived(app.snapshot);
+  const theme = $derived(themeByName(app.snapshot?.theme));
   const worktrees = $derived(snapshot?.worktrees ?? []);
   const projects = $derived<ProjectSnapshot[]>(snapshot?.projects ?? []);
   const loadingPrList = $derived(snapshot?.bg_loading?.pr_list ?? false);
   const activeTab = $derived(snapshot?.tabs?.find((t) => t.is_active) ?? null);
+  // Counted per PR like the Inbox rows (and InboxPanel's badge), so the
+  // collapsed rail's badge matches what a click lands on.
+  const unreadPrs = $derived(
+    collapsed
+      ? groupInboxThreads(snapshot?.inbox_items ?? [], projects).filter(isThreadUnread).length
+      : 0,
+  );
+  // The collapsed-rail Inbox button closes the Inbox when it is open.
+  const inboxOpen = $derived(app.mainView === "inbox");
+  const inboxUnread = $derived(unreadPrs > 0 ? `${unreadPrs} unread` : "");
+  const inboxTitle = $derived(inboxOpen ? "Close Inbox (Esc)" : ["Inbox", inboxUnread].filter(Boolean).join(" · "));
+  const inboxLabel = $derived(inboxOpen ? "Close Inbox" : ["Inbox", inboxUnread].filter(Boolean).join(", "));
   const appVersion = $derived(snapshot?.app_version?.trim() || "0.0.0");
 
   interface AppUpdateInfo {
@@ -261,6 +287,23 @@
     if (mins < 60) return `${mins}m`;
     const hrs = Math.floor(mins / 60);
     return `${hrs}h`;
+  }
+
+  const CI_DOT = {
+    ok: { cls: "bg-add-fg", title: "CI passing" },
+    fail: { cls: "bg-del-fg", title: "CI failing" },
+    pend: { cls: "bg-warning", title: "CI running" },
+  } as const;
+
+  function ciDot(pr: PrInfo) {
+    const ci = prCiState(pr);
+    return ci ? CI_DOT[ci] : null;
+  }
+
+  function trackerClass(merged: boolean, active: boolean): string {
+    if (merged) return "bg-periwinkle";
+    if (active) return "bg-question shadow-[0_0_0_3px_color-mix(in_srgb,var(--color-question)_20%,transparent)]";
+    return "bg-ink-500";
   }
 
   function prIconColor(pr: PrInfo): string {
@@ -722,13 +765,48 @@
     }
   }
 
+  /** The sidebar PR open waiting on the tab-open modal's answer. */
+  let pendingPrOpen = $state<{ project: ProjectSnapshot; prNumber: number; hint?: PrInfo } | null>(null);
+
+  /** A PR click asks "new tab or here?" (P1C's modal) unless the click already
+   *  said (⌘/middle-click), the reader opted out, the PR is open in a tab, or
+   *  there is no tab to replace. */
   async function openPr(project: ProjectSnapshot, prNumber: number, _headRef: string, e: MouseEvent, hint?: PrInfo) {
+    // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
+    cancelPrPrefetch(project.id, prNumber);
+    const tabs = snapshot?.tabs ?? [];
+    const existing = findPrTab(project, prNumber, tabs);
+    if (existing) {
+      if (!existing.is_active) await app.cmd("select_tab", { idx: existing.idx });
+      return;
+    }
+    const choice = tabs.length === 0 ? "replace" : resolvePrOpen(e);
+    if (choice === "ask") {
+      pendingPrOpen = { project, prNumber, hint };
+      return;
+    }
+    await openPrIn(project, prNumber, choice === "replace", hint);
+  }
+
+  const prOpenRequest = $derived.by(() => {
+    const p = pendingPrOpen;
+    if (!p) return null;
+    const pr = p.hint ?? { number: p.prNumber, title: `Pull request #${p.prNumber}`, author: "", updated_at: "", state: "OPEN" as const, is_draft: false };
+    return sidebarPrOpenRequest(p.project, pr);
+  });
+
+  function choosePrOpen(newTab: boolean, remember: boolean) {
+    const p = pendingPrOpen;
+    pendingPrOpen = null;
+    if (remember) saveAlwaysNewTab(true);
+    if (p) void openPrIn(p.project, p.prNumber, !newTab, p.hint);
+  }
+
+  async function openPrIn(project: ProjectSnapshot, prNumber: number, replace: boolean, hint?: PrInfo) {
     const projectId = project.id;
     const prKey = `${projectId}:${prNumber}`;
     if (pendingPrKey === prKey) return;
     pendingPrKey = prKey;
-    // Clear any pending hover-prefetch timer for this PR — the click supersedes it.
-    cancelPrPrefetch(projectId, prNumber);
     try {
       await yieldForPendingPaint();
       if (project.remote_only) {
@@ -738,13 +816,13 @@
           owner: parts.owner,
           repo: parts.repo,
           number: prNumber,
-          replace: shouldReplaceTab(e),
+          replace,
         });
       } else {
         await app.cmd("open_pr_review", {
           projectId,
           prNumber,
-          replace: shouldReplaceTab(e),
+          replace,
           hint: hint ? buildPrHint(hint) : undefined,
         });
       }
@@ -785,6 +863,19 @@
     <button type="button" title="Search (⌘K)" aria-label="Search" onclick={() => commandPalette.show()} class="w-7 h-7 rounded hover:bg-hover flex items-center justify-center text-fg-3">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg>
     </button>
+    <button
+      type="button"
+      title={inboxTitle}
+      aria-label={inboxLabel}
+      aria-current={app.mainView === "inbox" ? "page" : undefined}
+      onclick={() => app.toggleInbox()}
+      class="relative w-7 h-7 rounded flex items-center justify-center {app.mainView === 'inbox' ? 'bg-hover text-fg' : 'text-fg-3 hover:bg-hover'}"
+    >
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/></svg>
+      {#if unreadPrs > 0}
+        <span class="absolute -top-0.5 -right-1 min-w-[14px] h-[14px] px-[3px] rounded-full bg-accent text-on-accent font-mono text-[9px] leading-[14px] text-center">{unreadPrs > 99 ? "99+" : unreadPrs}</span>
+      {/if}
+    </button>
     <div class="h-px w-5 bg-hairline my-1"></div>
     <button type="button" title={fallbackProjectName} aria-label={fallbackProjectName} class="w-7 h-7 rounded bg-hover flex items-center justify-center text-accent">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
@@ -805,7 +896,7 @@
   </aside>
 {:else}
 
-<aside class="w-60 bg-surface border-r border-hairline shrink-0 flex flex-col h-full overflow-hidden transition-[width] duration-200">
+<aside class="w-[284px] bg-surface border-r border-hairline shrink-0 flex flex-col h-full overflow-hidden transition-[width] duration-200">
   <!-- Scrollable content; Settings footer is fixed at bottom outside this wrapper. -->
   <div class="flex-1 overflow-y-auto min-h-0">
   <!-- Top actions -->
@@ -935,11 +1026,13 @@
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="shrink-0 text-muted transition-transform {open ? '' : '-rotate-90'}">
                   <path d="M6 9l6 6 6-6"/>
                 </svg>
-                <!-- Folder icon — 12px text-fg-3 -->
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="shrink-0 text-fg-3">
-                  <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
-                </svg>
-                <span class="truncate font-medium">{project.name}</span>
+                <!-- Monogram tile: colour is a hash of the name so it survives reorder and search. -->
+                <span
+                  class="w-4 h-4 rounded-[4px] grid place-items-center text-[9.5px] font-bold shrink-0"
+                  style="background:{projectColorVar(project.name)};color:{projectTileInk(theme, project.name)}"
+                  aria-hidden="true"
+                >{projectMonogram(project.name)}</span>
+                <span class="truncate font-semibold text-[12.5px]">{project.name}</span>
                 {#if badge > 0}
                   <span class="font-mono text-[10px] text-muted ml-auto shrink-0">{badge}</span>
                 {/if}
@@ -1087,9 +1180,10 @@
                         <path d="M6 9l6 6 6-6"/>
                       </svg>
                     </span>
-                    <span class="text-[9px] font-semibold uppercase tracking-[0.07em] text-muted/70 leading-none">
-                      {label} - {count}
+                    <span class="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-muted leading-none">
+                      {label}
                     </span>
+                    <span class="font-mono text-[10.5px] font-normal text-muted leading-none">{count}</span>
                     {#if showLoading && loadingPrList}
                       <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-muted animate-spin shrink-0"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>
                     {/if}
@@ -1097,7 +1191,7 @@
                 </div>
               {/snippet}
 
-              {#snippet prRow(pr: PrInfo, depth = 0)}
+              {#snippet prRow(pr: PrInfo, depth = 0, inToReview = false)}
                 {@const isActivePr = (activeTab?.kind === "remote_pr" && activeTab.pr_number === pr.number && project.is_active) ||
                   (activeTab?.kind === "local_branch" && activeTab.branch === pr.head_ref && activeTab.repo_root === project.root_path)}
                 {@const prPending = pendingPrKey === `${project.id}:${pr.number}`}
@@ -1136,6 +1230,12 @@
                         <path d="M21 12a9 9 0 1 1-3-6.7L21 8"/>
                         <path d="M21 3v5h-5"/>
                       </svg>
+                    {/if}
+                    {#if !inToReview && prNeedsMyReview(pr, project.prs_to_review.some((q) => q.number === pr.number))}
+                      <span class="shrink-0 font-mono text-[10px] leading-4 px-1.5 rounded-full text-accent bg-accent/15">review</span>
+                    {:else if pr.state === "OPEN" && ciDot(pr)}
+                      {@const dot = ciDot(pr)}
+                      <i class="w-1.5 h-1.5 rounded-full shrink-0 {dot?.cls}" title={dot?.title}></i>
                     {/if}
                     <span class="shrink-0 text-[10px] mono text-muted">#{pr.number}</span>
                   </button>
@@ -1204,15 +1304,14 @@
                         onauxclick={(e) => { if (e.button === 1) openBranch(project.id, br.name, e); }}
                         class="w-full flex items-center gap-2 px-2 py-1 rounded-md text-[12px] text-left pr-7 {(isActiveView || branchPending) ? 'bg-hover text-fg font-medium' : 'text-fg-3 hover:bg-hover'}"
                       >
-                        {#if isActiveView}
-                          <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-accent'} shrink-0"></span>
-                        {:else}
-                          <span class="w-1.5 h-1.5 rounded-full {br.is_merged ? 'bg-periwinkle' : 'bg-ink-500'} shrink-0"></span>
-                        {/if}
+                        <!-- Tracker square: purple glow marks the branch open in the active tab. -->
+                        <span
+                          class="w-[7px] h-[7px] rounded-[2px] shrink-0 mt-px {trackerClass(br.is_merged, isActiveView)}"
+                        ></span>
                         <div class="flex flex-col min-w-0 flex-1">
-                          <span class="truncate">{br.name}</span>
+                          <span class="truncate font-mono text-[11.5px]">{br.name}</span>
                           {#if br.worktree_path != null}
-                            <span class="truncate text-[10px] text-muted font-mono">{br.worktree_path.split("/").slice(-2).join("/")}</span>
+                            <span class="truncate text-[10px] text-muted font-mono">worktree · {br.worktree_path.split("/").slice(-2).join("/")}</span>
                           {/if}
                         </div>
                         {#if branchPending}
@@ -1263,7 +1362,7 @@
                   {#if isSectionOpen(project.id, "to_review")}
                   {@const toReviewVisible = visibleToReviewPrs(project).slice(0, revealCount(prRevealCountByProject, project.id))}
                   {#each toReviewVisible as pr (pr.number)}
-                    {@render prRow(pr)}
+                    {@render prRow(pr, 0, true)}
                   {/each}
                   {#if visibleToReviewPrs(project).length > toReviewVisible.length}
                     <button
@@ -1519,22 +1618,20 @@
     </div>
   {/if}
 
-  <!-- Version + optional update pill above Settings. -->
-  <div class="border-t border-hairline px-3 pt-2.5 pb-1.5 shrink-0 space-y-1.5">
-    <div class="flex items-center gap-2 min-w-0">
-      <span class="text-[11px] font-mono text-fg-3 truncate" title="Installed version">
-        v{appVersion}
-      </span>
-    </div>
+  <!-- Version footer: update dot beside the version, pill only while an update is offered. -->
+  <div class="border-t border-hairline px-2 py-2 shrink-0 flex items-center gap-2 min-w-0 text-[12px] text-fg-2">
+    {#if updateAvailable}
+      <span class="w-[7px] h-[7px] rounded-full bg-accent shrink-0" class:animate-pulse={updateBusy} title="Update available" aria-hidden="true"></span>
+    {/if}
+    <span class="font-mono text-[11px] text-fg-3 truncate" title="Installed version">er {appVersion}</span>
     {#if updateAvailable}
       <button
         type="button"
-        class="inline-flex items-center gap-1.5 max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
+        class="inline-flex items-center max-w-full px-2 py-0.5 rounded-full bg-accent-soft border border-accent-border text-[10px] font-medium text-accent hover:bg-accent/20 transition-colors"
         title={updatePhase.kind === "failed" ? updatePhase.message : updateLabel}
         disabled={updateBusy}
         onclick={startUpdate}
       >
-        <span class="w-1.5 h-1.5 rounded-full bg-accent shrink-0" class:animate-pulse={updateBusy} aria-hidden="true"></span>
         <span class="truncate">{updateLabel}</span>
       </button>
     {/if}
@@ -1548,4 +1645,12 @@
   </button>
 </aside>
 {/if}
+
+<TabOpenModal
+  request={prOpenRequest}
+  tabCount={snapshot?.tabs?.length ?? 0}
+  currentTabLabel={activeTab?.label ?? null}
+  onChoose={choosePrOpen}
+  onClose={() => (pendingPrOpen = null)}
+/>
 

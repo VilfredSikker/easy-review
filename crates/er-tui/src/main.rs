@@ -696,6 +696,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: None,
         }
     }
 
@@ -817,6 +818,7 @@ mod tests {
                 author: "You".to_string(),
                 promoted_to: None,
                 finding_ref: None,
+                ai_action: None,
             }],
         });
         app.tab_mut().focused_comment_id = Some("q-abc".to_string());
@@ -927,6 +929,7 @@ mod tests {
                 dels: 0,
                 compacted: false,
                 raw_hunk_count: 0,
+                similarity: None,
             },
         ];
         let mut app = make_app(files);

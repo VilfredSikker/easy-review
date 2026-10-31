@@ -429,6 +429,149 @@ describe("mergeChromeSnapshot", () => {
     expect(merged.branch).toBe("feat/keep");
     expect(merged.base).toBe("origin/main");
   });
+
+  it("keeps per-file and per-commit fields from prev content", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      files: [
+        {
+          path: "src/new.ts",
+          status: "renamed",
+          old_path: "src/old.ts",
+          similarity: 92,
+          kind: "test",
+          additions: 1,
+          deletions: 1,
+          reviewed: false,
+          compacted: false,
+          risk: null,
+          finding_count: 0,
+          comment_count: 0,
+          question_count: 0,
+          hunks: [],
+          source_index: 0,
+          cache_key: "k",
+        },
+      ],
+      commits: [
+        {
+          sha: "abc",
+          title: "t",
+          author: "a",
+          committed_at: "2026-01-01T00:00:00Z",
+          additions: 3,
+          deletions: 1,
+          unpushed: true,
+        },
+      ],
+    });
+    // A chrome-only stub carries no files or commits.
+    const next = snap({ active_tab: 0, tabs, files: [], commits: [] });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.files[0]).toMatchObject({ old_path: "src/old.ts", similarity: 92, kind: "test" });
+    expect(merged.commits?.[0]).toMatchObject({ additions: 3, deletions: 1, unpushed: true });
+  });
+
+  it("keeps prev scope stats over a chrome-only stub's zeros", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      unstaged_stat: { files: 2, additions: 10, deletions: 4 },
+      staged_stat: { files: 1, additions: 3, deletions: 0 },
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      unstaged_stat: { files: 0, additions: 0, deletions: 0 },
+      staged_stat: { files: 0, additions: 0, deletions: 0 },
+    });
+    const merged = mergeChromeSnapshot(prev, next, "prev");
+    expect(merged.unstaged_stat).toEqual({ files: 2, additions: 10, deletions: 4 });
+    expect(merged.staged_stat).toEqual({ files: 1, additions: 3, deletions: 0 });
+  });
+
+  it("takes the PR head and ahead from chrome but keeps the last unstaged count", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
+    // The push moved the PR head; the chrome-only poll does not re-read the worktree.
+    const next = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "def", ahead: 0 },
+    });
+    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toEqual({
+      pr_head_oid: "def",
+      ahead: 0,
+      unstaged_files: 2,
+    });
+  });
+
+  it("drops the local-branch divergence when chrome no longer has one", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const prev = snap({
+      active_tab: 0,
+      tabs,
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
+    const next = snap({ active_tab: 0, tabs });
+    expect(mergeChromeSnapshot(prev, next, "prev").local_branch_divergence).toBeUndefined();
+  });
+
+  it("drops the local-branch divergence across a view change", () => {
+    const prev = snap({
+      active_tab: 0,
+      tabs: [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })],
+      local_branch_divergence: { pr_head_oid: "abc", ahead: 1, unstaged_files: 2 },
+    });
+    const next = snap({
+      active_tab: 1,
+      tabs: [tab({ idx: 1, label: "pr-8", pr_number: 8, is_active: true })],
+    });
+    expect(mergeChromeSnapshot(prev, next, "next").local_branch_divergence).toBeUndefined();
+  });
+
+  it("keeps the other view's summary, which a chrome stub does not read", () => {
+    const tabs = [tab({ idx: 0, label: "feat", kind: "working", pr_number: 7, is_active: true })];
+    const other_bucket = {
+      view: "pr" as const,
+      has_triage: true,
+      has_review: true,
+      finding_count: 4,
+      pillar_count: 4,
+      tour_shared: false,
+      same_diff: false,
+    };
+    const prev = snap({ active_tab: 0, tabs, other_bucket });
+    const next = snap({ active_tab: 0, tabs, other_bucket: null });
+    expect(mergeChromeSnapshot(prev, next, "prev").other_bucket).toEqual(other_bucket);
+    // Across a view change the old view's summary would describe the wrong tab.
+    expect(mergeChromeSnapshot(prev, next, "next").other_bucket).toBeNull();
+  });
+
+  it("takes the per-tab stale flags from next chrome", () => {
+    const prev = snap({
+      active_tab: 0,
+      tabs: [
+        tab({ idx: 0, label: "feat", kind: "working", is_active: true }),
+        tab({ idx: 1, label: "pr-8", pr_number: 8, stale: false }),
+      ],
+    });
+    const next = snap({
+      active_tab: 0,
+      tabs: [
+        tab({ idx: 0, label: "feat", kind: "working", is_active: true }),
+        tab({ idx: 1, label: "pr-8", pr_number: 8, stale: true }),
+      ],
+    });
+    expect(mergeChromeSnapshot(prev, next, "prev").tabs[1].stale).toBe(true);
+  });
 });
 
 describe("shouldDeferChromeIdentityChange", () => {

@@ -347,6 +347,9 @@ pub struct PillarSnapshot {
     pub id: String,
     pub title: String,
     pub description_markdown: String,
+    /// The pillar's one-line summary for the pillar lists. Empty on a tour
+    /// written before pillars had one; readers fall back to the description.
+    pub summary_markdown: String,
     pub importance: u32,
     pub foundation: bool,
     pub files: Vec<TourFileRef>,
@@ -363,12 +366,20 @@ pub struct TourSnapshot {
     /// True when the tour matches the current diff (not stale). When false and
     /// `available` is true, the UI offers a "Re-run guide" affordance.
     pub fresh: bool,
-    /// Which diff the tour is attached to: `"pr"` or `"branch"`. Drives the
-    /// Diff/PR header toggle state and where the Diff toggle returns to.
+    /// Which diff the tour view belongs to: `"pr"` or `"branch"`, set even
+    /// when there is no tour. Drives the Diff/PR header toggle state and
+    /// where leaving Tour returns to.
     pub scope: String,
     pub title: String,
     pub overview_markdown: String,
     pub pillars: Vec<PillarSnapshot>,
+    /// When the tour was generated (ISO-8601, as the agent wrote it); empty
+    /// when the sidecar does not say.
+    pub created_at: String,
+    /// Hash of the diff the tour was generated against — its identity
+    /// (ADR 0025). A diff hash, not a commit: the commit the on-screen diff
+    /// was built from is `DiffStaleSnapshot::built_from_oid`.
+    pub diff_hash: String,
 }
 
 impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
@@ -382,10 +393,39 @@ impl From<&er_engine::config::DisplayConfig> for DisplayConfigSnapshot {
     }
 }
 
-/// +/- summary for a scope (unstaged / staged) so the scope selector can show
-/// counts without switching modes.
+/// What the other view of a local PR tab holds, so an empty view can say
+/// where the review artifacts are instead of only that it has none.
+///
+/// Artifacts are per view bucket (ADR 0004), and the snapshot otherwise
+/// carries only the active one. The tour is the exception (ADR 0025): a tour
+/// in the other bucket is reused here when its diff hash matches, so
+/// `tour_shared` says when this view's tour *is* the other bucket's file and
+/// an empty-state must not claim this view has no tour.
+#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+pub struct OtherBucketSnapshot {
+    /// The view the summary describes: `"pr"` (PR diff) or `"branch"`
+    /// (local branch).
+    pub view: String,
+    pub has_triage: bool,
+    pub has_review: bool,
+    /// Findings still open in that view's review (resolved and arbiter-dropped
+    /// ones left out), counted the way its own findings list is.
+    pub finding_count: usize,
+    /// Pillars in the tour stored in that view's bucket; 0 with no tour there.
+    pub pillar_count: usize,
+    /// The tour this view shows is that bucket's tour, reused on a matching
+    /// diff hash.
+    pub tour_shared: bool,
+    /// Some artifact there was generated against the diff on screen, so it
+    /// describes this view too (the branch and the PR head are the same diff).
+    pub same_diff: bool,
+}
+
+/// Files and +/- summary for a scope (unstaged / staged) so the scope selector
+/// can show counts without switching modes.
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct ScopeStat {
+    pub files: usize,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -402,6 +442,7 @@ pub struct DiffLineStatsSnapshot {
 impl From<&er_engine::git::ProdDiffStats> for DiffLineStatsSnapshot {
     fn from(stats: &er_engine::git::ProdDiffStats) -> Self {
         let stat = |k: &er_engine::git::DiffKindStats| ScopeStat {
+            files: k.files,
             additions: k.additions,
             deletions: k.deletions,
         };
@@ -485,6 +526,12 @@ pub struct AppSnapshot {
     /// box pins merges to it and compares it to the live PR head.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pr_diff_head_oid: Option<String>,
+    /// Set on a local PR tab in the local branch view with a live checkout.
+    /// Built on every revision, chrome-only ones included, because a PR-list
+    /// refresh that moves the PR head is itself a chrome-only revision. Only
+    /// `unstaged_files` waits for a full build, like `unstaged_stat`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub local_branch_divergence: Option<LocalBranchDivergenceSnapshot>,
     /// Which background fetches are currently in-flight.
     pub bg_loading: LoadingFlags,
     /// Running/done/failed background AI commands for the active tab.
@@ -547,6 +594,11 @@ pub struct AppSnapshot {
     /// Guided tour (Guide tab). `available` drives whether the Guide tab shows.
     #[serde(default)]
     pub tour: TourSnapshot,
+    /// The other view's artifacts on a local PR tab in its Local branch or PR
+    /// diff view; `None` everywhere else, and on a chrome-only build, which
+    /// does not read sidecars.
+    #[serde(default)]
+    pub other_bucket: Option<OtherBucketSnapshot>,
     /// Active arena runs across ALL tabs (tab-independent background runs).
     /// Lets the UI keep a run visible/controllable after switching branches.
     #[serde(default)]
@@ -655,6 +707,17 @@ pub struct DiffStaleSnapshot {
     pub kind: String,
     /// Short human label for the pill tooltip.
     pub message: String,
+    /// The oid the on-screen diff was built from: the PR head for "pr_head",
+    /// the local base ref for "base". The banner names it because the triage,
+    /// findings and tour on screen were produced against this commit.
+    pub built_from_oid: String,
+    /// The oid origin reports now. A Sync rebuilds the diff against it.
+    pub latest_oid: String,
+    /// Commits `latest_oid` has that `built_from_oid` lacks. Absent unless both
+    /// commits are already in the local object store — counting never fetches,
+    /// so a head pushed since the last fetch has no count, only the two oids.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_behind: Option<usize>,
 }
 
 /// Returns Some(stale) only when both oids are known AND differ. None when
@@ -671,10 +734,181 @@ pub fn compute_oid_staleness(
             Some(DiffStaleSnapshot {
                 kind: kind.to_string(),
                 message: message.to_string(),
+                built_from_oid: used.to_string(),
+                latest_oid: latest.to_string(),
+                commits_behind: None,
             })
         }
         _ => None,
     }
+}
+
+/// Commits reachable from `to` and not from `from`, counted in `repo_root`.
+///
+/// `GIT_NO_LAZY_FETCH` keeps a partial clone from downloading a missing commit:
+/// the snapshot never fetches, and an object that is not local yet is an
+/// unknown count, not a reason to block the build on the network.
+fn rev_list_count(repo_root: &str, from: &str, to: &str) -> Option<usize> {
+    let range = format!("{from}..{to}");
+    let out = std::process::Command::new("git")
+        .args(["rev-list", "--count", &range])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .current_dir(repo_root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+}
+
+type CommitsBehindKey = (String, String, String);
+
+/// `diff_stale` and `local_branch_divergence` are built on every revision
+/// event, chrome-only ones included, and both count between two oids. The
+/// count for two fixed oids never changes; only
+/// an unknown one can resolve, once a fetch from outside the app brings the
+/// newer commit in, and the TTL bounds how long that takes to show.
+static COMMITS_BEHIND_CACHE: Mutex<Vec<(CommitsBehindKey, std::time::Instant, Option<usize>)>> =
+    Mutex::new(Vec::new());
+
+const COMMITS_BEHIND_CACHE_CAP: usize = 8;
+
+const COMMITS_BEHIND_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn commits_behind_cached(repo_root: &str, built_from: &str, latest: &str) -> Option<usize> {
+    let key = (
+        repo_root.to_string(),
+        built_from.to_string(),
+        latest.to_string(),
+    );
+    if let Ok(guard) = COMMITS_BEHIND_CACHE.lock() {
+        if let Some((_, _, count)) = guard
+            .iter()
+            .find(|(k, at, _)| *k == key && at.elapsed() < COMMITS_BEHIND_TTL)
+        {
+            return *count;
+        }
+    }
+    let count = rev_list_count(repo_root, built_from, latest);
+    if let Ok(mut guard) = COMMITS_BEHIND_CACHE.lock() {
+        guard.retain(|(k, at, _)| *k != key && at.elapsed() < COMMITS_BEHIND_TTL);
+        if guard.len() >= COMMITS_BEHIND_CACHE_CAP {
+            guard.remove(0);
+        }
+        guard.push((key, std::time::Instant::now(), count));
+    }
+    count
+}
+
+/// How a local PR tab's worktree differs from the PR head, for the banner
+/// shown in the local branch view: there the diff is the working tree, so
+/// review artifacts from the PR diff view do not carry over, and the reviewer
+/// needs to know by how much the two differ.
+#[derive(Debug, Clone, Serialize)]
+pub struct LocalBranchDivergenceSnapshot {
+    /// The PR head the worktree is compared to: the PR-list cache's head, else
+    /// the head the PR diff was last built from.
+    pub pr_head_oid: String,
+    /// Commits on the worktree's HEAD that the PR head does not contain, i.e.
+    /// unpushed work. Absent when the PR head is not in the local object store;
+    /// counting never fetches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ahead: Option<usize>,
+    /// Files with unstaged changes in the worktree. Absent on a chrome-only
+    /// build, which skips the shortstat; the frontend keeps the last count.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unstaged_files: Option<usize>,
+}
+
+/// Head oid the PR-list cache reports for a tab's PR: the one lookup behind the
+/// active tab's stale pill, every tab's stale dot and the local-branch banner,
+/// so the three agree. A tab with its own PR number resolves through
+/// `pr_info_for_tab`, which prefers the bucket of the tab's remote, because two
+/// cached repos can share a PR number. `detected_pr_number` names a local
+/// branch's PR found by head ref, so it is matched by number alone, and only
+/// for a tab without its own.
+fn tab_pr_head_oid(
+    tab: &TabState,
+    detected_pr_number: Option<u64>,
+    cache: Option<&HashMap<String, Vec<PrInfo>>>,
+) -> Option<String> {
+    let cache = cache?;
+    let pr = if tab.pr_number.is_some() {
+        pr_info_for_tab(tab, cache)
+    } else {
+        let number = detected_pr_number?;
+        cache
+            .values()
+            .flat_map(|prs| prs.iter())
+            .find(|p| p.number == number)
+    };
+    pr.map(|p| p.head_oid.clone()).filter(|s| !s.is_empty())
+}
+
+/// Whether an inactive PR tab's diff was built from an older head than the
+/// PR-list cache now reports. Only PR tabs: theirs is a compare of two strings
+/// already in memory, while a branch tab's base check costs a `git rev-parse`
+/// per tab per snapshot. Both inputs already move `chrome_revision`: the cache's
+/// head oids are in `pr_cache_fingerprint`, and the PR-list refresh that changes
+/// them bumps `desktop_revision`, which emits `er://revision` (ADR 0011, ADR
+/// 0016). A tab's `last_diff_head_oid` changes only on a diff load of that tab.
+fn pr_tab_is_stale(tab: &TabState, cache: Option<&HashMap<String, Vec<PrInfo>>>) -> bool {
+    if tab.pr_number.is_none() {
+        return false;
+    }
+    let latest = tab_pr_head_oid(tab, None, cache);
+    compute_oid_staleness(
+        latest.as_deref(),
+        tab.last_diff_head_oid.as_deref(),
+        "pr_head",
+        "",
+    )
+    .is_some()
+}
+
+/// `LocalBranchDivergenceSnapshot` for a local PR tab in the local branch view
+/// of a live checkout; None for the PR diff view, the tour (built from either
+/// source), a remote PR, and a read-only branch view, which has no worktree.
+///
+/// `pr_head` comes from the PR-list cache only. `last_diff_head_oid` is no
+/// substitute here: in the local branch view it can name the local branch's own
+/// head, which would report a worktree as never ahead.
+///
+/// `unstaged_stat` is None on a chrome-only build: `ahead` is still counted,
+/// since a PR-list refresh moves `pr_head` without a content revision, but the
+/// worktree is not re-read for unstaged files.
+fn local_branch_divergence_for(
+    tab: &TabState,
+    pr_head: &str,
+    unstaged_stat: Option<&ScopeStat>,
+) -> Option<LocalBranchDivergenceSnapshot> {
+    if tab.is_remote()
+        || matches!(tab.mode, DiffMode::PrDiff | DiffMode::Tour)
+        || pr_head.is_empty()
+    {
+        return None;
+    }
+    let root = match (&tab.local_branch_view, &tab.local_branch_checkout_root) {
+        (None, _) => tab.repo_root.as_str(),
+        (Some(_), Some(checkout)) => checkout.as_str(),
+        (Some(_), None) => return None,
+    };
+    let unstaged_files = unstaged_stat.map(|stat| {
+        if root == tab.repo_root {
+            stat.files
+        } else {
+            er_engine::git::diff_shortstat(root, false).0
+        }
+    });
+    // Resolved so the cache key moves with a new commit or a checkout.
+    let ahead = er_engine::github::rev_parse_oid(root, "HEAD")
+        .and_then(|head| commits_behind_cached(root, pr_head, &head));
+    Some(LocalBranchDivergenceSnapshot {
+        pr_head_oid: pr_head.to_string(),
+        ahead,
+        unstaged_files,
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -822,6 +1056,11 @@ pub struct TabSummary {
     pub repo_root: String,
     pub is_active: bool,
     pub change_token: String,
+    /// The tab's diff was built from an older commit than origin now has. On
+    /// the active tab this is exactly `AppSnapshot::diff_stale` being set; on
+    /// the others only PR tabs are checked (`pr_tab_is_stale`), so an inactive
+    /// branch tab reads false even when its base has moved.
+    pub stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1102,11 +1341,27 @@ pub struct FileSnapshot {
     pub preview_key: String,
     pub path: String,
     pub status: String,
+    /// Source path of a rename or copy; `None` for every other status. `path`
+    /// stays the new name so every path-keyed lookup keeps working.
+    pub old_path: Option<String>,
+    /// Git's similarity percentage for a rename or copy, when git reported one.
+    pub similarity: Option<u8>,
+    /// `FileKind` after the repo's `[file_kinds]` overrides, so a chip agrees
+    /// with what the `kind:` filter selects.
+    pub kind: &'static str,
     pub additions: usize,
     pub deletions: usize,
     pub reviewed: bool,
     pub compacted: bool,
+    /// The AI review's rating from `review.json`; `None` before a review.
     pub risk: Option<String>,
+    /// The tier the repo's risk rules give this path (`high|med|low|ai`). `ai`
+    /// declares nothing and leaves the file to `risk`, so a reader shows the
+    /// review's rating for it, or nothing before a review (ADR 0048).
+    pub risk_tier: &'static str,
+    /// The rule that set `risk_tier`: its key as written, label and source
+    /// table. `None` when a default, or nothing at all, answered.
+    pub risk_rule: Option<er_engine::config::MatchedRiskRule>,
     pub finding_count: usize,
     pub comment_count: usize,
     pub question_count: usize,
@@ -1143,6 +1398,12 @@ pub struct CommitSummary {
     /// ISO 8601 commit timestamp; the frontend renders it as a relative
     /// "time ago" string (uniform across local and remote-PR commits).
     pub committed_at: String,
+    /// `None` when the commit's diffstat is unknown — a PR commit not in the
+    /// local object DB (remote PR tabs) — so the UI can tell that from zero.
+    pub additions: Option<usize>,
+    pub deletions: Option<usize>,
+    /// On no remote yet. Always false for commits listed from GitHub.
+    pub unpushed: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1216,6 +1477,12 @@ pub struct ThreadMessage {
     pub editable: Option<bool>,
     #[serde(default)]
     pub deletable: Option<bool>,
+    /// The AI action that wrote this reply (`ask` / `elaborate`), so the card
+    /// can name it. Also set on the pending "…thinking" reply, which is how the
+    /// reader knows which of the two is running. `None` on a person's text and
+    /// on AI replies written before the field existed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_action: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1345,6 +1612,12 @@ pub struct AiSnapshot {
     /// rather than derived in the UI so the rule has one definition.
     #[serde(default)]
     pub min_trust_default: String,
+    /// When the review was generated (ISO-8601). `None` with no review; empty
+    /// when the sidecar does not say, as with a review assembled from expert
+    /// sidecars alone.
+    pub review_created_at: Option<String>,
+    /// Hash of the diff the review was generated against; `None` with no review.
+    pub review_diff_hash: Option<String>,
     /// Whether `{er_dir}/review.json` exists (batch validate target).
     pub has_review_json: bool,
     /// Top-level GitHub comments eligible for batch validate (!resolved, !outdated).
@@ -1444,6 +1717,10 @@ pub struct TriageSnapshot {
     /// Evidence-backed signals that led triage to request security review.
     #[serde(default)]
     pub sensitive: Vec<TriageSensitiveReasonSnapshot>,
+    /// When triage ran (ISO-8601); empty when the sidecar does not say.
+    pub created_at: String,
+    /// Hash of the diff triage was run against; `fresh` compares it.
+    pub diff_hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1466,6 +1743,65 @@ pub struct CheckSummary {
     pub status: String,
     pub conclusion: String,
     pub url: Option<String>,
+    /// ISO-8601 start and end; `None` until reached.
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    /// Wall time of a finished check, computed once here so the UI does not
+    /// re-parse GitHub's timestamps. `None` while running or untimed.
+    #[serde(default)]
+    pub duration_secs: Option<u64>,
+    /// Status-context text (a deploy preview's "Ready"), shown where a check
+    /// has no duration.
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+impl From<er_engine::github::CheckRun> for CheckSummary {
+    fn from(c: er_engine::github::CheckRun) -> Self {
+        let duration_secs = c.duration_secs();
+        Self {
+            name: c.name,
+            status: c.status,
+            conclusion: c.conclusion,
+            url: c.url,
+            started_at: c.started_at,
+            completed_at: c.completed_at,
+            duration_secs,
+            description: c.description,
+        }
+    }
+}
+
+/// One person (or team) on the PR's reviewer list: a pending request, a
+/// submitted review, or both. Folded by `er_engine::github::pr_reviewers`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhReviewerSummary {
+    pub reviewer: String,
+    pub is_team: bool,
+    /// A review is requested from them now (first ask or re-ask).
+    pub requested: bool,
+    /// The review that counts for them (`APPROVED`, `CHANGES_REQUESTED`,
+    /// `DISMISSED`, `COMMENTED`); `None` until they review.
+    pub state: Option<String>,
+}
+
+/// The reviewer list for a PR. The author is left out: their reviews are
+/// replies on their own PR, not reviews of it.
+pub fn github_reviewers(
+    overview: &er_engine::github::PrOverviewFull,
+    reviews: &[er_engine::github::PrReview],
+) -> Vec<GhReviewerSummary> {
+    er_engine::github::pr_reviewers(&overview.author, &overview.review_requests, reviews)
+        .into_iter()
+        .map(|r| GhReviewerSummary {
+            reviewer: r.reviewer,
+            is_team: r.is_team,
+            requested: r.requested,
+            state: r.state,
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1538,6 +1874,16 @@ pub struct GithubStatusSnapshot {
     /// (`gh pr merge --admin`). Looked up only while the PR is blocked.
     #[serde(default)]
     pub can_bypass_rules: bool,
+    /// When the PR was opened (ISO-8601). `gh pr view` has no timeline, so the
+    /// "opened" event is built from this instead (ADR 0026).
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// Commits on the PR.
+    #[serde(default)]
+    pub commit_count: usize,
+    /// Requested reviewers first, then everyone else who reviewed.
+    #[serde(default)]
+    pub reviewers: Vec<GhReviewerSummary>,
     /// Which fetch produced this entry (`gh_status_cache::store_fetched`).
     /// Process-local, so never sent or persisted.
     #[serde(skip)]
@@ -1864,6 +2210,7 @@ fn comment_ref_to_thread(
             synced: None,
             editable: None,
             deletable: None,
+            ai_action: None,
         },
         replies: build_replies(c, tab, pending),
         promoted_to: match c {
@@ -1917,6 +2264,7 @@ fn build_replies(
                     synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: q.ai_action.clone(),
                 });
             }
         }
@@ -1937,6 +2285,7 @@ fn build_replies(
                     synced: None,
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: n.ai_action.clone(),
                 });
             }
         }
@@ -1957,6 +2306,7 @@ fn build_replies(
                     synced: Some(c.synced),
                     editable: Some(kind == "you"),
                     deletable: Some(true),
+                    ai_action: None,
                 });
             }
         }
@@ -1967,25 +2317,21 @@ fn build_replies(
     // Append synthetic "…thinking" reply when an ask_ai subprocess is in
     // flight for this thread. Injected after the sort so it always renders at
     // the bottom regardless of timestamps.
-    if let Some(pmap) = pending {
-        let is_pending = pmap
-            .lock()
-            .map(|g| g.contains_key(root.id()))
-            .unwrap_or(false);
-        if is_pending {
-            replies.push(ThreadMessage {
-                id: String::new(),
-                author: "ai".to_string(),
-                kind: "ai".to_string(),
-                timestamp: String::new(),
-                body_markdown: "…thinking".to_string(),
-                origin: Some("thread_reply".to_string()),
-                source: None,
-                synced: None,
-                editable: None,
-                deletable: None,
-            });
-        }
+    let in_flight = pending.and_then(|pmap| pmap.lock().ok()?.get(root.id()).copied());
+    if let Some(reply) = in_flight {
+        replies.push(ThreadMessage {
+            id: String::new(),
+            author: "ai".to_string(),
+            kind: "ai".to_string(),
+            timestamp: String::new(),
+            body_markdown: "…thinking".to_string(),
+            origin: Some("thread_reply".to_string()),
+            source: None,
+            synced: None,
+            editable: None,
+            deletable: None,
+            ai_action: reply.ai_action.map(str::to_string),
+        });
     }
 
     replies
@@ -2003,9 +2349,19 @@ pub type BranchBaseRemoteOid = Arc<Mutex<HashMap<String, String>>>;
 /// the background poller fetched.
 pub type GhStatusCache = Arc<Mutex<HashMap<(String, String, u64), GithubStatusSnapshot>>>;
 
-/// Map of `thread_id -> started_at_ms`. Used to render a synthetic "…thinking"
+/// Map of `thread_id -> PendingAiReply`. Used to render a synthetic "…thinking"
 /// reply on threads where an AI subprocess is currently running.
-pub type PendingAiReplies = Arc<Mutex<HashMap<String, u64>>>;
+pub type PendingAiReplies = Arc<Mutex<HashMap<String, PendingAiReply>>>;
+
+/// One AI subprocess answering a thread or finding.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingAiReply {
+    pub started_at_ms: u64,
+    /// Which action is running (`AI_ACTION_ASK` / `AI_ACTION_ELABORATE`); the
+    /// placeholder carries it so the card can say "Elaborating" before the
+    /// rewrite lands, rather than guessing from the thread.
+    pub ai_action: Option<&'static str>,
+}
 
 #[derive(Clone, Default)]
 pub struct ProjectMeta {
@@ -2248,6 +2604,8 @@ fn build_file_snapshot_with_keys(
         .and_then(|r| r.files.get(&f.path))
         .map(|fr| severity_str(fr.risk).to_string());
 
+    let declared = tab.risk_rules.resolve(&f.path);
+
     let (lines_key, delta_key) = match precomputed {
         Some(keys) => keys,
         None => {
@@ -2261,11 +2619,19 @@ fn build_file_snapshot_with_keys(
         preview_key: tab.file_preview_key(&f.path),
         path: f.path.clone(),
         status: status_str(&f.status),
+        old_path: match &f.status {
+            FileStatus::Renamed(old) | FileStatus::Copied(old) => Some(old.clone()),
+            _ => None,
+        },
+        similarity: f.similarity,
+        kind: tab.file_kinds.classify(&f.path).as_str(),
         additions: f.adds,
         deletions: f.dels,
         reviewed: tab.reviewed.contains_key(&f.path),
         compacted: f.compacted,
         risk,
+        risk_tier: declared.tier.as_str(),
+        risk_rule: declared.rule,
         finding_count,
         comment_count,
         question_count,
@@ -2295,12 +2661,16 @@ fn build_file_snapshot_with_keys(
 /// are passed through unfiltered — only `available`/pillar-count is consumed
 /// there (the pillar nav renders in Tour mode only).
 fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
-    let Some(tour) = tab.ai.tour.as_ref() else {
-        return TourSnapshot::default();
+    let scope = tour_scope(tab);
+    // A view with no tour still has a source: the Tour page's empty state and
+    // every "leave Tour" path return to the diff `scope` names, so an empty
+    // scope would send a PR view back to the local branch.
+    let Some(tour) = tab.ai.tour.as_ref().filter(|t| !t.pillars.is_empty()) else {
+        return TourSnapshot {
+            scope,
+            ..TourSnapshot::default()
+        };
     };
-    if tour.pillars.is_empty() {
-        return TourSnapshot::default();
-    }
 
     let branch_scope = matches!(
         tab.mode,
@@ -2378,6 +2748,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
                 description_markdown: p.description.clone(),
+                summary_markdown: p.summary.clone(),
                 importance: p.importance,
                 foundation: p.foundation,
                 files,
@@ -2404,6 +2775,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: "__other__".to_string(),
                 title: "Other changes".to_string(),
                 description_markdown: "Files not assigned to a tour pillar.".to_string(),
+                summary_markdown: "Files not assigned to a tour pillar.".to_string(),
                 importance: 0,
                 foundation: false,
                 files: other,
@@ -2431,6 +2803,7 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
                 id: p.id.clone(),
                 title: p.title.clone(),
                 description_markdown: p.description.clone(),
+                summary_markdown: p.summary.clone(),
                 importance: p.importance,
                 foundation: p.foundation,
                 files,
@@ -2446,15 +2819,184 @@ fn build_tour_snapshot(tab: &TabState) -> TourSnapshot {
         // `scope` tells the frontend which guide (branch vs PR) is showing so the Guide
         // tab is context-aware and the Diff toggle returns to the right diff.
         fresh: !tab.ai.tour_stale,
-        scope: if tab.tour_context_is_pr() {
-            "pr".to_string()
-        } else {
-            "branch".to_string()
-        },
+        scope,
         title: tour.title.clone(),
         overview_markdown: tour.overview.clone(),
         pillars,
+        created_at: tour.created_at.clone(),
+        diff_hash: tour.diff_hash.clone(),
     }
+}
+
+/// Which diff the tour view belongs to: `"pr"` or `"branch"`.
+fn tour_scope(tab: &TabState) -> String {
+    if tab.tour_context_is_pr() {
+        "pr"
+    } else {
+        "branch"
+    }
+    .to_string()
+}
+
+/// The other view's bucket directory and its name, for a local PR tab in its
+/// Local branch or PR diff view. Unstaged/Staged/History have buckets of their
+/// own that describe a different diff, so they have no "other view" to point
+/// at; a remote tab has only the PR bucket.
+fn other_bucket_dir(tab: &TabState) -> Option<(&'static str, String)> {
+    if tab.is_remote() || tab.pr_number.is_none() {
+        return None;
+    }
+    let on_pr = tab.tour_context_is_pr();
+    if !matches!(
+        tab.mode,
+        DiffMode::PrDiff | DiffMode::Branch | DiffMode::Tour
+    ) {
+        return None;
+    }
+    let (view, dir) = if on_pr {
+        ("branch", tab.branch_bucket_er_dir()?)
+    } else {
+        // A PR tab's GitHub comments live in its PR bucket, so this is that
+        // bucket's directory; the engine keeps the bare PR-bucket path private.
+        ("pr", tab.github_comments_dir())
+    };
+    // Repo-local storage (`ER_REPO_LOCAL`) has one bucket for every view.
+    (dir != tab.er_dir()).then_some((view, dir))
+}
+
+/// What the summary needs from the other bucket's sidecars, read once per
+/// write to that bucket. Only facts are kept: the loaded `AiState` holds
+/// thread-local caches and cannot sit in a process-wide cache.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OtherBucketFacts {
+    triage_hash: Option<String>,
+    review_hash: Option<String>,
+    /// Findings still open in its review (resolved and arbiter-dropped ones
+    /// left out), counted the way its own findings list is.
+    finding_count: usize,
+    /// `(diff_hash, created_at, pillar count)` of the tour stored there.
+    tour: Option<(String, String, usize)>,
+}
+
+impl OtherBucketFacts {
+    fn read(dir: &str) -> Self {
+        // Loaded as of the bucket's own generation, so the loader merges the
+        // expert and professor sidecars its own view would. Freshness against
+        // the active view is judged in `summarize_other_bucket`.
+        let ai = er_engine::ai::load_ai_state(dir, &bucket_generation_hash(dir), None);
+        let tour = er_engine::ai::load_tour_sidecar(dir, "tour.json");
+        Self {
+            triage_hash: ai.triage.as_ref().map(|t| t.diff_hash.clone()),
+            review_hash: ai.review.as_ref().map(|r| r.diff_hash.clone()),
+            finding_count: ai.review.as_ref().map_or(0, |r| {
+                r.files
+                    .values()
+                    .flat_map(|f| f.findings.iter())
+                    .filter(|f| f.is_active())
+                    .count()
+            }),
+            tour: tour.map(|t| (t.diff_hash, t.created_at, t.pillars.len())),
+        }
+    }
+}
+
+/// The diff hash the bucket's sidecars were generated against: `review.json`'s,
+/// else the newest expert, professor or triage sidecar's. The loader merges only
+/// sidecars matching the hash it is given, so an empty one drops a review built
+/// from experts or professor alone.
+fn bucket_generation_hash(dir: &str) -> String {
+    #[derive(serde::Deserialize)]
+    struct HashOnly {
+        diff_hash: String,
+    }
+    let review_hash = std::fs::read_to_string(std::path::Path::new(dir).join("review.json"))
+        .ok()
+        .and_then(|content| serde_json::from_str::<HashOnly>(&content).ok())
+        .map(|review| review.diff_hash)
+        .filter(|hash| !hash.is_empty());
+    if let Some(hash) = review_hash {
+        return hash;
+    }
+    let experts = er_engine::ai::load_expert_reviews(dir)
+        .into_iter()
+        .map(|e| (e.created_at, e.diff_hash));
+    let professor = er_engine::ai::load_professor_review(dir).map(|p| (p.created_at, p.diff_hash));
+    let triage = er_engine::ai::load_triage_review(dir).map(|t| (t.created_at, t.diff_hash));
+    experts
+        .chain(professor)
+        .chain(triage)
+        .filter(|(_, hash)| !hash.is_empty())
+        .max_by(|a, b| a.0.cmp(&b.0))
+        .map(|(_, hash)| hash)
+        .unwrap_or_default()
+}
+
+/// The pure half of the summary, so it can be tested without managed storage.
+fn summarize_other_bucket(
+    view: &str,
+    other: &OtherBucketFacts,
+    shown_tour: Option<&er_engine::ai::ErTour>,
+    active_hashes: &[&str],
+) -> OtherBucketSnapshot {
+    let matches = |hash: &str| !hash.is_empty() && active_hashes.contains(&hash);
+    // The tour on screen came from there when it is that same file: the hash
+    // alone could match a tour generated separately in each bucket.
+    let tour_shared = match (&other.tour, shown_tour) {
+        (Some((hash, created, _)), Some(shown)) => {
+            *hash == shown.diff_hash && *created == shown.created_at
+        }
+        _ => false,
+    };
+    let same_diff = [&other.triage_hash, &other.review_hash]
+        .into_iter()
+        .flatten()
+        .chain(other.tour.as_ref().map(|(hash, _, _)| hash))
+        .any(|hash| matches(hash));
+    OtherBucketSnapshot {
+        view: view.to_string(),
+        has_triage: other.triage_hash.is_some(),
+        has_review: other.review_hash.is_some(),
+        finding_count: other.finding_count,
+        pillar_count: other.tour.as_ref().map_or(0, |(_, _, n)| *n),
+        tour_shared,
+        same_diff,
+    }
+}
+
+/// Keyed by the bucket's directory and newest sidecar mtime. Every full
+/// snapshot asks, and that bucket only changes when an agent writes to it, so
+/// the parse runs once per write rather than once per poll.
+fn other_bucket_facts_cached(dir: &str) -> OtherBucketFacts {
+    type Key = Option<std::time::SystemTime>;
+    static CACHE: std::sync::LazyLock<Mutex<HashMap<String, (Key, OtherBucketFacts)>>> =
+        std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+    let key: Key = er_engine::ai::latest_er_mtime(dir);
+    if let Some((_, facts)) = CACHE
+        .lock()
+        .ok()
+        .and_then(|c| c.get(dir).filter(|(k, _)| *k == key).cloned())
+    {
+        return facts;
+    }
+    let facts = OtherBucketFacts::read(dir);
+    if let Ok(mut cache) = CACHE.lock() {
+        if cache.len() > 32 {
+            cache.clear();
+        }
+        cache.insert(dir.to_string(), (key, facts.clone()));
+    }
+    facts
+}
+
+fn build_other_bucket_snapshot(tab: &TabState) -> Option<OtherBucketSnapshot> {
+    let (view, dir) = other_bucket_dir(tab)?;
+    let active_hashes = [tab.branch_diff_hash.as_str(), tab.diff_hash.as_str()];
+    Some(summarize_other_bucket(
+        view,
+        &other_bucket_facts_cached(&dir),
+        tab.ai.tour.as_ref(),
+        &active_hashes,
+    ))
 }
 
 /// The desktop-owned state a snapshot reads beside the engine `App`. Every
@@ -2677,7 +3219,8 @@ fn build_snapshot_inner(
     };
 
     let active_tab = app.active_tab;
-    let tabs: Vec<TabSummary> = app
+    let pr_cache_guard = pr_cache.and_then(|pc| pc.lock().ok());
+    let mut tabs: Vec<TabSummary> = app
         .tabs
         .iter()
         .enumerate()
@@ -2699,9 +3242,12 @@ fn build_snapshot_inner(
                 repo_root: t.repo_root.clone(),
                 is_active: i == active_tab,
                 change_token: t.branch_diff_hash.clone(),
+                // The active tab's flag is overwritten from `diff_stale` below.
+                stale: i != active_tab && pr_tab_is_stale(t, pr_cache_guard.as_deref()),
             }
         })
         .collect();
+    drop(pr_cache_guard);
 
     let filter = if tab.filter_expr.is_empty() {
         None
@@ -2792,6 +3338,10 @@ fn build_snapshot_inner(
     // PR-list cache (gh pr list, 10-min cadence); branch case reads a background
     // ls-remote cache + a local `git rev-parse`. Never fetches here. Any unknown
     // oid yields None (we don't guess), so the pill never wedges "stale".
+    let cached_pr_head = {
+        let guard = pr_cache.and_then(|pc| pc.lock().ok());
+        tab_pr_head_oid(tab, detected_pr_number, guard.as_deref())
+    };
     let diff_stale: Option<DiffStaleSnapshot> = {
         // Fire whenever the tab represents a PR — including a local PR tab
         // switched to Branch view (via set_mode), which matches neither
@@ -2803,24 +3353,15 @@ fn build_snapshot_inner(
         if pr_showing {
             // PR case (FREE): compare the head_oid the open diff was computed
             // against to the latest head_oid carried by the PR-list cache.
-            // Prefer the tab's own PR number — `detected_pr_number` is None for
-            // remote PR tabs, so keying off it alone would never light their pill.
-            tab.pr_number.or(detected_pr_number).and_then(|pr_number| {
-                let cached_head_oid = pr_cache.and_then(|pc| pc.lock().ok()).and_then(|cache| {
-                    cache
-                        .values()
-                        .flat_map(|prs| prs.iter())
-                        .find(|p| p.number == pr_number)
-                        .map(|p| p.head_oid.clone())
-                        .filter(|s| !s.is_empty())
-                });
-                compute_oid_staleness(
-                    cached_head_oid.as_deref(),
-                    tab.last_diff_head_oid.as_deref(),
-                    "pr_head",
-                    "PR head updated on origin — Sync to refresh",
-                )
-            })
+            // `tab_pr_head_oid` prefers the tab's own PR number —
+            // `detected_pr_number` is None for remote PR tabs, so keying off it
+            // alone would never light their pill.
+            compute_oid_staleness(
+                cached_pr_head.as_deref(),
+                tab.last_diff_head_oid.as_deref(),
+                "pr_head",
+                "PR head updated on origin — Sync to refresh",
+            )
         } else if tab.shows_branch_base_diff() {
             // Branch case (main checkout or read-only branch view): compare the
             // background-probed remote tip of the base branch to the oid the diff's
@@ -2844,6 +3385,17 @@ fn build_snapshot_inner(
             None
         }
     };
+    // A remote PR tab has no clone to count in.
+    let diff_stale = diff_stale.map(|mut stale| {
+        if !tab.is_remote() {
+            stale.commits_behind =
+                commits_behind_cached(&tab.repo_root, &stale.built_from_oid, &stale.latest_oid);
+        }
+        stale
+    });
+    if let Some(summary) = tabs.get_mut(active_tab) {
+        summary.stale = diff_stale.is_some();
+    }
 
     // Per-scope +/- counters for the scope selector. Only meaningful for a live
     // local checkout (working tree or checked-out branch view); skipped on remote
@@ -2852,21 +3404,23 @@ fn build_snapshot_inner(
         && !tab.is_remote()
         && (tab.local_branch_view.is_none() || tab.local_branch_checkout_root.is_some())
     {
-        let (ua, ud) = er_engine::git::diff_shortstat(&tab.repo_root, false);
-        let (sa, sd) = er_engine::git::diff_shortstat(&tab.repo_root, true);
-        (
+        let stat = |staged| {
+            let (files, additions, deletions) =
+                er_engine::git::diff_shortstat(&tab.repo_root, staged);
             ScopeStat {
-                additions: ua,
-                deletions: ud,
-            },
-            ScopeStat {
-                additions: sa,
-                deletions: sd,
-            },
-        )
+                files,
+                additions,
+                deletions,
+            }
+        };
+        (stat(false), stat(true))
     } else {
         (ScopeStat::default(), ScopeStat::default())
     };
+
+    let local_branch_divergence = cached_pr_head.as_deref().and_then(|pr_head| {
+        local_branch_divergence_for(tab, pr_head, (!chrome_only).then_some(&unstaged_stat))
+    });
 
     let (inbox_items, inbox_unread_count, inbox_last_refresh_ms) =
         snapshot_inbox(inbox, &app.config.inbox);
@@ -2936,6 +3490,7 @@ fn build_snapshot_inner(
         detected_pr_number,
         diff_stale,
         pr_diff_head_oid: pr_diff_head_oid(tab),
+        local_branch_divergence,
         bg_loading: loading
             .and_then(|l| l.lock().ok().map(|g| g.clone()))
             .unwrap_or_default(),
@@ -2991,6 +3546,11 @@ fn build_snapshot_inner(
             app.arena_list_summaries(Some(&branch)).unwrap_or_default()
         },
         tour: build_tour_snapshot(tab),
+        other_bucket: if chrome_only {
+            None
+        } else {
+            build_other_bucket_snapshot(tab)
+        },
         background_arena_runs: app.background_arena_runs(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
     };
@@ -3059,6 +3619,8 @@ fn empty_ai_snapshot() -> AiSnapshot {
         resolved_findings: Vec::new(),
         dropped_findings: Vec::new(),
         min_trust_default: String::new(),
+        review_created_at: None,
+        review_diff_hash: None,
         has_review_json: false,
         eligible_comment_count: 0,
         triage: None,
@@ -3087,6 +3649,12 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
 
     let log_root = tab.commit_log_root();
 
+    // The same rule `TabState::set_mode` uses to seed History from
+    // `pr_commits`: on a PR review tab the list is GitHub's in either mode, and
+    // a commit GitHub lists is pushed by definition.
+    let listed_by_github =
+        tab.pr_number.is_some() && (tab.history.is_none() || tab.local_branch_view.is_some());
+
     let raw: Vec<er_engine::git::CommitInfo> = if let Some(history) = tab.history.as_ref() {
         history.commits.iter().take(LIMIT).cloned().collect()
     } else if tab.pr_number.is_some() {
@@ -3108,14 +3676,118 @@ fn build_commits_snapshot(tab: &TabState) -> Vec<CommitSummary> {
         }
     };
 
+    let meta = if raw.is_empty() || tab.is_remote() {
+        CommitMeta::default()
+    } else {
+        let key = CommitMetaKey {
+            log_root: log_root.to_string(),
+            head_ref: tab.commit_head_ref().to_string(),
+            pr_head_ref: tab.pr_head_ref.clone(),
+            listed_by_github,
+            shas: raw.iter().map(|c| c.hash.clone()).collect(),
+        };
+        commit_meta_cached(key, || {
+            // A local PR tab's GitHub listing has no diffstat; read it from the
+            // object DB when the head was fetched, and leave it unknown otherwise.
+            let missing: Vec<&str> = raw
+                .iter()
+                .filter(|c| !c.diffstat_known)
+                .map(|c| c.hash.as_str())
+                .collect();
+            let stats = er_engine::git::git_commit_shortstats(log_root, &missing);
+            let unpushed = if listed_by_github {
+                std::collections::HashSet::new()
+            } else {
+                // A local PR tab's fetched head counts as pushed even when it
+                // lives outside refs/remotes (a fork's PR).
+                let pushed_refs: Vec<&str> = tab.pr_head_ref.as_deref().into_iter().collect();
+                er_engine::git::git_unpushed_shas(
+                    log_root,
+                    tab.commit_head_ref(),
+                    &pushed_refs,
+                    LIMIT,
+                )
+            };
+            CommitMeta { stats, unpushed }
+        })
+    };
+
     raw.into_iter()
-        .map(|c| CommitSummary {
-            sha: c.hash,
-            title: c.subject,
-            author: c.author,
-            committed_at: c.date,
+        .map(|c| {
+            let (additions, deletions) = if c.diffstat_known {
+                (Some(c.adds), Some(c.dels))
+            } else {
+                meta.stats
+                    .get(&c.hash)
+                    .map_or((None, None), |s| (Some(s.1), Some(s.2)))
+            };
+            CommitSummary {
+                unpushed: meta.unpushed.contains(&c.hash),
+                sha: c.hash,
+                title: c.subject,
+                author: c.author,
+                committed_at: c.date,
+                additions,
+                deletions,
+            }
         })
         .collect()
+}
+
+/// What the commit scroller's git lookups depend on. The commit list is
+/// re-read on every build, so a new commit, a rebase or a switch of branch
+/// changes `shas` and misses at once.
+#[derive(Clone, PartialEq, Eq)]
+struct CommitMetaKey {
+    log_root: String,
+    head_ref: String,
+    pr_head_ref: Option<String>,
+    listed_by_github: bool,
+    shas: Vec<String>,
+}
+
+/// Object-DB diffstats for commits whose listing carried none, and the
+/// commits no remote holds.
+#[derive(Clone, Default)]
+struct CommitMeta {
+    stats: HashMap<String, (usize, usize, usize)>,
+    unpushed: std::collections::HashSet<String>,
+}
+
+/// The snapshot rebuilds on every revision event, and these two `git`
+/// processes would otherwise run on each one. A diffstat never changes for a
+/// sha, so only the unpushed set can go stale under an unchanged key — after a
+/// push or fetch from outside the app — and the TTL bounds that.
+static COMMIT_META_CACHE: Mutex<Vec<(CommitMetaKey, std::time::Instant, CommitMeta)>> =
+    Mutex::new(Vec::new());
+
+/// Entries kept before the least recently used is dropped: one per open tab is
+/// the common case.
+const COMMIT_META_CACHE_CAP: usize = 8;
+
+/// How long an entry may serve before the next build recomputes it.
+const COMMIT_META_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn commit_meta_cached(key: CommitMetaKey, compute: impl FnOnce() -> CommitMeta) -> CommitMeta {
+    if let Ok(mut guard) = COMMIT_META_CACHE.lock() {
+        if let Some(idx) = guard.iter().position(|(cached_key, computed_at, _)| {
+            *cached_key == key && computed_at.elapsed() < COMMIT_META_TTL
+        }) {
+            let entry = guard.remove(idx);
+            let value = entry.2.clone();
+            guard.push(entry);
+            return value;
+        }
+    }
+    let value = compute();
+    if let Ok(mut guard) = COMMIT_META_CACHE.lock() {
+        guard.retain(|(cached_key, _, _)| *cached_key != key);
+        guard.push((key, std::time::Instant::now(), value.clone()));
+        if guard.len() > COMMIT_META_CACHE_CAP {
+            guard.remove(0);
+        }
+    }
+    value
 }
 
 fn build_agent_commands(app: &App, tab: &TabState) -> Vec<AgentCommandSnapshot> {
@@ -4272,6 +4944,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&qref, tab, pending),
                         promoted_to: q.promoted_to.clone(),
@@ -4305,6 +4978,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&nref, tab, pending),
                         promoted_to: n.promoted_to.clone(),
@@ -4343,6 +5017,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                             synced: None,
                             editable: None,
                             deletable: None,
+                            ai_action: None,
                         },
                         replies: build_replies(&cref, tab, pending),
                         promoted_to: None,
@@ -4517,6 +5192,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     note: reason.note.clone(),
                 })
                 .collect(),
+            created_at: t.created_at.clone(),
+            diff_hash: t.diff_hash.clone(),
         }
     });
 
@@ -4581,6 +5258,8 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         dropped_findings,
         min_trust_default: confidence_str(er_engine::ai::min_trust_for(&ai.arbiter_effect))
             .to_string(),
+        review_created_at: ai.review.as_ref().map(|r| r.created_at.clone()),
+        review_diff_hash: ai.review.as_ref().map(|r| r.diff_hash.clone()),
         has_review_json,
         eligible_comment_count,
         triage,
@@ -4795,6 +5474,87 @@ mod tests {
         let pr_stale = compute_oid_staleness(Some("head2"), Some("head1"), "pr_head", "msg")
             .expect("differing oids must be stale");
         assert_eq!(pr_stale.kind, "pr_head");
+        // The banner names both commits; latest is the first argument.
+        assert_eq!(pr_stale.built_from_oid, "head1");
+        assert_eq!(pr_stale.latest_oid, "head2");
+        assert_eq!(pr_stale.commits_behind, None);
+    }
+
+    fn rev_parse(root: &std::path::Path, rev: &str) -> String {
+        let out = std::process::Command::new("git")
+            .args(["rev-parse", rev])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn commits_behind_counts_local_commits_and_never_guesses() {
+        let tmp = init_repo_with_feature_commit();
+        let root = tmp.path().to_string_lossy().to_string();
+        let main = rev_parse(tmp.path(), "main");
+        let feature = rev_parse(tmp.path(), "feature");
+
+        assert_eq!(commits_behind_cached(&root, &main, &feature), Some(1));
+        assert_eq!(commits_behind_cached(&root, &feature, &main), Some(0));
+        // A head pushed since the last fetch is not in the object store: no
+        // count rather than a wrong one.
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(commits_behind_cached(&root, &main, missing), None);
+    }
+
+    #[test]
+    fn local_branch_divergence_counts_unpushed_commits_and_unstaged_files() {
+        let tmp = init_repo_with_feature_commit();
+        let pr_head = rev_parse(tmp.path(), "main");
+        std::fs::write(tmp.path().join("file.txt"), "edited\n").unwrap();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.pr_number = Some(42);
+        tab.mode = DiffMode::Branch;
+        let unstaged = ScopeStat {
+            files: 1,
+            additions: 1,
+            deletions: 2,
+        };
+
+        let div =
+            local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).expect("local PR tab");
+        assert_eq!(div.pr_head_oid, pr_head);
+        assert_eq!(div.ahead, Some(1));
+        assert_eq!(div.unstaged_files, Some(1));
+
+        // The PR diff view and the tour are not the local branch view.
+        tab.mode = DiffMode::PrDiff;
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
+        tab.mode = DiffMode::Tour;
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
+
+        // A read-only branch view has no worktree to be ahead or dirty.
+        tab.mode = DiffMode::Branch;
+        tab.local_branch_view = Some("feature".to_string());
+        assert!(local_branch_divergence_for(&tab, &pr_head, Some(&unstaged)).is_none());
+    }
+
+    #[test]
+    fn local_branch_divergence_reads_the_checkout_root_of_a_branch_view() {
+        let tmp = init_repo_with_feature_commit();
+        let pr_head = rev_parse(tmp.path(), "main");
+        std::fs::write(tmp.path().join("file.txt"), "edited\n").unwrap();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = "/nonexistent/project-root".to_string();
+        tab.pr_number = Some(42);
+        tab.mode = DiffMode::Branch;
+        tab.local_branch_view = Some("feature".to_string());
+        tab.local_branch_checkout_root = Some(tmp.path().to_string_lossy().to_string());
+
+        // The project root's counters describe another checkout, so they are
+        // not reused.
+        let div = local_branch_divergence_for(&tab, &pr_head, Some(&ScopeStat::default()))
+            .expect("checked-out branch view");
+        assert_eq!(div.ahead, Some(1));
+        assert_eq!(div.unstaged_files, Some(1));
     }
 
     #[test]
@@ -5112,6 +5872,7 @@ mod tests {
             adds: 0,
             dels: 0,
             is_merge: false,
+            diffstat_known: false,
         }
     }
 
@@ -5317,6 +6078,41 @@ mod tests {
     }
 
     #[test]
+    fn file_snapshot_kind_follows_repo_file_kind_overrides() {
+        let file = |path: &str| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![
+            file("src/lib.rs"),
+            file("src/lib.test.ts"),
+            file("src/api/schema.ts"),
+        ]);
+        tab.file_kinds =
+            er_engine::config::FileKindRepoConfig::new(std::collections::BTreeMap::from([(
+                "src/api/schema.ts".to_string(),
+                "generated".to_string(),
+            )]));
+
+        let kinds: Vec<&str> = tab
+            .files
+            .iter()
+            .enumerate()
+            .map(|(i, f)| build_file_snapshot(i, f, &tab, None, false).kind)
+            .collect();
+        assert_eq!(kinds, vec!["production", "test", "generated"]);
+        let plain = build_file_snapshot(0, &tab.files[0], &tab, None, false);
+        assert_eq!(plain.old_path, None);
+        assert_eq!(plain.similarity, None);
+    }
+
+    #[test]
     fn lazy_pure_rename_is_not_a_stub_but_unparsed_content_is() {
         // A `DiffFile` with no hunks and zero +/- lines: a pure rename (or
         // mode-only / binary change). In lazy mode this must not report as a
@@ -5332,6 +6128,7 @@ mod tests {
             dels: 0,
             compacted: false,
             raw_hunk_count: 0,
+            similarity: Some(100),
         };
         // A genuinely-unparsed content file: empty hunks but real +/- counts
         // from the header scan. This one *must* still read as a stub so the
@@ -5344,6 +6141,7 @@ mod tests {
             dels: 12,
             compacted: false,
             raw_hunk_count: 3,
+            similarity: None,
         };
 
         let mut tab = TabState::new_for_test(vec![rename, unparsed]);
@@ -5354,6 +6152,12 @@ mod tests {
             !rename_snap.is_lazy_stub,
             "a pure rename has nothing to load and must not be a perpetual stub"
         );
+        assert_eq!(rename_snap.status, "renamed");
+        assert_eq!(
+            rename_snap.old_path.as_deref(),
+            Some("routes/quality-control/component/ReplicateDeviationSection.svelte")
+        );
+        assert_eq!(rename_snap.similarity, Some(100));
 
         let unparsed_snap = build_file_snapshot(1, &tab.files[1], &tab, None, true);
         assert!(
@@ -5476,6 +6280,148 @@ mod tests {
         let stale = diff_stale_for(&app, &pr_cache).expect("pill should be lit");
         assert_eq!(stale.kind, "pr_head");
         assert_eq!(stale.message, "PR head updated on origin — Sync to refresh");
+        assert_eq!(stale.built_from_oid, "head1");
+        assert_eq!(stale.latest_oid, "head2");
+        // "/tmp/test" is no repository, so there is nothing to count in.
+        assert_eq!(stale.commits_behind, None);
+    }
+
+    fn snapshot_with_cache(app: &App, pr_cache: &PrCache) -> AppSnapshot {
+        build_snapshot_with_delta(
+            app,
+            &SnapshotSources {
+                pr_cache: Some(pr_cache),
+                ..SnapshotSources::default()
+            },
+        )
+    }
+
+    #[test]
+    fn active_tab_stale_flag_follows_the_pill() {
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+        assert!(snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+
+        let (app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head1");
+        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+    }
+
+    /// An inactive tab carries no `diff_stale`, so its dot comes from comparing
+    /// its own `last_diff_head_oid` to the PR-list cache.
+    #[test]
+    fn inactive_pr_tab_is_stale_when_its_pr_head_moved() {
+        let (mut app, pr_cache) =
+            pr_tab_app_with_cache(42, DiffMode::Branch, Some("head1"), "head2");
+        let mut working = TabState::new_for_test(vec![]);
+        working.repo_root = "/tmp/test".to_string();
+        app.tabs.push(working);
+        app.tabs.swap(0, 1);
+        app.active_tab = 0;
+
+        let snap = snapshot_with_cache(&app, &pr_cache);
+        assert!(
+            !snap.tabs[0].stale,
+            "a working tab without a PR is never PR-stale"
+        );
+        assert!(snap.tabs[1].stale, "the PR tab's head moved on origin");
+
+        // The refresh that brings the PR head back in line clears it.
+        if let Ok(mut cache) = pr_cache.lock() {
+            if let Some(prs) = cache.get_mut("owner/repo") {
+                prs[0].head_oid = "head1".to_string();
+            }
+        }
+        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[1].stale);
+    }
+
+    /// A restored tab has no `last_diff_head_oid` until its diff loads; an
+    /// unknown baseline must not light the dot.
+    #[test]
+    fn inactive_pr_tab_without_a_baseline_is_not_stale() {
+        let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, None, "head2");
+        app.tabs.push(TabState::new_for_test(vec![]));
+        app.active_tab = 1;
+
+        assert!(!snapshot_with_cache(&app, &pr_cache).tabs[0].stale);
+    }
+
+    /// Two cached repos can share a PR number. The tab's dot must read the
+    /// same head whether the tab is active (pill) or not, and that head is the
+    /// one in the tab's own remote's bucket, whatever the map's order.
+    #[test]
+    fn pr_tab_stale_flag_agrees_active_and_inactive_across_buckets() {
+        let pr = |head: &str| {
+            let mut p = minimal_pr_info(42, "PR");
+            p.head_oid = head.to_string();
+            p
+        };
+        let pr_cache: PrCache = Arc::new(Mutex::new(HashMap::from([
+            ("owner/a".to_string(), vec![pr("headA")]),
+            ("owner/b".to_string(), vec![pr("headB")]),
+        ])));
+        for (built_from, expect_stale) in [("headA", false), ("headB", true)] {
+            let mut app = App::new_for_test(vec![]);
+            {
+                let tab = app.tab_mut();
+                tab.repo_root = "/tmp/test".to_string();
+                tab.remote_repo = Some("owner/a".to_string());
+                tab.pr_number = Some(42);
+                tab.mode = DiffMode::PrDiff;
+                tab.last_diff_head_oid = Some(built_from.to_string());
+            }
+            app.tabs.push(TabState::new_for_test(vec![]));
+
+            app.active_tab = 0;
+            let active = snapshot_with_cache(&app, &pr_cache);
+            app.active_tab = 1;
+            let inactive = snapshot_with_cache(&app, &pr_cache).tabs[0].stale;
+
+            assert_eq!(
+                active.tabs[0].stale, expect_stale,
+                "built from {built_from}"
+            );
+            assert_eq!(inactive, expect_stale, "built from {built_from}");
+            assert_eq!(active.diff_stale.is_some(), expect_stale);
+        }
+    }
+
+    /// Pushing moves the PR-list cache's head without touching the worktree, so
+    /// only a chrome-only build follows. That build must still recount `ahead`.
+    #[test]
+    fn chrome_only_build_recounts_ahead_when_the_pr_head_moves() {
+        let tmp = init_repo_with_feature_commit();
+        let main = rev_parse(tmp.path(), "main");
+        let feature = rev_parse(tmp.path(), "feature");
+        let (mut app, pr_cache) = pr_tab_app_with_cache(42, DiffMode::Branch, Some(&main), &main);
+        {
+            let tab = app.tab_mut();
+            tab.repo_root = tmp.path().to_string_lossy().to_string();
+            tab.local_branch_view = None;
+        }
+        let sources = SnapshotSources {
+            pr_cache: Some(&pr_cache),
+            ..SnapshotSources::default()
+        };
+
+        let full = build_snapshot_with_delta(&app, &sources)
+            .local_branch_divergence
+            .expect("local PR tab in the local branch view");
+        assert_eq!(full.ahead, Some(1), "one unpushed commit");
+        assert_eq!(full.unstaged_files, Some(0));
+
+        if let Ok(mut cache) = pr_cache.lock() {
+            if let Some(prs) = cache.get_mut("owner/repo") {
+                prs[0].head_oid = feature.clone();
+            }
+        }
+        let chrome = build_chrome_snapshot(&app, &sources)
+            .local_branch_divergence
+            .expect("still a local PR tab");
+        assert_eq!(chrome.pr_head_oid, feature);
+        assert_eq!(chrome.ahead, Some(0), "the push landed");
+        assert_eq!(
+            chrome.unstaged_files, None,
+            "a chrome-only build does not re-read the worktree"
+        );
     }
 
     /// Equal oids → no pill (the diff is already at the latest head).
@@ -5558,6 +6504,127 @@ mod tests {
 
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].title, "feature commit");
+        assert_eq!(commits[0].additions, Some(1));
+        assert_eq!(commits[0].deletions, Some(0));
+        // The test repo has no remote, so the branch's own commit is unpushed.
+        assert!(commits[0].unpushed);
+    }
+
+    #[test]
+    fn local_branch_commit_on_a_remote_ref_is_not_unpushed() {
+        let tmp = init_repo_with_feature_commit();
+        run_git(
+            tmp.path(),
+            &["update-ref", "refs/remotes/origin/feature", "feature"],
+        );
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.base_branch = "main".to_string();
+        tab.current_branch = "feature".to_string();
+        tab.local_branch_view = Some("feature".to_string());
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 1);
+        assert!(!commits[0].unpushed);
+    }
+
+    #[test]
+    fn pr_commit_snapshot_reads_diffstat_from_the_local_object_db() {
+        let tmp = init_repo_with_feature_commit();
+        let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.repo_root = tmp.path().to_string_lossy().to_string();
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_commits = vec![
+            commit_info(&feature_sha, "feature commit"),
+            // Listed by GitHub but never fetched: stats unknown, not zero.
+            commit_info("cccccccccccccccccccccccccccccccccccccccc", "not fetched"),
+        ];
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].additions, Some(1));
+        assert_eq!(commits[0].deletions, Some(0));
+        assert_eq!(commits[1].additions, None);
+        assert_eq!(commits[1].deletions, None);
+        assert!(commits.iter().all(|c| !c.unpushed));
+    }
+
+    #[test]
+    fn pr_commit_snapshot_in_history_mode_keeps_unknown_stats_unknown() {
+        // History on a PR review tab is seeded from `pr_commits`, whose zeros
+        // mean "not reported" — they must not surface as a real +0 −0.
+        let tmp = init_repo_with_feature_commit();
+        let feature_sha = run_git(tmp.path(), &["rev-parse", "feature"]);
+        let mut tab = TabState::new_with_base_unloaded(
+            tmp.path().to_string_lossy().to_string(),
+            "main".into(),
+        )
+        .unwrap();
+        tab.pr_number = Some(42);
+        tab.local_branch_view = Some("feature".to_string());
+        tab.pr_commits = vec![
+            commit_info(&feature_sha, "feature commit"),
+            commit_info("dddddddddddddddddddddddddddddddddddddddd", "not fetched"),
+        ];
+        tab.set_mode(DiffMode::History);
+        assert_eq!(tab.history.as_ref().map(|h| h.commits.len()), Some(2));
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].additions, Some(1));
+        assert_eq!(commits[0].deletions, Some(0));
+        assert_eq!(commits[1].additions, None);
+        assert_eq!(commits[1].deletions, None);
+        assert!(commits.iter().all(|c| !c.unpushed));
+    }
+
+    #[test]
+    fn pr_commit_snapshot_uses_a_reported_diffstat_without_the_object_db() {
+        // A remote PR tab has no object DB; its GraphQL listing carries the stats.
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.pr_number = Some(42);
+        tab.remote_repo = Some("owner/repo".to_string());
+        let mut reported = commit_info("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "reported");
+        reported.adds = 7;
+        reported.dels = 0;
+        reported.diffstat_known = true;
+        tab.pr_commits = vec![
+            reported,
+            commit_info("ffffffffffffffffffffffffffffffffffffffff", "unreported"),
+        ];
+
+        let commits = build_commits_snapshot(&tab);
+
+        assert_eq!(commits[0].additions, Some(7));
+        assert_eq!(commits[0].deletions, Some(0));
+        assert_eq!(commits[1].additions, None);
+    }
+
+    #[test]
+    fn commit_meta_cache_serves_an_unchanged_commit_list_without_recomputing() {
+        let key = |shas: &[&str]| CommitMetaKey {
+            log_root: "/nonexistent/commit-meta-cache-test".to_string(),
+            head_ref: "feature".to_string(),
+            pr_head_ref: None,
+            listed_by_github: false,
+            shas: shas.iter().map(|s| s.to_string()).collect(),
+        };
+        let calls = std::cell::Cell::new(0);
+        let compute = || {
+            calls.set(calls.get() + 1);
+            CommitMeta::default()
+        };
+        commit_meta_cached(key(&["a"]), compute);
+        commit_meta_cached(key(&["a"]), compute);
+        assert_eq!(calls.get(), 1);
+        // A new commit changes the list and misses at once.
+        commit_meta_cached(key(&["b", "a"]), compute);
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]
@@ -6385,5 +7452,341 @@ mod tests {
         let finding = &snapshot.findings[0];
         assert_eq!(finding.providers, ["provider-a", "provider-b"]);
         assert!(finding.security_stage);
+    }
+    fn question_json(
+        id: &str,
+        author: &str,
+        reply_to: Option<&str>,
+        action: Option<&str>,
+    ) -> er_engine::ai::ReviewQuestion {
+        let mut v = serde_json::json!({
+            "id": id,
+            "timestamp": "2026-10-30T10:00:00Z",
+            "file": "src/a.rs",
+            "hunk_index": 0,
+            "line_start": 3,
+            "text": format!("text of {id}"),
+            "author": author,
+        });
+        if let Some(parent) = reply_to {
+            v["in_reply_to"] = parent.into();
+        }
+        if let Some(action) = action {
+            v["ai_action"] = action.into();
+        }
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn tab_with_question_thread() -> TabState {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.questions = Some(er_engine::ai::ErQuestions {
+            version: 1,
+            diff_hash: "h".into(),
+            questions: vec![
+                question_json("q-1", "You", None, None),
+                question_json(
+                    "q-2",
+                    "ai",
+                    Some("q-1"),
+                    Some(er_engine::ai::AI_ACTION_ELABORATE),
+                ),
+            ],
+        });
+        tab
+    }
+
+    #[test]
+    fn thread_replies_name_the_ai_action_that_wrote_them() {
+        let tab = tab_with_question_thread();
+        let root = tab.ai.questions.as_ref().unwrap().questions[0].clone();
+        let replies = build_replies(&CommentRef::Question(&root), &tab, None);
+        assert_eq!(replies.len(), 1);
+        assert_eq!(replies[0].kind, "ai");
+        assert_eq!(replies[0].ai_action.as_deref(), Some("elaborate"));
+        // A reply a person wrote carries none, and the field stays off the wire.
+        let json = serde_json::to_value(&build_ai_snapshot(&tab, None).threads[0].root).unwrap();
+        assert!(json.get("ai_action").is_none(), "{json}");
+    }
+
+    #[test]
+    fn pending_thinking_reply_carries_the_running_action() {
+        let tab = tab_with_question_thread();
+        let root = tab.ai.questions.as_ref().unwrap().questions[0].clone();
+        let pending: PendingAiReplies = Arc::new(Mutex::new(HashMap::from([(
+            "q-1".to_string(),
+            PendingAiReply {
+                started_at_ms: 1,
+                ai_action: Some(er_engine::ai::AI_ACTION_ASK),
+            },
+        )])));
+        let replies = build_replies(&CommentRef::Question(&root), &tab, Some(&pending));
+        let thinking = replies.last().unwrap();
+        assert_eq!(thinking.body_markdown, "…thinking");
+        assert_eq!(thinking.ai_action.as_deref(), Some("ask"));
+    }
+
+    #[test]
+    fn file_snapshot_carries_the_declared_risk_tier_and_its_rule() {
+        let file = |path: &str| DiffFile {
+            path: path.to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![file("db/001.sql"), file("src/lib.rs")]);
+        tab.risk_rules.project.rules.insert(
+            "db/**".to_string(),
+            er_engine::config::RiskRule {
+                tier: "high".to_string(),
+                label: Some("Migrations".to_string()),
+            },
+        );
+
+        let claimed = build_file_snapshot(0, &tab.files[0], &tab, None, false);
+        assert_eq!(claimed.risk_tier, "high");
+        let rule = claimed.risk_rule.expect("db/** claims the migration");
+        assert_eq!(rule.key, "db/**");
+        assert_eq!(rule.label.as_deref(), Some("Migrations"));
+        assert_eq!(rule.source.as_str(), "project");
+
+        // Nothing claims it: `ai` leaves the file to the review, and no rule
+        // is named for a judgement nobody declared.
+        let unclaimed = build_file_snapshot(1, &tab.files[1], &tab, None, false);
+        assert_eq!(unclaimed.risk_tier, "ai");
+        assert!(unclaimed.risk_rule.is_none());
+    }
+
+    fn tour_json(
+        diff_hash: &str,
+        created_at: &str,
+        summary: Option<&str>,
+    ) -> er_engine::ai::ErTour {
+        let mut pillar = serde_json::json!({
+            "id": "p1",
+            "title": "Schema",
+            "description": "The migration and its check.",
+            "files": [{ "path": "src/a.rs" }],
+        });
+        if let Some(summary) = summary {
+            pillar["summary"] = summary.into();
+        }
+        serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "diff_hash": diff_hash,
+            "created_at": created_at,
+            "pillars": [pillar],
+        }))
+        .unwrap()
+    }
+
+    /// With no tour, the Tour page still has to know which diff it was
+    /// entered from, or leaving it lands a PR view on the local branch (and a
+    /// remote tab in a mode it never offers).
+    #[test]
+    fn tour_snapshot_without_tour_keeps_source_scope() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Tour;
+
+        tab.tour_is_pr = true;
+        let tour = build_tour_snapshot(&tab);
+        assert!(!tour.available);
+        assert_eq!(tour.scope, "pr", "local tab entered from PR diff");
+
+        tab.tour_is_pr = false;
+        assert_eq!(
+            build_tour_snapshot(&tab).scope,
+            "branch",
+            "entered from branch"
+        );
+
+        tab.remote_repo = Some("owner/repo".to_string());
+        assert_eq!(
+            build_tour_snapshot(&tab).scope,
+            "pr",
+            "remote tabs are PR-only"
+        );
+    }
+
+    #[test]
+    fn tour_snapshot_carries_pillar_summary_and_provenance() {
+        let file = DiffFile {
+            path: "src/a.rs".to_string(),
+            status: FileStatus::Modified,
+            hunks: Vec::new(),
+            adds: 1,
+            dels: 0,
+            compacted: false,
+            raw_hunk_count: 0,
+            similarity: None,
+        };
+        let mut tab = TabState::new_for_test(vec![file]);
+        tab.mode = DiffMode::Branch;
+        tab.ai.tour = Some(tour_json(
+            "hash-1",
+            "2026-10-30T10:00:00Z",
+            Some("Adds the check."),
+        ));
+        let tour = build_tour_snapshot(&tab);
+        assert_eq!(tour.pillars[0].summary_markdown, "Adds the check.");
+        assert_eq!(tour.created_at, "2026-10-30T10:00:00Z");
+        assert_eq!(tour.diff_hash, "hash-1");
+
+        // A tour from before pillar summaries sends an empty one, so readers
+        // can tell it apart and fall back to the description.
+        tab.ai.tour = Some(tour_json("hash-1", "", None));
+        assert_eq!(build_tour_snapshot(&tab).pillars[0].summary_markdown, "");
+    }
+
+    #[test]
+    fn other_bucket_summary_reports_artifacts_and_tour_reuse() {
+        let facts = OtherBucketFacts {
+            triage_hash: Some("pr-hash".into()),
+            review_hash: Some("pr-hash".into()),
+            finding_count: 4,
+            tour: Some(("pr-hash".into(), "t1".into(), 4)),
+        };
+
+        // Diverged diffs: the PR view has everything, nothing describes this one.
+        let diverged = summarize_other_bucket("pr", &facts, None, &["local-hash", ""]);
+        assert_eq!(
+            diverged,
+            OtherBucketSnapshot {
+                view: "pr".into(),
+                has_triage: true,
+                has_review: true,
+                finding_count: 4,
+                pillar_count: 4,
+                tour_shared: false,
+                same_diff: false,
+            }
+        );
+
+        // Same diff, and the tour on screen is the PR bucket's file (ADR 0025):
+        // the empty state must not claim this view has no tour.
+        let shown = tour_json("pr-hash", "t1", None);
+        let reused = summarize_other_bucket("pr", &facts, Some(&shown), &["pr-hash"]);
+        assert!(reused.tour_shared);
+        assert!(reused.same_diff);
+
+        // A tour generated separately in each bucket for the same diff is not
+        // the other bucket's tour.
+        let own = tour_json("pr-hash", "t2", None);
+        assert!(!summarize_other_bucket("pr", &facts, Some(&own), &["pr-hash"]).tour_shared);
+
+        // An empty hash never counts as a match.
+        let empty = OtherBucketFacts {
+            review_hash: Some(String::new()),
+            ..OtherBucketFacts::default()
+        };
+        assert!(!summarize_other_bucket("pr", &empty, None, &["", "x"]).same_diff);
+    }
+
+    #[test]
+    fn other_bucket_facts_count_expert_and_professor_findings_without_review_json() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dir = tmp.path();
+        let finding = |id: &str, line: u32| {
+            serde_json::json!({
+                "id": id, "severity": "medium", "category": "logic",
+                "title": format!("finding {id}"), "description": "d",
+                "hunk_index": 0, "line_start": line, "line_end": line
+            })
+        };
+        std::fs::create_dir_all(dir.join("experts")).unwrap();
+        std::fs::write(
+            dir.join("experts/security.json"),
+            serde_json::json!({
+                "version": 1, "expert_id": "security", "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:00:00Z",
+                "files": {"src/a.rs": {"findings": [finding("s1", 3), finding("s2", 9)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("professor.json"),
+            serde_json::json!({
+                "version": 1, "diff_hash": "pr-hash",
+                "created_at": "2026-10-30T10:05:00Z",
+                "files": {"src/b.rs": {"findings": [finding("p1", 5)]}}
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let facts = OtherBucketFacts::read(dir.to_str().unwrap());
+        assert_eq!(facts.review_hash.as_deref(), Some("pr-hash"));
+        assert_eq!(facts.finding_count, 3);
+        let summary = summarize_other_bucket("pr", &facts, None, &["pr-hash"]);
+        assert!(summary.has_review);
+        assert!(summary.same_diff);
+    }
+
+    #[test]
+    fn only_a_local_pr_tabs_review_views_have_an_other_bucket() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.mode = DiffMode::Branch;
+        assert!(other_bucket_dir(&tab).is_none(), "no PR, no other view");
+
+        tab.pr_number = Some(7);
+        tab.mode = DiffMode::Unstaged;
+        assert!(
+            other_bucket_dir(&tab).is_none(),
+            "Unstaged has its own diff, not the other view's"
+        );
+    }
+
+    #[test]
+    fn check_summary_carries_timing_and_duration() {
+        let run = er_engine::github::CheckRun {
+            name: "ci".into(),
+            status: "COMPLETED".into(),
+            conclusion: "SUCCESS".into(),
+            url: None,
+            started_at: Some("2026-10-30T10:00:00Z".into()),
+            completed_at: Some("2026-10-30T10:01:52Z".into()),
+            description: None,
+        };
+        let summary = CheckSummary::from(run);
+        assert_eq!(summary.duration_secs, Some(112));
+        assert_eq!(summary.started_at.as_deref(), Some("2026-10-30T10:00:00Z"));
+    }
+
+    #[test]
+    fn triage_and_review_carry_when_and_against_what_they_ran() {
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai.triage = Some(
+            serde_json::from_value(serde_json::json!({
+                "version": 1,
+                "diff_hash": "tri-hash",
+                "created_at": "2026-10-30T09:00:00Z",
+            }))
+            .unwrap(),
+        );
+        tab.ai.review = Some(er_engine::ai::ErReview {
+            version: 1,
+            diff_hash: "rev-hash".into(),
+            created_at: "2026-10-30T09:30:00Z".into(),
+            base_branch: String::new(),
+            head_branch: String::new(),
+            files: HashMap::new(),
+            file_hashes: HashMap::new(),
+        });
+        let ai = build_ai_snapshot(&tab, None);
+        let triage = ai.triage.expect("triage loaded");
+        assert_eq!(triage.created_at, "2026-10-30T09:00:00Z");
+        assert_eq!(triage.diff_hash, "tri-hash");
+        assert_eq!(
+            ai.review_created_at.as_deref(),
+            Some("2026-10-30T09:30:00Z")
+        );
+        assert_eq!(ai.review_diff_hash.as_deref(), Some("rev-hash"));
+
+        tab.ai.review = None;
+        assert_eq!(build_ai_snapshot(&tab, None).review_created_at, None);
     }
 }

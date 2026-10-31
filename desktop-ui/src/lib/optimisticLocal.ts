@@ -29,6 +29,8 @@ export const OPTIMISTIC_COMMANDS = [
   "delete_thread",
   "update_thread_message",
   "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
   "promote_to_comment",
   "promote_to_note",
   "bulk_review_pillar",
@@ -112,6 +114,15 @@ export type OptimisticOp =
       viewIdentity: string;
       finding: FlatFinding;
       threads: OptimisticThread[];
+    }
+  | {
+      type: "resolve-finding";
+      id: string;
+      viewIdentity: string;
+      /** The finding as painted, before the move. */
+      finding: FlatFinding;
+      /** True resolves; false reopens. */
+      target: boolean;
     }
   | {
       type: "promote";
@@ -561,6 +572,19 @@ function buildDismissFinding({ args, snap, viewIdentity, id }: BuildCtx): Optimi
   return { type: "dismiss-finding", id, viewIdentity, finding: { ...finding }, threads };
 }
 
+function buildResolveFinding(
+  { args, snap, viewIdentity, id }: BuildCtx,
+  command: OptimisticCommand,
+): OptimisticOp | null {
+  const findingId = asString(pick(args, "findingId", "finding_id"));
+  if (!findingId) return null;
+  const target = command === "resolve_finding";
+  const source = target ? snap.ai.findings : (snap.ai.resolved_findings ?? []);
+  const finding = source.find((f) => f.id === findingId);
+  if (!finding) return null;
+  return { type: "resolve-finding", id, viewIdentity, finding: { ...finding }, target };
+}
+
 function buildPromote(ctx: BuildCtx, command: OptimisticCommand): OptimisticOp | null {
   const { args, snap, viewIdentity, nowIso, optsId } = ctx;
   const sourceId = asString(args.id);
@@ -889,6 +913,8 @@ const OP_BUILDERS: Record<OptimisticCommand, OpBuilder> = {
   delete_thread: buildDeleteThread,
   update_thread_message: buildEditMessage,
   dismiss_finding: buildDismissFinding,
+  resolve_finding: buildResolveFinding,
+  unresolve_finding: buildResolveFinding,
   promote_to_comment: buildPromote,
   promote_to_note: buildPromote,
   bulk_review_pillar: buildBulkReviewed,
@@ -951,6 +977,24 @@ function restoreFinding(snap: AppSnapshot, finding: FlatFinding): void {
     snap.ai.findings = [...snap.ai.findings, finding];
     bumpFindingCounts(snap, finding, 1);
   }
+}
+
+/**
+ * Move a finding between the open list and `resolved_findings`, mirroring how
+ * the backend splits them. Idempotent, so a reapply onto a snapshot that
+ * already shows the move changes nothing.
+ */
+function setFindingResolved(snap: AppSnapshot, finding: FlatFinding, resolved: boolean): void {
+  const resolvedList = snap.ai.resolved_findings ?? [];
+  if (resolved) {
+    hideFinding(snap, finding);
+    if (!resolvedList.some((f) => f.id === finding.id)) {
+      snap.ai.resolved_findings = [...resolvedList, { ...finding, resolved: true }];
+    }
+    return;
+  }
+  snap.ai.resolved_findings = resolvedList.filter((f) => f.id !== finding.id);
+  restoreFinding(snap, { ...finding, resolved: false });
 }
 
 function appendReply(snap: AppSnapshot, parentId: string, reply: ThreadMessage): void {
@@ -1085,6 +1129,7 @@ const APPLY_HANDLERS: OpHandlers = {
       removeOptimisticThread(snap, thread);
     }
   },
+  "resolve-finding": (snap, op) => setFindingResolved(snap, op.finding, op.target),
   promote: (snap, op) => {
     removeOptimisticThread(snap, op.source);
     applyOptimisticThread(snap, op.created);
@@ -1202,6 +1247,7 @@ const ROLLBACK_HANDLERS: OpHandlers = {
       applyOptimisticThread(snap, thread);
     }
   },
+  "resolve-finding": (snap, op) => setFindingResolved(snap, op.finding, !op.target),
   promote: (snap, op) => {
     removeOptimisticThread(snap, op.created);
     applyOptimisticThread(snap, op.source);

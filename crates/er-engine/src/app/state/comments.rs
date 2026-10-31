@@ -747,6 +747,14 @@ fn take_comment_id(tab: &mut TabState, prefix: &str) -> String {
     mint_comment_id(prefix)
 }
 
+/// Who a desktop submit is written as. Both fields are set on every desktop
+/// submit, so an override never carries over into the next one.
+#[derive(Default)]
+struct ReplyAttribution {
+    author: Option<String>,
+    ai_action: Option<String>,
+}
+
 impl App {
     // ── Comment System ──
 
@@ -1062,6 +1070,7 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            ai_action: self.tab_mut().comment_ai_action_override.take(),
         });
 
         // Write atomically
@@ -1171,6 +1180,7 @@ impl App {
             author,
             promoted_to: None,
             finding_ref,
+            ai_action: self.tab_mut().comment_ai_action_override.take(),
         });
 
         // Write atomically
@@ -1357,7 +1367,14 @@ impl App {
         let anchor = document_line_anchor(source, line)
             .with_context(|| format!("Line {line} is past the end of {}", target.file))?;
         self.tab_mut().comment_document_anchor = Some(anchor);
-        let result = self.submit_comment_text_inner(target, text, comment_type, None, None, None);
+        let result = self.submit_comment_text_inner(
+            target,
+            text,
+            comment_type,
+            None,
+            None,
+            ReplyAttribution::default(),
+        );
         // An empty body returns before the anchor is taken; never let it leak
         // into the next submit.
         self.tab_mut().comment_document_anchor = None;
@@ -1482,29 +1499,37 @@ impl App {
         reply_to: Option<String>,
         finding_ref: Option<String>,
     ) -> Result<()> {
-        self.submit_comment_text_inner(target, text, comment_type, reply_to, finding_ref, None)
-    }
-
-    /// Submit a comment/question whose `author` field is set to the provided
-    /// value (e.g. "ai") instead of "You". Used by the desktop `ask_ai` flow
-    /// to attribute AI-generated replies. Mirrors `submit_comment_text` and
-    /// sets a transient override consumed by submit_question/submit_github_comment.
-    pub fn submit_comment_text_as_author(
-        &mut self,
-        target: CommentTarget,
-        text: String,
-        comment_type: CommentType,
-        reply_to: Option<String>,
-        finding_ref: Option<String>,
-        author: String,
-    ) -> Result<()> {
         self.submit_comment_text_inner(
             target,
             text,
             comment_type,
             reply_to,
             finding_ref,
-            Some(author),
+            ReplyAttribution::default(),
+        )
+    }
+
+    /// Submit an AI-written reply: `author` is "ai" rather than "You", and a
+    /// question or note reply also records which AI action wrote it, so a front
+    /// end can label it. Used by the desktop card AI flows.
+    pub fn submit_ai_reply(
+        &mut self,
+        target: CommentTarget,
+        text: String,
+        comment_type: CommentType,
+        reply_to: Option<String>,
+        ai_action: Option<&str>,
+    ) -> Result<()> {
+        self.submit_comment_text_inner(
+            target,
+            text,
+            comment_type,
+            reply_to,
+            None,
+            ReplyAttribution {
+                author: Some("ai".to_string()),
+                ai_action: ai_action.map(str::to_string),
+            },
         )
     }
 
@@ -1515,7 +1540,7 @@ impl App {
         comment_type: CommentType,
         reply_to: Option<String>,
         finding_ref: Option<String>,
-        author: Option<String>,
+        attribution: ReplyAttribution,
     ) -> Result<()> {
         let CommentTarget {
             file,
@@ -1534,7 +1559,8 @@ impl App {
             tab.comment_type = comment_type;
             tab.comment_edit_id = None;
             tab.comment_textarea = TextArea::new(vec![text]);
-            tab.comment_author_override = author;
+            tab.comment_author_override = attribution.author;
+            tab.comment_ai_action_override = attribution.ai_action;
         }
         self.input_mode = InputMode::Comment;
         self.submit_comment()
@@ -3514,7 +3540,7 @@ impl App {
     ///
     /// The prompt carries the repo, not a diff, and the agent has no write path:
     /// it prints a rule table, and the worker validates and merges that into the
-    /// global config (`ImportanceProposal::merge_into_global_config`). A table
+    /// global config (`RiskRuleProposal::merge_into_global_config`). A table
     /// nobody can read back before it lands is worse than no table.
     pub fn spawn_background_importance(&mut self) -> Result<()> {
         let scope = "branch".to_string();
@@ -4264,13 +4290,13 @@ impl App {
                 // global config, replacing only this repo's table.
                 if task_kind == crate::ai::prompts::IMPORTANCE_TASK_KIND {
                     let reply = stdout_lines.join("\n");
-                    let proposal = crate::config::ImportanceProposal::from_reply(&reply)
-                        .ok_or_else(|| {
+                    let proposal =
+                        crate::config::RiskRuleProposal::from_reply(&reply).ok_or_else(|| {
                             anyhow::anyhow!(
                                 "{command_name_fail}: the agent printed no importance table"
                             )
                         })?;
-                    crate::config::ImportanceProposal::merge_into_global_config(
+                    crate::config::RiskRuleProposal::merge_into_global_config(
                         &repo_for_worker,
                         proposal,
                     )
@@ -4450,21 +4476,24 @@ impl App {
                 }
             }
 
-            // The importance worker writes the config *file*; the app's copy is
+            // The risk-rules worker writes the config *file*; the app's copy is
             // now behind it, so re-read it and re-hand the rules to the tabs
             // that filter with them.
             if wrote_importance && matches!(status, CommandStatus::Done) {
-                // Only the table this task wrote. A wholesale reload is what
+                // Only the tables this task wrote: `[risk]`, and the `[importance]`
+                // table it retires. A wholesale reload is what
                 // silently reverted in-flight settings before — see the note on
                 // `sync_config_from_active_tab`, and `docs/adr/0005`.
-                self.config.importance = crate::config::load_global_config().importance;
+                let written = crate::config::load_global_config();
+                self.config.risk = written.risk;
+                self.config.importance = written.importance;
                 self.sync_repo_rules_to_tabs();
                 // The agent's own one-line distribution — the share each tier
                 // covers — is what tells a reader whether the table is
                 // over-broad, and it is in this task's log. Point at it rather
                 // than repeating it here, where it would be a number without
                 // the reasoning beside it.
-                self.notify_long("Importance: rules written — see the task log for its report");
+                self.notify_long("Risk rules written — see the task log for its report");
             }
 
             self.notify_long(&status_msg);

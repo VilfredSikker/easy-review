@@ -3,14 +3,24 @@
   import { terminal } from "$lib/stores/terminal.svelte";
   import type { RightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import TabStrip from "$lib/components/TabStrip.svelte";
-  import BranchContextBar from "$lib/components/BranchContextBar.svelte";
+  import TopBar from "$lib/components/shell/TopBar.svelte";
+  import ViewBar from "$lib/components/shell/ViewBar.svelte";
+  import StaleBanner from "$lib/components/shell/StaleBanner.svelte";
+  import LocalBranchBanner from "$lib/components/shell/LocalBranchBanner.svelte";
+  import TourEmptyState from "$lib/components/TourEmptyState.svelte";
   import LeftSidebar from "$lib/components/LeftSidebar.svelte";
   import FileTree from "$lib/components/FileTree.svelte";
   import DiffView from "$lib/components/DiffView.svelte";
   import RightPanel from "$lib/components/RightPanel.svelte";
   import CollapsedRightRail from "$lib/components/CollapsedRightRail.svelte";
   import Toast from "$lib/components/Toast.svelte";
-  import { richSnapshot } from "$lib/stories/fixtures";
+  import {
+    localBranchBannerSnapshot,
+    localBranchEmptyBucketSnapshot,
+    richSnapshot,
+    staleSnapshot,
+  } from "$lib/stories/fixtures";
+  import type { AppSnapshot } from "$lib/types";
   import type { InboxItemSnapshot } from "$lib/types";
 
   /**
@@ -29,6 +39,8 @@
     rightRail?: "expanded" | "collapsed" | "hidden";
     terminalOpen?: boolean;
     inboxOpen?: boolean;
+    /** Which review state the shell chrome shows: the banners and the Tour empty state hang off it. */
+    shellState?: "pr" | "stale" | "local" | "tour-empty";
     /** When true (default), render a visual terminal stand-in instead of the real
      *  Terminal component so Storybook never calls Tauri's invoke/listen APIs. */
     mockTerminal?: boolean;
@@ -40,6 +52,7 @@
     rightRail = "expanded",
     terminalOpen = false,
     inboxOpen = false,
+    shellState = "pr",
     mockTerminal = true,
   }: Props = $props();
 
@@ -86,11 +99,23 @@
     },
   ];
 
+  const SHELL_SNAPSHOTS: Record<NonNullable<Props["shellState"]>, AppSnapshot> = {
+    pr: richSnapshot,
+    stale: staleSnapshot,
+    local: localBranchBannerSnapshot,
+    "tour-empty": {
+      ...localBranchEmptyBucketSnapshot,
+      mode: "tour",
+      tour: { available: false, fresh: true, scope: "", title: "", overviewMarkdown: "", pillars: [] },
+    },
+  };
+  const tourEmpty = $derived(shellState === "tour-empty");
+
   // ── seed global store ────────────────────────────────────────────────────
   $effect(() => {
     const activeInbox = inboxOpen ? inboxFixture : [];
     app.snapshot = {
-      ...richSnapshot,
+      ...SHELL_SNAPSHOTS[shellState],
       panels: {
         left: leftRail !== "hidden",
         tree: treeRail,
@@ -155,9 +180,6 @@
     rightCollapsed={rightPanelCollapsed}
   />
 
-  <!-- Branch context bar -->
-  <BranchContextBar />
-
   <!-- Body row -->
   <div class="flex-1 flex min-h-0 relative">
     <!-- Left sidebar -->
@@ -165,28 +187,40 @@
       <LeftSidebar collapsed={leftRail === "collapsed"} />
     {/if}
 
-    <!-- Main content area -->
-    <main class="flex-1 flex min-w-0 min-h-0">
-      <FileTree collapsed={!treeRail} />
-      <DiffView />
-    </main>
+    <!-- Review window: top bar, view bar and banners over the page (mirrors App.svelte) -->
+    <div class="flex-1 flex flex-col min-w-0 min-h-0">
+      <TopBar />
+      <ViewBar />
+      <StaleBanner />
+      <LocalBranchBanner />
 
-    <!-- Right panel / collapsed rail -->
-    {#if rightRail === "expanded"}
-      <RightPanel
-        ai={app.snapshot?.ai ?? null}
-        pr={app.snapshot?.pr ?? null}
-        width={rightPanelWidth}
-        dragging={false}
-        onResizeStart={undefined}
-        {onCollapseToggle}
-      />
-    {:else if rightRail === "collapsed"}
-      <CollapsedRightRail
-        ai={app.snapshot?.ai ?? null}
-        onExpand={expandRightPanelToTab}
-      />
-    {/if}
+      <div class="flex-1 flex min-h-0">
+        <main class="flex-1 flex min-w-0 min-h-0">
+          {#if tourEmpty}
+            <TourEmptyState />
+          {:else}
+            <FileTree collapsed={!treeRail} />
+            <DiffView />
+          {/if}
+        </main>
+
+        <!-- Right panel / collapsed rail -->
+        {#if rightRail === "expanded"}
+          <RightPanel
+            ai={app.snapshot?.ai ?? null}
+            width={rightPanelWidth}
+            dragging={false}
+            onResizeStart={undefined}
+            {onCollapseToggle}
+          />
+        {:else if rightRail === "collapsed"}
+          <CollapsedRightRail
+            ai={app.snapshot?.ai ?? null}
+            onExpand={expandRightPanelToTab}
+          />
+        {/if}
+      </div>
+    </div>
   </div>
 
   <!-- Terminal drawer -->

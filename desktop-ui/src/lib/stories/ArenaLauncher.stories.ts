@@ -1,15 +1,13 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
-import ArenaLauncher from "$lib/components/arena/ArenaLauncher.svelte";
+import ArenaLauncherHarness from "./ArenaLauncherHarness.svelte";
 
 const meta = {
   title: "Arena/Launcher",
-  component: ArenaLauncher,
+  component: ArenaLauncherHarness,
   parameters: { layout: "fullscreen" },
-} satisfies Meta<typeof ArenaLauncher>;
+} satisfies Meta<typeof ArenaLauncherHarness>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Open: Story = {
-  args: { open: true, onClose: () => {} },
-};
+export const Open: Story = {};

@@ -11,11 +11,108 @@ export interface PrOpenHint {
   author: string;
 }
 
-/** Plain click replaces the active tab. Cmd/Ctrl-click or middle-click opens
- * a new tab. (Inverse of the previous behavior — power users use modifiers
- * when they want to keep the current tab around.) */
-export function shouldReplaceTab(e: MouseEvent): boolean {
-  return !(e.metaKey || e.ctrlKey || e.button === 1);
+/** Where an open lands: ask with the tab-open modal, or go straight to a new
+ *  tab or the current one. */
+export type PrOpenChoice = "ask" | "new-tab" | "replace";
+
+/** A per-viewer UI preference, so localStorage rather than config.toml: it
+ *  only changes which dialog this window shows, never what the engine does. */
+const ALWAYS_NEW_TAB_KEY = "er.alwaysOpenInNewTab";
+
+type PrefStorage = Pick<Storage, "getItem" | "setItem" | "removeItem">;
+
+function defaultStorage(): PrefStorage | null {
+  try {
+    return typeof localStorage === "undefined" ? null : localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function loadAlwaysNewTab(storage: PrefStorage | null = defaultStorage()): boolean {
+  try {
+    return storage?.getItem(ALWAYS_NEW_TAB_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+export function saveAlwaysNewTab(on: boolean, storage: PrefStorage | null = defaultStorage()): void {
+  try {
+    if (on) storage?.setItem(ALWAYS_NEW_TAB_KEY, "1");
+    else storage?.removeItem(ALWAYS_NEW_TAB_KEY);
+  } catch {
+    // Blocked storage only means the modal asks again next time.
+  }
+}
+
+function wantsNewTab(e: Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: number }): boolean {
+  return e.metaKey || e.ctrlKey || e.button === 1;
+}
+
+/**
+ * A plain open asks, unless the reader said "always open in a new tab". This
+ * inverts the old default, where a plain click silently replaced the current
+ * tab and lost its place. Cmd/Ctrl-click and middle-click still skip the
+ * question and open a new tab.
+ */
+export function resolvePrOpen(
+  e: (Pick<MouseEvent, "metaKey" | "ctrlKey"> & { button?: number }) | null,
+  alwaysNewTab: boolean = loadAlwaysNewTab(),
+): PrOpenChoice {
+  if (e && wantsNewTab(e)) return "new-tab";
+  return alwaysNewTab ? "new-tab" : "ask";
+}
+
+/**
+ * The old default, kept for open paths that do not mount the tab-open modal:
+ * a plain click replaces the active tab, Cmd/Ctrl-click and middle-click open
+ * a new one. The Inbox and the sidebar's PR rows ask; the sidebar's branch
+ * rows still call this and so still replace on a plain click. The one thing
+ * they share with the asking paths is the "always open in a new tab"
+ * preference, which turns a plain click into a new tab here too.
+ */
+export function shouldReplaceTab(e: MouseEvent, alwaysNewTab: boolean = loadAlwaysNewTab()): boolean {
+  return resolvePrOpen(e, alwaysNewTab) === "ask";
+}
+
+/** The element a keydown landed on, as far as the tab-open modal cares. */
+export interface KeyTarget {
+  tagName: string;
+  hasAttribute(name: string): boolean;
+}
+
+/**
+ * What Enter means inside the tab-open modal. Cmd/Ctrl+Enter replaces from
+ * anywhere. A bare Enter takes the default (new tab) only from the panel or
+ * the primary button; on any other button it is that button's own press, so
+ * null leaves the click to the browser.
+ */
+export function tabOpenKeyChoice(
+  e: Pick<KeyboardEvent, "key" | "metaKey" | "ctrlKey">,
+  target: KeyTarget | null,
+): "new-tab" | "replace" | null {
+  if (e.key !== "Enter") return null;
+  if (target?.tagName === "INPUT") return null;
+  if (e.metaKey || e.ctrlKey) return "replace";
+  if (target?.tagName === "BUTTON" && !target.hasAttribute("data-tm-primary")) return null;
+  return "new-tab";
+}
+
+/** What the tab-open modal shows about the thing being opened. */
+export interface TabOpenRequest {
+  /** Identity of this open; the modal resets its choices only when it changes. */
+  key: string;
+  title: string;
+  /** "repo #123", in mono. */
+  ref: string;
+  /** "Comment on your PR · 21m ago"; empty when the open has no triggering event. */
+  context: string;
+  iconPath: string;
+  /** A theme colour token name (e.g. "comment"), never a raw colour. */
+  tone: string;
+  /** The last comment, quoted so the reader knows what they are jumping to. */
+  quote: string | null;
 }
 
 function nextAnimationFrame(): Promise<void> {

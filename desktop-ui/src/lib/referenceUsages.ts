@@ -280,6 +280,25 @@ export function buildRulerMarks(
   return marks;
 }
 
+export type UsagesPopoverKeyAction = "next" | "prev" | "jump";
+
+/**
+ * What a keydown does to the open usages popover. Keys typed into a field
+ * belong to that field, and keys pressed while the diff is off screen belong
+ * to whatever is on screen: the diff layer stays mounted (inert) under the
+ * Overview, and its `window` listener with it.
+ */
+export function usagesPopoverKeyAction(
+  key: string,
+  context: { inField: boolean; diffOnScreen: boolean },
+): UsagesPopoverKeyAction | null {
+  if (context.inField || !context.diffOnScreen) return null;
+  if (key === "ArrowDown") return "next";
+  if (key === "ArrowUp") return "prev";
+  if (key === "Enter") return "jump";
+  return null;
+}
+
 /**
  * Clamp a popover's top-left corner so a `box`-sized popover stays inside the
  * `viewport` with `pad` breathing room. When the box can't fit, the

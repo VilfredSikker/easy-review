@@ -1,5 +1,11 @@
 import { describe, expect, it } from "bun:test";
-import { gutterWidthPx, maxLineNumber, SPLIT_GUTTER_PX } from "./splitDiffLayout";
+import {
+  diffGutterPx,
+  gutterWidthPx,
+  HIDDEN_GUTTER_PX,
+  maxLineNumber,
+  SPLIT_GUTTER_PX,
+} from "./splitDiffLayout";
 import type { FileSnapshot } from "./types";
 
 function file(hunks: [oldStart: number, oldCount: number, newStart: number, newCount: number][]) {
@@ -39,5 +45,16 @@ describe("gutterWidthPx", () => {
 
   it("falls back to a default char width before the probe measures", () => {
     expect(gutterWidthPx(10626, 0)).toBeGreaterThan(SPLIT_GUTTER_PX);
+  });
+});
+
+describe("diffGutterPx", () => {
+  it("sizes to the line numbers when they show", () => {
+    expect(diffGutterPx(10626, 7.8, true)).toBe(gutterWidthPx(10626, 7.8));
+  });
+
+  it("narrows to the accent-bar lane when they are off, whatever the digits", () => {
+    expect(diffGutterPx(10626, 7.8, false)).toBe(HIDDEN_GUTTER_PX);
+    expect(HIDDEN_GUTTER_PX).toBeLessThan(SPLIT_GUTTER_PX);
   });
 });

@@ -3,8 +3,12 @@ import type {
   AppSnapshot,
   ChecklistSnapshot,
   CommitSummary,
+  DiffStaleSnapshot,
   FileSnapshot,
+  LocalBranchDivergenceSnapshot,
+  GithubStatusSnapshot,
   HunkSnapshot,
+  OtherBucketSnapshot,
   LineSnapshot,
   PrInfo,
   PrSnapshot,
@@ -100,6 +104,7 @@ export const questionThread: ThreadSnapshot = {
       timestamp: new Date(Date.now() - 10 * 60 * 1000).toISOString(),
       body_markdown:
         "The combobox owns comboboxOpen and uses it locally for show/hide. Lifting handleExperimentOptionSelect up would force the parent to manage that toggle too. Recommend keeping it here.",
+      ai_action: "ask",
     },
   ],
   promoted_to: null,
@@ -156,9 +161,12 @@ const mediaComboboxHunk2: HunkSnapshot = {
 
 const fileBase: Omit<FileSnapshot, "path" | "additions" | "deletions"> = {
   status: "modified",
+  kind: "production",
   reviewed: false,
   compacted: false,
   risk: null,
+  risk_tier: "ai",
+  risk_rule: null,
   finding_count: 0,
   comment_count: 0,
   question_count: 0,
@@ -185,12 +193,15 @@ export const fileVariantWarningCopy: FileSnapshot = {
   additions: 8,
   deletions: 6,
   risk: "high",
+  risk_tier: "high",
+  risk_rule: { key: "src/lib/*-copy.ts", label: "User-facing copy", source: "project" },
   finding_count: 2,
 };
 
 export const fileVariantWarningTest: FileSnapshot = {
   ...fileBase,
   path: "packages/discovery-platform/src/lib/variant-warning-copy.test.ts",
+  kind: "test",
   additions: 2,
   deletions: 2,
 };
@@ -207,9 +218,23 @@ export const fileExperimentTemplate: FileSnapshot = {
 export const filePageTest: FileSnapshot = {
   ...fileBase,
   path: "packages/discovery-platform/src/routes/page.test.ts",
+  kind: "test",
+  risk_tier: "low",
+  risk_rule: { key: "*.test.ts", label: null, source: "user" },
   additions: 0,
   deletions: 0,
   reviewed: true,
+};
+
+/** Pure rename: no hunks, the source path and git's similarity carried explicitly. */
+export const fileRenamedPure: FileSnapshot = {
+  ...fileBase,
+  path: "packages/discovery-platform/src/lib/components/qc/ReplicateDeviationSection.svelte",
+  status: "renamed",
+  old_path: "packages/discovery-platform/src/routes/quality-control/component/ReplicateDeviationSection.svelte",
+  similarity: 100,
+  additions: 0,
+  deletions: 0,
 };
 
 // ─── AI snapshots ───────────────────────────────────────────────────────────
@@ -288,6 +313,8 @@ export const checklistFixture: ChecklistSnapshot = {
 /** A feature built as new code behind a flag, wired in through one shared loader. */
 export const triageBroadGuarded: TriageSnapshot = {
   fresh: true,
+  created_at: new Date(Date.now() - 2 * 60 * 1000).toISOString(),
+  diff_hash: "3c9a1f7e5b2d8c40a6e1f9b37d2c5a81e4f06b9d2a7c3e518f0b6d4a92c7e1f3",
   first_impression:
     "This PR adds a read-only Reports area to the app. It has a Postgres layer (`current_report_collection_id`, `get_report_summaries`, `get_report_overview`, with grants), a SvelteKit route tree under `/app/reports` (list, redirect, per-report page with a data loader and Zod schema), and a `reportsPage` PostHog flag that controls a new sidebar entry.\n\nReach is mostly new code, but two existing files are edited. The shared app layout loader now calls `getReportSummaries` on every `/app` load in place of the old helper. That helper was replaced rather than extended, so any failure in the new RPC now fails every app page. The flag guards only the sidebar link; the `/app/reports` routes can be opened by URL.\n\nGut feel: the SQL and tests look careful. One Svelte line in the per-report page has a stray `</output>` closing tag, which should stop the UI from compiling. Fix that first, then read the grants and the layout loader.",
   verdict_primary: "general",
@@ -530,6 +557,8 @@ export const aiWithFindings: AiSnapshot = {
   resolved_findings: [],
   dropped_findings: [],
   min_trust_default: "informational",
+  review_created_at: new Date(Date.now() - 19 * 60 * 1000).toISOString(),
+  review_diff_hash: "3c9a1f7e5b2d8c40a6e1f9b37d2c5a81e4f06b9d2a7c3e518f0b6d4a92c7e1f3",
   has_review_json: true,
   eligible_comment_count: 0,
   triage: null,
@@ -765,10 +794,11 @@ export const worktreesMulti: WorktreeSnapshot[] = [
 const isoAgo = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 export const commitsRich: CommitSummary[] = [
-  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", committed_at: isoAgo(45 * 60_000) },
-  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", committed_at: isoAgo(24 * 60 * 60_000) },
-  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", committed_at: isoAgo(2 * 60 * 60_000) },
-  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", committed_at: isoAgo(60 * 60_000) },
+  { sha: "2afab9e0", title: "Fix lint errors in variant warning copy typings", author: "Vilfred", committed_at: isoAgo(45 * 60_000), additions: 6, deletions: 4, unpushed: true },
+  { sha: "d1a60769", title: "Add experiment-option resolver to combobox", author: "Claude", committed_at: isoAgo(24 * 60 * 60_000), additions: 41, deletions: 2, unpushed: false },
+  { sha: "54a9a3d2", title: "Wire warning metadata through dropdowns", author: "Vilfred", committed_at: isoAgo(2 * 60 * 60_000), additions: 12, deletions: 6, unpushed: false },
+  // Merges carry no diffstat of their own.
+  { sha: "2356d55a", title: "Merge branch 'main' into show-experiment-params", author: "Vilfred", committed_at: isoAgo(60 * 60_000), additions: 0, deletions: 0, unpushed: false },
 ];
 
 /** Active working-tree tab — ScopeSelector shows unstaged/staged/commits even when pr is set. */
@@ -783,6 +813,7 @@ export const tabsWorkingActive: TabSummary[] = [
     repo_root: "/Users/vilfred/Projects/discovery-platform",
     is_active: true,
     change_token: "",
+    stale: false,
   },
 ];
 
@@ -872,6 +903,8 @@ const baseSnapshot: AppSnapshot = {
   active_tab: 0,
   bg_loading: { pr_list: false, gh_status: false, gh_comments: false },
   commits: commitsRich,
+  unstaged_stat: { files: 1, additions: 3, deletions: 1 },
+  staged_stat: { files: 0, additions: 0, deletions: 0 },
   active_ai_label: "Codex / GPT-5.6 Luna",
   active_ai_provider_label: "Codex",
   active_ai_model_label: "GPT-5.6 Luna",
@@ -879,6 +912,128 @@ const baseSnapshot: AppSnapshot = {
 
 /** Snapshot used for full-page mock recreation. */
 export const richSnapshot: AppSnapshot = { ...baseSnapshot };
+
+/** PR head moved on origin two commits past the diff on screen (stale banner, Stale pill). */
+export const diffStalePrHead: DiffStaleSnapshot = {
+  kind: "pr_head",
+  message: "PR head updated on origin — Sync to refresh",
+  built_from_oid: "7be0d14c2a9f5e3b8d61f0a4c7e2b9d3a5f81c60",
+  latest_oid: "9f3e1a2b7c4d8e6f0a1b2c3d4e5f6a7b8c9d0e1f",
+  commits_behind: 2,
+};
+
+export const staleSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  mode: "pr",
+  diff_stale: diffStalePrHead,
+  tabs: tabsWorkingActive.map((t) => ({ ...t, stale: true })),
+};
+
+/** Inactive PR tabs whose dots differ: the second one's PR head moved. */
+export const tabsWithStalePr: TabSummary[] = [
+  ...tabsWorkingActive,
+  {
+    idx: 1,
+    label: "fix-auth-callback",
+    kind: "remote_pr",
+    branch: null,
+    pr_number: 123,
+    remote: "owner/repo",
+    repo_root: "",
+    is_active: false,
+    change_token: "",
+    stale: true,
+  },
+];
+
+/** Local PR tab, local branch view: one unpushed commit and one unstaged file (info banner). */
+export const localBranchDivergence: LocalBranchDivergenceSnapshot = {
+  pr_head_oid: "7be0d14c2a9f5e3b8d61f0a4c7e2b9d3a5f81c60",
+  ahead: 1,
+  unstaged_files: 1,
+};
+
+export const localBranchBannerSnapshot: AppSnapshot = {
+  ...baseSnapshot,
+  mode: "branch",
+  local_branch_divergence: localBranchDivergence,
+};
+
+/** The PR diff view of a local PR tab holds the artifacts; the diffs diverged. */
+export const otherBucketPr: OtherBucketSnapshot = {
+  view: "pr",
+  has_triage: true,
+  has_review: true,
+  finding_count: 4,
+  pillar_count: 4,
+  tour_shared: false,
+  same_diff: false,
+};
+
+/** Local branch view with an empty bucket of its own, pointing at the PR view. */
+export const localBranchEmptyBucketSnapshot: AppSnapshot = {
+  ...localBranchBannerSnapshot,
+  other_bucket: otherBucketPr,
+};
+
+/** Same diff in both views: the PR view's tour is the one on screen (ADR 0025). */
+export const localBranchSharedTourSnapshot: AppSnapshot = {
+  ...localBranchBannerSnapshot,
+  other_bucket: { ...otherBucketPr, tour_shared: true, same_diff: true },
+};
+
+/** Open PR with reviewers, commit count, opening time and timed checks. */
+export const githubStatusOpen: GithubStatusSnapshot = {
+  owner: "owner",
+  repo: "repo",
+  number: 123,
+  url: "https://github.com/owner/repo/pull/123",
+  state: "OPEN",
+  is_draft: false,
+  title: "Fail CI when a migration version sorts before main's newest",
+  body: "",
+  author: "sune",
+  head_ref: "fix/migration-order",
+  base_ref: "main",
+  review_decision: "REVIEW_REQUIRED",
+  mergeable: "MERGEABLE",
+  labels: [],
+  checks: [
+    {
+      name: "ci / migrations",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      url: null,
+      started_at: "2026-10-30T09:20:00Z",
+      completed_at: "2026-10-30T09:21:52Z",
+      duration_secs: 112,
+      description: null,
+    },
+    {
+      name: "preview",
+      status: "COMPLETED",
+      conclusion: "SUCCESS",
+      url: null,
+      started_at: null,
+      completed_at: null,
+      duration_secs: null,
+      description: "Ready",
+    },
+  ],
+  comments_count: 1,
+  reviews_count: 1,
+  recent_comments: [],
+  recent_reviews: [],
+  last_updated: null,
+  is_authored_by_me: false,
+  created_at: "2026-10-30T09:12:00Z",
+  commit_count: 2,
+  reviewers: [
+    { reviewer: "martin", is_team: false, requested: true, state: null },
+    { reviewer: "owner/backend", is_team: true, requested: true, state: null },
+    { reviewer: "maria-c", is_team: false, requested: false, state: "COMMENTED" },
+  ],
+};
 
 const remoteOnlyRecentPr: PrInfo = {
   number: 123,
@@ -931,6 +1086,7 @@ export const remoteOnlyProjectSnapshot: AppSnapshot = {
       repo_root: "",
       is_active: true,
       change_token: "",
+      stale: false,
     },
   ],
   active_tab: 0,
@@ -993,6 +1149,7 @@ export const classicTreeFiles: FileSnapshot[] = [
     ...fileBase,
     path: "packages/discovery-platform/src/routes/page.test.ts",
     status: "deleted",
+    kind: "test",
     additions: 0,
     deletions: 12,
     reviewed: true,
@@ -1002,6 +1159,7 @@ export const classicTreeFiles: FileSnapshot[] = [
     ...fileBase,
     path: "README.md",
     status: "modified",
+    kind: "docs",
     additions: 1,
     deletions: 1,
     reviewed: true,

@@ -1,5 +1,14 @@
 import { describe, expect, it } from "bun:test";
-import { buildPrHint, createPrPrefetch, remoteParts, shouldReplaceTab } from "./prOpen";
+import {
+  buildPrHint,
+  createPrPrefetch,
+  loadAlwaysNewTab,
+  remoteParts,
+  resolvePrOpen,
+  saveAlwaysNewTab,
+  shouldReplaceTab,
+  tabOpenKeyChoice,
+} from "./prOpen";
 import type { PrInfo } from "./types";
 
 function pr(overrides: Partial<PrInfo> = {}): PrInfo {
@@ -17,13 +26,91 @@ function pr(overrides: Partial<PrInfo> = {}): PrInfo {
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const click = (o: Partial<MouseEvent>) => ({ metaKey: false, ctrlKey: false, button: 0, ...o }) as MouseEvent;
+
 describe("shouldReplaceTab", () => {
   it("replaces on a plain click and opens a new tab on modifier or middle click", () => {
-    const click = (o: Partial<MouseEvent>) => ({ metaKey: false, ctrlKey: false, button: 0, ...o }) as MouseEvent;
-    expect(shouldReplaceTab(click({}))).toBe(true);
-    expect(shouldReplaceTab(click({ metaKey: true }))).toBe(false);
-    expect(shouldReplaceTab(click({ ctrlKey: true }))).toBe(false);
-    expect(shouldReplaceTab(click({ button: 1 }))).toBe(false);
+    expect(shouldReplaceTab(click({}), false)).toBe(true);
+    expect(shouldReplaceTab(click({ metaKey: true }), false)).toBe(false);
+    expect(shouldReplaceTab(click({ ctrlKey: true }), false)).toBe(false);
+    expect(shouldReplaceTab(click({ button: 1 }), false)).toBe(false);
+  });
+
+  it("never replaces once the reader chose to always open in a new tab", () => {
+    expect(shouldReplaceTab(click({}), true)).toBe(false);
+  });
+});
+
+describe("resolvePrOpen", () => {
+  it("asks on a plain open by default", () => {
+    expect(resolvePrOpen(click({}), false)).toBe("ask");
+    expect(resolvePrOpen(null, false)).toBe("ask");
+  });
+
+  it("keeps Cmd/Ctrl-click and middle-click as a direct new tab", () => {
+    expect(resolvePrOpen(click({ metaKey: true }), false)).toBe("new-tab");
+    expect(resolvePrOpen(click({ ctrlKey: true }), false)).toBe("new-tab");
+    expect(resolvePrOpen(click({ button: 1 }), false)).toBe("new-tab");
+  });
+
+  it("stops asking once the preference is set", () => {
+    expect(resolvePrOpen(click({}), true)).toBe("new-tab");
+    expect(resolvePrOpen(null, true)).toBe("new-tab");
+  });
+});
+
+describe("always-new-tab preference", () => {
+  function memoryStorage() {
+    const data = new Map<string, string>();
+    return {
+      getItem: (k: string) => data.get(k) ?? null,
+      setItem: (k: string, v: string) => void data.set(k, v),
+      removeItem: (k: string) => void data.delete(k),
+    };
+  }
+
+  it("round-trips and clears", () => {
+    const s = memoryStorage();
+    expect(loadAlwaysNewTab(s)).toBe(false);
+    saveAlwaysNewTab(true, s);
+    expect(loadAlwaysNewTab(s)).toBe(true);
+    saveAlwaysNewTab(false, s);
+    expect(loadAlwaysNewTab(s)).toBe(false);
+  });
+
+  it("treats missing or throwing storage as unset", () => {
+    expect(loadAlwaysNewTab(null)).toBe(false);
+    const blocked = () => {
+      throw new Error("blocked");
+    };
+    const throwing = { getItem: blocked, setItem: blocked, removeItem: blocked };
+    expect(loadAlwaysNewTab(throwing)).toBe(false);
+    expect(() => saveAlwaysNewTab(true, throwing)).not.toThrow();
+  });
+});
+
+describe("tabOpenKeyChoice", () => {
+  const key = (o: Partial<KeyboardEvent> = {}) => ({ key: "Enter", metaKey: false, ctrlKey: false, ...o });
+  const el = (tagName: string, attrs: string[] = []) => ({ tagName, hasAttribute: (n: string) => attrs.includes(n) });
+
+  it("takes the new-tab default from the panel or the primary button", () => {
+    expect(tabOpenKeyChoice(key(), el("DIV"))).toBe("new-tab");
+    expect(tabOpenKeyChoice(key(), null)).toBe("new-tab");
+    expect(tabOpenKeyChoice(key(), el("BUTTON", ["data-tm-primary"]))).toBe("new-tab");
+  });
+
+  it("leaves a bare Enter on any other button to that button", () => {
+    expect(tabOpenKeyChoice(key(), el("BUTTON"))).toBeNull();
+  });
+
+  it("replaces on Cmd/Ctrl+Enter from anywhere but the checkbox", () => {
+    expect(tabOpenKeyChoice(key({ metaKey: true }), el("BUTTON"))).toBe("replace");
+    expect(tabOpenKeyChoice(key({ ctrlKey: true }), el("DIV"))).toBe("replace");
+    expect(tabOpenKeyChoice(key({ metaKey: true }), el("INPUT"))).toBeNull();
+  });
+
+  it("ignores other keys", () => {
+    expect(tabOpenKeyChoice(key({ key: "a" }), el("DIV"))).toBeNull();
   });
 });
 

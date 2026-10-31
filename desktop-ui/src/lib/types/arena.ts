@@ -203,3 +203,17 @@ export interface ArenaRunSnapshot {
   funnel: FunnelStages;
   arbiter?: ArbiterView;
 }
+
+/**
+ * What one finished run amounts to, derived in the UI from its snapshot. The
+ * engine summary carries only counts of reviewers and findings, so rounds and
+ * survivors are read from the run itself rather than added to the wire.
+ */
+export interface ArenaRunDigest {
+  /** Reviewer rounds that ran, arbiter excluded. */
+  rounds: number;
+  reviewers: number;
+  /** Kept plus escalated: what an import would bring into the review. */
+  survived: number;
+  total: number;
+}

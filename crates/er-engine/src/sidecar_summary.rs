@@ -393,6 +393,7 @@ mod tests {
                 description: "main path".into(),
                 order: 0,
                 importance: 90,
+                summary: String::new(),
                 foundation: true,
                 files: vec![crate::ai::TourFile {
                     path: "src/a.rs".into(),

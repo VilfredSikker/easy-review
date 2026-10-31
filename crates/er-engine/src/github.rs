@@ -6,6 +6,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod pending_review;
+pub use pending_review::{
+    gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
+    gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
+    ReviewRequest,
+};
+
 /// Parsed reference to a GitHub PR
 #[derive(Debug, Clone)]
 pub struct PrRef {
@@ -90,6 +97,15 @@ pub fn parse_pr_commits_view_value(
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
+            // `gh pr view --json commits` has no diffstat; only the GraphQL
+            // listing (`gh_pr_commits_remote`) carries these fields.
+            let count = |key: &str| {
+                commit
+                    .get(key)
+                    .and_then(|v| v.as_u64())
+                    .and_then(|n| usize::try_from(n).ok())
+            };
+            let (adds, dels) = (count("additions"), count("deletions"));
             Some(crate::git::CommitInfo {
                 hash: oid.to_string(),
                 short_hash: oid.chars().take(7).collect(),
@@ -101,13 +117,78 @@ pub fn parse_pr_commits_view_value(
                 author,
                 date: date.clone(),
                 relative_date: date,
-                file_count: 0,
-                adds: 0,
-                dels: 0,
+                file_count: count("changedFiles").unwrap_or(0),
+                adds: adds.unwrap_or(0),
+                dels: dels.unwrap_or(0),
                 is_merge: false,
+                diffstat_known: adds.is_some() && dels.is_some(),
             })
         })
         .collect()
+}
+
+/// GraphQL query behind [`gh_pr_commits_remote`]. `gh pr view --json commits`
+/// cannot return a commit's diffstat, and a remote tab has no object DB to
+/// read one from, so the remote listing asks GraphQL directly — still one `gh`
+/// process per fetch, paginated by `gh api --paginate`.
+const PR_COMMITS_GRAPHQL: &str =
+    "query($owner: String!, $repo: String!, $number: Int!, $endCursor: String) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $number) {
+      commits(first: 100, after: $endCursor) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          commit {
+            oid
+            messageHeadline
+            committedDate
+            additions
+            deletions
+            changedFilesIfAvailable
+            authors(first: 10) { nodes { name user { login } } }
+          }
+        }
+      }
+    }
+  }
+}";
+
+/// Parse `gh api graphql --paginate` output for [`PR_COMMITS_GRAPHQL`] — one
+/// JSON document per page, concatenated — into the newest-first list
+/// [`parse_pr_commits_view_value`] produces, each commit with its diffstat.
+pub fn parse_pr_commits_graphql(bytes: &[u8], limit: usize) -> Result<Vec<crate::git::CommitInfo>> {
+    let mut commits = Vec::new();
+    for page in serde_json::Deserializer::from_slice(bytes).into_iter::<serde_json::Value>() {
+        let page = page.context("Failed to parse PR commits GraphQL JSON")?;
+        let nodes = page
+            .pointer("/data/repository/pullRequest/commits/nodes")
+            .and_then(|v| v.as_array())
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        for c in nodes.iter().filter_map(|node| node.get("commit")) {
+            let authors: Vec<serde_json::Value> = c
+                .pointer("/authors/nodes")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default()
+                .iter()
+                .map(|a| serde_json::json!({ "login": a.pointer("/user/login"), "name": a.get("name") }))
+                .collect();
+            commits.push(serde_json::json!({
+                "oid": c.get("oid"),
+                "messageHeadline": c.get("messageHeadline"),
+                "committedDate": c.get("committedDate"),
+                "authors": authors,
+                "additions": c.get("additions"),
+                "deletions": c.get("deletions"),
+                "changedFiles": c.get("changedFilesIfAvailable"),
+            }));
+        }
+    }
+    Ok(parse_pr_commits_view_value(
+        &serde_json::json!({ "commits": commits }),
+        limit,
+    ))
 }
 
 /// Fetch the commits on a local-clone PR using the GitHub API via `gh`.
@@ -2385,29 +2466,31 @@ fn pr_review_payload_json(
         "body": body,
     });
     if !comments.is_empty() {
-        let comment_values: Vec<serde_json::Value> = comments
-            .iter()
-            .map(|entry| {
-                let mut obj = serde_json::json!({
-                    "path": entry.file,
-                    "line": entry.line,
-                    "side": entry.side,
-                    "body": entry.body
-                });
-                if let Some(start) = entry.start_line {
-                    if start < entry.line {
-                        obj["start_line"] = serde_json::json!(start);
-                        if entry.side == "LEFT" {
-                            obj["start_side"] = serde_json::json!("LEFT");
-                        }
-                    }
-                }
-                obj
-            })
-            .collect();
+        let comment_values: Vec<serde_json::Value> =
+            comments.iter().map(review_comment_json).collect();
         payload["comments"] = serde_json::Value::Array(comment_values);
     }
     payload
+}
+
+/// One entry of a review's `comments` array, as `POST /pulls/{pr}/reviews`
+/// takes it.
+fn review_comment_json(entry: &ReviewBatchEntry) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "path": entry.file,
+        "line": entry.line,
+        "side": entry.side,
+        "body": entry.body
+    });
+    if let Some(start) = entry.start_line {
+        if start < entry.line {
+            obj["start_line"] = serde_json::json!(start);
+            if entry.side == "LEFT" {
+                obj["start_side"] = serde_json::json!("LEFT");
+            }
+        }
+    }
+    obj
 }
 
 fn post_pr_review(
@@ -2602,6 +2685,35 @@ pub struct PrOverviewFull {
     pub is_cross_repository: bool,
     /// Merge method of a pending auto-merge (`MERGE`, `SQUASH`, `REBASE`).
     pub auto_merge_method: Option<String>,
+    /// ISO-8601 time the PR was opened. `gh pr view --json` has no timeline,
+    /// so "opened N ago" and the opening activity event are built from this
+    /// instead of a timeline query (ADR 0026).
+    pub created_at: Option<String>,
+    /// Reviews requested and not yet submitted. GitHub drops a request once
+    /// the reviewer submits, and adds it back on a re-request.
+    pub review_requests: Vec<PrReviewRequest>,
+    /// Commits on the PR, counted from the `commits` list `gh` returns.
+    pub commit_count: usize,
+}
+
+/// One pending review request: a user, or a team named by its `org/slug`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewRequest {
+    pub reviewer: String,
+    pub is_team: bool,
+}
+
+/// A person on the PR's reviewer list, folded from pending requests and
+/// submitted reviews.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrReviewer {
+    pub reviewer: String,
+    pub is_team: bool,
+    /// Their review currently has a pending request (first ask or re-ask).
+    pub requested: bool,
+    /// State of the review that counts for them (`APPROVED`,
+    /// `CHANGES_REQUESTED`, `DISMISSED`, `COMMENTED`); `None` until they review.
+    pub state: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2620,12 +2732,29 @@ pub struct PrReview {
     pub submitted_at: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CheckRun {
     pub name: String,
     pub status: String,
     pub conclusion: String,
     pub url: Option<String>,
+    /// ISO-8601 start/end. `gh` reports a not-yet-reached time as Go's zero
+    /// time; that parses to `None`, not to year 1.
+    pub started_at: Option<String>,
+    pub completed_at: Option<String>,
+    /// Status-context text, e.g. a deploy preview's "Ready". It is what a
+    /// check without timings shows in place of a duration.
+    pub description: Option<String>,
+}
+
+impl CheckRun {
+    /// Wall time of a finished check. `None` while it runs, when either time
+    /// is missing, or when the clock order is inverted.
+    pub fn duration_secs(&self) -> Option<u64> {
+        let start = crate::review_queue::parse_github_updated_at(self.started_at.as_deref()?)?;
+        let end = crate::review_queue::parse_github_updated_at(self.completed_at.as_deref()?)?;
+        u64::try_from(end - start).ok()
+    }
 }
 
 /// Pure parser for `gh pr view --json number,title,state,isDraft,author,reviewDecision,mergeable,headRefName,baseRefName,labels,url` output.
@@ -2662,7 +2791,78 @@ pub fn parse_pr_overview(json: &str) -> Result<PrOverviewFull> {
         is_cross_repository: v["isCrossRepository"].as_bool().unwrap_or(false),
         // `autoMergeRequest` is null when auto-merge is off.
         auto_merge_method: non_empty_str(&v["autoMergeRequest"]["mergeMethod"]),
+        created_at: non_empty_str(&v["createdAt"]),
+        review_requests: v["reviewRequests"]
+            .as_array()
+            .map(|arr| arr.iter().filter_map(parse_review_request).collect())
+            .unwrap_or_default(),
+        commit_count: v["commits"].as_array().map_or(0, Vec::len),
     })
+}
+
+/// `gh` flattens a requested reviewer to `{__typename, login}` for a user or
+/// bot and `{__typename, name, slug}` for a team, where `slug` is `org/slug`.
+fn parse_review_request(r: &serde_json::Value) -> Option<PrReviewRequest> {
+    let is_team = r["__typename"].as_str() == Some("Team");
+    let reviewer = non_empty_str(&r["login"])
+        .or_else(|| non_empty_str(&r["slug"]))
+        .or_else(|| non_empty_str(&r["name"]))?;
+    Some(PrReviewRequest { reviewer, is_team })
+}
+
+/// Fold pending requests and submitted reviews into one reviewer list:
+/// requested reviewers first in request order, then everyone else who
+/// reviewed, in order of their first review. The PR author's own reviews are
+/// replies on their PR, not a review of it, so they are left out.
+///
+/// The state that counts is the reviewer's latest approve/request-changes/
+/// dismiss; a later plain comment does not undo an approval on GitHub either.
+/// Someone who only commented shows `COMMENTED`.
+pub fn pr_reviewers(
+    author: &str,
+    requests: &[PrReviewRequest],
+    reviews: &[PrReview],
+) -> Vec<PrReviewer> {
+    let mut out: Vec<PrReviewer> = requests
+        .iter()
+        .map(|r| PrReviewer {
+            reviewer: r.reviewer.clone(),
+            is_team: r.is_team,
+            requested: true,
+            state: None,
+        })
+        .collect();
+    let mut ordered: Vec<&PrReview> = reviews
+        .iter()
+        .filter(|r| !r.author.is_empty() && !r.author.eq_ignore_ascii_case(author))
+        .filter(|r| r.state != "PENDING")
+        .collect();
+    // `gh` returns reviews oldest first; sort anyway so the latest-wins rule
+    // does not lean on that. ISO-8601 in UTC sorts as text.
+    ordered.sort_by(|a, b| a.submitted_at.cmp(&b.submitted_at));
+    for review in ordered {
+        let idx = match out
+            .iter()
+            .position(|p| !p.is_team && p.reviewer.eq_ignore_ascii_case(&review.author))
+        {
+            Some(i) => i,
+            None => {
+                out.push(PrReviewer {
+                    reviewer: review.author.clone(),
+                    is_team: false,
+                    requested: false,
+                    state: None,
+                });
+                out.len() - 1
+            }
+        };
+        let slot = &mut out[idx].state;
+        let decisive = review.state != "COMMENTED";
+        if decisive || slot.is_none() {
+            *slot = Some(review.state.clone());
+        }
+    }
+    out
 }
 
 fn non_empty_str(v: &serde_json::Value) -> Option<String> {
@@ -2699,7 +2899,7 @@ pub fn parse_pr_reviews(json: &str) -> Result<Vec<PrReview>> {
         .collect())
 }
 
-/// Pure parser for `gh pr checks --json name,state,bucket,link` output.
+/// Pure parser for `gh pr checks --json name,state,bucket,link,startedAt,completedAt,description` output.
 pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
     let v: serde_json::Value = serde_json::from_str(json).context("invalid checks JSON")?;
     let arr = v.as_array().cloned().unwrap_or_default();
@@ -2733,17 +2933,24 @@ pub fn parse_pr_checks(json: &str) -> Result<Vec<CheckRun>> {
                     conclusion
                 },
                 url: c["link"].as_str().map(|s| s.to_string()),
+                started_at: check_time(&c["startedAt"]),
+                completed_at: check_time(&c["completedAt"]),
+                description: non_empty_str(&c["description"]),
             }
         })
         .collect())
 }
 
+/// `gh` serializes an unset check time as Go's zero time rather than null.
+fn check_time(v: &serde_json::Value) -> Option<String> {
+    non_empty_str(v).filter(|s| !s.starts_with("0001-01-01"))
+}
+
 /// Fetch the list of commits on a remote PR (no local clone required).
 ///
-/// Returns commits in reverse-chronological order (newest first), capped at `limit`.
-/// Uses `gh pr view --json commits` which returns the PR's commit history via the
-/// GitHub API. Each commit exposes `oid`, `messageHeadline`, `authors`, and
-/// `committedDate` (ISO 8601).
+/// Returns commits in reverse-chronological order (newest first), capped at
+/// `limit`, each with its diffstat — see [`PR_COMMITS_GRAPHQL`] for why this one
+/// listing is GraphQL rather than `gh pr view --json commits`.
 ///
 /// On any failure (gh unavailable, no auth, etc.) returns an empty list so the
 /// caller degrades gracefully.
@@ -2753,17 +2960,15 @@ pub fn gh_pr_commits_remote(
     number: u64,
     limit: usize,
 ) -> Vec<crate::git::CommitInfo> {
-    let repo_slug = format!("{}/{}", owner, repo);
     let output = match Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &number.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "commits",
-        ])
+        .args(["api", "graphql", "--paginate", "-f"])
+        .arg(format!("query={PR_COMMITS_GRAPHQL}"))
+        .arg("-f")
+        .arg(format!("owner={owner}"))
+        .arg("-f")
+        .arg(format!("repo={repo}"))
+        .arg("-F")
+        .arg(format!("number={number}"))
         .output_timed(crate::proc::GH_TIMEOUT)
     {
         Ok(o) => o,
@@ -2774,7 +2979,7 @@ pub fn gh_pr_commits_remote(
         return Vec::new();
     }
 
-    parse_pr_commits_view_json(&output.stdout, limit).unwrap_or_default()
+    parse_pr_commits_graphql(&output.stdout, limit).unwrap_or_default()
 }
 
 /// Combined overview + conversation-comments + reviews for a remote PR, in
@@ -2804,7 +3009,7 @@ pub fn gh_pr_status_remote(owner: &str, repo: &str, number: u64) -> Result<PrSta
             "--repo",
             &repo_slug,
             "--json",
-            "number,title,body,state,isDraft,author,reviewDecision,mergeable,mergeStateStatus,headRefName,headRefOid,isCrossRepository,autoMergeRequest,baseRefName,labels,url,comments,reviews",
+            "number,title,body,state,isDraft,author,reviewDecision,mergeable,mergeStateStatus,headRefName,headRefOid,isCrossRepository,autoMergeRequest,baseRefName,labels,url,comments,reviews,createdAt,reviewRequests,commits",
         ])
         .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr view (status bundle)")?;
@@ -2838,7 +3043,7 @@ pub fn gh_pr_checks_remote(owner: &str, repo: &str, number: u64) -> Result<Vec<C
             "--repo",
             &repo_slug,
             "--json",
-            "name,state,bucket,link",
+            "name,state,bucket,link,startedAt,completedAt,description",
         ])
         .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to run gh pr checks")?;
@@ -3626,6 +3831,47 @@ mod tests {
     }
 
     #[test]
+    fn parse_pr_commits_view_marks_diffstat_unknown() {
+        let raw = br#"{"commits": [{"oid": "1111111111111111111111111111111111111111"}]}"#;
+        let commits = parse_pr_commits_view_json(raw, 10).expect("parse commits");
+        assert!(!commits[0].diffstat_known);
+    }
+
+    #[test]
+    fn parse_pr_commits_graphql_reads_every_page_with_diffstat() {
+        let page = |oid: &str, subject: &str, adds: u64, more: bool| {
+            format!(
+                r#"{{"data":{{"repository":{{"pullRequest":{{"commits":{{
+                  "pageInfo":{{"hasNextPage":{more},"endCursor":"c"}},
+                  "nodes":[{{"commit":{{"oid":"{oid}","messageHeadline":"{subject}",
+                    "committedDate":"2026-06-01T10:00:00Z","additions":{adds},"deletions":2,
+                    "changedFilesIfAvailable":3,
+                    "authors":{{"nodes":[{{"name":"Ada","user":{{"login":"ada"}}}},
+                                         {{"name":"Ghost","user":null}}]}}}}}}]}}}}}}}}}}"#
+            )
+        };
+        // `gh api --paginate` concatenates one document per page.
+        let raw = format!(
+            "{}\n{}",
+            page("1111111111111111111111111111111111111111", "old", 5, true),
+            page("2222222222222222222222222222222222222222", "new", 0, false),
+        );
+
+        let commits = parse_pr_commits_graphql(raw.as_bytes(), 10).expect("parse commits");
+
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "new");
+        assert_eq!((commits[0].adds, commits[0].dels), (0, 2));
+        assert!(commits[0].diffstat_known);
+        assert_eq!(commits[1].subject, "old");
+        assert_eq!(
+            (commits[1].file_count, commits[1].adds, commits[1].dels),
+            (3, 5, 2)
+        );
+        assert_eq!(commits[1].author, "ada, Ghost");
+    }
+
+    #[test]
     fn combined_status_json_parses_overview_comments_reviews_independently() {
         let json = r#"{
             "number": 42,
@@ -3776,9 +4022,33 @@ mod tests {
             "mergeable": "MERGEABLE",
             "headRefName": "feat/x",
             "baseRefName": "main",
-            "labels": [{"name": "bug"}, {"name": "ui"}]
+            "labels": [{"name": "bug"}, {"name": "ui"}],
+            "createdAt": "2026-10-30T09:12:00Z",
+            "reviewRequests": [
+                {"__typename": "User", "login": "bob"},
+                {"__typename": "Team", "name": "Core", "slug": "o/core"}
+            ],
+            "commits": [
+                {"oid": "aaa", "messageHeadline": "first"},
+                {"oid": "bbb", "messageHeadline": "second"}
+            ]
         }"#;
         let pr = parse_pr_overview(json).unwrap();
+        assert_eq!(pr.created_at.as_deref(), Some("2026-10-30T09:12:00Z"));
+        assert_eq!(
+            pr.review_requests,
+            vec![
+                PrReviewRequest {
+                    reviewer: "bob".into(),
+                    is_team: false
+                },
+                PrReviewRequest {
+                    reviewer: "o/core".into(),
+                    is_team: true
+                },
+            ]
+        );
+        assert_eq!(pr.commit_count, 2);
         assert_eq!(pr.number, 7);
         assert_eq!(pr.title, "Add feature");
         assert_eq!(pr.state, "OPEN");
@@ -3805,6 +4075,112 @@ mod tests {
         assert!(pr.auto_merge_method.is_none());
         assert_eq!(pr.head_ref_oid, "");
         assert!(!pr.is_cross_repository);
+        assert!(pr.created_at.is_none());
+        assert!(pr.review_requests.is_empty());
+        assert_eq!(pr.commit_count, 0);
+    }
+
+    #[test]
+    fn parse_pr_overview_skips_review_requests_without_a_name() {
+        let json = r#"{"number": 3, "reviewRequests": [
+            {"__typename": "Bot", "login": "copilot-pull-request-reviewer"},
+            {"__typename": "User"},
+            {"__typename": "Team", "name": "Docs"}
+        ]}"#;
+        let pr = parse_pr_overview(json).unwrap();
+        let names: Vec<_> = pr
+            .review_requests
+            .iter()
+            .map(|r| r.reviewer.as_str())
+            .collect();
+        assert_eq!(names, vec!["copilot-pull-request-reviewer", "Docs"]);
+        assert!(pr.review_requests[1].is_team);
+    }
+
+    // ── pr_reviewers ──
+
+    fn review(author: &str, state: &str, at: &str) -> PrReview {
+        PrReview {
+            author: author.into(),
+            state: state.into(),
+            body: String::new(),
+            submitted_at: at.into(),
+        }
+    }
+
+    #[test]
+    fn pr_reviewers_lists_requested_first_then_reviewers_by_first_review() {
+        let requests = vec![PrReviewRequest {
+            reviewer: "dan".into(),
+            is_team: false,
+        }];
+        let reviews = vec![
+            review("carol", "COMMENTED", "2026-10-30T10:00:00Z"),
+            review("bob", "APPROVED", "2026-10-30T10:05:00Z"),
+        ];
+        let got = pr_reviewers("alice", &requests, &reviews);
+        let order: Vec<_> = got.iter().map(|r| r.reviewer.as_str()).collect();
+        assert_eq!(order, vec!["dan", "carol", "bob"]);
+        assert!(got[0].requested && got[0].state.is_none());
+        assert_eq!(got[1].state.as_deref(), Some("COMMENTED"));
+        assert_eq!(got[2].state.as_deref(), Some("APPROVED"));
+        assert!(!got[2].requested);
+    }
+
+    #[test]
+    fn pr_reviewers_keeps_an_approval_over_a_later_comment() {
+        let reviews = vec![
+            review("bob", "COMMENTED", "2026-10-30T11:00:00Z"),
+            review("bob", "APPROVED", "2026-10-30T10:00:00Z"),
+        ];
+        let got = pr_reviewers("alice", &[], &reviews);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].state.as_deref(), Some("APPROVED"));
+    }
+
+    #[test]
+    fn pr_reviewers_latest_decisive_review_wins() {
+        let reviews = vec![
+            review("bob", "CHANGES_REQUESTED", "2026-10-30T10:00:00Z"),
+            review("bob", "APPROVED", "2026-10-30T11:00:00Z"),
+        ];
+        let got = pr_reviewers("alice", &[], &reviews);
+        assert_eq!(got[0].state.as_deref(), Some("APPROVED"));
+    }
+
+    #[test]
+    fn pr_reviewers_re_request_keeps_prior_state() {
+        let requests = vec![PrReviewRequest {
+            reviewer: "Bob".into(),
+            is_team: false,
+        }];
+        let reviews = vec![review("bob", "CHANGES_REQUESTED", "2026-10-30T10:00:00Z")];
+        let got = pr_reviewers("alice", &requests, &reviews);
+        assert_eq!(got.len(), 1);
+        assert!(got[0].requested);
+        assert_eq!(got[0].state.as_deref(), Some("CHANGES_REQUESTED"));
+    }
+
+    #[test]
+    fn pr_reviewers_leaves_out_the_author_and_pending_drafts() {
+        let reviews = vec![
+            review("alice", "COMMENTED", "2026-10-30T10:00:00Z"),
+            review("bob", "PENDING", ""),
+        ];
+        assert!(pr_reviewers("Alice", &[], &reviews).is_empty());
+    }
+
+    #[test]
+    fn pr_reviewers_does_not_merge_a_user_into_a_team_of_the_same_name() {
+        let requests = vec![PrReviewRequest {
+            reviewer: "core".into(),
+            is_team: true,
+        }];
+        let reviews = vec![review("core", "APPROVED", "2026-10-30T10:00:00Z")];
+        let got = pr_reviewers("alice", &requests, &reviews);
+        assert_eq!(got.len(), 2);
+        assert!(got[0].state.is_none());
+        assert_eq!(got[1].state.as_deref(), Some("APPROVED"));
     }
 
     #[test]
@@ -3890,6 +4266,46 @@ mod tests {
         assert_eq!(checks[1].conclusion, "FAILURE");
         assert_eq!(checks[2].status, "PENDING");
         assert!(checks[2].url.is_none());
+    }
+
+    #[test]
+    fn parse_pr_checks_reads_timings_and_description() {
+        let json = r#"[
+            {"name": "test / python", "state": "SUCCESS", "bucket": "pass",
+             "startedAt": "2026-10-30T09:00:00Z", "completedAt": "2026-10-30T09:01:52Z",
+             "description": ""},
+            {"name": "Vercel", "state": "SUCCESS", "bucket": "pass",
+             "startedAt": "0001-01-01T00:00:00Z", "completedAt": "0001-01-01T00:00:00Z",
+             "description": "Ready"},
+            {"name": "cleanup", "state": "IN_PROGRESS", "bucket": "pending",
+             "startedAt": "2026-10-30T09:00:00Z", "completedAt": "0001-01-01T00:00:00Z"}
+        ]"#;
+        let checks = parse_pr_checks(json).unwrap();
+        assert_eq!(
+            checks[0].started_at.as_deref(),
+            Some("2026-10-30T09:00:00Z")
+        );
+        assert_eq!(checks[0].duration_secs(), Some(112));
+        assert!(checks[0].description.is_none());
+
+        assert!(checks[1].started_at.is_none());
+        assert!(checks[1].completed_at.is_none());
+        assert_eq!(checks[1].duration_secs(), None);
+        assert_eq!(checks[1].description.as_deref(), Some("Ready"));
+
+        assert!(checks[2].started_at.is_some());
+        assert!(checks[2].completed_at.is_none());
+        assert_eq!(checks[2].duration_secs(), None);
+    }
+
+    #[test]
+    fn check_duration_is_none_when_end_precedes_start() {
+        let check = CheckRun {
+            started_at: Some("2026-10-30T09:01:00Z".into()),
+            completed_at: Some("2026-10-30T09:00:00Z".into()),
+            ..Default::default()
+        };
+        assert_eq!(check.duration_secs(), None);
     }
 
     #[test]
@@ -4190,13 +4606,13 @@ mod tests {
                 name: "lint".into(),
                 status: "COMPLETED".into(),
                 conclusion: "SUCCESS".into(),
-                url: None,
+                ..Default::default()
             },
             CheckRun {
                 name: "test".into(),
                 status: "COMPLETED".into(),
                 conclusion: "FAILURE".into(),
-                url: None,
+                ..Default::default()
             },
         ];
         assert_eq!(summarize_checks_state(&checks), "failing");
@@ -4208,14 +4624,14 @@ mod tests {
             name: "build".into(),
             status: "IN_PROGRESS".into(),
             conclusion: "".into(),
-            url: None,
+            ..Default::default()
         }];
         assert_eq!(summarize_checks_state(&checks), "pending");
         let queued = vec![CheckRun {
             name: "build".into(),
             status: "QUEUED".into(),
             conclusion: "".into(),
-            url: None,
+            ..Default::default()
         }];
         assert_eq!(summarize_checks_state(&queued), "pending");
     }

@@ -314,6 +314,7 @@ fn tour_schema() -> Value {
               "id": { "type": "string" },
               "title": { "type": "string" },
               "description": { "type": "string" },
+              "summary": { "type": "string" },
               "order": { "type": "integer", "minimum": 0 },
               "importance": { "type": "integer", "minimum": 0, "maximum": 100 },
               "foundation": { "type": "boolean" },
@@ -451,6 +452,7 @@ fn tour_example() -> Value {
             {
                 "id": "p-1",
                 "title": "Foundation",
+                "summary": "Core types other files depend on",
                 "description": "Core types other files depend on.",
                 "order": 0,
                 "importance": 90,

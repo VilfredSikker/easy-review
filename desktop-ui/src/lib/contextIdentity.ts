@@ -38,6 +38,60 @@ function findPrInProjects(
   return null;
 }
 
+export interface ContextTitle {
+  /** Repo name for the leading breadcrumb segment; empty when unknown. */
+  repo: string;
+  prNumber: number | null;
+  /** PR title, or the tab label / branch when the view is not a PR. */
+  title: string;
+}
+
+/** Breadcrumb "repo / #N title" for the top bar. Same fallback order as
+ *  `resolveContextIdentity`: remote PR stubs often carry no `snapshot.pr`, so
+ *  the title falls through to GitHub status, the sidebar PR lists, then the
+ *  tab label and branch, so the bar never renders empty on a loaded tab. */
+export function resolveContextTitle(
+  snapshot: AppSnapshot | null | undefined,
+): ContextTitle {
+  if (!snapshot) return { repo: "", prNumber: null, title: "" };
+
+  const tab =
+    snapshot.tabs.find((t) => t.is_active) ??
+    (typeof snapshot.active_tab === "number"
+      ? snapshot.tabs[snapshot.active_tab]
+      : undefined);
+  const prNumber =
+    tab?.pr_number ??
+    snapshot.pr?.number ??
+    snapshot.detected_pr_number ??
+    snapshot.github?.number ??
+    null;
+  const repo = repoName(snapshot, tab?.remote);
+
+  if (prNumber == null) {
+    return { repo, prNumber, title: firstNonEmpty(tab?.label, snapshot.branch) };
+  }
+  const listed = findPrInProjects(snapshot.projects, prNumber, tab?.remote);
+  const title = firstNonEmpty(
+    snapshot.pr?.title,
+    snapshot.github?.title,
+    listed?.title,
+    tab?.label,
+    snapshot.branch,
+  );
+  return { repo, prNumber, title };
+}
+
+function repoName(
+  snapshot: AppSnapshot,
+  tabRemote: string | null | undefined,
+): string {
+  const gh = snapshot.github;
+  const slug = firstNonEmpty(tabRemote, gh ? `${gh.owner}/${gh.repo}` : "");
+  if (slug) return slug.split("/").pop() ?? "";
+  return firstNonEmpty(snapshot.projects?.find((p) => p.is_active)?.name);
+}
+
 /** Branch title + base ref for the context bar. Empty snapshot.branch/base
  *  is common on remote PR stubs; fall back to GitHub status, PR card, then
  *  the sidebar PR lists. */

@@ -28,6 +28,7 @@ const VIS_OFF: CommentVisibility = {
   hideComments: false,
   hideFindings: false,
   hideQuestions: false,
+  hideNotes: false,
 };
 
 function mkLine(opts: Partial<LineSnapshot> & Pick<LineSnapshot, "kind">): LineSnapshot {
@@ -394,6 +395,15 @@ describe("threadsForLine", () => {
 
     const hideAll = threadsForLine(hunkQuery(idx, { ...VIS_OFF, hideAll: true }), 13);
     expect(hideAll.length).toBe(0);
+  });
+
+  it("hides note threads under hideNotes and leaves other kinds", () => {
+    const note = mkThread({ id: "tNote", file: FILE, line: 13, kind: "note" });
+    const files = [mkFile(FILE, [mkHunk({ new_start: 10, new_count: 4, lines: hunkLines, threads: [baseThread, note] })])];
+    const idx = buildAnnotationIndex({ threads: [], findings: [] }, files, "branch", VIS_OFF);
+    expect(threadsForLine(hunkQuery(idx), 13).map((t) => t.id).sort()).toEqual(["t1", "tNote"]);
+    const hidden = threadsForLine(hunkQuery(idx, { ...VIS_OFF, hideNotes: true }), 13);
+    expect(hidden.map((t) => t.id)).toEqual(["t1"]);
   });
 
   it("places multi-line threads at line_end, not line_start", () => {

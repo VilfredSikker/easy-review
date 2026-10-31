@@ -18,6 +18,8 @@ const LOCAL_FIRST_COMMANDS = [
   "delete_thread",
   "update_thread_message",
   "dismiss_finding",
+  "resolve_finding",
+  "unresolve_finding",
   "promote_to_comment",
   "promote_to_note",
   "bulk_review_pillar",
@@ -49,6 +51,41 @@ describe("SLOW_COMMANDS", () => {
     const block = src.slice(src.indexOf("const SLOW_COMMANDS"), src.indexOf("const VOID_COMMANDS"));
     for (const command of LOCAL_FIRST_COMMANDS) {
       expect(block.includes(`"${command}"`)).toBe(false);
+    }
+  });
+
+  it("keeps review-flow controls and lazy per-file reads off the switching overlay", () => {
+    // Neither switches the view: the flow runs in the background and reports
+    // through the jobs popover, and line_commits fills in one file's markers.
+    const block = src.slice(src.indexOf("const SLOW_COMMANDS"), src.indexOf("const VOID_COMMANDS"));
+    for (const command of [
+      "start_review_flow",
+      "confirm_review_flow",
+      "run_standard_review_flow",
+      "decline_review_flow",
+      "line_commits",
+    ]) {
+      expect(block.includes(`"${command}"`)).toBe(false);
+    }
+  });
+
+  it("keeps pending-review commands off the overlay and out of the optimistic writer", () => {
+    // Each is a GitHub round trip that can be refused, and none switches the
+    // view: they neither paint ahead nor cover the window while they run.
+    const block = src.slice(src.indexOf("const SLOW_COMMANDS"), src.indexOf("function timingSegmentMs"));
+    const optimistic = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "optimisticLocal.ts"),
+      "utf8",
+    );
+    for (const command of [
+      "get_pending_review",
+      "add_pending_review_comment",
+      "remove_pending_review_comment",
+      "submit_pending_review",
+      "post_github_line_comment",
+    ]) {
+      expect(block.includes(`"${command}"`)).toBe(false);
+      expect(optimistic.includes(`"${command}"`)).toBe(false);
     }
   });
 
@@ -148,14 +185,8 @@ describe("optimistic local-write call sites", () => {
   });
 
   it("fires app-wide chrome writes without waiting on the backend", () => {
-    const inbox = component("InboxPanel.svelte");
-    for (const command of [
-      "mark_inbox_item_read",
-      "mark_inbox_items_read",
-      "mark_all_inbox_read",
-      "clear_read_inbox_items",
-      "clear_inbox_items",
-    ]) {
+    const inbox = component("InboxView.svelte");
+    for (const command of ["mark_inbox_items_read", "clear_inbox_items"]) {
       expect(inbox).toContain(`void app.cmd("${command}"`);
     }
 
@@ -180,6 +211,13 @@ describe("optimistic local-write call sites", () => {
     const clearIdx = composer.indexOf("diffSel.clear();");
     expect(cmdIdx).toBeGreaterThan(-1);
     expect(clearIdx).toBeGreaterThan(cmdIdx);
+    // A GitHub comment is not painted ahead, so its draft waits for GitHub.
+    const postFn = composer.slice(
+      composer.indexOf("async function postToGithub"),
+      composer.indexOf("function submitPrimary"),
+    );
+    expect(postFn.indexOf("await pendingReview.add(")).toBeGreaterThan(-1);
+    expect(postFn.indexOf("if (ok &&")).toBeGreaterThan(postFn.indexOf("await pendingReview.add("));
 
     const thread = component("InlineThread.svelte");
     const replyFn = thread.slice(
@@ -247,7 +285,11 @@ describe("panel chrome is local-first", () => {
   });
 
   it("command palette toggles all three chrome panels through togglePanel", () => {
-    const palette = component("CommandPalette.svelte");
+    // The View & Layout menu is built in commandPaletteMenus.ts.
+    const palette = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "commandPaletteMenus.ts"),
+      "utf8",
+    );
     expect(palette).toContain('id: "toggle-tree"');
     expect(palette).toContain('app.togglePanel("left")');
     expect(palette).toContain('app.togglePanel("tree")');

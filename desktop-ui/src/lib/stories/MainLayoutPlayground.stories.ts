@@ -29,6 +29,11 @@ const meta = {
       description:
         "Seed inbox items (popover opens on click of the Inbox header in the sidebar)",
     },
+    shellState: {
+      control: { type: "select" },
+      options: ["pr", "stale", "local", "tour-empty"],
+      description: "Review state the top bar, view bar and banners show",
+    },
     mockTerminal: {
       control: { type: "boolean" },
       description:
@@ -95,6 +100,27 @@ export const TerminalOpen: Story = {
     inboxOpen: false,
     mockTerminal: true,
   },
+};
+
+/**
+ * The PR head moved on origin: Stale pill in the view bar and the stale banner under it.
+ */
+export const StalePr: Story = {
+  args: { ...Playground.args, shellState: "stale" },
+};
+
+/**
+ * A local PR tab's local branch view: the banner says how the worktree differs from the PR head.
+ */
+export const LocalBranch: Story = {
+  args: { ...Playground.args, shellState: "local" },
+};
+
+/**
+ * Tour with no tour for this view, while the PR diff view holds one.
+ */
+export const TourEmpty: Story = {
+  args: { ...Playground.args, shellState: "tour-empty" },
 };
 
 /**

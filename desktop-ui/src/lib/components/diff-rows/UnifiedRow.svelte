@@ -21,6 +21,8 @@
     commentVisibility: CommentVisibility;
     /** Cell column capacity when word wrap is on; null = no wrap (in-panel pan). */
     wrapCols?: number | null;
+    /** Mark lines colour of the commit behind this line; null leaves the add/del bar. */
+    commitColor?: string | null;
   }
   const {
     row,
@@ -31,6 +33,7 @@
     annotationIndex,
     commentVisibility,
     wrapCols = null,
+    commitColor = null,
   }: Props = $props();
 
   const wrap = $derived(wrapCols !== null);
@@ -93,13 +96,20 @@
   data-row-identity={row.identity}
   data-row-idx={rowIdx}
 >
-  <div class="leading-6 text-right pr-2 gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}">
-    {line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}
+  <div
+    class="leading-6 text-right gutter {lineClass(line.kind)} {isSelected ? 'is-selected' : ''} {commitColor ? 'commit-mark' : ''}"
+    style={commitColor ? `--cc:${commitColor}` : undefined}
+  >
+    <!-- The number is the click target (prototype `lnCell`): no hover-only "+"
+         to aim for, and shift-click extends the range from the same cell. -->
     {#if ln !== null && line.kind !== "fold"}
       <button type="button"
-        class="add-comment-btn"
+        class="block w-full pr-2 text-right cursor-pointer {isSelected ? 'text-accent' : 'hover:text-accent'}"
+        aria-label="Comment on line {ln}"
         onmousedown={(e) => diffSel.begin(ln, e.shiftKey, e, { file: filePath, side, startRowIdx: rowIdx })}
-      >+</button>
+      >{line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}</button>
+    {:else}
+      <span class="pr-2">{line.kind === "del" ? (line.old_num ?? "") : (line.new_num ?? line.old_num ?? "")}</span>
     {/if}
   </div>
   <div class="leading-6 pr-3 {wrap ? 'whitespace-pre-wrap break-all' : 'whitespace-pre'} {lineClass(line.kind)} {isSelected ? 'is-selected' : ''}" onclick={onCodeClick}>
@@ -121,3 +131,11 @@
     </div>
   </div>
 </div>
+
+<style>
+  /* Mark lines: the gutter's add/del bar takes the colour of the commit that
+     introduced (or removed) the line. A selection keeps its own bar. */
+  .diff-row:not(.is-selected) > .gutter.commit-mark {
+    box-shadow: inset 3px 0 0 0 var(--cc);
+  }
+</style>

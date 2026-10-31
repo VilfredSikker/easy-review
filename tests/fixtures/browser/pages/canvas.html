@@ -1,0 +1,5 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>canvas fixture</title></head><body>
+<h1 id="whoami"></h1><p id="doc-id"></p>
+<canvas id="canvas" width="600" height="400"></canvas><script>const c = document.querySelector('#canvas').getContext('2d'); c.fillStyle = '#75a'; c.fillRect(20,20,200,120); c.fillStyle = '#e80'; c.beginPath(); c.arc(350,200,80,0,2*Math.PI); c.fill(); c.fillStyle = '#111'; c.font = '24px sans-serif'; c.fillText('Fixture canvas',20,300);</script>
+<script src="/common.js"></script></body></html>

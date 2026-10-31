@@ -9,6 +9,19 @@
   --font-sans: "DM Sans", system-ui, sans-serif;
   --font-mono: "JetBrains Mono", "SF Mono", monospace;
 
+  /* Canvas beneath the app frame, and the hairline divider fainter than
+   * --color-border (both derived per theme by themes.ts). */
+  --color-ground: #050505;
+  --color-line: #1a1a1a;
+
+  /* Categorical commit series (accent ladder, set per theme by themes.ts). */
+  --color-commit-1: #ff6a3d;
+  --color-commit-2: #60a5fa;
+  --color-commit-3: #a78bf6;
+  --color-commit-4: #4ade80;
+  --color-commit-5: #22d3ee;
+  --color-commit-6: #fbbf24;
+
   --color-ink-900: #0a0a0a;
   --color-ink-880: #0c0c0c;  /* side rails */
   --color-ink-870: #0d0d0d;  /* titlebar, sticky headers */
@@ -55,14 +68,15 @@
   --color-risk-med:  #fbbf24;
   --color-risk-low:  #60a5fa;
 
-  --color-comment: #22d3ee;
-  --color-question: #fde047;
-  --color-question-surface: rgba(253,224,71,0.04);
-  --color-question-border: rgba(253,224,71,0.25);
+  --color-comment: #60a5fa;
+  --color-question: #a78bf6;
+  --color-question-surface: rgba(167,139,246,0.04);
+  --color-question-border: rgba(167,139,246,0.25);
+  --color-note: #fbbf24;
   --color-ai: #fbbf24;
 
   --color-tree-selected: rgba(88, 166, 255, 0.14);
-  --color-finding: #c9a3f5;
+  --color-finding: #22d3ee;
 
   /* Diff row drag-selection (overridden per theme by themes.ts). */
   --color-row-select: rgba(59, 130, 246, 0.18);

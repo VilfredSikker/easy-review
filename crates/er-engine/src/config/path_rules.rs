@@ -1,8 +1,8 @@
 //! Matching a repo-relative path against a per-repo rule table.
 //!
-//! `[importance.<repo>]` and `[file_kinds.<repo>]` are both tables whose keys are
-//! paths, globs or file types. They share one precedence order here so the two
-//! cannot drift into resolving the same key differently.
+//! `[risk.<repo>]`, `[user_risk]` and `[file_kinds.<repo>]` are all tables whose
+//! keys are paths, globs or file types. They share one precedence order here so
+//! they cannot drift into resolving the same key differently.
 
 use glob::{MatchOptions, Pattern};
 use std::collections::BTreeMap;
@@ -68,9 +68,20 @@ pub(crate) fn matching_rule<'a, T>(
     path: &str,
     parse: impl Fn(&str) -> Option<T>,
 ) -> Option<(&'a str, T)> {
+    matching_entry(rules, path, |value: &String| parse(value)).map(|(key, _, parsed)| (key, parsed))
+}
+
+/// [`matching_rule`] over a table whose values are richer than a string, handing
+/// back the winning value beside its parsed form so a caller reading more than
+/// the tier (a label, say) does not look the key up a second time.
+pub(crate) fn matching_entry<'a, V, T>(
+    rules: &'a BTreeMap<String, V>,
+    path: &str,
+    parse: impl Fn(&V) -> Option<T>,
+) -> Option<(&'a str, &'a V, T)> {
     let exact = || {
         let (key, value) = rules.get_key_value(path)?;
-        Some((key.as_str(), parse(value)?))
+        Some((key.as_str(), value, parse(value)?))
     };
     let glob = || pattern_rule(rules, path, true, &parse);
     let file_type = || {
@@ -83,18 +94,18 @@ pub(crate) fn matching_rule<'a, T>(
 /// A key carrying a separator names a place in the tree and is matched against
 /// the whole path; one without names a kind of file and is matched against the
 /// basename.
-fn pattern_rule<'a, T>(
-    rules: &'a BTreeMap<String, String>,
+fn pattern_rule<'a, V, T>(
+    rules: &'a BTreeMap<String, V>,
     target: &str,
     path_shaped: bool,
-    parse: &impl Fn(&str) -> Option<T>,
-) -> Option<(&'a str, T)> {
+    parse: &impl Fn(&V) -> Option<T>,
+) -> Option<(&'a str, &'a V, T)> {
     let (key, value) = rules
         .iter()
         .filter(|(key, _)| is_pattern(key) && key.contains('/') == path_shaped)
         .filter(|(key, _)| matches_pattern(key, target))
         .max_by_key(|(key, _)| key.len())?;
-    Some((key.as_str(), parse(value)?))
+    Some((key.as_str(), value, parse(value)?))
 }
 
 #[cfg(test)]
