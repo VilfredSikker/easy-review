@@ -7,6 +7,7 @@ import {
   richSnapshot,
   tabsWorkingActive,
 } from "./fixtures";
+import { botConversation } from "./botCommentFixtures";
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString();
 
@@ -63,6 +64,18 @@ export const LocalBranch: Story = { args: { snapshot: { ...richSnapshot, pr: nul
 
 /** This view's bucket is empty while the other view's is not: one card replaces the AI sections. */
 export const EmptyBucket: Story = { args: { snapshot: localBranchEmptyBucketSnapshot } };
+
+const withBots: AppSnapshot = {
+  ...onPr,
+  github: onPr.github && {
+    ...onPr.github,
+    comments_count: botConversation.comments_count,
+    recent_comments: botConversation.recent_comments,
+  },
+};
+
+/** Vercel and Linear bot comments in the Activity: the page must not scroll sideways. */
+export const BotComments: Story = { args: { snapshot: withBots } };
 
 /** Below 880px the aside drops under the main column. */
 export const Narrow: Story = {

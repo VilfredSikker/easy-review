@@ -5,6 +5,8 @@
   import { longAge } from "$lib/relativeTime";
   import { openExternalUrl } from "$lib/openExternalUrl";
   import MarkdownText from "$lib/components/ui/MarkdownText.svelte";
+  import type { GithubRef } from "$lib/prLinks";
+  import ActivityBody from "./ActivityBody.svelte";
   import {
     avatarToken,
     buildActivity,
@@ -18,9 +20,12 @@
     /** Defaults to the active tab's live GitHub status; stories pass one. */
     github?: GithubStatusSnapshot | null;
     ai?: AiSnapshot | null;
+    /** Stories stand in for the backend's attachment fetch and tab opening. */
+    loadImage?: (url: string) => Promise<string>;
+    onOpenRef?: (ref: GithubRef, url: string, e: MouseEvent) => void;
   }
 
-  const { github: githubOverride, ai: aiOverride }: Props = $props();
+  const { github: githubOverride, ai: aiOverride, loadImage, onOpenRef }: Props = $props();
   const github = $derived(githubOverride !== undefined ? githubOverride : githubStatusForActiveTab(app.snapshot));
   const ai = $derived(aiOverride !== undefined ? aiOverride : (app.snapshot?.ai ?? null));
   const timeline = $derived(buildActivity(github, ai));
@@ -76,14 +81,16 @@
 {#snippet line(icon: string, iconClass: string, text: string, at: string | null)}
   <div class="grid grid-cols-[18px_minmax(0,1fr)] items-start gap-2.5 py-1.5 text-[12px] text-fg-2">
     <span class="grid h-[18px] place-items-center {iconClass}" aria-hidden="true">{icon}</span>
-    <span>{text}{#if at} <span class="text-fg-3">· {ago(at)}</span>{/if}</span>
+    <span class="min-w-0 [overflow-wrap:anywhere]">{text}{#if at}<span class="ml-1 text-fg-3">· {ago(at)}</span>{/if}</span>
   </div>
 {/snippet}
 
-<section aria-label="Activity" data-testid="overview-activity">
+<section class="min-w-0" aria-label="Activity" data-testid="overview-activity">
   <h2 class="m-0 mb-2.5 text-[11px] font-medium uppercase tracking-[.06em] text-fg-3">Activity</h2>
 
-  <div class="grid">
+  <!-- One flexible track: a grid item's default min-width is its content, so
+       a bot's wide table would otherwise widen the whole Overview column. -->
+  <div class="grid grid-cols-[minmax(0,1fr)]">
     {#each timeline.events as event (event.key)}
       {#if event.kind === "opened"}
         {@render line("○", "text-fg-3", openedText(event.actor, event.commits), event.at)}
@@ -92,21 +99,21 @@
       {:else if event.kind === "review" && !event.body}
         {@render line(REVIEW_ICON[event.state], REVIEW_TEXT[event.state], `${event.actor} ${REVIEW_VERB[event.state]}`, event.at)}
       {:else if event.kind === "review" || event.kind === "comment"}
-        <div class="my-2 rounded-[10px] border border-line bg-surface px-3.5 py-3" data-testid="activity-comment">
-          <div class="mb-1.5 flex items-center gap-2 text-[12px]">
+        <div class="my-2 min-w-0 rounded-[10px] border border-line bg-surface px-3.5 py-3" data-testid="activity-comment">
+          <div class="mb-1.5 flex min-w-0 items-center gap-2 text-[12px]">
             {@render avatar(event.actor)}
-            <b class="font-semibold text-fg">{event.actor}</b>
+            <b class="min-w-0 truncate font-semibold text-fg">{event.actor}</b>
             {#if event.kind === "review"}
               <span class={REVIEW_TEXT[event.state]}>{REVIEW_VERB[event.state]}</span>
             {/if}
-            <span class="text-fg-3">{ago(event.at)}</span>
+            <span class="shrink-0 text-fg-3">{ago(event.at)}</span>
           </div>
-          <MarkdownText text={event.body} className="text-[13px] leading-[1.55] text-fg" />
+          <ActivityBody body={event.body} owner={github?.owner} repo={github?.repo} {loadImage} {onOpenRef} />
         </div>
       {:else if event.kind === "ai-review"}
         <!-- The review is the bucket's, not a reviewer's: no person's name or
              avatar here (CONTEXT.md, Lens). -->
-        <div class="my-2 rounded-[10px] border border-line bg-surface px-3.5 py-3 {event.fresh ? '' : 'opacity-[.72]'}" data-testid="activity-ai-review">
+        <div class="my-2 min-w-0 rounded-[10px] border border-line bg-surface px-3.5 py-3 [overflow-wrap:anywhere] {event.fresh ? '' : 'opacity-[.72]'}" data-testid="activity-ai-review">
           <div class="mb-1.5 flex items-center gap-2 text-[12px]">
             <span class="inline-grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full bg-ai/20 text-[10px] text-ai" aria-hidden="true">✦</span>
             <b class="font-semibold text-fg">AI review</b>
