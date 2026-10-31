@@ -57,7 +57,7 @@ const PENDING_REVIEW_QUERY: &str = r#"query($owner:String!,$repo:String!,$pr:Int
     pullRequest(number:$pr){
       reviews(states:PENDING,first:10){nodes{id databaseId viewerDidAuthor
         comments(first:100){nodes{id databaseId path line startLine originalLine originalStartLine body}}}}
-      reviewThreads(last:100){nodes{diffSide comments(first:50){nodes{id}}}}
+      reviewThreads(last:100){nodes{diffSide comments(last:50){nodes{id}}}}
       timelineItems(itemTypes:[REVIEW_REQUESTED_EVENT],last:50){nodes{
         ... on ReviewRequestedEvent{createdAt actor{login} requestedReviewer{... on User{login}}}}}
     }
