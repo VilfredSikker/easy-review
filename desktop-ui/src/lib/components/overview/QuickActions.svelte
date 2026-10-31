@@ -4,8 +4,9 @@
   import { arena } from "$lib/stores/arena.svelte";
   import { exportOptions } from "$lib/stores/exportOptions.svelte";
   import { reviewScopeFromMode } from "$lib/reviewScope";
+  import { reviewFlowEstimate } from "$lib/reviewFlow";
   import { shortAge } from "$lib/relativeTime";
-  import { generatorStates, latestArenaRun, type Generator, type GeneratorState } from "./overviewModel";
+  import { generatorStates, latestArenaRun, reviewFlowCommand, type Generator, type GeneratorState } from "./overviewModel";
 
   interface Props {
     /** Defaults to the live snapshot; stories pass one. */
@@ -35,13 +36,22 @@
   function buttonTitle(g: GeneratorState): string {
     if (!scope) return "Not available in this view";
     if (g.busy) return "Running";
+    if (g.confirm) return `Confirm Deep review: ${reviewFlowEstimate(snap?.review_flow) ?? "estimate unavailable"}`;
     return `${g.at ? "Regenerate" : "Run"} ${LABEL[g.id].toLowerCase()}`;
+  }
+
+  function caption(g: GeneratorState): string {
+    if (g.busy) return BUSY[g.id];
+    return g.confirm ? "Confirm Deep review" : LABEL[g.id];
   }
 
   function run(id: Generator) {
     if (!scope) return;
     if (id === "triage") void app.cmd("run_ai_triage_review", { scope });
-    else if (id === "review") void app.cmd("run_ai_review", { scope });
+    else if (id === "review") {
+      const flow = reviewFlowCommand(snap, scope);
+      if (flow) void app.cmd(flow.command, flow.args);
+    }
     else void app.cmd("generate_tour");
   }
 
@@ -72,8 +82,10 @@
           {/if}
         </svg>
       </span>
-      {g.busy ? BUSY[g.id] : LABEL[g.id]}
-      {#if !g.busy}
+      {caption(g)}
+      {#if g.confirm}
+        <span class="mono text-[11px] font-normal text-fg-3">{reviewFlowEstimate(snap?.review_flow) ?? ""}</span>
+      {:else if !g.busy}
         <span class="mono text-[11px] font-normal text-fg-3">{g.at ? shortAge(g.at) : "not run"}</span>
       {/if}
     </button>

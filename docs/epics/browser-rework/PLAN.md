@@ -1,8 +1,9 @@
 # Browser rework plan
 
-Scope: ER-21 through ER-36. Target: `release/v0.6.0`, verified at `db43ec6c` on
-2026-10-30. Later owner decisions recorded in an ADDENDUM in this folder override
-this plan. Native proof results are pending; implementation readiness is separate
+Scope: ER-21 through ER-36. Target: `release/v0.6.1`, branched from
+`release/v0.6.0` at `e668531f` on 2026-10-31. The owner
+[release-target addendum](./ADDENDUM-release-0.6.1.md) overrides earlier target
+references. Later owner decisions recorded in an ADDENDUM override this plan. Native proof results are pending; implementation readiness is separate
 from a passed proof. No browser product replacement is authorized by a scaffold.
 
 ## Sources and verified starting point
@@ -23,7 +24,7 @@ scenario lists. This plan overrides their branch instructions, verification
 wrapper location, splits and sequencing. Resolve stale line references against
 the current worktree rather than copying old code.
 
-Verified on the release tip: native children are indexed by tab position;
+The original audit at `db43ec6c` verified: native children are indexed by tab position;
 overlay suspension destroys them; navigation comparison drops ports and fragments;
 the annotation runtime uses the page world; remote browser capabilities permit
 the legacy message command; BrowserView automatically falls back to the proxy.

@@ -6,7 +6,7 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
 
 1. Read [PLAN.md](./PLAN.md), [AGENT_BRIEF.md](./AGENT_BRIEF.md), STATUS and the
    latest log entries. Fetch the current release branch before starting a lane.
-2. Inspect open browser rework PRs against `release/v0.6.0` and their reviews.
+2. Inspect open browser rework PRs against `release/v0.6.1` and their reviews.
    Resume an existing implementer when possible; do not duplicate a PR.
 3. Use worktrees outside the main checkout. In this cloud session, source
    `/workspace/scratch/browser-tool-env.sh` before Rust, Bun or just commands.
@@ -57,3 +57,38 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   avoids the product modal teardown confounder; this changes the experiment
   driver, not the release browser behavior. Mac compile and native observations
   remain required before the proof can pass.
+
+### 2026-10-31
+
+- The owner resumed the paused epic. Rechecked the current release branch, open
+  PRs, saved worktrees, toolchain and existing reviews before resuming agents.
+- Renderer PR 335 retained its reviewed head and passing CI. Merged it as
+  `b22019ff`; this adds the renderer without switching production export readers.
+- ER32b was rebased and checked locally. Independent review found a missing
+  Debug derive, a cache-publication/sent-revision race and unrecoverable cached
+  read errors. Assigned the repair to Sol before further publication.
+- ER35 is locally committed at `ed37a5c4`; independent review found no blocker.
+  Its 25 MCP tests, formatting and scoped Clippy passed, with no external writes.
+- ER22 debug-only probe scaffolding is locally reviewed for a draft. macOS
+  compilation and native behavior remain unverified; all 18 proof cells remain
+  pending. The dedicated probe leaves product modal teardown unchanged.
+- Automatic approval review rejected snapshot PR creation for public source
+  disclosure. Verified the original repository is public, owned by VilfredSikker,
+  and writable by the connected account; a supported retry with this evidence was
+  also rejected for lack of explicit source-disclosure approval. Put remaining
+  publication on hold while completing local checks and reviews.
+- ER32b repair `09e5abf2` passed independent re-review. Added Debug and one
+  library-owned cache; App-serialized publication keeps disk work outside App,
+  retries errors, revalidates stable reads and discards changed-bucket reads.
+  Five actual-source Rust regressions and strict harness lint passed; 46 focused
+  UI tests and UI type checking passed. Full UI retained the previously proven
+  defaultDevUrl baseline failure. Full desktop verification still needs GTK/CI.
+- ER22 recovery guidance is finalized at `0aa3d32d`, reviewed as suitable only
+  for a draft pending Mac compilation and native scenarios. ER35 remains reviewed
+  at `ed37a5c4`. Prepared exact patch artifacts for the three local branch heads
+  before requesting explicit publication approval.
+- The owner directed branching from `release/v0.6.0` to a new `release/v0.6.1`
+  and targeting every new PR at 0.6.1. Created the new remote branch from the
+  verified latest 0.6.0 head `e668531f`; inherited merged fixtures, engine storage
+  and renderer. Moved the unpublished tracking updates onto the new branch.
+  Future work follows the release-target addendum; macOS proof gates remain.

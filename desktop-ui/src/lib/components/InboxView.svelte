@@ -2,6 +2,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { arena } from "$lib/stores/arena.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
   import { inboxView } from "$lib/stores/inboxView.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
@@ -183,11 +184,14 @@
   // alone while the Inbox is the main view so j/k move rows, not diff files.
   $effect(() => {
     function onKeydown(e: KeyboardEvent) {
-      if (app.mainView !== "inbox" || commandPalette.open) return;
+      // Full-window overlays own Esc and the bare keys while they are up.
+      if (app.mainView !== "inbox" || commandPalette.open || arena.overlayOpen || app.showEmptyState) return;
       if (e.metaKey || e.ctrlKey || e.altKey || document.querySelector("[data-modal]")) return;
       const target = e.target as HTMLElement;
       if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
-      if (e.key === "j" || e.key === "k") void step(e.key === "j" ? 1 : -1);
+      // Esc in a field only blurs it (the global handler does that); a second Esc leaves.
+      if (e.key === "Escape") app.closeInbox();
+      else if (e.key === "j" || e.key === "k") void step(e.key === "j" ? 1 : -1);
       else if (e.key === "u" && selected) markThreadRead(selected);
       else if (e.key === "Enter" && selected) void openThread(selected, null);
       else return;
@@ -344,6 +348,7 @@
     <footer class="flex gap-3 px-3.5 py-2 border-t border-hairline text-[11px] text-muted">
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">j</kbd><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">k</kbd> move</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">u</kbd> mark read</span>
+      <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">esc</kbd> close</span>
       <span><kbd class="font-mono text-[10px] px-1 border border-border rounded-sm mr-0.5">↵</kbd> open review</span>
       {#if alwaysNewTab}
         <span class="flex-1"></span>
