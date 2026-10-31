@@ -38,8 +38,8 @@ fn route(url: &str) -> Option<Auth> {
     match host {
         "github.com" => {
             let segments: Vec<&str> = path.split(['?', '#']).next()?.split('/').collect();
-            let attachment = segments.first() == Some(&"user-attachments")
-                && segments.get(1) == Some(&"assets");
+            let attachment =
+                segments.first() == Some(&"user-attachments") && segments.get(1) == Some(&"assets");
             // Older uploads: /<owner>/<repo>/assets/<id>/<uuid>.
             let repo_asset = segments.len() >= 4 && segments[2] == "assets";
             (attachment || repo_asset).then_some(Auth::Token)
