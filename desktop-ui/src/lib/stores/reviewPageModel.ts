@@ -81,31 +81,64 @@ export function reviewPageTabKey(snap: Pick<AppSnapshot, "tabs" | "active_tab"> 
 }
 
 /**
- * Remembers, per tab, whether the reader left it on the Overview. Tour versus
- * Diff needs no memory here: the engine keeps each tab's mode, so a tab left on
- * its Tour comes back in `DiffMode::Tour` by itself.
+ * Remembers, per tab, the page the reader left it on. Tour versus Diff needs no
+ * memory here: the engine keeps each tab's mode, so a tab left on its Tour comes
+ * back in `DiffMode::Tour` by itself. What is remembered is Overview or not, and
+ * whether the tab has been visited at all: a tab seen for the first time opens
+ * on the Overview, since a fresh review starts from the summary, not the diff.
  */
 export class ReviewPageMemory {
   private onOverview = new Set<string>();
+  private visited = new Set<string>();
   private activeKey: string | null = null;
 
   /**
    * Note that `key` is now the active tab. Returns the main view to switch to,
    * or null to leave the current one. A non-review main view (Settings,
    * Export…) is left alone: the reader opened it on purpose, and switching
-   * tabs under it should not close it.
+   * tabs under it should not close it. `overviewAvailable` is false until the
+   * Overview can be drawn; a tab first seen then stays unvisited, so it still
+   * gets the Overview default once it can.
    */
-  follow(key: string | null, view: MainViewMode): MainViewMode | null {
+  follow(key: string | null, view: MainViewMode, overviewAvailable = true): MainViewMode | null {
     if (key === this.activeKey) return null;
     const leaving = this.activeKey;
     this.activeKey = key;
     if (!isReviewMainView(view)) return null;
     if (leaving !== null) {
+      this.visited.add(leaving);
       if (view === "overview") this.onOverview.add(leaving);
       else this.onOverview.delete(leaving);
     }
     if (key === null) return null;
+    if (!this.visited.has(key) && overviewAvailable) {
+      this.visited.add(key);
+      this.onOverview.add(key);
+    }
     const next: MainViewMode = this.onOverview.has(key) ? "overview" : "diff";
     return next === view ? null : next;
   }
+}
+
+/** How a review page's component sits in the shell: on screen, kept but hidden, or unmounted. */
+export type ReviewLayer = "shown" | "hidden" | "absent";
+
+export interface ReviewLayers {
+  diff: ReviewLayer;
+  overview: ReviewLayer;
+}
+
+/**
+ * Which review pages stay mounted under `view`. Unmounting the diff for the
+ * Overview threw away its row model, measured heights and scroll, so coming
+ * back rebuilt all three from a snapshot it already had; hiding it keeps them.
+ * The Overview mounts on its first visit and then stays, for its own scroll.
+ * Every other main view still replaces both.
+ */
+export function reviewLayers(view: MainViewMode, overviewVisited: boolean): ReviewLayers {
+  if (view === "diff") {
+    return { diff: "shown", overview: overviewVisited ? "hidden" : "absent" };
+  }
+  if (view === "overview") return { diff: "hidden", overview: "shown" };
+  return { diff: "absent", overview: "absent" };
 }

@@ -197,6 +197,18 @@ function pageItems(r: PaletteRunners): CommandItem[] {
 export function navigateMenu(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem[] {
   return [
     ...pageItems(r),
+    // Outside the Tour `]` toggles the right panel, so the row would lie there.
+    ...(reviewPage.current === "tour"
+      ? [
+          {
+            id: "next-pillar",
+            label: "Next pillar",
+            group: "Navigate" as const,
+            kbd: "]",
+            run: () => r.dismissLocal(() => void diffNav.scrollToNextPillar()),
+          },
+        ]
+      : []),
     {
       id: "open-inbox",
       label: "Open inbox",

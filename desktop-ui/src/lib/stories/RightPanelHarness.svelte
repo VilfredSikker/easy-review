@@ -26,6 +26,6 @@
   {#if collapsed}
     <CollapsedRightRail ai={snapshot.ai} onExpand={(t) => rightPanelTab.set(t)} />
   {:else}
-    <RightPanel ai={snapshot.ai} pr={snapshot.pr} />
+    <RightPanel ai={snapshot.ai} />
   {/if}
 </div>

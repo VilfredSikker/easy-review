@@ -23,6 +23,7 @@
   import { longAge } from "$lib/relativeTime";
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { isDocumentAnchored, ownReplyCount } from "$lib/threadAnchor";
+  import { pendingReview } from "$lib/stores/pendingReview.svelte";
 
   interface Props {
     thread: ThreadSnapshot;
@@ -308,6 +309,8 @@
     <span class="ml-auto text-[11px] text-fg-3">
       {#if isLocal}
         only you
+      {:else if pendingReview.isPending(thread.id)}
+        <span class="rounded-full border border-[color-mix(in_srgb,var(--color-warning)_40%,transparent)] bg-[color-mix(in_srgb,var(--color-warning)_14%,transparent)] px-1.5 py-0.5 text-[10px] text-warning" title="In your pending review; posts when you submit from Review">pending review</span>
       {:else if thread.synced}
         GitHub · synced
       {:else if thread.source === "local"}

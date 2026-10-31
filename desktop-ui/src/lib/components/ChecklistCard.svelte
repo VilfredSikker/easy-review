@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { ChecklistSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { checklistProgress, groupChecklistItems } from "$lib/checklist";
   import { navigateToFinding } from "$lib/dom";
   import { reviewScopeFromMode } from "$lib/reviewScope";
@@ -43,6 +44,10 @@
     if (!snap) return;
     const f = snap.files.find((file) => file.path === path);
     if (f) {
+      // Mounted on the Overview: show the diff first, or the jump lands in a
+      // view that is not on screen.
+      reviewPage.show("diff");
+      await tick();
       await app.cmd("select_file", { idx: f.source_index });
       await tick();
     }
@@ -54,9 +59,12 @@
     return app.snapshot?.ai.findings.find((f) => f.id === id) ?? null;
   }
 
-  function jumpToFinding(id: string) {
+  async function jumpToFinding(id: string) {
     const finding = findingFor(id);
-    if (finding) navigateToFinding(finding);
+    if (!finding) return;
+    reviewPage.show("diff");
+    await tick();
+    await navigateToFinding(finding);
   }
 
   function basename(path: string): string {

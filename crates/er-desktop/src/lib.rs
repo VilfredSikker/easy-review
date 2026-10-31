@@ -11,6 +11,7 @@ pub mod export;
 pub mod frame_script;
 pub mod gh_pr_actions;
 pub mod gh_status_cache;
+pub mod github_image;
 pub mod inbox;
 pub mod main_webview_policy;
 pub mod native_notify;

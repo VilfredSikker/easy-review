@@ -7,6 +7,8 @@ import {
   HUNK_HEADER_HEIGHT,
   LINE_HEIGHT,
   NO_CHANGES_HEIGHT,
+  PILLAR_HEADER_BASE_HEIGHT,
+  estimatePillarHeaderHeight,
   estimateLazyStubHeight,
   estimateThreadHeight,
   estimateFindingHeight,
@@ -20,6 +22,7 @@ import {
   type RenderModelInputs,
 } from "./diffRenderModel";
 import { splitRows } from "./splitRows";
+import type { PillarHeaderSpec } from "./tourModel";
 import { rowIndexAtOffset, windowFromScrollVariable } from "./virtualWindow";
 import {
   buildAnnotationIndex,
@@ -815,6 +818,7 @@ function mkCross(
     previewPaths?: ReadonlySet<string>;
     sidePaths?: ReadonlySet<string>;
     sideWrapCols?: number | null;
+    pillarHeaders?: readonly PillarHeaderSpec[];
   } = {},
 ) {
   const viewMode = opts.viewMode ?? "unified";
@@ -831,6 +835,7 @@ function mkCross(
     previewPaths: opts.previewPaths,
     sidePaths: opts.sidePaths,
     sideWrapCols: opts.sideWrapCols,
+    pillarHeaders: opts.pillarHeaders,
   });
 }
 
@@ -1429,5 +1434,81 @@ describe("side-by-side document rows", () => {
     });
     expect(side.identity).not.toBe(plain.identity);
     expect(side.rows[2].height).toBeGreaterThan(plain.rows[2].height);
+  });
+});
+
+describe("pillar-header rows", () => {
+  const spec = (pillarId: string, index: number, anchorPath: string | null): PillarHeaderSpec => ({
+    pillarId,
+    index,
+    total: 2,
+    title: `Pillar ${pillarId}`,
+    narrativeMarkdown: "Reads the schema first.",
+    anchorPath,
+  });
+
+  it("sit above their anchor file and index into pillarStartRow", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const b = makeSimpleFile("b.ts", 1);
+    const m = mkCross([a, b], emptyAi(), {
+      snapshotKey: "pillars",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "b.ts")],
+    });
+    expect(m.rows.map((r) => r.type)).toEqual([
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+    ]);
+    expect(m.pillarStartRow.get("p1")).toBe(0);
+    expect(m.pillarStartRow.get("p2")).toBe(4);
+    expect(m.fileStartRow.get("b.ts")).toBe(5);
+    expect(m.rows[0].filePath).toBe("");
+    expect(m.cumulativeOffsets[1]).toBe(m.rows[0].height);
+  });
+
+  it("go last when their anchor is not drawn", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const m = mkCross([a], emptyAi(), {
+      snapshotKey: "pillars-trailing",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "gone.ts")],
+    });
+    expect(m.pillarStartRow.get("p2")).toBe(m.rows.length - 1);
+  });
+
+  it("change the model identity, and none outside the Tour leave it as before", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const plain = mkCross([a], emptyAi(), { snapshotKey: "pillars-id" });
+    const toured = mkCross([a], emptyAi(), { snapshotKey: "pillars-id", pillarHeaders: [spec("p1", 1, "a.ts")] });
+    expect(toured.identity).not.toBe(plain.identity);
+    expect(plain.pillarStartRow.size).toBe(0);
+  });
+
+  it("survive collapsing the file above them", () => {
+    const a = makeSimpleFile("a.ts", 1);
+    const b = makeSimpleFile("b.ts", 1);
+    const m = mkCross([a, b], emptyAi(), {
+      snapshotKey: "pillars-collapse",
+      pillarHeaders: [spec("p1", 1, "a.ts"), spec("p2", 2, "b.ts")],
+    });
+    const collapsed = applyCollapsedFiles(m, new Set(["a.ts"]));
+    expect(collapsed.rows.map((r) => r.type)).toEqual([
+      "pillar-header",
+      "file-header",
+      "pillar-header",
+      "file-header",
+      "hunk-header",
+      "content-unified",
+    ]);
+    expect(collapsed.pillarStartRow.get("p2")).toBe(2);
+  });
+
+  it("estimate more height for a longer narrative", () => {
+    expect(estimatePillarHeaderHeight("")).toBe(PILLAR_HEADER_BASE_HEIGHT);
+    expect(estimatePillarHeaderHeight("x".repeat(400))).toBeGreaterThan(estimatePillarHeaderHeight("short"));
   });
 });

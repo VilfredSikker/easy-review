@@ -1055,6 +1055,7 @@ fn main() {
         tauri_app_handle: Arc::clone(&tauri_app_handle),
         auto_triage_in_flight: Arc::new(Mutex::new(std::collections::HashSet::new())),
         sent_files: Arc::new(Mutex::new(Default::default())),
+        line_commits_cache: Arc::default(),
     };
 
     match pr_cache::load_persisted_pr_cache() {
@@ -1903,6 +1904,7 @@ fn main() {
             commands::request_file_content,
             commands::request_file_preview,
             commands::request_image_preview,
+            er_desktop::github_image::fetch_github_image,
             commands::select_file,
             commands::next_file,
             commands::prev_file,
@@ -1949,6 +1951,11 @@ fn main() {
             commands::submit_github_review,
             commands::submit_github_pr_decision,
             commands::post_github_pr_comment,
+            commands::get_pending_review,
+            commands::add_pending_review_comment,
+            commands::remove_pending_review_comment,
+            commands::submit_pending_review,
+            commands::post_github_line_comment,
             gh_pr_actions::run_github_pr_action,
             commands::run_ai_review,
             commands::run_ai_expert_review,
@@ -2004,6 +2011,8 @@ fn main() {
             commands::validate_with_ai,
             commands::elaborate_with_ai,
             commands::send_note_to_agent,
+            commands::line_commits::line_commits,
+            commands::run_standard_review_flow,
             commands::open_pr_url,
             commands::open_remote_pr,
             commands::open_worktree,

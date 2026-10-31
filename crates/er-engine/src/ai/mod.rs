@@ -1,3 +1,5 @@
+pub mod browser_annotations;
+pub mod browser_prompt;
 pub mod change_facts;
 pub mod comments;
 pub mod diagrams;
@@ -20,6 +22,7 @@ pub mod accepted_provenance;
 pub mod arbiter;
 pub mod identity;
 pub use arbiter::*;
+pub use browser_annotations::*;
 pub use comments::*;
 pub use diagrams::*;
 pub use experts::*;

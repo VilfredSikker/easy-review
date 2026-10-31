@@ -67,10 +67,10 @@ export function resolvePrOpen(
 /**
  * The old default, kept for open paths that do not mount the tab-open modal:
  * a plain click replaces the active tab, Cmd/Ctrl-click and middle-click open
- * a new one. Only the Inbox asks; the sidebar's PR and branch rows still call
- * this and so still replace on a plain click. The one thing they share with
- * the Inbox is the "always open in a new tab" preference, which turns a plain
- * click into a new tab here too.
+ * a new one. The Inbox and the sidebar's PR rows ask; the sidebar's branch
+ * rows still call this and so still replace on a plain click. The one thing
+ * they share with the asking paths is the "always open in a new tab"
+ * preference, which turns a plain click into a new tab here too.
  */
 export function shouldReplaceTab(e: MouseEvent, alwaysNewTab: boolean = loadAlwaysNewTab()): boolean {
   return resolvePrOpen(e, alwaysNewTab) === "ask";

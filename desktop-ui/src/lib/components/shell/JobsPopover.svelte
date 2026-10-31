@@ -64,7 +64,7 @@
 
   function openSettings() {
     onClose();
-    app.setMainView("settings");
+    app.openSettings("concurrency");
   }
 
   const dot: Record<RunningJob["status"], string> = {

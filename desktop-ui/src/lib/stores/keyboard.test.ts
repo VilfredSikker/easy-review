@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, it, mock } from "bun:test";
+import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 
 // Characterisation of the global keydown handler: which action each key
 // reaches, in precedence order, and whether it calls preventDefault.
@@ -20,7 +20,9 @@ const state = {
   focusedField: false,
   overviewRendered: false,
   arenaOverlayOpen: false,
+  inTour: false,
 };
+let visiblePath: string | null = null;
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: async (cmd: string) => {
@@ -38,12 +40,14 @@ mock.module("./app.svelte", () => ({
       tabs: [{}, {}],
       selected_file: 0,
       files: [
-        { path: "a.ts", source_index: 0 },
-        { path: "b.ts", source_index: 1 },
+        { path: "a.ts", source_index: 0, reviewed: false },
+        { path: "b.ts", source_index: 1, reviewed: true },
       ],
     },
     cmd: (name: string, args?: Record<string, unknown>) => {
-      calls.push(`cmd:${name}${args && "idx" in args ? `:${String(args.idx)}` : ""}`);
+      const arg =
+        args && "idx" in args ? `:${String(args.idx)}` : args && "path" in args ? `:${String(args.path)}` : "";
+      calls.push(`cmd:${name}${arg}`);
       return Promise.resolve();
     },
     togglePanel: (p: string) => calls.push(`togglePanel:${p}`),
@@ -112,12 +116,25 @@ mock.module("./commandPalette.svelte", () => ({
 mock.module("$lib/stores/fileTreeCollapse.svelte", () => ({
   fileTreeCollapse: { collapsed: new Set<string>() },
 }));
-mock.module("$lib/stores/diffNav.svelte", () => ({
-  diffNav: { scrollToFile: (p: string) => calls.push(`diffNav.scrollToFile:${p}`) },
-}));
+// Spied, not module-mocked: bun keeps a module mock for the whole run, which
+// left diffNav.test.ts holding this stub. Spies are restored in afterAll.
+const { diffNav } = await import("$lib/stores/diffNav.svelte");
+spyOn(diffNav, "scrollToFile").mockImplementation(async (p: string) => {
+  calls.push(`diffNav.scrollToFile:${p}`);
+});
+spyOn(diffNav, "scrollToNextPillar").mockImplementation(() => {
+  calls.push("diffNav.scrollToNextPillar");
+  return true;
+});
+// The Tour has drawn only a.ts, so j there stays put where the tree would move on.
+spyOn(diffNav, "drawnFilePaths").mockImplementation(() => ["a.ts"]);
+spyOn(diffNav, "visibleFilePath").mockImplementation(() => visiblePath);
 mock.module("$lib/stores/rightRail.svelte", () => ({ rightRail: { toggle: log("rightRail.toggle") } }));
 mock.module("./reviewPage.svelte", () => ({
   reviewPage: {
+    get current() {
+      return state.inTour ? "tour" : "diff";
+    },
     available: (page: string) => page !== "overview" || state.overviewRendered,
     show: (page: string) => calls.push(`reviewPage.show:${page}`),
   },
@@ -142,6 +159,7 @@ const fieldEl = {
 const realGlobals = { window: globalThis.window, document: globalThis.document };
 afterAll(() => {
   Object.assign(globalThis, realGlobals);
+  mock.restore();
 });
 
 Object.assign(globalThis, {
@@ -207,6 +225,7 @@ function press(init: KeyInit): { calls: string[]; prevented: boolean } {
 
 beforeEach(() => {
   for (const k of Object.keys(state) as (keyof typeof state)[]) state[k] = false;
+  visiblePath = null;
 });
 
 describe("Escape precedence", () => {
@@ -337,6 +356,13 @@ describe("panel toggles", () => {
     expect(press({ key: "\\" }).calls).toEqual(["togglePanel:tree"]);
   });
 
+  it("] steps to the next pillar in the Tour; Cmd+] still toggles the panel there", () => {
+    state.inTour = true;
+    expect(press({ key: "]" })).toEqual({ calls: ["diffNav.scrollToNextPillar"], prevented: true });
+    expect(press({ key: "]", metaKey: true }).calls).toEqual(["rightRail.toggle"]);
+    expect(press({ key: "[" }).calls).toEqual(["togglePanel:left"]);
+  });
+
   it("are blocked by a modal unless Cmd is held", () => {
     state.modalOpen = true;
     expect(press({ key: "[" }).calls).toEqual([]);
@@ -354,6 +380,17 @@ describe("bare keys", () => {
     await Promise.resolve();
     expect(calls).toEqual(["cmd:select_file:1", "diffNav.scrollToFile:b.ts"]);
     expect(press({ key: "k" }).calls).toEqual(["cmd:select_file:1"]);
+  });
+
+  it("j/k follow the drawn pillar order in the Tour", () => {
+    state.inTour = true;
+    expect(press({ key: "j" }).calls).toEqual(["cmd:select_file:0"]);
+  });
+
+  it("r toggles reviewed on the file being read, else the selected one", () => {
+    expect(press({ key: "r" })).toEqual({ calls: ["cmd:mark_reviewed:a.ts"], prevented: true });
+    visiblePath = "b.ts";
+    expect(press({ key: "r" }).calls).toEqual(["cmd:unmark_reviewed:b.ts"]);
   });
 
   it("d, R, / and e reach their actions", () => {

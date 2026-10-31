@@ -6,6 +6,13 @@ use std::process::Command;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
+mod pending_review;
+pub use pending_review::{
+    gh_pending_review, gh_pending_review_add_comment, gh_pending_review_remove_comment,
+    gh_pending_review_submit, review_body_required, PendingReview, PendingReviewComment,
+    ReviewRequest,
+};
+
 /// Parsed reference to a GitHub PR
 #[derive(Debug, Clone)]
 pub struct PrRef {
@@ -2459,29 +2466,31 @@ fn pr_review_payload_json(
         "body": body,
     });
     if !comments.is_empty() {
-        let comment_values: Vec<serde_json::Value> = comments
-            .iter()
-            .map(|entry| {
-                let mut obj = serde_json::json!({
-                    "path": entry.file,
-                    "line": entry.line,
-                    "side": entry.side,
-                    "body": entry.body
-                });
-                if let Some(start) = entry.start_line {
-                    if start < entry.line {
-                        obj["start_line"] = serde_json::json!(start);
-                        if entry.side == "LEFT" {
-                            obj["start_side"] = serde_json::json!("LEFT");
-                        }
-                    }
-                }
-                obj
-            })
-            .collect();
+        let comment_values: Vec<serde_json::Value> =
+            comments.iter().map(review_comment_json).collect();
         payload["comments"] = serde_json::Value::Array(comment_values);
     }
     payload
+}
+
+/// One entry of a review's `comments` array, as `POST /pulls/{pr}/reviews`
+/// takes it.
+fn review_comment_json(entry: &ReviewBatchEntry) -> serde_json::Value {
+    let mut obj = serde_json::json!({
+        "path": entry.file,
+        "line": entry.line,
+        "side": entry.side,
+        "body": entry.body
+    });
+    if let Some(start) = entry.start_line {
+        if start < entry.line {
+            obj["start_line"] = serde_json::json!(start);
+            if entry.side == "LEFT" {
+                obj["start_side"] = serde_json::json!("LEFT");
+            }
+        }
+    }
+    obj
 }
 
 fn post_pr_review(

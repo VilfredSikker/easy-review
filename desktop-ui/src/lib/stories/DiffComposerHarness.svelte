@@ -2,6 +2,8 @@
   import { untrack } from "svelte";
   import DiffComposer from "$lib/components/DiffComposer.svelte";
   import { diffSel } from "$lib/stores/diffSelection.svelte";
+  import { app } from "$lib/stores/app.svelte";
+  import type { AppSnapshot } from "$lib/types";
 
   /**
    * Storybook harness for the three composer placements. The diff view decides
@@ -15,6 +17,8 @@
     kind?: "comment" | "question" | "note";
     text?: string;
     range?: [number, number];
+    /** With a PR, the comment kind's GitHub actions are enabled. */
+    snapshot?: AppSnapshot;
   }
   const {
     placement,
@@ -22,7 +26,12 @@
     kind = "comment",
     text = "",
     range = [36, 39],
+    snapshot,
   }: Props = $props();
+
+  $effect(() => {
+    if (snapshot) app.snapshot = snapshot;
+  });
 
   $effect(() => {
     // Same shape the diff view leaves behind when a drag-select finishes.

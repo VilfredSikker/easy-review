@@ -1,5 +1,6 @@
-import type { TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/types";
+import type { DiffStaleSnapshot, TriagePriorityFileSnapshot, TriageSnapshot } from "$lib/types";
 import type { PillTone } from "$lib/components/ui/Pill.svelte";
+import { longAge } from "$lib/relativeTime";
 
 /**
  * What the triage card shows before anything is opened, and what its one
@@ -221,4 +222,96 @@ const PRIORITY_DOT: Record<string, string> = {
 /** The dot before a priority file; `info` and anything unexpected read as muted. */
 export function priorityDotClass(risk: string): string {
   return PRIORITY_DOT[risk] ?? "bg-muted";
+}
+
+/** One labelled line under the impression. Prose and a code-styled part stay
+ *  apart so the card can set the code in mono without parsing text. */
+export interface Takeaway {
+  key: "reach" | "touch" | "guard" | "sensitive";
+  label: string;
+  text: string;
+  code?: string;
+  /** True when the triage recorded nothing: shown dim rather than dropped, so
+   *  "nothing sensitive" reads as a finding, not as an omission. */
+  empty?: boolean;
+}
+
+const MAX_TOUCH_POINTS = 3;
+
+/**
+ * The impression's supporting lines, read only from fields the triage already
+ * carries. Reach, Touches and Guard appear when the agent said something;
+ * Sensitive always appears, since its absence is the point (ADR 0039: only
+ * evidenced reasons count).
+ */
+export function takeaways(triage: TriageSnapshot): Takeaway[] {
+  const rows: Takeaway[] = [];
+
+  const reach = triage.reach ?? "unknown";
+  if (reach !== "unknown" && triage.reach_reason) {
+    rows.push({ key: "reach", label: "Reach", text: triage.reach_reason });
+  }
+
+  const touch = (triage.touch_points ?? []).slice(0, MAX_TOUCH_POINTS);
+  if (touch.length > 0) {
+    rows.push({ key: "touch", label: "Touches", text: "", code: touch.join("  ") });
+  }
+
+  const guard = evidencedGuard(triage);
+  if (guard) {
+    rows.push({
+      key: "guard",
+      label: "Guard",
+      text: guard.name ? `${guard.kind} ${guard.name}` : guard.kind,
+      code: guard.evidence,
+    });
+  }
+
+  const sensitive = (triage.sensitive ?? []).filter((r) => r.evidence.trim().length > 0);
+  if (sensitive.length > 0) {
+    rows.push({
+      key: "sensitive",
+      label: "Sensitive",
+      text: sensitive.map((r) => r.kind).join(", "),
+      code: sensitive[0].evidence,
+    });
+  } else {
+    rows.push({ key: "sensitive", label: "Sensitive", text: "Nothing evidenced", empty: true });
+  }
+  return rows;
+}
+
+const OID_DISPLAY_LEN = 7;
+
+export interface TriageFreshness {
+  stale: boolean;
+  /** "fresh · 2 min ago" or "stale · built from 7be0d14". */
+  text: string;
+}
+
+/**
+ * Whether the triage still describes what origin has, and what to call it.
+ *
+ * Two signals: `triage.fresh` says whether the triage matches the on-screen
+ * diff, and `diffStale` says whether origin has moved past the commit that diff
+ * was built from. A fresh triage on a stale diff was built from that commit, so
+ * the chip names it. A triage that no longer matches the on-screen diff was not
+ * built from `built_from_oid`, and its own `diff_hash` is a diff hash, not a
+ * commit, so the chip labels it as a diff rather than "built from".
+ */
+export function triageFreshness(
+  triage: TriageSnapshot,
+  diffStale: Pick<DiffStaleSnapshot, "built_from_oid"> | null | undefined,
+  now: number = Date.now(),
+): TriageFreshness {
+  if (!triage.fresh) {
+    const hash = (triage.diff_hash ?? "").slice(0, OID_DISPLAY_LEN);
+    return { stale: true, text: hash ? `stale · diff ${hash}` : "stale" };
+  }
+  if (diffStale) {
+    const built = diffStale.built_from_oid.slice(0, OID_DISPLAY_LEN);
+    return { stale: true, text: built ? `stale · built from ${built}` : "stale" };
+  }
+  const age = triage.created_at ? longAge(triage.created_at, now) : "";
+  return { stale: false, text: age ? `fresh · ${age}` : "fresh" };
 }

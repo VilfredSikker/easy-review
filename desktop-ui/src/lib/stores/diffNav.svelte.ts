@@ -1,5 +1,6 @@
 import { tick } from "svelte";
 import type { CrossFileModel } from "$lib/diffRenderModel";
+import { nextPillarId, pillarOrder } from "$lib/tourModel";
 import type { FileSnapshot } from "$lib/types";
 
 /**
@@ -19,6 +20,10 @@ export interface DiffNavigator {
   requestFileContent(sourceIndex: number): Promise<void>;
   getModel(): CrossFileModel | null;
   getFiles(): FileSnapshot[];
+  /** The file under the reading line, which `r` marks; null over a pillar header. */
+  getVisibleFilePath?(): string | null;
+  /** The Tour pillar being read; null outside the Tour. */
+  getActivePillarId?(): string | null;
 }
 
 function domFlash(id: string): void {
@@ -70,6 +75,34 @@ class DiffNavStore {
         .getElementById(`file-${path}`)
         ?.scrollIntoView({ behavior: "auto", block: "start" });
     }
+  }
+
+  /** Scrolls a Tour pillar's header to the top. False when it is not drawn. */
+  scrollToPillar(pillarId: string): boolean {
+    const model = this.nav?.getModel();
+    const row = model?.pillarStartRow.get(pillarId);
+    if (!this.nav || !model || row === undefined) return false;
+    this.pendingScrollPx = model.cumulativeOffsets[row] ?? 0;
+    this.nav.scrollToRow(row, "start");
+    return true;
+  }
+
+  /** `]` in the Tour: the pillar after the one being read. */
+  scrollToNextPillar(): boolean {
+    const model = this.nav?.getModel();
+    if (!this.nav || !model) return false;
+    const order = pillarOrder(model.pillarStartRow);
+    const next = nextPillarId(order, this.nav.getActivePillarId?.() ?? null);
+    return next !== null && this.scrollToPillar(next);
+  }
+
+  /** Paths in the order the column draws them (pillar order in the Tour). */
+  drawnFilePaths(): string[] {
+    return this.nav?.getFiles().map((f) => f.path) ?? [];
+  }
+
+  visibleFilePath(): string | null {
+    return this.nav?.getVisibleFilePath?.() ?? null;
   }
 
   async scrollToThread(threadId: string, opts: { flashId?: string } = {}): Promise<boolean> {

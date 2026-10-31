@@ -1,5 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/svelte";
 import DiffComposerHarness from "./DiffComposerHarness.svelte";
+import { richSnapshot } from "./fixtures";
 
 const meta = {
   title: "Components/DiffComposer",
@@ -39,4 +40,25 @@ export const FloatingFallback: Story = {
 /** Docked fallback — no rendered anchor row (compacted file, lazy stub). */
 export const DockedFallback: Story = {
   args: { placement: { kind: "sticky" } },
+};
+
+/**
+ * A GitHub comment on a PR: "Add single comment" posts now, "Start a review"
+ * adds it to the pending review that Review submits.
+ */
+export const GitHubCommentOnPr: Story = {
+  args: {
+    placement: { kind: "flow" },
+    text: "Does this need a guard for the empty list?",
+    snapshot: { ...richSnapshot, detected_pr_number: 1756 },
+  },
+};
+
+/** No PR for the branch: both GitHub actions are disabled with the reason. */
+export const GitHubCommentNoPr: Story = {
+  args: {
+    placement: { kind: "flow" },
+    text: "Does this need a guard for the empty list?",
+    snapshot: { ...richSnapshot, detected_pr_number: null, github: null },
+  },
 };

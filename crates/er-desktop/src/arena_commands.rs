@@ -248,7 +248,7 @@ pub async fn arena_start(
     .await
 }
 
-fn validate_review_flow_bucket(app: &App, expected_er_dir: &str) -> Result<(), String> {
+pub(crate) fn validate_review_flow_bucket(app: &App, expected_er_dir: &str) -> Result<(), String> {
     let active_er_dir = app.tab().er_dir();
     if active_er_dir != expected_er_dir {
         return Err(

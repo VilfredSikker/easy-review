@@ -3,6 +3,7 @@ import type { AppSnapshot, TabSummary } from "../types";
 import {
   ReviewPageMemory,
   currentReviewPage,
+  reviewLayers,
   reviewPageAvailable,
   reviewPageTabKey,
   setModeArgsFor,
@@ -116,22 +117,35 @@ describe("reviewPageTabKey", () => {
 });
 
 describe("ReviewPageMemory", () => {
-  it("restores the Overview on the tab that was left on it", () => {
+  it("opens a tab on its first visit on the Overview", () => {
     const m = new ReviewPageMemory();
-    expect(m.follow("a", "diff")).toBeNull();
-    // Reader opens the Overview on a, then switches to b.
-    expect(m.follow("b", "overview")).toBe("diff");
     expect(m.follow("a", "diff")).toBe("overview");
-    expect(m.follow("b", "overview")).toBe("diff");
+    expect(m.follow("b", "diff")).toBe("overview");
   });
 
-  it("forgets the Overview once the tab is left on Tour or Diff", () => {
+  it("keeps Diff for a first visit while the Overview is unavailable, then defaults later", () => {
     const m = new ReviewPageMemory();
-    m.follow("a", "diff");
-    m.follow("b", "overview");
-    m.follow("a", "diff");
-    expect(m.follow("b", "diff")).toBeNull();
-    expect(m.follow("a", "diff")).toBeNull();
+    expect(m.follow("a", "diff", false)).toBeNull();
+    expect(m.follow("b", "diff", false)).toBeNull();
+    expect(m.follow("c", "diff", true)).toBe("overview");
+  });
+
+  it("restores the page a visited tab was left on", () => {
+    const m = new ReviewPageMemory();
+    m.follow("a", "overview");
+    // Reader moves to Diff on a, then opens b and leaves it on Overview.
+    expect(m.follow("b", "diff")).toBe("overview");
+    expect(m.follow("a", "overview")).toBe("diff");
+    expect(m.follow("b", "diff")).toBe("overview");
+  });
+
+  it("does not bring the Overview back once a tab is left on Tour or Diff", () => {
+    const m = new ReviewPageMemory();
+    m.follow("a", "overview");
+    expect(m.follow("b", "overview")).toBeNull();
+    // Reader switches b to Diff, then goes back to a and returns to b.
+    expect(m.follow("a", "diff")).toBe("overview");
+    expect(m.follow("b", "overview")).toBe("diff");
   });
 
   it("leaves a non-review main view open across tab switches", () => {
@@ -143,7 +157,25 @@ describe("ReviewPageMemory", () => {
 
   it("does nothing while the tab stays the same", () => {
     const m = new ReviewPageMemory();
-    m.follow("a", "diff");
-    expect(m.follow("a", "overview")).toBeNull();
+    m.follow("a", "overview");
+    expect(m.follow("a", "diff")).toBeNull();
+  });
+});
+
+describe("reviewLayers", () => {
+  it("keeps the diff mounted under the Overview", () => {
+    expect(reviewLayers("overview", false)).toEqual({ diff: "hidden", overview: "shown" });
+    expect(reviewLayers("overview", true)).toEqual({ diff: "hidden", overview: "shown" });
+  });
+
+  it("mounts the Overview behind the diff only once it has been visited", () => {
+    expect(reviewLayers("diff", false)).toEqual({ diff: "shown", overview: "absent" });
+    expect(reviewLayers("diff", true)).toEqual({ diff: "shown", overview: "hidden" });
+  });
+
+  it("unmounts both under a page that replaces the review", () => {
+    for (const view of ["settings", "inbox", "export-review", "agent-output"] as const) {
+      expect(reviewLayers(view, true)).toEqual({ diff: "absent", overview: "absent" });
+    }
   });
 });

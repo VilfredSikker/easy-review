@@ -27,7 +27,12 @@
   import ThreadRow from "./diff-rows/ThreadRow.svelte";
   import FindingRow from "./diff-rows/FindingRow.svelte";
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
-  import PillarRail from "./diff-rows/PillarRail.svelte";
+  import PillarHeaderRow from "./diff-rows/PillarHeaderRow.svelte";
+  import TourRail from "./TourRail.svelte";
+  import FileMapRuler from "./FileMapRuler.svelte";
+  import { lineCommitStore } from "$lib/stores/lineCommits.svelte";
+  import { attributionWanted, commitSlots, lineCommitColor, markLinesActive } from "$lib/lineCommitMarks";
+  import { activePillarAt, fileEntryRow, pillarHeaderSpecs, railPillars } from "$lib/tourModel";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
   import DiffSearchBar from "./DiffSearchBar.svelte";
@@ -49,7 +54,6 @@
     rowLineOnSide,
     unifiedLineSide,
     type CrossFileFlatRow,
-    type PillarHeaderInfo,
   } from "$lib/diffRenderModel";
   import { diffFileCollapse } from "$lib/stores/diffFileCollapse.svelte";
   import { splitRows } from "$lib/splitRows";
@@ -161,7 +165,7 @@
     const all = snapshot?.files ?? [];
     if (all.length === 0) return [];
     const byPath = new Map(all.map((f) => [f.path, f]));
-    // Guide mode: order files by the tour's pillar sequence so each pillar's
+    // Tour mode: order files by the tour's pillar sequence so each pillar's
     // files are contiguous (its header is injected before the first one).
     if (snapshot?.mode === "tour" && snapshot.tour?.pillars?.length) {
       const out: FileSnapshot[] = [];
@@ -205,33 +209,12 @@
   const toolbarNote = $derived(
     commitNote(snapshot?.commits ?? [], snapshot?.selected_commit_sha, app.markLines),
   );
-  /** Guide/Diff toggle is offered once a tour exists for the current view
-   *  context (PR vs local branch). */
+  /** A tour exists for the current view context (PR vs local branch). */
   const tourAvailable = $derived(
     (snapshot?.features?.viewTour ?? true) && (snapshot?.tour?.available ?? false),
   );
-  /** Whether the current view's guide is attached to the PR diff. Drives where
-   *  the Diff toggle returns to so leaving the Guide doesn't switch diffs. */
-  const tourIsPr = $derived(snapshot?.tour?.scope === "pr");
-  /** False when new changes have landed since the guide was generated. */
+  /** False when new changes have landed since the tour was generated. */
   const tourFresh = $derived(snapshot?.tour?.fresh ?? true);
-  /** PR number for returning to the PR diff from a PR-scoped guide. */
-  const tourPrNumber = $derived(
-    snapshot?.detected_pr_number ??
-      snapshot?.github?.number ??
-      snapshot?.pr?.number ??
-      null,
-  );
-  function exitGuideToDiff() {
-    if (mode !== "tour") return;
-    if (tourIsPr) {
-      void app.cmd("set_mode", { mode: "pr_diff", prNumber: tourPrNumber });
-    } else {
-      void app.cmd("set_mode", { mode: "branch" });
-    }
-  }
-
-  let settingsOpen = $state(false);
 
   const snapshotKey = $derived(
     snapshot ? `${snapshot.active_tab}:${snapshot.mode}:${snapshot.base}:${snapshot.branch}` : mode,
@@ -311,6 +294,10 @@
     if (!wrapEnabled || bandWidthPx <= 0) return null;
     return wrapColsForWidth(Math.max(0, bandWidthPx / 2 - GUTTER_PX - CELL_HPAD_PX), charWPx);
   });
+  const tourActive = $derived(snapshot?.mode === "tour");
+  /** The tour's pillars; none outside the Tour, so no header rows are built. */
+  const tourPillars = $derived(tourActive ? (snapshot?.tour?.pillars ?? []) : []);
+  const pillarHeaders = $derived(pillarHeaderSpecs(tourPillars, files));
   const baseCrossFileModel = $derived(
     getCrossFileModel({
       files,
@@ -323,6 +310,7 @@
       previewPaths,
       sidePaths,
       sideWrapCols,
+      pillarHeaders,
     }),
   );
   const crossFileModel = $derived.by(() => {
@@ -351,17 +339,6 @@
   let overlayHeights = $state(new Map<string, number>());
   let overlaySerial = $state(0);
 
-  // Guide mode: measured rendered height of each pillar's rail (keyed by pillar
-  // id). Drives pillarPadByRowIdentity so a pillar's region is never shorter
-  // than its rail (no overlap when files are short/collapsed).
-  let railHeights = $state(new Map<string, number>());
-  function setRailHeight(pillarId: string, px: number) {
-    if ((railHeights.get(pillarId) ?? -1) === px) return;
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- copy assigned whole to the `railHeights` $state; reactivity comes from the assignment
-    const next = new Map(railHeights);
-    next.set(pillarId, px);
-    railHeights = next;
-  }
   /** Svelte action: report a node's rendered height (ResizeObserver). */
   function measureHeight(node: HTMLElement, onHeight: (px: number) => void) {
     let cb = onHeight;
@@ -518,9 +495,8 @@
   );
 
   // ── Effective geometry (model + overlay) ──────────────────────────────────
-  // baseGeometry = model row heights + measured overlay heights (threads/findings),
-  // WITHOUT the Guide pillar padding (so pillar-pad can be derived from it without
-  // feeding back into itself).
+  // baseGeometry = model row heights + measured overlay heights (threads,
+  // findings, Tour pillar headers), before the extras below.
   const baseGeometry = $derived.by<EffectiveGeometry>(() => {
     overlaySerial; // reactive on overlay changes
     const model = crossFileModel;
@@ -554,58 +530,18 @@
     sideBlockPadding(sideView.spans, baseGeometry.cumulativeOffsets, (key) => sideView.height(key)),
   );
 
-  const tourActive = $derived(snapshot?.mode === "tour");
-
-  // Guide mode: extra bottom padding for each pillar's LAST row so the pillar's
-  // region is at least as tall as its (measured) rail — keyed by that row's
-  // identity. Derived from baseGeometry (never effectiveGeometry) to avoid a
-  // feedback loop. Empty outside tour mode.
-  const pillarPadByRowIdentity = $derived.by<Map<string, number>>(() => {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
-    const pad = new Map<string, number>();
-    if (!tourActive || railHeights.size === 0) return pad;
-    const model = crossFileModel;
-    const offsets = baseGeometry.cumulativeOffsets;
-    // Pillar boundaries: first in-diff file's start row, in pillar order.
-    const bounds: { pillarId: string; startRow: number }[] = [];
-    const present = new Set(files.map((f) => f.path));
-    for (const p of snapshot?.tour?.pillars ?? []) {
-      const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
-      if (!firstPath) continue;
-      const startRow = model.fileStartRow.get(firstPath);
-      if (startRow === undefined) continue;
-      bounds.push({ pillarId: p.id, startRow });
-    }
-    bounds.sort((a, b) => a.startRow - b.startRow);
-    for (let i = 0; i < bounds.length; i++) {
-      const startRow = bounds[i].startRow;
-      const endRow = i + 1 < bounds.length ? bounds[i + 1].startRow : model.rows.length; // exclusive
-      if (endRow <= startRow) continue;
-      const diffSpanPx = (offsets[endRow] ?? 0) - (offsets[startRow] ?? 0);
-      const railPx = railHeights.get(bounds[i].pillarId) ?? 0;
-      const extra = Math.max(0, railPx - diffSpanPx);
-      if (extra > 0) {
-        const lastRow = model.rows[endRow - 1];
-        if (lastRow) pad.set(lastRow.identity, extra);
-      }
-    }
-    return pad;
-  });
-
-  // effectiveGeometry = baseGeometry + Guide pillar padding + composer reserve.
-  // Everything downstream (virtual window, pillarSpans, scroll mapping) uses this.
+  // effectiveGeometry = baseGeometry + document side padding + composer reserve.
+  // Everything downstream (virtual window, scroll mapping) uses this.
   const effectiveGeometry = $derived.by<EffectiveGeometry>(() => {
     const base = baseGeometry;
-    const pad = pillarPadByRowIdentity;
     const composerAnchor = composerAnchorIdentity;
     const composerPx = composerReservePx;
     const sidePad = sidePadByRow;
-    if (pad.size === 0 && composerPx === 0 && sidePad.size === 0) return base;
+    if (composerPx === 0 && sidePad.size === 0) return base;
     const rows = crossFileModel.rows;
     const offsets = foldRowExtras(base.cumulativeOffsets, (i) => {
       const identity = rows[i].identity;
       return (
-        (pad.get(identity) ?? 0) +
         (sidePad.get(i) ?? 0) +
         (composerPx !== 0 && identity === composerAnchor ? composerPx : 0)
       );
@@ -656,7 +592,7 @@
     treeFollowTimer = setTimeout(() => {
       const idx = rowIndexAtOffset(effectiveGeometry, top);
       if (idx >= 0 && idx < crossFileModel.rows.length) {
-        diffScroll.currentFilePath = crossFileModel.rows[idx].filePath ?? null;
+        diffScroll.currentFilePath = crossFileModel.rows[idx].filePath || null;
       }
     }, 200);
   }
@@ -810,6 +746,39 @@
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
+
+  // ── Mark lines: per-line commit attribution for the files in the window ──
+  const commits = $derived(snapshot?.commits ?? []);
+  const markActive = $derived(markLinesActive(app.markLines, snapshot?.selected_commit_sha, tourActive));
+  const commitSlotBySha = $derived(commitSlots(commits));
+  const fileByPath = $derived(new Map(files.map((f) => [f.path, f])));
+
+  $effect(() => {
+    snapshotKey;
+    lineCommitStore.clear();
+  });
+
+  // Only the window's files: attribution is one `git blame` each, and a long
+  // diff scrolled past once should not blame every file in it.
+  $effect(() => {
+    if (!attributionWanted(markActive, commits, tourActive)) return;
+    let last = "";
+    for (const row of windowedRows) {
+      if (!row.filePath || row.filePath === last) continue;
+      last = row.filePath;
+      const f = fileByPath.get(row.filePath);
+      if (f && !f.is_lazy_stub) lineCommitStore.request(f.path, f.cache_key);
+    }
+  });
+
+  function commitColorFor(
+    filePath: string,
+    line: Pick<LineSnapshot, "kind" | "old_num" | "new_num"> | null,
+  ): string | null {
+    if (!markActive || !line) return null;
+    const f = fileByPath.get(filePath);
+    return f ? lineCommitColor(lineCommitStore.get(f.path, f.cache_key), commitSlotBySha, line) : null;
+  }
   // Rendered side-by-side blocks overlapping the rendered rows, at their row top.
   const sideBlocksInWindow = $derived.by(() => {
     const offsets = effectiveGeometry.cumulativeOffsets;
@@ -836,8 +805,9 @@
 
 
   // ── Visible file (for sticky header) ─────────────────────────────────────
+  /** Null over a Tour pillar header, which belongs to no file. */
   const visibleFilePath = $derived(
-    filePathAtContentTop(effectiveGeometry, crossFileModel.rows, scrollTopLivePx),
+    filePathAtContentTop(effectiveGeometry, crossFileModel.rows, scrollTopLivePx) || null,
   );
 
   const visibleFileHeaderRow = $derived.by((): Extract<CrossFileFlatRow, { type: "file-header" }> | null => {
@@ -862,91 +832,48 @@
     !stickyHeaderHidden && visibleFileHeaderRow !== null,
   );
 
-  // ── Guide mode: Split View pillar lane ───────────────────────────────────
-  /** Width of the left pillar rail lane in Guide mode. */
-  const RAIL_W = 320;
+  // ── Tour: pillar rail and pillar-header rows ─────────────────────────────
+  /** How far below the top of the rows a header must scroll before its pillar
+   *  counts as the one being read; matches the prototype's reading line. */
+  const PILLAR_READING_LINE_PX = 60;
 
-  /**
-   * Vertical span of each pillar's diffs (column 2), so the left rail (column 1)
-   * can position a sticky block aligned to it. Files are reordered contiguously
-   * per pillar, so each span runs from its first file's start row to the next
-   * pillar's. Uses post-collapse geometry so spans track collapsed heights.
-   */
-  const pillarSpans = $derived.by(
-    (): { info: PillarHeaderInfo; topPx: number; heightPx: number }[] => {
-      if (!tourActive || !snapshot?.tour?.pillars?.length) return [];
-      const geom = effectiveGeometry;
-      const model = crossFileModel;
-      const present = new Set(files.map((f) => f.path));
-      const entries: { info: PillarHeaderInfo; topPx: number }[] = [];
-      for (const p of snapshot.tour.pillars) {
-        const firstPath = p.files.map((tf) => tf.path).find((path) => present.has(path));
-        if (!firstPath) continue;
-        const startRow = model.fileStartRow.get(firstPath);
-        if (startRow === undefined) continue;
-        entries.push({
-          info: {
-            pillarId: p.id,
-            title: p.title,
-            descriptionMarkdown: p.descriptionMarkdown,
-            reviewedCount: p.reviewedCount,
-            totalCount: p.totalCount,
-            foundation: p.foundation,
-          },
-          topPx: geom.cumulativeOffsets[startRow] ?? 0,
-        });
-      }
-      entries.sort((a, b) => a.topPx - b.topPx);
-      const total = geom.totalHeight;
-      return entries.map((e, i) => ({
-        info: e.info,
-        topPx: e.topPx,
-        heightPx: (i + 1 < entries.length ? entries[i + 1].topPx : total) - e.topPx,
-      }));
-    },
+  const activePillarId = $derived(
+    tourActive
+      ? activePillarAt(
+          crossFileModel.pillarStartRow,
+          effectiveGeometry.cumulativeOffsets,
+          rowOffsetForScroll(scrollTopLivePx) + PILLAR_READING_LINE_PX,
+        )
+      : null,
   );
+  const railGroups = $derived(railPillars(tourPillars, files));
+  const pillarById = $derived(new Map(tourPillars.map((p) => [p.id, p])));
+  const drawnPaths = $derived(files.map((f) => f.path));
 
-  /** Per-pillar primary file rows for the rail (path + +/- + reviewed), in diff
-   *  order. Co-located related files are excluded here and rendered nested via
-   *  {@link relatedRows}. */
-  const pillarFileRows = $derived.by((): Map<string, FileSnapshot[]> => {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
-    const m = new Map<string, FileSnapshot[]>();
-    if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
-    const byPath = new Map(files.map((f) => [f.path, f]));
-    for (const p of snapshot.tour.pillars) {
-      const list: FileSnapshot[] = [];
-      for (const tf of p.files) {
-        const f = byPath.get(tf.path);
-        if (f) list.push(f);
-      }
-      m.set(p.id, list);
-    }
-    return m;
-  });
+  function rowOffsetForScroll(scrollTop: number): number {
+    return Math.max(0, scrollTop - STICKY_HEADER_PX);
+  }
 
-  /** Map of primary file path → its co-located related rows (test/style/…), for
-   *  nested rendering in the pillar rail. */
-  const relatedRows = $derived.by((): Map<string, { file: FileSnapshot; kind: string }[]> => {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- local temporary built and returned; never mutated after the derived returns
-    const m = new Map<string, { file: FileSnapshot; kind: string }[]>();
-    if (!tourActive || !snapshot?.tour?.pillars?.length) return m;
-    const byPath = new Map(files.map((f) => [f.path, f]));
-    for (const p of snapshot.tour.pillars) {
-      for (const tf of p.files) {
-        const children: { file: FileSnapshot; kind: string }[] = [];
-        for (const r of tf.related ?? []) {
-          const f = byPath.get(r.path);
-          if (f) children.push({ file: f, kind: r.kind });
-        }
-        if (children.length) m.set(tf.path, children);
-      }
-    }
-    return m;
-  });
+  /** Rail rows, ruler rows and narrative references land here: scroll first, then select,
+   *  as the file tree does. */
+  function jumpToFile(path: string) {
+    void diffNav.scrollToFile(path);
+    const file = files.find((f) => f.path === path);
+    if (file) void app.cmd("select_file", { idx: file.source_index });
+  }
 
-  // Guide mode: auto-collapse a file to a compact row once it's reviewed. Acts
-  // only on the false→true transition (and on already-reviewed files when Guide
+  // Ticking a file collapses it through the reviewed transition below, so no
+  // explicit collapse here.
+  function toggleTourFile(file: FileSnapshot) {
+    void app.cmd(file.reviewed ? "unmark_reviewed" : "mark_reviewed", { path: file.path });
+  }
+
+  function reviewPillar(pillarId: string, allReviewed: boolean) {
+    void app.cmd(allReviewed ? "unbulk_review_pillar" : "bulk_review_pillar", { pillarId });
+  }
+
+  // Tour mode: auto-collapse a file to a compact row once it's reviewed. Acts
+  // only on the false→true transition (and on already-reviewed files when Tour
   // is first entered), so a user who manually re-expands a reviewed file isn't
   // fought.
   let _prevReviewedTour = new Set<string>();
@@ -1767,8 +1694,9 @@
       if (files.length === 0) applyScrollTop(0);
       return;
     }
-    const rowIdx = crossFileModel.fileStartRow.get(target.path);
-    if (rowIdx === undefined) return;
+    const fileRow = crossFileModel.fileStartRow.get(target.path);
+    if (fileRow === undefined) return;
+    const rowIdx = fileEntryRow(crossFileModel.rows, fileRow);
     const top = effectiveGeometry.cumulativeOffsets[rowIdx] ?? 0;
     // Skip the scroll (and the diff-viewport repaint it triggers) when the next
     // header is already on screen below the sticky overlay.
@@ -1798,6 +1726,8 @@
       requestFileContent: (src) => requestLazyFiles([src]),
       getModel: () => crossFileModel,
       getFiles: () => files,
+      getVisibleFilePath: () => visibleFilePath,
+      getActivePillarId: () => activePillarId,
       getFindingPath: (id) => getFinding(id)?.file,
       ensureRaw: async (path) => {
         if (snapshot && diffPreview.ensureRaw(snapshot, path)) await tick();
@@ -2168,36 +2098,15 @@
       <span class="mono text-xs text-fg-3">{orderedFiles.length} {orderedFiles.length === 1 ? "file" : "files"}</span>
       <div class="ml-auto flex items-center gap-1">
         {#if tourAvailable && !tourFresh}
-          <!-- New changes landed since the guide was generated — offer a re-run. -->
+          <!-- New changes landed since the tour was generated — offer a re-run. -->
           <button type="button"
             class="flex items-center gap-1 h-[22px] px-2 mr-1 rounded text-[11px] font-medium border border-risk-med/40 text-risk-med hover:bg-risk-med/10 transition-colors shrink-0"
-            onclick={() => { app.showToast("info", "Regenerating guide…"); void app.cmd("generate_tour"); }}
-            title="The diff changed since this guide was generated — regenerate it"
+            onclick={() => { app.showToast("info", "Regenerating tour…"); void app.cmd("generate_tour"); }}
+            title="The diff changed since this tour was generated — regenerate it"
           >
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            Re-run guide
+            Regenerate tour
           </button>
-        {/if}
-        {#if tourAvailable}
-          <div role="tablist" class="flex items-center bg-ink-800 border border-hairline rounded-md p-0.5 mr-1 shrink-0">
-            <button type="button"
-              role="tab"
-              aria-selected={mode !== "tour"}
-              onclick={exitGuideToDiff}
-              class="h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode !== 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
-            >
-              Diff
-            </button>
-            <button type="button"
-              role="tab"
-              aria-selected={mode === "tour"}
-              onclick={() => { if (mode !== "tour") void app.cmd("set_mode", { mode: "tour" }); }}
-              class="flex items-center gap-1 h-[22px] px-2.5 rounded text-[11px] font-medium transition-colors {mode === 'tour' ? 'bg-ink-650 text-fg cursor-default' : 'text-muted hover:text-fg-2'}"
-            >
-              <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18l6-6-6-6"/><circle cx="4" cy="12" r="1.5"/></svg>
-              Guide
-            </button>
-          </div>
         {/if}
         <button
           type="button"
@@ -2221,119 +2130,6 @@
             <path d="m6 9 6 6 6-6"/>
           </svg>
         </button>
-        <div class="relative">
-          <button type="button"
-            class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded flex items-center"
-            onclick={() => (settingsOpen = !settingsOpen)}
-            title="View settings"
-            aria-label="View settings"
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="3"/>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
-            </svg>
-          </button>
-          {#if settingsOpen}
-            <!-- svelte-ignore a11y_click_events_have_key_events -->
-            <!-- svelte-ignore a11y_no_static_element_interactions -->
-            <div class="fixed inset-0 z-40" onclick={() => (settingsOpen = false)}></div>
-            <div class="absolute right-0 top-full mt-1 z-50 bg-ink-800 border border-ink-500 rounded shadow-xl w-52 py-1">
-              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Layout</div>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => { app.setDiffViewMode("unified"); settingsOpen = false; }}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if viewMode === "unified"}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Unified
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => { app.setDiffViewMode("split"); settingsOpen = false; }}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if viewMode === "split"}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Split
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.toggleWrapLines()}
-                title="Wrap long lines instead of scrolling them horizontally inside each panel"
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if app.wrapLines}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Wrap long lines
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setLineNumbers(!app.lineNumbers)}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if app.lineNumbers}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Line numbers
-              </button>
-              <div class="border-t border-ink-600 my-1"></div>
-              <div class="px-3 pt-2 pb-1 text-[11px] uppercase tracking-wide text-fg-3">Annotations</div>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideComments: !app.commentVisibility.hideComments })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideComments}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Comments
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideFindings: !app.commentVisibility.hideFindings })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideFindings}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Findings
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => app.setCommentVisibility({ hideQuestions: !app.commentVisibility.hideQuestions })}
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if !app.commentVisibility.hideQuestions}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Questions
-              </button>
-              <button type="button"
-                class="w-full text-left px-3 py-2 text-sm text-ink-100 hover:bg-ink-700 flex items-center gap-2"
-                onclick={() => findingsVisibility.toggleResolved()}
-                title="Session-only, like the other layer toggles"
-              >
-                <span class="w-3 inline-flex items-center justify-center">
-                  {#if findingsVisibility.showResolved}
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M5 13l4 4L19 7"/></svg>
-                  {/if}
-                </span>
-                Resolved findings
-              </button>
-            </div>
-          {/if}
-        </div>
         <button type="button"
           class="px-2 py-1 text-xs text-fg-3 hover:bg-hover rounded"
           onclick={async () => {
@@ -2360,11 +2156,30 @@
     />
   {/if}
 
+  <div class="tour-split flex-1 min-h-0 flex relative">
+  {#if tourActive && railGroups.length > 0 && files.length > 0}
+    <TourRail
+      pillars={railGroups}
+      {activePillarId}
+      currentPath={visibleFilePath}
+      onpillar={(id) => diffNav.scrollToPillar(id)}
+      onjump={jumpToFile}
+      ontogglefile={toggleTourFile}
+      onreviewpillar={reviewPillar}
+      rulerPillars={tourPillars}
+      rulerFiles={files}
+    />
+  {/if}
+  {#if !tourActive && files.length > 0}
+    <!-- Its own strip left of the column, outside the scroll viewport, so the
+         ticks never cover code. The Tour mounts its ruler beside the rail. -->
+    <FileMapRuler {files} currentPath={visibleFilePath} onGoto={jumpToFile} />
+  {/if}
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
        ruler and usages popover can overlay the scroll viewport (instead of
        scrolling away with the content). -->
   <div
-    class="flex-1 min-h-0 relative flex flex-col {app.lineNumbers ? '' : 'no-line-numbers'}"
+    class="flex-1 min-h-0 min-w-0 relative flex flex-col {app.lineNumbers ? '' : 'no-line-numbers'}"
     style="--er-split-gutter:{GUTTER_PX}px"
   >
   <div
@@ -2393,52 +2208,22 @@
         </div>
       {/if}
     {:else}
-      <!-- Sticky file path overlay: hides when real file-header is in viewport top band.
-           In Guide mode it's inset past the pillar rail lane so it pins over the
-           diff column (column 2) without covering the rail. -->
+      <!-- Sticky file path overlay: hides when real file-header is in viewport top band. -->
       <StickyFileHeader
         row={visibleFileHeaderRow}
         hidden={stickyHeaderHidden}
-        offsetLeftPx={tourActive ? RAIL_W : 0}
         {previewPaths}
         {sidePaths}
         onpreviewchange={changePreviewMode}
       />
 
-      {#if tourActive}
-        <!-- Column 1: pillar rail lane. Each pillar block aligns to its diffs in
-             column 2 and pins its rail (sticky) while that pillar is on screen. -->
-        <div
-          class="pillar-rail-lane"
-          style="position:absolute;top:{STICKY_HEADER_PX}px;left:0;width:{RAIL_W}px;height:{effectiveGeometry.totalHeight}px;z-index:20;border-right:1px solid var(--color-hairline);"
-        >
-          {#each pillarSpans as span (span.info.pillarId)}
-            <div style="position:absolute;left:0;right:0;top:{span.topPx}px;height:{span.heightPx}px;">
-              <div
-                style="position:sticky;top:0;"
-                use:measureHeight={(px) => setRailHeight(span.info.pillarId, px)}
-              >
-                <PillarRail
-                  info={span.info}
-                  fileRows={pillarFileRows.get(span.info.pillarId) ?? []}
-                  {relatedRows}
-                  selectedPath={visibleFilePath}
-                />
-              </div>
-            </div>
-          {/each}
-        </div>
-      {/if}
-
       <!-- Row band surface: viewport-width (always a fixed 50/50 split in split
            view). Long lines wrap or pan inside their panel — the band itself
-           never scrolls horizontally. (Column 2 in Guide.) -->
+           never scrolls horizontally. -->
       <div
         bind:this={hscrollEl}
         class="hscroll"
-        style="height:{effectiveGeometry.totalHeight + bottomPadPx}px;overflow-x:hidden;overflow-y:hidden;position:relative;{tourActive
-          ? `margin-left:${RAIL_W}px;width:calc(100% - ${RAIL_W}px);`
-          : 'width:100%;'}"
+        style="height:{effectiveGeometry.totalHeight + bottomPadPx}px;overflow-x:hidden;overflow-y:hidden;position:relative;width:100%;"
       >
         <div
           class="band"
@@ -2467,18 +2252,24 @@
             {:else}
               {@render rowBody(row, rowIdx, false)}
             {/if}
-            {#if tourActive && pillarPadByRowIdentity.get(row.identity)}
-              <!-- Guide mode: pad the pillar's last row down to the rail height so
-                   the next pillar's files start below the (taller) rail. -->
-              <div style="height:{pillarPadByRowIdentity.get(row.identity)}px"></div>
-            {/if}
             {#if sidePadByRow.get(rowIdx)}
               <div style="height:{sidePadByRow.get(rowIdx)}px"></div>
             {/if}
             {#if composerHere && !sideRaw}{@render composerFlow()}{/if}
           {/each}
           {#snippet rowBody(row: CrossFileFlatRow, rowIdx: number, sideRaw: boolean)}
-            {#if row.type === "file-header"}
+            {#if row.type === "pillar-header"}
+              {@const pillar = pillarById.get(row.pillarId)}
+              <PillarHeaderRow
+                {row}
+                reviewed={pillar?.reviewedCount ?? 0}
+                total={pillar?.totalCount ?? 0}
+                fresh={tourFresh}
+                paths={drawnPaths}
+                onjump={jumpToFile}
+                onreviewpillar={reviewPillar}
+              />
+            {:else if row.type === "file-header"}
               <FileHeaderRow
                 {row}
                 {previewPaths}
@@ -2517,6 +2308,7 @@
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
                   wrapCols={sideRaw ? sideWrapCols : committedWrapCols}
+                  commitColor={commitColorFor(row.filePath, line)}
                 />
               {/if}
             {:else if row.type === "content-split"}
@@ -2530,6 +2322,8 @@
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
                   wrapCols={committedWrapCols}
+                  commitColorLeft={commitColorFor(row.filePath, splitRow.left)}
+                  commitColorRight={commitColorFor(row.filePath, splitRow.right)}
                 />
               {/if}
             {:else if row.type === "compacted-stub"}
@@ -2581,13 +2375,12 @@
   <!-- Per-panel horizontal scrollbars (word wrap off): pinned to the viewport
        bottom, one per code panel. scrollLeft is the pan source of truth. -->
   {#if !wrapEnabled && files.length > 0 && bandWidthPx > 0}
-    {@const railOffset = tourActive ? RAIL_W : 0}
     {#if viewMode === "split"}
       {@const panelW = bandWidthPx / 2}
       {#if maxPanLPx > 0}
         <div
           class="diff-hbar"
-          style="left:{railOffset}px;width:{panelW}px"
+          style="left:0;width:{panelW}px"
           bind:this={hbarLEl}
           onscroll={() => (panLPx = hbarLEl?.scrollLeft ?? 0)}
         >
@@ -2597,7 +2390,7 @@
       {#if maxPanRPx > 0}
         <div
           class="diff-hbar"
-          style="left:{railOffset + panelW}px;width:{panelW}px"
+          style="left:{panelW}px;width:{panelW}px"
           bind:this={hbarREl}
           onscroll={() => (panRPx = hbarREl?.scrollLeft ?? 0)}
         >
@@ -2607,7 +2400,7 @@
     {:else if maxPanLPx > 0}
       <div
         class="diff-hbar"
-        style="left:{railOffset}px;width:{bandWidthPx}px"
+        style="left:0;width:{bandWidthPx}px"
         bind:this={hbarLEl}
         onscroll={() => (panLPx = hbarLEl?.scrollLeft ?? 0)}
       >
@@ -2643,6 +2436,7 @@
     />
   {/if}
   </div>
+  </div>
 
   {#if showGoBackToComment}
     <div class="pointer-events-none absolute inset-x-0 bottom-3 z-30 flex justify-center">
@@ -2652,6 +2446,12 @@
 </div>
 
 <style>
+  /* Narrow windows stack the Tour rail above the column. */
+  @media (max-width: 880px) {
+    .tour-split {
+      flex-direction: column;
+    }
+  }
   .vscroll {
     overflow-y: auto;
     overflow-x: hidden;

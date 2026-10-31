@@ -7,6 +7,8 @@ use tauri::State;
 #[cfg(not(target_os = "macos"))]
 use tauri_plugin_notification::NotificationExt;
 
+pub mod line_commits;
+
 use crate::inbox::{
     inbox_item_from_notification, inbox_items_from_pr_transition, is_review_edge_kind, InboxHandle,
     InboxItem, InboxNotification, InboxState, InboxTarget, NotificationInboxCtx, PrInboxView,
@@ -212,6 +214,8 @@ pub struct AppState {
     /// Differential snapshots: per-file content keys the frontend currently
     /// holds, so unchanged hunks can be omitted from later snapshots.
     pub sent_files: crate::snapshot::SentFilesHandle,
+    /// Per-file "Mark lines" attribution, outside the snapshot on purpose.
+    pub line_commits_cache: line_commits::LineCommitsCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
@@ -653,6 +657,17 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
     let lower = raw.to_lowercase();
     lower.contains("can not approve your own pull request")
         || lower.contains("cannot approve your own pull request")
+}
+
+/// GitHub keeps one pending review per reviewer per PR and refuses a
+/// standalone review comment while it exists, so "Add single comment" has to
+/// wait until the review is submitted (as github.com hides it meanwhile).
+fn pending_review_blocks_single_comment() -> String {
+    "You have a pending review — add this to it or submit the review first".to_string()
+}
+
+fn is_one_pending_review_error(raw: &str) -> bool {
+    raw.to_lowercase().contains("one pending review")
 }
 
 fn process_ai_task_inbox(app: &App, state: &AppState) {
@@ -1301,6 +1316,7 @@ pub async fn set_mode(
                 return Ok(snap_from_command(&app, &state));
             }
         }
+        let t_switch = std::time::Instant::now();
         if matches!(mode.as_str(), "pr" | "pr_diff") {
             // Only enter PrDiff when not already there (avoids re-fetching refs
             // on a tab that is already in PrDiff from construction).
@@ -1315,7 +1331,7 @@ pub async fn set_mode(
                 }
                 app.tab_mut().enter_pr_diff().map_err(|e| e.to_string())?;
             }
-            return Ok(snap_from_command(&app, &state));
+            return Ok(set_mode_snapshot(&app, &state, &mode, t_switch));
         }
         let diff_mode = match mode.as_str() {
             "unstaged" => DiffMode::Unstaged,
@@ -1327,9 +1343,33 @@ pub async fn set_mode(
             _ => DiffMode::Branch,
         };
         app.tab_mut().set_mode(diff_mode);
-        Ok(snap_from_command(&app, &state))
+        Ok(set_mode_snapshot(&app, &state, &mode, t_switch))
     })
     .await
+}
+
+/// The snapshot a mode switch returns, with the switch and the snapshot build
+/// logged apart: a slow switch is either a re-fetched diff or a large snapshot,
+/// and the fix for each is different.
+fn set_mode_snapshot(
+    app: &App,
+    state: &AppState,
+    mode: &str,
+    t_switch: std::time::Instant,
+) -> AppSnapshot {
+    let switch_ms = t_switch.elapsed().as_millis();
+    let t_snap = std::time::Instant::now();
+    let snap = snap_from_command(app, state);
+    crate::profile_log::profile_log(
+        "set_mode",
+        &[
+            ("mode", mode.to_string()),
+            ("switch_ms", switch_ms.to_string()),
+            ("snap_ms", t_snap.elapsed().as_millis().to_string()),
+            ("files", snap.files.len().to_string()),
+        ],
+    );
+    snap
 }
 
 /// Change the compare/base branch the active tab diffs against. Only valid on
@@ -3857,6 +3897,220 @@ fn post_github_pr_comment_impl(body: String, state: &AppState) -> Result<AppSnap
     Ok(snap_from(&app, state))
 }
 
+// ── Pending review ───────────────────────────────────────────────────────────
+//
+// The composer's "Start a review" collects line comments in the reviewer's
+// GitHub pending review; the Review popover submits them with one decision.
+// GitHub holds the draft, so every command here is a `gh` round trip and runs
+// off the lock, which is held only to read which PR the tab is on (ADR 0015).
+
+/// The pending review as the Review popover reads it.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PendingReviewView {
+    pub pr_number: u64,
+    #[serde(flatten)]
+    pub review: er_engine::github::PendingReview,
+}
+
+/// A line the composer selected, in the numbering of its side.
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewLineTarget {
+    pub file: String,
+    pub line_num: usize,
+    pub line_num_end: Option<usize>,
+    /// "LEFT" | "RIGHT"
+    pub side: Option<String>,
+}
+
+impl ReviewLineTarget {
+    fn batch_entry(&self, body: &str) -> Result<er_engine::github::ReviewBatchEntry, String> {
+        if self.file.is_empty() {
+            return Err("A review comment needs a file and line".to_string());
+        }
+        let side = match self.side.as_deref() {
+            None | Some("RIGHT") => "RIGHT",
+            Some("LEFT") => "LEFT",
+            Some(other) => return Err(format!("Invalid diff side: {other}")),
+        };
+        let end = self
+            .line_num_end
+            .filter(|e| *e > self.line_num)
+            .unwrap_or(self.line_num);
+        Ok(er_engine::github::ReviewBatchEntry {
+            file: self.file.clone(),
+            line: end,
+            start_line: (end > self.line_num).then_some(self.line_num),
+            body: body.to_string(),
+            side: side.to_string(),
+        })
+    }
+}
+
+fn review_comment_body(text: &str) -> Result<String, String> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Err("Comment body cannot be empty".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    active_github_key(&app, state)
+        .ok_or_else(|| "No pull request for this view — open a PR to review on GitHub".to_string())
+}
+
+fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
+    let (owner, repo, number) = active_pr_or_err(state)?;
+    let review = er_engine::github::gh_pending_review(&owner, &repo, number)
+        .map_err(|e| format!("{e:#}"))?;
+    Ok(PendingReviewView {
+        pr_number: number,
+        review,
+    })
+}
+
+/// A posted or submitted comment changes what `pull_github_comments` should
+/// return, so drop its cache and let the status card recount.
+fn after_github_write(state: &AppState, owner: String, repo: String, number: u64) {
+    er_engine::github::invalidate_pr_comments_cache();
+    kick_github_status_refresh(
+        state.gh_status_cache.clone(),
+        Arc::clone(&state.gh_status_in_flight),
+        Arc::clone(&state.desktop_revision),
+        Some(Arc::clone(&state.loading)),
+        owner,
+        repo,
+        number,
+    );
+}
+
+#[tauri::command]
+pub async fn get_pending_review(state: State<'_, AppState>) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || read_pending_review(&state)).await
+}
+
+#[tauri::command]
+pub async fn add_pending_review_comment(
+    target: ReviewLineTarget,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let entry = target.batch_entry(&review_comment_body(&text)?)?;
+        let (owner, repo, number) = active_pr_or_err(&state)?;
+        er_engine::github::gh_pending_review_add_comment(&owner, &repo, number, &entry)
+            .map_err(gh_review_submit_err)?;
+        after_github_write(&state, owner, repo, number);
+        read_pending_review(&state)
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn remove_pending_review_comment(
+    comment_id: String,
+    state: State<'_, AppState>,
+) -> Result<PendingReviewView, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        er_engine::github::gh_pending_review_remove_comment(&comment_id)
+            .map_err(|e| format!("{e:#}"))?;
+        read_pending_review(&state)
+    })
+    .await
+}
+
+/// Submit the pending review with a decision. Without pending comments this
+/// is the bare decision the Branch card's Approve used to send.
+#[tauri::command]
+pub async fn submit_pending_review(
+    mode: String,
+    summary: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let event = match mode.as_str() {
+            "APPROVE" | "REQUEST_CHANGES" | "COMMENT" => mode.clone(),
+            _ => {
+                return Err(format!(
+                    "Invalid review mode: {mode}. Use COMMENT, APPROVE, or REQUEST_CHANGES."
+                ));
+            }
+        };
+        let (owner, repo, number) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            let (owner, repo, number) = active_github_key(&app, &state).ok_or_else(|| {
+                "No pull request for this view — open a PR to review on GitHub".to_string()
+            })?;
+            if event == "APPROVE" {
+                let me = state.gh_user.lock().ok().and_then(|login| login.clone());
+                if let (Some(me), Some(author)) =
+                    (me, active_pr_author(&app, &state, &owner, &repo, number))
+                {
+                    if author.eq_ignore_ascii_case(&me) {
+                        return Err(own_pr_approval_error());
+                    }
+                }
+            }
+            (owner, repo, number)
+        };
+        er_engine::github::gh_pending_review_submit(&owner, &repo, number, &event, summary.trim())
+            .map_err(gh_review_submit_err)?;
+        after_github_write(&state, owner, repo, number);
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
+/// "Add single comment": one line comment posted to the PR now, outside any
+/// review.
+#[tauri::command]
+pub async fn post_github_line_comment(
+    target: ReviewLineTarget,
+    text: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let entry = target.batch_entry(&review_comment_body(&text)?)?;
+        let (owner, repo, number) = active_pr_or_err(&state)?;
+        // Ask first rather than make a call GitHub will refuse. If the check
+        // itself fails, the post still goes and its error is mapped below.
+        if er_engine::github::gh_pending_review(&owner, &repo, number)
+            .is_ok_and(|p| p.review_id.is_some())
+        {
+            return Err(pending_review_blocks_single_comment());
+        }
+        let comment = er_engine::github::NewLineComment {
+            path: &entry.file,
+            line_start: entry.start_line.unwrap_or(entry.line),
+            line_end: Some(entry.line),
+            body: &entry.body,
+            side: &entry.side,
+        };
+        er_engine::github::gh_pr_push_comment_remote(&owner, &repo, number, comment).map_err(
+            |e| {
+                let raw = format!("{e:#}");
+                if is_one_pending_review_error(&raw) {
+                    pending_review_blocks_single_comment()
+                } else {
+                    raw
+                }
+            },
+        )?;
+        after_github_write(&state, owner, repo, number);
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        Ok(snap_from(&app, &state))
+    })
+    .await
+}
+
 // ── AI integration ───────────────────────────────────────────────────────────
 
 pub(crate) fn resolve_review_scope(
@@ -5381,6 +5635,27 @@ fn send_note_blocked_reason(tab: &er_engine::app::TabState) -> Result<(), String
                 .to_string(),
         ),
     }
+}
+
+/// "Run standard instead" on a pending Deep confirmation: the triaged lenses
+/// run as Standard finders, each queued for an agent slot (ADR 0021), with the
+/// prompts the flow already builds in Rust (ADR 0023). Declining cancels, and
+/// starting a new flow re-triages, which is why neither stands in for this.
+#[tauri::command]
+pub async fn run_standard_review_flow(
+    er_dir: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        crate::arena_commands::validate_review_flow_bucket(&app, &er_dir)?;
+        app.run_review_flow_standard(&er_dir)
+            .map_err(|e| e.to_string())?;
+        state.desktop_revision.fetch_add(1, Ordering::Relaxed);
+        Ok(snap_from_command(&app, &state))
+    })
+    .await
 }
 
 /// Hand a note to the configured agent CLI to carry out (ADR 0031). It runs as
@@ -11876,6 +12151,7 @@ mod tests {
             tauri_app_handle: Arc::new(Mutex::new(None)),
             auto_triage_in_flight: Arc::new(Mutex::new(HashSet::new())),
             sent_files: Arc::new(Mutex::new(Default::default())),
+            line_commits_cache: Arc::default(),
         }
     }
 
@@ -12500,6 +12776,39 @@ mod tests {
     #[test]
     fn review_submit_validation_accepts_comment_batch() {
         validate_review_submission(2, "").unwrap();
+    }
+
+    #[test]
+    fn review_line_target_maps_ranges_and_sides() {
+        let t = |end: Option<usize>, side: Option<&str>| ReviewLineTarget {
+            file: "src/a.rs".into(),
+            line_num: 10,
+            line_num_end: end,
+            side: side.map(str::to_string),
+        };
+        let single = t(None, None).batch_entry("x").unwrap();
+        assert_eq!((single.line, single.start_line), (10, None));
+        assert_eq!(single.side, "RIGHT");
+
+        let range = t(Some(12), Some("LEFT")).batch_entry("x").unwrap();
+        assert_eq!((range.line, range.start_line), (12, Some(10)));
+        assert_eq!(range.side, "LEFT");
+
+        // An end at or before the start is a single line, not a reversed range.
+        let flat = t(Some(10), None).batch_entry("x").unwrap();
+        assert_eq!(flat.start_line, None);
+
+        assert!(t(None, Some("BOTH")).batch_entry("x").is_err());
+        assert!(review_comment_body("  \n").is_err());
+    }
+
+    #[test]
+    fn one_pending_review_refusal_is_detected_from_github_422() {
+        let raw = r#"gh: Unprocessable Entity (HTTP 422) ({"message":"Unprocessable Entity","errors":["user_id can only have one pending review per pull request"]})"#;
+        assert!(is_one_pending_review_error(raw));
+        assert!(!is_one_pending_review_error(
+            "gh: Unprocessable Entity (HTTP 422) pull_request_review_thread.line must be part of the diff"
+        ));
     }
 
     #[test]
@@ -13352,6 +13661,11 @@ mod tests {
             "push_github_comment_thread",
             "push_github_comment_reply",
             "post_github_pr_comment",
+            "get_pending_review",
+            "add_pending_review_comment",
+            "remove_pending_review_comment",
+            "submit_pending_review",
+            "post_github_line_comment",
             "export_review",
             "export_review_to_file",
             // App-wide chrome writes (inbox, pins, ignores): painted optimistically,
