@@ -6,7 +6,7 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
 
 1. Read [PLAN.md](./PLAN.md), [AGENT_BRIEF.md](./AGENT_BRIEF.md), STATUS and the
    latest log entries. Fetch the current release branch before starting a lane.
-2. Inspect open browser rework PRs against `release/v0.6.0` and their reviews.
+2. Inspect open browser rework PRs against `release/v0.6.1` and their reviews.
    Resume an existing implementer when possible; do not duplicate a PR.
 3. Use worktrees outside the main checkout. In this cloud session, source
    `/workspace/scratch/browser-tool-env.sh` before Rust, Bun or just commands.
@@ -87,3 +87,8 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
   for a draft pending Mac compilation and native scenarios. ER35 remains reviewed
   at `ed37a5c4`. Prepared exact patch artifacts for the three local branch heads
   before requesting explicit publication approval.
+- The owner directed branching from `release/v0.6.0` to a new `release/v0.6.1`
+  and targeting every new PR at 0.6.1. Created the new remote branch from the
+  verified latest 0.6.0 head `e668531f`; inherited merged fixtures, engine storage
+  and renderer. Moved the unpublished tracking updates onto the new branch.
+  Future work follows the release-target addendum; macOS proof gates remain.

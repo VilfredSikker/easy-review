@@ -1,6 +1,6 @@
 # Browser rework status
 
-Release branch: `release/v0.6.0`. Implementation PRs target that branch.
+Release branch: `release/v0.6.1`. Implementation PRs target that branch.
 Plan: [PLAN.md](./PLAN.md). Resume notes: [BUILD_LOG.md](./BUILD_LOG.md).
 Updated by the orchestrator only. Last update: 2026-10-31.
 
@@ -32,12 +32,12 @@ The native proof tasks require mouse and keyboard checks in a macOS Tauri app.
 The current Linux environment cannot supply that evidence. Their proof results
 remain pending until recorded in the proof log; compilation is not a substitute.
 
-## Publication hold
+## Release target
 
-Automatic approval review rejected creating the snapshot PR, requiring explicit
-owner approval to publish the source changes to the public Easy Review repository.
-Remaining snapshot, MCP and parking-probe work is preserved in local branches;
-no further publication is attempted until that approval is available.
+The owner directed creating `release/v0.6.1` from `release/v0.6.0` and targeting
+every new PR at it. See the [addendum](./ADDENDUM-release-0.6.1.md). Remaining
+snapshot, MCP and parking-probe branches will merge this base before publication.
+The parking-probe PR stays a draft until macOS validation.
 
 ## Pending design decisions
 
