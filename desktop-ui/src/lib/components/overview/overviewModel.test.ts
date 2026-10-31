@@ -6,6 +6,7 @@ import {
   checkRows,
   formatDuration,
   generatorStates,
+  reviewFlowCommand,
   langTag,
   latestArenaRun,
   overviewHeader,
@@ -94,6 +95,22 @@ describe("checks", () => {
       ["test", "ok", "1m 52s"],
       ["preview", "ok", "Ready"],
     ]);
+  });
+});
+
+describe("reviewFlowCommand", () => {
+  const base = { review_bucket_er_dir: "/er", review_flow: null } as Pick<AppSnapshot, "review_flow" | "review_bucket_er_dir">;
+  const flow = (state: string) => ({ ...base, review_flow: { state, draining: false } as unknown as AppSnapshot["review_flow"] });
+
+  it("starts the review flow, the same review the palette runs", () => {
+    expect(reviewFlowCommand(base, "branch")).toEqual({ command: "start_review_flow", args: { scope: "branch", erDir: "/er" } });
+  });
+  it("confirms a Deep estimate that is waiting", () => {
+    expect(reviewFlowCommand(flow("awaiting_confirmation"), "branch")).toEqual({ command: "confirm_review_flow", args: { erDir: "/er" } });
+  });
+  it("does nothing while a flow runs or with no scope", () => {
+    expect(reviewFlowCommand(flow("finding"), "branch")).toBeNull();
+    expect(reviewFlowCommand(base, null)).toBeNull();
   });
 });
 
