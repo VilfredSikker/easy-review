@@ -63,3 +63,17 @@ export const RemotePrDisplayOnly: Story = {
     scopeLabel: "PR Diff",
   },
 };
+
+/** Mark lines on: the switch in the Commits heading drives the inset bars in
+ *  the diff and the legend in the toolbar, coloured from the same series. */
+export const MarkLinesOn: Story = {
+  args: {
+    ...base,
+    allLabel: "All changes",
+    allActive: true,
+    allStat: { additions: 59, deletions: 12 },
+    scopeLabel: "PR Diff",
+    markLines: true,
+    onMarkLines: noop,
+  },
+};

@@ -29,6 +29,9 @@
   import StickyFileHeader from "./diff-rows/StickyFileHeader.svelte";
   import PillarHeaderRow from "./diff-rows/PillarHeaderRow.svelte";
   import TourRail from "./TourRail.svelte";
+  import FileMapRuler from "./FileMapRuler.svelte";
+  import { lineCommitStore } from "$lib/stores/lineCommits.svelte";
+  import { attributionWanted, commitSlots, lineCommitColor, markLinesActive } from "$lib/lineCommitMarks";
   import { activePillarAt, fileEntryRow, pillarHeaderSpecs, railPillars } from "$lib/tourModel";
   import ReferenceRuler from "./ReferenceRuler.svelte";
   import ReferenceUsagesPopover from "./ReferenceUsagesPopover.svelte";
@@ -743,6 +746,39 @@
     ),
   );
   const windowedRows = $derived(crossFileModel.rows.slice(vw.start, vw.end));
+
+  // ── Mark lines: per-line commit attribution for the files in the window ──
+  const commits = $derived(snapshot?.commits ?? []);
+  const markActive = $derived(markLinesActive(app.markLines, snapshot?.selected_commit_sha, tourActive));
+  const commitSlotBySha = $derived(commitSlots(commits));
+  const fileByPath = $derived(new Map(files.map((f) => [f.path, f])));
+
+  $effect(() => {
+    snapshotKey;
+    lineCommitStore.clear();
+  });
+
+  // Only the window's files: attribution is one `git blame` each, and a long
+  // diff scrolled past once should not blame every file in it.
+  $effect(() => {
+    if (!attributionWanted(markActive, commits, tourActive)) return;
+    let last = "";
+    for (const row of windowedRows) {
+      if (!row.filePath || row.filePath === last) continue;
+      last = row.filePath;
+      const f = fileByPath.get(row.filePath);
+      if (f && !f.is_lazy_stub) lineCommitStore.request(f.path, f.cache_key);
+    }
+  });
+
+  function commitColorFor(
+    filePath: string,
+    line: Pick<LineSnapshot, "kind" | "old_num" | "new_num"> | null,
+  ): string | null {
+    if (!markActive || !line) return null;
+    const f = fileByPath.get(filePath);
+    return f ? lineCommitColor(lineCommitStore.get(f.path, f.cache_key), commitSlotBySha, line) : null;
+  }
   // Rendered side-by-side blocks overlapping the rendered rows, at their row top.
   const sideBlocksInWindow = $derived.by(() => {
     const offsets = effectiveGeometry.cumulativeOffsets;
@@ -818,9 +854,9 @@
     return Math.max(0, scrollTop - STICKY_HEADER_PX);
   }
 
-  /** Rail rows and narrative references land here: scroll first, then select,
+  /** Rail rows, ruler rows and narrative references land here: scroll first, then select,
    *  as the file tree does. */
-  function jumpToTourFile(path: string) {
+  function jumpToFile(path: string) {
     void diffNav.scrollToFile(path);
     const file = files.find((f) => f.path === path);
     if (file) void app.cmd("select_file", { idx: file.source_index });
@@ -2120,16 +2156,18 @@
     />
   {/if}
 
-  <div class="tour-split flex-1 min-h-0 flex">
+  <div class="tour-split flex-1 min-h-0 flex relative">
   {#if tourActive && railGroups.length > 0 && files.length > 0}
     <TourRail
       pillars={railGroups}
       {activePillarId}
       currentPath={visibleFilePath}
       onpillar={(id) => diffNav.scrollToPillar(id)}
-      onjump={jumpToTourFile}
+      onjump={jumpToFile}
       ontogglefile={toggleTourFile}
       onreviewpillar={reviewPillar}
+      rulerPillars={tourPillars}
+      rulerFiles={files}
     />
   {/if}
   <!-- D11 three-layer scroll DOM. Wrapped so the reference-highlight overview
@@ -2223,7 +2261,7 @@
                 total={pillar?.totalCount ?? 0}
                 fresh={tourFresh}
                 paths={drawnPaths}
-                onjump={jumpToTourFile}
+                onjump={jumpToFile}
                 onreviewpillar={reviewPillar}
               />
             {:else if row.type === "file-header"}
@@ -2265,6 +2303,7 @@
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
                   wrapCols={sideRaw ? sideWrapCols : committedWrapCols}
+                  commitColor={commitColorFor(row.filePath, line)}
                 />
               {/if}
             {:else if row.type === "content-split"}
@@ -2278,6 +2317,8 @@
                   {annotationIndex}
                   commentVisibility={app.commentVisibility}
                   wrapCols={committedWrapCols}
+                  commitColorLeft={commitColorFor(row.filePath, splitRow.left)}
+                  commitColorRight={commitColorFor(row.filePath, splitRow.right)}
                 />
               {/if}
             {:else if row.type === "compacted-stub"}
@@ -2370,6 +2411,10 @@
       activeIdx={refHighlight.searchActiveIdx}
       onNavigate={navigateSearch}
     />
+  {/if}
+  {#if !tourActive && files.length > 0}
+    <!-- The Tour mounts its own ruler beside the pillar rail. -->
+    <FileMapRuler {files} currentPath={visibleFilePath} onGoto={jumpToFile} />
   {/if}
   {#if usageMarks.length > 0}
     <ReferenceRuler

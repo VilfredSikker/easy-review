@@ -100,7 +100,7 @@ describe("reviewRunCard", () => {
     expect(row.round).toBe("round 2/3");
     expect(row.model).toBe("Provider · Model");
     expect(row.title).toBe("Security");
-    expect(row.dotColor).toBe("var(--color-info)");
+    expect(row.dotColor).toBe("var(--color-commit-2)");
   });
 
   it("summarises a done Deep review that waits for acceptance", () => {

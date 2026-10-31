@@ -19,6 +19,10 @@ describe("commitColorToken", () => {
     expect(commitColorToken(Number.NaN)).toBe(COMMIT_COLOR_TOKENS[0]);
   });
 
+  it("uses the categorical commit series", () => {
+    expect(COMMIT_COLOR_TOKENS).toEqual([1, 2, 3, 4, 5, 6].map((n) => `--color-commit-${n}`));
+  });
+
   it("never emits raw hex", () => {
     for (const t of COMMIT_COLOR_TOKENS) expect(t.startsWith("--color-")).toBe(true);
     expect(commitColorVar(0)).toBe(`var(${COMMIT_COLOR_TOKENS[0]})`);

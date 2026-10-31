@@ -20,6 +20,9 @@
     commentVisibility: CommentVisibility;
     /** Cell column capacity when word wrap is on; null = no wrap (in-panel pan). */
     wrapCols?: number | null;
+    /** Mark lines colour of the commit behind each side's line; null leaves the add/del bar. */
+    commitColorLeft?: string | null;
+    commitColorRight?: string | null;
   }
   const {
     row,
@@ -29,6 +32,8 @@
     annotationIndex,
     commentVisibility,
     wrapCols = null,
+    commitColorLeft = null,
+    commitColorRight = null,
   }: Props = $props();
 
   const wrap = $derived(wrapCols !== null);
@@ -107,7 +112,8 @@
 >
   <!-- Left gutter -->
   <div
-    class="leading-6 text-right gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {left ? lineClass(left.kind) : 'diff-empty'} {selLeft(leftLn) ? 'is-selected' : ''} {commitColorLeft ? 'commit-mark' : ''}"
+    style={commitColorLeft ? `--cc:${commitColorLeft}` : undefined}
   >
     {#if left && leftLn !== null && left.kind !== "fold"}
       <button type="button"
@@ -148,7 +154,8 @@
   </div>
   <!-- Right gutter -->
   <div
-    class="leading-6 text-right gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''}"
+    class="leading-6 text-right gutter {right ? lineClass(right.kind) : 'diff-empty'} {selRight(rightLn) ? 'is-selected' : ''} {commitColorRight ? 'commit-mark' : ''}"
+    style={commitColorRight ? `--cc:${commitColorRight}` : undefined}
   >
     {#if right && rightLn !== null && right.kind !== "fold"}
       <button type="button"
@@ -188,3 +195,11 @@
     {/if}
   </div>
 </div>
+
+<style>
+  /* Mark lines: the gutter's add/del bar takes the colour of the commit that
+     introduced (or removed) the line. A selection keeps its own bar. */
+  .diff-row:not(.is-selected) > .gutter.commit-mark {
+    box-shadow: inset 3px 0 0 0 var(--cc);
+  }
+</style>
