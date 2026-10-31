@@ -2,6 +2,7 @@
   import type { FileRiskSnapshot, RiskTier } from "$lib/types";
   import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
+  import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import {
@@ -61,6 +62,10 @@
     if (!snap) return;
     const f = snap.files.find((file) => file.path === path);
     if (f) {
+      // Mounted on the Overview: show the diff first, or the jump lands in a
+      // view that is not on screen.
+      reviewPage.show("diff");
+      await tick();
       await app.cmd("select_file", { idx: f.source_index });
       await tick();
       await diffNav.scrollToFile(path);

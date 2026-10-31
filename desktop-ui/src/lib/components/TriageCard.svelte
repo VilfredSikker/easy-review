@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { TriageSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
+  import { reviewPage } from "$lib/stores/reviewPage.svelte";
   import { arena } from "$lib/stores/arena.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
@@ -60,6 +61,10 @@
     if (!snap) return;
     const f = snap.files.find((file) => file.path === path);
     if (f) {
+      // This card lives on the Overview, where no diff is mounted; select_file
+      // alone would change nothing the reader can see.
+      reviewPage.show("diff");
+      await tick();
       await app.cmd("select_file", { idx: f.source_index });
       await tick();
     }

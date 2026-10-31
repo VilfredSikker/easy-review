@@ -96,7 +96,7 @@
       <DiffView />
     </main>
     {#if panels.right}
-      <RightPanel ai={snapshot.ai} pr={snapshot.pr} />
+      <RightPanel ai={snapshot.ai} />
     {/if}
   </div>
 </div>

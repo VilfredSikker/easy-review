@@ -93,7 +93,7 @@
   <div class="w-5 h-px bg-hairline my-1"></div>
 
   <!-- Branch & PR: CI state wins the badge; a draft shows when CI has none. -->
-  <button type="button" title="Branch & PR — expand panel" aria-label="Branch and PR" onclick={() => onExpand("branch")} class={atom}>
+  <button type="button" title="Branch & PR — on the Overview" aria-label="Branch and PR" onclick={() => onExpand("branch")} class={atom}>
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class={ci.icon}>
       <line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/>
     </svg>
@@ -104,7 +104,7 @@
     {/if}
   </button>
 
-  <button type="button" title="Diagrams — expand panel" aria-label="Diagrams" onclick={() => onExpand("context")} class={atom}>
+  <button type="button" title="Diagrams — on the Overview" aria-label="Diagrams" onclick={() => onExpand("context")} class={atom}>
     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-fg-3">
       <rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/><path d="M10 6.5h5.5a2 2 0 0 1 2 2V14"/>
     </svg>
