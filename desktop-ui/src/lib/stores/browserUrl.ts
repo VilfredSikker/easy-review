@@ -114,8 +114,10 @@ export function annotationMatchesPage(annotationUrl: string, currentUrl: string)
 export async function defaultDevUrl(repoRoot?: string): Promise<string> {
   if (!repoRoot) return DEFAULT_DEV_URL;
   try {
-    const detected = await invoke<string | null>("detect_dev_url", { repoRoot });
-    return detected ?? DEFAULT_DEV_URL;
+    const detected: unknown = await invoke("detect_dev_url", { repoRoot });
+    // Anything but a non-empty string (null, or a test's module-wide `invoke`
+    // mock leaking in from another file) falls back.
+    return typeof detected === "string" && detected !== "" ? detected : DEFAULT_DEV_URL;
   } catch {
     // Backend not reachable (test/storybook environment) — fall back.
     return DEFAULT_DEV_URL;
