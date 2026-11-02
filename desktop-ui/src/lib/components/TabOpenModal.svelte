@@ -8,7 +8,8 @@
     tabCount: number;
     /** Label of the tab "Open here" would replace; null when nothing is open. */
     currentTabLabel: string | null;
-    onChoose: (newTab: boolean, alwaysNewTab: boolean) => void;
+    /** `alwaysOpenHere` is only ever true alongside `newTab: false`. */
+    onChoose: (newTab: boolean, alwaysOpenHere: boolean) => void;
     onClose: () => void;
   }
 
@@ -27,8 +28,10 @@
     highlighted = "new";
   });
 
+  // "Always open here" picked together with "Open in new tab" contradicts
+  // itself; the button wins and nothing is remembered.
   function choose(newTab: boolean) {
-    onChoose(newTab, remember);
+    onChoose(newTab, remember && !newTab);
   }
 
   // preventDefault stops the focused button from also firing its own click.
@@ -110,9 +113,21 @@
       </div>
 
       <label class="flex items-center gap-2 text-[12px] text-fg-3">
-        <input type="checkbox" bind:checked={remember} class="accent-accent" />
-        Always open in a new tab, don't ask again
+        <input
+          type="checkbox"
+          bind:checked={remember}
+          onchange={() => { if (remember) highlighted = "here"; }}
+          class="accent-accent"
+        />
+        Always open here, don't ask again
       </label>
+
+      <div class="flex items-center gap-2 px-3 py-2 rounded-[9px] border border-accent/40 bg-accent/10 text-[12px] text-fg-2">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="text-accent shrink-0"><path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg>
+        <span>
+          <kbd class="font-mono text-[11px] px-1 border border-border rounded-sm bg-bg text-fg">⌘</kbd>-click a pull request in the sidebar to open it in a new tab without asking.
+        </span>
+      </div>
     </div>
 
     <div class="flex justify-end gap-2 px-3.5 py-2.5 border-t border-hairline bg-bg">
