@@ -1,3 +1,16 @@
+# Easy Review v0.6.3
+
+## In plain terms
+
+- **What changed.** In the desktop app, comments, questions and notes hidden by an old "Hide all" setting can be shown again. The redesign in v0.6.0 removed every control for it, so anyone who had switched it on saw an empty diff with no way back. Settings → General now has a Diff display section with all the display options in one place.
+- **What you need to do.** Nothing. If comments were missing from your diff, open the display menu and tick the kind you want, or turn off Hide all under Settings → General → Diff display.
+
+## What's Changed
+
+### Fixes
+- Desktop: a stored Hide all choice from the old Comments panel hid every comment, question and note with no control to undo it. The display menu shows each kind unticked while Hide all is on and a click shows it again, it gains Resolved comments and Outdated comments rows, and the Comments tab names Hide all when it is the reason nothing shows (#360).
+- Desktop: "All display settings…" in the display menu opened Settings → General, which had no desktop display settings. General now has a Diff display section for split view, wrap, line numbers, Hide all, each annotation kind, and resolved and outdated comments, bound to the same state as the display menu. The TUI's display settings stay separate (#361).
+
 # Easy Review v0.6.2
 
 ## In plain terms
