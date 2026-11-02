@@ -1,7 +1,11 @@
 <script lang="ts">
   import type { AiSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
-  import { commentThreadsFromDiff, unpushedLocalCommentThreads } from "$lib/commentVisibility";
+  import {
+    commentThreadsFromDiff,
+    hiddenGithubHint,
+    unpushedLocalCommentThreads,
+  } from "$lib/commentVisibility";
   import { navigateToThread } from "$lib/dom";
   import { baseName } from "$lib/shortFileName";
   import { copyReviewExport } from "$lib/stores/quickExport";
@@ -130,7 +134,7 @@
 
 {#if hiddenGithub > 0 && rightPanelFilters.kind !== "question" && rightPanelFilters.kind !== "note"}
   <p class="m-0 -mt-1.5 text-[11px] text-fg-3">
-    {hiddenGithub} resolved or outdated GitHub comment{hiddenGithub === 1 ? "" : "s"} hidden
+    {hiddenGithubHint(hiddenGithub, app.commentVisibility)}
   </p>
 {/if}
 

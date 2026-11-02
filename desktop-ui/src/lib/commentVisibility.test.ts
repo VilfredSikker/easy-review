@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_COMMENT_VISIBILITY,
+  commentFilterCounts,
   commentThreads,
   hiddenCommentsHint,
+  hiddenGithubHint,
+  kindShown,
   toggleCommentFilter,
+  toggleKindShown,
   unpushedLocalCommentThreads,
   visibleCommentThreads,
 } from "./commentVisibility";
@@ -178,6 +182,73 @@ describe("hiddenCommentsHint", () => {
   it("mentions resolved/outdated when Hide all is off", () => {
     expect(hiddenCommentsHint(15, DEFAULT_COMMENT_VISIBILITY)).toBe(
       "15 comments hidden (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.",
+    );
+  });
+});
+
+// A `hideAll` stored by the old Comments panel, which the redesigned UI had no
+// control for: every annotation stayed hidden from the diff with no way back.
+const STUCK_HIDE_ALL = {
+  ...DEFAULT_COMMENT_VISIBILITY,
+  hideAll: true,
+  hideResolved: true,
+  hideOutdated: true,
+};
+
+describe("kindShown", () => {
+  it("reads unticked under hideAll even when the kind itself is on", () => {
+    expect(kindShown(STUCK_HIDE_ALL, "hideQuestions")).toBe(false);
+    expect(kindShown(DEFAULT_COMMENT_VISIBILITY, "hideQuestions")).toBe(true);
+  });
+
+  it("reads unticked when the kind is hidden", () => {
+    expect(kindShown({ ...DEFAULT_COMMENT_VISIBILITY, hideNotes: true }, "hideNotes")).toBe(false);
+  });
+});
+
+describe("toggleKindShown", () => {
+  it("lifts hideAll and shows the clicked kind", () => {
+    const next = { ...STUCK_HIDE_ALL, ...toggleKindShown(STUCK_HIDE_ALL, "hideComments") };
+    expect(next.hideAll).toBe(false);
+    expect(kindShown(next, "hideComments")).toBe(true);
+    // The other kinds were on underneath hideAll, so they come back too.
+    expect(kindShown(next, "hideQuestions")).toBe(true);
+  });
+
+  it("shows a hidden kind under hideAll instead of hiding it further", () => {
+    const vis = { ...STUCK_HIDE_ALL, hideNotes: true };
+    const next = { ...vis, ...toggleKindShown(vis, "hideNotes") };
+    expect(kindShown(next, "hideNotes")).toBe(true);
+  });
+
+  it("flips just the kind when hideAll is off", () => {
+    expect(toggleKindShown(DEFAULT_COMMENT_VISIBILITY, "hideFindings")).toEqual({ hideFindings: true });
+    expect(toggleKindShown(DEFAULT_COMMENT_VISIBILITY, "hideOutdated")).toEqual({ hideOutdated: false });
+  });
+});
+
+describe("commentFilterCounts", () => {
+  it("counts resolved and outdated GitHub comments, not questions or notes", () => {
+    const counts = commentFilterCounts([
+      thread({ id: "c1", kind: "comment", resolved: true }),
+      thread({ id: "c2", kind: "comment", stale: true }),
+      thread({ id: "c3", kind: "comment", resolved: true, stale: true }),
+      thread({ id: "q1", kind: "question", resolved: true, stale: true }),
+    ]);
+    expect(counts).toEqual({ resolved: 2, outdated: 2 });
+  });
+});
+
+describe("hiddenGithubHint", () => {
+  it("names hideAll when that is what hides the comments", () => {
+    expect(hiddenGithubHint(1, STUCK_HIDE_ALL)).toBe(
+      "1 GitHub comment hidden: all annotations are hidden. Tick Comments in the display menu to show them.",
+    );
+  });
+
+  it("names the resolved/outdated filters otherwise", () => {
+    expect(hiddenGithubHint(2, DEFAULT_COMMENT_VISIBILITY)).toBe(
+      "2 GitHub comments hidden (resolved or outdated). Show them from the display menu.",
     );
   });
 });
