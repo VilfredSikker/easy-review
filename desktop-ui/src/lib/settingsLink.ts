@@ -1,7 +1,7 @@
 import type { SettingsTab } from "./types";
 
 /** A Settings section other surfaces link to by name. */
-export type SettingsSectionId = "risk-rules" | "concurrency" | "uninstall";
+export type SettingsSectionId = "risk-rules" | "concurrency" | "uninstall" | "display";
 
 /** Where an open of Settings lands: a tab, and optionally a section on it. */
 export interface SettingsTarget {
@@ -15,6 +15,7 @@ const SECTION_TAB: Record<SettingsSectionId, SettingsTab> = {
   "risk-rules": "review",
   concurrency: "ai",
   uninstall: "general",
+  display: "general",
 };
 
 const TABS: readonly SettingsTab[] = ["general", "ai", "review", "projects", "terminal"];

@@ -6,6 +6,7 @@
   import ThemePicker from "./ThemePicker.svelte";
   import InboxSettings from "./InboxSettings.svelte";
   import UninstallSection from "./UninstallSection.svelte";
+  import DisplaySettings from "./DisplaySettings.svelte";
   import { fieldMap, optionLabel, unclaimedSections } from "./settingsModel";
   import { GENERAL_ROWS, WATCHED_DESCRIPTIONS } from "./settingsSearch";
 
@@ -38,6 +39,8 @@
     <ThemePicker options={theme.options} value={theme.value} onchange={(v) => void onpatch(theme.key, v)} />
   </SettingsSection>
 {/if}
+
+<DisplaySettings />
 
 {#if watched.length > 0}
   <SettingsSection title="Watched paths">

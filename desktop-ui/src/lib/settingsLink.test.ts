@@ -6,6 +6,7 @@ describe("settings deep links", () => {
     expect(resolveSettingsTarget("risk-rules")).toEqual({ tab: "review", section: "risk-rules" });
     expect(resolveSettingsTarget("concurrency")).toEqual({ tab: "ai", section: "concurrency" });
     expect(resolveSettingsTarget("uninstall")).toEqual({ tab: "general", section: "uninstall" });
+    expect(resolveSettingsTarget("display")).toEqual({ tab: "general", section: "display" });
   });
 
   test("a tab opens at its top", () => {
