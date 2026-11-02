@@ -3,7 +3,12 @@
   import { app } from "$lib/stores/app.svelte";
   import { findingsVisibility } from "$lib/stores/findingsVisibility.svelte";
   import { displayMenuCounts } from "$lib/viewBarModel";
-  import type { CommentVisibility } from "$lib/commentVisibility";
+  import {
+    commentFilterCounts,
+    kindShown,
+    toggleKindShown,
+    type CommentVisibility,
+  } from "$lib/commentVisibility";
 
   /**
    * The diff display menu: layout, wrap, line numbers and which annotation
@@ -18,6 +23,7 @@
 
   const counts = $derived(displayMenuCounts(app.snapshot));
   const vis = $derived(app.commentVisibility);
+  const commentFilters = $derived(commentFilterCounts(app.snapshot?.ai.threads, app.snapshot?.files));
 
   // `d` toggles unified/split globally; the hint teaches it where it applies.
   const LAYOUT_ROWS = [
@@ -49,8 +55,14 @@
   }
 
   function toggleHide(key: HideKey) {
-    app.setCommentVisibility({ [key]: !vis[key] });
+    app.setCommentVisibility(toggleKindShown(vis, key));
   }
+
+  type CommentFilterKey = "hideResolved" | "hideOutdated";
+  const commentFilterRows = $derived<{ key: CommentFilterKey; label: string; count: number }[]>([
+    { key: "hideResolved", label: "Resolved comments", count: commentFilters.resolved },
+    { key: "hideOutdated", label: "Outdated comments", count: commentFilters.outdated },
+  ]);
 
   function openSettings() {
     close(false);
@@ -165,10 +177,10 @@
           type="button"
           class={rowClass}
           role="menuitemcheckbox"
-          aria-checked={!vis[row.key]}
+          aria-checked={kindShown(vis, row.key)}
           onclick={() => toggleHide(row.key)}
         >
-          <span class="text-[12px] text-accent" aria-hidden="true">{vis[row.key] ? "" : "✓"}</span>
+          <span class="text-[12px] text-accent" aria-hidden="true">{kindShown(vis, row.key) ? "✓" : ""}</span>
           {row.label}
           <span class="font-mono text-[11px] text-muted">{row.count}</span>
         </button>
@@ -185,6 +197,19 @@
         Resolved findings
         <span class="font-mono text-[11px] text-muted">{counts.findingsResolved}</span>
       </button>
+      {#each commentFilterRows as row (row.key)}
+        <button
+          type="button"
+          class={rowClass}
+          role="menuitemcheckbox"
+          aria-checked={kindShown(vis, row.key)}
+          onclick={() => app.setCommentVisibility(toggleKindShown(vis, row.key))}
+        >
+          <span class="text-[12px] text-accent" aria-hidden="true">{kindShown(vis, row.key) ? "✓" : ""}</span>
+          {row.label}
+          <span class="font-mono text-[11px] text-muted">{row.count}</span>
+        </button>
+      {/each}
 
       <div class="mx-0.5 my-1 h-px bg-line" role="separator"></div>
       <button type="button" class={rowClass} role="menuitem" onclick={openSettings}>

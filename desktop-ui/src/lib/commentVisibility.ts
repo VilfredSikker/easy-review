@@ -131,3 +131,47 @@ export function hiddenCommentsHint(hiddenCount: number, visibility: CommentVisib
   }
   return `${n} (resolved/outdated). Turn off Hide resolved or Hide outdated above to show them.`;
 }
+
+type KindKey =
+  | "hideComments"
+  | "hideFindings"
+  | "hideQuestions"
+  | "hideNotes"
+  | "hideResolved"
+  | "hideOutdated";
+
+/** Whether the diff draws this annotation kind (or resolved / outdated
+ *  comments). `hideAll` overrides every other setting, so a ticked row must
+ *  not claim otherwise. */
+export function kindShown(vis: CommentVisibility, key: KindKey): boolean {
+  return !vis.hideAll && !vis[key];
+}
+
+/** The change one click on a display-menu row makes. Under `hideAll` the
+ *  click shows that row's annotations and lifts `hideAll`: the menu has no other control for
+ *  it, and a stored `hideAll` would otherwise hide every annotation for good. */
+export function toggleKindShown(vis: CommentVisibility, key: KindKey): Partial<CommentVisibility> {
+  if (vis.hideAll) return { hideAll: false, [key]: false };
+  return { [key]: !vis[key] };
+}
+
+/** Resolved and outdated GitHub comment threads, for the display-menu rows
+ *  that show or hide them. A thread that is both counts in each. */
+export function commentFilterCounts(
+  threads: ThreadSnapshot[] | undefined | null,
+  files?: DiffFiles,
+): { resolved: number; outdated: number } {
+  const all = commentThreadsFromDiff(threads, files);
+  return {
+    resolved: all.filter((t) => t.resolved).length,
+    outdated: all.filter((t) => t.stale).length,
+  };
+}
+
+/** The Comments tab's note for GitHub comments the visibility settings hide.
+ *  Names the setting doing the hiding and where to change it. */
+export function hiddenGithubHint(hidden: number, vis: CommentVisibility): string {
+  const n = `${hidden} GitHub comment${hidden === 1 ? "" : "s"} hidden`;
+  if (vis.hideAll) return `${n}: all annotations are hidden. Tick Comments in the display menu to show them.`;
+  return `${n} (resolved or outdated). Show them from the display menu.`;
+}
