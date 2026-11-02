@@ -616,16 +616,32 @@ pub fn build_tour_prompt_prepared_diff(
     output_file: &str,
     diff_hash: &str,
 ) -> String {
+    build_tour_prompt_split_dirs(scope, output_dir, output_dir, output_file, diff_hash)
+}
+
+/// [`build_tour_prompt_prepared_diff`] with the prepared diff in its own
+/// directory, so a tour can run beside a review flow that has pinned the
+/// bucket's `diff-tmp`. Output and the optional `review.json` stay in `output_dir`.
+pub fn build_tour_prompt_split_dirs(
+    scope: &str,
+    diff_dir: &str,
+    output_dir: &str,
+    output_file: &str,
+    diff_hash: &str,
+) -> String {
+    let safe_diff_dir = sanitize_for_shell(diff_dir)
+        .replace('{', "{{")
+        .replace('}', "}}");
     let safe_output_dir = sanitize_for_shell(output_dir)
         .replace('{', "{{")
         .replace('}', "}}");
     let safe_output_file = output_file.replace('{', "{{").replace('}', "}}");
     format!(
-        r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_output_dir}/diff-tmp`.
+        r#"You are preparing a guided **Tour** of a code diff for a reviewer. A diff for scope `{scope}` is already captured at `{safe_diff_dir}/diff-tmp`.
 
 ## Steps
-1. The diff hash is `{diff_hash}` — SHA-256 of `{safe_output_dir}/diff-tmp`, computed by the harness. Save it as `diff_hash` in the output (do **not** run `sha256sum`).
-2. Read `{safe_output_dir}/diff-tmp` (the full diff) into context.
+1. The diff hash is `{diff_hash}` — SHA-256 of `{safe_diff_dir}/diff-tmp`, computed by the harness. Save it as `diff_hash` in the output (do **not** run `sha256sum`).
+2. Read `{safe_diff_dir}/diff-tmp` (the full diff) into context.
 3. Optionally read `{safe_output_dir}/review.json` if it exists and its `diff_hash` matches — reuse its groupings and reference finding ids.
 4. Group the changed files into **pillars** ordered foundation-first, then by importance:
    - `foundation: true` for pillars other pillars build on (data models, core types, shared utilities, schema). Order these first.
@@ -2742,6 +2758,19 @@ mod tests {
         let r3 = build_arena_round3_prompt("{}", "", None);
         assert!(!r1.contains("REVIEW.md"));
         assert!(!r3.contains("REVIEW.md"));
+    }
+
+    #[test]
+    fn tour_prompt_split_dirs_reads_diff_from_its_own_dir() {
+        let p = build_tour_prompt_split_dirs("branch", "/b/tour-input", "/b", "tour.json", HASH);
+        assert!(p.contains("'/b/tour-input'/diff-tmp"), "{p}");
+        assert!(!p.contains("'/b'/diff-tmp"), "{p}");
+        assert!(p.contains("'/b'/review.json"), "{p}");
+        assert!(p.contains("'/b'/tour.json"), "{p}");
+        assert_eq!(
+            build_tour_prompt_prepared_diff("branch", "/b", "tour.json", HASH),
+            build_tour_prompt_split_dirs("branch", "/b", "/b", "tour.json", HASH)
+        );
     }
 
     #[test]

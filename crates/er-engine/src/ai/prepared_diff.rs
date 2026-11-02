@@ -23,6 +23,16 @@ use std::sync::Mutex;
 /// contention is negligible.
 static ARTIFACT_LOCK: Mutex<()> = Mutex::new(());
 
+/// Directory inside a bucket where a tour keeps its own prepared diff, so it
+/// never rewrites the `diff-tmp` that a review flow has pinned. The caller
+/// creates it; `ensure_diff_artifacts` does not.
+pub fn tour_input_dir(er_dir: &str) -> String {
+    Path::new(er_dir)
+        .join("tour-input")
+        .to_string_lossy()
+        .into_owned()
+}
+
 /// Write `diff-tmp` and `diff-annotated` under `er_dir` when their content
 /// changed since the last command, and return the SHA-256 of `raw` — the
 /// `diff_hash` the agent must record (contract: SHA-256 of `diff-tmp`).
