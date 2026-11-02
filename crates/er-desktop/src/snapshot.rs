@@ -172,10 +172,11 @@ pub struct OptimisticView {
 
 pub fn optimistic_view_matches(app: &App, expected: &OptimisticView) -> bool {
     let tab = app.tab();
-    let branch = tab
-        .local_branch_view
-        .clone()
-        .unwrap_or_else(|| tab.current_branch.clone());
+    // The frontend reads `branch` from the active `TabSummary`, which carries
+    // `local_branch_view` only (empty on a working tab). Falling back to
+    // `current_branch` here made every working-tab write look like a switched
+    // view: the write was skipped and the painted comment vanished.
+    let branch = tab.local_branch_view.as_deref().unwrap_or("");
     app.active_tab == expected.active_tab
         && tab.repo_root == expected.repo_root
         && tab.pr_number == expected.pr_number
@@ -7788,5 +7789,49 @@ mod tests {
 
         tab.ai.review = None;
         assert_eq!(build_ai_snapshot(&tab, None).review_created_at, None);
+    }
+
+    /// The view the frontend sends with an optimistic write, built from the
+    /// snapshot it painted the way `snapshotViewParts` in
+    /// desktop-ui/src/lib/snapshotChrome.ts does.
+    fn painted_view(snap: &AppSnapshot) -> OptimisticView {
+        let tab = snap.tabs.iter().find(|t| t.is_active);
+        OptimisticView {
+            active_tab: snap.active_tab,
+            repo_root: tab.map(|t| t.repo_root.clone()).unwrap_or_default(),
+            pr_number: tab.and_then(|t| t.pr_number),
+            branch: tab.and_then(|t| t.branch.clone()).unwrap_or_default(),
+            mode: snap.mode.clone(),
+        }
+    }
+
+    /// Regression: on a working tab with a checked-out branch, the painted view
+    /// must match, or `add_comment` / `promote_finding_to_comment` skip the
+    /// write and the optimistic comment disappears on confirm.
+    #[test]
+    fn painted_view_matches_on_working_tab_with_branch() {
+        let mut app = App::new_for_test(Vec::new());
+        app.tab_mut().current_branch = "feature".into();
+        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+        assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+    }
+
+    #[test]
+    fn painted_view_matches_on_local_branch_tab() {
+        let mut app = App::new_for_test(Vec::new());
+        app.tab_mut().current_branch = "main".into();
+        app.tab_mut().local_branch_view = Some("feature".into());
+        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+        assert!(optimistic_view_matches(&app, &painted_view(&snap)));
+    }
+
+    #[test]
+    fn painted_view_rejects_a_switched_mode() {
+        let mut app = App::new_for_test(Vec::new());
+        app.tab_mut().current_branch = "feature".into();
+        let snap = build_snapshot_with_delta(&app, &SnapshotSources::default());
+        let mut view = painted_view(&snap);
+        view.mode = "staged".into();
+        assert!(!optimistic_view_matches(&app, &view));
     }
 }
