@@ -7,7 +7,7 @@ on:
 
 permissions:
   contents: write
-  # npm publish uses OIDC trusted publishing when configured; token fallback via secrets.
+  # npm publish authenticates with OIDC trusted publishing (no token).
   id-token: write
 
 jobs:
@@ -239,7 +239,10 @@ jobs:
     name: Publish easy-review-mcp to npm
     needs: release
     runs-on: ubuntu-latest
-    # Opt-in: set repo variable PUBLISH_NPM=true and configure NPM_TOKEN (or trusted publishing).
+    # Opt-in: set repo variable PUBLISH_NPM=true. Publishing authenticates with
+    # npm trusted publishing (OIDC), configured per package on npmjs.com for
+    # this repo and release.yml. A token secret expired silently and every
+    # publish from 0.5.10 to 0.6.1 failed with E404, so there is no token path.
     if: ${{ vars.PUBLISH_NPM == 'true' }}
     steps:
       - uses: actions/checkout@v4
@@ -248,6 +251,10 @@ jobs:
         with:
           node-version: "22"
           registry-url: "https://registry.npmjs.org"
+
+      # Trusted publishing needs npm 11.5.1+; Node 22 ships npm 10.
+      - name: Upgrade npm
+        run: npm install -g npm@^11.5.1
 
       - name: Download binary artifacts
         uses: actions/download-artifact@v4
@@ -300,15 +307,9 @@ jobs:
           for key in darwin-arm64 darwin-x64 linux-x64; do
             ( cd "npm/platforms/$key" && npm publish --access public )
           done
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish launcher
         run: cd npm/er-mcp && npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish skills installer
         run: cd npm/skills && npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

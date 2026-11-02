@@ -1,3 +1,16 @@
+# Easy Review v0.6.2
+
+## In plain terms
+
+- **What changed.** Release plumbing only; the app is the same as v0.6.1. The `easy-review-mcp` npm packages publish again (npm was stuck on 0.5.9), and the desktop DMG is built and signed in CI along with the in-app update files.
+- **What you need to do.** If you use `easy-review-mcp` through npm, update it to get everything since 0.5.9. Desktop apps from v0.5.11 on should offer this update from the sidebar pill; older ones need a manual download.
+
+## What's Changed
+
+### Fixes
+- Release: npm publishing uses trusted publishing instead of a token that had expired, so every npm publish from 0.5.10 to 0.6.1 had failed (#359).
+- Release: CI now has the Developer ID certificate, so it builds the signed DMG and the updater archive and `latest.json` instead of skipping them.
+
 # Easy Review v0.6.1
 
 ## In plain terms
