@@ -1,8 +1,8 @@
 # Browser rework status
 
-Release branch: `release/v0.6.1`. Implementation PRs target that branch.
+Release branch: `release/v0.6.2`. Implementation PRs target that branch.
 Plan: [PLAN.md](./PLAN.md). Resume notes: [BUILD_LOG.md](./BUILD_LOG.md).
-Updated by the orchestrator only. Last update: 2026-10-31.
+Updated by the orchestrator only. Last update: 2026-11-02.
 
 Legend: planned, implementing, reviewing, fixing, merged, blocked.
 
@@ -34,9 +34,10 @@ remain pending until recorded in the proof log; compilation is not a substitute.
 
 ## Release target
 
-The owner directed creating `release/v0.6.1` from `release/v0.6.0` and targeting
-every new PR at it. See the [addendum](./ADDENDUM-release-0.6.1.md). Remaining
-snapshot, MCP and parking-probe branches will merge this base before publication.
+v0.6.1 shipped from `main` without this epic, so the owner moved it to 0.6.2:
+`release/v0.6.2` was created from `release/v0.6.1` and every new PR targets it. See
+the [addendum](./ADDENDUM-release-0.6.2.md). Remaining branches merge this base
+before publication.
 The parking-probe PR stays a draft until macOS validation.
 
 ## Pending design decisions

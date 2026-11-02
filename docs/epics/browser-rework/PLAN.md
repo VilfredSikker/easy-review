@@ -1,8 +1,8 @@
 # Browser rework plan
 
-Scope: ER-21 through ER-36. Target: `release/v0.6.1`, branched from
-`release/v0.6.0` at `e668531f` on 2026-10-31. The owner
-[release-target addendum](./ADDENDUM-release-0.6.1.md) overrides earlier target
+Scope: ER-21 through ER-36. Target: `release/v0.6.2`, branched from
+`release/v0.6.1` at `29d12bc4` on 2026-11-02. The owner
+[release-target addendum](./ADDENDUM-release-0.6.2.md) overrides earlier target
 references. Later owner decisions recorded in an ADDENDUM override this plan. Native proof results are pending; implementation readiness is separate
 from a passed proof. No browser product replacement is authorized by a scaffold.
 

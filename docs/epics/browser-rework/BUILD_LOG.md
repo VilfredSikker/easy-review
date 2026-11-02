@@ -6,7 +6,7 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
 
 1. Read [PLAN.md](./PLAN.md), [AGENT_BRIEF.md](./AGENT_BRIEF.md), STATUS and the
    latest log entries. Fetch the current release branch before starting a lane.
-2. Inspect open browser rework PRs against `release/v0.6.1` and their reviews.
+2. Inspect open browser rework PRs against `release/v0.6.2` and their reviews.
    Resume an existing implementer when possible; do not duplicate a PR.
 3. Use worktrees outside the main checkout. In this cloud session, source
    `/workspace/scratch/browser-tool-env.sh` before Rust, Bun or just commands.
@@ -109,3 +109,11 @@ Only the orchestrator updates this append-only log and [STATUS.md](./STATUS.md).
 - A status update accidentally replaced the build-log content. Restored the full
   append-only history from `4831d2a6` and appended these events; application code
   was unaffected.
+
+### 2026-11-02
+
+- v0.6.1 shipped from `main` as a patch release without this epic. The owner moved
+  the epic to 0.6.2: created `release/v0.6.2` from the `release/v0.6.1` head
+  `29d12bc4`, inheriting every merged epic change, and retargeted draft PR 354 to
+  it. See the [0.6.2 addendum](./ADDENDUM-release-0.6.2.md). The macOS proof gates
+  are unchanged.
