@@ -1,3 +1,16 @@
+# Easy Review v0.6.1
+
+## In plain terms
+
+- **What changed.** In the desktop app, comments, questions and notes stay put again. On a normal working tab they showed up and then vanished, and promoting a finding to a comment did nothing, because the app never saved them. The "open in a new tab?" dialog's "don't ask again" box now remembers **Open here**.
+- **What you need to do.** Nothing. Comments you added on v0.6.0 that vanished were never saved, so add them again. If you had ticked "always open in a new tab", the dialog asks you once more. Cmd/Ctrl-click or middle-click still opens a new tab.
+
+## What's Changed
+
+### Fixes
+- Desktop: comments, questions and notes added on a working tab vanished, and promoting a finding to a comment did nothing. The app compared the branch name from the wrong field, so it took every write for a switched view and skipped it (#357).
+- Desktop: the open-in-new-tab dialog's "don't ask again" box remembers "Open here" instead of "Always open in a new tab", and says that Cmd/Ctrl-click or middle-click opens a new tab. Ticking the box moves the highlight to "Open here". The choice uses a new saved key, so you are asked once more.
+
 # Easy Review v0.6.0
 
 ## In plain terms
