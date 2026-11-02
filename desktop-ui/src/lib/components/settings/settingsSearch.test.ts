@@ -75,10 +75,17 @@ const counts = (query: string, inputs: Partial<SearchInputs> = {}) =>
 describe("settings search index", () => {
   it("counts matches per tab so the nav can point at another tab", () => {
     expect(counts("wrap").terminal).toBe(2);
-    expect(counts("wrap").general).toBe(0);
+    // The desktop's own Wrap long lines row (Diff display) is on General.
+    expect(counts("wrap").general).toBe(2);
     expect(counts("parallel").ai).toBe(1);
     expect(counts("brand new").general).toBe(1);
     expect(counts("").ai).toBe(0);
+  });
+
+  it("indexes the desktop Diff display section on General, not Terminal", () => {
+    expect(counts("hide all annotations").general).toBe(1);
+    expect(counts("hide all annotations").terminal).toBe(0);
+    expect(counts("outdated comments").general).toBe(1);
   });
 
   it("indexes the description a row shows, not the engine's", () => {

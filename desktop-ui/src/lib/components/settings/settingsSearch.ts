@@ -109,6 +109,26 @@ export const GENERAL_ROWS = {
   },
 } satisfies Record<string, RowCopy>;
 
+/** The desktop diff display (Settings → General), the values the display menu flips. */
+export const DISPLAY_LAYOUT_ROWS = {
+  split: { label: "Split view", description: "Old and new side by side instead of one unified column." },
+  wrap: { label: "Wrap long lines", description: "Wrap long lines instead of scrolling each panel sideways." },
+  lineNumbers: { label: "Line numbers", description: "Show the line-number gutter." },
+  hideAll: {
+    label: "Hide all annotations",
+    description: "Hide every comment, finding, question and note from the diff, whatever the rows below say.",
+  },
+} satisfies Record<string, RowCopy>;
+
+export const DISPLAY_ANNOTATION_ROWS = {
+  comments: { label: "Comments", description: "GitHub review comments in the diff." },
+  findings: { label: "Findings", description: "AI review findings in the diff." },
+  questions: { label: "Questions", description: "Your private questions in the diff." },
+  notes: { label: "Notes", description: "Your private notes in the diff." },
+  resolved: { label: "Resolved comments", description: "GitHub comments in resolved threads." },
+  outdated: { label: "Outdated comments", description: "GitHub comments on lines that have since changed." },
+} satisfies Record<string, RowCopy>;
+
 export const AI_ROWS = {
   noProviders: {
     label: "No providers configured",
@@ -205,6 +225,9 @@ function generalTerms(general: ConfigHubField[]): string[] {
     ...(theme?.kind === "cycle"
       ? ["Appearance", ...rowTerms({ ...GENERAL_ROWS.theme, keywords: theme.options.map(optionLabel) })]
       : []),
+    "Diff display",
+    ...Object.values(DISPLAY_LAYOUT_ROWS).flatMap(rowTerms),
+    ...Object.values(DISPLAY_ANNOTATION_ROWS).flatMap(rowTerms),
     ...(watched.length > 0 ? ["Watched paths", ...fieldsTerms(watched, WATCHED_DESCRIPTIONS)] : []),
     "Inbox",
     ...rowTerms(GENERAL_ROWS.testNotification),

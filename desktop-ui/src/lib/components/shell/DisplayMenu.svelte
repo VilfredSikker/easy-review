@@ -66,7 +66,7 @@
 
   function openSettings() {
     close(false);
-    app.setMainView("settings");
+    app.openSettings("display");
   }
 
   function onMenuKey(e: KeyboardEvent) {
