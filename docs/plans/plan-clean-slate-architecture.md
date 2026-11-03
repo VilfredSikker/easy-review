@@ -17,8 +17,9 @@ document.
 |---|---|---|
 | Which front end leads? | **The desktop is the main product. The TUI stays supported** but follows the desktop. | §3.9, §6: the service is shaped around the desktop's needs and ported desktop-first. The TUI consumes the same service. |
 | Daemon or in-process? | **Whatever is best for performance and stability.** That is in-process. | §3.10 |
-| Multi-window desktop? | **Undecided.** | §3.8: the protocol keeps per-subscriber state, so allowing it later costs nothing. Nothing is built for it now. |
+| Multi-window desktop? | **No.** One window. | §3.8: the protocol assumes a single subscriber and builds nothing for multiple windows. |
 | Arena | **Keep the feature; a redesign is welcome.** | §3.11: the arena becomes a stage of the shared workflow engine instead of a subsystem of its own. |
+| Review drafts | **Use the GitHub pending review only.** | §5: the local unpushed-comment path is deleted. |
 | Old data | **No support needed.** Breaking changes are allowed. | §5: no `er migrate`. The new store starts empty, and every artifact can be regenerated. |
 
 ---
@@ -427,9 +428,9 @@ currently showing. This keeps ADR 0011's push model but adds per-resource
 precision, so no fingerprint hashing is needed: the owner bumps a version when
 it writes.
 
-Subscriptions belong to a subscriber, a webview, not to the process. There is
-no global `last_sent_*`. One window costs nothing extra, and if multiple
-windows are ever wanted, each simply subscribes on its own.
+The desktop has one window and one subscriber. Because the frontend tracks
+the versions it already holds and asks for what changed, the backend keeps no
+`last_sent_*` record of what it delivered.
 
 **3. Content addressing replaces delta bookkeeping.** A file's hunks are
 immutable for a given content hash, so the frontend cache is keyed by hash. A
@@ -617,8 +618,13 @@ These can be deleted regardless of whether the rest of this plan goes ahead.
       (`ai/review.rs`)
 - [ ] `ai/browser_annotations*` and `ai/browser_prompt.rs`. Their own header
       says "No runtime caller". Delete them or wire them up; do not keep them.
-- [ ] Decide between `submit_github_review` (local unpushed comments) and the
-      GitHub pending review (ADR 0049). Keep one review-draft path.
+- [ ] The unpushed-local-comment review path: the `submit_github_review`
+      command and the Comments-panel push that bundles unsynced comments from
+      `github-comments.json`. The GitHub pending review (ADR 0049) becomes the
+      only review draft. `github-comments.json` then mirrors only what
+      GitHub holds, so there is no "local, not yet pushed" comment state to
+      sync, reconcile or render. Update ADR 0049's last consequence when
+      this lands.
 
 **No migration of existing data.** Old data does not need to be supported:
 
@@ -684,9 +690,4 @@ ADR 0038's ratchet approach can enforce the new boundaries:
 The earlier questions are answered in "Decisions taken" at the top. What
 remains:
 
-1. **Multi-window desktop.** Nothing is blocked. The protocol supports it
-   (§3.8), but no window-management work is planned until there is a product
-   reason.
-2. **Panel round count (§3.11).** Decide after the measurement, not before.
-3. **One review-draft path (§5).** Choose between local unpushed comments and
-   the GitHub pending review.
+1. **Panel round count (§3.11).** Decide after the measurement, not before.
