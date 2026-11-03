@@ -1,7 +1,7 @@
 <script lang="ts">
   import type { TriageSnapshot } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
-  import { reviewPage } from "$lib/stores/reviewPage.svelte";
+  import { openOverviewFile } from "$lib/overviewFileOpen";
   import { arena } from "$lib/stores/arena.svelte";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
@@ -18,12 +18,14 @@
     followUpFor,
     previewLine,
     priorityDotClass,
+    priorityFiles,
+    reviewedBy,
+    reviewedNext,
     summaryPills,
     takeaways,
     triageFreshness,
     verdictLabel,
   } from "$lib/triageCard";
-  import { tick } from "svelte";
 
   interface Props {
     triage: TriageSnapshot;
@@ -41,6 +43,10 @@
 
   const reviewScope = $derived(reviewScopeFromMode(app.snapshot?.mode));
   const label = $derived(verdictLabel(triage.verdict_primary));
+  // A review of this diff answers "what next" better than triage's routing
+  // call; the routing call stays under Verdict.
+  const reviewed = $derived(reviewedNext(triage));
+  const files = $derived(priorityFiles(triage));
   const pills = $derived(summaryPills(triage));
 
   const rows = $derived(takeaways(triage));
@@ -56,19 +62,7 @@
     return parts.join(" ");
   });
 
-  async function navigateToPath(path: string) {
-    const snap = app.snapshot;
-    if (!snap) return;
-    const f = snap.files.find((file) => file.path === path);
-    if (f) {
-      // This card lives on the Overview, where no diff is mounted; select_file
-      // alone would change nothing the reader can see.
-      reviewPage.show("diff");
-      await tick();
-      await app.cmd("select_file", { idx: f.source_index });
-      await tick();
-    }
-  }
+  const navigateToPath = (path: string, e?: MouseEvent) => openOverviewFile(path, e);
 
   function runTriageAgain() {
     if (!reviewScope) return;
@@ -157,8 +151,13 @@
       <div class="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
         <p class="m-0 flex items-baseline gap-1.5 text-[14px] text-fg">
           <span class="text-[11px] font-medium uppercase tracking-[0.06em] text-accent">Next</span>
-          <b class="font-semibold">{label}</b>
-          {#if triage.confidence}<span class="text-[12px] text-fg-3">· {triage.confidence} confidence</span>{/if}
+          {#if reviewed}
+            <b class="font-semibold" data-testid="triage-reviewed-next">{reviewed}</b>
+            <span class="text-[12px] text-fg-3">· {reviewedBy(triage)}</span>
+          {:else}
+            <b class="font-semibold">{label}</b>
+            {#if triage.confidence}<span class="text-[12px] text-fg-3">· {triage.confidence} confidence</span>{/if}
+          {/if}
         </p>
         {#if pills.length > 0}
           <div class="flex flex-wrap gap-1.5" data-testid="triage-pills">
@@ -201,7 +200,7 @@
           preview={previewLine(triage.rationale) || verdictSummary}
           bind:open={verdictOpen}
         >
-          <p class="text-[12px] font-medium text-fg">{verdictSummary}</p>
+          <p class="text-[12px] font-medium text-fg">{reviewed ? `Triage routed: ${label}` : verdictSummary}</p>
           {#if triage.verdict_primary === "expert" && triage.experts.length > 0}
             <p class="mt-0.5 text-[11px] text-muted">
               Recommended experts: {triage.experts.join(", ")}
@@ -212,21 +211,21 @@
           {/if}
         </Disclosure>
 
-        {#if triage.priority_files.length > 0}
+        {#if files.length > 0}
           <Disclosure
             label="Priority files"
-            badge={triage.priority_files.length}
-            preview={filesPreview(triage.priority_files)}
+            badge={files.length}
+            preview={filesPreview(files)}
             bind:open={filesOpen}
           >
             <ul class="space-y-0.5">
-              {#each triage.priority_files as pf, i (i)}
+              {#each files as pf, i (i)}
                 <li class="min-w-0">
                   <button
                     type="button"
                     class="flex w-full min-w-0 items-start gap-1.5 rounded px-1 py-0.5 text-left transition-colors hover:bg-bg"
                     title={pf.reason ? `${pf.path} · ${pf.reason}` : pf.path}
-                    onclick={() => navigateToPath(pf.path)}
+                    onclick={(e) => navigateToPath(pf.path, e)}
                   >
                     <span
                       class="mt-[5px] h-1.5 w-1.5 shrink-0 rounded-full {priorityDotClass(pf.risk)}"

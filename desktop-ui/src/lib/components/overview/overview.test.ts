@@ -219,12 +219,10 @@ describe("overview jumps", () => {
   // These cards used to sit beside the diff; on the Overview no diff is
   // mounted, so a jump that only selects a file changes nothing on screen.
   it.each([
-    ["TriageCard.svelte", "async function navigateToPath", 'await app.cmd("select_file"'],
-    ["FileRisksCard.svelte", "async function jumpTo(", 'await app.cmd("select_file"'],
+    ["../overviewFileOpen.ts", "export async function openOverviewFile", 'await app.cmd("select_file"'],
     ["ChecklistCard.svelte", "async function jumpToFile", 'await app.cmd("select_file"'],
     ["ChecklistCard.svelte", "async function jumpToFinding", "await navigateToFinding(finding)"],
     ["overview/OverviewFindings.svelte", "async function open(", "await navigateToFinding(finding)"],
-    ["overview/OverviewAside.svelte", "async function openFile", 'void app.cmd("select_file"'],
   ])("%s switches the main view to the diff before %s jumps", (name, decl, jump) => {
     const fn = fnBody(card(name), decl);
     const show = fn.indexOf(SHOW_DIFF);
@@ -232,6 +230,14 @@ describe("overview jumps", () => {
     expect(show).toBeGreaterThan(-1);
     expect(settle).toBeGreaterThan(show);
     expect(fn.indexOf(jump)).toBeGreaterThan(settle);
+  });
+
+  it.each([
+    ["TriageCard.svelte", "openOverviewFile(path, e)"],
+    ["FileRisksCard.svelte", "openOverviewFile(path, e)"],
+    ["overview/OverviewAside.svelte", "openOverviewFile(file.path, e)"],
+  ])("%s jumps through the shared Overview file opener", (name, call) => {
+    expect(card(name)).toContain(call);
   });
 
   it("keeps the active tab's agent output reachable from the Overview", () => {

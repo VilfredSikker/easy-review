@@ -11,6 +11,7 @@
   import FindingsTab from "./rpanel/FindingsTab.svelte";
   import RisksTab from "./rpanel/RisksTab.svelte";
   import CommentsTab from "./rpanel/CommentsTab.svelte";
+  import DiagramsCard from "./DiagramsCard.svelte";
   import { useCommentAutoPull } from "./rpanel/commentAutoPull.svelte";
   import { PRIMARY_TABS, isSecondaryTab, type PrimaryRightPanelTab } from "./rpanel/rightPanelTabs";
   import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
@@ -31,7 +32,7 @@
     onCollapseToggle,
   }: Props = $props();
 
-  // Branch & PR, Triage and Diagrams live on the Overview now; a tab name left
+  // Branch & PR and Triage live on the Overview now; a tab name left
   // in storage from before shows Findings rather than an empty panel.
   const activeTab = $derived<PrimaryRightPanelTab>(
     isSecondaryTab(rightPanelTab.active) ? "findings" : rightPanelTab.active,
@@ -58,11 +59,13 @@
     findings: "Findings",
     risks: "Risks",
     comments: "Comments",
+    diagrams: "Diagrams",
   };
   const tabCount = $derived<Record<PrimaryRightPanelTab, number>>({
     findings: findingCount,
     risks: fileCount,
     comments: threadCount,
+    diagrams: ai?.diagrams.length ?? 0,
   });
 </script>
 
@@ -70,7 +73,7 @@
   class="shrink-0 bg-surface border-l border-hairline overflow-hidden flex flex-col relative
     max-[880px]:absolute max-[880px]:right-0 max-[880px]:inset-y-0 max-[880px]:z-20 max-[880px]:max-w-[92%] max-[880px]:shadow-2xl"
   style="width: {width}px"
-  aria-label="Findings, risks and comments"
+  aria-label="Findings, risks, comments and diagrams"
 >
   {#if onResizeStart}
     <!-- svelte-ignore a11y_no_noninteractive_element_interactions (mouse-only drag handle; keyboard resizing is not implemented) -->
@@ -83,7 +86,9 @@
     ></div>
   {/if}
 
-  <div class="flex items-center gap-0.5 pt-2 pr-2 pl-2.5 border-b border-hairline shrink-0" role="tablist">
+  <!-- Four tabs outgrow the panel's narrowest width; the row scrolls rather
+       than wrapping, so the panel body keeps its top edge. -->
+  <div class="flex items-center gap-0.5 pt-2 pr-2 pl-2 border-b border-hairline shrink-0 overflow-x-auto overflow-y-hidden [scrollbar-width:none]" role="tablist">
     {#each PRIMARY_TABS as tab (tab)}
       {@const selected = activeTab === tab}
       <button
@@ -91,7 +96,7 @@
         role="tab"
         aria-selected={selected}
         onclick={() => rightPanelTab.set(tab)}
-        class="px-2 pt-1.5 pb-2 -mb-px text-[12.5px] font-medium border-b-2 transition-colors
+        class="shrink-0 whitespace-nowrap px-1.5 pt-1.5 pb-2 -mb-px text-[12.5px] font-medium border-b-2 transition-colors
           {selected ? 'text-fg border-accent' : 'text-fg-2 border-transparent hover:text-fg'}"
       >{TAB_LABEL[tab]} <span class="text-fg-3 font-normal">{tabCount[tab]}</span></button>
     {/each}
@@ -102,7 +107,7 @@
         onclick={onCollapseToggle}
         title="Close panel (])"
         aria-label="Close panel"
-        class="w-6 h-6 rounded-md flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg text-[15px] leading-none self-center"
+        class="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-fg-3 hover:bg-hover hover:text-fg text-[15px] leading-none self-center"
       >×</button>
     {/if}
   </div>
@@ -114,6 +119,12 @@
       <RisksTab {ai} {currentFile} />
     {:else if activeTab === "comments"}
       <CommentsTab {ai} {currentFile} />
+    {:else if activeTab === "diagrams"}
+      {#if ai}
+        <DiagramsCard {ai} />
+      {:else}
+        <p class="m-0 text-[12px] text-fg-3">Diagrams need an AI view of this diff.</p>
+      {/if}
     {/if}
   </div>
 </aside>
