@@ -3525,14 +3525,19 @@ impl App {
         prompt: String,
         prepared_diff: bool,
     ) -> Result<()> {
-        self.spawn_background_agent_task(
-            "tour".to_string(),
-            "tour",
+        // Not `spawn_background_agent_task`: that refuses a bucket a review
+        // flow owns, and a tour shares nothing with the flow (it prepares its
+        // own diff and writes only `tour.json`).
+        self.enqueue_background_agent_task(
+            super::review_flow_admission::TOUR_TASK_KIND.to_string(),
+            super::review_flow_admission::TOUR_TASK_KIND,
             target,
             prompt,
             prepared_diff,
             None,
+            None,
         )
+        .map(|_| ())
     }
 
     /// Spawn the agent that proposes this repo's importance rules
@@ -3622,22 +3627,20 @@ impl App {
             )
         };
 
-        // The TUI calls this method directly. Check the exact tour destination
-        // before creating the directory or preparing diff artifacts.
-        self.check_review_bucket_admission(&er_dir)?;
-        std::fs::create_dir_all(&er_dir)?;
-
         let raw = self.tab().raw_diff_for_review(&scope)?;
         if raw.trim().is_empty() {
             anyhow::bail!("Nothing to tour");
         }
-        let diff_hash = crate::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)
+        let diff_dir = crate::ai::prepared_diff::tour_input_dir(&er_dir);
+        std::fs::create_dir_all(&diff_dir)?;
+        let diff_hash = crate::ai::prepared_diff::ensure_diff_artifacts(&diff_dir, &raw)
             .map_err(|e| anyhow::anyhow!("failed to prepare tour diff: {e}"))?;
 
         let is_pr = self.tab().tour_context_is_pr();
         let scope_label = if is_pr { "PR diff" } else { "branch diff" };
-        let prompt = crate::ai::prompts::build_tour_prompt_prepared_diff(
+        let prompt = crate::ai::prompts::build_tour_prompt_split_dirs(
             scope_label,
+            &diff_dir,
             &er_dir,
             "tour.json",
             &diff_hash,

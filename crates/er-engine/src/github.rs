@@ -1591,7 +1591,7 @@ pub fn gh_pr_diff_remote(owner: &str, repo: &str, number: u64) -> Result<String>
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.contains("406") || stderr.contains("too_large") {
+        if gh_diff_too_large(&stderr) {
             return gh_pr_diff_via_clone(owner, repo, number);
         }
         anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
@@ -1616,10 +1616,101 @@ pub fn gh_pr_diff(pr_number: u64, repo_root: &str) -> Result<String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
+        if gh_diff_too_large(&stderr) {
+            return gh_pr_diff_too_large_fallback(pr_number, repo_root);
+        }
         anyhow::bail!("Failed to get PR diff: {}", stderr.trim());
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Whether `gh pr diff` stderr says GitHub refused to render the diff.
+///
+/// GitHub caps the diff endpoint by file count (300) and by size, and the cap
+/// has nothing to do with how many lines changed: a few thousand lines spread
+/// over more than 300 files is refused, as is a small change to one huge file.
+fn gh_diff_too_large(stderr: &str) -> bool {
+    stderr.contains("HTTP 406")
+        || stderr.contains("too_large")
+        || stderr.contains("exceeded the maximum number")
+}
+
+/// A PR the diff endpoint refused: build the diff from the local checkout, and
+/// only if that cannot work (no usable `origin`, a shallow clone with no merge
+/// base) clone the repo into a temp dir.
+fn gh_pr_diff_too_large_fallback(pr_number: u64, repo_root: &str) -> Result<String> {
+    let local = gh_pr_diff_via_local_git(pr_number, repo_root);
+    let Err(local_err) = local else {
+        return local;
+    };
+    let Some((owner, repo)) = parse_origin_remote(repo_root) else {
+        return Err(local_err.context("GitHub refused to render this large PR diff"));
+    };
+    gh_pr_diff_via_clone(&owner, &repo, pr_number).map_err(|clone_err| {
+        clone_err.context(format!(
+            "GitHub refused to render this large PR diff; local git diff also failed: {local_err:#}"
+        ))
+    })
+}
+
+fn gh_pr_diff_via_local_git(pr_number: u64, repo_root: &str) -> Result<String> {
+    let output = Command::new("gh")
+        .args([
+            "pr",
+            "view",
+            &pr_number.to_string(),
+            "--json",
+            "baseRefOid,headRefOid",
+            "--jq",
+            r#"[.baseRefOid, .headRefOid] | @tsv"#,
+        ])
+        .current_dir(repo_root)
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .map_err(gh_spawn_context)?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!(
+            "Failed to get PR #{pr_number} commit SHAs: {}",
+            stderr.trim()
+        );
+    }
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    let (base_sha, head_sha) = text
+        .split_once('\t')
+        .filter(|(base, head)| !base.is_empty() && !head.is_empty())
+        .ok_or_else(|| anyhow::anyhow!("Unexpected gh pr view output: {text}"))?;
+
+    // By SHA rather than by branch name: it works for forks and for a head
+    // branch that has since been deleted. No refs are created.
+    let fetch = Command::new("git")
+        .args(["fetch", "--no-tags", "origin", base_sha, head_sha])
+        .current_dir(repo_root)
+        .output_timed(crate::proc::GIT_FETCH_TIMEOUT)
+        .context("Failed to fetch PR commits")?;
+    if !fetch.status.success() {
+        let stderr = String::from_utf8_lossy(&fetch.stderr);
+        anyhow::bail!("Failed to fetch PR commits: {}", stderr.trim());
+    }
+    git_merge_base_diff(repo_root, base_sha, head_sha)
+}
+
+/// `git diff base...head`: against the merge base, which is what GitHub's
+/// Files changed view shows. A two-dot diff against the base tip would also
+/// show the base branch's own newer commits, reversed.
+fn git_merge_base_diff(repo_root: &str, base: &str, head: &str) -> Result<String> {
+    let unified_arg = format!("--unified={}", crate::git::DEFAULT_CONTEXT_LINES);
+    let range = format!("{base}...{head}");
+    let diff = Command::new("git")
+        .args(["diff", &range, &unified_arg, "--no-color", "--no-ext-diff"])
+        .current_dir(repo_root)
+        .output()
+        .context("Failed to run git diff for large PR")?;
+    if !diff.status.success() {
+        let stderr = String::from_utf8_lossy(&diff.stderr);
+        anyhow::bail!("git diff failed for large PR: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&diff.stdout).to_string())
 }
 
 /// Base and head commit SHAs for a PR (from `gh pr view`). Works for merged PRs and
@@ -4778,5 +4869,44 @@ mod tests {
             pr_number_from_notification_url("https://api.github.com/repos/org/repo/commits/abc"),
             None
         );
+    }
+
+    #[test]
+    fn diff_too_large_matches_githubs_refusals_and_nothing_else() {
+        assert!(gh_diff_too_large(
+            "could not find pull request diff: HTTP 406: Sorry, the diff exceeded the maximum \
+             number of files (300). Consider using 'List pull requests files' API"
+        ));
+        assert!(gh_diff_too_large("PullRequest.diff too_large"));
+        assert!(!gh_diff_too_large("HTTP 404: Not Found"));
+        assert!(!gh_diff_too_large(
+            "no pull requests found for branch 14060"
+        ));
+    }
+
+    #[test]
+    fn merge_base_diff_excludes_commits_the_base_gained_since_the_branch_point() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        git(root, &["init", "-q", "-b", "main"]);
+        std::fs::write(root.join("shared.txt"), "one\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "base"]);
+
+        git(root, &["checkout", "-q", "-b", "feature"]);
+        std::fs::write(root.join("feature.txt"), "from the PR\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "pr"]);
+        let head = git(root, &["rev-parse", "HEAD"]);
+
+        git(root, &["checkout", "-q", "main"]);
+        std::fs::write(root.join("landed-later.txt"), "not part of the PR\n").unwrap();
+        git(root, &["add", "."]);
+        git(root, &["commit", "-q", "-m", "base moved on"]);
+        let base_tip = git(root, &["rev-parse", "HEAD"]);
+
+        let diff = git_merge_base_diff(root.to_str().unwrap(), &base_tip, &head).unwrap();
+        assert!(diff.contains("feature.txt"), "{diff}");
+        assert!(!diff.contains("landed-later.txt"), "{diff}");
     }
 }

@@ -1,6 +1,9 @@
 use super::{App, CommandStatus};
 use anyhow::{bail, Result};
 
+/// Task kind and command name of a tour; both are the same string.
+pub(super) const TOUR_TASK_KIND: &str = "tour";
+
 /// Capability held by the one review flow that owns a bucket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ReviewFlowLease {
@@ -61,23 +64,28 @@ impl App {
         Ok(())
     }
 
+    /// A tour is not a producer: it reads its own prepared diff
+    /// (`prepared_diff::tour_input_dir`) and writes only `tour.json`, which no
+    /// review-flow stage reads or writes. Counting it would let a running tour
+    /// block a flow's acquire and its release.
     fn bucket_has_producers(&self, er_dir: &str) -> Result<bool> {
         if self.background_tasks.values().any(|task| {
-            task.task.target.er_dir == er_dir && task.task.status == CommandStatus::Running
+            task.task.target.er_dir == er_dir
+                && task.task.kind != TOUR_TASK_KIND
+                && task.task.status == CommandStatus::Running
         }) || self
             .pending_background_tasks
             .iter()
-            .any(|task| task.task.target.er_dir == er_dir)
+            .any(|task| task.task.target.er_dir == er_dir && task.task.kind != TOUR_TASK_KIND)
         {
             return Ok(true);
         }
 
         if self.tabs.iter().any(|tab| {
             tab.er_dir() == er_dir
-                && tab
-                    .command_status
-                    .values()
-                    .any(|status| status == &CommandStatus::Running)
+                && tab.command_status.iter().any(|(name, status)| {
+                    name != TOUR_TASK_KIND && status == &CommandStatus::Running
+                })
         }) {
             return Ok(true);
         }
@@ -275,22 +283,41 @@ mod tests {
     }
 
     #[test]
-    fn review_flow_admission_tour_refusal_precedes_bucket_creation() {
-        let unique_repo = std::env::temp_dir().join(format!(
-            "er-review-flow-tour-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
+    fn review_flow_admission_tour_runs_beside_a_flow_lease() {
         let mut app = app();
-        app.tab_mut().repo_root = unique_repo.to_string_lossy().into_owned();
-        let bucket = app.tab().tour_bucket_er_dir().unwrap();
-        assert!(!std::path::Path::new(&bucket).exists());
+        let lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
+        app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
+            .unwrap();
+        assert!(
+            app.pending_background_tasks
+                .iter()
+                .any(|task| task.task.kind == TOUR_TASK_KIND)
+                || app
+                    .background_tasks
+                    .values()
+                    .any(|task| task.task.kind == TOUR_TASK_KIND)
+        );
+        // A queued or running tour must not hold the flow's lease open.
+        assert!(app.release_review_flow_lease(&lease).is_ok());
+    }
 
-        let _lease = app.acquire_review_flow_lease(&bucket).unwrap();
-        assert!(app.spawn_tour_for_active_tab().is_err());
-        assert!(!std::path::Path::new(&bucket).exists());
+    #[test]
+    fn review_flow_admission_tour_does_not_block_acquire() {
+        let mut app = app();
+        app.spawn_background_tour(target("/tmp/test/.er"), String::new(), true)
+            .unwrap();
+        app.tab_mut()
+            .command_status
+            .insert(TOUR_TASK_KIND.into(), CommandStatus::Running);
+        assert!(app.acquire_review_flow_lease("/tmp/test/.er").is_ok());
+    }
+
+    #[test]
+    fn review_flow_admission_other_background_work_still_refused_under_lease() {
+        let mut app = app();
+        let _lease = app.acquire_review_flow_lease("/tmp/test/.er").unwrap();
+        assert!(app
+            .spawn_background_review(target("/tmp/test/.er"), String::new(), true)
+            .is_err());
     }
 }

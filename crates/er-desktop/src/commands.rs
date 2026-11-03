@@ -4331,10 +4331,11 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
             )
         };
 
-        app.check_review_bucket_admission(&er_dir)
-            .map_err(|e| e.to_string())?;
-
-        std::fs::create_dir_all(&er_dir)
+        // No bucket admission check: a tour prepares its own diff under
+        // `tour_input_dir` and writes only `tour.json`, so it can run beside a
+        // review flow that owns the bucket.
+        let diff_dir = er_engine::ai::prepared_diff::tour_input_dir(&er_dir);
+        std::fs::create_dir_all(&diff_dir)
             .map_err(|e| format!("Failed to create tour managed directory: {e}"))?;
 
         let mut raw = app
@@ -4351,11 +4352,12 @@ pub async fn generate_tour(state: State<'_, AppState>) -> Result<AppSnapshot, St
         if raw.trim().is_empty() {
             return Err("Nothing to tour".to_string());
         }
-        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&er_dir, &raw)?;
+        let diff_hash = er_engine::ai::prepared_diff::ensure_diff_artifacts(&diff_dir, &raw)?;
 
         let scope_label = if is_pr { "PR diff" } else { "branch diff" };
-        let prompt = er_engine::ai::prompts::build_tour_prompt_prepared_diff(
+        let prompt = er_engine::ai::prompts::build_tour_prompt_split_dirs(
             scope_label,
+            &diff_dir,
             &er_dir,
             &tour_file,
             &diff_hash,
