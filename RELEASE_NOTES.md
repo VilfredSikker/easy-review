@@ -1,3 +1,16 @@
+# Easy Review v0.6.4
+
+## In plain terms
+
+- **What changed.** Very large PRs can now be opened. Once a PR touched more than 300 files, GitHub refused to send its diff and the PR could not be opened. Easy Review now builds the diff from your local clone instead. "Generate tour" also works while a Deep review is waiting for you to confirm its cost; before, it failed saying a review flow was already running.
+- **What you need to do.** Nothing.
+
+## What's Changed
+
+### Fixes
+- GitHub: a PR that GitHub would not render (HTTP 406, such as one touching more than 300 files) could not be opened, refreshed or auto-triaged from a local clone. Easy Review now fetches the PR's base and head from origin and diffs them locally, the same way Files changed does, and falls back to a temporary clone when that is not possible (#363).
+- Tour: a Deep review waiting for cost confirmation blocked "Generate tour" with "A review flow is already using this review bucket". A tour now prepares its own diff and writes only `tour.json`, so it neither waits for a review flow nor holds one up. ADR 0051 records why (#363).
+
 # Easy Review v0.6.3
 
 ## In plain terms
