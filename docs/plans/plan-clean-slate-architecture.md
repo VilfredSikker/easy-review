@@ -11,6 +11,16 @@ The figures below are a snapshot taken to show scale. They are not meant to be
 maintained, and they will drift. The code wins wherever it disagrees with this
 document.
 
+## Decisions taken
+
+| Question | Decision | Where it lands |
+|---|---|---|
+| Which front end leads? | **The desktop is the main product. The TUI stays supported** but follows the desktop. | §3.9, §6: the service is shaped around the desktop's needs and ported desktop-first. The TUI consumes the same service. |
+| Daemon or in-process? | **Whatever is best for performance and stability.** That is in-process. | §3.10 |
+| Multi-window desktop? | **Undecided.** | §3.8: the protocol keeps per-subscriber state, so allowing it later costs nothing. Nothing is built for it now. |
+| Arena | **Keep the feature; a redesign is welcome.** | §3.11: the arena becomes a stage of the shared workflow engine instead of a subsystem of its own. |
+| Old data | **No support needed.** Breaking changes are allowed. | §5: no `er migrate`. The new store starts empty, and every artifact can be regenerated. |
+
 ---
 
 ## 1. Diagnosis
@@ -417,6 +427,10 @@ currently showing. This keeps ADR 0011's push model but adds per-resource
 precision, so no fingerprint hashing is needed: the owner bumps a version when
 it writes.
 
+Subscriptions belong to a subscriber, a webview, not to the process. There is
+no global `last_sent_*`. One window costs nothing extra, and if multiple
+windows are ever wanted, each simply subscribes on its own.
+
 **3. Content addressing replaces delta bookkeeping.** A file's hunks are
 immutable for a given content hash, so the frontend cache is keyed by hash. A
 hit is a hit, and the server keeps no record of what it sent. This removes
@@ -444,6 +458,12 @@ ADR describing this protocol.
 
 ### 3.9 Front ends
 
+The desktop is the main product. The service, the resource set and the
+`Command` enum are designed around what the desktop needs, and the desktop is
+ported first. The TUI stays supported as a second consumer of the same service:
+it gets every domain feature for free, since nothing domain-related lives in a
+front end anymore, but it does not drive the design.
+
 - **er-tui** owns a `TuiView` (cursor, scroll, input mode, overlay, text area)
   and renders from `(service resources, TuiView)`. Key handling maps to
   `Command`s or to local view changes. It never mutates domain state directly.
@@ -459,19 +479,103 @@ ADR describing this protocol.
   almost free once use cases are commands. This is a natural headless and CI
   entry point.
 
-### 3.10 Optional: one service process shared by all front ends
+### 3.10 In-process service, with cross-process safety in the store
 
-The service API above can run in-process (as proposed) or behind a local socket.
-A per-user `er` daemon would:
+**Decision: the service runs in-process in each front end. There is no daemon.**
 
-- let the TUI, desktop and MCP share one store, one job runner and one slot pool
-- make the bucket lease real across processes (ADR 0044 currently admits it is
-  not)
-- remove "one `er` instance per worktree"
+A per-user daemon would let the desktop, TUI and MCP share one job runner. The
+cost is a second process to start, supervise, version and recover. That adds
+failure modes a desktop user would see: a stale daemon after an upgrade, a
+socket left behind by a crash, or a client and daemon on different protocol
+versions. Every hunk would also cross a socket with serialisation, which is
+the hot path §3.8 exists to make cheap. Neither trade suits a "performance and
+stability" priority.
 
-**Recommendation:** design `er-protocol` so it serialises cleanly, ship
-in-process first, and decide on the daemon after the protocol has settled.
-Nothing in §3.1–3.9 depends on it.
+What the daemon would have bought, and how to get it in-process instead:
+
+| Need | In-process answer |
+|---|---|
+| Two processes must not write the same bucket at once (ADR 0044's lease is App-local) | `ArtifactStore` takes an OS advisory lock (`flock` / `LockFileEx`) on `<bucket>/.lock` for every write, and a longer lease lock for a running workflow. This works across the desktop, TUI and MCP with no shared process. |
+| One front end should see another's writes | The store's change notification is fed by the file watcher on the store root (the `watch` code already exists), so an external write raises `ResourceChanged` just like an internal one. |
+| A global cap on agent processes across front ends | Not needed in practice: the desktop is the main front end, and the cap protects a single user's machine and provider quota. If it becomes needed, a counting lock directory in the store root gives a cross-process semaphore. |
+
+`er-protocol` types still derive `Serialize`, because the desktop's IPC needs
+that anyway. A daemon therefore stays possible later without redesigning
+anything.
+
+### 3.11 Arena: a workflow stage, not a subsystem
+
+**Keep the product behaviour.** Several independent reviewers work the same
+diff, an independent agreement signal is required (ADR 0024's quorum), an
+arbiter rules, and nothing reaches the review until the user accepts it. These
+are the reasons the arena exists, and they stay.
+
+**Change how it is built.** Today the arena is a second AI platform beside the
+review flow:
+
+- its own adapter, argv resolver and retry loop
+- its own registry and kill path (no process-group kill)
+- its own `progress.jsonl` progress channel
+- its own storage, an import path that rewrites `review.json`, and
+  ~1.3k lines of `impl App` glue
+
+That is about 6.5k lines in `arena/` plus the glue. The review flow then drives
+it as a foreign system, which is why a Deep run spans two job systems.
+
+The redesign makes the review flow and the arena **one workflow engine with
+composable stages**:
+
+```rust
+pub enum Stage {
+    Triage,                                         // picks depth + lenses
+    Finders  { lenses: Vec<Lens>, models: ModelGroup },
+    Panel    { reviewers: Vec<ModelChoice>, rounds: PanelRounds, quorum: u8 },
+    Arbiter  { mode: ArbiterMode },                 // Seeded verification | Panel ruling
+    AwaitAcceptance,
+}
+
+// Quick    = [Triage, Finders{general}, Arbiter{Seeded}]
+// Standard = [Triage, Finders{general + experts}, Arbiter{Seeded}]
+// Deep     = [Triage, Panel{…}, Arbiter{Panel}, AwaitAcceptance]
+// "Run arena" from the launcher = [Panel{user's pick}, Arbiter{Panel}, AwaitAcceptance]
+```
+
+- **Every reviewer and arbiter call is an ordinary `JobSpec`** on the shared
+  `JobRunner` (§3.6), so it gets slots, cancellation, process-group kill,
+  progress events and output validation for free. The arena adapter, registry,
+  retry loop and progress file are deleted.
+- **The rules move to `er-core` as pure functions.** Voting, merge, identity
+  and provenance are the arena's real intellectual content, and they are
+  already nearly pure: `quorum(votes) -> Agreement`,
+  `merge(candidates) -> Vec<Candidate>`, `normalize_reviewer(id) -> Lens`. They
+  become directly testable without spawning anything.
+- **The panel writes candidates, never findings.** A `PanelRun` artifact holds
+  candidates, votes and rulings (one writer). Accepting a candidate writes an
+  `AcceptedFinding` into its own artifact (one writer), and the findings
+  projection reads it alongside the general review. The `review.json` rewrite
+  in `arena/import.rs` goes away, and ADR 0024's "a run cannot silently rewrite
+  the artifacts it was meant to inform" becomes structural instead of
+  procedural.
+- **One arbiter.** The seeded verification arbiter and the panel arbiter are
+  the same job kind with different inputs (seeded claims vs. voted candidates).
+  `arbiter.json` and the panel's ruling share one schema.
+- **The workflow record is durable.** It lives in the store, under the store's
+  lease lock (§3.10). A crash mid-panel leaves a run marked interrupted, as
+  today, and the user can re-run only the stages that did not finish, because
+  each stage's output is an artifact bound to the same diff generation.
+
+Two product suggestions to consider while the arena is being rebuilt:
+
+1. **Make rounds a parameter, and measure.** Round 2 (cross-voting) is the most
+   expensive part of a panel. Record per run how often a cross-vote changes the
+   outcome compared with independent agreement plus the arbiter alone. If it
+   rarely does, `PanelRounds::Two` (independent work, then the arbiter) becomes
+   the default, and Deep gets cheaper with no change in quality.
+2. **Use diverse reviewers by default.** Independent agreement is only a signal
+   when the reviewers can fail differently. Default a panel to distinct
+   providers or models from the Advanced model group (ADR 0045), and show
+   "2 of 3 agreed (same model)" differently from "2 of 3 agreed (different
+   providers)".
 
 ---
 
@@ -491,6 +595,7 @@ The counts are indicative, as of `v0.6.4`.
 | `scoped_merge.rs`, the expert merge-into-review, the arena import rewrite of `review.json` | One writer per artifact, plus read-time projection |
 | `github.rs` + `gh_pr_actions.rs` (two layers, two cache styles) | `er-github` |
 | Four remote-slug parsers, three `now_epoch_ms` copies, two `projects.json` writers | One function or one writer each, in core or service |
+| `arena/` adapter, registry, retry loop, `progress.jsonl`, import, `app/state/arena.rs` glue | A `Panel` workflow stage on the shared `JobRunner`, with voting and merge rules in `er-core` |
 
 ---
 
@@ -515,9 +620,20 @@ These can be deleted regardless of whether the rest of this plan goes ahead.
 - [ ] Decide between `submit_github_review` (local unpushed comments) and the
       GitHub pending review (ADR 0049). Keep one review-draft path.
 
-Users would run a one-shot `er migrate` that rewrites existing sidecars into
-envelope format. After that, the loader accepts only current versions plus
-registered migrations.
+**No migration of existing data.** Old data does not need to be supported:
+
+- The new store uses a new root, for example `<app data>/easy-review/v1/`. On
+  first launch it starts empty. Projects, saved PRs and settings are re-entered
+  or re-detected, and every AI artifact is regenerable by definition.
+- The old root is left untouched. A single notice tells the user where it is,
+  and `er uninstall` offers to delete it.
+- `Artifact::migrate` exists from day one, but its registry starts empty. From
+  this release onward a format change ships with a migration, because this is
+  the format users will keep. Until then, a file with an unknown version is
+  treated as absent and regenerated, never half-read.
+
+This also simplifies the deletion list above: none of it needs a compatibility
+read path, so each item is a plain deletion.
 
 ---
 
@@ -530,12 +646,13 @@ leaves the tree green.
 
 | Phase | Work | Why in this order | Risk |
 |---|---|---|---|
-| **0. Delete** | §5 | Cheap. Shrinks every later phase. | Low; users need `er migrate` |
+| **0. Delete** | §5 | Cheap. Shrinks every later phase. | Low; old data is not carried over |
 | **1. Ports** | `er-git`, `er-github` traits and typed errors. Move every `Command::new` behind them. | Mechanical. Gives fakes, so later phases have tests. | Low |
-| **2. Store** | `er-store`, envelopes, `schemars`, one writer per artifact, read-time projection | Jobs and the service both need it | Medium: on-disk format change |
-| **3. Jobs** | `er-agent` `JobRunner`. Port the paths one at a time: card AI → background → tab-local → arena. Then workflows as persisted state machines. | Independent of UI. Removes the most duplicated code. | Medium |
-| **4. Core + service** | Extract `er-core`. Build the `Workspace` actor. Move use cases one command at a time. Move view state into the front ends. Port the TUI first, because it is the simplest consumer. | The large phase. Ports, store and jobs make it tractable. | High: touches everything |
-| **5. Protocol** | `er-protocol`, generated TS, resources plus content-addressed hunks. Port desktop-ui store by store. Delete `snapshot.rs` and `commands.rs`. | Needs the service to exist | High |
+| **2. Store** | `er-store` on a fresh root, envelopes, `schemars`, one writer per artifact, read-time projection, cross-process locks (§3.10) | Jobs and the service both need it | Low: no old data to carry |
+| **3. Jobs + workflows** | `er-agent` `JobRunner`. Port the paths one at a time: card AI → background → tab-local. Then the workflow engine (§3.11), with the arena rebuilt as a `Panel` stage and its rules moved to core. | Independent of UI. Removes the most duplicated code. | Medium |
+| **4. Core + service** | Extract `er-core`. Build the `Workspace` actor around the desktop's use cases. Move use cases one command at a time. Move view state into the front ends. | The large phase. Ports, store and jobs make it tractable. | High: touches everything |
+| **5. Desktop protocol** | `er-protocol`, generated TS, resources plus content-addressed hunks. Port desktop-ui store by store. Delete `snapshot.rs` and `commands.rs`. | The main product, so it moves first and gets the most testing. | High |
+| **5b. TUI** | Port the TUI onto the service with its own `TuiView`. | Follows the desktop. By then the service is settled, so this is mostly key mapping and rendering. | Medium |
 | **6. Consolidate** | Move inbox and projects into the service. Move MCP onto the service. Add CLI subcommands. Write the superseding ADRs. Update `CONTEXT.md` only if a term changed. | Cleanup | Low |
 
 During phases 4 and 5, run the old and new paths side by side behind a build
@@ -562,20 +679,14 @@ ADR 0038's ratchet approach can enforce the new boundaries:
 
 ---
 
-## 8. Open questions for the maintainer
+## 8. Still open
 
-1. **Is the TUI still a first-class front end?** If the desktop is the primary
-   product, phase 4 can port the desktop first, and the TUI's view layer can be
-   simpler.
-2. **Daemon or in-process (§3.10)?** This affects whether `er-protocol` needs a
-   transport now.
-3. **Multi-window desktop?** The current global `last_sent_*` markers assume
-   one window. The resource model does not, but it is worth knowing before
-   designing subscriptions.
-4. **Is the arena worth its weight?** It accounts for about 4k lines across
-   orchestrator, seeded runs and app glue. If the review flow's Deep depth
-   covers the same need, it could become a workflow preset rather than a
-   subsystem.
-5. **Should `er migrate` be one-shot, or should the loader keep migrations
-   indefinitely?** One-shot is simpler; indefinite is friendlier to users who
-   skip versions.
+The earlier questions are answered in "Decisions taken" at the top. What
+remains:
+
+1. **Multi-window desktop.** Nothing is blocked. The protocol supports it
+   (§3.8), but no window-management work is planned until there is a product
+   reason.
+2. **Panel round count (§3.11).** Decide after the measurement, not before.
+3. **One review-draft path (§5).** Choose between local unpushed comments and
+   the GitHub pending review.
