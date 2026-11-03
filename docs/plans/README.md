@@ -8,6 +8,7 @@ itself. When a plan and the code disagree, the code wins.
 | Plan | Area |
 |------|------|
 | [plan-agent-panel.md](plan-agent-panel.md) | AI agent terminal in the side panel |
+| [plan-clean-slate-architecture.md](plan-clean-slate-architecture.md) | Breaking-release architecture proposal: what to keep, what to change (proposal) |
 | [plan-agent-runner-and-cpu-audit.md](plan-agent-runner-and-cpu-audit.md) | Agent runner + CPU-hot path audit, doc-drift findings (Phases 0 and 1 complete; Phases 2-4 deferred) |
 | [plan-code-references.md](plan-code-references.md) | Code reference linking |
 | [plan-comments.md](plan-comments.md) | Comment system (questions + GitHub sync) |
