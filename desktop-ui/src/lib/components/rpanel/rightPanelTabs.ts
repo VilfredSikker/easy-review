@@ -1,24 +1,25 @@
 /**
- * The panel beside Tour and Diff answers three questions — what did the review
- * find, which files need a close read, what has been said — so those are its
- * tabs. Branch, Triage and Context held things that belong on the Overview,
- * which now carries them; the names stay so a stored or requested one can be
- * sent there instead of to an empty panel.
+ * The panel beside Tour and Diff answers what did the review find, which files
+ * need a close read, what has been said, and how the change hangs together —
+ * so those are its tabs. Diagrams are on the Overview as well: reading a flow
+ * diagram is most useful next to the code it draws. Branch and Triage held
+ * things that belong on the Overview only; the names stay so a stored or
+ * requested one can be sent there instead of to an empty panel.
  */
-export type PrimaryRightPanelTab = "findings" | "risks" | "comments";
-export type SecondaryRightPanelTab = "branch" | "triage" | "context";
+export type PrimaryRightPanelTab = "findings" | "risks" | "comments" | "diagrams";
+export type SecondaryRightPanelTab = "branch" | "triage";
 export type RightPanelTab = PrimaryRightPanelTab | SecondaryRightPanelTab;
 
-/** Names the four-tab panel used that no longer name a tab. */
-export type LegacyRightPanelTab = "review" | "notes";
+/** Names earlier panels used that no longer name a tab. `context` was the
+ *  Diagrams tab's first name. */
+export type LegacyRightPanelTab = "review" | "notes" | "context";
 
-export const PRIMARY_TABS: readonly PrimaryRightPanelTab[] = ["findings", "risks", "comments"];
-export const SECONDARY_TABS: readonly SecondaryRightPanelTab[] = ["branch", "triage", "context"];
+export const PRIMARY_TABS: readonly PrimaryRightPanelTab[] = ["findings", "risks", "comments", "diagrams"];
+export const SECONDARY_TABS: readonly SecondaryRightPanelTab[] = ["branch", "triage"];
 
 export const SECONDARY_TAB_LABELS: Record<SecondaryRightPanelTab, string> = {
   branch: "Branch & PR",
   triage: "Triage & checklist",
-  context: "Diagrams",
 };
 
 /** A new key, so a stored four-tab value is read through the migration once
@@ -37,6 +38,7 @@ export function isSecondaryTab(tab: RightPanelTab): tab is SecondaryRightPanelTa
 export function migrateRightPanelTab(raw: string | null | undefined): RightPanelTab {
   if (raw === "review") return "findings";
   if (raw === "notes") return "comments";
+  if (raw === "context") return "diagrams";
   if (raw && ALL_TABS.includes(raw)) return raw as RightPanelTab;
   return "findings";
 }

@@ -1,9 +1,8 @@
 <script lang="ts">
-  import { tick } from "svelte";
   import type { AppSnapshot, GhReviewerSummary } from "$lib/types";
   import { app } from "$lib/stores/app.svelte";
   import { reviewPage } from "$lib/stores/reviewPage.svelte";
-  import { diffNav } from "$lib/stores/diffNav.svelte";
+  import { openOverviewFile } from "$lib/overviewFileOpen";
   import { rightRail } from "$lib/stores/rightRail.svelte";
   import { rightPanelTab } from "$lib/stores/rightPanelTab.svelte";
   import { rightPanelFilters } from "$lib/components/rpanel/panelFilters.svelte";
@@ -18,8 +17,9 @@
   import BranchCard from "$lib/components/BranchCard.svelte";
   import CommentsCard from "$lib/components/CommentsCard.svelte";
   import ReviewerCommentsPopover from "./ReviewerCommentsPopover.svelte";
-  import { asideFileGroups, checkRows, prStatus, type AsideFile, type CheckState } from "./overviewModel";
+  import { asideFileGroups, checkRows, prStatus, type CheckState } from "./overviewModel";
   import { overviewSectionId } from "./overviewNav";
+  import OverviewSection from "./OverviewSection.svelte";
 
   interface Props {
     /** Defaults to the live snapshot; stories pass one. */
@@ -35,6 +35,7 @@
   const checks = $derived(checkRows(github?.checks ?? []));
   const reviewers = $derived(github?.reviewers ?? []);
   const groups = $derived(asideFileGroups(snap));
+  const fileCount = $derived(groups.reduce((n, g) => n + g.files.length, 0));
   const reviewed = $derived(snap?.reviewed_count ?? 0);
   const total = $derived(snap?.total_count ?? 0);
 
@@ -81,13 +82,6 @@
     reviewPage.show("diff");
   }
 
-  async function openFile(file: AsideFile) {
-    reviewPage.show("diff");
-    await tick();
-    void app.cmd("select_file", { idx: file.sourceIndex });
-    await diffNav.scrollToFile(file.path);
-  }
-
   const h3 = "m-0 mb-2 text-[11px] font-medium uppercase tracking-[.06em] text-fg-3";
 </script>
 
@@ -101,7 +95,7 @@
 
 <aside class="grid content-start gap-6 min-w-0" aria-label="Pull request details" data-testid="overview-aside">
   {#if github && status}
-    <section>
+    <OverviewSection name="aside-status" title="Status">
       <h3 class={h3}>Status</h3>
       <span class="inline-flex items-center gap-1.5 text-[13px] font-medium {STATUS_TEXT[status.tone]}">
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8" /><circle cx="4" cy="12.5" r="1.8" /><circle cx="12" cy="12.5" r="1.8" /><path d="M4 5.3v5.4M12 10.7V7a3 3 0 00-3-3H7" /></svg>
@@ -110,10 +104,10 @@
       <div class="mt-2.5">
         <PrMergeBox {github} />
       </div>
-    </section>
+    </OverviewSection>
   {/if}
 
-  <section>
+  <OverviewSection name="aside-reviewers" title="Reviewers">
     <h3 class={h3}>Reviewers</h3>
     <div class="grid gap-1.5 text-[12.5px]">
       <div class="flex min-w-0 items-center gap-2">
@@ -137,70 +131,15 @@
         </div>
       {/each}
     </div>
-  </section>
-
-  {#if checks.length > 0}
-    <section>
-      <h3 class={h3}>Checks</h3>
-      <div class="grid gap-1.5">
-        {#each checks as check, i (`${check.name}:${i}`)}
-          <div class="flex min-w-0 items-center gap-2 text-[12px]">
-            <span class="h-[7px] w-[7px] shrink-0 rounded-full {CHECK_DOT[check.state]}" aria-hidden="true"></span>
-            {#if check.url}
-              <button
-                type="button"
-                class="min-w-0 truncate text-left hover:underline"
-                title="Open {check.name}"
-                onclick={() => check.url && void openExternalUrl(check.url)}
-              >{check.name}</button>
-            {:else}
-              <span class="min-w-0 truncate">{check.name}</span>
-            {/if}
-            <span class="mono ml-auto shrink-0 text-[11px] text-fg-3">{check.detail}</span>
-          </div>
-        {/each}
-      </div>
-    </section>
-  {/if}
-
-  {#if groups.length > 0}
-    <section>
-      <h3 class={h3}>Files changed</h3>
-      <div class="grid gap-0.5">
-        {#each groups as group, gi (group.title ?? gi)}
-          {#if group.title}
-            <div class="mb-0.5 flex justify-between gap-2 text-[12px] text-fg-2 {gi > 0 ? 'mt-2' : ''}">
-              <span class="min-w-0 truncate">{group.title}</span>
-              <span class="mono shrink-0 text-[11px]"><span class="text-add-fg">+{group.additions}</span> <span class="text-del-fg">−{group.deletions}</span></span>
-            </div>
-          {/if}
-          {#each group.files as file (file.path)}
-            <button
-              type="button"
-              class="-mx-1.5 grid grid-cols-[26px_minmax(0,1fr)_auto] items-center gap-2 rounded-[5px] px-1.5 py-[3px] text-left text-[12px] hover:bg-hover"
-              title={file.path}
-              onclick={() => void openFile(file)}
-            >
-              <span class="mono rounded border border-hairline text-center text-[9px] leading-[14px] text-fg-3">{file.lang}</span>
-              <span class="truncate {file.reviewed ? 'text-fg-3 line-through' : ''}">{file.name}</span>
-              <span class="mono text-[10.5px] text-fg-3">{file.renamed ? "R" : ""}</span>
-            </button>
-          {/each}
-        {/each}
-      </div>
-    </section>
-  {/if}
+  </OverviewSection>
 
   <!-- Branch tools the right panel's Branch tab held: stack, save, watch and
-       the GitHub summary, then pushing and submitting comments. Folded, since
-       the sections above already answer what the prototype's aside asks. -->
+       the GitHub summary, then pushing and submitting comments. Open by
+       default and right under who is reviewing: it is where the PR is acted on. -->
   {#if snap}
-    <details id={overviewSectionId("branch")} class="group scroll-mt-4">
-      <summary class="{h3} mb-0 flex cursor-pointer list-none items-center gap-1.5 hover:text-fg-2">
-        <span class="transition-transform group-open:rotate-90" aria-hidden="true">›</span>
-        Branch &amp; PR
-      </summary>
-      <div class="mt-2 grid gap-3">
+    <OverviewSection id={overviewSectionId("branch")} name="aside-branch" title="Branch & PR" class="scroll-mt-4">
+      <h3 class={h3}>Branch &amp; PR</h3>
+      <div class="grid gap-3">
         <BranchCard
           branch={identity.branch}
           base={identity.base}
@@ -220,6 +159,59 @@
           <CommentsCard {ai} active={false} />
         {/if}
       </div>
-    </details>
+    </OverviewSection>
+  {/if}
+
+  {#if checks.length > 0}
+    <OverviewSection name="aside-checks" title="Checks">
+      <h3 class={h3}>Checks <span class="normal-case tracking-normal text-fg-3">{checks.length}</span></h3>
+      <!-- Capped so a monorepo's forty checks do not push Files changed off screen. -->
+      <div class="-mr-1.5 grid max-h-[220px] gap-1.5 overflow-y-auto pr-1.5">
+        {#each checks as check, i (`${check.name}:${i}`)}
+          <div class="flex min-w-0 items-center gap-2 text-[12px]">
+            <span class="h-[7px] w-[7px] shrink-0 rounded-full {CHECK_DOT[check.state]}" aria-hidden="true"></span>
+            {#if check.url}
+              <button
+                type="button"
+                class="min-w-0 truncate text-left hover:underline"
+                title="Open {check.name}"
+                onclick={() => check.url && void openExternalUrl(check.url)}
+              >{check.name}</button>
+            {:else}
+              <span class="min-w-0 truncate">{check.name}</span>
+            {/if}
+            <span class="mono ml-auto shrink-0 text-[11px] text-fg-3">{check.detail}</span>
+          </div>
+        {/each}
+      </div>
+    </OverviewSection>
+  {/if}
+
+  {#if groups.length > 0}
+    <OverviewSection name="aside-files" title="Files changed">
+      <h3 class={h3}>Files changed <span class="normal-case tracking-normal text-fg-3">{fileCount}</span></h3>
+      <div class="-mx-1.5 grid max-h-[320px] content-start gap-0.5 overflow-y-auto px-1.5">
+        {#each groups as group, gi (group.title ?? gi)}
+          {#if group.title}
+            <div class="mb-0.5 flex justify-between gap-2 text-[12px] text-fg-2 {gi > 0 ? 'mt-2' : ''}">
+              <span class="min-w-0 truncate">{group.title}</span>
+              <span class="mono shrink-0 text-[11px]"><span class="text-add-fg">+{group.additions}</span> <span class="text-del-fg">−{group.deletions}</span></span>
+            </div>
+          {/if}
+          {#each group.files as file (file.path)}
+            <button
+              type="button"
+              class="-mx-1.5 grid grid-cols-[26px_minmax(0,1fr)_auto] items-center gap-2 rounded-[5px] px-1.5 py-[3px] text-left text-[12px] hover:bg-hover"
+              title="{file.path} · ⌘-click to open the source"
+              onclick={(e) => void openOverviewFile(file.path, e)}
+            >
+              <span class="mono rounded border border-hairline text-center text-[9px] leading-[14px] text-fg-3">{file.lang}</span>
+              <span class="truncate {file.reviewed ? 'text-fg-3 line-through' : ''}">{file.name}</span>
+              <span class="mono text-[10.5px] text-fg-3">{file.renamed ? "R" : ""}</span>
+            </button>
+          {/each}
+        {/each}
+      </div>
+    </OverviewSection>
   {/if}
 </aside>

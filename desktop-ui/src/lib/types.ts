@@ -309,6 +309,25 @@ export interface TriageSnapshot {
   created_at?: string;
   /** Hash of the diff triage ran against. */
   diff_hash?: string;
+  /** A review of this same diff, regrading triage's call. `null` until one
+   *  exists; optional for fixtures. */
+  review_update?: TriageReviewUpdate | null;
+}
+
+/** What a finished review says about triage's first read. */
+export interface TriageReviewUpdate {
+  /** `high` | `med` | `low`. */
+  approx_risk: string;
+  /** `fix` with open high findings, `check` with medium ones, else `done`. */
+  next: "fix" | "check" | "done";
+  high: number;
+  med: number;
+  low: number;
+  /** Lenses whose findings are in the review: General, Security, … */
+  reviewed_by: string[];
+  /** Triage's priority files regraded, plus files only the review flagged. */
+  priority_files: TriagePriorityFileSnapshot[];
+  created_at: string;
 }
 
 /** Backend-owned progress for one review flow bound to a diff generation. */

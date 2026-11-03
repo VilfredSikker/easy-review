@@ -82,7 +82,8 @@ describe("right panel tabs", () => {
   it("maps the retired tab names onto the tabs that hold their content", () => {
     expect(migrateRightPanelTab("review")).toBe("findings");
     expect(migrateRightPanelTab("notes")).toBe("comments");
-    expect(migrateRightPanelTab("context")).toBe("context");
+    expect(migrateRightPanelTab("context")).toBe("diagrams");
+    expect(migrateRightPanelTab("diagrams")).toBe("diagrams");
     expect(migrateRightPanelTab("branch")).toBe("branch");
     expect(migrateRightPanelTab("bogus")).toBe("findings");
     expect(migrateRightPanelTab(null)).toBe("findings");
@@ -94,7 +95,8 @@ describe("right panel tabs", () => {
   });
 
   it("knows which tabs live behind More", () => {
-    expect(isSecondaryTab("context")).toBe(true);
+    expect(isSecondaryTab("branch")).toBe(true);
+    expect(isSecondaryTab("diagrams")).toBe(false);
     expect(isSecondaryTab("risks")).toBe(false);
   });
 });

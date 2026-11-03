@@ -1722,6 +1722,9 @@ pub struct TriageSnapshot {
     pub created_at: String,
     /// Hash of the diff triage was run against; `fresh` compares it.
     pub diff_hash: String,
+    /// The review's regrading of triage's call, once a review of this diff
+    /// exists. `triage.json` itself is left as the agent wrote it.
+    pub review_update: Option<crate::triage_update::TriageReviewUpdateSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5195,7 +5198,21 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 .collect(),
             created_at: t.created_at.clone(),
             diff_hash: t.diff_hash.clone(),
+            review_update: None,
         }
+    });
+    let triage = triage.map(|mut t| {
+        let review = ai.review.as_ref();
+        t.review_update = crate::triage_update::triage_review_update(
+            review.is_some_and(|r| r.diff_hash == tab.branch_diff_hash),
+            review.map_or("", |r| r.created_at.as_str()),
+            &t.priority_files,
+            &findings,
+            &resolved_findings,
+            &dropped_findings,
+            &file_risks,
+        );
+        t
     });
 
     // Same freshness rule the checklist feeds into `stale_reason` above, sent
