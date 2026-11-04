@@ -1,7 +1,7 @@
 # Epic 1.0.0 plan
 
 Source: [PROPOSAL.md](./PROPOSAL.md). Its "Decisions taken" table is settled and
-is not reopened here. Resume notes: [BUILD_LOG.md](./BUILD_LOG.md). Progress: [STATUS.md](./STATUS.md).
+is not reopened here. Owner decisions D1–D10 are settled in [ADDENDUM-01-decisions.md](./ADDENDUM-01-decisions.md), which wins where it disagrees with this plan. Resume notes: [BUILD_LOG.md](./BUILD_LOG.md). Progress: [STATUS.md](./STATUS.md).
 
 Target branch: `release/v1.0.0`, cut from `main` at `604c7945d`, verified on
 2026-11-03. Phases 0, 1 and 2 are planned as PRs. Phases 3 to 6 are milestones
