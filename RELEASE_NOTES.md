@@ -1,3 +1,18 @@
+# Easy Review v0.6.5
+
+## In plain terms
+
+- **What changed.** The desktop Overview gets Copy branch, Copy worktree and Copy PR link quick actions, every section can be folded, and file links open the diff (⌘-click opens the source). The right panel beside Tour and Diff gains a Diagrams tab. Once a review exists, the triage card shows the risk and next step from its open findings, such as "Fix 2 high findings".
+- **What you need to do.** Nothing. `triage.json` is not rewritten; the regraded view is worked out from the open findings each time the app reads the review.
+
+## What's Changed
+
+### Features
+- Overview quick actions: Copy branch, Copy worktree (⌘-click reveals it) and Copy PR link (⌘-click opens it), which the branch bar carried before the top bar replaced it. File links in Files changed, File risks and triage priority files open the diff on a click and the source on ⌘-click (#366).
+- Every Overview section folds from a gutter chevron and remembers its state. Agent output moves to the bottom, folded by default. In the aside, Branch & PR sits under Reviewers and starts open; Checks and Files changed have a capped height and scroll (#366).
+- Right panel: a Diagrams tab beside Tour and Diff. The palette's Diagrams item opens it there instead of switching to the Overview (#366).
+- Triage card: once a review of the current diff exists, it shows the risk, the regraded priority files and the next step, derived from the open findings of every lens. ADR 0052 records why `triage.json` stays untouched (#366).
+
 # Easy Review v0.6.4
 
 ## In plain terms
