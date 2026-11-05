@@ -121,6 +121,9 @@
                 class="text-[11px] {finding.confidence === 'confirmed' && !finding.resolved ? 'text-add-fg' : 'text-fg-3'}"
                 title="Confidence: {finding.confidence}"
               >{confidenceWord(finding)}</span>
+              {#if finding.arbiter_verdict === "escalated"}
+                <span class="rounded bg-warning/14 px-1 text-[11px] text-warning" title="The verifier escalated this finding for review">Escalated</span>
+              {/if}
               <button
                 type="button"
                 class="mono ml-auto text-[11.5px] text-fg underline decoration-dotted underline-offset-[3px] hover:text-accent"

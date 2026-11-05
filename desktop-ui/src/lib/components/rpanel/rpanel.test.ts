@@ -7,6 +7,7 @@ import {
   findingLens,
   findingLocation,
   findingsPanelView,
+  showEscalationDetails,
   scopeToReviewer,
   showReviewerPicker,
   toggleSeverity,
@@ -102,6 +103,12 @@ describe("right panel tabs", () => {
 });
 
 describe("findingsPanelView", () => {
+  it("closes escalation details when the verdict changes", () => {
+    const escalated = finding({ id: "e", arbiter_verdict: "escalated" });
+    expect(showEscalationDetails(escalated, "e")).toBe(true);
+    expect(showEscalationDetails({ ...escalated, arbiter_verdict: "kept" }, "e")).toBe(false);
+    expect(showEscalationDetails(escalated, "other")).toBe(false);
+  });
   const open = [
     finding({ id: "a", severity: "low", file: "z.ts" }),
     finding({ id: "b", severity: "high", confidence: "tentative" }),
@@ -123,6 +130,14 @@ describe("findingsPanelView", () => {
   it("counts what the gate holds back within the tile filter", () => {
     const v = findingsPanelView(open, resolved, { severity: "high", minTrust: "tentative", showResolved: false });
     expect(v.rows.map((f) => f.id)).toEqual(["b"]);
+    expect(v.gatedCount).toBe(1);
+  });
+
+  it("keeps escalated findings visible even when confidence is below the gate", () => {
+    const escalated = { ...finding({ id: "e", confidence: "informational", line: null }), arbiter_verdict: "escalated" as const };
+    const ordinary = finding({ id: "i", confidence: "informational" });
+    const v = findingsPanelView([escalated, ordinary], [], { severity: "all", minTrust: "confirmed", showResolved: false });
+    expect(v.rows.map((f) => f.id)).toEqual(["e"]);
     expect(v.gatedCount).toBe(1);
   });
 

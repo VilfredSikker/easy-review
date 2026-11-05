@@ -176,10 +176,12 @@ impl TabState {
         &mut self,
         bucket_dir: &str,
         diff_hash: &str,
+        arbiter_overlay: Option<&[u8]>,
     ) -> Option<super::AiState> {
         if let Some(pre) = self.preloaded_branch_ai.as_ref() {
             if pre.bucket_dir == bucket_dir && pre.diff_hash == diff_hash {
-                return self.preloaded_branch_ai.take().map(|p| p.ai);
+                let pre = self.preloaded_branch_ai.take()?;
+                return (pre.arbiter_overlay.as_deref() == arbiter_overlay).then_some(pre.ai);
             }
         }
         None
@@ -200,6 +202,7 @@ fn normalize_base(base: &str) -> &str {
 pub struct BranchAiPreload {
     pub bucket_dir: String,
     pub diff_hash: String,
+    pub arbiter_overlay: Option<Vec<u8>>,
     pub ai: super::AiState,
 }
 
@@ -327,11 +330,12 @@ mod tests {
         tab.preloaded_branch_ai = Some(BranchAiPreload {
             bucket_dir: bucket.clone(),
             diff_hash: "hash-1".to_string(),
+            arbiter_overlay: None,
             ai: super::super::AiState::default(),
         });
         // Matching bucket + hash → adopted (slot consumed).
         let adopted = tab
-            .take_preloaded_branch_ai(&bucket, "hash-1")
+            .take_preloaded_branch_ai(&bucket, "hash-1", None)
             .expect("adopted");
         assert!(adopted.questions.is_none(), "preload state returned as-is");
         assert!(tab.preloaded_branch_ai.is_none(), "consumed on match");
@@ -342,21 +346,41 @@ mod tests {
         tab.preloaded_branch_ai = Some(BranchAiPreload {
             bucket_dir: bucket.clone(),
             diff_hash: "hash-1".to_string(),
+            arbiter_overlay: None,
             ai: super::super::AiState::default(),
         });
         // A different bucket (the PR bucket at open) must not consume it.
         assert!(
-            tab.take_preloaded_branch_ai("pr-bucket-dir", "hash-1")
+            tab.take_preloaded_branch_ai("pr-bucket-dir", "hash-1", None)
                 .is_none(),
             "other-bucket reload leaves the slot alone"
         );
         assert!(tab.preloaded_branch_ai.is_some(), "cross-bucket keep");
         // And a later matching consume still adopts it.
         assert!(
-            tab.take_preloaded_branch_ai(&bucket, "hash-1").is_some(),
+            tab.take_preloaded_branch_ai(&bucket, "hash-1", None)
+                .is_some(),
             "later matching consume adopts"
         );
         assert!(tab.preloaded_branch_ai.is_none(), "one-shot");
+    }
+
+    #[test]
+    fn preload_uses_the_callers_captured_overlay_for_adoption() {
+        let dir = tempfile::tempdir().unwrap();
+        let bucket = dir.path().to_str().unwrap();
+        std::fs::write(dir.path().join("arbiter.json"), b"B").unwrap();
+        let mut tab = tab_with(|_| {});
+        tab.preloaded_branch_ai = Some(BranchAiPreload {
+            bucket_dir: bucket.into(),
+            diff_hash: "hash".into(),
+            arbiter_overlay: Some(b"B".to_vec()),
+            ai: super::super::AiState::default(),
+        });
+        assert!(tab
+            .take_preloaded_branch_ai(bucket, "hash", Some(b"A"))
+            .is_none());
+        assert!(tab.preloaded_branch_ai.is_none());
     }
 
     #[test]
