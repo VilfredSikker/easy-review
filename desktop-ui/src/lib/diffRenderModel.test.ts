@@ -26,6 +26,7 @@ import type { PillarHeaderSpec } from "./tourModel";
 import { rowIndexAtOffset, windowFromScrollVariable } from "./virtualWindow";
 import {
   buildAnnotationIndex,
+  findingsForDiff,
   type CommentVisibility,
 } from "./diffAnnotations";
 import type {
@@ -846,6 +847,21 @@ function makeSimpleFile(path: string, ctxLines = 2): FileSnapshot {
   }
   return file({ path, hunks: [hunk({ lines })] });
 }
+
+describe("escalated finding navigation", () => {
+  it("indexes a hunk-only escalation below the confidence gate for navigation", () => {
+    const f = makeSimpleFile("a.ts");
+    const escalation = finding("escalation", "a.ts", null, {
+      hunk_index: 0, confidence: "informational", arbiter_verdict: "escalated",
+    });
+    const ai = emptyAi([], [escalation]);
+    const visible = findingsForDiff(ai, { showResolved: false, minTrust: "confirmed" });
+    const model = mkCross([f], { ...ai, findings: visible }, { mode: "pr" });
+    const index = model.findingRowIndex("escalation");
+    expect(index).not.toBeNull();
+    expect(model.rows[index!].type).toBe("fallback-finding");
+  });
+});
 
 describe("document preview rows", () => {
   for (const viewMode of ["unified", "split"] as const) {

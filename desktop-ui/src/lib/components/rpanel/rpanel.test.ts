@@ -126,6 +126,14 @@ describe("findingsPanelView", () => {
     expect(v.gatedCount).toBe(1);
   });
 
+  it("keeps escalated findings visible even when confidence is below the gate", () => {
+    const escalated = { ...finding({ id: "e", confidence: "informational", line: null }), arbiter_verdict: "escalated" as const };
+    const ordinary = finding({ id: "i", confidence: "informational" });
+    const v = findingsPanelView([escalated, ordinary], [], { severity: "all", minTrust: "confirmed", showResolved: false });
+    expect(v.rows.map((f) => f.id)).toEqual(["e"]);
+    expect(v.gatedCount).toBe(1);
+  });
+
   it("sinks resolved rows below every open one when shown", () => {
     const v = findingsPanelView(open, resolved, { severity: "high", minTrust: "informational", showResolved: true });
     expect(v.rows.map((f) => f.id)).toEqual(["b", "c", "r"]);

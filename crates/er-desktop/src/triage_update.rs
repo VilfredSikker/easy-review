@@ -155,6 +155,8 @@ mod tests {
             hunk_index: None,
             severity: severity.to_string(),
             confidence: String::new(),
+            arbiter_verdict: None,
+            arbiter_rationale: None,
             lens_category: String::new(),
             resolved: false,
             expert_label: None,

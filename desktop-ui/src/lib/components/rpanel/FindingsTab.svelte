@@ -42,8 +42,8 @@
 
   const GATE_OPTIONS: { level: Confidence; label: string; hint: string }[] = [
     { level: "informational", label: "all", hint: "Show every grade, including informational" },
-    { level: "tentative", label: "tentative+", hint: "Hide informational findings" },
-    { level: "confirmed", label: "confirmed", hint: "Show only confirmed findings" },
+    { level: "tentative", label: "tentative+", hint: "Hide informational findings except escalations" },
+    { level: "confirmed", label: "confirmed", hint: "Show confirmed findings and escalations" },
   ];
 
   const SEV_TEXT = { high: "text-risk-high", med: "text-risk-med", low: "text-risk-low" } as const;
@@ -67,6 +67,7 @@
   const arbiterLine = $derived(ai ? arbiterSummary(ai) : null);
   const droppedFindings = $derived(ai?.dropped_findings ?? []);
   let showDropped = $state(false);
+  let expandedFindingId = $state<string | null>(null);
 
   const hasReview = $derived(
     !!ai &&
@@ -344,10 +345,21 @@
               class="mono text-[10px] w-3.5 h-3.5 inline-grid place-items-center rounded-[3px] border border-border shrink-0"
               title="Confidence: {finding.confidence}"
             >{confidenceGlyph(finding.confidence)}</span>
-            <span class="ml-auto shrink-0">{findingLens(finding)}</span>
+            <span class="ml-auto truncate">{findingLens(finding)}</span>
           </span>
           <span class="text-[12.5px] font-medium leading-snug text-fg {finding.resolved ? 'line-through' : ''}">{finding.title}</span>
+          {#if finding.arbiter_verdict === "escalated"}
+            <span class="w-fit rounded bg-warning/14 px-1 text-[11px] text-warning" title="The verifier escalated this finding for review">Escalated</span>
+          {/if}
         </button>
+        {#if finding.arbiter_verdict === "escalated"}
+          <button
+            type="button"
+            aria-expanded={expandedFindingId === finding.id}
+            class="px-2 pb-1 text-[11px] text-fg-3 hover:text-fg"
+            onclick={() => (expandedFindingId = expandedFindingId === finding.id ? null : finding.id)}
+          >{expandedFindingId === finding.id ? "Hide details" : "Show details"}</button>
+        {/if}
         <button
           type="button"
           onclick={() => setResolved(finding, !finding.resolved)}
@@ -355,6 +367,15 @@
           class="absolute top-1.5 right-1 px-1.5 py-px rounded-[5px] mono text-[10.5px] text-fg-3 bg-surface border border-hairline
             opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-fg transition-opacity"
         >{finding.resolved ? "Reopen" : "Resolve"}</button>
+        {#if expandedFindingId === finding.id}
+          <div class="px-2 pb-2 text-[12px] leading-relaxed text-fg-2">
+            <MarkdownText text={finding.message_markdown} />
+            {#if finding.arbiter_rationale}
+              <p class="mb-1 mt-2 font-medium text-fg">Why it was escalated</p>
+              <MarkdownText text={finding.arbiter_rationale} />
+            {/if}
+          </div>
+        {/if}
       </div>
     {:else}
       <p class="px-1 py-3 text-[12px] text-fg-3">No findings pass this filter.</p>

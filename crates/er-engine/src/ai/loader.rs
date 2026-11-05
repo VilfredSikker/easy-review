@@ -359,12 +359,17 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
     if let Some(arbiter) = super::arbiter::load_arbiter_review(er_dir) {
         if let Some(review) = state.review.as_mut() {
             if arbiter.diff_hash == review.diff_hash {
-                let verdict_ids: HashSet<&str> = arbiter
+                let verdicts: HashMap<&str, (super::arbiter::ArbiterRuling, &str)> = arbiter
                     .verdicts
                     .iter()
-                    .map(|verdict| verdict.id.as_str())
+                    .map(|verdict| {
+                        (
+                            verdict.id.as_str(),
+                            (verdict.verdict, verdict.rationale.as_str()),
+                        )
+                    })
                     .collect();
-                state.arbiter_graded_keys = review
+                state.arbiter_verdicts = review
                     .files
                     .iter()
                     .flat_map(|(path, file_review)| {
@@ -374,10 +379,12 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
                                 finding.line_start,
                                 &finding.title,
                             );
-                            verdict_ids.contains(key.as_str()).then_some(key)
+                            let (ruling, rationale) = verdicts.get(key.as_str())?;
+                            Some((key, (*ruling, (*rationale).to_owned())))
                         })
                     })
                     .collect();
+                state.arbiter_graded_keys = state.arbiter_verdicts.keys().cloned().collect();
             }
             state.arbiter_effect = super::arbiter::merge_arbiter_into_review(review, &arbiter);
         }
@@ -631,6 +638,51 @@ mod tests {
         assert!(producer_only.files["src/a.rs"].findings[0]
             .providers
             .is_empty());
+    }
+
+    #[test]
+    fn arbiter_verdicts_follow_matching_review_identity_without_line_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let key = super::super::identity::finding_key("src/a.rs", None, "claim");
+        std::fs::write(
+            path.join("review.json"),
+            serde_json::to_vec(&json!({
+                "version": 1, "diff_hash": "hash",
+                "files": { "src/a.rs": { "risk": "medium", "findings": [
+                    { "id": "f-1", "severity": "medium", "title": "claim", "line_start": null },
+                    { "id": "f-2", "severity": "medium", "title": "other", "line_start": null }
+                ] } }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let write_arbiter = |hash| {
+            std::fs::write(
+                path.join("arbiter.json"),
+                serde_json::to_vec(&json!({
+                    "version": 1, "diff_hash": hash, "verdicts": [
+                        { "id": key, "verdict": "escalated", "confidence": "informational" },
+                        { "id": "orphan", "verdict": "kept" }
+                    ]
+                }))
+                .unwrap(),
+            )
+            .unwrap();
+        };
+        write_arbiter("hash");
+        let state = load_ai_state(path.to_str().unwrap(), "hash", None);
+        assert_eq!(state.arbiter_verdicts.len(), 1);
+        assert_eq!(
+            state
+                .arbiter_verdicts
+                .get(&key)
+                .map(|(verdict, _)| *verdict),
+            Some(super::super::arbiter::ArbiterRuling::Escalated)
+        );
+        write_arbiter("old-hash");
+        let stale = load_ai_state(path.to_str().unwrap(), "hash", None);
+        assert!(stale.arbiter_verdicts.is_empty());
     }
 
     #[test]

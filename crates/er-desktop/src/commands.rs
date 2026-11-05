@@ -11608,6 +11608,11 @@ fn compute_content_revision(app: &App) -> u64 {
         resolved.hash(&mut h);
         dropped.hash(&mut h);
     }
+    // A verdict can change without changing any finding counts or confidence.
+    // Sort the map so equivalent overlays always produce the same revision.
+    let mut verdicts: Vec<_> = tab.ai.arbiter_verdicts.iter().collect();
+    verdicts.sort_unstable_by_key(|(key, _)| *key);
+    verdicts.hash(&mut h);
     // Agent command status changes (e.g. running → done) must trigger a snapshot.
     for (name, status) in &tab.command_status {
         name.hash(&mut h);
@@ -13252,6 +13257,28 @@ mod tests {
             image_data_url("image/svg+xml", b"<svg/>"),
             "data:image/svg+xml;base64,PHN2Zy8+"
         );
+    }
+
+    #[test]
+    fn arbiter_verdict_and_rationale_invalidate_content_revision() {
+        let mut app = make_app_with_n_tabs(1);
+        let before = compute_content_revision(&app);
+        app.tab_mut().ai.arbiter_verdicts.insert(
+            "claim".into(),
+            (
+                er_engine::ai::ArbiterRuling::Escalated,
+                "first reason".into(),
+            ),
+        );
+        let with_verdict = compute_content_revision(&app);
+        assert_ne!(before, with_verdict);
+        app.tab_mut()
+            .ai
+            .arbiter_verdicts
+            .get_mut("claim")
+            .unwrap()
+            .1 = "new reason".into();
+        assert_ne!(with_verdict, compute_content_revision(&app));
     }
 
     #[test]

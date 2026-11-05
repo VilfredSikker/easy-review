@@ -190,6 +190,13 @@ describe("findingsForDiff", () => {
     // The open gate hides nothing.
     expect(findingsForDiff(graded, open).map((f) => f.id)).toEqual(["tent", "info"]);
   });
+
+  it("shows escalations in the diff even when their confidence is below the gate", () => {
+    const escalated = mkFinding({ id: "escalated", file: FILE, line: null, hunk_index: 0, confidence: "informational", arbiter_verdict: "escalated" });
+    const ordinary = mkFinding({ id: "ordinary", file: FILE, line: 4, confidence: "informational" });
+    const visible = findingsForDiff({ threads: [], findings: [escalated, ordinary] }, { showResolved: false, minTrust: "confirmed" });
+    expect(visible.map((f) => f.id)).toEqual(["escalated"]);
+  });
 });
 
 describe("buildAnnotationIndex", () => {
@@ -545,6 +552,13 @@ describe("annotationVersion", () => {
     const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF);
     const v2 = annotationVersion({ ...a.ai, findings: [...a.ai.findings, mkFinding({ id: "newFinding", file: FILE })] }, a.files, "branch", VIS_OFF);
     expect(v1).not.toBe(v2);
+  });
+
+  it("changes when a finding receives an escalation verdict", () => {
+    const a = fix();
+    const v1 = annotationVersion(a.ai, a.files, "branch", VIS_OFF);
+    const updated = a.ai.findings.map((f, i) => i === 0 ? { ...f, arbiter_verdict: "escalated" as const } : f);
+    expect(annotationVersion({ ...a.ai, findings: updated }, a.files, "branch", VIS_OFF)).not.toBe(v1);
   });
 
   it("changes when visibility bits flip", () => {

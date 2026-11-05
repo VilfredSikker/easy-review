@@ -247,6 +247,10 @@ export interface FlatFinding {
   severity: "high" | "med" | "low";
   /** The producer's own grade, which an arbiter pass may have replaced. */
   confidence: Confidence;
+  /** Verdict from the matching arbiter overlay, when one applies. */
+  arbiter_verdict?: "kept" | "escalated" | "merged" | "dropped" | null;
+  /** Reason supplied with the matching arbiter verdict. */
+  arbiter_rationale?: string | null;
   /** `producers · category`, built by the engine — the same tag the TUI draws. */
   lens_category: string;
   /** The user has fixed this one. Rows carrying it arrive in

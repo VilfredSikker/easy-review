@@ -1518,6 +1518,10 @@ pub struct FlatFinding {
     /// The producer's own grade, which an arbiter pass may have replaced.
     #[serde(default)]
     pub confidence: String,
+    /// Ruling from the matching arbiter overlay, if this claim was graded.
+    pub arbiter_verdict: Option<String>,
+    /// Arbiter's reason, independent of whether the confidence changed.
+    pub arbiter_rationale: Option<String>,
     /// `producers · category`, built by the engine so both front ends render one
     /// definition of the tag rather than reimplementing it.
     #[serde(default)]
@@ -5102,6 +5106,9 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                     });
                 }
             }
+            let arbiter =
+                ai.arbiter_verdicts
+                    .get(&er_engine::ai::finding_key(path, f.line_start, &f.title));
             FlatFinding {
                 id: f.id.clone(),
                 file: path.to_owned(),
@@ -5109,6 +5116,18 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                 hunk_index: f.hunk_index,
                 severity: severity_str(f.severity).to_string(),
                 confidence: confidence_str(f.confidence).to_string(),
+                arbiter_verdict: arbiter.map(|(verdict, _)| {
+                    match verdict {
+                        er_engine::ai::ArbiterRuling::Kept => "kept",
+                        er_engine::ai::ArbiterRuling::Escalated => "escalated",
+                        er_engine::ai::ArbiterRuling::Merged => "merged",
+                        er_engine::ai::ArbiterRuling::Dropped => "dropped",
+                    }
+                    .to_string()
+                }),
+                arbiter_rationale: arbiter.and_then(|(_, rationale)| {
+                    (!rationale.trim().is_empty()).then(|| rationale.clone())
+                }),
                 lens_category: f.lens_category_tag(),
                 resolved: f.resolved,
                 expert_label: er_engine::ai::expert_label_for_id(&f.lens).map(|s| s.to_string()),
@@ -7333,6 +7352,46 @@ mod tests {
         // The arbiter's removals are listed rather than only counted, so the
         // claim it rejected stays readable.
         assert_eq!(ids(&snapshot.dropped_findings), vec!["drp"]);
+    }
+
+    #[test]
+    fn snapshot_carries_matching_escalated_verdict_without_a_line_anchor() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        let key = er_engine::ai::finding_key("a.rs", None, "Needs review");
+        std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "diff_hash": "hash",
+            "files": { "a.rs": { "risk": "medium", "findings": [
+                { "id": "f-1", "severity": "medium", "title": "Needs review", "line_start": null, "confidence": "informational" },
+                { "id": "f-2", "severity": "medium", "title": "Other", "line_start": null }
+            ] } }
+        })).unwrap()).unwrap();
+        std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "diff_hash": "hash", "verdicts": [
+                { "id": key, "verdict": "escalated", "confidence": "informational", "rationale": "Evidence conflicts" }
+            ]
+        })).unwrap()).unwrap();
+        let mut tab = TabState::new_for_test(vec![]);
+        tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
+        let snapshot = build_ai_snapshot(&tab, None);
+        let escalated = snapshot.findings.iter().find(|f| f.id == "f-1").unwrap();
+        assert_eq!(escalated.arbiter_verdict.as_deref(), Some("escalated"));
+        assert_eq!(
+            escalated.arbiter_rationale.as_deref(),
+            Some("Evidence conflicts")
+        );
+        assert_eq!(escalated.confidence, "informational");
+        assert_eq!(escalated.severity, "med");
+        assert_eq!(escalated.line, None);
+        assert_eq!(
+            snapshot
+                .findings
+                .iter()
+                .find(|f| f.id == "f-2")
+                .unwrap()
+                .arbiter_verdict,
+            None
+        );
     }
 
     #[test]
