@@ -374,6 +374,15 @@ describe("panel toggles", () => {
     expect(press({ key: "{", code: "BracketLeft", shiftKey: true })).toEqual({ calls: [], prevented: false });
     expect(press({ key: "å", code: "BracketRight", altKey: true })).toEqual({ calls: [], prevented: false });
   });
+
+  it("accepts panel characters typed with Alt without using their physical key positions", () => {
+    expect(press({ key: "[", code: "Digit8", altKey: true })).toEqual({ calls: ["togglePanel:left"], prevented: true });
+    expect(press({ key: "]", code: "BracketLeft", altKey: true })).toEqual({ calls: ["rightRail.toggle"], prevented: true });
+    expect(press({ key: "\\", code: "Digit7", altKey: true, ctrlKey: true })).toEqual({ calls: ["togglePanel:tree"], prevented: true });
+    expect(press({ key: "[", code: "Digit8", altKey: true, ctrlKey: true, inField: true })).toEqual({ calls: [], prevented: false });
+    state.modalOpen = true;
+    expect(press({ key: "]", code: "Digit9", altKey: true })).toEqual({ calls: [], prevented: false });
+  });
 });
 
 describe("bare keys", () => {

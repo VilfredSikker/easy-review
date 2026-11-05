@@ -87,17 +87,19 @@ function focusSidebarSearchOrFileFilter() {
 }
 
 function togglePanelForKey(e: KeyboardEvent): boolean {
-  if (e.key === "[" || e.code === "BracketLeft") {
+  // Alt may be needed to type these characters on some keyboard layouts.
+  // In that case, use the character, not the physical key position.
+  if (e.key === "[" || (!e.altKey && e.code === "BracketLeft")) {
     app.togglePanel("left");
     e.preventDefault();
     return true;
   }
-  if (e.key === "]" || e.code === "BracketRight") {
+  if (e.key === "]" || (!e.altKey && e.code === "BracketRight")) {
     rightRail.toggle();
     e.preventDefault();
     return true;
   }
-  if (e.key === "\\" || e.code === "Backslash") {
+  if (e.key === "\\" || (!e.altKey && e.code === "Backslash")) {
     app.togglePanel("tree");
     e.preventDefault();
     return true;
@@ -297,7 +299,7 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
     return true;
   },
   (e, { inField, modalOpen }) => {
-    if (e.altKey || e.shiftKey) return false;
+    if (e.shiftKey || (e.altKey && (inField || modalOpen))) return false;
     const bare = !inField && !e.ctrlKey && !e.metaKey && !modalOpen;
     return (bare || withMod(e)) && togglePanelForKey(e);
   },
