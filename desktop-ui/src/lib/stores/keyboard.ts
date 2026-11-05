@@ -14,7 +14,7 @@ import { fileTreeCollapse } from "$lib/stores/fileTreeCollapse.svelte";
 import { diffNav } from "$lib/stores/diffNav.svelte";
 import { rightRail } from "$lib/stores/rightRail.svelte";
 import { reviewPage, type ReviewPage } from "./reviewPage.svelte";
-import { copyReviewExport } from "./quickExport";
+import { exportOptions } from "./exportOptions.svelte";
 import { arena } from "./arena.svelte";
 
 /** Bare digits pick the review page, in the order the shell lists them. */
@@ -87,20 +87,19 @@ function focusSidebarSearchOrFileFilter() {
 }
 
 function togglePanelForKey(e: KeyboardEvent): boolean {
-  if (e.key === "[" || e.code === "BracketLeft") {
+  // Alt may be needed to type these characters on some keyboard layouts.
+  // In that case, use the character, not the physical key position.
+  if (e.key === "[" || (!e.altKey && e.code === "BracketLeft")) {
     app.togglePanel("left");
     e.preventDefault();
     return true;
   }
-  if (e.key === "]" || e.code === "BracketRight") {
-    // The Tour gives bare `]` to the next pillar, as its rail footer says;
-    // Cmd+] still reaches the right panel there.
-    if (!e.metaKey && !e.ctrlKey && reviewPage.current === "tour") diffNav.scrollToNextPillar();
-    else rightRail.toggle();
+  if (e.key === "]" || (!e.altKey && e.code === "BracketRight")) {
+    rightRail.toggle();
     e.preventDefault();
     return true;
   }
-  if (e.key === "\\" || e.code === "Backslash") {
+  if (e.key === "\\" || (!e.altKey && e.code === "Backslash")) {
     app.togglePanel("tree");
     e.preventDefault();
     return true;
@@ -255,10 +254,10 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
     openExportReviewView();
     return true;
   },
-  (e) => {
-    if (!withMod(e) || !e.shiftKey || !isLetter(e, "c")) return false;
+  (e, { inField }) => {
+    if (!withMod(e) || !e.shiftKey || e.altKey || inField || !isLetter(e, "c")) return false;
     e.preventDefault();
-    void copyReviewExport();
+    void exportOptions.quickCopy();
     return true;
   },
   (e, { inField }) => {
@@ -300,6 +299,7 @@ const GLOBAL_SHORTCUTS: Shortcut[] = [
     return true;
   },
   (e, { inField, modalOpen }) => {
+    if (e.shiftKey || (e.altKey && (inField || modalOpen))) return false;
     const bare = !inField && !e.ctrlKey && !e.metaKey && !modalOpen;
     return (bare || withMod(e)) && togglePanelForKey(e);
   },
@@ -335,6 +335,12 @@ function handleBareKey(e: KeyboardEvent) {
       break;
     case "k":
       moveFile(-1);
+      break;
+    case "n":
+      if (reviewPage.current === "tour") {
+        e.preventDefault();
+        diffNav.scrollToNextPillar();
+      }
       break;
     case "/":
       e.preventDefault();

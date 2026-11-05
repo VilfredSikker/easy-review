@@ -77,7 +77,7 @@
   {/each}
   <div class="rail-foot">
     <span><kbd>j</kbd> <kbd>k</kbd> next / previous file</span>
-    <span><kbd>]</kbd> next pillar</span>
+    <span><kbd>n</kbd> next pillar</span>
     <span><kbd>r</kbd> mark reviewed</span>
   </div>
 </aside>

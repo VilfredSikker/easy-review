@@ -197,14 +197,14 @@ function pageItems(r: PaletteRunners): CommandItem[] {
 export function navigateMenu(snapshot: AppSnapshot | null, r: PaletteRunners): CommandItem[] {
   return [
     ...pageItems(r),
-    // Outside the Tour `]` toggles the right panel, so the row would lie there.
+    // Next pillar only applies to the Tour.
     ...(reviewPage.current === "tour"
       ? [
           {
             id: "next-pillar",
             label: "Next pillar",
             group: "Navigate" as const,
-            kbd: "]",
+            kbd: "n",
             run: () => r.dismissLocal(() => void diffNav.scrollToNextPillar()),
           },
         ]

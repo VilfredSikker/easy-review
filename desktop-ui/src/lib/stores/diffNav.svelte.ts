@@ -87,7 +87,7 @@ class DiffNavStore {
     return true;
   }
 
-  /** `]` in the Tour: the pillar after the one being read. */
+  /** `n` in the Tour: the pillar after the one being read. */
   scrollToNextPillar(): boolean {
     const model = this.nav?.getModel();
     if (!this.nav || !model) return false;
