@@ -810,6 +810,9 @@ pub struct TabState {
     /// Timestamp of last .er-* file check (to avoid re-reading every tick)
     pub last_ai_check: Option<std::time::SystemTime>,
 
+    /// Exact arbiter bytes at the last load, including file absence.
+    pub last_arbiter_overlay: Option<Vec<u8>>,
+
     /// `branch_diff_hash` as of the last AI-state load.
     ///
     /// Staleness is derived from each sidecar's recorded `diff_hash` against
@@ -1653,6 +1656,7 @@ impl TabState {
             diff_hash: diff_hash.clone(),
             branch_diff_hash: diff_hash,
             last_ai_check: None,
+            last_arbiter_overlay: None,
             last_ai_diff_hash: None,
             last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
@@ -1791,6 +1795,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_arbiter_overlay: None,
             last_ai_diff_hash: None,
             last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
@@ -1923,6 +1928,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_arbiter_overlay: None,
             last_ai_diff_hash: None,
             last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
@@ -2068,6 +2074,7 @@ impl TabState {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_arbiter_overlay: None,
             last_ai_diff_hash: None,
             last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
@@ -3827,16 +3834,24 @@ impl TabState {
         let prev_stale_files = std::mem::take(&mut self.ai.stale_files);
         let er_dir = self.er_dir();
         let branch_scope = self.storage_branch_scope().map(str::to_string);
+        let arbiter_stamp = ai::arbiter_overlay_stamp(&er_dir);
         let prev_tour_stale = self.ai.tour_stale;
         // Adopt the background branch-AI preload when it matches this view's
         // bucket + diff hash (the worker loaded it without holding the App
         // lock) — otherwise read the sidecars as before.
         let diff_hash = self.branch_diff_hash.clone();
-        self.ai = match self.take_preloaded_branch_ai(&er_dir, &diff_hash) {
+        self.ai = match self.take_preloaded_branch_ai(&er_dir, &diff_hash, arbiter_stamp.as_deref())
+        {
             Some(ai) => ai,
-            None => ai::load_ai_state(&er_dir, &self.branch_diff_hash, branch_scope.as_deref()),
+            None => ai::load_ai_state_with_arbiter(
+                &er_dir,
+                &self.branch_diff_hash,
+                branch_scope.as_deref(),
+                arbiter_stamp.as_deref(),
+            ),
         };
         self.finish_ai_reload(&er_dir, prev_stale_files, prev_tour_stale);
+        self.last_arbiter_overlay = arbiter_stamp;
         // The gate follows the review rather than a remembered choice, so it is
         // recomputed on every load — unless the reviewer set it by hand.
         if !self.layers.min_trust_pinned {
@@ -4312,6 +4327,9 @@ impl TabState {
     /// (never loaded), or sidecars gone when we had loaded some (deleted).
     /// Shared so the two callers cannot drift on it.
     fn sidecars_moved_since_last_check(&self) -> bool {
+        if ai::arbiter_overlay_stamp(&self.er_dir()) != self.last_arbiter_overlay {
+            return true;
+        }
         match ai::latest_er_mtime(&self.er_dir()) {
             Some(t) => self.last_ai_check.is_none_or(|last| t > last),
             None => self.last_ai_check.is_some(),
@@ -9704,6 +9722,7 @@ mod tests {
             diff_hash: String::new(),
             branch_diff_hash: String::new(),
             last_ai_check: None,
+            last_arbiter_overlay: None,
             last_ai_diff_hash: None,
             last_quick_branch_hash: None,
             comment_textarea: TextArea::default(),
@@ -13607,6 +13626,7 @@ mod tests {
         tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
             bucket_dir: er_dir.clone(),
             diff_hash: "hash-abc".to_string(),
+            arbiter_overlay: None,
             ai: crate::ai::AiState::default(),
         });
         tab.reload_ai_state();
@@ -13615,12 +13635,25 @@ mod tests {
             "matching preload adopted — sidecar not re-read"
         );
 
+        // An overlay written after the preload invalidates it even when the
+        // bucket and diff are unchanged.
+        tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
+            bucket_dir: er_dir.clone(),
+            diff_hash: "hash-abc".to_string(),
+            arbiter_overlay: None,
+            ai: crate::ai::AiState::default(),
+        });
+        std::fs::write(std::path::Path::new(&er_dir).join("arbiter.json"), "{}").unwrap();
+        tab.reload_ai_state();
+        assert_eq!(tab.ai.questions.as_ref().unwrap().questions.len(), 1);
+
         // A stale preload (hash mismatch) is not served; the disk is read.
         // The slot itself survives (see the preload.rs keep-on-mismatch test).
         tab.branch_diff_hash = "hash-abc".to_string();
         tab.preloaded_branch_ai = Some(crate::app::state::preload::BranchAiPreload {
             bucket_dir: er_dir,
             diff_hash: "hash-other".to_string(),
+            arbiter_overlay: None,
             ai: crate::ai::AiState::default(),
         });
         tab.reload_ai_state();
@@ -15636,6 +15669,49 @@ mod tests {
         }
 
         std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn arbiter_overlay_changes_reload_even_with_older_mtime_and_deletion() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tab = make_test_tab(vec![]);
+        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        let er_dir = std::path::PathBuf::from(tab.er_dir());
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(
+            er_dir.join("review.json"),
+            r#"{"version":1,"diff_hash":"hash","files":{}}"#,
+        )
+        .unwrap();
+        tab.branch_diff_hash = "hash".into();
+        tab.reload_ai_state();
+        assert!(!tab.check_ai_files_changed());
+
+        let arbiter = er_dir.join("arbiter.json");
+        std::fs::write(
+            &arbiter,
+            r#"{"version":1,"diff_hash":"hash","verdicts":[]}"#,
+        )
+        .unwrap();
+        assert!(tab.check_ai_files_changed(), "creation must reload");
+        assert!(!tab.check_ai_files_changed());
+
+        std::fs::write(&arbiter, r#"{"version":1,"diff_hash":"old","verdicts":[]}"#).unwrap();
+        let file = std::fs::OpenOptions::new()
+            .write(true)
+            .open(&arbiter)
+            .unwrap();
+        file.set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        assert!(
+            tab.check_ai_files_changed(),
+            "older replacement must reload"
+        );
+        assert!(!tab.check_ai_files_changed());
+
+        std::fs::remove_file(&arbiter).unwrap();
+        assert!(tab.check_ai_files_changed(), "removal must reload");
+        assert!(!tab.check_ai_files_changed());
     }
 
     #[test]

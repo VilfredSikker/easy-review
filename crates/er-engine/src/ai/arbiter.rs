@@ -66,13 +66,19 @@ const MAX_SIDECAR_BYTES: u64 = 10_000_000;
 
 /// Read `<er_dir>/arbiter.json`. Absent or malformed reads as "no verdicts".
 pub fn load_arbiter_review(er_dir: &str) -> Option<ArbiterReview> {
-    let path = std::path::Path::new(er_dir).join("arbiter.json");
-    let metadata = std::fs::metadata(&path).ok()?;
-    if metadata.len() > MAX_SIDECAR_BYTES {
-        return None;
-    }
-    let content = std::fs::read_to_string(&path).ok()?;
-    serde_json::from_str(&content).ok()
+    let bytes = arbiter_overlay_stamp(er_dir)?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// Capture the exact bytes used for both overlay loading and change detection.
+pub fn arbiter_overlay_stamp(er_dir: &str) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let file = std::fs::File::open(std::path::Path::new(er_dir).join("arbiter.json")).ok()?;
+    let mut bytes = Vec::new();
+    file.take(MAX_SIDECAR_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    (bytes.len() <= MAX_SIDECAR_BYTES as usize).then_some(bytes)
 }
 
 /// Serialize verdicts for `<er_dir>/arbiter.json`, atomically.

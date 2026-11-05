@@ -26,6 +26,7 @@
     findingsPanelView,
     scopeToReviewer,
     SEVERITIES,
+    showEscalationDetails,
     showReviewerPicker,
     toggleSeverity,
   } from "./findingsPanel";
@@ -367,7 +368,7 @@
           class="absolute top-1.5 right-1 px-1.5 py-px rounded-[5px] mono text-[10.5px] text-fg-3 bg-surface border border-hairline
             opacity-0 group-hover:opacity-100 focus-visible:opacity-100 hover:text-fg transition-opacity"
         >{finding.resolved ? "Reopen" : "Resolve"}</button>
-        {#if expandedFindingId === finding.id}
+        {#if showEscalationDetails(finding, expandedFindingId)}
           <div class="px-2 pb-2 text-[12px] leading-relaxed text-fg-2">
             <MarkdownText text={finding.message_markdown} />
             {#if finding.arbiter_rationale}

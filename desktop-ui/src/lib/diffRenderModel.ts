@@ -534,7 +534,9 @@ export function fileAnnotationFingerprint(
   }
   for (const f of annotationIndex.findingMap.values()) {
     if (f.file !== file.path) continue;
-    h = (h * 31 + hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0)) | 0;
+    h = (h * 31 + hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0) +
+      (f.arbiter_verdict ? hashStr(f.arbiter_verdict) : 0) +
+      hashStr(`${f.line}:${f.hunk_index}`)) | 0;
   }
   return h;
 }
@@ -808,6 +810,31 @@ function leadRow(
   return { row: stub, hunks: stub === null };
 }
 
+/** Keep escalations visible even when no rendered hunk owns their anchor. */
+function pushUnplacedEscalations(
+  rows: CrossFileFlatRow[],
+  filePath: string,
+  annotationIndex: AnnotationIndex,
+  viewMode: "unified" | "split",
+  bodyCols: number,
+): void {
+  const placedFindings = new Set(rows.flatMap((row) =>
+    row.type === "inline-finding" || row.type === "fallback-finding" ? [row.findingId] : []));
+  for (const finding of annotationIndex.findingMap.values()) {
+    if (finding.file !== filePath || finding.arbiter_verdict !== "escalated" || placedFindings.has(finding.id)) continue;
+    rows.push({
+      type: "fallback-finding",
+      filePath,
+      hunkIdx: 0,
+      findingId: finding.id,
+      side: viewMode === "split" ? "split" : "unified",
+      height: estimateFindingHeight(finding, bodyCols),
+      identity: `ff:${finding.id}`,
+    });
+    placedFindings.add(finding.id);
+  }
+}
+
 export function getFileBlock(input: RenderModelInputs): FileBlock {
   const { file, fileIndex, mode, annotationIndex, commentVisibility } = input;
   const { sideBySide, viewMode, wrapCols } = fileLayout(input);
@@ -890,6 +917,8 @@ export function getFileBlock(input: RenderModelInputs): FileBlock {
       pushHunkFallbacks(b, hunk);
     }
   }
+
+  pushUnplacedEscalations(rows, file.path, annotationIndex, viewMode, bodyCols);
 
   const cumulativeOffsets = new Array<number>(rows.length + 1);
   cumulativeOffsets[0] = 0;

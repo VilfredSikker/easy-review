@@ -7,6 +7,7 @@ import {
   findingLens,
   findingLocation,
   findingsPanelView,
+  showEscalationDetails,
   scopeToReviewer,
   showReviewerPicker,
   toggleSeverity,
@@ -102,6 +103,12 @@ describe("right panel tabs", () => {
 });
 
 describe("findingsPanelView", () => {
+  it("closes escalation details when the verdict changes", () => {
+    const escalated = finding({ id: "e", arbiter_verdict: "escalated" });
+    expect(showEscalationDetails(escalated, "e")).toBe(true);
+    expect(showEscalationDetails({ ...escalated, arbiter_verdict: "kept" }, "e")).toBe(false);
+    expect(showEscalationDetails(escalated, "other")).toBe(false);
+  });
   const open = [
     finding({ id: "a", severity: "low", file: "z.ts" }),
     finding({ id: "b", severity: "high", confidence: "tentative" }),

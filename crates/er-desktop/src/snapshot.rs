@@ -2555,6 +2555,36 @@ pub fn pr_cache_fingerprint(
     crate::profile_log::finish_hash(h)
 }
 
+fn finding_is_escalated(
+    ai: &er_engine::ai::AiState,
+    path: &str,
+    finding: &er_engine::ai::Finding,
+) -> bool {
+    matches!(
+        ai.arbiter_verdicts.get(&er_engine::ai::finding_key(
+            path,
+            finding.line_start,
+            &finding.title
+        )),
+        Some((er_engine::ai::ArbiterRuling::Escalated, _))
+    )
+}
+
+fn active_finding_count(ai: &er_engine::ai::AiState, file: Option<&str>) -> usize {
+    let Some(review) = &ai.review else { return 0 };
+    let files: Box<dyn Iterator<Item = (&String, &er_engine::ai::ErFileReview)> + '_> = match file {
+        Some(file) => Box::new(review.files.get_key_value(file).into_iter()),
+        None => Box::new(review.files.iter()),
+    };
+    let rows = files.flat_map(|(path, review)| {
+        review.findings.iter().filter_map(move |finding| {
+            (!finding.resolved && (finding.is_active() || finding_is_escalated(ai, path, finding)))
+                .then_some((path.as_str(), finding))
+        })
+    });
+    er_engine::ai::project_visible_findings(rows, &ai.arbiter_graded_keys).len()
+}
+
 /// Build a single `FileSnapshot`.
 ///
 /// `include_hunks` controls whether the file's diff hunks are serialized:
@@ -2591,17 +2621,7 @@ fn build_file_snapshot_with_keys(
         vec![]
     };
 
-    let finding_count = tab
-        .ai
-        .review
-        .as_ref()
-        .map(|r| {
-            r.files
-                .get(&f.path)
-                .map(|fr| fr.findings.iter().filter(|fd| fd.is_active()).count())
-                .unwrap_or(0)
-        })
-        .unwrap_or(0);
+    let finding_count = active_finding_count(&tab.ai, Some(&f.path));
     let comment_count = tab.ai.file_github_comment_count(&f.path);
     let question_count = tab.ai.file_question_count(&f.path);
 
@@ -2850,7 +2870,7 @@ fn tour_scope(tab: &TabState) -> String {
 /// Local branch or PR diff view. Unstaged/Staged/History have buckets of their
 /// own that describe a different diff, so they have no "other view" to point
 /// at; a remote tab has only the PR bucket.
-fn other_bucket_dir(tab: &TabState) -> Option<(&'static str, String)> {
+pub(crate) fn other_bucket_dir(tab: &TabState) -> Option<(&'static str, String)> {
     if tab.is_remote() || tab.pr_number.is_none() {
         return None;
     }
@@ -2887,22 +2907,27 @@ struct OtherBucketFacts {
 }
 
 impl OtherBucketFacts {
+    #[cfg(test)]
     fn read(dir: &str) -> Self {
+        let overlay = er_engine::ai::arbiter_overlay_stamp(dir);
+        Self::read_with_arbiter(dir, overlay.as_deref())
+    }
+
+    fn read_with_arbiter(dir: &str, overlay: Option<&[u8]>) -> Self {
         // Loaded as of the bucket's own generation, so the loader merges the
         // expert and professor sidecars its own view would. Freshness against
         // the active view is judged in `summarize_other_bucket`.
-        let ai = er_engine::ai::load_ai_state(dir, &bucket_generation_hash(dir), None);
+        let ai = er_engine::ai::load_ai_state_with_arbiter(
+            dir,
+            &bucket_generation_hash(dir),
+            None,
+            overlay,
+        );
         let tour = er_engine::ai::load_tour_sidecar(dir, "tour.json");
         Self {
             triage_hash: ai.triage.as_ref().map(|t| t.diff_hash.clone()),
             review_hash: ai.review.as_ref().map(|r| r.diff_hash.clone()),
-            finding_count: ai.review.as_ref().map_or(0, |r| {
-                r.files
-                    .values()
-                    .flat_map(|f| f.findings.iter())
-                    .filter(|f| f.is_active())
-                    .count()
-            }),
+            finding_count: active_finding_count(&ai, None),
             tour: tour.map(|t| (t.diff_hash, t.created_at, t.pillars.len())),
         }
     }
@@ -2971,14 +2996,17 @@ fn summarize_other_bucket(
     }
 }
 
-/// Keyed by the bucket's directory and newest sidecar mtime. Every full
+/// Keyed by the bucket's directory, newest sidecar mtime, and arbiter contents. Every full
 /// snapshot asks, and that bucket only changes when an agent writes to it, so
 /// the parse runs once per write rather than once per poll.
-fn other_bucket_facts_cached(dir: &str) -> OtherBucketFacts {
-    type Key = Option<std::time::SystemTime>;
+fn other_bucket_facts_cached(dir: &str, overlay: Option<&[u8]>) -> OtherBucketFacts {
+    type Key = (Option<std::time::SystemTime>, Option<Vec<u8>>);
     static CACHE: std::sync::LazyLock<Mutex<HashMap<String, (Key, OtherBucketFacts)>>> =
         std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-    let key: Key = er_engine::ai::latest_er_mtime(dir);
+    let key: Key = (
+        er_engine::ai::latest_er_mtime(dir),
+        overlay.map(<[u8]>::to_vec),
+    );
     if let Some((_, facts)) = CACHE
         .lock()
         .ok()
@@ -2986,7 +3014,7 @@ fn other_bucket_facts_cached(dir: &str) -> OtherBucketFacts {
     {
         return facts;
     }
-    let facts = OtherBucketFacts::read(dir);
+    let facts = OtherBucketFacts::read_with_arbiter(dir, key.1.as_deref());
     if let Ok(mut cache) = CACHE.lock() {
         if cache.len() > 32 {
             cache.clear();
@@ -2996,12 +3024,27 @@ fn other_bucket_facts_cached(dir: &str) -> OtherBucketFacts {
     facts
 }
 
-fn build_other_bucket_snapshot(tab: &TabState) -> Option<OtherBucketSnapshot> {
+#[expect(
+    clippy::option_option,
+    reason = "distinguishes an absent captured overlay from no capture"
+)]
+fn build_other_bucket_snapshot(
+    tab: &TabState,
+    captured: Option<Option<&[u8]>>,
+) -> Option<OtherBucketSnapshot> {
     let (view, dir) = other_bucket_dir(tab)?;
+    let live;
+    let overlay = match captured {
+        Some(stamp) => stamp,
+        None => {
+            live = er_engine::ai::arbiter_overlay_stamp(&dir);
+            live.as_deref()
+        }
+    };
     let active_hashes = [tab.branch_diff_hash.as_str(), tab.diff_hash.as_str()];
     Some(summarize_other_bucket(
         view,
-        &other_bucket_facts_cached(&dir),
+        &other_bucket_facts_cached(&dir, overlay),
         tab.ai.tour.as_ref(),
         &active_hashes,
     ))
@@ -3011,6 +3054,7 @@ fn build_other_bucket_snapshot(tab: &TabState) -> Option<OtherBucketSnapshot> {
 /// source is optional so tests can build a snapshot from only what they seed.
 #[derive(Clone, Copy, Default)]
 pub struct SnapshotSources<'a> {
+    pub other_bucket_arbiter: Option<Option<&'a [u8]>>,
     pub pr_cache: Option<&'a PrCache>,
     pub pr_cache_fetched_at: Option<&'a PrCacheFetchedAt>,
     pub meta_cache: Option<&'a MetaCache>,
@@ -3049,6 +3093,7 @@ fn build_snapshot_inner(
     chrome_only: bool,
 ) -> AppSnapshot {
     let SnapshotSources {
+        other_bucket_arbiter,
         pr_cache,
         pr_cache_fetched_at,
         meta_cache,
@@ -3557,7 +3602,7 @@ fn build_snapshot_inner(
         other_bucket: if chrome_only {
             None
         } else {
-            build_other_bucket_snapshot(tab)
+            build_other_bucket_snapshot(tab, other_bucket_arbiter)
         },
         background_arena_runs: app.background_arena_runs(),
         app_version: env!("CARGO_PKG_VERSION").to_string(),
@@ -4848,7 +4893,10 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
             for (path, file_review) in &review.files {
                 for finding in &file_review.findings {
                     let row = (path.as_str(), finding);
-                    if matches!(finding.confidence, er_engine::ai::Confidence::Dropped) {
+                    let escalated = finding_is_escalated(ai, path, finding);
+                    if matches!(finding.confidence, er_engine::ai::Confidence::Dropped)
+                        && !escalated
+                    {
                         dropped.push(row);
                     } else if finding.resolved {
                         resolved.push(row);
@@ -4870,7 +4918,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
         let mut h = 0usize;
         let mut m = 0usize;
         let mut l = 0usize;
-        for (_, finding) in projected_findings.iter().filter(|(_, f)| f.is_active()) {
+        for (_, finding) in &projected_findings {
             match finding.severity {
                 RiskLevel::High => h += 1,
                 RiskLevel::Medium => m += 1,
@@ -7352,6 +7400,110 @@ mod tests {
         // The arbiter's removals are listed rather than only counted, so the
         // claim it rejected stays readable.
         assert_eq!(ids(&snapshot.dropped_findings), vec!["drp"]);
+    }
+
+    #[test]
+    fn escalated_dropped_grade_remains_visible_and_respects_resolution() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("review.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "diff_hash": "hash",
+            "files": { "a.rs": { "risk": "medium", "findings": [
+                { "id": "open", "severity": "high", "title": "Open", "confidence": "dropped" },
+                { "id": "z-open", "severity": "high", "title": "Open", "confidence": "dropped" },
+                { "id": "resolved", "severity": "medium", "title": "Resolved", "confidence": "dropped", "resolved": true },
+                { "id": "dropped", "severity": "low", "title": "Dropped", "confidence": "dropped" }
+            ] } }
+        })).unwrap()).unwrap();
+        std::fs::write(path.join("arbiter.json"), serde_json::to_vec(&serde_json::json!({
+            "version": 1, "diff_hash": "hash", "verdicts": [
+                { "id": er_engine::ai::finding_key("a.rs", None, "Open"), "verdict": "escalated" },
+                { "id": er_engine::ai::finding_key("a.rs", None, "Resolved"), "verdict": "escalated" }
+            ]
+        })).unwrap()).unwrap();
+        let raw = "diff --git a/a.rs b/a.rs\n--- a/a.rs\n+++ b/a.rs\n@@ -1 +1 @@\n-old\n+new\n";
+        let mut tab = TabState::new_for_test(er_engine::git::parse_diff(raw));
+        tab.ai = er_engine::ai::load_ai_state(path.to_str().unwrap(), "hash", None);
+        let snapshot = build_ai_snapshot(&tab, None);
+        assert_eq!(
+            snapshot
+                .findings
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["open"]
+        );
+        assert_eq!(snapshot.findings[0].confidence, "dropped");
+        assert_eq!(
+            snapshot.findings[0].arbiter_verdict.as_deref(),
+            Some("escalated")
+        );
+        assert_eq!(
+            snapshot
+                .resolved_findings
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["resolved"]
+        );
+        assert_eq!(
+            snapshot
+                .dropped_findings
+                .iter()
+                .map(|f| f.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["dropped"]
+        );
+        assert_eq!((snapshot.high, snapshot.med, snapshot.low), (1, 0, 0));
+        assert_eq!(
+            build_file_snapshot(0, &tab.files[0], &tab, None, false).finding_count,
+            1
+        );
+        assert_eq!(
+            OtherBucketFacts::read(path.to_str().unwrap()).finding_count,
+            1
+        );
+        let dir = path.to_str().unwrap();
+        assert_eq!(
+            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                .finding_count,
+            1
+        );
+        let arbiter = path.join("arbiter.json");
+        let original = std::fs::read(&arbiter).unwrap();
+        std::fs::write(
+            &arbiter,
+            r#"{"version":1,"diff_hash":"older","verdicts":[]}"#,
+        )
+        .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&arbiter)
+            .unwrap()
+            .set_times(std::fs::FileTimes::new().set_modified(std::time::UNIX_EPOCH))
+            .unwrap();
+        assert_eq!(
+            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                .finding_count,
+            0
+        );
+        // The file now holds B. A snapshot stamped A must still load A.
+        assert_eq!(
+            other_bucket_facts_cached(dir, Some(&original)).finding_count,
+            1
+        );
+        std::fs::write(&arbiter, &original).unwrap();
+        assert_eq!(
+            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                .finding_count,
+            1
+        );
+        std::fs::remove_file(&arbiter).unwrap();
+        assert_eq!(
+            other_bucket_facts_cached(dir, er_engine::ai::arbiter_overlay_stamp(dir).as_deref())
+                .finding_count,
+            0
+        );
     }
 
     #[test]

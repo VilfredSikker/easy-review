@@ -849,6 +849,62 @@ function makeSimpleFile(path: string, ctxLines = 2): FileSnapshot {
 }
 
 describe("escalated finding navigation", () => {
+  for (const mode of ["branch", "pr"]) {
+    it(`places an unanchored escalation once in ${mode}, including files with no hunks`, () => {
+      const files = [
+        file({ path: `${mode}-multi.ts`, hunks: [hunk({ lines: [] }), hunk({ lines: [] })] }),
+        file({ path: `${mode}-empty.ts`, hunks: [] }),
+      ];
+      const findings = files.map((f) => finding(`escalation-${f.path}`, f.path, null, {
+        confidence: "informational", arbiter_verdict: "escalated",
+      }));
+      const ai = emptyAi([], findings);
+      const visible = findingsForDiff(ai, { showResolved: false, minTrust: "confirmed" });
+      const model = mkCross(files, { ...ai, findings: visible }, { mode });
+      for (const f of findings) {
+        const rows = model.rows.filter((r) => r.type === "fallback-finding" && r.findingId === f.id);
+        expect(rows).toHaveLength(1);
+        expect(model.findingRowIndex(f.id)).toBe(model.rows.indexOf(rows[0]));
+      }
+    });
+  }
+
+  it("invalidates the file block when an unanchored finding becomes escalated", () => {
+    const f = makeSimpleFile("escalation-cache.ts");
+    const original = finding("cache-finding", f.path, null, { confidence: "informational" });
+    const before = mkCross([f], emptyAi([], [original]));
+    expect(before.findingRowIndex(original.id)).toBeNull();
+    const after = mkCross([f], emptyAi([], [{ ...original, arbiter_verdict: "escalated" }]));
+    expect(after.findingRowIndex(original.id)).not.toBeNull();
+  });
+
+  it("places each escalation whose line or hunk is outside the rendered diff once", () => {
+    const files = [makeSimpleFile("outside.ts"), makeSimpleFile("bad-hunk.ts"), file({ path: "no-hunks.ts", hunks: [] })];
+    const findings = [
+      finding("outside", files[0].path, 99, { arbiter_verdict: "escalated", confidence: "informational" }),
+      finding("bad-hunk", files[1].path, 1, { hunk_index: 5, arbiter_verdict: "escalated", confidence: "informational" }),
+      finding("no-hunks", files[2].path, 1, { arbiter_verdict: "escalated", confidence: "informational" }),
+      finding("in-hunk", files[0].path, 1, { arbiter_verdict: "escalated", confidence: "informational" }),
+    ];
+    const ai = emptyAi([], findings);
+    const visible = findingsForDiff(ai, { showResolved: false, minTrust: "confirmed" });
+    const model = mkCross(files, { ...ai, findings: visible });
+    for (const f of findings) {
+      const rows = model.rows.filter((r) => (r.type === "fallback-finding" || r.type === "inline-finding") && r.findingId === f.id);
+      expect(rows).toHaveLength(1);
+      expect(model.findingRowIndex(f.id)).toBe(model.rows.indexOf(rows[0]));
+    }
+  });
+
+  it("rebuilds the file block when an escalation anchor changes", () => {
+    const f = makeSimpleFile("anchor-cache.ts");
+    const original = finding("anchor-cache", f.path, 1, { arbiter_verdict: "escalated" });
+    const before = mkCross([f], emptyAi([], [original]));
+    expect(before.rows[before.findingRowIndex(original.id)!].type).toBe("inline-finding");
+    const after = mkCross([f], emptyAi([], [{ ...original, line: 99 }]));
+    expect(after.rows[after.findingRowIndex(original.id)!].type).toBe("fallback-finding");
+  });
+
   it("indexes a hunk-only escalation below the confidence gate for navigation", () => {
     const f = makeSimpleFile("a.ts");
     const escalation = finding("escalation", "a.ts", null, {

@@ -206,6 +206,17 @@ pub fn artifacts_branch_mismatch(er_dir: &Path, scope: &str) -> bool {
 /// and other review artifacts from the same directory. This avoids showing a prior
 /// branch's review after mistaken migration into the wrong managed folder.
 pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option<&str>) -> AiState {
+    let overlay = super::arbiter::arbiter_overlay_stamp(er_dir);
+    load_ai_state_with_arbiter(er_dir, current_diff_hash, branch_scope, overlay.as_deref())
+}
+
+/// Load the AI state with a captured overlay, tying the loaded value to its stamp.
+pub fn load_ai_state_with_arbiter(
+    er_dir: &str,
+    current_diff_hash: &str,
+    branch_scope: Option<&str>,
+    overlay: Option<&[u8]>,
+) -> AiState {
     let mut state = AiState::default();
     let er_path = Path::new(er_dir);
 
@@ -356,7 +367,9 @@ pub fn load_ai_state(er_dir: &str, current_diff_hash: &str, branch_scope: Option
 
     // Overlay arbiter verdicts last, so they grade every finding the merges
     // above put into the review rather than only the review's own.
-    if let Some(arbiter) = super::arbiter::load_arbiter_review(er_dir) {
+    if let Some(arbiter) = overlay
+        .and_then(|bytes| serde_json::from_slice::<super::arbiter::ArbiterReview>(bytes).ok())
+    {
         if let Some(review) = state.review.as_mut() {
             if arbiter.diff_hash == review.diff_hash {
                 let verdicts: HashMap<&str, (super::arbiter::ArbiterRuling, &str)> = arbiter
@@ -683,6 +696,25 @@ mod tests {
         write_arbiter("old-hash");
         let stale = load_ai_state(path.to_str().unwrap(), "hash", None);
         assert!(stale.arbiter_verdicts.is_empty());
+    }
+
+    #[test]
+    fn captured_arbiter_bytes_are_the_bytes_loaded() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        std::fs::write(path.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim"}]}}}"#).unwrap();
+        let key = super::super::identity::finding_key("a.rs", None, "claim");
+        let overlay = |rationale| {
+            serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id": key,"verdict":"escalated","rationale":rationale}]}).to_string()
+        };
+        let file = path.join("arbiter.json");
+        std::fs::write(&file, overlay("A")).unwrap();
+        let captured =
+            super::super::arbiter::arbiter_overlay_stamp(path.to_str().unwrap()).unwrap();
+        std::fs::write(&file, overlay("B")).unwrap();
+        let state =
+            load_ai_state_with_arbiter(path.to_str().unwrap(), "hash", None, Some(&captured));
+        assert_eq!(state.arbiter_verdicts.get(&key).unwrap().1, "A");
     }
 
     #[test]

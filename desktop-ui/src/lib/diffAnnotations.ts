@@ -178,7 +178,8 @@ function hashStr(s: string): number {
 
 function findingVersion(f: FlatFinding): number {
   return hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0) +
-    (f.arbiter_verdict ? hashStr(f.arbiter_verdict) : 0);
+    (f.arbiter_verdict ? hashStr(f.arbiter_verdict) : 0) +
+    hashStr(`${f.file}:${f.line}:${f.hunk_index}`);
 }
 
 export function annotationVersion(
