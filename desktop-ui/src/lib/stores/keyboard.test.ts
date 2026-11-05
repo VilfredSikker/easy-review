@@ -139,7 +139,7 @@ mock.module("./reviewPage.svelte", () => ({
     show: (page: string) => calls.push(`reviewPage.show:${page}`),
   },
 }));
-mock.module("./quickExport", () => ({ copyReviewExport: log("copyReviewExport") }));
+mock.module("./exportOptions.svelte", () => ({ exportOptions: { quickCopy: log("exportOptions.quickCopy") } }));
 mock.module("./arena.svelte", () => ({
   arena: {
     get overlayOpen() {
@@ -298,12 +298,13 @@ describe("modifier shortcuts", () => {
     expect(press({ key: "e", metaKey: true, shiftKey: true }).calls).toEqual(["setMainView:export-review"]);
   });
 
-  it("Cmd+Shift+C copies the export, from a field too", () => {
+  it("Cmd+Shift+C copies the export with the current options, except from a field", () => {
     expect(press({ key: "C", metaKey: true, shiftKey: true })).toEqual({
-      calls: ["copyReviewExport"],
+      calls: ["exportOptions.quickCopy"],
       prevented: true,
     });
-    expect(press({ key: "c", ctrlKey: true, shiftKey: true, inField: true }).calls).toEqual(["copyReviewExport"]);
+    expect(press({ key: "c", ctrlKey: true, shiftKey: true, inField: true }).calls).toEqual([]);
+    expect(press({ key: "c", ctrlKey: true, shiftKey: true, altKey: true }).calls).toEqual([]);
   });
 
   it("Cmd+C without Shift is left to the platform copy", () => {
@@ -356,9 +357,9 @@ describe("panel toggles", () => {
     expect(press({ key: "\\" }).calls).toEqual(["togglePanel:tree"]);
   });
 
-  it("] steps to the next pillar in the Tour; Cmd+] still toggles the panel there", () => {
+  it("toggles both side panels in the Tour", () => {
     state.inTour = true;
-    expect(press({ key: "]" })).toEqual({ calls: ["diffNav.scrollToNextPillar"], prevented: true });
+    expect(press({ key: "]" })).toEqual({ calls: ["rightRail.toggle"], prevented: true });
     expect(press({ key: "]", metaKey: true }).calls).toEqual(["rightRail.toggle"]);
     expect(press({ key: "[" }).calls).toEqual(["togglePanel:left"]);
   });
@@ -367,6 +368,11 @@ describe("panel toggles", () => {
     state.modalOpen = true;
     expect(press({ key: "[" }).calls).toEqual([]);
     expect(press({ key: "[", metaKey: true }).calls).toEqual(["togglePanel:left"]);
+  });
+
+  it("leaves shifted and Alt-modified bracket keys alone", () => {
+    expect(press({ key: "{", code: "BracketLeft", shiftKey: true })).toEqual({ calls: [], prevented: false });
+    expect(press({ key: "å", code: "BracketRight", altKey: true })).toEqual({ calls: [], prevented: false });
   });
 });
 
@@ -385,6 +391,15 @@ describe("bare keys", () => {
   it("j/k follow the drawn pillar order in the Tour", () => {
     state.inTour = true;
     expect(press({ key: "j" }).calls).toEqual(["cmd:select_file:0"]);
+  });
+
+  it("n moves to the next pillar only in the Tour", () => {
+    expect(press({ key: "n" })).toEqual({ calls: [], prevented: false });
+    state.inTour = true;
+    expect(press({ key: "n" })).toEqual({ calls: ["diffNav.scrollToNextPillar"], prevented: true });
+    expect(press({ key: "n", inField: true }).calls).toEqual([]);
+    state.modalOpen = true;
+    expect(press({ key: "n" }).calls).toEqual([]);
   });
 
   it("r toggles reviewed on the file being read, else the selected one", () => {
