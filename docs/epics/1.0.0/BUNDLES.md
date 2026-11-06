@@ -86,10 +86,14 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 
 ## Talking to sessions
 
-Instructions go on GitHub, not through the owner. The coordinator posts each review on the issue, then a comment starting `**Next step (coordinator):**` that says exactly what the session does next. The owner sends the session one line:
+GitHub is the record. The coordinator posts each review on the issue, then a comment starting `**Next step (coordinator):**` that says exactly what the session does next.
+
+The coordinator then messages the session directly (Claude Code `SendMessage` to the session name that `ListAgents` shows), only when there is something to do; it sends no acknowledgements. A session's standing rule is the reverse: after it posts a report, a PR, a question or "ready for re-review" on GitHub, it messages the coordinator session with the issue number. Neither side polls. When the sessions run in different permission modes, the receiver holds each message until the owner approves it, so keep the modes matched.
+
+If direct messages are unavailable (a session on another machine, or a new coordinator session), the owner sends the session one line instead:
 
 ```text
 Read the latest **Next step (coordinator):** comment on your issue(s) on GitHub (gh issue view <n> -R VilfredSikker/easy-review --comments) and do what it says.
 ```
 
-A session reports back on the same issue (`Revised; ready for re-review.`, or the brief's PR report), and the owner tells the coordinator which issues to look at.
+The owner is brought in only for important decisions; routine merges and design approvals are delegated to the coordinator (BUILD_LOG, 2026-11-06).
