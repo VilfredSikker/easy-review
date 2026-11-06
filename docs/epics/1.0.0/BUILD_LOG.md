@@ -4,10 +4,12 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 
 ## How to resume (read first)
 
-1. **Get the latest state.** GitHub is the source of truth: read epic issue #371 and its sub-issues (assignees, open or closed, blocked-by), then the last entries below. List the open PRs whose base is `release/v1.0.0`.
-2. **Worktrees.** The epic docs are edited in `~/.claude-worktrees/er-v1/epic-docs` (branch `release/v1.0.0`). Each PR is built in `~/.claude-worktrees/er-v1/<id>`, outside the main checkout. Run `cd desktop-ui && bun install` in a worktree before touching the UI.
-3. **Delegation** follows the `epic-orchestration` skill: model per the issue's `model:` label, a reviewer per PR, and merge only on a `merge` verdict.
-4. **Phase gates.** Only phases 0–2 are planned as PRs. Before starting phase 3, re-plan it against the merged tree and record the new entries in an addendum.
+1. **Get the latest state.** Read [STATUS.md](./STATUS.md) ("Now" says who works on what), then the last entries below. GitHub wins where they disagree: epic issue #371, its sub-issues and their "blocked by" links, and the open PRs whose base is `release/v1.0.0`.
+2. **Find the sessions.** Implementer and design work runs in separate Claude Code sessions on this machine, one per bundle ([BUNDLES.md](./BUNDLES.md)). `ListAgents` shows them (`t1-…`, `t2-…`, `d4-…`, …). Message them directly; they message the coordinator after every GitHub post ("Talking to sessions" in BUNDLES.md). A session that has posted on GitHub but gone quiet may have crashed: read its issue, then message it.
+3. **Worktrees.** The epic docs are edited in `~/.claude-worktrees/er-v1/epic-docs` (branch `release/v1.0.0`). Each PR is built in `~/.claude-worktrees/er-v1/<id>`, and reviewed in `~/.claude-worktrees/er-v1/review-<pr>`, outside the main checkout. Run `cd desktop-ui && bun install` in a worktree before touching the UI.
+4. **Review and merge** follow [COORDINATOR.md](./COORDINATOR.md). `model:opus` issues get a line-by-line read and a planted break; `model:sonnet` a check of the diff against the steps. Run the tests on the PR merged with the current release branch. Merge on a `merge` verdict with green CI; design approvals are delegated too. Ask the owner only about important decisions.
+5. **Heartbeat.** The coordinator runs a session-only cron every 30 minutes that catches what the message loop missed. A new coordinator session sets it up again.
+6. **Phase gates.** Only phases 0–2 are planned as PRs. Before starting phase 3, run the checklist in #396, re-plan phase 3 against the merged tree, and record the new entries in an addendum.
 
 ## Log
 
@@ -76,3 +78,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - #408 approved in round 3 with two binding amendments: the page splitter tracks JSON string state, and `Unprocessable.message` keeps every `errors[]` entry, because review 422s carry plain strings that the desktop matchers read. #409 approved, with one generation counter per cache confirmed over a shared one. #410's fold-ins follow #409. All three are applied to #381, #382 and #383, and closed. **Every wave-1 design is now settled.**
 - `"crossSessionInbound": "accept"` is set at the top level of `~/.claude/settings.json`. Cross-session messages no longer wait for the owner.
 - Follow-ups to carry to the phase-0 gate: ADR 0037 still names `TabState.importance` and `ImportanceRepoConfig`; the `preload.rs:170-173` comment fix rides on #376.
+- STATUS.md is the owner's progress page again (owner request): a "Now" table of sessions, a progress table for P01–P25, a design table and the phase gates, kept current by the coordinator after every event. It reverses the earlier removal of the progress table; GitHub still wins where they disagree. AGENT_BRIEF gains the rules learned today (no force-push, merge the release branch in, ADR numbering, how to talk to the coordinator). "How to resume" and COORDINATOR.md describe the delegated, message-driven loop.
