@@ -88,3 +88,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - P05 arrived as two stacked PRs, #416 and #417 (TUI). On the release-merged tree the engine and desktop suites pass, and the two TUI `/tmp` tests fail only inside the sandbox. A planted skip of the reconcile step makes both retry tests fail. The line-by-line review is in progress.
 - #404 revised by D5; round-2 review in progress.
 - Correction to the entry above: phase 0 is not fully merged. P05 (#376) and P06 (#377) are phase 0 too; P01–P04 and P25 are merged.
+- #416 and #417 (P05) review: fix-then-merge. Must fix: a failed sidecar write after a successful post left no pending record, so a retry would post twice; any `gh` failure counted as "no PR" and blocked commenting offline. Back to T3.
