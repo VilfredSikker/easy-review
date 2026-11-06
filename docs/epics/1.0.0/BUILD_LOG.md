@@ -34,3 +34,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - STATUS.md now holds only the map from plan id to issue, plus the owner actions. The progress table was removed so there is one tracker.
 - Before the issues were created, PLAN.md P07, P08, P09, P10, P12 and P15 were edited to match Addendum 01 (D7 allow-list, D6 notice).
 - Agents claim an issue by assignment, report on the issue, and open PRs with `Part of #<issue>`. Whoever merges closes the issue, because PRs into a release branch do not close issues.
+- The 24 task issues are too terse for a smaller model. An enrichment pass by another model is briefed in [HANDOFF-issue-enrichment.md](./HANDOFF-issue-enrichment.md), and its output is reviewed against [REVIEW-issue-enrichment.md](./REVIEW-issue-enrichment.md). Nine issues (P05, P07, P10, P11, P14, P16, P20, P21, P23) get a design issue that blocks them. Assign an issue only after a `ready` verdict.
