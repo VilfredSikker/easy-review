@@ -277,22 +277,18 @@ impl App {
                 created_at,
                 author,
                 ticket.request.body.clone(),
+                false,
             ),
             GitHubPostExecution::Adopted { comment } => {
-                let edited = comment.body.trim_end() != ticket.request.body.trim_end();
-                let result = self.record_posted_comment(
+                let kept_earlier_body = comment.body.trim_end() != ticket.request.body.trim_end();
+                self.record_posted_comment(
                     &ticket,
                     comment.id,
                     comment.created_at,
                     comment.author,
                     comment.body,
-                );
-                if edited && result.is_ok() {
-                    self.notify(
-                        "The earlier attempt posted the previous text; your edit was not posted.",
-                    );
-                }
-                result
+                    kept_earlier_body,
+                )
             }
         }
     }
@@ -351,12 +347,21 @@ impl App {
             ticket.pending.as_ref(),
         );
         let posted = self.finish_github_comment_post(ticket, execution);
-        if posted.is_ok() {
-            let tab = self.tab_mut();
-            tab.comment_textarea = TextArea::default();
-            tab.comment_client_id = None;
-            self.input_mode = InputMode::Normal;
-            self.notify("Comment posted to GitHub");
+        match &posted {
+            Ok(posted) if posted.kept_earlier_body => {
+                // Keep the edited text: sending it again is a deliberate new
+                // comment, under a new client id.
+                self.tab_mut().comment_client_id = None;
+                self.notify("Your earlier version was posted; this edit was not");
+            }
+            Ok(_) => {
+                let tab = self.tab_mut();
+                tab.comment_textarea = TextArea::default();
+                tab.comment_client_id = None;
+                self.input_mode = InputMode::Normal;
+                self.notify("Comment posted to GitHub");
+            }
+            Err(_) => {}
         }
         posted
     }
@@ -523,6 +528,7 @@ impl App {
         created_at: String,
         author: String,
         body: String,
+        kept_earlier_body: bool,
     ) -> Result<PostedGitHubComment, GitHubPostError> {
         if matches!(ticket.request.target, GitHubPostTarget::General) {
             self.pending_github_posts.remove(&ticket.request.client_id);
@@ -530,6 +536,7 @@ impl App {
             return Ok(PostedGitHubComment {
                 github_id,
                 store_id: None,
+                kept_earlier_body,
             });
         }
 
@@ -593,18 +600,25 @@ impl App {
         })();
         if let Err(e) = write {
             // GitHub holds the comment, so the retry must reconcile rather
-            // than post it again. The not-before time is zero because the
-            // comment already exists.
-            self.pending_github_posts.insert(
-                ticket.request.client_id.clone(),
-                PendingGitHubPost {
-                    started_at: ticket.started_at.clone(),
-                    not_before_epoch: 0,
-                    known_ids: ticket.known_ids.clone(),
-                    bodies: vec![ticket.request.body.clone()],
-                    request: ticket.request.clone(),
-                },
-            );
+            // than post it again. Keep an existing record: replacing it would
+            // discard the first attempt's start time and bodies, and a later
+            // retry could miss the earlier comment. Only the wait is cleared,
+            // because the comment already exists.
+            match self.pending_github_posts.get_mut(&ticket.request.client_id) {
+                Some(pending) => pending.not_before_epoch = 0,
+                None => {
+                    self.pending_github_posts.insert(
+                        ticket.request.client_id.clone(),
+                        PendingGitHubPost {
+                            started_at: ticket.started_at.clone(),
+                            not_before_epoch: 0,
+                            known_ids: ticket.known_ids.clone(),
+                            bodies: vec![ticket.request.body.clone()],
+                            request: ticket.request.clone(),
+                        },
+                    );
+                }
+            }
             return Err(GitHubPostError::RecordFailed(format!("{e:#}")));
         }
 
@@ -625,6 +639,7 @@ impl App {
         Ok(PostedGitHubComment {
             github_id,
             store_id: Some(store_id),
+            kept_earlier_body,
         })
     }
 }
@@ -756,7 +771,7 @@ mod tests {
     struct Fixture {
         app: App,
         poster: Arc<FakeCommentPoster>,
-        _dir: tempfile::TempDir,
+        dir: tempfile::TempDir,
     }
 
     fn sample_file() -> crate::git::DiffFile {
@@ -801,11 +816,7 @@ mod tests {
         app.tab_mut().diff_hash = "diff-hash".to_string();
         let poster = FakeCommentPoster::new();
         app.set_github_comment_poster(poster.clone());
-        Fixture {
-            app,
-            poster,
-            _dir: dir,
-        }
+        Fixture { app, poster, dir }
     }
 
     fn target() -> PrPostTarget {
@@ -1250,11 +1261,128 @@ mod tests {
             gc.comments[0].comment, "first",
             "the sidecar records what GitHub holds"
         );
-        assert!(f
+        assert!(
+            second.kept_earlier_body,
+            "the caller keeps the edited text and says so"
+        );
+    }
+
+    #[test]
+    fn an_adopted_edit_keeps_the_composer_open() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let mut f = fixture();
+        std::env::set_var("ER_STORAGE_ROOT", f.dir.path());
+        {
+            let tab = f.app.tab_mut();
+            // A remote tab resolves its post target without a gh call.
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(7);
+            tab.comment_type = CommentType::GitHubComment;
+            tab.comment_file = "src/a.rs".to_string();
+            tab.comment_hunk = 0;
+            tab.comment_line_num = Some(2);
+            tab.comment_textarea = TextArea::new(vec!["first".to_string()]);
+        }
+        f.poster
+            .record_unknown_as_listed
+            .store(true, Ordering::Relaxed);
+        f.poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+            error: "timeout".to_string(),
+        });
+        assert!(f.app.post_github_comment_now().is_err());
+        assert_eq!(f.poster.posts(), 1);
+        let client = f
             .app
-            .notification
-            .as_ref()
-            .is_some_and(|n| n.message.contains("edit was not posted")));
+            .tab()
+            .comment_client_id
+            .clone()
+            .expect("the composer holds the client id");
+        clear_retry_delay(&mut f.app, &client);
+
+        f.app.tab_mut().comment_textarea = TextArea::new(vec!["edited".to_string()]);
+        f.app.input_mode = InputMode::Comment;
+        let posted = f.app.post_github_comment_now().unwrap();
+
+        assert!(posted.kept_earlier_body);
+        assert_eq!(f.app.input_mode, InputMode::Comment);
+        assert_eq!(f.app.tab().comment_textarea.lines().join("\n"), "edited");
+        assert!(
+            f.app.tab().comment_client_id.is_none(),
+            "a resend is a deliberate new comment"
+        );
+        assert!(f.app.notification.as_ref().is_some_and(|n| {
+            n.message == "Your earlier version was posted; this edit was not"
+        }));
+        std::env::remove_var("ER_STORAGE_ROOT");
+    }
+
+    #[test]
+    fn a_record_failure_keeps_an_existing_pending_record() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = App::new_for_test(vec![sample_file()]);
+        let blocked = dir.path().join("er");
+        std::fs::write(&blocked, b"not a directory").unwrap();
+        app.tab_mut().er_root =
+            crate::paths::ErRoot::managed(blocked.to_string_lossy().into_owned());
+        app.tab_mut().branch_diff_hash = "branch-hash".to_string();
+        app.tab_mut().diff_hash = "diff-hash".to_string();
+        let poster = FakeCommentPoster::new();
+        app.set_github_comment_poster(poster.clone());
+        poster
+            .record_unknown_as_listed
+            .store(true, Ordering::Relaxed);
+
+        let client = "c-three-sends";
+        // Send 1: unknown, remembered with the first body and start time.
+        poster.push_outcome(GitHubPostOutcome::UnknownOutcome {
+            error: "timeout".to_string(),
+        });
+        let first = drive(&mut app, poster.as_ref(), line_intent("first"), client);
+        assert!(matches!(first, Err(GitHubPostError::UnknownOutcome(_))));
+        let started_at = app
+            .pending_github_posts
+            .get(client)
+            .unwrap()
+            .started_at
+            .clone();
+        clear_retry_delay(&mut app, client);
+
+        // Send 2: adopts the first comment, but the write fails.
+        let second = drive(&mut app, poster.as_ref(), line_intent("edited"), client);
+        assert!(matches!(second, Err(GitHubPostError::RecordFailed(_))));
+        let pending = app.pending_github_posts.get(client).cloned().unwrap();
+        assert_eq!(
+            pending.started_at, started_at,
+            "the first start time is kept"
+        );
+        assert_eq!(pending.bodies, vec!["first".to_string()]);
+        assert_eq!(pending.not_before_epoch, 0);
+
+        // Send 3: still adopts the earlier comment, so it must not post again.
+        std::fs::remove_file(&blocked).unwrap();
+        std::fs::create_dir_all(&blocked).unwrap();
+        let third = drive(&mut app, poster.as_ref(), line_intent("third"), client).unwrap();
+        assert_eq!(poster.posts(), 1);
+        assert_eq!(third.github_id, 100);
+        assert!(third.kept_earlier_body);
+    }
+
+    #[test]
+    fn a_gh_no_pull_request_answer_maps_to_the_no_pr_sentence() {
+        let lookup =
+            crate::github::classify_pr_lookup_failure("no pull requests found for branch \"feat\"");
+        let ctx = CommentPostContext {
+            repo_root: "/repo".to_string(),
+            is_remote: false,
+            remote_repo: None,
+            pr_number: None,
+        };
+        assert_eq!(
+            crate::github_post::post_target_from_lookup(lookup, &ctx).unwrap_err(),
+            GitHubPostError::NotPosted(crate::github_post::NO_PR_FOR_COMMENT.to_string())
+        );
     }
 
     #[test]
