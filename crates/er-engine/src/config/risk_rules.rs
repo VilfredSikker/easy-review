@@ -28,14 +28,13 @@ impl RiskTier {
     ///
     /// An unrecognized spelling resolves to nothing rather than failing the
     /// load: one typo in a rule table must not cost the user every other
-    /// section of their config. The `[importance]` spellings are read too, so
-    /// an `[importance.<repo>]` table keeps its meaning.
+    /// section of their config.
     pub fn parse(value: &str) -> Option<Self> {
         match value.trim().to_ascii_lowercase().as_str() {
-            "high" | "foundational" => Some(Self::High),
+            "high" => Some(Self::High),
             "med" | "medium" => Some(Self::Med),
-            "low" | "isolated" => Some(Self::Low),
-            "ai" | "normal" => Some(Self::Ai),
+            "low" => Some(Self::Low),
+            "ai" => Some(Self::Ai),
             _ => None,
         }
     }
@@ -169,18 +168,6 @@ impl RiskRuleTable {
     pub fn default_tier(&self) -> Option<RiskTier> {
         self.default.as_deref().and_then(RiskTier::parse)
     }
-
-    /// A table read from the `[importance.<repo>]` section.
-    pub fn from_importance(legacy: &ImportanceRepoConfig) -> Self {
-        Self {
-            default: legacy.default.clone(),
-            rules: legacy
-                .rules
-                .iter()
-                .map(|(key, tier)| (key.clone(), RiskRule::from(tier.as_str())))
-                .collect(),
-        }
-    }
 }
 
 /// `[risk.<repo>]`: each repo's project rules, keyed by `storage::rules_key`.
@@ -192,30 +179,6 @@ impl RiskRuleTable {
 pub struct RiskConfig {
     #[serde(flatten)]
     pub items: BTreeMap<String, RiskRuleTable>,
-}
-
-/// The `[importance.<repo>]` section, read so a table generated
-/// in the old vocabulary keeps working until something rewrites it.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ImportanceConfig {
-    #[serde(flatten)]
-    pub items: BTreeMap<String, ImportanceRepoConfig>,
-}
-
-impl ImportanceConfig {
-    pub fn is_empty(&self) -> bool {
-        self.items.is_empty()
-    }
-}
-
-/// One repo's `[importance]` table; values are `foundational|normal|isolated`.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(default)]
-pub struct ImportanceRepoConfig {
-    pub default: Option<String>,
-    #[serde(flatten)]
-    pub rules: BTreeMap<String, String>,
 }
 
 /// Which table a rule came from. Ordered the way resolution consults them.
@@ -392,9 +355,7 @@ impl RiskRuleProposal {
     ///
     /// The background worker that ran the agent holds no `App`, so this is the
     /// file path: read the config, replace one repo's project table, write it
-    /// back with every other section as it was found. An
-    /// `[importance.<repo>]` table is removed in the same write so the repo is
-    /// left with one table.
+    /// back with every other section as it was found.
     pub fn merge_into_global_config(repo: &str, proposal: Self) -> anyhow::Result<(usize, usize)> {
         if proposal.repo != repo {
             anyhow::bail!("risk rule proposal names `{}`, not `{repo}`", proposal.repo);
@@ -403,7 +364,6 @@ impl RiskRuleProposal {
         let (table, dropped) = proposal.into_table();
         let kept = table.rules.len();
         config.risk.items.insert(repo.to_string(), table);
-        config.importance.items.remove(repo);
         super::save_config(&config)?;
         Ok((kept, dropped))
     }
@@ -454,9 +414,7 @@ pub struct RiskRuleEdit {
 
 /// Apply `edit` to `config`, or say why it was refused and change nothing.
 ///
-/// Editing a repo that still has only a `[importance]` table first
-/// carries that table over, so the edit lands beside the rules the reviewer was
-/// looking at rather than replacing them.
+/// A project edit creates that repo's table when it does not exist yet.
 pub fn apply_risk_rule_edit(
     config: &mut super::ErConfig,
     edit: RiskRuleEdit,
@@ -487,17 +445,7 @@ pub fn apply_risk_rule_edit(
             if repo.is_empty() {
                 return Err("a project rule needs the repo it belongs to".into());
             }
-            let legacy = config.importance.items.remove(repo);
-            config
-                .risk
-                .items
-                .entry(repo.to_string())
-                .or_insert_with(|| {
-                    legacy
-                        .as_ref()
-                        .map(RiskRuleTable::from_importance)
-                        .unwrap_or_default()
-                })
+            config.risk.items.entry(repo.to_string()).or_default()
         }
     };
     if let Some(old) = edit.replaces.as_deref() {
@@ -538,21 +486,21 @@ mod tests {
     }
 
     #[test]
-    fn tiers_read_their_own_and_the_importance_spellings() {
+    fn tiers_read_only_the_current_spellings() {
         for (text, tier) in [
             ("high", RiskTier::High),
             ("MED", RiskTier::Med),
             ("medium", RiskTier::Med),
             (" low ", RiskTier::Low),
             ("ai", RiskTier::Ai),
-            ("foundational", RiskTier::High),
-            ("normal", RiskTier::Ai),
-            ("isolated", RiskTier::Low),
         ] {
             assert_eq!(RiskTier::parse(text), Some(tier), "{text}");
             assert_eq!(RiskTier::parse(tier.as_str()), Some(tier));
         }
         assert_eq!(RiskTier::parse("critical"), None);
+        for old in ["foundational", "isolated", "normal"] {
+            assert_eq!(RiskTier::parse(old), None, "{old}");
+        }
     }
 
     #[test]
@@ -712,42 +660,30 @@ mod tests {
         assert_eq!(back.risk.items["er"], config.risk.items["er"]);
     }
 
-    /// An empty `[user_risk]` or legacy table is not written back as an empty
-    /// section: the file is the user's, and noise in it is not free.
+    /// An empty `[user_risk]` table is not written back as an empty section:
+    /// the file is the user's, and noise in it is not free.
     #[test]
     fn empty_rule_sections_are_not_written() {
         let text = toml::to_string_pretty(&ErConfig::default()).unwrap();
         assert!(!text.contains("user_risk"), "{text}");
-        assert!(!text.contains("importance"), "{text}");
     }
 
     #[test]
-    fn a_pre_merge_importance_table_is_read_as_project_rules() {
+    fn an_importance_table_is_ignored() {
         let config: ErConfig = toml::from_str(
             r#"
             [importance.easy-review]
-            "crates/er-engine/src/**" = "foundational"
-            "*.md" = "isolated"
-            "src/odd/**" = "normal"
-            default = "normal"
+            "src/**" = "foundational"
             "#,
         )
-        .unwrap();
-        let rules = config.risk_rules("easy-review");
-        assert!(rules.is_declared());
-        assert_eq!(rules.tier_of("crates/er-engine/src/lib.rs"), RiskTier::High);
-        assert_eq!(rules.tier_of("README.md"), RiskTier::Low);
-        assert_eq!(rules.tier_of("src/odd/x.rs"), RiskTier::Ai);
-        assert_eq!(rules.tier_of("desktop-ui/x.ts"), RiskTier::Ai);
+        .expect("an old table does not fail the load");
+        assert!(!config.risk_rules("easy-review").is_declared());
         assert_eq!(
-            rules.resolve("src/odd/x.rs").rule.map(|r| r.key),
-            Some("src/odd/**".to_string()),
-            "an `ai` rule still names itself: it was declared"
+            config.risk_rules("easy-review").tier_of("src/lib.rs"),
+            RiskTier::Ai
         );
     }
 
-    /// Once a repo has a `[risk]` table it is the one table; a stale
-    /// `[importance]` table beside it is not consulted.
     /// A malformed rule value must not fail the parse: a failed parse loads the
     /// defaults, and the next save writes them over every other section.
     #[test]
@@ -778,20 +714,6 @@ mod tests {
             (Some(RiskTier::High), None)
         );
         assert_eq!(rules.tier_of("docs/a.md"), RiskTier::Low);
-    }
-
-    #[test]
-    fn a_risk_table_shadows_the_importance_table_for_the_same_repo() {
-        let config: ErConfig = toml::from_str(
-            r#"
-            [importance.er]
-            "*.md" = "foundational"
-            [risk.er]
-            "src/**" = "high"
-            "#,
-        )
-        .unwrap();
-        assert_eq!(config.risk_rules("er").tier_of("README.md"), RiskTier::Ai);
     }
 
     #[test]
@@ -851,7 +773,7 @@ mod tests {
             repo: "er".into(),
             default: Some("banana".into()),
             rules: BTreeMap::from([
-                ("src/**".to_string(), RiskRule::from("foundational")),
+                ("src/**".to_string(), RiskRule::from("HIGH")),
                 ("docs/**".to_string(), RiskRule::from("LOW")),
                 ("weird/**".to_string(), RiskRule::from("nonsense")),
                 ("crates/[".to_string(), RiskRule::from("high")),
@@ -880,8 +802,7 @@ mod tests {
     }
 
     /// The config also holds the reviewer's provider and display settings, so a
-    /// generated table must replace one repo's rules and nothing else — and it
-    /// retires that repo's `[importance]` table so one table is left.
+    /// generated table must replace one repo's rules and nothing else.
     #[test]
     fn merging_a_proposal_replaces_only_that_repos_table() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
@@ -897,13 +818,6 @@ mod tests {
             .risk
             .items
             .insert("another-repo".into(), table(&[("keep/**", "low")], None));
-        config.importance.items.insert(
-            "er".into(),
-            ImportanceRepoConfig {
-                default: None,
-                rules: BTreeMap::from([("old/**".to_string(), "foundational".to_string())]),
-            },
-        );
         config.user_risk = table(&[("*.lock", "low")], None);
         crate::config::save_config(&config).unwrap();
 
@@ -919,10 +833,6 @@ mod tests {
         assert_eq!((kept, dropped), (1, 0));
         assert!(!loaded.features.view_branch, "other sections survive");
         assert!(loaded.risk.items.contains_key("another-repo"));
-        assert!(
-            !loaded.importance.items.contains_key("er"),
-            "the old table is retired"
-        );
         assert_eq!(
             loaded.user_risk, config.user_risk,
             "the user's rules are untouched"
@@ -1010,33 +920,5 @@ mod tests {
         }
         assert!(config.risk.items.is_empty());
         assert!(config.user_risk.is_empty());
-    }
-
-    /// Editing a repo that only has a `[importance]` table carries those rules over,
-    /// so the edit adds to what the reviewer saw rather than replacing it.
-    #[test]
-    fn editing_a_pre_merge_repo_carries_its_importance_rules_over() {
-        let mut config = ErConfig::default();
-        config.importance.items.insert(
-            "er".into(),
-            ImportanceRepoConfig {
-                default: Some("isolated".into()),
-                rules: BTreeMap::from([("src/**".to_string(), "foundational".to_string())]),
-            },
-        );
-        apply_risk_rule_edit(
-            &mut config,
-            edit(RiskRuleSource::Project, "*.md", Some("low")),
-        )
-        .unwrap();
-        assert!(config.importance.items.is_empty(), "one table is left");
-        let rules = config.risk_rules("er");
-        assert_eq!(rules.tier_of("src/lib.rs"), RiskTier::High);
-        assert_eq!(rules.tier_of("README.md"), RiskTier::Low);
-        assert_eq!(
-            rules.tier_of("other/x"),
-            RiskTier::Low,
-            "the default came too"
-        );
     }
 }

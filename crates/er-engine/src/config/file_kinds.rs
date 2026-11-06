@@ -2,7 +2,7 @@
 //!
 //! [`classify_path`] knows the common conventions (lockfiles, `dist/`, `*.test.ts`)
 //! but not a project's own codegen directory or e2e folder. A repo names those
-//! here, keyed the same way as `[importance.<repo>]` and for the same reason:
+//! here, keyed the same way as `[risk.<repo>]` and for the same reason:
 //! there is no repo-local config (ADR 0005).
 //!
 //! ```toml

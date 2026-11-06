@@ -4483,13 +4483,11 @@ impl App {
             // now behind it, so re-read it and re-hand the rules to the tabs
             // that filter with them.
             if wrote_importance && matches!(status, CommandStatus::Done) {
-                // Only the tables this task wrote: `[risk]`, and the `[importance]`
-                // table it retires. A wholesale reload is what
-                // silently reverted in-flight settings before — see the note on
-                // `sync_config_from_active_tab`, and `docs/adr/0005`.
+                // Only the table this task wrote: `[risk]`. A wholesale reload
+                // is what silently reverted in-flight settings before — see the
+                // note on `sync_config_from_active_tab`, and `docs/adr/0005`.
                 let written = crate::config::load_global_config();
                 self.config.risk = written.risk;
-                self.config.importance = written.importance;
                 self.sync_repo_rules_to_tabs();
                 // The agent's own one-line distribution — the share each tier
                 // covers — is what tells a reader whether the table is
