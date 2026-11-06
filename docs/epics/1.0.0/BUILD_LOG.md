@@ -87,3 +87,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - Merged PR #418 (P25) as deae0620a; #411 closed. Phase 0 is fully merged. The desktop and TUI hand check after the major UI library upgrades is an owner action. The T1 session continues as T4 (#378, then #379 and #380).
 - P05 arrived as two stacked PRs, #416 and #417 (TUI). On the release-merged tree the engine and desktop suites pass, and the two TUI `/tmp` tests fail only inside the sandbox. A planted skip of the reconcile step makes both retry tests fail. The line-by-line review is in progress.
 - #404 revised by D5; round-2 review in progress.
+- Correction to the entry above: phase 0 is not fully merged. P05 (#376) and P06 (#377) are phase 0 too; P01–P04 and P25 are merged.
