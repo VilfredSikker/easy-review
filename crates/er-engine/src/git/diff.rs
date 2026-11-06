@@ -1,4 +1,4 @@
-use super::status::FileStatus;
+use er_git::FileStatus;
 
 /// A single line in a diff hunk
 #[derive(Debug, Clone)]
@@ -658,7 +658,7 @@ pub fn expand_compacted_file(
     base: &str,
     head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw = super::status::git_diff_raw_file(mode, base, repo_root, &file.path, None, head_ref)?;
+    let raw = er_git::git_diff_raw_file(mode, base, repo_root, &file.path, None, head_ref)?;
     let parsed = parse_diff(&raw);
     if let Some(f) = parsed.into_iter().next() {
         file.hunks = f.hunks;
@@ -680,7 +680,7 @@ pub fn refetch_file_with_context(
     context_lines: usize,
     head_ref: Option<&str>,
 ) -> anyhow::Result<()> {
-    let raw = super::status::git_diff_raw_file(
+    let raw = er_git::git_diff_raw_file(
         mode,
         base,
         repo_root,
@@ -699,8 +699,8 @@ pub fn refetch_file_with_context(
 
 #[cfg(test)]
 mod tests {
-    use super::super::status::FileStatus;
     use super::*;
+    use er_git::FileStatus;
 
     #[test]
     fn filter_by_paths_keeps_the_exact_section_of_a_crlf_diff() {

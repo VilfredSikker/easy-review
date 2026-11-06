@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use er_engine::app::{DiffMode, TabState};
 use er_engine::git::{
     blame_range, git_merge_base, git_rev_parse_commit, BlameEnd, BlameRequest, FileStatus,
-    LineAttribution,
+    GitError, LineAttribution,
 };
 use tauri::State;
 
@@ -182,7 +182,7 @@ fn attribute(
     path: &str,
     cache_key: &str,
 ) -> Result<LineAttribution, String> {
-    let err = |e: anyhow::Error| e.to_string();
+    let err = |e: GitError| e.to_string();
     let (root, start, end, working_tree) = match &target.source {
         Source::Range { root, base, head } => {
             let end = git_rev_parse_commit(root, head).map_err(err)?;

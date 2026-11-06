@@ -1375,6 +1375,7 @@ version = "0.6.5"
 dependencies = [
  "anyhow",
  "dirs 6.0.0",
+ "er-git",
  "glob",
  "libc",
  "notify",
@@ -1389,6 +1390,16 @@ dependencies = [
  "toml 1.2.1+spec-1.1.0",
  "tui-textarea-2",
  "two-face",
+]
+
+[[package]]
+name = "er-git"
+version = "0.6.5"
+dependencies = [
+ "anyhow",
+ "glob",
+ "serde",
+ "tempfile",
 ]
 
 [[package]]
