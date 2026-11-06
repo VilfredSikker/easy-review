@@ -134,6 +134,144 @@ pub struct CommentSyncResult {
     pub tab_key: (String, Option<u64>, bool),
 }
 
+/// Parse `YYYY-MM-DDTHH:MM:SSZ` (optional fraction, `+00:00` offset) to Unix
+/// seconds. Anything else is `None`.
+pub fn parse_iso8601_secs(value: &str) -> Option<u64> {
+    let value = value.trim();
+    let (date, rest) = value.split_once('T')?;
+    let time = rest
+        .strip_suffix('Z')
+        .or_else(|| rest.split_once('+').map(|(time, _)| time))
+        .unwrap_or(rest);
+    let time = time.split('.').next()?;
+
+    let mut date_parts = date.split('-');
+    let year: i64 = date_parts.next()?.parse().ok()?;
+    let month: i64 = date_parts.next()?.parse().ok()?;
+    let day: i64 = date_parts.next()?.parse().ok()?;
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+
+    let mut time_parts = time.split(':');
+    let hour: u64 = time_parts.next()?.parse().ok()?;
+    let minute: u64 = time_parts.next()?.parse().ok()?;
+    let second: u64 = time_parts.next()?.parse().ok()?;
+    if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+
+    let days = days_from_civil(year, month, day);
+    if days < 0 {
+        return None;
+    }
+    u64::try_from(days)
+        .ok()?
+        .checked_mul(86_400)?
+        .checked_add(hour * 3_600 + minute * 60 + second)
+}
+
+/// Days since 1970-01-01 for a proleptic Gregorian date (Howard Hinnant's
+/// `days_from_civil`).
+fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
+    let year = if month <= 2 { year - 1 } else { year };
+    let era = if year >= 0 { year } else { year - 399 } / 400;
+    let year_of_era = year - era * 400;
+    let day_of_year = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    era * 146_097 + day_of_era - 719_468
+}
+
+/// Merge one pull's listed comments into the store, keeping local unpushed
+/// entries and rebuilding every GitHub entry. The caller writes the result.
+pub fn rebuild_comment_store(
+    ctx: &CommentSyncContext,
+    mut gc: ai::ErGitHubComments,
+    gh_comments: &[github::GitHubComment],
+    thread_state: &std::collections::HashMap<u64, github::ReviewThreadState>,
+) -> ai::ErGitHubComments {
+    gc.github = Some(ai::GitHubSyncState {
+        pr_number: Some(ctx.pr_number),
+        owner: ctx.owner.clone(),
+        repo: ctx.repo_name.clone(),
+        last_synced: chrono_now(),
+    });
+
+    let local_unpushed: Vec<_> = gc
+        .comments
+        .into_iter()
+        .filter(|c| c.source == "local" && !c.synced)
+        .collect();
+
+    let mut github_entries = Vec::new();
+    for gh in gh_comments {
+        let file_path = gh.path.clone().unwrap_or_default();
+        let stable_line = gh.original_line.or(gh.line);
+        let line_end = match (gh.start_line, gh.line) {
+            (Some(start), Some(end)) if end > start => Some(end),
+            _ => None,
+        };
+        let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
+            &gh.diff_hunk,
+            ctx.files.iter().find(|f| f.path == file_path),
+        ) {
+            find_local_line_for_diff_hunk(diff_hunk, f)
+                .map(|(_, ln)| ln)
+                .or(stable_line)
+        } else {
+            stable_line
+        };
+
+        let (
+            hunk_index,
+            anchor_line_content,
+            anchor_ctx_before,
+            anchor_ctx_after,
+            anchor_old_line,
+            anchor_hunk_header,
+        ) = resolve_anchor(
+            resolved_line,
+            &file_path,
+            &ctx.files,
+            gh.diff_hunk.as_deref(),
+        );
+
+        let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
+        let state = thread_state.get(&gh.id).copied().unwrap_or_default();
+        let outdated = merged_outdated_state(state, gh.outdated);
+        github_entries.push(ai::GitHubReviewComment {
+            id: format!("gh-{}", gh.id),
+            timestamp: gh.created_at.clone(),
+            file: file_path,
+            hunk_index,
+            line_start: gh.start_line.or(resolved_line),
+            line_end,
+            line_content: anchor_line_content,
+            comment: gh.body.clone(),
+            in_reply_to,
+            resolved: state.resolved,
+            source: "github".to_string(),
+            github_id: Some(gh.id),
+            author: gh.user.login.clone(),
+            synced: true,
+            outdated,
+            stale: outdated,
+            context_before: anchor_ctx_before,
+            context_after: anchor_ctx_after,
+            old_line_start: anchor_old_line,
+            hunk_header: anchor_hunk_header,
+            anchor_status: "original".to_string(),
+            relocated_at_hash: ctx.anchor_hash.clone(),
+            finding_ref: None,
+            side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
+        });
+    }
+
+    gc.comments = local_unpushed;
+    gc.comments.extend(github_entries);
+    gc
+}
+
 pub(crate) const fn merged_outdated_state(
     thread_state: ReviewThreadState,
     rest_outdated: bool,
@@ -208,7 +346,7 @@ fn fetch_comment_sync_data_with(
     });
     let (gh_comments, thread_state) = bundle?;
 
-    let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&ctx.comments_path) {
+    let gc: ai::ErGitHubComments = match std::fs::read_to_string(&ctx.comments_path) {
         Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
             version: 1,
             diff_hash: ctx.diff_hash.clone(),
@@ -223,87 +361,13 @@ fn fetch_comment_sync_data_with(
         },
     };
 
-    gc.github = Some(ai::GitHubSyncState {
-        pr_number: Some(ctx.pr_number),
-        owner: ctx.owner.clone(),
-        repo: ctx.repo_name.clone(),
-        last_synced: chrono_now(),
-    });
-
-    let local_unpushed: Vec<_> = gc
+    let gc = rebuild_comment_store(ctx, gc, &gh_comments, &thread_state);
+    let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
+    let local_count = gc
         .comments
-        .into_iter()
+        .iter()
         .filter(|c| c.source == "local" && !c.synced)
-        .collect();
-
-    let mut github_entries = Vec::new();
-    for gh in &gh_comments {
-        let file_path = gh.path.clone().unwrap_or_default();
-        let stable_line = gh.original_line.or(gh.line);
-        let line_end = match (gh.start_line, gh.line) {
-            (Some(start), Some(end)) if end > start => Some(end),
-            _ => None,
-        };
-        let resolved_line: Option<usize> = if let (Some(diff_hunk), Some(f)) = (
-            &gh.diff_hunk,
-            ctx.files.iter().find(|f| f.path == file_path),
-        ) {
-            find_local_line_for_diff_hunk(diff_hunk, f)
-                .map(|(_, ln)| ln)
-                .or(stable_line)
-        } else {
-            stable_line
-        };
-
-        let (
-            hunk_index,
-            anchor_line_content,
-            anchor_ctx_before,
-            anchor_ctx_after,
-            anchor_old_line,
-            anchor_hunk_header,
-        ) = resolve_anchor(
-            resolved_line,
-            &file_path,
-            &ctx.files,
-            gh.diff_hunk.as_deref(),
-        );
-
-        let in_reply_to = gh.in_reply_to_id.map(|pid| format!("gh-{}", pid));
-        let state = thread_state.get(&gh.id).copied().unwrap_or_default();
-        let outdated = merged_outdated_state(state, gh.outdated);
-        github_entries.push(ai::GitHubReviewComment {
-            id: format!("gh-{}", gh.id),
-            timestamp: gh.created_at.clone(),
-            file: file_path,
-            hunk_index,
-            line_start: gh.start_line.or(resolved_line),
-            line_end,
-            line_content: anchor_line_content,
-            comment: gh.body.clone(),
-            in_reply_to,
-            resolved: state.resolved,
-            source: "github".to_string(),
-            github_id: Some(gh.id),
-            author: gh.user.login.clone(),
-            synced: true,
-            outdated,
-            stale: outdated,
-            context_before: anchor_ctx_before,
-            context_after: anchor_ctx_after,
-            old_line_start: anchor_old_line,
-            hunk_header: anchor_hunk_header,
-            anchor_status: "original".to_string(),
-            relocated_at_hash: ctx.anchor_hash.clone(),
-            finding_ref: None,
-            side: gh.side.clone().unwrap_or_else(|| "RIGHT".to_string()),
-        });
-    }
-
-    let github_count = github_entries.len();
-    let local_count = local_unpushed.len();
-    gc.comments = local_unpushed;
-    gc.comments.extend(github_entries);
+        .count();
 
     // Write to disk (atomic rename, outside app lock)
     if let Some(dir) = std::path::Path::new(&ctx.comments_path).parent() {

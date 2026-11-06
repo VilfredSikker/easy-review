@@ -1,5 +1,6 @@
 <script lang="ts">
   import { hunkForLines, quotedBody, type LineRange } from "$lib/documentAnchors";
+  import { newCommentClientId } from "$lib/optimisticComment";
   import { app } from "$lib/stores/app.svelte";
   import type { FileSnapshot } from "$lib/types";
 
@@ -23,6 +24,12 @@
   const kind = $derived<Kind>(kinds.includes(picked) ? picked : "question");
   let text = $state("");
   let textarea: HTMLTextAreaElement | null = $state(null);
+  // A GitHub comment posts immediately: keep the draft and the client id
+  // until the command resolves, so a failure loses nothing and a retry is
+  // the same create.
+  let clientId = $state<string | null>(null);
+  let sending = $state(false);
+  let error = $state<string | null>(null);
 
   $effect(() => {
     textarea?.focus({ preventScroll: true });
@@ -38,10 +45,34 @@
 
   const rangeLabel = $derived(lines.start === lines.end ? `L${lines.start}` : `L${lines.start}–${lines.end}`);
 
-  function submit() {
-    if (!text.trim()) return;
+  async function submit() {
+    if (!text.trim() || sending) return;
     const body = quotedBody(quote, text);
     const lineNumEnd = lines.end !== lines.start ? lines.end : null;
+    if (hunkIdx !== null && kind === "comment") {
+      if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
+      const id = clientId ?? newCommentClientId();
+      clientId = id;
+      sending = true;
+      error = null;
+      try {
+        await app.cmd(
+          ADD_COMMAND[kind],
+          {
+            file: file.path, hunkIdx, lineNum: lines.start, lineNumEnd, text: body, side: "RIGHT", id,
+          },
+          { throwOnError: true },
+        );
+        text = "";
+        clientId = null;
+        onclose();
+      } catch (e) {
+        error = e instanceof Error ? e.message : String(e);
+      } finally {
+        sending = false;
+      }
+      return;
+    }
     if (hunkIdx !== null) {
       if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
       void app.cmd(ADD_COMMAND[kind], {
@@ -84,9 +115,10 @@
   </div>
   <blockquote class="quote">{quote}</blockquote>
   <textarea bind:this={textarea} bind:value={text} {onkeydown} rows="3" placeholder={PLACEHOLDER[kind]}></textarea>
+  {#if error}<p class="error">{error}</p>{/if}
   <div class="footer">
     <span class="hint">⌘↵ save · Ctrl+T switch · Esc cancel</span>
-    <button type="button" class="submit" disabled={!text.trim()} onclick={submit}>Save {LABEL[kind].toLowerCase()}</button>
+    <button type="button" class="submit" disabled={!text.trim() || sending} onclick={submit}>{sending ? "Posting…" : `Save ${LABEL[kind].toLowerCase()}`}</button>
   </div>
 </div>
 
@@ -104,6 +136,7 @@
   .quote { margin: 0.5rem 0.75rem 0; padding-left: 0.6rem; border-left: 2px solid var(--color-question); color: var(--color-fg-3); white-space: pre-wrap; max-height: 4.8em; overflow: hidden; }
   textarea { display: block; width: 100%; padding: 0.5rem 0.75rem; background: transparent; outline: none; resize: none; line-height: 1.5; color: var(--color-fg); }
   textarea::placeholder { color: var(--color-muted); }
+  .error { margin: 0; padding: 0.15rem 0.75rem 0.4rem; color: var(--color-del-fg); font-size: 0.75rem; }
   .footer { display: flex; align-items: center; justify-content: space-between; padding: 0.35rem 0.75rem; border-top: 1px solid var(--color-hairline); }
   .hint { font-size: 0.625rem; color: var(--color-muted); }
   .submit { padding: 0.2rem 0.7rem; border-radius: 4px; background: var(--color-action); color: var(--color-on-accent); font-size: 0.75rem; cursor: pointer; }

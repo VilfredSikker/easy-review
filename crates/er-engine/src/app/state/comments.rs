@@ -778,6 +778,7 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
+        tab.comment_client_id = None;
         let side = tab.comment_side_for_cursor(split_active);
         tab.comment_side = Some(side);
         self.input_mode = InputMode::Comment;
@@ -795,6 +796,7 @@ impl App {
         tab.comment_finding_ref = None;
         tab.comment_type = CommentType::GitHubComment;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -844,6 +846,7 @@ impl App {
         tab.comment_reply_to = None;
         tab.comment_type = comment_type;
         tab.comment_edit_id = Some(comment_id.to_string());
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -905,6 +908,7 @@ impl App {
         tab.comment_finding_ref = None;
         tab.comment_type = comment_type;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -950,6 +954,7 @@ impl App {
         tab.comment_finding_ref = Some(finding_id.to_string());
         tab.comment_type = CommentType::GitHubComment;
         tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Comment;
     }
 
@@ -1388,94 +1393,12 @@ impl App {
         comment_line_num: Option<usize>,
     ) -> LineAnchor {
         let tab = self.tab();
-        let diff_file = if tab.comment_file.is_empty() {
-            tab.selected_diff_file()
-        } else if tab.mode == DiffMode::History {
-            tab.history.as_ref().and_then(|history| {
-                history
-                    .commit_files
-                    .iter()
-                    .find(|f| f.path == tab.comment_file)
-            })
-        } else {
-            tab.files.iter().find(|f| f.path == tab.comment_file)
-        };
-
-        if let Some(df) = diff_file {
-            if let Some(hunk) = df.hunks.get(hunk_index) {
-                if let Some(ln) = comment_line_num {
-                    // Find the target line index within the hunk
-                    let target_idx = match tab.comment_side.as_deref() {
-                        Some("LEFT") => hunk
-                            .lines
-                            .iter()
-                            .position(|l| l.old_num == Some(ln))
-                            .or_else(|| hunk.lines.iter().position(|l| l.new_num == Some(ln))),
-                        Some("RIGHT") => hunk
-                            .lines
-                            .iter()
-                            .position(|l| l.new_num == Some(ln))
-                            .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
-                        _ => hunk
-                            .lines
-                            .iter()
-                            .position(|l| l.new_num == Some(ln))
-                            .or_else(|| hunk.lines.iter().position(|l| l.old_num == Some(ln))),
-                    };
-                    let (line_content, old_line_start) = if let Some(idx) = target_idx {
-                        let dl = &hunk.lines[idx];
-                        (dl.content.clone(), dl.old_num)
-                    } else {
-                        (String::new(), None)
-                    };
-
-                    // Collect up to 3 content lines before the target (same hunk)
-                    let context_before = if let Some(idx) = target_idx {
-                        let start = idx.saturating_sub(3);
-                        hunk.lines[start..idx]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    // Collect up to 3 content lines after the target (same hunk)
-                    let context_after = if let Some(idx) = target_idx {
-                        let end = (idx + 4).min(hunk.lines.len());
-                        hunk.lines[(idx + 1)..end]
-                            .iter()
-                            .map(|l| l.content.clone())
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-
-                    LineAnchor {
-                        line_start: Some(ln),
-                        line_content,
-                        context_before,
-                        context_after,
-                        old_line_start,
-                        hunk_header: hunk.header.clone(),
-                    }
-                } else {
-                    // Hunk-level comment
-                    LineAnchor {
-                        line_start: None,
-                        line_content: hunk.header.clone(),
-                        context_before: Vec::new(),
-                        context_after: Vec::new(),
-                        old_line_start: None,
-                        hunk_header: hunk.header.clone(),
-                    }
-                }
-            } else {
-                LineAnchor::default()
-            }
-        } else {
-            LineAnchor::default()
-        }
+        self.line_anchor_at(
+            &tab.comment_file,
+            hunk_index,
+            comment_line_num,
+            tab.comment_side.as_deref(),
+        )
     }
 
     /// Inclusive end line for a multi-line anchor; `None` when single-line or invalid.
@@ -1654,8 +1577,10 @@ impl App {
 
     /// Cancel comment input
     pub fn cancel_comment(&mut self) {
-        self.tab_mut().comment_textarea = TextArea::default();
-        self.tab_mut().comment_edit_id = None;
+        let tab = self.tab_mut();
+        tab.comment_textarea = TextArea::default();
+        tab.comment_edit_id = None;
+        tab.comment_client_id = None;
         self.input_mode = InputMode::Normal;
     }
 

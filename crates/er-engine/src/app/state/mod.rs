@@ -2,6 +2,7 @@ pub mod arena;
 pub mod background;
 pub(super) mod comments;
 mod diff_reuse;
+pub mod github_post;
 pub mod github_sync;
 pub(super) mod navigation;
 pub(super) mod preload;
@@ -893,6 +894,11 @@ pub struct TabState {
     /// follow-up reply/delete before ingest still hits the backend row.
     pub comment_id_override: Option<String>,
 
+    /// Client id of the composer's current GitHub post, reused by a retry so
+    /// the engine can reconcile instead of posting twice. Cleared on success,
+    /// cancel, or a new composer.
+    pub comment_client_id: Option<String>,
+
     /// History mode state (only populated when mode == History)
     pub history: Option<HistoryState>,
 
@@ -959,6 +965,11 @@ pub struct TabState {
 
     /// PR number when opened via --pr or PR URL. Used for comment sync and PR data fetching.
     pub pr_number: Option<u64>,
+
+    /// A PR probe already found no pull request for this branch. Key presses
+    /// gate the GitHub comment composer on this held state, never on a `gh`
+    /// call; `false` means "not known", not "there is a PR".
+    pub pr_absent: bool,
 
     // ── Commit input state ──
     /// Text buffer for the commit message being typed
@@ -1230,6 +1241,31 @@ pub struct SessionState {
     /// Comment draft type ("question" or "github")
     #[serde(default)]
     pub comment_draft_type: String,
+
+    /// Comment draft reply target, so a restored reply is still a reply.
+    #[serde(default)]
+    pub comment_draft_reply_to: Option<String>,
+
+    /// Finding the draft replies to. Without it a restored finding reply would
+    /// post as a public line comment.
+    #[serde(default)]
+    pub comment_draft_finding_ref: Option<String>,
+
+    /// Comment being edited, so a restored edit stays an edit.
+    #[serde(default)]
+    pub comment_draft_edit_id: Option<String>,
+
+    /// Review side of the draft ("LEFT" / "RIGHT").
+    #[serde(default)]
+    pub comment_draft_side: Option<String>,
+
+    /// Inclusive end line of a multi-line draft.
+    #[serde(default)]
+    pub comment_draft_line_end: Option<usize>,
+
+    /// Client id of the draft's GitHub post, reused by a retry.
+    #[serde(default)]
+    pub comment_draft_client_id: Option<String>,
 }
 
 impl SessionState {
@@ -1673,11 +1709,13 @@ impl TabState {
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
+            comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
             pr_commits,
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
+            pr_absent: false,
             history: None,
             tour: None,
             tour_is_pr: false,
@@ -1812,11 +1850,13 @@ impl TabState {
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
+            comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: Some(pr_ref.number),
+            pr_absent: false,
             history: None,
             tour: None,
             tour_is_pr: false,
@@ -1945,11 +1985,13 @@ impl TabState {
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
+            comment_client_id: None,
             pr_data: None,
             stack: StackState::default(),
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
+            pr_absent: false,
             history: None,
             tour: None,
             tour_is_pr: false,
@@ -2015,6 +2057,7 @@ impl TabState {
         let mut tab = Self::new_for_test(Vec::new());
         tab.repo_root = String::new();
         tab.er_root = ErRoot::unresolved("");
+        tab.pr_absent = true;
         tab.base_branch = String::new();
         tab.current_branch = String::new();
         tab.placeholder = true;
@@ -2091,10 +2134,12 @@ impl TabState {
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
+            comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
+            pr_absent: false,
             history: None,
             tour: None,
             tour_is_pr: false,
@@ -5513,6 +5558,12 @@ impl TabState {
                 CommentType::Note => "note".to_string(),
                 CommentType::GitHubComment => "github".to_string(),
             },
+            comment_draft_reply_to: self.comment_reply_to.clone(),
+            comment_draft_finding_ref: self.comment_finding_ref.clone(),
+            comment_draft_edit_id: self.comment_edit_id.clone(),
+            comment_draft_side: self.comment_side.clone(),
+            comment_draft_line_end: self.comment_line_end,
+            comment_draft_client_id: self.comment_client_id.clone(),
         }
     }
 
@@ -5583,6 +5634,12 @@ impl TabState {
                 "note" => CommentType::Note,
                 _ => CommentType::GitHubComment,
             };
+            self.comment_reply_to = session.comment_draft_reply_to;
+            self.comment_finding_ref = session.comment_draft_finding_ref;
+            self.comment_edit_id = session.comment_draft_edit_id;
+            self.comment_side = session.comment_draft_side;
+            self.comment_line_end = session.comment_draft_line_end;
+            self.comment_client_id = session.comment_draft_client_id;
         }
 
         true
@@ -5782,6 +5839,14 @@ pub struct App {
 
     /// TUI: provider id waiting for the event loop to spawn discovery.
     pub pending_model_discovery: Option<String>,
+
+    /// How a created GitHub comment reaches GitHub. Tests replace it with a
+    /// fake; production uses `GhCommentPoster`.
+    comment_poster: std::sync::Arc<dyn crate::github_post::GitHubCommentPoster>,
+
+    /// Create attempts whose outcome is unknown, keyed by client id. A retry
+    /// lists the PR's comments before posting again.
+    pending_github_posts: std::collections::HashMap<String, crate::github_post::PendingGitHubPost>,
 }
 
 impl App {
@@ -5950,6 +6015,8 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            pending_github_posts: std::collections::HashMap::new(),
         };
         // These tabs were built before the config loaded, so `push_tab` never
         // saw them.
@@ -6007,6 +6074,8 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            pending_github_posts: std::collections::HashMap::new(),
         };
         app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
@@ -6056,6 +6125,8 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            pending_github_posts: std::collections::HashMap::new(),
         };
         app.sync_repo_rules_to_tabs();
         app.overlay_cached_discovered_models();
@@ -6106,6 +6177,8 @@ impl App {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            pending_github_posts: std::collections::HashMap::new(),
         }
     }
 
@@ -9760,10 +9833,12 @@ mod tests {
             comment_side: None,
             comment_document_anchor: None,
             comment_id_override: None,
+            comment_client_id: None,
             pr_data: None,
             pr_commits: Vec::new(),
             pr_head_ref: None,
             pr_number: None,
+            pr_absent: false,
             history: None,
             tour: None,
             tour_is_pr: false,
@@ -12430,6 +12505,8 @@ mod tests {
             model_discovery_inflight: std::collections::HashSet::new(),
             available_update: None,
             pending_model_discovery: None,
+            comment_poster: std::sync::Arc::new(crate::github_post::GhCommentPoster),
+            pending_github_posts: std::collections::HashMap::new(),
         }
     }
 

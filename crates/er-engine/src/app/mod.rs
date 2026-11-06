@@ -15,6 +15,7 @@ pub use state::background::{
     HostWriteDiagram,
 };
 pub use state::chrono_now;
+pub use state::github_post::{NewGitHubComment, PostedGitHubCommentLocation};
 pub use state::github_sync::{
     fetch_comment_sync_data, fetch_comment_sync_data_cached, CommentSyncContext, CommentSyncResult,
 };

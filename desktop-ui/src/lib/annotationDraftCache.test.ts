@@ -11,7 +11,7 @@ describe("review annotation drafts", () => {
     draft.showReply = true;
     const refreshed = { ...richSnapshot, preview_context_key: "updated-content" };
     expect(cache.get(refreshed, "thread", "one")).toBe(draft);
-    expect(cache.get(refreshed, "thread", "one")).toEqual({ replyText: "Unsent reply", showReply: true });
+    expect(cache.get(refreshed, "thread", "one")).toMatchObject({ replyText: "Unsent reply", showReply: true });
   });
   test("isolates annotations, reviews, diff scopes and History commits", () => {
     const cache = new AnnotationDraftCache();

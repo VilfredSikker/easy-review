@@ -9,6 +9,8 @@
     sourceId: string;
     initialBody: string;
     targetLineLabel: string;
+    /** The last promote failure, shown until the next attempt. */
+    error?: string | null;
     onSubmit: (body: string) => void | Promise<void>;
     onClose: () => void;
   }
@@ -19,6 +21,7 @@
     sourceId,
     initialBody,
     targetLineLabel,
+    error = null,
     onSubmit,
     onClose,
   }: Props = $props();
@@ -110,6 +113,10 @@
           <div class="rounded-md border border-risk-med/40 bg-risk-med/10 px-2.5 py-2 text-[12px] text-fg-2" role="note">
             Promoting deletes this finding and any validation replies on it. This cannot be undone.
           </div>
+        {/if}
+
+        {#if error}
+          <p class="m-0 text-[12px] text-del-fg" role="alert">{error}</p>
         {/if}
 
         <div class="text-[10px] text-muted font-mono">

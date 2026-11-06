@@ -672,7 +672,7 @@ fn is_own_pr_approval_error(raw: &str) -> bool {
 /// standalone review comment while it exists, so "Add single comment" has to
 /// wait until the review is submitted (as github.com hides it meanwhile).
 fn pending_review_blocks_single_comment() -> String {
-    "You have a pending review — add this to it or submit the review first".to_string()
+    er_engine::github_post::PENDING_REVIEW_BLOCKS_COMMENT.to_string()
 }
 
 fn is_one_pending_review_error(raw: &str) -> bool {
@@ -2578,33 +2578,61 @@ pub async fn add_comment(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        // Set side before submit so submit_github_comment can consume it
-        if let Some(ref s) = side {
-            app.tab_mut().comment_side = Some(s.clone());
-        }
-        if let Some(id) = id {
-            app.tab_mut().comment_id_override = Some(id);
-        }
-        app.submit_comment_text(
-            CommentTarget {
-                file,
-                hunk_idx,
-                line_num,
-                line_num_end,
-            },
+        add_comment_impl(
+            file,
+            hunk_idx,
+            line_num,
+            line_num_end,
             text,
-            CommentType::GitHubComment,
-            None,
-            None,
+            side,
+            id,
+            view,
+            &state,
         )
-        .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
     })
     .await
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the parameters are the JS IPC payload; a params struct would change the command contract"
+)]
+fn add_comment_impl(
+    file: String,
+    hunk_idx: usize,
+    line_num: Option<usize>,
+    line_num_end: Option<usize>,
+    text: String,
+    side: Option<String>,
+    id: Option<String>,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+            return early;
+        }
+    }
+    let posted = post_github_comment_flow(
+        state,
+        er_engine::app::NewGitHubComment::Line {
+            file,
+            hunk_idx,
+            line_start: line_num,
+            line_end: line_num_end,
+            side,
+            body: text,
+        },
+        id,
+    )?;
+    let kept_earlier_body = posted.posted.kept_earlier_body;
+    posted.finish(state);
+    if kept_earlier_body {
+        return Err("Your earlier version was posted; this edit was not".to_string());
+    }
+    let app = state.app.lock().map_err(|e| e.to_string())?;
+    Ok(snap_from_confirmed(&app, state))
 }
 
 #[tauri::command]
@@ -2764,9 +2792,18 @@ pub async fn reply_to_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || reply_to_thread_impl(parent_id, text, view, &state)).await
+}
+
+fn reply_to_thread_impl(
+    parent_id: String,
+    text: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
             return early;
         }
         let (file, hunk_idx, line_num, comment_type) = {
@@ -2807,15 +2844,18 @@ pub async fn reply_to_thread(
                     .github_comments
                     .as_ref()
                     .and_then(|gc| gc.comments.iter().find(|c| c.id == parent_id))
-                    .map(|c| {
-                        (
-                            c.file.clone(),
-                            c.hunk_index.unwrap_or(0),
-                            c.line_start,
-                            CommentType::GitHubComment,
-                        )
-                    });
-                c.ok_or_else(|| "Comment not found".to_string())?
+                    .ok_or_else(|| "Comment not found".to_string())?;
+                if c.github_id.is_some() {
+                    return Err(
+                        "This comment is on GitHub — use reply_to_github_thread".to_string()
+                    );
+                }
+                (
+                    c.file.clone(),
+                    c.hunk_index.unwrap_or(0),
+                    c.line_start,
+                    CommentType::GitHubComment,
+                )
             }
         };
         app.submit_comment_text(
@@ -2831,6 +2871,36 @@ pub async fn reply_to_thread(
             None,
         )
         .map_err(|e| e.to_string())?;
+        Ok(snap_from_confirmed(&app, state))
+    }
+}
+
+/// Reply to a comment that is already on GitHub: post the reply now and
+/// record it. `id` is the client id the composer holds, so a retry after an
+/// unknown outcome reconciles instead of posting twice.
+#[tauri::command]
+pub async fn reply_to_github_thread(
+    parent_id: String,
+    text: String,
+    id: String,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshot, String> {
+    let state = state.inner().clone();
+    run_blocking(move || {
+        let posted = post_github_comment_flow(
+            &state,
+            er_engine::app::NewGitHubComment::Reply {
+                parent_id,
+                body: text,
+            },
+            Some(id),
+        )?;
+        let kept_earlier_body = posted.posted.kept_earlier_body;
+        posted.finish(&state);
+        if kept_earlier_body {
+            return Err("Your earlier version was posted; this edit was not".to_string());
+        }
+        let app = state.app.lock().map_err(|e| e.to_string())?;
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
@@ -3971,6 +4041,68 @@ fn active_pr_or_err(state: &AppState) -> Result<(String, String, u64), String> {
     let app = state.app.lock().map_err(|e| e.to_string())?;
     active_github_key(&app, state)
         .ok_or_else(|| "No pull request for this view — open a PR to review on GitHub".to_string())
+}
+
+/// What a posted create landed on.
+struct PostedTo {
+    owner: String,
+    repo: String,
+    pr: u64,
+    posted: er_engine::github_post::PostedGitHubComment,
+    /// The create that posted, so a later failed step can keep it reconcilable.
+    request: er_engine::github_post::GitHubPostRequest,
+}
+
+impl PostedTo {
+    /// Refresh the data a posted comment changes, and record the write cost.
+    fn finish(self, state: &AppState) {
+        after_github_write(state, self.owner, self.repo, self.pr);
+        crate::profile_log::profile_log(
+            "github_comment_post",
+            &[("github_id", self.posted.github_id.to_string())],
+        );
+    }
+}
+
+/// Post a comment in three phases so no `gh` call holds the App lock:
+/// context under the lock, resolve outside, begin under, execute outside,
+/// finish under. Then refresh the status card.
+fn post_github_comment_flow(
+    state: &AppState,
+    intent: er_engine::app::NewGitHubComment,
+    client_id: Option<String>,
+) -> Result<PostedTo, String> {
+    let ctx = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        app.comment_post_context()
+    };
+    let pr = er_engine::github_post::resolve_post_target(&ctx).map_err(|e| e.to_string())?;
+    let (ticket, poster) = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        let ticket = app
+            .begin_github_comment_post(intent, pr, ctx, client_id)
+            .map_err(|e| e.to_string())?;
+        (ticket, app.github_comment_poster())
+    };
+    let target = ticket.request.pr.clone();
+    let request = ticket.request.clone();
+    let execution = er_engine::github_post::execute_comment_post(
+        poster.as_ref(),
+        &ticket.request,
+        ticket.pending.as_ref(),
+    );
+    let posted = {
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        app.finish_github_comment_post(ticket, execution)
+            .map_err(|e| e.to_string())?
+    };
+    Ok(PostedTo {
+        owner: target.owner,
+        repo: target.repo,
+        pr: target.pr,
+        posted,
+        request,
+    })
 }
 
 fn read_pending_review(state: &AppState) -> Result<PendingReviewView, String> {
@@ -5258,20 +5390,20 @@ pub async fn promote_to_comment(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
-            return early;
-        }
-        // GitHub takes comments on diff lines only. Refuse before anything is
-        // written, so the source question or note is kept.
-        if app.document_anchor_of(&id).is_some() {
-            return Err(
-                "This line is not in the diff, so it cannot become a GitHub comment".to_string(),
-            );
-        }
+        let (file, hunk_idx, line_start, text, side) = {
+            let app = state.app.lock().map_err(|e| e.to_string())?;
+            if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+                return early;
+            }
+            // GitHub takes comments on diff lines only. Refuse before anything
+            // is written, so the source question or note is kept.
+            if app.document_anchor_of(&id).is_some() {
+                return Err(
+                    "This line is not in the diff, so it cannot become a GitHub comment"
+                        .to_string(),
+                );
+            }
 
-        // 1. Resolve the source question or note + already-promoted guard.
-        let (file, hunk_idx, line_start, default_body, side) = {
             let tab = app.tab();
             // Both questions and notes use the `ReviewQuestion` shape; pick the
             // collection by id prefix so notes can be promoted too.
@@ -5310,60 +5442,40 @@ pub async fn promote_to_comment(
                 .map(|r| (r.author.as_str(), r.text.as_str()))
                 .collect();
             let default = build_promoted_body(&item.text, &replies);
+            let text = body.clone().unwrap_or(default);
 
             (
                 item.file.clone(),
                 item.hunk_index.unwrap_or(0),
                 item.line_start,
-                default,
+                text,
                 item.side.clone(),
             )
         };
 
-        let text = body.unwrap_or(default_body);
-
-        // 2. Snapshot existing comment ids to detect the new one.
-        let existing_ids: std::collections::HashSet<String> = {
-            let tab = app.tab();
-            tab.ai
-                .github_comments
-                .as_ref()
-                .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
-                .unwrap_or_default()
-        };
-
-        // 3. Create the new comment on the same review side as the source.
-        app.tab_mut().comment_side = Some(side);
-        app.submit_comment_text(
-            CommentTarget {
+        let posted = post_github_comment_flow(
+            &state,
+            er_engine::app::NewGitHubComment::Line {
                 file,
                 hunk_idx,
-                line_num: line_start,
-                line_num_end: None,
+                line_start,
+                line_end: None,
+                side: Some(side),
+                body: text,
             },
-            text,
-            CommentType::GitHubComment,
-            None,
-            None,
-        )
-        .map_err(|e| e.to_string())?;
+            Some(format!("c-promote-{id}")),
+        )?;
+        let request = posted.request.clone();
+        posted.finish(&state);
 
-        // 4. Find the new comment id (anything not in the pre-existing set).
-        let new_id: Option<String> = {
-            let tab = app.tab();
-            tab.ai.github_comments.as_ref().and_then(|gc| {
-                gc.comments
-                    .iter()
-                    .find(|c| !existing_ids.contains(&c.id))
-                    .map(|c| c.id.clone())
-            })
-        };
-
-        // 5. Remove the source question thread (replaced by the new GitHub comment).
-        if new_id.is_some() {
-            app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        // The source is replaced only once GitHub holds the comment, so a
+        // failure keeps it and a retry can post it again.
+        let mut app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Err(e) = app.delete_comment_direct(&id) {
+            // The comment is on GitHub; the next promote must adopt it.
+            app.remember_posted_for_retry(request);
+            return Err(e.to_string());
         }
-
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
@@ -9790,84 +9902,72 @@ fn promote_finding_to_comment_impl(
     view: Option<crate::snapshot::OptimisticView>,
     state: &AppState,
 ) -> Result<AppSnapshot, String> {
-    let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
-        return early;
-    }
-
-    let er_dir = app.tab().er_dir();
-
-    let found = app.tab().ai.review.as_ref().and_then(|review| {
-        review.files.iter().find_map(|(path, file)| {
-            let f = file.findings.iter().find(|f| f.id == finding_id)?;
-            let default = if f.description.is_empty() {
-                f.title.clone()
-            } else {
-                format!("{}\n\n{}", f.title, f.description)
-            };
-            Some((
-                path.clone(),
-                f.hunk_index.unwrap_or(0),
-                f.line_start,
-                default,
-            ))
-        })
-    });
-
-    let (file, hunk_idx, line_start, default_body) =
-        found.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
-    let text = match body {
-        Some(b) => b,
-        None => {
-            let promote_replies =
-                er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
-            er_engine::ai::append_promote_replies(default_body, &promote_replies)
+    let (er_dir, file, hunk_idx, line_start, text) = {
+        let app = state.app.lock().map_err(|e| e.to_string())?;
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
+            return early;
         }
+
+        let er_dir = app.tab().er_dir();
+        let found = app.tab().ai.review.as_ref().and_then(|review| {
+            review.files.iter().find_map(|(path, file)| {
+                let f = file.findings.iter().find(|f| f.id == finding_id)?;
+                let default = if f.description.is_empty() {
+                    f.title.clone()
+                } else {
+                    format!("{}\n\n{}", f.title, f.description)
+                };
+                Some((
+                    path.clone(),
+                    f.hunk_index.unwrap_or(0),
+                    f.line_start,
+                    default,
+                ))
+            })
+        });
+
+        let (file, hunk_idx, line_start, default_body) =
+            found.ok_or_else(|| format!("Finding not found: {finding_id}"))?;
+        let text = match body.clone() {
+            Some(b) => b,
+            None => {
+                let promote_replies =
+                    er_engine::ai::collect_finding_promote_replies(&app.tab().ai, &finding_id);
+                er_engine::ai::append_promote_replies(default_body, &promote_replies)
+            }
+        };
+        (er_dir, file, hunk_idx, line_start, text)
     };
 
-    let existing_ids: std::collections::HashSet<String> = {
-        let tab = app.tab();
-        tab.ai
-            .github_comments
-            .as_ref()
-            .map(|gc| gc.comments.iter().map(|c| c.id.clone()).collect())
-            .unwrap_or_default()
-    };
-
-    app.submit_comment_text(
-        CommentTarget {
+    let posted = post_github_comment_flow(
+        state,
+        er_engine::app::NewGitHubComment::Line {
             file,
             hunk_idx,
-            line_num: line_start,
-            line_num_end: None,
+            line_start,
+            line_end: None,
+            side: None,
+            body: text,
         },
-        text,
-        CommentType::GitHubComment,
-        None,
-        None,
-    )
-    .map_err(|e| e.to_string())?;
+        Some(format!("c-promote-finding-{finding_id}")),
+    )?;
+    let request = posted.request.clone();
+    posted.finish(state);
 
-    let new_id: Option<String> = {
-        let tab = app.tab();
-        tab.ai.github_comments.as_ref().and_then(|gc| {
-            gc.comments
-                .iter()
-                .find(|c| !existing_ids.contains(&c.id))
-                .map(|c| c.id.clone())
-        })
-    };
-
-    if new_id.is_some() {
-        er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
-            .map_err(|e| format!("Failed to remove finding after promote: {e}"))?;
-        let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
-        let mut promotions = load_finding_promotions(&er_dir);
-        if promotions.remove(&finding_id).is_some() {
-            let _ = save_finding_promotions(&er_dir, &promotions);
-        }
-        app.tab_mut().reload_ai_state();
+    // The finding is removed only once GitHub holds the comment, so a failure
+    // keeps it and a retry can post it again.
+    let mut app = state.app.lock().map_err(|e| e.to_string())?;
+    if let Err(e) = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id) {
+        // The comment is on GitHub; the next promote must adopt it.
+        app.remember_posted_for_retry(request);
+        return Err(format!("Failed to remove finding after promote: {e}"));
     }
+    let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
+    let mut promotions = load_finding_promotions(&er_dir);
+    if promotions.remove(&finding_id).is_some() {
+        let _ = save_finding_promotions(&er_dir, &promotions);
+    }
+    app.tab_mut().reload_ai_state();
 
     Ok(snap_from_confirmed(&app, state))
 }
@@ -13778,6 +13878,7 @@ mod tests {
             "add_question",
             "add_note",
             "reply_to_thread",
+            "reply_to_github_thread",
             "delete_thread",
             "resolve_thread",
             "update_thread_message",
@@ -14082,5 +14183,104 @@ mod tests {
         );
         assert_eq!(remote_owner_repo("owner"), None);
         assert_eq!(remote_owner_repo("a/b/c"), None);
+    }
+
+    struct RefusingCommentPoster;
+
+    impl er_engine::github_post::GitHubCommentPoster for RefusingCommentPoster {
+        fn post(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> er_engine::github_post::GitHubPostOutcome {
+            er_engine::github_post::GitHubPostOutcome::NotPosted {
+                error: "network down".to_string(),
+            }
+        }
+
+        fn list(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
+            Ok(Vec::new())
+        }
+
+        fn viewer_login(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<String> {
+            Ok("viewer".to_string())
+        }
+    }
+
+    #[test]
+    fn add_comment_failure_returns_the_error_and_writes_nothing() {
+        use std::sync::Arc;
+
+        let dir = ReviewFlowTestDir::new();
+        let state = review_flow_test_state(&dir);
+        {
+            let mut app = state.app.lock().unwrap();
+            app.tab_mut().remote_repo = Some("owner/repo".to_string());
+            app.tab_mut().pr_number = Some(7);
+            app.set_github_comment_poster(Arc::new(RefusingCommentPoster));
+        }
+        let comments_path = state.app.lock().unwrap().tab().github_comments_path();
+        assert!(!std::path::Path::new(&comments_path).exists());
+
+        let error = add_comment_impl(
+            "src/lib.rs".to_string(),
+            0,
+            Some(1),
+            None,
+            "hello".to_string(),
+            Some("RIGHT".to_string()),
+            None,
+            None,
+            &state,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("Comment not posted"), "{error}");
+        assert!(
+            !std::path::Path::new(&comments_path).exists(),
+            "a failed post must write nothing"
+        );
+    }
+
+    #[test]
+    fn reply_to_thread_refuses_a_parent_on_github() {
+        let dir = ReviewFlowTestDir::new();
+        let state = review_flow_test_state(&dir);
+        {
+            let mut app = state.app.lock().unwrap();
+            app.tab_mut().ai.github_comments = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1,
+                    "diff_hash": "hash",
+                    "comments": [{
+                        "id": "gh-11",
+                        "file": "src/lib.rs",
+                        "hunk_index": 0,
+                        "line_start": 1,
+                        "comment": "already on GitHub",
+                        "source": "github",
+                        "github_id": 11,
+                        "author": "octo",
+                        "synced": true
+                    }]
+                }))
+                .unwrap(),
+            );
+        }
+
+        let error = reply_to_thread_impl(
+            "gh-11".to_string(),
+            "a local reply".to_string(),
+            None,
+            &state,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("reply_to_github_thread"), "{error}");
     }
 }

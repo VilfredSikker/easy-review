@@ -5,6 +5,7 @@ import {
   nextOptimisticId,
   parseAddThreadArgs,
   removeOptimisticThread,
+  buildOptimisticThreadForKind,
   type OptimisticThread,
 } from "./optimisticComment";
 import { snapshotViewIdentity, type SnapshotViewParts } from "./snapshotChrome";
@@ -21,7 +22,6 @@ import type {
 } from "./types";
 
 export const OPTIMISTIC_COMMANDS = [
-  "add_comment",
   "add_question",
   "add_note",
   "reply_to_thread",
@@ -31,7 +31,6 @@ export const OPTIMISTIC_COMMANDS = [
   "dismiss_finding",
   "resolve_finding",
   "unresolve_finding",
-  "promote_to_comment",
   "promote_to_note",
   "bulk_review_pillar",
   "unbulk_review_pillar",
@@ -41,7 +40,6 @@ export const OPTIMISTIC_COMMANDS = [
   "toggle_checklist_item",
   // Finding-thread actions: view-scoped, same contract as dismiss_finding.
   "remove_finding_thread",
-  "promote_finding_to_comment",
   "delete_finding_response",
   "update_finding_response",
   "reply_to_finding",
@@ -585,7 +583,7 @@ function buildResolveFinding(
   return { type: "resolve-finding", id, viewIdentity, finding: { ...finding }, target };
 }
 
-function buildPromote(ctx: BuildCtx, command: OptimisticCommand): OptimisticOp | null {
+function buildPromote(ctx: BuildCtx, _command: OptimisticCommand): OptimisticOp | null {
   const { args, snap, viewIdentity, nowIso, optsId } = ctx;
   const sourceId = asString(args.id);
   if (!sourceId) return null;
@@ -594,7 +592,7 @@ function buildPromote(ctx: BuildCtx, command: OptimisticCommand): OptimisticOp |
   const body =
     asString(args.body)?.trim() ||
     root.thread.root.body_markdown;
-  const destCommand = command === "promote_to_comment" ? "add_comment" : "add_note";
+  const destCommand = "add_note";
   const created = buildOptimisticThread(
     destCommand,
     {
@@ -702,35 +700,6 @@ function buildRemoveFindingThread({ args, snap, viewIdentity, id }: BuildCtx): O
   };
 }
 
-function buildPromoteFinding({ args, snap, viewIdentity, nowIso, optsId }: BuildCtx): OptimisticOp | null {
-  const findingId = asString(pick(args, "findingId", "finding_id"));
-  const finding = findingId ? findFinding(snap, findingId) : undefined;
-  if (!findingId || !finding) return null;
-  const body = asString(args.body)?.trim() || finding.message_markdown || finding.title;
-  const created = buildOptimisticThread(
-    "add_comment",
-    {
-      file: finding.file,
-      hunkIdx: finding.hunk_index ?? 0,
-      lineNum: finding.line,
-      lineNumEnd: null,
-      text: body,
-      side: "RIGHT",
-    },
-    viewIdentity,
-    finding.file,
-    { nowIso, id: optsId },
-  );
-  return {
-    type: "promote-finding",
-    id: created.id,
-    viewIdentity,
-    finding: { ...finding },
-    threads: findingThreads(snap, finding, viewIdentity),
-    created,
-  };
-}
-
 function buildDeleteFindingResponse({ args, snap, viewIdentity, id }: BuildCtx): OptimisticOp | null {
   const findingId = asString(pick(args, "findingId", "finding_id"));
   const responseId = asString(pick(args, "responseId", "response_id"));
@@ -791,8 +760,8 @@ function buildReplyFinding({ args, snap, viewIdentity, nowIso, id, optsId }: Bui
       },
     };
   }
-  const created = buildOptimisticThread(
-    "add_comment",
+  const created = buildOptimisticThreadForKind(
+    "comment",
     {
       file: finding.file,
       hunkIdx: finding.hunk_index ?? 0,
@@ -905,7 +874,6 @@ function buildDismissedPr(ctx: BuildCtx, command: OptimisticCommand): Optimistic
 }
 
 const OP_BUILDERS: Record<OptimisticCommand, OpBuilder> = {
-  add_comment: buildAddThread,
   add_question: buildAddThread,
   add_note: buildAddThread,
   reply_to_thread: buildReply,
@@ -915,7 +883,6 @@ const OP_BUILDERS: Record<OptimisticCommand, OpBuilder> = {
   dismiss_finding: buildDismissFinding,
   resolve_finding: buildResolveFinding,
   unresolve_finding: buildResolveFinding,
-  promote_to_comment: buildPromote,
   promote_to_note: buildPromote,
   bulk_review_pillar: buildBulkReviewed,
   unbulk_review_pillar: buildBulkReviewed,
@@ -923,7 +890,6 @@ const OP_BUILDERS: Record<OptimisticCommand, OpBuilder> = {
   delete_ui_annotation: buildDeleteAnnotation,
   toggle_checklist_item: buildChecklistToggle,
   remove_finding_thread: buildRemoveFindingThread,
-  promote_finding_to_comment: buildPromoteFinding,
   delete_finding_response: buildDeleteFindingResponse,
   update_finding_response: buildEditFindingResponse,
   reply_to_finding: buildReplyFinding,

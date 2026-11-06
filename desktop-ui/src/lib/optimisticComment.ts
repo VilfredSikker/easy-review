@@ -1,11 +1,7 @@
 import { snapshotViewIdentity } from "./snapshotChrome";
 import type { AppSnapshot, FileSnapshot, ThreadSnapshot } from "./types";
 
-export const ADD_THREAD_COMMANDS = [
-  "add_comment",
-  "add_question",
-  "add_note",
-] as const;
+export const ADD_THREAD_COMMANDS = ["add_question", "add_note"] as const;
 
 export type AddThreadCommand = (typeof ADD_THREAD_COMMANDS)[number];
 
@@ -39,6 +35,14 @@ export function nextOptimisticId(opts?: { now?: number; prefix?: string }): stri
   return `${prefix}-${now}-${seq}`;
 }
 
+/**
+ * The client id a GitHub comment create carries. A retry reuses it so the
+ * backend can reconcile instead of posting twice.
+ */
+export function newCommentClientId(): string {
+  return nextOptimisticId({ prefix: "c" });
+}
+
 function asNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string" && value.trim() !== "") {
@@ -57,7 +61,6 @@ function pick(args: Record<string, unknown>, camel: string, snake: string): unkn
 }
 
 function threadKind(command: AddThreadCommand): ThreadSnapshot["kind"] {
-  if (command === "add_comment") return "comment";
   if (command === "add_note") return "note";
   return "question";
 }
@@ -85,10 +88,10 @@ export function parseAddThreadArgs(
   };
 }
 
-const OPTIMISTIC_ID_PREFIX: Record<AddThreadCommand, string> = {
-  add_comment: "c",
-  add_note: "n",
-  add_question: "q",
+const KIND_ID_PREFIX: Record<ThreadSnapshot["kind"], string> = {
+  comment: "c",
+  note: "n",
+  question: "q",
 };
 
 export function buildOptimisticThread(
@@ -98,12 +101,29 @@ export function buildOptimisticThread(
   filePath: string,
   opts?: { nowIso?: string; id?: string },
 ): OptimisticThread {
-  const id = opts?.id ?? nextOptimisticId({ prefix: OPTIMISTIC_ID_PREFIX[command] });
+  return buildOptimisticThreadForKind(
+    threadKind(command),
+    parsed,
+    viewIdentity,
+    filePath,
+    opts,
+  );
+}
+
+/** A thread of an explicit kind, for a local reply that creates a comment thread. */
+export function buildOptimisticThreadForKind(
+  kind: ThreadSnapshot["kind"],
+  parsed: ParsedAddThread,
+  viewIdentity: string,
+  filePath: string,
+  opts?: { nowIso?: string; id?: string },
+): OptimisticThread {
+  const id = opts?.id ?? nextOptimisticId({ prefix: KIND_ID_PREFIX[kind] });
   const timestamp = opts?.nowIso ?? new Date().toISOString();
   const line = parsed.lineNum ?? 0;
   const thread: ThreadSnapshot = {
     id,
-    kind: threadKind(command),
+    kind,
     file: filePath,
     line,
     line_end: parsed.lineNumEnd,
@@ -121,6 +141,7 @@ export function buildOptimisticThread(
     },
     replies: [],
     promoted_to: null,
+    github_id: null,
   };
   return { id, hunkIdx: parsed.hunkIdx, filePath, thread, viewIdentity };
 }

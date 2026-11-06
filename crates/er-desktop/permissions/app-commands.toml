@@ -44,6 +44,7 @@ commands.allow = [
   "add_note",
   "add_document_thread",
   "reply_to_thread",
+  "reply_to_github_thread",
   "delete_thread",
   "resolve_thread",
   "refresh_diff",

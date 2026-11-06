@@ -24,6 +24,7 @@
   import { resolveActivePrNumber } from "$lib/prUrl";
   import { isDocumentAnchored, ownReplyCount } from "$lib/threadAnchor";
   import { pendingReview } from "$lib/stores/pendingReview.svelte";
+  import { newCommentClientId } from "$lib/optimisticComment";
 
   interface Props {
     thread: ThreadSnapshot;
@@ -53,6 +54,7 @@
 
   let justCopied = $state(false);
   let pushing = $state(false);
+  let promoteError = $state<string | null>(null);
 
   $effect(() => {
     if (replyFocusPending && draft.showReply && replyInput) {
@@ -107,9 +109,35 @@
     void app.cmd("delete_thread", { id: replyId });
   }
 
+  const isOnGithub = $derived(thread.github_id != null);
+
+  async function postGithubReply(text: string): Promise<boolean> {
+    const id = draft.replyClientId ?? newCommentClientId();
+    draft.replyClientId = id;
+    draft.replyError = null;
+    try {
+      await app.cmd(
+        "reply_to_github_thread",
+        { parentId: thread.id, text, id },
+        { throwOnError: true },
+      );
+      draft.replyText = "";
+      draft.replyClientId = null;
+      draft.showReply = false;
+      return true;
+    } catch (e) {
+      draft.replyError = e instanceof Error ? e.message : String(e);
+      return false;
+    }
+  }
+
   function submitReply() {
     const text = draft.replyText.trim();
     if (!text) return;
+    if (isOnGithub) {
+      void postGithubReply(text);
+      return;
+    }
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     void app.cmd("reply_to_thread", { parentId: thread.id, text });
     draft.replyText = "";
@@ -117,12 +145,18 @@
   }
 
   // Post-then-ask is one gesture: the AI answers the thread as it stands after
-  // the reply lands, so the two commands must run in order. reply_to_thread is
-  // optimistic and rolls back on failure without throwing, so whether the
-  // reply landed is read off the snapshot once the write settles.
+  // the reply lands, so the two commands must run in order. A local reply is
+  // optimistic and rolls back on failure without throwing, so whether it
+  // landed is read off the snapshot once the write settles. A GitHub reply
+  // throws on failure, and the AI step is skipped.
   async function replyAndAskAi() {
     const text = draft.replyText.trim();
     if (!text) return;
+    if (isOnGithub) {
+      if (!(await postGithubReply(text))) return;
+      await app.cmd("ask_ai", { threadId: thread.id, prompt: "" });
+      return;
+    }
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
     const before = ownReplyCount(app.snapshot, thread.id, text);
     const posted = app.cmd("reply_to_thread", { parentId: thread.id, text });
@@ -152,10 +186,15 @@
     return parts.join("\n\n");
   }
 
-  function submitPromote(body: string) {
+  async function submitPromote(body: string) {
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked();
-    void app.cmd("promote_to_comment", { id: thread.id, body });
-    showPromote = false;
+    promoteError = null;
+    try {
+      await app.cmd("promote_to_comment", { id: thread.id, body }, { throwOnError: true });
+      showPromote = false;
+    } catch (e) {
+      promoteError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   function promoteToNote() {
@@ -376,6 +415,8 @@
             e.preventDefault();
             draft.showReply = false;
             draft.replyText = "";
+            draft.replyClientId = null;
+            draft.replyError = null;
           }
         }}
       />
@@ -388,6 +429,7 @@
         class="h-[26px] px-2.5 rounded-md text-xs text-accent border border-accent-border hover:bg-accent-soft disabled:opacity-40"
       >✦ Ask AI</button>
     </form>
+    {#if draft.replyError}<p class="text-[11px] text-del-fg">{draft.replyError}</p>{/if}
   {/if}
 
   <!-- Actions -->
@@ -455,8 +497,9 @@
   sourceId={thread.id}
   initialBody={buildPromoteBody()}
   {targetLineLabel}
+  error={promoteError}
   onSubmit={submitPromote}
-  onClose={() => (showPromote = false)}
+  onClose={() => { showPromote = false; promoteError = null; }}
 />
 
 <EditMessageModal

@@ -7,6 +7,10 @@ function reviewKey(tab: TabSummary): string {
 export interface AnnotationDraft {
   replyText: string;
   showReply: boolean;
+  /** Client id of a GitHub reply create, so a retry reconciles. */
+  replyClientId: string | null;
+  /** The last reply failure, shown in the reply box. */
+  replyError: string | null;
 }
 
 /** Review-owned drafts outlive virtualized annotation cards. */
@@ -14,7 +18,12 @@ export class AnnotationDraftCache {
   private drafts = new Map<string, AnnotationDraft>();
 
   get(snapshot: AppSnapshot | null, kind: "thread" | "finding", id: string,
-    create: () => AnnotationDraft = () => ({ replyText: "", showReply: false }),
+    create: () => AnnotationDraft = () => ({
+      replyText: "",
+      showReply: false,
+      replyClientId: null,
+      replyError: null,
+    }),
   ): AnnotationDraft {
     const tab = snapshot?.tabs.find((t) => t.is_active) ?? snapshot?.tabs[snapshot.active_tab];
     const review = tab ? reviewKey(tab) : "no-review";

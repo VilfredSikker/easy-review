@@ -1930,6 +1930,7 @@ fn main() {
             commands::add_note,
             commands::add_document_thread,
             commands::reply_to_thread,
+            commands::reply_to_github_thread,
             commands::delete_thread,
             commands::resolve_thread,
             commands::refresh_diff,

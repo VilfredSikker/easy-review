@@ -1459,6 +1459,9 @@ pub struct ThreadSnapshot {
     pub replies: Vec<ThreadMessage>,
     /// For questions: the GitHub comment id this was promoted to (if any).
     pub promoted_to: Option<String>,
+    /// GitHub's numeric id when this comment is on the PR. A reply to a
+    /// comment with one posts; a reply to a local-only comment stays local.
+    pub github_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2191,6 +2194,10 @@ fn comment_ref_to_thread(
         .map(str::to_string)
         .unwrap_or_else(default_thread_side);
     let author_kind = if c.author() == "You" { "you" } else { "human" };
+    let github_id = match c {
+        CommentRef::GitHubComment(gc) => gc.github_id,
+        _ => None,
+    };
     ThreadSnapshot {
         id: c.id().to_string(),
         kind: kind.to_string(),
@@ -2223,6 +2230,7 @@ fn comment_ref_to_thread(
             CommentRef::Question(q) | CommentRef::Note(q) => q.promoted_to.clone(),
             CommentRef::GitHubComment(_) => None,
         },
+        github_id,
     }
 }
 
@@ -4987,6 +4995,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         synced: false,
                         stale: q.stale,
                         resolved: q.resolved,
+                        github_id: None,
                         root: ThreadMessage {
                             id: q.id.clone(),
                             author: display_author(&q.author),
@@ -5021,6 +5030,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         synced: false,
                         stale: n.stale,
                         resolved: n.resolved,
+                        github_id: None,
                         root: ThreadMessage {
                             id: n.id.clone(),
                             author: display_author(&n.author),
@@ -5060,6 +5070,7 @@ fn build_ai_snapshot(tab: &TabState, pending: Option<&PendingAiReplies>) -> AiSn
                         synced: c.synced,
                         stale: c.stale || c.outdated,
                         resolved: c.resolved,
+                        github_id: c.github_id,
                         root: ThreadMessage {
                             id: c.id.clone(),
                             author: display_author(&c.author),
