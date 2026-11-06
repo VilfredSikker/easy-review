@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate"]
+members = ["crates/er-engine", "crates/er-tui", "crates/er-desktop", "crates/er-mcp", "crates/er-crap", "crates/er-lint-gate", "crates/er-git"]
 
 [workspace.package]
 version = "0.6.5"
@@ -108,6 +108,19 @@ budgeted = [
 # An inherent impl is flagged when its methods fall into more than max-groups
 # groups that never use each other, each spanning min-group-lines or more.
 impl-cohesion = { max-groups = 1, min-group-lines = 40 }
+
+# `Command::new("git")` outside the crate that owns git: call the Git trait.
+# The allow-list is shrink-only: an entry with no findings fails as stale.
+[workspace.metadata.lint-gate.spawn.git]
+home = "crates/er-git"
+allow = [
+    "crates/er-engine/src/storage.rs",
+    "crates/er-engine/src/github.rs",
+    "crates/er-desktop/src/commands.rs",
+    "crates/er-desktop/src/main.rs",
+    "crates/er-desktop/src/projects.rs",
+    "crates/er-desktop/src/snapshot.rs",
+]
 
 [profile.release]
 opt-level = 3

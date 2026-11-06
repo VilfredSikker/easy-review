@@ -3235,6 +3235,7 @@ impl TabState {
             &self.repo_root,
             head_ref_owned.as_deref(),
         )
+        .map_err(anyhow::Error::from)
     }
 
     /// Raw diff for AI review: prefer the cached UI diff when fresh, else refetch.

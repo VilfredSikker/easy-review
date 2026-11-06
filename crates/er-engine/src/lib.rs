@@ -31,7 +31,7 @@ pub mod model_discovery;
 pub mod paths;
 pub mod pr_resolve;
 pub mod pr_review_feedback;
-pub mod proc;
+pub use er_git::proc;
 pub mod projects_pins;
 pub mod release_update;
 pub mod review_queue;

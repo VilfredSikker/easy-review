@@ -87,8 +87,10 @@ pub fn fetch_branch_scope_raw(
             match scope {
                 "unstaged" | "staged" => {
                     crate::git::git_diff_raw(scope, &inputs.base_branch, checkout_root, None)
+                        .map_err(anyhow::Error::from)
                 }
-                _ => crate::git::git_diff_checkout_against_base(checkout_root, &inputs.base_branch),
+                _ => crate::git::git_diff_checkout_against_base(checkout_root, &inputs.base_branch)
+                    .map_err(anyhow::Error::from),
             }
         } else if let Some(head_ref) = inputs.pr_head_ref.as_deref() {
             if let Some(pr_number) = inputs.pr_number {
@@ -99,6 +101,7 @@ pub fn fetch_branch_scope_raw(
                     &inputs.base_branch,
                     head_ref,
                 )
+                .map_err(anyhow::Error::from)
             }
         } else if let Some(pr_number) = inputs.pr_number {
             // Local PR tab whose refs haven't landed yet: fetch the PR-parity
@@ -109,6 +112,7 @@ pub fn fetch_branch_scope_raw(
             crate::github::gh_pr_diff(pr_number, &inputs.repo_root)
         } else {
             crate::git::git_diff_against_branch(&inputs.repo_root, &inputs.base_branch, branch)
+                .map_err(anyhow::Error::from)
         };
     }
 
