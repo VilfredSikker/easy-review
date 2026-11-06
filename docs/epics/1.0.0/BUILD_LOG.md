@@ -47,3 +47,11 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   - P13's behaviour changes are accepted.
   - Locks use `std::fs::File::lock`.
   The owner also asked for current dependencies, so P25 (#411, upgrade dependencies and raise `rust-version`) joins phase 0. It is blocked by #374 and blocks #378 and #394. Each affected issue has a "Settled" comment.
+- Review pass done (four Opus reviewers, one per slice). Every task and design issue has a `**Review verdict:**` comment. 34 are `ready`; #376 (P05) is `design-first` until #403 is settled. Fixes were applied straight to the issue bodies, including:
+  - #376's steps would have made local-only AI threads post to GitHub;
+  - #379's production `App::new_empty` would have held a `FakeGit`;
+  - #401's option B would have hidden every stale review, so the diff-hash check moved to ingest, in #395;
+  - #387 missed the MCP reply and resolve writer;
+  - a pathspec that matched nothing appeared in four issues.
+  Lanes: #379 holds E and F; #381 holds C and E; #384 holds F; #387, #388, #390, #394 and #395 hold C.
+- [ADDENDUM-03-issues-are-the-spec.md](./ADDENDUM-03-issues-are-the-spec.md) makes each issue body the specification and defines how design issues are settled. **Planning for phases 0–2 is closed.** STATUS.md "Start here" lists what is assignable at handoff.

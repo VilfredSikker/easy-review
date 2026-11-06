@@ -2,7 +2,27 @@
 
 > **GitHub is the source of truth.** Track the work in the epic issue [#371](https://github.com/VilfredSikker/easy-review/issues/371), its sub-issues and the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1). Who has a task is its assignee. Its state is open or closed plus the linked PR, and what blocks it is GitHub's "blocked by" list. This file does not repeat that.
 >
-> Release branch `release/v1.0.0`. Plan: [PLAN.md](./PLAN.md). Design: [PROPOSAL.md](./PROPOSAL.md). Decisions: [ADDENDUM-01-decisions.md](./ADDENDUM-01-decisions.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+> Release branch `release/v1.0.0`. Plan: [PLAN.md](./PLAN.md). Design: [PROPOSAL.md](./PROPOSAL.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+
+## Start here
+
+Planning for phases 0–2 is closed (2026-11-06). Every task and design issue has a review verdict. Assign an issue when it has no open blocker and no assigned issue holds any of its lanes.
+
+Assignable at handoff:
+
+| Issue | What | Model | Lanes |
+| --- | --- | --- | --- |
+| [#372](https://github.com/VilfredSikker/easy-review/issues/372) | P01: delete legacy feedback | sonnet | E, F |
+| [#373](https://github.com/VilfredSikker/easy-review/issues/373) | P02: delete legacy config paths | opus | C |
+| [#401](https://github.com/VilfredSikker/easy-review/issues/401) | P14 design: store envelope and keys | opus | - |
+| [#402](https://github.com/VilfredSikker/easy-review/issues/402) | P20 design: findings projection | opus | - |
+| [#403](https://github.com/VilfredSikker/easy-review/issues/403) | P05 design: no duplicate posts on retry | opus | - |
+| [#407](https://github.com/VilfredSikker/easy-review/issues/407) | P07 design: `Git` trait and handle | opus | - |
+| [#408](https://github.com/VilfredSikker/easy-review/issues/408) | P10 design: `GhError` classification | opus | - |
+| [#409](https://github.com/VilfredSikker/easy-review/issues/409) | P10 design: cache, runner, default handle | opus | - |
+| [#410](https://github.com/VilfredSikker/easy-review/issues/410) | P11 design: cache merge | opus | - |
+
+Design issues hold no lane and change no code, so all seven can run at once. Settling one means posting a `**Decision:**` comment and a `**Signatures:**` comment, then the owner approves and closes it ([ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md)). #403, #407 and #401 unblock the most work: P05, then P07 and the ports, then the store.
 
 ## Plan id to issue
 
