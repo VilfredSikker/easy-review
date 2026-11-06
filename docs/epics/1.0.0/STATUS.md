@@ -34,6 +34,7 @@ The plan and the addenda refer to work by id. This table maps each id to its iss
 | P22 | [#393](https://github.com/VilfredSikker/easy-review/issues/393) |
 | P23 | [#394](https://github.com/VilfredSikker/easy-review/issues/394) |
 | P24 | [#395](https://github.com/VilfredSikker/easy-review/issues/395) |
+| P25 | [#411](https://github.com/VilfredSikker/easy-review/issues/411) |
 | G3 | [#396](https://github.com/VilfredSikker/easy-review/issues/396) |
 | G4 | [#397](https://github.com/VilfredSikker/easy-review/issues/397) |
 | G5 | [#398](https://github.com/VilfredSikker/easy-review/issues/398) |
@@ -52,7 +53,7 @@ The plan and the addenda refer to work by id. This table maps each id to its iss
 
 ## Waiting on the owner
 
-**Decisions.** D1–D10 are settled in [ADDENDUM-01-decisions.md](./ADDENDUM-01-decisions.md). None is open.
+**Decisions.** D1–D10 are settled in [ADDENDUM-01-decisions.md](./ADDENDUM-01-decisions.md), and D11–D14 in [ADDENDUM-02-issue-decisions.md](./ADDENDUM-02-issue-decisions.md). None is open.
 
 **Actions.**
 

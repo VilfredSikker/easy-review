@@ -41,3 +41,9 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   - #393 (P22) is stopped until its file-list correction is ruled on.
   - #384's `RepoSlug::parse` rule table is the agent's choice and needs confirming.
   - The P23 design (#406) must raise `rust-version` from 1.88 to 1.89 to use `File::lock`, or use `fs4` (noted on the issue).
+- The owner settled the four open questions (D11–D14, [ADDENDUM-02-issue-decisions.md](./ADDENDUM-02-issue-decisions.md)):
+  - P08 migrates `github.rs`'s git calls.
+  - P22 takes the full app-records fix.
+  - P13's behaviour changes are accepted.
+  - Locks use `std::fs::File::lock`.
+  The owner also asked for current dependencies, so P25 (#411, upgrade dependencies and raise `rust-version`) joins phase 0. It is blocked by #374 and blocks #378 and #394. Each affected issue has a "Settled" comment.
