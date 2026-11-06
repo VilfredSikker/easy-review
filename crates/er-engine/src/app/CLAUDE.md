@@ -37,8 +37,7 @@ when nothing is reviewed. Scoping exceptions and why they exist:
 `docs/adr/0007-three-comment-stores.md`.
 
 Config is global-only at `<storage_root>/config.toml`. `~/.config/er/config.toml`
-is a copy-once migration source and nothing else — leave it on disk. There is no
-per-repo config file; do not add one back.
+is not read. There is no per-repo config file; do not add one back.
 `docs/adr/0005-global-only-config.md`.
 
 `ER_REPO_LOCAL=1` opts into repo `.er/` for debugging. Nothing imports a repo
