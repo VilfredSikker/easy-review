@@ -34,16 +34,6 @@ after every rule in both tables, so setting a project default cannot silently
 switch the user's rules off. Both orders live in `config/risk_rules.rs` and
 nowhere else.
 
-## Reading the old table
-
-A repo with only `[importance.<repo>]` reads it as its project rules:
-`foundational` → `high`, `isolated` → `low`, `normal` → `ai`. `normal` maps to
-`ai` rather than `med` because `normal` meant "nothing declared about this
-path", and `med` would assert a judgement nobody made. Once a repo has a
-`[risk]` table the old one is ignored, and the next write to that repo's rules
-(the agent, or a Settings edit) carries it over and removes it, so a repo is
-never left with two tables that disagree.
-
 ## Consequences
 
 - Settings now writes rules (one rule per patch, validated; an unreadable tier
@@ -52,6 +42,8 @@ never left with two tables that disagree.
   setting.
 - The `importance:` filter prefix, the agent's task kind and its JSON markers
   keep their old spelling: saved filters and queued tasks name them. They read
-  the new tiers and the old ones.
+  the current tiers.
+- The `[importance.<repo>]` table and the spellings `foundational`, `isolated`
+  and `normal` are no longer read (1.0.0).
 - An `ai` file has no tier until a review rates it, and a view with no review
   (ADR 0004) shows it unrated rather than defaulting it to `low`.
