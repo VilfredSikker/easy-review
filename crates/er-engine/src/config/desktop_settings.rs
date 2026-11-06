@@ -1,9 +1,9 @@
 //! Serializable settings schema for the desktop app (excludes diff-view fields).
 
-use super::settings::{agent_effort_label, settings_fields_grouped};
+use super::settings::settings_fields_grouped;
 use super::{
     apply_risk_rule_edit, split_shell_args, ErConfig, ResolvedRisk, RiskRuleEdit, RiskRuleSource,
-    RiskRules, RiskTier, AGENT_EFFORT_OPTIONS, MAX_CONCURRENT_REVIEWS_RANGE,
+    RiskRules, RiskTier, MAX_CONCURRENT_REVIEWS_RANGE,
 };
 use serde::{Deserialize, Serialize};
 
@@ -111,7 +111,6 @@ pub struct DesktopSettingsSnapshot {
     pub general: Vec<ConfigHubFieldDto>,
     pub app: Vec<ConfigHubFieldDto>,
     pub terminal: Vec<ConfigHubFieldDto>,
-    pub agent_effort: String,
     pub repo_root: String,
     /// The rules key a project rule edit names (`TabState::rules_key`), so the
     /// edit lands in the table this tab resolves against.
@@ -190,7 +189,6 @@ pub fn desktop_settings_snapshot(
         general: grouped.general,
         app: grouped.app,
         terminal: grouped.terminal,
-        agent_effort: agent_effort_label(&config.agent.effort),
         repo_root: repo_root.to_string(),
         risk_repo: repo_key.to_string(),
         // The pre-merge card keys its list by pattern and only knows this
@@ -390,13 +388,6 @@ pub fn apply_config_field(config: &mut ErConfig, key: &str, value: ConfigFieldVa
                 config.agent.args = split_shell_args(&v);
             }
         }
-        "agent.effort" => {
-            if let ConfigFieldValue::String(v) = value {
-                if AGENT_EFFORT_OPTIONS.contains(&v.as_str()) {
-                    config.agent.effort = Some(v);
-                }
-            }
-        }
         "ai_hub.max_concurrent_reviews" => {
             let parsed = match value {
                 ConfigFieldValue::Number(n) => Some(n as usize),
@@ -539,6 +530,11 @@ mod tests {
         assert!(general.iter().any(|k| k == "display.theme"));
         assert!(!terminal.iter().any(|k| k == "display.theme"));
 
+        assert!(!general.iter().any(|k| k == "agent.effort"));
+        assert!(!app.iter().any(|k| k == "agent.effort"));
+        assert!(!terminal.iter().any(|k| k == "agent.effort"));
+        assert!(general.iter().any(|k| k == "agent.args"));
+
         assert!(terminal.iter().any(|k| k == "features.view_branch"));
         assert!(general.iter().any(|k| k == "features.model_discovery"));
         assert!(general.iter().any(|k| k == "inbox.show.review_requested"));
@@ -584,17 +580,6 @@ mod tests {
             ConfigFieldValue::Bool(false),
         );
         assert!(!config.features.model_discovery);
-    }
-
-    #[test]
-    fn apply_config_field_agent_effort_round_trip() {
-        let mut config = ErConfig::default();
-        apply_config_field(
-            &mut config,
-            "agent.effort",
-            ConfigFieldValue::String("high".into()),
-        );
-        assert_eq!(config.agent.effort.as_deref(), Some("high"));
     }
 
     #[test]

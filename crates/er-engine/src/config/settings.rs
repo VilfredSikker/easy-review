@@ -1,7 +1,7 @@
 //! Settings field catalog split by scope (General / App / Terminal).
 
 use super::desktop_settings::ConfigHubFieldDto;
-use super::{ErConfig, AGENT_EFFORT_OPTIONS, MAX_CONCURRENT_REVIEWS_RANGE};
+use super::{ErConfig, MAX_CONCURRENT_REVIEWS_RANGE};
 
 pub const THEME_OPTIONS: &[&str] = &[
     "graphite",
@@ -55,14 +55,6 @@ pub struct SettingsFieldsGrouped {
     pub general: Vec<ConfigHubFieldDto>,
     pub app: Vec<ConfigHubFieldDto>,
     pub terminal: Vec<ConfigHubFieldDto>,
-}
-
-pub fn agent_effort_label(effort: &Option<String>) -> String {
-    effort
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or("medium")
-        .to_string()
 }
 
 pub fn settings_fields_grouped(config: &ErConfig) -> SettingsFieldsGrouped {
@@ -172,13 +164,6 @@ fn general_desktop_fields(config: &ErConfig) -> Vec<ConfigHubFieldDto> {
             placeholder: "e.g. --print -p {prompt}".into(),
             value: config.agent.args.join(" "),
             strict: true,
-        },
-        ConfigHubFieldDto::Cycle {
-            key: "agent.effort".into(),
-            label: "Effort".into(),
-            description: "Claude effort level".into(),
-            options: AGENT_EFFORT_OPTIONS.iter().map(|s| s.to_string()).collect(),
-            value: agent_effort_label(&config.agent.effort),
         },
         ConfigHubFieldDto::Cycle {
             key: "ai_hub.max_concurrent_reviews".into(),

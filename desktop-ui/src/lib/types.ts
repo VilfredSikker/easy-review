@@ -1146,7 +1146,6 @@ export interface DesktopSettingsSnapshot {
   general: ConfigHubField[];
   app: ConfigHubField[];
   terminal: ConfigHubField[];
-  agentEffort: string;
   repoRoot: string;
   /** The rules key a project rule edit names, so it lands in the table this tab reads. */
   riskRepo: string;

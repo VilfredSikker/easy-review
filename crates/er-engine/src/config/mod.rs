@@ -22,8 +22,8 @@ pub use risk_rules::{
 };
 use serde::{Deserialize, Serialize};
 pub use settings::{
-    agent_effort_label, desktop_settings_fields_flat, desktop_settings_fields_for_scope,
-    settings_fields_grouped, SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
+    desktop_settings_fields_flat, desktop_settings_fields_for_scope, settings_fields_grouped,
+    SettingsFieldsGrouped, SettingsScope, THEME_OPTIONS,
 };
 use std::collections::{BTreeMap, HashSet};
 
@@ -182,9 +182,6 @@ pub struct FeatureFlags {
     pub model_discovery: bool,
 }
 
-/// Claude-compatible effort levels passed as `--effort` when spawning agents.
-pub const AGENT_EFFORT_OPTIONS: &[&str] = &["low", "medium", "high"];
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AgentConfig {
     #[serde(default = "default_agent_cmd")]
@@ -193,9 +190,6 @@ pub struct AgentConfig {
     pub args: Vec<String>,
     #[serde(default)]
     pub model: String,
-    /// Claude Code `--effort` when ai_hub is empty (legacy fallback).
-    #[serde(default)]
-    pub effort: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -503,7 +497,6 @@ impl Default for AgentConfig {
             command: default_agent_cmd(),
             args: default_agent_args(),
             model: String::new(),
-            effort: None,
         }
     }
 }
@@ -758,51 +751,6 @@ pub fn ai_hub_catalog() -> AiHubConfig {
         .unwrap_or_default()
 }
 
-/// Presets dropped from the catalog: `(provider, retired id, successor id)`.
-///
-/// Presets are no longer saved (ADR 0042), but configs written before that hold
-/// copies with no `edited` mark, and an unknown id there could equally be the
-/// user's own model, so only this list may drop one. The successor keeps a
-/// retired default on the same tier rather than falling back to the catalog
-/// default.
-const RETIRED_PRESET_MODELS: &[(&str, &str, &str)] = &[
-    ("claude", "sonnet-4.6", "sonnet-5.5"),
-    ("claude", "sonnet-5", "sonnet-5.5"),
-    ("claude", "haiku-4.5", "haiku-5.5"),
-    ("claude", "opus-4.6", "opus-5.5"),
-    ("claude", "opus-4.7", "opus-5.5"),
-    ("claude", "opus-4.8", "opus-5.5"),
-    ("claude", "opus-5", "opus-5.5"),
-    ("claude", "fable-5", "fable-5.1"),
-    ("codex", "gpt-5.4", "gpt-5.6-terra"),
-    ("codex", "gpt-5.4-mini", "gpt-5.6-luna"),
-    ("codex", "gpt-5.3-codex-spark", "gpt-5.6-luna"),
-    ("codex", "gpt-5.3-codex", "gpt-6-sol"),
-];
-
-fn retire_preset_models(hub: &mut AiHubConfig) {
-    let default_provider = hub.resolve_provider_id(None);
-    for &(provider_id, retired, successor) in RETIRED_PRESET_MODELS {
-        let edited_retired = hub.providers.get(provider_id).is_some_and(|provider| {
-            provider
-                .models
-                .iter()
-                .any(|model| model.id == retired && model.edited)
-        });
-        if !edited_retired
-            && default_provider.as_deref() == Some(provider_id)
-            && hub.default_model.as_deref() == Some(retired)
-        {
-            hub.default_model = Some(successor.to_string());
-        }
-        if let Some(provider) = hub.providers.get_mut(provider_id) {
-            provider
-                .models
-                .retain(|model| model.id != retired || model.edited);
-        }
-    }
-}
-
 /// The catalog owns its presets: each comes from the catalog, in catalog order,
 /// unless the user edited it. The user's own models stay first, in saved order.
 fn merge_catalog_models(
@@ -830,7 +778,6 @@ fn merge_catalog_models(
 /// from the catalog so new metadata reaches previously-saved configs.
 pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
     let catalog = ai_hub_catalog();
-    retire_preset_models(hub);
     if hub.providers.is_empty() {
         let removed_providers = std::mem::take(&mut hub.removed_catalog_providers);
         let saved_default_provider = hub.default_provider.clone();
@@ -855,9 +802,6 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
                 hub.providers
                     .get(provider_id)
                     .is_some_and(|provider| provider.models.iter().any(|m| m.id == model_id))
-                    || RETIRED_PRESET_MODELS.iter().any(|(provider, retired, _)| {
-                        *provider == provider_id && *retired == model_id
-                    })
             })
         });
         if saved_provider_is_available
@@ -872,7 +816,6 @@ pub fn supplement_ai_hub(hub: &mut AiHubConfig) {
             hub.default_provider = catalog_default_provider;
             hub.default_model = catalog_default_model;
         }
-        retire_preset_models(hub);
         return;
     }
 
@@ -1505,10 +1448,10 @@ pub fn normalize_effort(
         .then(|| value.to_string())
 }
 
-/// Precedence: run override → runtime → hub default → agent fallback.
+/// Precedence: run override → runtime → hub default.
 pub fn resolve_effort(
     hub: &AiHubConfig,
-    agent: &AgentConfig,
+    _agent: &AgentConfig,
     runtime: Option<&str>,
     run_override: Option<&str>,
 ) -> Option<String> {
@@ -1519,7 +1462,6 @@ pub fn resolve_effort(
     pick(run_override)
         .or_else(|| pick(runtime))
         .or_else(|| pick(hub.default_effort.as_deref()))
-        .or_else(|| pick(agent.effort.as_deref()))
 }
 
 /// Resolve the configured effort and discard values unsupported by the
@@ -1701,7 +1643,7 @@ pub fn split_shell_args(s: &str) -> Vec<String> {
 }
 
 /// Global config directory (`$XDG_CONFIG_HOME/er`, else `~/.config/er`, else
-/// the platform config dir). Used by migration (legacy source) and uninstall.
+/// the platform config dir). Used by uninstall.
 pub fn global_config_dir() -> Option<std::path::PathBuf> {
     if let Ok(xdg) = std::env::var("XDG_CONFIG_HOME") {
         if !xdg.is_empty() {
@@ -1729,46 +1671,6 @@ pub fn managed_config_path() -> std::path::PathBuf {
     crate::storage::storage_root().join("config.toml")
 }
 
-fn legacy_config_candidates() -> Vec<std::path::PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(p) = global_config_dir().map(|d| d.join("config.toml")) {
-        paths.push(p);
-    }
-    if let Some(p) = dirs::config_dir().map(|d| d.join("er").join("config.toml")) {
-        if !paths.iter().any(|existing| existing == &p) {
-            paths.push(p);
-        }
-    }
-    paths
-}
-
-/// One-time copy of legacy `~/.config/er/config.toml` into managed storage.
-/// Copy-only — never moves or deletes the legacy file.
-fn migrate_legacy_config() {
-    let dest = managed_config_path();
-    if dest.exists() {
-        return;
-    }
-    let Some(src) = legacy_config_candidates().into_iter().find(|p| p.exists()) else {
-        return;
-    };
-    let Ok(content) = std::fs::read(&src) else {
-        return;
-    };
-    let root = crate::storage::storage_root();
-    if std::fs::create_dir_all(&root).is_err() {
-        return;
-    }
-    let tmp = root.join(format!("config.toml.tmp.{}", std::process::id()));
-    if std::fs::write(&tmp, &content).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-        return;
-    }
-    if std::fs::rename(&tmp, &dest).is_err() {
-        let _ = std::fs::remove_file(&tmp);
-    }
-}
-
 fn parse_config_from_path(path: &std::path::Path) -> Option<ErConfig> {
     let content = std::fs::read_to_string(path).ok()?;
     let table = match content.parse::<toml::Table>() {
@@ -1793,23 +1695,13 @@ fn parse_config_from_path(path: &std::path::Path) -> Option<ErConfig> {
     }
 }
 
-/// Load the global config from managed storage (with one-time legacy migration).
+/// Load the global config from managed storage.
 pub fn load_global_config() -> ErConfig {
     let managed = managed_config_path();
-    if !managed.exists() {
-        migrate_legacy_config();
-    }
-
     let mut config = if managed.exists() {
         parse_config_from_path(&managed).unwrap_or_default()
     } else {
-        // Migration failed or no legacy file — try legacy paths for this session
-        // so a transient write error does not silently drop the user's settings.
-        legacy_config_candidates()
-            .into_iter()
-            .find(|p| p.exists())
-            .and_then(|p| parse_config_from_path(&p))
-            .unwrap_or_default()
+        ErConfig::default()
     };
     supplement_ai_hub(&mut config.ai_hub);
     config
@@ -2002,20 +1894,6 @@ fn general_config_hub_items(config: &ErConfig) -> Vec<ConfigItem> {
             placeholder: "e.g. --print -p {prompt}".into(),
             get: |c| c.agent.args.join(" "),
             set: |c, v| c.agent.args = split_shell_args(&v),
-        },
-        ConfigItem::StringCycle {
-            label: "Effort".into(),
-            description: "Claude effort level (--effort)".into(),
-            options: AGENT_EFFORT_OPTIONS,
-            get: |c| {
-                c.agent
-                    .effort
-                    .clone()
-                    .unwrap_or_else(|| "medium".to_string())
-            },
-            set: |c, v| {
-                c.agent.effort = if v.is_empty() { None } else { Some(v) };
-            },
         },
         ConfigItem::SectionHeader("AI Hub".into()),
         ConfigItem::DynamicStringCycle {
@@ -2474,7 +2352,6 @@ mod tests {
                 command: "my-agent".into(),
                 args: vec!["--flag".into()],
                 model: String::new(),
-                effort: None,
             },
             ..Default::default()
         };
@@ -2846,7 +2723,6 @@ mod tests {
             command: "claude".into(),
             args: vec![],
             model: String::new(),
-            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -2857,7 +2733,6 @@ mod tests {
             command: "/usr/local/bin/claude".into(),
             args: vec![],
             model: String::new(),
-            effort: None,
         };
         assert_eq!(agent.display_name(), "Claude");
     }
@@ -2868,7 +2743,6 @@ mod tests {
             command: "".into(),
             args: vec![],
             model: String::new(),
-            effort: None,
         };
         assert_eq!(agent.display_name(), "AI");
     }
@@ -3075,7 +2949,6 @@ mod tests {
             ..Default::default()
         };
         let mut hub = claude_hub(vec![
-            preset("haiku-4.5"),
             preset("fable-5.1"),
             AiModelConfig {
                 cost_per_1k_in: Some(0.5),
@@ -3175,63 +3048,7 @@ mod tests {
     }
 
     #[test]
-    fn supplement_ai_hub_retires_dropped_presets() {
-        let retired_for = |provider: &str| -> Vec<AiModelConfig> {
-            RETIRED_PRESET_MODELS
-                .iter()
-                .filter(|(p, _, _)| *p == provider)
-                .map(|(_, id, _)| AiModelConfig {
-                    id: (*id).into(),
-                    ..Default::default()
-                })
-                .collect()
-        };
-        let mut hub = AiHubConfig {
-            default_provider: Some("claude".into()),
-            default_model: Some("fable-5".into()),
-            providers: BTreeMap::from([
-                (
-                    "claude".into(),
-                    AiProviderConfig {
-                        models: retired_for("claude"),
-                        ..Default::default()
-                    },
-                ),
-                (
-                    "codex".into(),
-                    AiProviderConfig {
-                        models: retired_for("codex"),
-                        ..Default::default()
-                    },
-                ),
-            ]),
-            ..Default::default()
-        };
-
-        supplement_ai_hub(&mut hub);
-
-        for (provider_id, retired, successor) in RETIRED_PRESET_MODELS {
-            let provider = hub.providers.get(*provider_id).expect("provider kept");
-            assert!(
-                provider.models.iter().all(|m| m.id != *retired),
-                "{retired} should be gone from {provider_id}"
-            );
-            assert!(
-                provider.models.iter().any(|m| m.id == *successor),
-                "{successor} should replace {retired}"
-            );
-        }
-        // A retired default moves to its successor, not to the catalog default.
-        assert_eq!(hub.default_model.as_deref(), Some("fable-5.1"));
-        assert_eq!(
-            hub.resolve_model_id("claude", hub.default_model.as_deref())
-                .as_deref(),
-            Some("fable-5.1")
-        );
-    }
-
-    #[test]
-    fn supplement_ai_hub_retires_legacy_codex_model_for_old_saved_config() {
+    fn supplement_ai_hub_is_idempotent_and_keeps_custom_providers() {
         let mut hub = AiHubConfig {
             default_provider: Some("claude".into()),
             default_model: Some("sonnet-5.5".into()),
@@ -3247,11 +3064,6 @@ mod tests {
                     "codex".into(),
                     AiProviderConfig {
                         command: "codex".into(),
-                        models: vec![AiModelConfig {
-                            id: "gpt-5.3-codex".into(),
-                            args: vec!["--model".into(), "gpt-5.3-codex".into()],
-                            ..Default::default()
-                        }],
                         ..Default::default()
                     },
                 ),
@@ -3275,7 +3087,6 @@ mod tests {
         assert_eq!(hub.default_provider.as_deref(), Some("claude"));
         assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
         let codex = &hub.providers["codex"];
-        assert!(codex.models.iter().all(|model| model.id != "gpt-5.3-codex"));
         let catalog_first = &ai_hub_catalog().providers["codex"].models[0].id;
         assert_eq!(
             codex.models.first().map(|model| &model.id),
@@ -3302,78 +3113,6 @@ mod tests {
         );
         assert_eq!(hub.default_provider.as_deref(), Some("claude"));
         assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
-    }
-
-    #[test]
-    fn supplement_ai_hub_preserves_edited_retired_codex_model_and_default() {
-        let args = vec!["--model".into(), "my-edited-codex".into()];
-        let mut hub = AiHubConfig {
-            default_provider: Some("codex".into()),
-            default_model: Some("gpt-5.3-codex".into()),
-            providers: BTreeMap::from([(
-                "codex".into(),
-                AiProviderConfig {
-                    command: "codex".into(),
-                    models: vec![AiModelConfig {
-                        id: "gpt-5.3-codex".into(),
-                        args: args.clone(),
-                        edited: true,
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        };
-
-        supplement_ai_hub(&mut hub);
-
-        let codex = &hub.providers["codex"];
-        let edited = codex
-            .models
-            .iter()
-            .find(|model| model.id == "gpt-5.3-codex")
-            .expect("edited legacy model remains configured");
-        assert!(edited.edited);
-        assert_eq!(edited.args, args);
-        assert_eq!(hub.default_provider.as_deref(), Some("codex"));
-        assert_eq!(hub.default_model.as_deref(), Some("gpt-5.3-codex"));
-        assert_eq!(
-            hub.resolve_model_id("codex", None).as_deref(),
-            Some("gpt-5.3-codex")
-        );
-    }
-
-    #[test]
-    fn supplement_ai_hub_moves_unedited_retired_codex_default_to_successor() {
-        let mut hub = AiHubConfig {
-            default_provider: Some("codex".into()),
-            default_model: Some("gpt-5.3-codex".into()),
-            providers: BTreeMap::from([(
-                "codex".into(),
-                AiProviderConfig {
-                    command: "codex".into(),
-                    models: vec![AiModelConfig {
-                        id: "gpt-5.3-codex".into(),
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        };
-
-        supplement_ai_hub(&mut hub);
-
-        assert_eq!(hub.default_model.as_deref(), Some("gpt-6-sol"));
-        assert!(hub.providers["codex"]
-            .models
-            .iter()
-            .all(|model| model.id != "gpt-5.3-codex"));
-        assert_eq!(
-            hub.resolve_model_id("codex", None).as_deref(),
-            Some("gpt-6-sol")
-        );
     }
 
     #[test]
@@ -3446,68 +3185,6 @@ mod tests {
         let loaded: ErConfig = toml::from_str(&serialized).unwrap();
 
         assert_eq!(loaded.ai_hub.review_models, config.ai_hub.review_models);
-    }
-
-    #[test]
-    fn supplement_ai_hub_moves_a_saved_sonnet_5_default_to_sonnet_5_5() {
-        // Sonnet 5 was the catalog default, so most saved configs hold it.
-        let mut hub = AiHubConfig {
-            default_provider: Some("claude".into()),
-            default_model: Some("sonnet-5".into()),
-            providers: BTreeMap::from([(
-                "claude".into(),
-                AiProviderConfig {
-                    models: vec![AiModelConfig {
-                        id: "sonnet-5".into(),
-                        args: vec!["--model".into(), "claude-sonnet-5".into()],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        };
-
-        supplement_ai_hub(&mut hub);
-
-        assert_eq!(hub.default_model.as_deref(), Some("sonnet-5.5"));
-        let sonnet = hub.providers["claude"]
-            .models
-            .iter()
-            .find(|m| m.id == "sonnet-5.5")
-            .expect("sonnet-5.5 merged from the catalog");
-        assert_eq!(sonnet.args, ["--model", "claude-sonnet-5-5"]);
-    }
-
-    #[test]
-    fn supplement_ai_hub_moves_a_saved_haiku_4_5_default_to_haiku_5_5() {
-        let mut hub = AiHubConfig {
-            default_provider: Some("claude".into()),
-            default_model: Some("haiku-4.5".into()),
-            providers: BTreeMap::from([(
-                "claude".into(),
-                AiProviderConfig {
-                    models: vec![AiModelConfig {
-                        id: "haiku-4.5".into(),
-                        args: vec!["--model".into(), "claude-haiku-4-5-20251001".into()],
-                        ..Default::default()
-                    }],
-                    ..Default::default()
-                },
-            )]),
-            ..Default::default()
-        };
-
-        supplement_ai_hub(&mut hub);
-
-        assert_eq!(hub.default_model.as_deref(), Some("haiku-5.5"));
-        let models = &hub.providers["claude"].models;
-        assert!(models.iter().all(|m| m.id != "haiku-4.5"));
-        let haiku = models
-            .iter()
-            .find(|m| m.id == "haiku-5.5")
-            .expect("haiku-5.5 merged from the catalog");
-        assert_eq!(haiku.args, ["--model", "claude-haiku-5-5"]);
     }
 
     #[test]
@@ -3922,10 +3599,7 @@ mod tests {
             default_effort: Some("medium".into()),
             ..Default::default()
         };
-        let agent = AgentConfig {
-            effort: Some("low".into()),
-            ..Default::default()
-        };
+        let agent = AgentConfig::default();
         assert_eq!(
             resolve_effort(&hub, &agent, Some("high"), None).as_deref(),
             Some("high")
@@ -3941,8 +3615,15 @@ mod tests {
         let hub_empty = AiHubConfig::default();
         assert_eq!(
             resolve_effort(&hub_empty, &agent, None, None).as_deref(),
-            Some("low")
+            None
         );
+    }
+
+    #[test]
+    fn a_config_with_the_removed_agent_effort_key_still_loads() {
+        let config: ErConfig =
+            toml::from_str("[agent]\ncommand = \"claude\"\neffort = \"high\"\n").unwrap();
+        assert_eq!(config.agent.command, "claude");
     }
 
     #[test]
@@ -4218,7 +3899,7 @@ mod tests {
     }
 
     #[test]
-    fn managed_config_migration_and_er_config_path() {
+    fn a_legacy_config_is_neither_read_nor_copied() {
         let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
             .lock()
             .unwrap_or_else(|e| e.into_inner());
@@ -4238,28 +3919,36 @@ mod tests {
         let _ = std::fs::remove_file(&managed);
         assert!(!managed.exists());
         let cfg = load_global_config();
-        assert_eq!(cfg.display.theme, "slate");
-        assert!(managed.exists());
-        // Legacy file left untouched
+        assert_eq!(cfg.display.theme, ErConfig::default().display.theme);
+        assert!(!managed.exists());
+        // The legacy file is not touched either.
         assert_eq!(
             std::fs::read_to_string(&legacy).unwrap(),
             "[display]\ntheme = \"slate\"\n"
         );
 
-        // Second load is idempotent
-        let cfg2 = load_global_config();
-        assert_eq!(cfg2.display.theme, "slate");
+        std::env::remove_var("ER_STORAGE_ROOT");
+        std::env::remove_var("XDG_CONFIG_HOME");
+    }
 
-        // ER_CONFIG_PATH override
+    #[test]
+    fn er_config_path_overrides_the_managed_path() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = tempfile::TempDir::new().unwrap();
+        let storage = tmp.path().join("storage");
+
+        std::env::set_var("ER_STORAGE_ROOT", &storage);
         let override_path = tmp.path().join("override.toml");
         std::fs::write(&override_path, "[display]\ntheme = \"paper\"\n").unwrap();
         std::env::set_var("ER_CONFIG_PATH", &override_path);
+
         let cfg = load_global_config();
         assert_eq!(cfg.display.theme, "paper");
 
         std::env::remove_var("ER_STORAGE_ROOT");
         std::env::remove_var("ER_CONFIG_PATH");
-        std::env::remove_var("XDG_CONFIG_HOME");
     }
 
     #[test]
