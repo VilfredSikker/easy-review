@@ -39,8 +39,38 @@ export interface TriagePill {
 const RISK_TONE: Record<string, PillTone> = {
   high: "risk-high",
   medium: "risk-med",
+  med: "risk-med",
   low: "risk-low",
 };
+
+const RISK_WORD: Record<string, string> = { med: "medium" };
+
+function plural(n: number, word: string): string {
+  return `${n} ${word} finding${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * The next step once a review has graded the diff, which says more than the
+ * routing call triage made before anything was read. `null` until then.
+ */
+export function reviewedNext(triage: TriageSnapshot): string | null {
+  const u = triage.review_update;
+  if (!u) return null;
+  if (u.next === "fix") return `Fix ${plural(u.high, "high")}`;
+  if (u.next === "check") return `Check ${plural(u.med, "medium")}`;
+  return "Nothing flagged — read the diff";
+}
+
+/** Who graded it, for the line under the verdict. */
+export function reviewedBy(triage: TriageSnapshot): string {
+  const by = triage.review_update?.reviewed_by ?? [];
+  return by.length > 0 ? `Updated by review · ${by.join(", ")}` : "Updated by review";
+}
+
+/** Priority files as the review regraded them, falling back to triage's. */
+export function priorityFiles(triage: TriageSnapshot): TriagePriorityFileSnapshot[] {
+  return triage.review_update?.priority_files ?? triage.priority_files;
+}
 
 /** `isolated` is the good case and `broad` the one to slow down for; `contained` is the norm. */
 const REACH_TONE: Record<string, PillTone> = {
@@ -57,7 +87,17 @@ const REACH_TONE: Record<string, PillTone> = {
 export function summaryPills(triage: TriageSnapshot): TriagePill[] {
   const pills: TriagePill[] = [];
 
-  if (triage.approx_risk) {
+  const reviewed = triage.review_update;
+  if (reviewed) {
+    const word = RISK_WORD[reviewed.approx_risk] ?? reviewed.approx_risk;
+    pills.push({
+      label: `${word} risk`,
+      tone: RISK_TONE[reviewed.approx_risk] ?? "neutral",
+      title: triage.approx_risk
+        ? `From the review's findings; triage estimated ${triage.approx_risk}`
+        : "From the review's findings",
+    });
+  } else if (triage.approx_risk) {
     pills.push({
       label: `${triage.approx_risk} risk`,
       tone: RISK_TONE[triage.approx_risk] ?? "neutral",
@@ -216,6 +256,7 @@ export function filesPreview(files: TriagePriorityFileSnapshot[]): string {
 const PRIORITY_DOT: Record<string, string> = {
   high: "bg-risk-high",
   medium: "bg-risk-med",
+  med: "bg-risk-med",
   low: "bg-risk-low",
 };
 

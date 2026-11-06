@@ -330,8 +330,15 @@ pub fn snap_from(app: &App, state: &AppState) -> AppSnapshot {
     crate::snapshot::build_snapshot_with_delta(app, &snapshot_sources(state))
 }
 
+fn snap_from_with_arbiter(app: &App, state: &AppState, overlay: Option<&[u8]>) -> AppSnapshot {
+    let mut sources = snapshot_sources(state);
+    sources.other_bucket_arbiter = Some(overlay);
+    crate::snapshot::build_snapshot_with_delta(app, &sources)
+}
+
 fn snapshot_sources(state: &AppState) -> crate::snapshot::SnapshotSources<'_> {
     crate::snapshot::SnapshotSources {
+        other_bucket_arbiter: None,
         pr_cache: Some(&state.pr_cache),
         pr_cache_fetched_at: Some(&state.pr_cache_fetched_at),
         meta_cache: Some(&state.meta_cache),
@@ -389,10 +396,12 @@ pub fn snap_from_command(app: &App, state: &AppState) -> AppSnapshot {
 /// instead of rebuilding and re-sending the identical content a second time.
 pub fn snap_from_confirmed(app: &App, state: &AppState) -> AppSnapshot {
     let t0 = std::time::Instant::now();
-    let snap = snap_from(app, state);
-    state
-        .last_sent_content_revision
-        .store(compute_content_revision(app), Ordering::Relaxed);
+    let overlay = other_bucket_arbiter(app);
+    let snap = snap_from_with_arbiter(app, state, overlay.as_deref());
+    state.last_sent_content_revision.store(
+        compute_content_revision_with_arbiter(app, overlay.as_deref()),
+        Ordering::Relaxed,
+    );
     state
         .last_sent_chrome_revision
         .store(compute_chrome_revision(state), Ordering::Relaxed);
@@ -10662,10 +10671,16 @@ pub fn kick_branch_preload(app: &App, state: &AppState) {
             let (bucket_dir, scope) = captured?;
             // Outside the lock: pure CPU + sidecar disk reads.
             let hash = er_engine::ai::compute_diff_hash(raw);
-            let ai = er_engine::ai::load_ai_state(&bucket_dir, &hash, scope.as_deref());
-            Some((bucket_dir, hash, ai))
+            let arbiter_overlay = er_engine::ai::arbiter_overlay_stamp(&bucket_dir);
+            let ai = er_engine::ai::load_ai_state_with_arbiter(
+                &bucket_dir,
+                &hash,
+                scope.as_deref(),
+                arbiter_overlay.as_deref(),
+            );
+            Some((bucket_dir, hash, arbiter_overlay, ai))
         });
-        if let Some((bucket_dir, hash, ai)) = ai_preload {
+        if let Some((bucket_dir, hash, arbiter_overlay, ai)) = ai_preload {
             if let Ok(mut app) = app_arc.lock() {
                 if let Some(tab) = app.tabs.get_mut(idx).filter(|t| {
                     t.repo_root == inputs.repo_root
@@ -10685,6 +10700,7 @@ pub fn kick_branch_preload(app: &App, state: &AppState) {
                         tab.preloaded_branch_ai = Some(er_engine::app::BranchAiPreload {
                             bucket_dir,
                             diff_hash: hash,
+                            arbiter_overlay,
                             ai,
                         });
                     }
@@ -11311,7 +11327,8 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     // with each other. Nothing between here and the snapshot releases it.
     let app = state.app.lock().map_err(|e| e.to_string())?;
     let desktop_rev = state.desktop_revision.load(Ordering::Relaxed);
-    let content_revision = compute_content_revision(&app);
+    let overlay = other_bucket_arbiter(&app);
+    let content_revision = compute_content_revision_with_arbiter(&app, overlay.as_deref());
     let chrome_revision = compute_chrome_revision(state);
     let reviewed_revision = app.tab().reviewed_revision;
     let revision = content_revision.max(chrome_revision);
@@ -11401,7 +11418,7 @@ fn poll_impl(state: &AppState) -> Result<PollResponse, String> {
     let snapshot = if chrome_only {
         chrome_snap_from(&app, state)
     } else {
-        snap_from(&app, state)
+        snap_from_with_arbiter(&app, state, overlay.as_deref())
     };
     state
         .last_sent_content_revision
@@ -11488,11 +11505,27 @@ fn compute_chrome_revision(state: &AppState) -> u64 {
 }
 
 fn compute_content_revision(app: &App) -> u64 {
+    let overlay = other_bucket_arbiter(app);
+    compute_content_revision_with_arbiter(app, overlay.as_deref())
+}
+
+fn other_bucket_arbiter(app: &App) -> Option<Vec<u8>> {
+    crate::snapshot::other_bucket_dir(app.tab())
+        .and_then(|(_, dir)| er_engine::ai::arbiter_overlay_stamp(&dir))
+}
+
+fn compute_content_revision_with_arbiter(app: &App, other_overlay: Option<&[u8]>) -> u64 {
     let tab = app.tab();
     let mut h = std::collections::hash_map::DefaultHasher::new();
     app.active_tab.hash(&mut h);
     let review_bucket_er_dir = tab.er_dir();
     review_bucket_er_dir.hash(&mut h);
+    // Hash the bytes used by the loaded AI state. Arbiter metadata can change
+    // without changing the verdict, rationale, confidence, or finding count.
+    tab.last_arbiter_overlay.hash(&mut h);
+    if crate::snapshot::other_bucket_dir(tab).is_some() {
+        other_overlay.hash(&mut h);
+    }
     app.review_flow_revision().hash(&mut h);
     if let Some(flow) = app.review_flow_for(&review_bucket_er_dir) {
         format!("{:?}", flow.state).hash(&mut h);
@@ -11607,7 +11640,23 @@ fn compute_content_revision(app: &App) -> u64 {
         total.hash(&mut h);
         resolved.hash(&mut h);
         dropped.hash(&mut h);
+        let mut grades: Vec<_> = review
+            .files
+            .iter()
+            .flat_map(|(path, file)| {
+                file.findings.iter().map(move |finding| {
+                    (path.as_str(), finding.id.as_str(), finding.confidence as u8)
+                })
+            })
+            .collect();
+        grades.sort_unstable();
+        grades.hash(&mut h);
     }
+    // A verdict can change without changing any finding counts or confidence.
+    // Sort the map so equivalent overlays always produce the same revision.
+    let mut verdicts: Vec<_> = tab.ai.arbiter_verdicts.iter().collect();
+    verdicts.sort_unstable_by_key(|(key, _)| *key);
+    verdicts.hash(&mut h);
     // Agent command status changes (e.g. running → done) must trigger a snapshot.
     for (name, status) in &tab.command_status {
         name.hash(&mut h);
@@ -13251,6 +13300,102 @@ mod tests {
         assert_eq!(
             image_data_url("image/svg+xml", b"<svg/>"),
             "data:image/svg+xml;base64,PHN2Zy8+"
+        );
+    }
+
+    #[test]
+    fn arbiter_verdict_and_rationale_invalidate_content_revision() {
+        let mut app = make_app_with_n_tabs(1);
+        let before = compute_content_revision(&app);
+        app.tab_mut().ai.arbiter_verdicts.insert(
+            "claim".into(),
+            (
+                er_engine::ai::ArbiterRuling::Escalated,
+                "first reason".into(),
+            ),
+        );
+        let with_verdict = compute_content_revision(&app);
+        assert_ne!(before, with_verdict);
+        app.tab_mut()
+            .ai
+            .arbiter_verdicts
+            .get_mut("claim")
+            .unwrap()
+            .1 = "new reason".into();
+        assert_ne!(with_verdict, compute_content_revision(&app));
+    }
+
+    #[test]
+    fn confidence_regrade_invalidates_content_revision_without_verdict_change() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+        let mut app = make_app_with_n_tabs(1);
+        app.tab_mut().ai = er_engine::ai::load_ai_state(dir.path().to_str().unwrap(), "hash", None);
+        let before = compute_content_revision(&app);
+        app.tab_mut()
+            .ai
+            .review
+            .as_mut()
+            .unwrap()
+            .files
+            .get_mut("a.rs")
+            .unwrap()
+            .findings[0]
+            .confidence = er_engine::ai::Confidence::Confirmed;
+        assert_ne!(before, compute_content_revision(&app));
+    }
+
+    #[test]
+    fn arbiter_metadata_change_invalidates_content_revision() {
+        let dir = tempfile::tempdir().unwrap();
+        let er_dir = dir.path().join(".er");
+        std::fs::create_dir_all(&er_dir).unwrap();
+        std::fs::write(er_dir.join("review.json"), r#"{"version":1,"diff_hash":"hash","files":{"a.rs":{"risk":"medium","findings":[{"id":"f","severity":"medium","title":"claim","confidence":"tentative"}]}}}"#).unwrap();
+        let key = er_engine::ai::finding_key("a.rs", None, "claim");
+        let overlay = |provider| {
+            serde_json::json!({"version":1,"diff_hash":"hash","verdicts":[{"id":key,"verdict":"escalated","rationale":"same","providers":[provider]}]}).to_string()
+        };
+        std::fs::write(er_dir.join("arbiter.json"), overlay("first")).unwrap();
+        let mut app = make_app_with_n_tabs(1);
+        app.tab_mut().er_root =
+            er_engine::paths::ErRoot::RepoLocal(dir.path().to_string_lossy().into());
+        app.tab_mut().branch_diff_hash = "hash".into();
+        app.tab_mut().reload_ai_state();
+        let before = compute_content_revision(&app);
+        assert_eq!(
+            app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
+            vec!["first"]
+        );
+        std::fs::write(er_dir.join("arbiter.json"), overlay("second")).unwrap();
+        assert!(app.tab_mut().check_ai_files_changed());
+        assert_eq!(
+            app.tab().ai.review.as_ref().unwrap().files["a.rs"].findings[0].providers,
+            vec!["second"]
+        );
+        assert_ne!(before, compute_content_revision(&app));
+    }
+
+    #[test]
+    fn other_bucket_arbiter_change_invalidates_only_review_views() {
+        let mut app = make_app_with_n_tabs(1);
+        let tab = app.tab_mut();
+        tab.mode = DiffMode::PrDiff;
+        tab.pr_number = Some(7);
+        tab.current_branch = "feature".into();
+        assert!(crate::snapshot::other_bucket_dir(tab).is_some());
+        let before = compute_content_revision_with_arbiter(&app, None);
+        let with_arbiter = compute_content_revision_with_arbiter(&app, Some(b"first"));
+        assert_ne!(before, with_arbiter);
+        assert_ne!(
+            with_arbiter,
+            compute_content_revision_with_arbiter(&app, Some(b"second"))
+        );
+        assert_eq!(before, compute_content_revision_with_arbiter(&app, None));
+        app.tab_mut().mode = DiffMode::Unstaged;
+        let unrelated = compute_content_revision_with_arbiter(&app, None);
+        assert_eq!(
+            unrelated,
+            compute_content_revision_with_arbiter(&app, Some(b"third"))
         );
     }
 

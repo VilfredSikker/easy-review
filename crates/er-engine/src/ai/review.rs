@@ -858,6 +858,9 @@ pub struct AiState {
     /// Canonical claim keys with an actual verdict from the matching review
     /// hash. Only these keys may collapse duplicate producer rows.
     pub arbiter_graded_keys: HashSet<String>,
+    /// Verdicts matched to the loaded review, keyed by canonical claim identity.
+    /// This is a load-time overlay and is never written into producer sidecars.
+    pub arbiter_verdicts: HashMap<String, (super::arbiter::ArbiterRuling, String)>,
     /// Lazily-built comment index for O(1) lookups.
     /// An empty cell means unbuilt; rebuilt on first query after invalidation.
     comment_index: RefCell<OnceCell<CommentIndexData>>,
@@ -883,6 +886,7 @@ impl Default for AiState {
             stale_files: HashSet::new(),
             arbiter_effect: super::arbiter::ArbiterEffect::default(),
             arbiter_graded_keys: HashSet::new(),
+            arbiter_verdicts: HashMap::new(),
             comment_index: RefCell::new(OnceCell::new()),
         }
     }

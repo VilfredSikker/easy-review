@@ -100,7 +100,6 @@
   const OVERVIEW_HOME: Record<SecondaryRightPanelTab, OverviewSection> = {
     branch: "branch",
     triage: "triage",
-    context: "diagrams",
   };
 
   function expandRightPanelToTab(tab: RightPanelTab) {

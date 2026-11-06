@@ -18,6 +18,7 @@
   import OverviewActivity from "./OverviewActivity.svelte";
   import EmptyBucket from "./EmptyBucket.svelte";
   import OverviewAside from "./OverviewAside.svelte";
+  import OverviewSection from "./OverviewSection.svelte";
   import { emptyBucketCopy } from "./emptyBucket";
   import { overviewHeader } from "./overviewModel";
   import { overviewSectionId } from "./overviewNav";
@@ -97,19 +98,19 @@
       <QuickActions snapshot={snap} />
 
       {#if github}
-        <div class="mt-8">
+        <OverviewSection name="description" title="Description" class="mt-8">
           <OverviewDescription body={github.body} owner={github.owner} repo={github.repo} />
-        </div>
+        </OverviewSection>
         {#if hasLinks}
-        <div class="mt-8">
-          <OverviewLinks
-            body={github.body}
-            comments={github.recent_comments}
-            owner={github.owner}
-            repo={github.repo}
-            number={github.number}
-          />
-        </div>
+          <OverviewSection name="links" title="Links" class="mt-8">
+            <OverviewLinks
+              body={github.body}
+              comments={github.recent_comments}
+              owner={github.owner}
+              repo={github.repo}
+              number={github.number}
+            />
+          </OverviewSection>
         {/if}
       {/if}
 
@@ -120,57 +121,61 @@
       {:else}
         <div id={overviewSectionId("triage")} class="mt-8 grid scroll-mt-4 gap-3">
           {#if ai?.triage}
+            <!-- Folds from its own header, so it takes no second chevron. -->
             <TriageCard triage={ai.triage} />
           {:else}
-            <div>
+            <OverviewSection name="triage" title="Triage">
               <p class={label}>Triage</p>
               <p class="m-0 rounded-[10px] border border-line bg-surface px-4 py-3.5 text-[12.5px] text-fg-3">
                 No triage for this view yet. Triage is a fast first read that says how to review the change.
               </p>
-            </div>
+            </OverviewSection>
           {/if}
           <!-- The TUI shows the checklist whenever the AI panel is up, with a
                fallback when the bucket has none; same gate here. -->
           {#if ai && (ai.checklist || ai.has_review_json)}
-            <ChecklistCard checklist={ai.checklist} />
+            <OverviewSection name="checklist" title="Checklist" card>
+              <ChecklistCard checklist={ai.checklist} />
+            </OverviewSection>
           {/if}
         </div>
 
         {#if ai && ai.file_risks.length > 0}
-          <div class="mt-8">
+          <OverviewSection name="file-risks" title="File risks" card class="mt-8">
             <FileRisksCard risks={ai.file_risks} />
-          </div>
+          </OverviewSection>
         {/if}
 
-        <div class="mt-8">
+        <OverviewSection name="findings" title="Review findings" class="mt-8">
           <OverviewFindings {ai} />
-        </div>
+        </OverviewSection>
 
-        <div class="mt-8">
+        <OverviewSection name="tour" title="Tour" class="mt-8">
           <OverviewTour tour={snap?.tour ?? null} />
-        </div>
+        </OverviewSection>
+      {/if}
+
+      {#if ai}
+        <OverviewSection id={overviewSectionId("diagrams")} name="diagrams" title="Diagrams" class="mt-8 scroll-mt-4">
+          <p class={label}>Diagrams</p>
+          <DiagramsCard {ai} />
+        </OverviewSection>
+      {/if}
+
+      {#if github}
+        <OverviewSection name="activity" title="Activity" class="mt-8">
+          <OverviewActivity {github} {ai} />
+        </OverviewSection>
       {/if}
 
       <!-- The active tab's agent commands and log, which the old Triage tab
            carried. Outside the bucket gate: a run in flight belongs to the
-           tab, not to one view's artifacts. -->
+           tab, not to one view's artifacts. Last and folded by default: it is
+           for when something went wrong, not part of reading the change. -->
       {#if hasAgentActivity}
-        <div class="mt-8">
+        <OverviewSection name="agent-output" title="Agent output" defaultOpen={false} class="mt-8">
           <AgentOutputCard />
-        </div>
-      {/if}
-
-      {#if ai}
-        <div id={overviewSectionId("diagrams")} class="mt-8 scroll-mt-4">
-          <p class={label}>Diagrams</p>
-          <DiagramsCard {ai} />
-        </div>
-      {/if}
-
-      {#if github}
-        <div class="mt-8">
-          <OverviewActivity {github} {ai} />
-        </div>
+        </OverviewSection>
       {/if}
     </div>
 

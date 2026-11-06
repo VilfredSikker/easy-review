@@ -1,8 +1,7 @@
 <script lang="ts">
   import type { FileRiskSnapshot, RiskTier } from "$lib/types";
-  import { tick } from "svelte";
   import { app } from "$lib/stores/app.svelte";
-  import { reviewPage } from "$lib/stores/reviewPage.svelte";
+  import { openOverviewFile } from "$lib/overviewFileOpen";
   import Card from "$lib/components/ui/Card.svelte";
   import SectionLabel from "$lib/components/ui/SectionLabel.svelte";
   import {
@@ -13,7 +12,6 @@
     type RiskQueueSort,
   } from "$lib/fileRiskQueue";
   import { baseName, shortFileName } from "$lib/shortFileName";
-  import { diffNav } from "$lib/stores/diffNav.svelte";
 
   interface Props {
     risks: FileRiskSnapshot[];
@@ -57,20 +55,7 @@
     return currentPaths.has(path);
   }
 
-  async function jumpTo(path: string) {
-    const snap = app.snapshot;
-    if (!snap) return;
-    const f = snap.files.find((file) => file.path === path);
-    if (f) {
-      // Mounted on the Overview: show the diff first, or the jump lands in a
-      // view that is not on screen.
-      reviewPage.show("diff");
-      await tick();
-      await app.cmd("select_file", { idx: f.source_index });
-      await tick();
-      await diffNav.scrollToFile(path);
-    }
-  }
+  const jumpTo = (path: string, e?: MouseEvent) => openOverviewFile(path, e);
 
   /// Reviewed rows dim rather than vanish, so the queue keeps its shape while
   /// you work down it.
@@ -122,9 +107,9 @@
           class="grid min-w-0 flex-1 grid-cols-[58px_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-0.5 rounded-md px-1.5 py-1 text-left text-[12.5px] hover:bg-bg disabled:cursor-not-allowed disabled:hover:bg-transparent"
           class:opacity-60={row.reviewed}
           disabled={!canJumpTo(row.path)}
-          title={canJumpTo(row.path) ? row.path : `${row.path} is not in the current diff`}
+          title={canJumpTo(row.path) ? `${row.path} · ⌘-click to open the source` : `${row.path} is not in the current diff`}
           aria-label="{row.shown} risk, {row.path}"
-          onclick={() => jumpTo(row.path)}
+          onclick={(e) => jumpTo(row.path, e)}
         >
           <span class="inline-flex items-center gap-1.5 text-[11px] font-medium {LEVEL_TEXT[row.shown]}">
             <i class="h-[7px] w-[7px] shrink-0 rounded-[2px] {LEVEL_DOT[row.shown]}"></i>

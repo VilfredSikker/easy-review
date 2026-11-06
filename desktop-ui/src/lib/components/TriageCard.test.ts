@@ -36,9 +36,9 @@ describe("TriageCard", () => {
   });
 
   it("keeps every paragraph inside its row", () => {
-    expect(row("Verdict")).toContain("{verdictSummary}");
+    expect(row("Verdict")).toContain("verdictSummary}");
     expect(row("Verdict")).toContain("{triage.rationale}");
-    expect(row("Priority files")).toContain("navigateToPath(pf.path)");
+    expect(row("Priority files")).toContain("navigateToPath(pf.path, e)");
     // Each paragraph is rendered once, so "inside its row" is also "nowhere else".
     for (const marker of ["{triage.rationale}", "<MarkdownText"]) {
       expect(occurrences(marker)).toBe(1);
@@ -47,13 +47,16 @@ describe("TriageCard", () => {
 
   it("gives each collapsed row a one-line teaser", () => {
     expect(src).toContain("preview={previewLine(triage.rationale) || verdictSummary}");
-    expect(src).toContain("preview={filesPreview(triage.priority_files)}");
-    expect(src).toContain("badge={triage.priority_files.length}");
+    // `files` is triage's list as the review regraded it, when there is one.
+    expect(src).toContain("const files = $derived(priorityFiles(triage));");
+    expect(src).toContain("preview={filesPreview(files)}");
+    expect(src).toContain("badge={files.length}");
   });
 
   it("jumps the diff to a priority file and names its risk without hiding the reason", () => {
-    expect(src).toContain('app.cmd("select_file", { idx: f.source_index })');
-    expect(src).toContain("onclick={() => navigateToPath(pf.path)}");
+    // The Overview's shared jump: the diff on a click, the source on ⌘-click.
+    expect(src).toContain("openOverviewFile(path, e)");
+    expect(src).toContain("onclick={(e) => navigateToPath(pf.path, e)}");
     expect(src).toContain("{priorityDotClass(pf.risk)}");
     // Screen readers get the risk as text; an aria-label would replace the
     // path and reason as the button's name.

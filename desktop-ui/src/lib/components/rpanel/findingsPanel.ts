@@ -138,3 +138,6 @@ export function showReviewerPicker(labels: readonly string[], filter: AgentFilte
   if (labels.length > 1) return true;
   return filter !== ALL_REVIEWERS && !(labels.length === 1 && labels[0] === filter);
 }
+export function showEscalationDetails(finding: FlatFinding, expandedId: string | null): boolean {
+  return finding.arbiter_verdict === "escalated" && finding.id === expandedId;
+}

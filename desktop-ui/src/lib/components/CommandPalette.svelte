@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { app } from "$lib/stores/app.svelte";
   import { commandPalette } from "$lib/stores/commandPalette.svelte";
-  import { showOverviewSection } from "$lib/components/overview/overviewNav";
+  import { showDiagrams } from "$lib/components/overview/overviewNav";
   import { arena } from "$lib/stores/arena.svelte";
   import ModalShell from "$lib/components/ui/ModalShell.svelte";
   import { reviewScopeFromMode, scopeDescriptionFromMode } from "$lib/reviewScope";
@@ -157,7 +157,7 @@
         kbd: "d",
         run: guard(() => {
           close();
-          void showOverviewSection("diagrams");
+          showDiagrams();
         }),
       },
       {

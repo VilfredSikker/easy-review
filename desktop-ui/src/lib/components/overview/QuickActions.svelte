@@ -6,6 +6,11 @@
   import { reviewScopeFromMode } from "$lib/reviewScope";
   import { reviewFlowEstimate } from "$lib/reviewFlow";
   import { shortAge } from "$lib/relativeTime";
+  import { resolveContextIdentity } from "$lib/contextIdentity";
+  import { resolveTabRoot } from "$lib/resolveTabRoot";
+  import { resolveActivePrNumber, resolveActivePrUrl } from "$lib/prUrl";
+  import { wantsSource } from "$lib/overviewFileOpen";
+  import { copyBranchName, copyPrLink, copyWorktreePath, openPrLink, revealWorktree } from "$lib/paletteQuickActions";
   import { generatorStates, latestArenaRun, reviewFlowCommand, type Generator, type GeneratorState } from "./overviewModel";
 
   interface Props {
@@ -20,6 +25,25 @@
   const generators = $derived(generatorStates(snap));
   const arenaRun = $derived(latestArenaRun(snap));
   const exportCount = $derived(exportOptions.itemCount);
+
+  // The branch bar's copy buttons, which the top bar left without a home.
+  // ⌘-click goes one step further than copying: reveal the worktree, open the PR.
+  const branch = $derived(resolveContextIdentity(snap).branch);
+  const activeTab = $derived(snap?.tabs.find((t) => t.is_active) ?? snap?.tabs[snap?.active_tab ?? 0]);
+  // A remote PR tab has no checkout, so there is no path to offer.
+  const worktree = $derived(resolveTabRoot(snap, activeTab) || null);
+  const prUrl = $derived(resolveActivePrUrl(snap));
+  const prNumber = $derived(resolveActivePrNumber(snap));
+
+  function onWorktree(e: MouseEvent) {
+    if (!worktree) return;
+    void (wantsSource(e) ? revealWorktree(worktree) : copyWorktreePath(worktree));
+  }
+
+  function onPr(e: MouseEvent) {
+    if (!prUrl) return;
+    void (wantsSource(e) ? openPrLink(prUrl) : copyPrLink(prUrl));
+  }
 
   const LABEL: Record<Generator, string> = { triage: "Triage", review: "AI review", tour: "Tour" };
   const BUSY: Record<Generator, string> = {
@@ -60,7 +84,7 @@
   const ic = "grid h-5 w-5 place-items-center rounded-[5px]";
 </script>
 
-<div class="mt-[18px] flex flex-wrap gap-2" role="group" aria-label="Generate and export">
+<div class="mt-[18px] flex flex-wrap gap-2" role="group" aria-label="Generate, export and copy">
   {#each generators as g (g.id)}
     <button
       type="button"
@@ -116,6 +140,35 @@
       <span class="{ic} bg-question/14 text-question" aria-hidden="true">⚔</span>
       Arena
       {#if arenaRun}<span class="mono text-[11px] font-normal text-fg-3">#{arenaRun.count} · {shortAge(arenaRun.at)}</span>{/if}
+    </button>
+  {/if}
+
+  {#if branch || worktree || prUrl}
+    <span class="mx-0.5 w-px self-stretch bg-hairline" aria-hidden="true"></span>
+  {/if}
+  {#if branch}
+    <button type="button" class={qa} title="Copy branch name · {branch}" onclick={() => void copyBranchName(branch)}>
+      <span class="{ic} bg-hover text-fg-2">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="6" cy="6" r="2" /><circle cx="6" cy="18" r="2" /><circle cx="18" cy="12" r="2" /><path d="M6 8v8M8 18h2a4 4 0 0 0 4-4v-2" /></svg>
+      </span>
+      Copy branch
+    </button>
+  {/if}
+  {#if worktree}
+    <button type="button" class={qa} title="Click to copy worktree path · ⌘-click to reveal in Finder · {worktree}" onclick={onWorktree}>
+      <span class="{ic} bg-hover text-fg-2">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 10a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2z" /></svg>
+      </span>
+      Copy worktree
+    </button>
+  {/if}
+  {#if prUrl}
+    <button type="button" class={qa} title="Click to copy PR link · ⌘-click to open on GitHub" onclick={onPr}>
+      <span class="{ic} bg-hover text-fg-2">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="18" cy="18" r="3" /><circle cx="6" cy="6" r="3" /><path d="M13 6h3a2 2 0 0 1 2 2v7" /><path d="M6 9v12" /></svg>
+      </span>
+      Copy PR link
+      {#if prNumber}<span class="mono text-[11px] font-normal text-fg-3">#{prNumber}</span>{/if}
     </button>
   {/if}
 </div>

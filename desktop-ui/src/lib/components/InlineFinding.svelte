@@ -210,6 +210,9 @@
         title="Confidence: {finding.confidence}"
       >{confidenceGlyph(finding.confidence)}</span>
     {/if}
+    {#if finding.arbiter_verdict === "escalated"}
+      <span class="px-1.5 py-0.5 rounded-full text-[9px] font-medium bg-warning/14 text-warning shrink-0" title="The verifier escalated this finding for review">Escalated</span>
+    {/if}
     {#if showLensCategory}
       <span class="text-muted shrink-0">{lensCategory}</span>
     {/if}
