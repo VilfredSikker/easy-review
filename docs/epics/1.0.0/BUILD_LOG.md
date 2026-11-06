@@ -68,3 +68,7 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - #403 approved and closed. Its revised signatures and five round-2 amendments are applied to the #376 and #377 bodies; #376 is `agent-ready` and waits only for #375. #410 is approved but is applied and closed together with #409.
 - Owner delegation: the coordinator merges on a `merge` verdict with green CI and approves designs that pass review. The owner is asked only about important decisions (format or product trade-offs, anything irreversible or outside the plan, changes to D1–D14).
 - Sessions are now messaged directly (SendMessage to the T and D sessions) to read their issue's latest `**Next step (coordinator):**` comment, and they message the coordinator after each GitHub post. GitHub stays the record.
+- Merged PR #414 (P04) as 540072e67; #375 closed. The T2 session continues as T3 (#376, then #377).
+- Designs approved by the coordinator under the owner's delegation, with their task issue changes applied: #402 (round 3) to #391; #407 (round 3) to #378, #379 and #380; #401 (round 3, with amendment B: `slug_repo` and `rules_key` stay unhashed, and only folder-path callers use the hashed slug) to #385, #386, #387, #393 and #395, with constraints recorded on #404 and #406. #401, #402 and #407 are closed.
+- ADR numbers: 0053 goes to P05 (#376). Every other new ADR takes the next free number at branch time, because several PRs add ADRs in parallel.
+- Design bundle D6 started: #404 to the D5 session and #406 to the D4 session. #405 waits for #381.
