@@ -315,18 +315,28 @@ fn main() -> Result<()> {
         if cli.pr.is_none() && !cli.paths.iter().any(|p| github::is_github_pr_url(p)) {
             let current_base = app.tab().base_branch.clone();
             let (hint_tx, hint_rx) = mpsc::channel::<String>();
-            let (pr_tx, pr_rx) = mpsc::channel::<github::PrOverviewData>();
+            let (pr_tx, pr_rx) = mpsc::channel::<PrProbe>();
             std::thread::spawn(move || {
-                if let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) {
-                    if pr_base != current_base {
-                        let _ = hint_tx.send(format!(
-                            "PR #{} targets {} — run: er --pr {}",
-                            pr_num, pr_base, pr_num
-                        ));
+                let Some((pr_num, pr_base)) = github::gh_pr_for_current_branch(&repo_root) else {
+                    // No PR: the tab now knows, so a key press can gate the
+                    // GitHub comment composer without calling `gh`.
+                    let _ = pr_tx.send(PrProbe::Absent);
+                    return;
+                };
+                if pr_base != current_base {
+                    let _ = hint_tx.send(format!(
+                        "PR #{} targets {} — run: er --pr {}",
+                        pr_num, pr_base, pr_num
+                    ));
+                }
+                // Fetch PR overview data regardless of base mismatch
+                match github::gh_pr_overview(&repo_root, Some(pr_num)) {
+                    Some(data) => {
+                        let _ = pr_tx.send(PrProbe::Found(Box::new(data)));
                     }
-                    // Fetch PR overview data regardless of base mismatch
-                    if let Some(data) = github::gh_pr_overview(&repo_root, Some(pr_num)) {
-                        let _ = pr_tx.send(data);
+                    // The PR exists; its overview failed. Do not mark it absent.
+                    None => {
+                        let _ = pr_tx.send(PrProbe::Failed);
                     }
                 }
             });
@@ -400,12 +410,20 @@ fn print_resume_hint(app: &App) {
     }
 }
 
+/// One startup PR probe's result. `Absent` is the only case that marks the tab
+/// as knowing it has no PR; a failed overview leaves it unknown.
+enum PrProbe {
+    Absent,
+    Found(Box<github::PrOverviewData>),
+    Failed,
+}
+
 fn run_app<B: Backend<Error: Send + Sync + 'static>>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     hl: &mut ui::highlight::Highlighter,
     hint_rx: Option<mpsc::Receiver<String>>,
-    pr_data_rx: Option<mpsc::Receiver<github::PrOverviewData>>,
+    pr_data_rx: Option<mpsc::Receiver<PrProbe>>,
 ) -> Result<()> {
     let update_rx = update::spawn_background_check();
     // Channel for file watch events
@@ -552,10 +570,17 @@ fn run_app<B: Backend<Error: Send + Sync + 'static>>(
             }
         }
 
-        // Check for PR overview data from background thread (fires once)
+        // Check for the PR probe's result from the background thread (fires once)
         if let Some(rx) = &pr_data_rx {
-            if let Ok(data) = rx.try_recv() {
-                app.tab_mut().pr_data = Some(data);
+            if let Ok(probe) = rx.try_recv() {
+                match probe {
+                    PrProbe::Absent => app.tab_mut().pr_absent = true,
+                    PrProbe::Found(data) => {
+                        app.tab_mut().pr_absent = false;
+                        app.tab_mut().pr_data = Some(*data);
+                    }
+                    PrProbe::Failed => {}
+                }
                 pr_data_rx = None;
             }
         }

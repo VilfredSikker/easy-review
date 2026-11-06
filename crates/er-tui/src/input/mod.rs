@@ -364,7 +364,11 @@ pub fn dispatch_hub_action(app: &mut App, action: HubAction) -> Result<()> {
             app.input_mode = InputMode::Confirm(ConfirmAction::PushComments);
         }
         HubAction::CommentOnPR => {
-            app.start_general_comment();
+            if app.tab().pr_absent {
+                app.notify(er_engine::github_post::NO_PR_FOR_COMMENT);
+            } else {
+                app.start_general_comment();
+            }
         }
         HubAction::RefreshDiff => {
             app.tab_mut().refresh_diff()?;
@@ -922,7 +926,15 @@ pub fn handle_comment_input(app: &mut App, key: KeyEvent) -> Result<()> {
             app.tab_mut().comment_textarea.insert_newline();
         }
         KeyCode::Enter => {
-            app.submit_comment()?;
+            // A GitHub-kind create posts now; a failure leaves the composer
+            // open with its text so the user can retry.
+            if app.github_comment_intent().is_some() {
+                if let Err(e) = app.post_github_comment_now() {
+                    app.notify(&e.to_string());
+                }
+            } else if let Err(e) = app.submit_comment() {
+                app.notify(&format!("Comment not saved: {e}"));
+            }
         }
         KeyCode::Esc => {
             app.cancel_comment();
@@ -3025,5 +3037,116 @@ mod tests {
             })
         );
         assert!(build_accept_review_flow_action("/bucket", "run", &Default::default()).is_none());
+    }
+
+    struct FailingCommentPoster;
+
+    impl er_engine::github_post::GitHubCommentPoster for FailingCommentPoster {
+        fn post(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> er_engine::github_post::GitHubPostOutcome {
+            er_engine::github_post::GitHubPostOutcome::NotPosted {
+                error: "network down".to_string(),
+            }
+        }
+
+        fn list(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<Vec<er_engine::github_post::ListedGitHubComment>> {
+            Ok(Vec::new())
+        }
+
+        fn viewer_login(
+            &self,
+            _request: &er_engine::github_post::GitHubPostRequest,
+        ) -> anyhow::Result<String> {
+            Ok("viewer".to_string())
+        }
+    }
+
+    #[test]
+    fn a_failed_post_keeps_comment_mode_and_the_text() {
+        use crate::app::InputMode;
+        use er_engine::ai::CommentType;
+
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        {
+            let tab = app.tab_mut();
+            tab.remote_repo = Some("owner/repo".to_string());
+            tab.pr_number = Some(7);
+            tab.comment_file = "src/a.rs".to_string();
+            tab.comment_hunk = 0;
+            tab.comment_line_num = Some(3);
+            tab.comment_type = CommentType::GitHubComment;
+            tab.comment_textarea = tui_textarea::TextArea::new(vec!["keep me".to_string()]);
+        }
+        app.input_mode = InputMode::Comment;
+        app.set_github_comment_poster(std::sync::Arc::new(FailingCommentPoster));
+
+        handle_comment_input(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Comment);
+        assert_eq!(app.tab().comment_textarea.lines().join("\n"), "keep me");
+        assert!(app
+            .notification
+            .as_ref()
+            .is_some_and(|n| n.message.contains("Comment not posted")));
+    }
+
+    #[test]
+    fn c_on_a_tab_known_to_have_no_pr_does_not_open_the_github_composer() {
+        use crate::app::InputMode;
+
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        app.tab_mut().pr_absent = true;
+        app.input_mode = InputMode::Normal;
+
+        let (watch_tx, _watch_rx) = std::sync::mpsc::channel();
+        let mut watcher = None;
+        handle_normal_input(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            &watch_tx,
+            &mut watcher,
+        )
+        .unwrap();
+
+        assert_ne!(app.input_mode, InputMode::Comment);
+        assert!(app
+            .notification
+            .as_ref()
+            .is_some_and(|n| n.message.contains("No pull request for this branch")));
+    }
+
+    #[test]
+    fn a_post_on_a_branch_with_no_pr_is_not_posted_and_keeps_the_text() {
+        use crate::app::InputMode;
+        use er_engine::ai::CommentType;
+
+        let mut app = er_engine::app::App::new_for_test(Vec::new());
+        {
+            let tab = app.tab_mut();
+            // `gh pr view` fails to spawn here, so target resolution reports no PR.
+            tab.repo_root = "/nonexistent-er-no-pr-repo".to_string();
+            tab.pr_number = None;
+            tab.remote_repo = None;
+            tab.comment_file = "src/a.rs".to_string();
+            tab.comment_hunk = 0;
+            tab.comment_line_num = Some(3);
+            tab.comment_type = CommentType::GitHubComment;
+            tab.comment_textarea = tui_textarea::TextArea::new(vec!["keep me too".to_string()]);
+        }
+        app.input_mode = InputMode::Comment;
+
+        handle_comment_input(&mut app, KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)).unwrap();
+
+        assert_eq!(app.input_mode, InputMode::Comment);
+        assert_eq!(app.tab().comment_textarea.lines().join("\n"), "keep me too");
+        assert!(app
+            .notification
+            .as_ref()
+            .is_some_and(|n| n.message.contains("No pull request for this branch")));
     }
 }
