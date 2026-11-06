@@ -1335,7 +1335,7 @@ dependencies = [
  "proc-macro2",
  "serde",
  "serde_json",
- "syn 2.0.119",
+ "syn 3.0.9",
  "tempfile",
 ]
 
@@ -1399,7 +1399,7 @@ dependencies = [
  "proc-macro2",
  "serde",
  "serde_json",
- "syn 2.0.119",
+ "syn 3.0.9",
  "toml 1.2.1+spec-1.1.0",
 ]
 
