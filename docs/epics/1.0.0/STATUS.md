@@ -22,6 +22,8 @@ Assignable at handoff:
 | [#409](https://github.com/VilfredSikker/easy-review/issues/409) | P10 design: cache, runner, default handle | opus | - |
 | [#410](https://github.com/VilfredSikker/easy-review/issues/410) | P11 design: cache merge | opus | - |
 
+Any model may take any of these. The `Model` column says how deep the Opus review goes, not who implements ([ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md)). When a PR is open or a design issue has its `**Decision:**` comment, bring it to the orchestrating session for review.
+
 Design issues hold no lane and change no code, so all seven can run at once. Settling one means posting a `**Decision:**` comment and a `**Signatures:**` comment, then the owner approves and closes it ([ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md)). #403, #407 and #401 unblock the most work: P05, then P07 and the ports, then the store.
 
 ## Plan id to issue

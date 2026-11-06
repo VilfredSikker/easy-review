@@ -30,6 +30,23 @@ Ten issues labelled `design` hold a decision that a task issue is blocked on: #4
 
 A design issue changes no code. When a decision contradicts a step already written in its task issue, the person settling it edits that task issue in the same pass.
 
+## Who does the work, and who reviews it
+
+The owner decided this on 2026-11-06, superseding the `model:` labels as an assignment rule.
+
+- **Any agent may implement any issue, task or design.** The work is meant to go to smaller models.
+- **Opus reviews every output** in the orchestrating session before it counts:
+  - every PR, before merge;
+  - every design issue's `**Decision:**` and `**Signatures:**` comments, before the owner approves and closes it.
+- **`model:` labels now set how deep the review goes.**
+  - `model:opus` gets a line-by-line read, and runs every check the reviewer doubts.
+  - `model:sonnet` gets a check of the diff against the issue's steps and tests.
+- **Review hardest:**
+  - #401, the store format users keep from 1.0.0 on;
+  - #403, #376 and #377, which change posting to GitHub;
+  - #408, #381 and #382, which classify `gh` errors and handle the caches;
+  - #394, the locks.
+
 ## What "assignable" means
 
 An issue is assignable when it has a `ready` review verdict, it has no open blocker, and no assigned issue holds any of its lanes.
