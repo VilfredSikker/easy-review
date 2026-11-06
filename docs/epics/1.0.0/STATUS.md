@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 20:40 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 21:05 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -80,5 +80,4 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 **Actions.**
 
-1. After PR #418 (P25, merged): run the desktop app (`just dev`) and open a review of a local branch, and run `er` in a terminal once. Several UI libraries moved a major version (Vite 8, mermaid 12, shiki 4, xterm 6, marked 18), and no agent can check the screen. Tell the coordinator if anything looks wrong.
-2. Before P10 (#381) merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot capture them from a test repo. 409 and 422 may stay `*.synthetic` until then.
+1. Before P10 (#381) merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot capture them from a test repo. 409 and 422 may stay `*.synthetic` until then.

@@ -96,3 +96,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - Merged PR #419 (P07, er-git) as 6b72de658; #378 closed. Merged with the release branch including P05, `just clippy` is clean and the engine, desktop and er-git tests pass. Follow-ups are in the PR review.
 - Lane decision: #381 (P10) and #377 (P06) edit the same files, and #381 moves `github.rs` and `pending_review.rs` into er-github. #377 goes first, because it is smaller, deletes code #381 would otherwise move, and its spec names today's paths. The T1 session reads #381 and starts it when #377 merges.
 - Merged PR #417 (P05 TUI) as 5509fdfcd after T3 merged the release branch in to trigger CI; #376 closed. T3 starts #377 (P06), the last phase-0 issue, and carries the leftover `preload.rs` comment fix.
+- Owner checked P25 by hand: the desktop app and the TUI both run fine on `release/v1.0.0`. That meets #411's last Done-when line.
