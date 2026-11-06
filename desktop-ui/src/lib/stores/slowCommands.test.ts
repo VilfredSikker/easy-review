@@ -134,17 +134,27 @@ function component(name: string): string {
 describe("optimistic local-write call sites", () => {
   it("closes composers before firing local writes", () => {
     const thread = component("InlineThread.svelte");
+    // Local question/note replies stay optimistic and close at once.
     for (const command of [
       "reply_to_thread",
       "delete_thread",
       "resolve_thread",
       "update_thread_message",
-      "promote_to_comment",
       "promote_to_note",
     ]) {
       expect(thread).toContain(`void app.cmd("${command}"`);
       expect(thread).not.toContain(`await app.cmd("${command}"`);
     }
+    // GitHub-kind paths post first: the draft clears only after the await,
+    // and a failure keeps it.
+    expect(thread).toContain('"reply_to_github_thread"');
+    expect(thread).toContain('"promote_to_comment"');
+    expect(thread).toContain("{ throwOnError: true }");
+    expect(thread).not.toContain('void app.cmd("promote_to_comment"');
+    const awaitIdx = thread.indexOf("await app.cmd(");
+    const clearIdx = thread.indexOf('draft.replyText = "";');
+    expect(awaitIdx).toBeGreaterThan(-1);
+    expect(clearIdx).toBeGreaterThan(awaitIdx);
 
     const bar = component("ReplyActionBar.svelte");
     expect(bar).toContain('void app.cmd("resolve_thread"');
@@ -158,7 +168,6 @@ describe("optimistic local-write call sites", () => {
       "delete_finding_response",
       "delete_thread",
       "remove_finding_thread",
-      "promote_finding_to_comment",
       "reply_to_finding",
     ]) {
       expect(finding).toContain(`void app.cmd("${command}"`);
@@ -170,10 +179,26 @@ describe("optimistic local-write call sites", () => {
       "delete_finding_response",
       "delete_thread",
       "remove_finding_thread",
-      "promote_finding_to_comment",
     ]) {
       expect(finding).not.toContain(`await app.cmd("${command}"`);
     }
+    // A promoted finding is posted first; the finding disappears only once
+    // GitHub holds the comment.
+    expect(finding).toContain('"promote_finding_to_comment"');
+    expect(finding).toContain("{ throwOnError: true }");
+    expect(finding).not.toContain('void app.cmd("promote_finding_to_comment"');
+
+    const composer = component("PreviewComposer.svelte");
+    expect(composer).toContain('"add_comment"');
+    expect(composer).toContain("{ throwOnError: true }");
+    expect(composer.indexOf("await app.cmd(")).toBeLessThan(
+      composer.indexOf('text = "";'),
+    );
+
+    const overview = component("overview/OverviewFindings.svelte");
+    expect(overview).toContain('"promote_finding_to_comment"');
+    expect(overview).toContain("{ throwOnError: true }");
+    expect(overview).not.toContain('void app.cmd("promote_finding_to_comment"');
 
     const browser = component("BrowserView.svelte");
     expect(browser).toContain('void app.cmd("add_ui_annotation"');

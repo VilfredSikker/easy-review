@@ -286,6 +286,8 @@ pub struct GitHubComment {
     #[serde(default)]
     pub start_line: Option<usize>,
     pub original_line: Option<usize>,
+    #[serde(default)]
+    pub original_start_line: Option<usize>,
     pub side: Option<String>,
     pub in_reply_to_id: Option<u64>,
     pub user: GitHubUser,
@@ -302,10 +304,41 @@ pub struct GitHubUser {
     pub login: String,
 }
 
-/// Response from creating a comment (we only need the id)
+/// Response from creating a comment.
 #[derive(Debug, Deserialize)]
 struct CreateCommentResponse {
     id: u64,
+    #[serde(default)]
+    created_at: String,
+    #[serde(default)]
+    user: Option<GitHubUser>,
+}
+
+impl CreateCommentResponse {
+    fn into_created(self) -> CreatedComment {
+        CreatedComment {
+            id: self.id,
+            created_at: self.created_at,
+            author: self.user.map(|user| user.login).unwrap_or_default(),
+        }
+    }
+}
+
+/// The parts of a created comment the caller records.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CreatedComment {
+    pub id: u64,
+    pub created_at: String,
+    pub author: String,
+}
+
+/// An issue comment (a PR-wide comment from the issues API).
+#[derive(Debug, Clone, Deserialize)]
+pub struct IssueComment {
+    pub id: u64,
+    pub body: String,
+    pub user: GitHubUser,
+    pub created_at: String,
 }
 
 /// Parse a GitHub PR URL into its components.
@@ -1097,6 +1130,18 @@ pub fn local_checkout_for_repo(repo_root: &str, remote_repo: &str) -> Option<Str
     owner_repo_matches_slug(&owner, &repo, remote_repo).then(|| repo_root.to_string())
 }
 
+/// Parse `gh api --paginate` output: one array, or several concatenated arrays.
+///
+/// Any parse error propagates: a chunk that fails must not be skipped, or a
+/// partial list would look complete to a caller reconciling a retry.
+fn parse_paginated<T: serde::de::DeserializeOwned>(stdout: &str) -> Result<Vec<T>> {
+    let mut out = Vec::new();
+    for batch in serde_json::Deserializer::from_str(stdout).into_iter::<Vec<T>>() {
+        out.extend(batch.context("Failed to parse paginated gh api output")?);
+    }
+    Ok(out)
+}
+
 /// Fetch all review comments for a PR
 pub fn gh_pr_comments(
     owner: &str,
@@ -1120,39 +1165,7 @@ pub fn gh_pr_comments(
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // gh api --paginate concatenates JSON arrays: [...][...]
-    // Parse each chunk separately and merge
-    let all_comments: Vec<GitHubComment> = if stdout.contains("][") {
-        // Split paginated response into individual arrays
-        let mut results = Vec::new();
-        let mut depth = 0i32;
-        let mut start = 0;
-        // Assumes the paginated output is a flat concatenation of valid JSON arrays;
-        // chunks that fail to parse are skipped.
-        for (i, ch) in stdout.char_indices() {
-            match ch {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        if let Some(Ok(mut batch)) = stdout
-                            .get(start..=i)
-                            .map(serde_json::from_str::<Vec<GitHubComment>>)
-                        {
-                            results.append(&mut batch);
-                        }
-                        start = i + 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        results
-    } else {
-        serde_json::from_str(&stdout)?
-    };
-
-    Ok(all_comments)
+    parse_paginated(&stdout)
 }
 
 /// Build `gh api -f/-F` args for a line or multi-line review comment.
@@ -1192,21 +1205,11 @@ pub struct NewLineComment<'a> {
     pub side: &'a str,
 }
 
-/// Push a new review comment to a PR.
-pub fn gh_pr_push_comment(
-    owner: &str,
-    repo: &str,
-    pr: u64,
-    comment: NewLineComment<'_>,
-    repo_root: &str,
-) -> Result<u64> {
-    let NewLineComment {
-        path,
-        line_start,
-        line_end,
-        body,
-        side,
-    } = comment;
+/// Head oid of a PR: from a local checkout when one is given, remote otherwise.
+pub fn gh_pr_head_oid(owner: &str, repo: &str, pr: u64, repo_root: Option<&str>) -> Result<String> {
+    let Some(repo_root) = repo_root else {
+        return gh_pr_head_oid_remote(owner, repo, pr);
+    };
     // Get the latest commit SHA for the PR (required for review comments)
     let sha_output = Command::new("gh")
         .args([
@@ -1233,9 +1236,27 @@ pub fn gh_pr_push_comment(
     if commit_id.is_empty() {
         anyhow::bail!("Failed to get HEAD SHA from gh pr view: empty output");
     }
+    Ok(commit_id)
+}
 
+/// Post a line-anchored review comment at the given head commit.
+pub fn gh_pr_post_line_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comment: NewLineComment<'_>,
+    commit_id: &str,
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    let NewLineComment {
+        path,
+        line_start,
+        line_end,
+        body,
+        side,
+    } = comment;
     let end = line_end.unwrap_or(line_start);
-    let field_args = review_comment_field_args(path, line_start, end, side, body, &commit_id);
+    let field_args = review_comment_field_args(path, line_start, end, side, body, commit_id);
     let mut cmd = Command::new("gh");
     cmd.args([
         "api",
@@ -1250,8 +1271,10 @@ pub fn gh_pr_push_comment(
             cmd.arg("-f").arg(arg);
         }
     }
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
     let output = cmd
-        .current_dir(repo_root)
         .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to push comment to GitHub")?;
 
@@ -1264,30 +1287,33 @@ pub fn gh_pr_push_comment(
     let resp: CreateCommentResponse =
         serde_json::from_str(&stdout).context("Failed to parse create comment response")?;
 
-    Ok(resp.id)
+    Ok(resp.into_created())
 }
 
-/// Push a reply to an existing review comment
-pub fn gh_pr_reply_comment(
+/// Post a reply to an existing review comment.
+pub fn gh_pr_post_reply(
     owner: &str,
     repo: &str,
     pr: u64,
     in_reply_to: u64,
     body: &str,
-    repo_root: &str,
-) -> Result<u64> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-            "-F",
-            &format!("in_reply_to={}", in_reply_to),
-        ])
-        .current_dir(repo_root)
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "POST",
+        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
+        "-f",
+        &format!("body={}", body),
+        "-F",
+        &format!("in_reply_to={}", in_reply_to),
+    ]);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    let output = cmd
         .output_timed(crate::proc::GH_TIMEOUT)
         .context("Failed to push reply to GitHub")?;
 
@@ -1300,7 +1326,114 @@ pub fn gh_pr_reply_comment(
     let resp: CreateCommentResponse =
         serde_json::from_str(&stdout).context("Failed to parse reply response")?;
 
-    Ok(resp.id)
+    Ok(resp.into_created())
+}
+
+/// Post a PR-wide comment (the issues API).
+pub fn gh_pr_post_general(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    body: &str,
+    repo_root: Option<&str>,
+) -> Result<CreatedComment> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        "-X",
+        "POST",
+        &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
+        "-f",
+        &format!("body={}", body),
+    ]);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to post general PR comment")?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let resp: CreateCommentResponse =
+        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
+
+    Ok(resp.into_created())
+}
+
+/// Fetch a PR's issue comments (PR-wide comments, not review comments).
+pub fn gh_pr_issue_comments(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    repo_root: Option<&str>,
+) -> Result<Vec<IssueComment>> {
+    let mut cmd = Command::new("gh");
+    cmd.args([
+        "api",
+        &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
+        "--paginate",
+    ]);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to fetch PR issue comments")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to fetch PR issue comments: {}", stderr.trim());
+    }
+    parse_paginated(&String::from_utf8_lossy(&output.stdout))
+}
+
+/// Login of the authenticated `gh` user.
+pub fn gh_viewer_login(repo_root: Option<&str>) -> Result<String> {
+    let mut cmd = Command::new("gh");
+    cmd.args(["api", "user", "--jq", ".login"]);
+    if let Some(root) = repo_root {
+        cmd.current_dir(root);
+    }
+    let output = cmd
+        .output_timed(crate::proc::GH_TIMEOUT)
+        .context("Failed to read the gh user")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        anyhow::bail!("Failed to read the gh user: {}", stderr.trim());
+    }
+    let login = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if login.is_empty() {
+        anyhow::bail!("Failed to read the gh user: empty login");
+    }
+    Ok(login)
+}
+
+/// Push a new review comment to a PR.
+pub fn gh_pr_push_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    comment: NewLineComment<'_>,
+    repo_root: &str,
+) -> Result<u64> {
+    let commit_id = gh_pr_head_oid(owner, repo, pr, Some(repo_root))?;
+    Ok(gh_pr_post_line_comment(owner, repo, pr, comment, &commit_id, Some(repo_root))?.id)
+}
+
+/// Push a reply to an existing review comment
+pub fn gh_pr_reply_comment(
+    owner: &str,
+    repo: &str,
+    pr: u64,
+    in_reply_to: u64,
+    body: &str,
+    repo_root: &str,
+) -> Result<u64> {
+    Ok(gh_pr_post_reply(owner, repo, pr, in_reply_to, body, Some(repo_root))?.id)
 }
 
 /// Update a review comment body on a PR
@@ -2040,34 +2173,7 @@ pub fn gh_pr_comments_remote(owner: &str, repo: &str, pr: u64) -> Result<Vec<Git
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let all_comments: Vec<GitHubComment> = if stdout.contains("][") {
-        let mut results = Vec::new();
-        let mut depth = 0i32;
-        let mut start = 0;
-        for (i, ch) in stdout.char_indices() {
-            match ch {
-                '[' => depth += 1,
-                ']' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        if let Some(Ok(mut batch)) = stdout
-                            .get(start..=i)
-                            .map(serde_json::from_str::<Vec<GitHubComment>>)
-                        {
-                            results.append(&mut batch);
-                        }
-                        start = i + 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-        results
-    } else {
-        serde_json::from_str(&stdout)?
-    };
-
-    Ok(all_comments)
+    parse_paginated(&stdout)
 }
 
 // ── GraphQL review thread resolution ──
@@ -2211,6 +2317,8 @@ struct PrCommentsCache {
     inner: Mutex<PrCommentMap>,
     ttl: Duration,
     cap: usize,
+    /// Bumped by every invalidation so a fetch that raced it cannot re-cache.
+    generation: std::sync::atomic::AtomicU64,
 }
 
 impl PrCommentsCache {
@@ -2299,12 +2407,18 @@ pub fn gh_pr_comment_bundle_cached(
         inner: Mutex::new(HashMap::new()),
         ttl: Duration::from_secs(60),
         cap: 32,
+        generation: std::sync::atomic::AtomicU64::new(0),
     });
     if let Some(bundle) = cache.get(owner, repo, pr) {
         return Ok(bundle);
     }
+    let generation = cache.generation.load(std::sync::atomic::Ordering::SeqCst);
     let bundle = Arc::new(fetch_pr_comment_bundle(owner, repo, pr, repo_root)?);
-    cache.insert(owner, repo, pr, Arc::clone(&bundle));
+    // A post invalidated the cache while this fetch was running; its data may
+    // predate the post, so do not make it the next 60 seconds' answer.
+    if cache.generation.load(std::sync::atomic::Ordering::SeqCst) == generation {
+        cache.insert(owner, repo, pr, Arc::clone(&bundle));
+    }
     Ok(bundle)
 }
 
@@ -2313,6 +2427,9 @@ pub fn gh_pr_comment_bundle_cached(
 /// dropped from `github-comments.json` on the next pull.
 pub fn invalidate_pr_comments_cache() {
     if let Some(cache) = PR_COMMENTS_CACHE.get() {
+        cache
+            .generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut g) = cache.inner.lock() {
             g.clear();
         }
@@ -2404,72 +2521,8 @@ pub fn gh_pr_push_comment_remote(
     pr: u64,
     comment: NewLineComment<'_>,
 ) -> Result<u64> {
-    let NewLineComment {
-        path,
-        line_start,
-        line_end,
-        body,
-        side,
-    } = comment;
-    // Get the latest commit SHA for the PR
-    let repo_slug = format!("{}/{}", owner, repo);
-    let sha_output = Command::new("gh")
-        .args([
-            "pr",
-            "view",
-            &pr.to_string(),
-            "--repo",
-            &repo_slug,
-            "--json",
-            "headRefOid",
-            "--jq",
-            ".headRefOid",
-        ])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to get PR head SHA")?;
-
-    if !sha_output.status.success() {
-        let stderr = String::from_utf8_lossy(&sha_output.stderr);
-        anyhow::bail!("Failed to get HEAD SHA: {}", stderr.trim());
-    }
-
-    let commit_id = String::from_utf8_lossy(&sha_output.stdout)
-        .trim()
-        .to_string();
-    if commit_id.is_empty() {
-        anyhow::bail!("Failed to get HEAD SHA: empty output");
-    }
-
-    let end = line_end.unwrap_or(line_start);
-    let field_args = review_comment_field_args(path, line_start, end, side, body, &commit_id);
-    let mut cmd = Command::new("gh");
-    cmd.args([
-        "api",
-        "-X",
-        "POST",
-        &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-    ]);
-    for arg in &field_args {
-        if arg.starts_with("line=") || arg.starts_with("start_line=") {
-            cmd.arg("-F").arg(arg);
-        } else {
-            cmd.arg("-f").arg(arg);
-        }
-    }
-    let output = cmd
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to push comment to GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to push comment: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse create comment response")?;
-
-    Ok(resp.id)
+    let commit_id = gh_pr_head_oid(owner, repo, pr, None)?;
+    Ok(gh_pr_post_line_comment(owner, repo, pr, comment, &commit_id, None)?.id)
 }
 
 /// A single comment entry for a batch PR review submission.
@@ -2693,55 +2746,12 @@ pub fn gh_pr_general_comment(
     body: &str,
     repo_root: &str,
 ) -> Result<u64> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-        ])
-        .current_dir(repo_root)
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to post general PR comment")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
-
-    Ok(resp.id)
+    Ok(gh_pr_post_general(owner, repo, pr, body, Some(repo_root))?.id)
 }
 
 /// Post a general comment on a remote PR (no local repo required).
 pub fn gh_pr_general_comment_remote(owner: &str, repo: &str, pr: u64, body: &str) -> Result<u64> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/issues/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-        ])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to post general PR comment")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to post general comment: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse general comment response")?;
-
-    Ok(resp.id)
+    Ok(gh_pr_post_general(owner, repo, pr, body, None)?.id)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -3236,30 +3246,7 @@ pub fn gh_pr_reply_comment_remote(
     in_reply_to: u64,
     body: &str,
 ) -> Result<u64> {
-    let output = Command::new("gh")
-        .args([
-            "api",
-            "-X",
-            "POST",
-            &format!("repos/{}/{}/pulls/{}/comments", owner, repo, pr),
-            "-f",
-            &format!("body={}", body),
-            "-F",
-            &format!("in_reply_to={}", in_reply_to),
-        ])
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to push reply to GitHub")?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        anyhow::bail!("Failed to push reply: {}", stderr.trim());
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let resp: CreateCommentResponse =
-        serde_json::from_str(&stdout).context("Failed to parse reply response")?;
-
-    Ok(resp.id)
+    Ok(gh_pr_post_reply(owner, repo, pr, in_reply_to, body, None)?.id)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4799,6 +4786,7 @@ mod tests {
             inner: Mutex::new(HashMap::new()),
             ttl: Duration::from_millis(5),
             cap: 4,
+            generation: std::sync::atomic::AtomicU64::new(0),
         };
         let bundle = Arc::new(PrCommentBundle {
             comments: Vec::new(),
@@ -4816,6 +4804,7 @@ mod tests {
             inner: Mutex::new(HashMap::new()),
             ttl: Duration::from_secs(60),
             cap: 4,
+            generation: std::sync::atomic::AtomicU64::new(0),
         };
         cache.insert(
             "o",
@@ -4908,5 +4897,23 @@ mod tests {
         let diff = git_merge_base_diff(root.to_str().unwrap(), &base_tip, &head).unwrap();
         assert!(diff.contains("feature.txt"), "{diff}");
         assert!(!diff.contains("landed-later.txt"), "{diff}");
+    }
+
+    #[test]
+    fn parse_paginated_handles_brackets_inside_strings() {
+        let one = r#"[{"id":1,"body":"a ] bracket and ][ in text"}]"#;
+        let parsed: Vec<serde_json::Value> = parse_paginated(one).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0]["body"], "a ] bracket and ][ in text");
+
+        let two = r#"[{"id":1}][{"id":2}]"#;
+        let parsed: Vec<serde_json::Value> = parse_paginated(two).unwrap();
+        assert_eq!(parsed.len(), 2);
+    }
+
+    #[test]
+    fn parse_paginated_rejects_a_bad_chunk() {
+        let bad = r#"[{"id":1}][not json]"#;
+        assert!(parse_paginated::<serde_json::Value>(bad).is_err());
     }
 }

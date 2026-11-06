@@ -95,8 +95,12 @@ impl App {
             }
         } else {
             match local_pr_target(&repo_root, explicit_pr_number) {
-                Ok(info) => info,
+                Ok(info) => {
+                    self.tab_mut().pr_absent = false;
+                    info
+                }
                 Err(_) => {
+                    self.tab_mut().pr_absent = true;
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }
@@ -122,7 +126,7 @@ impl App {
         let comments_dir = self.tab().github_comments_dir();
         let _ = std::fs::create_dir_all(&comments_dir);
         let comments_path = self.tab().github_comments_path();
-        let diff_hash = tab.branch_diff_hash.clone();
+        let diff_hash = self.tab().branch_diff_hash.clone();
         let mut gc: ai::ErGitHubComments = match std::fs::read_to_string(&comments_path) {
             Ok(content) => {
                 serde_json::from_str(&content).unwrap_or_else(|_| ai::ErGitHubComments {
@@ -288,8 +292,12 @@ impl App {
             }
         } else {
             match local_pr_target(&repo_root, explicit_pr_number) {
-                Ok(info) => info,
+                Ok(info) => {
+                    self.tab_mut().pr_absent = false;
+                    info
+                }
                 Err(_) => {
+                    self.tab_mut().pr_absent = true;
                     self.notify("No PR found for current branch");
                     return Ok(());
                 }

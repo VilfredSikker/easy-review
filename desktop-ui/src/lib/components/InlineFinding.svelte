@@ -50,6 +50,7 @@
   });
 
   let showPromote = $state(false);
+  let promoteError = $state<string | null>(null);
   let editMessageId = $state<string | null>(null);
   let editOrigin = $state<"finding_response" | "thread_reply" | null>(null);
   let editInitialBody = $state("");
@@ -163,10 +164,19 @@
     return parts.join("\n\n");
   }
 
-  function submitPromote(body: string) {
+  async function submitPromote(body: string) {
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked("promote_finding_to_comment");
-    void app.cmd("promote_finding_to_comment", { findingId: finding.id, body });
-    showPromote = false;
+    promoteError = null;
+    try {
+      await app.cmd(
+        "promote_finding_to_comment",
+        { findingId: finding.id, body },
+        { throwOnError: true },
+      );
+      showPromote = false;
+    } catch (e) {
+      promoteError = e instanceof Error ? e.message : String(e);
+    }
   }
 
   const targetLineLabel = $derived(
@@ -357,8 +367,9 @@
   sourceId={finding.id}
   initialBody={buildPromoteBody()}
   {targetLineLabel}
+  error={promoteError}
   onSubmit={submitPromote}
-  onClose={() => (showPromote = false)}
+  onClose={() => { showPromote = false; promoteError = null; }}
 />
 
 <EditMessageModal

@@ -64,6 +64,8 @@ export interface ThreadSnapshot {
   replies: ThreadMessage[];
   /** For questions: id of the GitHub comment this thread was promoted to. */
   promoted_to: string | null;
+  /** GitHub's numeric id when the comment is on the PR. */
+  github_id?: number | null;
 }
 
 export interface HunkSnapshot {

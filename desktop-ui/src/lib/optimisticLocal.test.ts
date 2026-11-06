@@ -385,7 +385,9 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ai.low).toBe(0);
   });
 
-  it("promotes a question to a comment and restores the question on rollback", () => {
+  it("does not paint a comment promotion optimistically", () => {
+    // A promoted comment is posted and recorded by the backend before it
+    // appears; the confirming snapshot carries the gh- id.
     const q: ThreadSnapshot = {
       ...commentThread("q-1"),
       kind: "question",
@@ -395,18 +397,13 @@ describe("dismiss / promote / bulk / annotation", () => {
       files: [file({ hunks: [h], question_count: 1 })],
       ai: emptyAi({ threads: [q], questions: 1 }),
     });
-    const op = buildOptimisticOp(
-      "promote_to_comment",
-      { id: "q-1", body: "as a comment" },
-      view,
-      { nowIso: now, id: "opt-p" },
-    );
-    applyOptimisticOp(view, op!);
-    expect(view.ai.threads.map((t) => t.kind)).toEqual(["comment"]);
-    expect(view.ai.questions).toBe(0);
-    expect(view.ai.comments).toBe(1);
-    rollbackOptimisticOp(view, op!);
-    expect(view.ai.threads.map((t) => t.id)).toEqual(["q-1"]);
+    expect(
+      buildOptimisticOp("promote_to_comment", { id: "q-1", body: "as a comment" }, view, {
+        nowIso: now,
+        id: "opt-p",
+      }),
+    ).toBeNull();
+    expect(view.ai.threads.map((t) => t.kind)).toEqual(["question"]);
     expect(view.ai.questions).toBe(1);
     expect(view.ai.comments).toBe(0);
   });
@@ -482,7 +479,7 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ui_annotations[0]).toMatchObject({ url: "https://ex/app", text: "pin" });
   });
 
-  it("rolls back an added UI annotation and an added comment thread", () => {
+  it("rolls back an added UI annotation and an added question thread", () => {
     const view = snap({ ui_annotations: [] });
     const ann = buildOptimisticOp(
       "add_ui_annotation",
@@ -496,13 +493,13 @@ describe("dismiss / promote / bulk / annotation", () => {
 
     const withFile = snap({ files: [file({ hunks: [hunk()] })] });
     const add = buildOptimisticOp(
-      "add_comment",
+      "add_question",
       { file: "src/a.ts", hunkIdx: 0, lineNum: 1, text: "hi" },
       withFile,
-      { nowIso: now, id: "c-opt" },
+      { nowIso: now, id: "q-opt" },
     );
     applyOptimisticOp(withFile, add!);
-    expect(withFile.ai.threads.map((t) => t.id)).toEqual(["c-opt"]);
+    expect(withFile.ai.threads.map((t) => t.id)).toEqual(["q-opt"]);
     rollbackOptimisticOp(withFile, add!);
     expect(withFile.ai.threads).toEqual([]);
   });
@@ -598,20 +595,20 @@ describe("dismiss / promote / bulk / annotation", () => {
     expect(view.ai.threads.map((t) => t.id)).toEqual(["t-linked"]);
   });
 
-  it("mints a persistable id for add_comment and add_ui_annotation", () => {
+  it("mints a persistable id for add_question and add_ui_annotation", () => {
     const comment = buildOptimisticOp(
-      "add_comment",
+      "add_question",
       { file: "src/a.ts", hunkIdx: 0, lineNum: 1, text: "hi" },
       snap(),
     );
     expect(comment?.type).toBe("add-thread");
     if (comment?.type !== "add-thread") throw new Error("expected add-thread");
-    expect(comment.pending.id.startsWith("c-")).toBe(true);
-    expect(optimisticInvokeArgs("add_comment", { text: "hi" }, comment).id).toBe(
+    expect(comment.pending.id.startsWith("q-")).toBe(true);
+    expect(optimisticInvokeArgs("add_question", { text: "hi" }, comment).id).toBe(
       comment.pending.id,
     );
     const commentArgs = optimisticInvokeArgs(
-      "add_comment",
+      "add_question",
       { text: "hi" },
       comment,
       { active_tab: 0, repo_root: "/repo", pr_number: null, branch: "feat", mode: "branch" },
@@ -1068,28 +1065,19 @@ describe("finding-thread ops", () => {
     expect(view.ai.comments).toBe(1);
   });
 
-  it("promotes a finding to a comment at its line and restores it on rollback", () => {
+  it("does not paint a finding promotion to a comment optimistically", () => {
     const view = snap({
       files: [file({ finding_count: 1 })],
       ai: emptyAi({ findings: [finding()], high: 1 }),
     });
-    const op = buildOptimisticOp(
-      "promote_finding_to_comment",
-      { findingId: "f-1", body: "as comment" },
-      view,
-      { nowIso: now, id: "opt-pf" },
-    );
-    if (op?.type !== "promote-finding") throw new Error("expected promote-finding");
-    applyOptimisticOp(view, op);
-    expect(view.ai.findings).toEqual([]);
-    expect(view.ai.high).toBe(0);
-    expect(view.files[0].finding_count).toBe(0);
-    expect(view.ai.threads.map((t) => [t.kind, t.line, t.root.body_markdown])).toEqual([
-      ["comment", 12, "as comment"],
-    ]);
-    expect(view.ai.comments).toBe(1);
-    expect(view.files[0].hunks[0].threads).toHaveLength(1);
-    rollbackOptimisticOp(view, op);
+    expect(
+      buildOptimisticOp(
+        "promote_finding_to_comment",
+        { findingId: "f-1", body: "as comment" },
+        view,
+        { nowIso: now, id: "opt-pf" },
+      ),
+    ).toBeNull();
     expect(view.ai.findings.map((f) => f.id)).toEqual(["f-1"]);
     expect(view.ai.high).toBe(1);
     expect(view.ai.threads).toEqual([]);

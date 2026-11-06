@@ -25,6 +25,7 @@ pub mod gh_pr_actions;
 pub mod gh_stack;
 pub mod git;
 pub mod github;
+pub mod github_post;
 #[cfg(feature = "highlight")]
 pub mod highlight;
 pub mod model_discovery;

@@ -62,15 +62,25 @@
   }
 
   let promoting = $state<FlatFinding | null>(null);
+  let promoteError = $state<string | null>(null);
   const promotingThread = $derived(
     promoting?.thread_id ? (ai?.threads.find((t) => t.id === promoting?.thread_id) ?? null) : null,
   );
 
-  function submitPromote(body: string) {
+  async function submitPromote(body: string) {
     if (!promoting) return;
     if (!app.canPaintOptimistic()) return app.explainPaintBlocked("promote_finding_to_comment");
-    void app.cmd("promote_finding_to_comment", { findingId: promoting.id, body });
-    promoting = null;
+    promoteError = null;
+    try {
+      await app.cmd(
+        "promote_finding_to_comment",
+        { findingId: promoting.id, body },
+        { throwOnError: true },
+      );
+      promoting = null;
+    } catch (e) {
+      promoteError = e instanceof Error ? e.message : String(e);
+    }
   }
 </script>
 
@@ -177,6 +187,7 @@
   sourceId={promoting?.id ?? ""}
   initialBody={promoting ? promoteBody(promoting, promotingThread) : ""}
   targetLineLabel={promoting ? fileLine(promoting) : ""}
+  error={promoteError}
   onSubmit={submitPromote}
-  onClose={() => (promoting = null)}
+  onClose={() => { promoting = null; promoteError = null; }}
 />

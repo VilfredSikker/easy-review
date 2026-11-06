@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   applyOptimisticThread,
-  buildOptimisticThread,
+  buildOptimisticThreadForKind,
+  newCommentClientId,
   parseAddThreadArgs,
   reapplyOptimisticThreads,
   removeOptimisticThread,
@@ -127,11 +128,22 @@ function pendingFor(
   view: AppSnapshot,
   args: Record<string, unknown>,
   id: string,
-): ReturnType<typeof buildOptimisticThread> {
-  const parsed = parseAddThreadArgs(command, args);
+): ReturnType<typeof buildOptimisticThreadForKind> {
+  // add_comment is no longer an optimistic command; the comment-kind thread
+  // still exists for finding replies, so the primitive is exercised directly.
+  const parsed = parseAddThreadArgs(
+    command === "add_comment" ? "add_question" : command,
+    args,
+  );
   if (!parsed) throw new Error("expected parsed args");
+  const KIND = {
+    add_comment: "comment",
+    add_note: "note",
+    add_question: "question",
+  } as const;
+  const kind = KIND[command];
   const filePath = parsed.file || view.files[0]?.path || "";
-  return buildOptimisticThread(command, parsed, snapshotViewIdentity(view), filePath, {
+  return buildOptimisticThreadForKind(kind, parsed, snapshotViewIdentity(view), filePath, {
     id,
     nowIso: "2026-08-17T00:00:00.000Z",
   });
@@ -146,9 +158,15 @@ const commentArgs = {
   side: "RIGHT",
 };
 
+describe("newCommentClientId", () => {
+  it("mints a persistable c- id for a GitHub comment create", () => {
+    expect(newCommentClientId().startsWith("c-")).toBe(true);
+  });
+});
+
 describe("parseAddThreadArgs", () => {
   it("reads camelCase composer args", () => {
-    expect(parseAddThreadArgs("add_comment", commentArgs)).toEqual({
+    expect(parseAddThreadArgs("add_question", commentArgs)).toEqual({
       file: "src/a.ts",
       hunkIdx: 0,
       lineNum: 12,
@@ -179,7 +197,7 @@ describe("parseAddThreadArgs", () => {
   });
 
   it("rejects empty text and unknown commands", () => {
-    expect(parseAddThreadArgs("add_comment", { ...commentArgs, text: "  " })).toBeNull();
+    expect(parseAddThreadArgs("add_question", { ...commentArgs, text: "  " })).toBeNull();
     expect(parseAddThreadArgs("reply_to_thread", commentArgs)).toBeNull();
   });
 });

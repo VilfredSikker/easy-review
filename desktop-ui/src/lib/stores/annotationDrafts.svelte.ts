@@ -4,7 +4,14 @@ import type { AppSnapshot } from "$lib/types";
 
 const cache = new AnnotationDraftCache();
 function createDraft() {
-  const draft = $state({ replyText: "", showReply: false });
+  const draft = $state({
+    replyText: "",
+    showReply: false,
+    /** Client id of a GitHub reply create, so a retry reconciles. */
+    replyClientId: null as string | null,
+    /** The last reply failure, shown in the reply box. */
+    replyError: null as string | null,
+  });
   return draft;
 }
 export const annotationDrafts = {
