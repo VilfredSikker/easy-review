@@ -289,8 +289,7 @@ fn forward_request_headers(headers: &tauri::http::HeaderMap) -> Vec<(String, Str
     reason = "a fixed status and static header values cannot make the builder fail"
 )]
 fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<u8>> {
-    let msg = e.to_string();
-    let status = if msg.contains("timed out") || msg.contains("TimedOut") {
+    let status = if matches!(e, ureq::Error::Timeout(_)) {
         504
     } else {
         502
@@ -308,27 +307,20 @@ fn proxy_transport_error_response(e: &ureq::Error) -> tauri::http::Response<Vec<
         .expect("static transport-error response is always valid")
 }
 
-#[expect(
-    clippy::result_large_err,
-    reason = "ureq::Error is the library's own type; boxing it at every call site buys nothing"
-)]
 fn upstream_request(
     agent: &ureq::Agent,
     request: &tauri::http::Request<Vec<u8>>,
     target: &str,
-) -> Result<ureq::Response, ureq::Error> {
-    let mut req = agent
-        .request(request.method().as_str(), target)
-        .set("Accept-Encoding", "identity");
+) -> Result<ureq::http::Response<ureq::Body>, ureq::Error> {
+    let mut builder = ureq::http::Request::builder()
+        .method(request.method().as_str())
+        .uri(target)
+        .header("Accept-Encoding", "identity");
     for (name, value) in forward_request_headers(request.headers()) {
-        req = req.set(&name, &value);
+        builder = builder.header(name.as_str(), value.as_str());
     }
-    let body = request.body();
-    if body.is_empty() {
-        req.call()
-    } else {
-        req.send_bytes(body)
-    }
+    let request = builder.body(request.body().clone()).map_err(ureq::Error::Http)?;
+    agent.run(request)
 }
 
 #[expect(
@@ -343,11 +335,13 @@ fn proxied_response(
     let target = upstream_url_for_proxy(uri, upstream_scheme);
     eprintln!("[erp] request: {} {} -> {}", request.method(), uri, target);
     // Document navigations: see `browser_proxy` module for redirect policy.
-    let agent = ureq::AgentBuilder::new()
-        .redirects(0)
-        .timeout_connect(std::time::Duration::from_secs(10))
-        .timeout_read(std::time::Duration::from_secs(30))
+    let config = ureq::Agent::config_builder()
+        .max_redirects(0)
+        .timeout_connect(Some(std::time::Duration::from_secs(10)))
+        .timeout_per_read(Some(std::time::Duration::from_secs(30)))
+        .http_status_as_error(false)
         .build();
+    let agent = ureq::Agent::new_with_config(config);
 
     let forward_headers = forward_request_headers(request.headers());
     let method = request.method().as_str();
@@ -373,20 +367,20 @@ fn proxied_response(
                 let headers = browser_proxy::collect_ureq_headers(&resp);
                 (resp, headers)
             }
-            Err(ureq::Error::Status(_, resp)) => {
-                let headers = browser_proxy::collect_ureq_headers(&resp);
-                (resp, headers)
-            }
             Err(e) => return proxy_transport_error_response(&e),
         }
     };
 
-    let status = resp.status();
+    let status = resp.status().as_u16();
 
-    let ct = resp.header("Content-Type").map(str::to_string);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
     let is_html = is_html_content_type(ct.as_deref());
     let size_limit = proxy_size_limit(is_html);
-    let bounded = read_bounded(resp.into_reader(), size_limit);
+    let bounded = read_bounded(resp.into_body().into_reader(), size_limit);
     let mut body = match bounded {
         Ok(b) => b,
         Err(bytes) => {

@@ -7,19 +7,23 @@ use std::io::Read;
 use std::time::Duration;
 
 fn agent(timeout: Duration) -> ureq::Agent {
-    ureq::AgentBuilder::new()
-        .timeout(timeout)
+    let config = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
         .user_agent(concat!("easy-review-tui/", env!("CARGO_PKG_VERSION")))
-        .build()
+        .build();
+    ureq::Agent::new_with_config(config)
 }
 
 fn fetch_latest() -> Result<LatestRelease> {
-    let body = agent(Duration::from_secs(8))
+    let mut resp = agent(Duration::from_secs(8))
         .get(release_update::RELEASES_LATEST_API)
-        .set("Accept", "application/vnd.github+json")
+        .header("Accept", "application/vnd.github+json")
         .call()
-        .context("GitHub releases request failed")?
-        .into_string()?;
+        .context("GitHub releases request failed")?;
+    let body = resp
+        .body_mut()
+        .read_to_string()
+        .context("read GitHub releases body")?;
     release_update::parse_latest_release(&body)
 }
 
@@ -29,7 +33,7 @@ fn download(url: &str) -> Result<Vec<u8>> {
         .call()
         .with_context(|| format!("download {url}"))?;
     let mut bytes = Vec::new();
-    resp.into_reader().read_to_end(&mut bytes)?;
+    resp.into_body().into_reader().read_to_end(&mut bytes)?;
     Ok(bytes)
 }
 

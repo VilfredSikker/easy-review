@@ -28,7 +28,7 @@ serde_json.workspace = true
 anyhow.workspace = true
 
 # `er update` and the status-bar release check (HTTP stays out of er-engine, ADR 0026)
-ureq = { version = "2", default-features = false, features = ["tls"] }
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 tempfile = "3"
 
 [lints]
