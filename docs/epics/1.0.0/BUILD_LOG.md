@@ -82,3 +82,4 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - #406 design review: revise (lost updates without a locked `update`; `write_durable` outside the lock). Back to D4.
 - #376 (P05) stop-and-ask answered by the coordinator: on a tab known to have no PR, the TUI's `c` and "comment on PR" do not open the GitHub composer and say why; a post that fails for want of a PR keeps the text. No silent switch to a private question.
 - #404 settled by D5 and #406 revised by D4; both in review.
+- #406 approved in round 2 with amendments A1 (compile fixes) and A2 (the increment test runs across two processes). Applied to #394, and to #387, #388 and #389 (their read-modify-writes use `ArtifactStore::update`). #387 (P16) is now blocked by #394 (P23), because its `update_*` need the locked `update`. #406 closed.
