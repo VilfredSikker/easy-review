@@ -8,7 +8,6 @@
 |---|---|
 | Live config | `<storage_root>/config.toml` |
 | macOS | `~/Library/Application Support/easy-review/config.toml` |
-| Legacy, migration source only | `~/.config/er/config.toml` (`$XDG_CONFIG_HOME/er/config.toml`) |
 
 `storage_root` is `$ER_STORAGE_ROOT` or `dirs::data_dir()/easy-review` — the same root that holds review sidecars (`crates/er-engine/src/storage.rs`).
 
@@ -18,7 +17,7 @@
 | `ER_CONFIG_PATH` | Replaces the config path outright — a full file path, not a directory. |
 | `ER_REPO_LOCAL=1` | Review sidecars go to `<repo>/.er/` instead of managed storage. Debug only; the config path is unaffected. |
 
-**Legacy migration.** On load, when the managed file is missing, the legacy file is copied into it once. Copy-only — the legacy file is never moved or deleted, so leave it on disk: it is read directly for that session if the copy fails.
+An old `~/.config/er/config.toml` (`$XDG_CONFIG_HOME/er/config.toml`) is not read.
 
 **A config that will not parse** is copied to `config.toml.invalid` beside it, and built-in defaults are used.
 
@@ -84,7 +83,6 @@ The fallback used whenever `[ai_hub]` has no providers.
 | `command` | `"claude"` |
 | `args` | `["--print", "--output-format", "stream-json", "-p", "{prompt}"]` |
 | `model` | empty |
-| `effort` | unset — Claude `--effort`, legacy path only |
 
 `{prompt}` is how the prompt reaches the agent. An `args` override that omits it drops the prompt silently; nothing validates that.
 
@@ -136,7 +134,7 @@ Model keys: `id` (required), `label`, `description`, `args`, `effort_levels`, `e
 
 Rules:
 
-- A built-in catalog — claude, codex, cursor, opencode — owns its preset models. Each load builds them from the catalog, so a release's model changes reach every config, and saving never writes them back. A preset you save from Settings is marked `edited = true` and kept as you wrote it. Your own models are listed first, then the presets in catalog order. A `default_model` naming a retired preset moves to its successor. Models found by `models_command` discovery are never persisted. See ADR 0042.
+- A built-in catalog — claude, codex, cursor, opencode — owns its preset models. Each load builds them from the catalog, so a release's model changes reach every config, and saving never writes them back. A preset you save from Settings is marked `edited = true` and kept as you wrote it. Your own models are listed first, then the presets in catalog order. Models found by `models_command` discovery are never persisted. See ADR 0042.
 - Deleting a catalog provider or model in the UI records its id in `removed_catalog_providers` / `removed_catalog_models`, which is what stops the catalog re-adding it.
 - With no providers configured, `[ai_hub]` is inert and every action falls back to `[agent]`.
 - Provider `args` are the shared base for that CLI; model `args` are appended after them. OpenCode is the exception: its model and effort flags are inserted **before** `{prompt}`, which is a trailing positional argument there.

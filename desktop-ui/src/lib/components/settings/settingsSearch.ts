@@ -49,12 +49,11 @@ export const COMMAND_DESCRIPTIONS: DescriptionOverrides = {
   "summary.push_to_pr": "Write the review summary into the PR description.",
 };
 
-export const AGENT_KEYS = ["agent.command", "agent.args", "agent.effort"] as const;
+export const AGENT_KEYS = ["agent.command", "agent.args"] as const;
 
 export const AGENT_DESCRIPTIONS: DescriptionOverrides = {
   "agent.command": "The CLI that runs review agents.",
   "agent.args": "Arguments passed to it. {prompt} is replaced by the task.",
-  "agent.effort": "Effort the agent CLI is asked for, separate from the default model's.",
 };
 
 export const CONCURRENCY_KEYS = [
@@ -104,7 +103,7 @@ export const GENERAL_ROWS = {
   uninstall: {
     label: "Uninstall Easy Review",
     description:
-      "Removes config, review data, legacy cache and installed apps. Your repos are untouched; only Easy Review's own files are deleted.",
+      "Removes config, review data, caches and installed apps. Your repos are untouched; only Easy Review's own files are deleted.",
     keywords: ["Show what will be removed"],
   },
 } satisfies Record<string, RowCopy>;

@@ -7,6 +7,6 @@ Before this, the first load copied every preset into the saved config, and from 
 ## Consequences
 
 - The one-time cost: configs saved before this have no `edited` mark, so an untouched copy and a hand-edited preset look the same. Both are replaced from the catalog on the first load. Models under the user's own ids are not touched.
-- Removing a model from the catalog removes it everywhere on the next load. `RETIRED_PRESET_MODELS` remains for two jobs: moving a saved default to its successor, and dropping copies from configs written before this change, where an unknown id could equally be the user's own model.
+- Removing a model from the catalog removes it everywhere on the next load; a saved default that names it resolves to the default provider's first model (your own models first, then the catalog presets) until you pick another. There is no retirement table (1.0.0).
 - Saving a model from Settings marks it `edited`, and from then on the user's version wins over the catalog, even when it matches the catalog exactly. There is no reset to the shipped preset yet: deleting a preset records it in `removed_catalog_models`, so the catalog does not bring it back either.
 - The user's own models are listed first, in saved order, then the presets in catalog order.
