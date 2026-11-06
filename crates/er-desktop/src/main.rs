@@ -319,7 +319,9 @@ fn upstream_request(
     for (name, value) in forward_request_headers(request.headers()) {
         builder = builder.header(name.as_str(), value.as_str());
     }
-    let request = builder.body(request.body().clone()).map_err(ureq::Error::Http)?;
+    let request = builder
+        .body(request.body().clone())
+        .map_err(ureq::Error::Http)?;
     agent.run(request)
 }
 
