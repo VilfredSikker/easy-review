@@ -47,7 +47,7 @@ Never merge, never push to release/v1.0.0, and never weaken or skip a test to ge
 ```text
 You are settling design bundle D1 GitHub writes of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #403.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
@@ -64,7 +64,7 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 ```text
 You are settling design bundle D2 git port of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #407.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
@@ -81,7 +81,7 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 ```text
 You are settling design bundle D3 GitHub port of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #408, #409, #410.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
@@ -98,7 +98,7 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 ```text
 You are settling design bundle D4 store format of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #401.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
@@ -115,7 +115,7 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 ```text
 You are settling design bundle D5 projection of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #402.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
@@ -153,7 +153,7 @@ Never merge, never push to release/v1.0.0, and never weaken or skip a test to ge
 ```text
 You are settling design bundle D6 store follow-ups of epic 1.0.0 in VilfredSikker/easy-review. Your design issues, in order: #404, #405, #406.
 
-A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites, at the tip of release/v1.0.0.
+A design issue changes no code. Read docs/epics/1.0.0/ADDENDUM-03-issues-are-the-spec.md and AGENT_BRIEF.md on branch release/v1.0.0. Then, for each issue, read it in full, the task issue it blocks, and the code it cites. Read code only in /Users/vilfredsikker/.claude-worktrees/er-v1/epic-docs, which is checked out at release/v1.0.0; do not edit, commit or switch branches there.
 
 For each design issue in order:
 1. Check that its "blocked by" issues are all closed. If any is open, stop and say which.
