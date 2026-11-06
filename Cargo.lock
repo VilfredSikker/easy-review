@@ -1382,7 +1382,7 @@ name = "er-desktop"
 version = "0.6.5"
 dependencies = [
  "anyhow",
- "base64 0.22.1",
+ "base64 0.23.1",
  "block2",
  "dirs 6.0.0",
  "er-engine",
