@@ -147,7 +147,12 @@ describe("optimistic local-write call sites", () => {
     }
     // GitHub-kind paths post first: the draft clears only after the await,
     // and a failure keeps it.
+    // A thread is routed on its GitHub id, not on source or kind.
+    expect(thread).toContain("thread.github_id != null");
     expect(thread).toContain('"reply_to_github_thread"');
+    expect(thread.indexOf("thread.github_id != null")).toBeLessThan(
+      thread.indexOf('"reply_to_github_thread"'),
+    );
     expect(thread).toContain('"promote_to_comment"');
     expect(thread).toContain("{ throwOnError: true }");
     expect(thread).not.toContain('void app.cmd("promote_to_comment"');

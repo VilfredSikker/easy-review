@@ -2785,9 +2785,18 @@ pub async fn reply_to_thread(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
-    run_blocking(move || {
+    run_blocking(move || reply_to_thread_impl(parent_id, text, view, &state)).await
+}
+
+fn reply_to_thread_impl(
+    parent_id: String,
+    text: String,
+    view: Option<crate::snapshot::OptimisticView>,
+    state: &AppState,
+) -> Result<AppSnapshot, String> {
+    {
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        if let Some(early) = abort_wrong_view(&app, &state, view.as_ref()) {
+        if let Some(early) = abort_wrong_view(&app, state, view.as_ref()) {
             return early;
         }
         let (file, hunk_idx, line_num, comment_type) = {
@@ -2855,9 +2864,8 @@ pub async fn reply_to_thread(
             None,
         )
         .map_err(|e| e.to_string())?;
-        Ok(snap_from_confirmed(&app, &state))
-    })
-    .await
+        Ok(snap_from_confirmed(&app, state))
+    }
 }
 
 /// Reply to a comment that is already on GitHub: post the reply now and
@@ -4030,6 +4038,8 @@ struct PostedTo {
     repo: String,
     pr: u64,
     posted: er_engine::github_post::PostedGitHubComment,
+    /// The create that posted, so a later failed step can keep it reconcilable.
+    request: er_engine::github_post::GitHubPostRequest,
 }
 
 impl PostedTo {
@@ -4064,6 +4074,7 @@ fn post_github_comment_flow(
         (ticket, app.github_comment_poster())
     };
     let target = ticket.request.pr.clone();
+    let request = ticket.request.clone();
     let execution = er_engine::github_post::execute_comment_post(
         poster.as_ref(),
         &ticket.request,
@@ -4079,6 +4090,7 @@ fn post_github_comment_flow(
         repo: target.repo,
         pr: target.pr,
         posted,
+        request,
     })
 }
 
@@ -5430,7 +5442,7 @@ pub async fn promote_to_comment(
             )
         };
 
-        post_github_comment_flow(
+        let posted = post_github_comment_flow(
             &state,
             er_engine::app::NewGitHubComment::Line {
                 file,
@@ -5441,13 +5453,18 @@ pub async fn promote_to_comment(
                 body: text,
             },
             Some(format!("c-promote-{id}")),
-        )?
-        .finish(&state);
+        )?;
+        let request = posted.request.clone();
+        posted.finish(&state);
 
         // The source is replaced only once GitHub holds the comment, so a
         // failure keeps it and a retry can post it again.
         let mut app = state.app.lock().map_err(|e| e.to_string())?;
-        app.delete_comment_direct(&id).map_err(|e| e.to_string())?;
+        if let Err(e) = app.delete_comment_direct(&id) {
+            // The comment is on GitHub; the next promote must adopt it.
+            app.remember_posted_for_retry(request);
+            return Err(e.to_string());
+        }
         Ok(snap_from_confirmed(&app, &state))
     })
     .await
@@ -9911,7 +9928,7 @@ fn promote_finding_to_comment_impl(
         (er_dir, file, hunk_idx, line_start, text)
     };
 
-    post_github_comment_flow(
+    let posted = post_github_comment_flow(
         state,
         er_engine::app::NewGitHubComment::Line {
             file,
@@ -9922,14 +9939,18 @@ fn promote_finding_to_comment_impl(
             body: text,
         },
         Some(format!("c-promote-finding-{finding_id}")),
-    )?
-    .finish(state);
+    )?;
+    let request = posted.request.clone();
+    posted.finish(state);
 
     // The finding is removed only once GitHub holds the comment, so a failure
     // keeps it and a retry can post it again.
     let mut app = state.app.lock().map_err(|e| e.to_string())?;
-    er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id)
-        .map_err(|e| format!("Failed to remove finding after promote: {e}"))?;
+    if let Err(e) = er_engine::ai::remove_finding_from_sidecars(&er_dir, &finding_id) {
+        // The comment is on GitHub; the next promote must adopt it.
+        app.remember_posted_for_retry(request);
+        return Err(format!("Failed to remove finding after promote: {e}"));
+    }
     let _ = er_engine::ai::delete_threads_linked_to_finding(&er_dir, &finding_id);
     let mut promotions = load_finding_promotions(&er_dir);
     if promotions.remove(&finding_id).is_some() {
@@ -14213,5 +14234,42 @@ mod tests {
             !std::path::Path::new(&comments_path).exists(),
             "a failed post must write nothing"
         );
+    }
+
+    #[test]
+    fn reply_to_thread_refuses_a_parent_on_github() {
+        let dir = ReviewFlowTestDir::new();
+        let state = review_flow_test_state(&dir);
+        {
+            let mut app = state.app.lock().unwrap();
+            app.tab_mut().ai.github_comments = Some(
+                serde_json::from_value(serde_json::json!({
+                    "version": 1,
+                    "diff_hash": "hash",
+                    "comments": [{
+                        "id": "gh-11",
+                        "file": "src/lib.rs",
+                        "hunk_index": 0,
+                        "line_start": 1,
+                        "comment": "already on GitHub",
+                        "source": "github",
+                        "github_id": 11,
+                        "author": "octo",
+                        "synced": true
+                    }]
+                }))
+                .unwrap(),
+            );
+        }
+
+        let error = reply_to_thread_impl(
+            "gh-11".to_string(),
+            "a local reply".to_string(),
+            None,
+            &state,
+        )
+        .unwrap_err();
+
+        assert!(error.contains("reply_to_github_thread"), "{error}");
     }
 }

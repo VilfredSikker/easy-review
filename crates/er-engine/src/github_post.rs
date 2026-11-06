@@ -372,14 +372,37 @@ pub fn resolve_post_target(ctx: &CommentPostContext) -> Result<PrPostTarget, Git
             repo_root: None,
         });
     }
-    let (owner, repo, pr) = crate::sync::local_pr_target(&ctx.repo_root, ctx.pr_number)
-        .map_err(|_| GitHubPostError::NotPosted(NO_PR_FOR_COMMENT.to_string()))?;
-    Ok(PrPostTarget {
-        owner,
-        repo,
-        pr,
-        repo_root: Some(ctx.repo_root.clone()),
-    })
+    if let Some(pr) = ctx.pr_number {
+        let (owner, repo) = crate::github::get_repo_info(&ctx.repo_root).map_err(|e| {
+            GitHubPostError::NotPosted(format!(
+                "Could not read the repository for this pull request: {e:#}"
+            ))
+        })?;
+        return Ok(PrPostTarget {
+            owner,
+            repo,
+            pr,
+            repo_root: Some(ctx.repo_root.clone()),
+        });
+    }
+    match crate::github::lookup_pr_for_current_branch(&ctx.repo_root) {
+        crate::github::PrLookup::Present {
+            owner,
+            repo,
+            number,
+        } => Ok(PrPostTarget {
+            owner,
+            repo,
+            pr: number,
+            repo_root: Some(ctx.repo_root.clone()),
+        }),
+        crate::github::PrLookup::Absent => {
+            Err(GitHubPostError::NotPosted(NO_PR_FOR_COMMENT.to_string()))
+        }
+        crate::github::PrLookup::Unknown(e) => Err(GitHubPostError::NotPosted(format!(
+            "Could not read this branch's pull request: {e}"
+        ))),
+    }
 }
 
 fn is_http_4xx(error: &anyhow::Error) -> bool {
@@ -541,5 +564,41 @@ impl GitHubCommentPoster for GhCommentPoster {
 
     fn viewer_login(&self, request: &GitHubPostRequest) -> Result<String> {
         github::gh_viewer_login(request.pr.repo_root.as_deref())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classify_post_error_marks_a_4xx_as_not_posted() {
+        let error = anyhow::anyhow!("gh: Unprocessable Entity (HTTP 422)");
+        match classify_post_error(&error) {
+            GitHubPostOutcome::NotPosted { error } => {
+                assert!(error.contains("HTTP 422"), "{error}");
+            }
+            other => panic!("expected NotPosted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_post_error_marks_a_pending_review_refusal_as_not_posted() {
+        let error = anyhow::anyhow!("user_id can only have one pending review per pull request");
+        assert_eq!(
+            classify_post_error(&error),
+            GitHubPostOutcome::NotPosted {
+                error: PENDING_REVIEW_BLOCKS_COMMENT.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_post_error_marks_a_timeout_as_unknown() {
+        let error = anyhow::anyhow!("request timed out");
+        assert!(matches!(
+            classify_post_error(&error),
+            GitHubPostOutcome::UnknownOutcome { .. }
+        ));
     }
 }

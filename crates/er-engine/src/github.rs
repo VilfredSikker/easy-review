@@ -861,9 +861,28 @@ pub fn ensure_base_ref_available(repo_root: &str, base_branch: &str) -> Result<S
 
 /// Check if the current branch has an open PR. Returns (number, base_branch) or None.
 /// Silently returns None if gh is unavailable, not authenticated, or no PR exists.
-pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
+/// Three-way result of probing the checked-out branch's PR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BranchPrProbe {
+    Present {
+        number: u64,
+        base: String,
+    },
+    /// gh answered that this branch has no pull request.
+    Absent,
+    /// The probe itself failed (offline, unauthenticated, timeout, …).
+    Unknown,
+}
+
+/// Whether gh's failure stderr means "this branch has no PR". Only that
+/// explicit answer counts: an offline or unauthenticated gh is unknown.
+fn gh_failure_is_absent(stderr: &str) -> bool {
+    stderr.to_lowercase().contains("no pull requests found")
+}
+
+pub fn probe_pr_for_current_branch(repo_root: &str) -> BranchPrProbe {
     // Use --jq to extract "number<tab>baseRefName" — robust against JSON formatting
-    let output = Command::new("gh")
+    let output = match Command::new("gh")
         .args([
             "pr",
             "view",
@@ -874,22 +893,116 @@ pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
         ])
         .current_dir(repo_root)
         .output_timed(crate::proc::GH_TIMEOUT)
-        .ok()?;
+    {
+        Ok(output) => output,
+        Err(_) => return BranchPrProbe::Unknown,
+    };
 
     if !output.status.success() {
-        return None;
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return if gh_failure_is_absent(&stderr) {
+            BranchPrProbe::Absent
+        } else {
+            BranchPrProbe::Unknown
+        };
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
     let text = text.trim();
-    let (num_str, base) = text.split_once('\t')?;
-    let number = num_str.parse::<u64>().ok()?;
-
+    let Some((num_str, base)) = text.split_once('\t') else {
+        return BranchPrProbe::Unknown;
+    };
+    let Ok(number) = num_str.parse::<u64>() else {
+        return BranchPrProbe::Unknown;
+    };
     if base.is_empty() {
-        return None;
+        return BranchPrProbe::Unknown;
+    }
+    BranchPrProbe::Present {
+        number,
+        base: base.to_string(),
+    }
+}
+
+/// The PR for the checked-out branch, if one can be read.
+///
+/// Prefer [`probe_pr_for_current_branch`] when "no PR" and "could not ask"
+/// must be told apart.
+pub fn gh_pr_for_current_branch(repo_root: &str) -> Option<(u64, String)> {
+    match probe_pr_for_current_branch(repo_root) {
+        BranchPrProbe::Present { number, base } => Some((number, base)),
+        BranchPrProbe::Absent | BranchPrProbe::Unknown => None,
+    }
+}
+
+/// Three-way result of a PR lookup for the checked-out branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PrLookup {
+    Present {
+        owner: String,
+        repo: String,
+        number: u64,
+    },
+    /// gh answered that this branch has no pull request.
+    Absent,
+    /// The lookup itself failed (offline, unauthenticated, timeout, …).
+    Unknown(String),
+}
+
+/// Classify a failed `gh pr view` by its stderr. Only gh's explicit answer
+/// counts as absent; everything else is unknown.
+pub fn classify_pr_lookup_failure(stderr: &str) -> PrLookup {
+    if gh_failure_is_absent(stderr) {
+        return PrLookup::Absent;
+    }
+    let detail = stderr.trim();
+    PrLookup::Unknown(if detail.is_empty() {
+        "gh pr view failed".to_string()
+    } else {
+        detail.to_string()
+    })
+}
+
+/// Resolve the checked-out branch's PR without collapsing "no PR" and
+/// "could not ask" into one answer.
+pub fn lookup_pr_for_current_branch(repo_root: &str) -> PrLookup {
+    let output = match Command::new("gh")
+        .args(["pr", "view", "--json", "number,headRepository"])
+        .current_dir(repo_root)
+        .output_timed(crate::proc::GH_TIMEOUT)
+    {
+        Ok(output) => output,
+        Err(e) => return PrLookup::Unknown(format!("{e:#}")),
+    };
+
+    if !output.status.success() {
+        return classify_pr_lookup_failure(&String::from_utf8_lossy(&output.stderr));
     }
 
-    Some((number, base.to_string()))
+    let v: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(e) => return PrLookup::Unknown(format!("Failed to parse PR info JSON: {e}")),
+    };
+    let Some(number) = v["number"].as_u64() else {
+        return PrLookup::Unknown("Missing PR number".to_string());
+    };
+    let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
+    let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
+    if !owner.is_empty() && !repo_name.is_empty() {
+        return PrLookup::Present {
+            owner: owner.to_string(),
+            repo: repo_name.to_string(),
+            number,
+        };
+    }
+    match parse_origin_remote(repo_root) {
+        Some((owner, repo)) => PrLookup::Present {
+            owner,
+            repo,
+            number,
+        },
+        None => PrLookup::Unknown("Could not read the repository's origin remote".to_string()),
+    }
 }
 
 /// Open PR number whose head branch matches `head` on `owner/repo` (first non-draft).
@@ -957,43 +1070,15 @@ pub fn is_github_pr_url(s: &str) -> bool {
 
 /// Get PR info (owner, repo, number) for the current branch
 pub fn get_pr_info(repo_root: &str) -> Result<(String, String, u64)> {
-    // Try `gh pr view --json number,headRepository,baseRefName`
-    let output = Command::new("gh")
-        .args(["pr", "view", "--json", "number,headRepository"])
-        .current_dir(repo_root)
-        .output_timed(crate::proc::GH_TIMEOUT)
-        .context("Failed to get PR info")?;
-
-    if !output.status.success() {
-        anyhow::bail!("No PR associated with current branch");
+    match lookup_pr_for_current_branch(repo_root) {
+        PrLookup::Present {
+            owner,
+            repo,
+            number,
+        } => Ok((owner, repo, number)),
+        PrLookup::Absent => anyhow::bail!("No PR associated with current branch"),
+        PrLookup::Unknown(e) => anyhow::bail!("Failed to get PR info: {e}"),
     }
-
-    let json_str = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value =
-        serde_json::from_str(&json_str).context("Failed to parse PR info JSON")?;
-
-    let number = v["number"].as_u64().context("Missing PR number")?;
-
-    // headRepository can be absent (e.g. a deleted fork); the empty values are
-    // detected below and fall back to the git remote.
-    let owner = v["headRepository"]["owner"]["login"].as_str().unwrap_or("");
-    let repo_name = v["headRepository"]["name"].as_str().unwrap_or("");
-
-    // If headRepository is missing, try to get owner/repo from remote
-    if owner.is_empty() || repo_name.is_empty() {
-        let remote_output = Command::new("git")
-            .args(["remote", "get-url", "origin"])
-            .current_dir(repo_root)
-            .output()?;
-        let remote = String::from_utf8_lossy(&remote_output.stdout)
-            .trim()
-            .to_string();
-        // Parse owner/repo from remote URL
-        let (o, r) = parse_owner_repo_from_remote(&remote)?;
-        return Ok((o, r, number));
-    }
-
-    Ok((owner.to_string(), repo_name.to_string(), number))
 }
 
 /// Parse owner/repo from a git remote URL
@@ -4915,5 +5000,21 @@ mod tests {
     fn parse_paginated_rejects_a_bad_chunk() {
         let bad = r#"[{"id":1}][not json]"#;
         assert!(parse_paginated::<serde_json::Value>(bad).is_err());
+    }
+
+    #[test]
+    fn pr_lookup_absent_only_when_gh_says_no_pull_request() {
+        assert_eq!(
+            classify_pr_lookup_failure("no pull requests found for branch \"feat\""),
+            PrLookup::Absent
+        );
+        assert!(matches!(
+            classify_pr_lookup_failure("gh: authentication required"),
+            PrLookup::Unknown(_)
+        ));
+        assert!(matches!(
+            classify_pr_lookup_failure("request timed out"),
+            PrLookup::Unknown(_)
+        ));
     }
 }
