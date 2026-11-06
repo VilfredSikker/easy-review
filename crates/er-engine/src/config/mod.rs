@@ -16,9 +16,8 @@ pub use file_kinds::{FileKindRepoConfig, FileKindsConfig};
 pub use flow_models::{ReviewModelGroups, ReviewModelRef, ReviewModelTier};
 pub use inbox::{InboxConfig, InboxKindToggles};
 pub use risk_rules::{
-    apply_risk_rule_edit, ImportanceConfig, ImportanceRepoConfig, MatchedRiskRule, ResolvedRisk,
-    RiskConfig, RiskRule, RiskRuleEdit, RiskRuleProposal, RiskRuleSource, RiskRuleTable, RiskRules,
-    RiskTier,
+    apply_risk_rule_edit, MatchedRiskRule, ResolvedRisk, RiskConfig, RiskRule, RiskRuleEdit,
+    RiskRuleProposal, RiskRuleSource, RiskRuleTable, RiskRules, RiskTier,
 };
 use serde::{Deserialize, Serialize};
 pub use settings::{
@@ -54,11 +53,6 @@ pub struct ErConfig {
     /// own. `docs/adr/0048-risk-rules-merge-importance.md`.
     #[serde(default, skip_serializing_if = "RiskRuleTable::is_empty")]
     pub user_risk: RiskRuleTable,
-    /// The `[importance.<repo>]` tables, read as risk rules for a
-    /// repo with no `[risk]` table and retired when that repo's rules are
-    /// next written.
-    #[serde(default, skip_serializing_if = "ImportanceConfig::is_empty")]
-    pub importance: ImportanceConfig,
     #[serde(default)]
     pub file_kinds: FileKindsConfig,
     #[serde(default)]
@@ -121,17 +115,10 @@ pub struct PackagesConfig {
 
 impl ErConfig {
     /// The risk rules `repo`'s paths resolve against (`repo` is
-    /// `storage::rules_key`). A repo with a `[risk]` table reads only that one;
-    /// a repo with only a `[importance]` table reads it in its place.
+    /// `storage::rules_key`).
     pub fn risk_rules(&self, repo: &str) -> RiskRules {
-        let project = self.risk.items.get(repo).cloned().or_else(|| {
-            self.importance
-                .items
-                .get(repo)
-                .map(RiskRuleTable::from_importance)
-        });
         RiskRules {
-            project: project.unwrap_or_default(),
+            project: self.risk.items.get(repo).cloned().unwrap_or_default(),
             user: self.user_risk.clone(),
         }
     }

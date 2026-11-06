@@ -178,8 +178,7 @@ _Avoid_: importance (the earlier name), priority, weight, blast radius
 **Tier**:
 How closely a file needs reading: `high`, `med`, `low`, or `ai`. A risk rule
 sets it; `ai` means no rule fixed one, and the review rates the file from what
-its change does. The older spellings `foundational`, `isolated` and `normal`
-read as `high`, `low` and `ai`.
+its change does.
 _Avoid_: level, rank, class, importance
 
 **Reach**:
