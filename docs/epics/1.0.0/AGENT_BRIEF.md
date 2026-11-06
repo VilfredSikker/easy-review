@@ -4,6 +4,7 @@ Every implementer and reviewer agent reads this first. The plan is in [PLAN.md](
 
 ## Ground rules
 
+- **Your task is a GitHub issue.** Each PR has one issue under the epic [#371](https://github.com/VilfredSikker/easy-review/issues/371). The issue holds the scope, its "blocked by" links and its lane. Start only when every blocking issue is closed and no other assigned issue holds your lane. Assign yourself, or ask the owner to, before you begin.
 - **Base and target.** All work branches from and targets `release/v1.0.0`, never `main`.
 - **Branch names.** Use `epic/pNN-<slug>`, as named in the plan.
 - **Repo rules.** Read the root [CLAUDE.md](../../../CLAUDE.md), [CONTEXT.md](../../../CONTEXT.md), [writing rules](../../agents/writing-docs.md) and [development guide](../../DEVELOPMENT.md), then the `CLAUDE.md` or `agent.md` in each directory you touch and the ADRs your PR cites. Use `CONTEXT.md` vocabulary for every new name.
@@ -11,7 +12,7 @@ Every implementer and reviewer agent reads this first. The plan is in [PLAN.md](
 - **Lint gate.** It only tightens (ADR 0038). Never grow `clippy-warning-budget.json` or a UI lint baseline. Fix the violation, or scope an `#[expect(lint, reason = …)]` / `// eslint-disable-next-line rule -- why` to the one site. After fixing a baselined violation, run `just clippy-prune` or `just lint-ui-prune`. List every baseline, allow-list or `clippy.toml` change under **Call-outs**.
 - **Guardrails.** When your PR creates a crate or a port, it also adds the boundary rule the plan names for it. Do not leave it for later.
 - **Old data.** Version 1.0.0 carries no old data. A deletion needs no compatibility read path. Do not add migrations unless the plan says so.
-- **Status files.** Do not edit `docs/epics/1.0.0/STATUS.md` or `BUILD_LOG.md`. Only the orchestrator does.
+- **Tracking.** Report progress, blockers and plan corrections as comments on your issue. Do not edit `docs/epics/1.0.0/STATUS.md` or `BUILD_LOG.md`.
 - **Model names.** Keep model names and agent ids out of code, comments, commits and PR text. Do not add attribution trailers to commits or PRs.
 - **Comments.** Code says what and how; a comment says why. Do not cite plan ids, review findings or tracker numbers in code comments (`just comments-check` rejects them).
 
@@ -50,17 +51,17 @@ Prove a fix or new behaviour with a test that fails before and passes after. Nev
 1. **Commit.** Small logical commits with short messages that say why. Stage files by name; never `git add .`.
 2. **Push** with `git push -u origin epic/pNN-<slug>`. On a network error, retry up to 4 times with backoff.
 3. **Open the PR** with `gh pr create`.
-   - Repo `VilfredSikker/easy-review`, base `release/v1.0.0`, title starting with `[Pnn]`.
+   - Repo `VilfredSikker/easy-review`, base `release/v1.0.0`, title starting with `[Pnn]`, and `Part of #<issue>` as the first line of the body. A PR into a release branch does not close its issue; the person who merges closes it.
    - Body sections, short: **The Problem**, **How we fix**, **Design choices** (only when relevant), **How to manually test**. Then:
      - **Verification:** the exact commands and results, with test counts.
      - **Call-outs:** baseline, `clippy.toml`, `Cargo.toml` dependency or ADR changes.
      - **Owner actions:** anything only the owner can do.
      - **Follow-ups.**
-4. **Do not merge.** The orchestrator merges after review.
+4. **Do not merge.** The owner or orchestrator merges after review.
 
 ## Report back
 
-Keep it to 250 words or fewer. Include:
+Post this as a comment on your issue, and return it to whoever started you. Keep it to 250 words or fewer. Include:
 
 - PR number and URL, branch, head SHA
 - verification per command: pass or fail, with counts
@@ -83,6 +84,6 @@ Keep it to 250 words or fewer. Include:
    - rule violations and missing call-outs
 4. **Verification:** re-run only what you doubt, through the lock.
 5. **Post one PR review** with `gh pr review --comment`. List the findings by severity, each with a `file:line`.
-6. **Report to the orchestrator** in 200 words or fewer.
+6. **Report** the verdict as a comment on the issue, in 200 words or fewer.
    - **Verdict:** `merge`, `fix-then-merge` (with a list of must-fix items), or `rework`.
    - Include the findings.

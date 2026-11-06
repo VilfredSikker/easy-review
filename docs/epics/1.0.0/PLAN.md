@@ -293,8 +293,10 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
   `CLAUDE.md`. Move the spawn rules from `crates/er-engine/src/git/CLAUDE.md`
   (`--no-color`, `--no-ext-diff`, subprocess only, ADR 0001).
 - Guardrail: add `er::git_spawn` to `er-lint-gate` (a syn check flagging
-  `Command::new("git")` outside `crates/er-git`), list it under `budgeted`, and
-  seed the budget with the reviewed counts (`just clippy-accept`, D7).
+  `Command::new("git")` outside `crates/er-git`) at error tier, with a
+  shrink-only allow-list of the files that spawn `git` today under
+  `[workspace.metadata.lint-gate]` (D7). Do not touch
+  `clippy-warning-budget.json` or run `just clippy-accept`.
 - Acceptance: `fmt-check`, `clippy`, `test` (recipe now includes `er-git`),
   `build-engine-headless`, `docs-check`, and `cargo test -p er-lint-gate` via
   `test-all`.
@@ -308,8 +310,8 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
 - Depends on: P06 (lane), P07.
 - Scope: every `Command::new("git")` in `app/state/*`, `storage.rs`,
   `sidecar_upload.rs` and `ai/review_md.rs` calls the `Git` trait. Add a
-  fake-backed test for at least one refresh path. `just clippy-prune` lowers the
-  `er::git_spawn` counts.
+  fake-backed test for at least one refresh path. Remove the migrated files from
+  the `er::git_spawn` allow-list.
 - Out of scope: arena redesign (phase 3); its git calls move as they are.
 - Acceptance: `fmt-check`, `clippy`, `test`, `test-desktop`.
 - Risks: the five `App`/`TabState` field-literal constructors each need the
@@ -322,8 +324,8 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
 - Depends on: P08.
 - Scope: git spawns in `er-desktop` (`snapshot.rs`, `commands.rs`, `tabs.rs`,
   `projects.rs`, `main.rs`, `commands/line_commits.rs`) and the engine test
-  `comment_bucket_repro.rs`. Remove the P07 shims. Move `er::git_spawn` from
-  `budgeted` to the error tier; its budget entries go to zero and are pruned.
+  `comment_bucket_repro.rs`. Remove the P07 shims. The `er::git_spawn`
+  allow-list is now empty; delete it.
 - Acceptance: `fmt-check`, `clippy`, `test`, `test-desktop`.
 - Risks: desktop git calls made under the `App` lock must stay outside it
   (ADR 0015); moving them is a chance to check, not to change, lock scope.
@@ -338,7 +340,7 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
   `gh api --include` status lines. Move engine `gh_pr_actions.rs` and
   `github/pending_review.rs` behind it. ADR 0026 stays.
 - Guardrail: `er::gh_spawn` (same mechanism as `er::git_spawn`, allowed only in
-  `crates/er-github`), budgeted and seeded.
+  `crates/er-github`), at error tier with a shrink-only allow-list (D7).
 - Acceptance: `fmt-check`, `clippy`, `test`, `build-engine-headless`,
   `docs-check`, `test-all`.
 - Risks: classification from `--include` output needs real `gh` samples for
@@ -368,8 +370,8 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
 - Scope: gh spawns in `er-desktop` (`commands.rs` `run_gh_pr_*_for_open`,
   `gh_pr_actions.rs`, `pr_cache.rs`, `gh_status_cache.rs`, `github_image.rs`,
   `projects.rs`, `main.rs`) and `er-tui/src/input/mod.rs`. Replace
-  `is_gh_review_422` with a `GhError` match. Move `er::gh_spawn` to the error
-  tier.
+  `is_gh_review_422` with a `GhError` match. The `er::gh_spawn` allow-list is
+  now empty; delete it. (P11 removes the engine files from it as it moves them.)
 - Acceptance: `fmt-check`, `clippy`, `test`, `test-desktop`.
 - Risks: gh writes on merge and branch delete (ADR 0040). Keep `pr_cache`
   semantics until phase 6 moves it to the service.
@@ -416,8 +418,8 @@ in `scripts/docs-check.sh`; added to the `test` recipe.
 - Branch: `epic/p15-v1-root`. Lanes: E, C. Model: `opus`.
 - Depends on: P04, P14. Decision D6.
 - Scope: `storage_root()` returns the `v1/` directory, which moves config with
-  it. On first launch with an old root present, show one notice naming it (the
-  existing `App` notification). `er uninstall` offers to delete the old root.
+  it. On first launch with an old root present, show one notice naming it and
+  the old `config.toml` (the existing `App` notification). `er uninstall` offers to delete the old root.
   Update the config path in `CLAUDE.md`, `crates/er-desktop/agent.md` and
   ADR 0003.
 - Acceptance: `fmt-check`, `clippy`, `test`, `test-desktop`, `docs-check`.
