@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// How long a model-cache entry stays "fresh" before background refresh.
-pub const MODEL_CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+pub const MODEL_CACHE_TTL: Duration = Duration::from_hours(24);
 
 const CACHE_VERSION: u32 = 1;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(10);

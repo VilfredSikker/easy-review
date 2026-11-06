@@ -1704,7 +1704,7 @@ pub struct AppUpdateInfo {
     pub release_url: Option<String>,
 }
 
-const UPDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+const UPDATE_CACHE_TTL: std::time::Duration = std::time::Duration::from_hours(1);
 
 fn fetch_latest_release() -> Result<er_engine::release_update::LatestRelease, String> {
     let config = ureq::Agent::config_builder()
@@ -12762,7 +12762,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -12782,7 +12782,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -12805,7 +12805,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // These go through ER_FAKE_CLAUDE and never reach the spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };

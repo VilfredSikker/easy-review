@@ -17,7 +17,7 @@ pub const CHECKSUMS_ASSET: &str = "SHA256SUMS";
 
 /// How long a launch reuses the last answer. The anonymous API allows 60
 /// requests an hour per IP, shared with every other tool on the machine.
-pub const CHECK_TTL: Duration = Duration::from_secs(6 * 60 * 60);
+pub const CHECK_TTL: Duration = Duration::from_hours(6);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LatestRelease {
