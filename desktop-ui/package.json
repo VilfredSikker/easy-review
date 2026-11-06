@@ -33,7 +33,7 @@
     "@eslint/js": "^9.39.5",
     "@storybook/svelte": "^10.6.6",
     "@storybook/svelte-vite": "^10.6.6",
-    "@sveltejs/vite-plugin-svelte": "^4.0.4",
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
     "@tailwindcss/vite": "^4.3.4",
     "@types/node": "^25.9.9",
     "eslint": "^9.39.5",
@@ -46,6 +46,6 @@
     "tailwindcss": "^4.3.4",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.72.1",
-    "vite": "^5.4.21"
+    "vite": "^8.3.6"
   }
 }
