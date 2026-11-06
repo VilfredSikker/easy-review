@@ -84,3 +84,6 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - #404 settled by D5 and #406 revised by D4; both in review.
 - #406 approved in round 2 with amendments A1 (compile fixes) and A2 (the increment test runs across two processes). Applied to #394, and to #387, #388 and #389 (their read-modify-writes use `ArtifactStore::update`). #387 (P16) is now blocked by #394 (P23), because its `update_*` need the locked `update`. #406 closed.
 - #404 design review: revise (six must-fix: replies and resolves cannot reach overlay rows; a second scoped run loses the first; stale expert rows look fresh after validate; a full rerun keeps old overlays; the cleanup deletes question and note backups; the scoped prompts contradict the new appendix). Back to D5.
+- Merged PR #418 (P25) as deae0620a; #411 closed. Phase 0 is fully merged. The desktop and TUI hand check after the major UI library upgrades is an owner action. The T1 session continues as T4 (#378, then #379 and #380).
+- P05 arrived as two stacked PRs, #416 and #417 (TUI). On the release-merged tree the engine and desktop suites pass, and the two TUI `/tmp` tests fail only inside the sandbox. A planted skip of the reconcile step makes both retry tests fail. The line-by-line review is in progress.
+- #404 revised by D5; round-2 review in progress.

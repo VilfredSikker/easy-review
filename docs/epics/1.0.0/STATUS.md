@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 16:40 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 17:15 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 | T1 config | [#411](https://github.com/VilfredSikker/easy-review/issues/411) P25 | C |
+| T1 → T4 | T4 git port | [#378](https://github.com/VilfredSikker/easy-review/issues/378) P07, then #379 P08, #380 P09 | C |
 | T2 → T3 | T3 comment posting | [#376](https://github.com/VilfredSikker/easy-review/issues/376) P05, then #377 P06 | E, F |
 | D4 | – | idle; designs #401 and #406 done | – |
 | D5 | D6 store follow-ups | [#404](https://github.com/VilfredSikker/easy-review/issues/404) P21-design | – |
 | D1, D2, D3 | – | idle; next free design is #405 when #381 closes | – |
 
-**Next to unblock:** #411 merging unblocks #378 (P07, the git port), which unblocks #379, #380 and #381.
+**Next to unblock:** #378 (P07) merging unblocks #381 (P10, er-github), and with P06 also #379. P05 is in review as two stacked PRs.
 
 ## Progress
 
@@ -27,10 +27,10 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P02 | [#373](https://github.com/VilfredSikker/easy-review/issues/373) Delete legacy config paths | C | opus | ✅ | [#413](https://github.com/VilfredSikker/easy-review/pull/413) | |
 | P03 | [#374](https://github.com/VilfredSikker/easy-review/issues/374) Delete the importance table | C | opus | ✅ | [#415](https://github.com/VilfredSikker/easy-review/pull/415) | follow-up: ADR 0037 names removed types |
 | P04 | [#375](https://github.com/VilfredSikker/easy-review/issues/375) Delete the repo-local storage root | E/F | opus | ✅ | [#414](https://github.com/VilfredSikker/easy-review/pull/414) | |
-| P25 | [#411](https://github.com/VilfredSikker/easy-review/issues/411) Upgrade dependencies, raise rust-version | C | sonnet | 🟡 | | T1 |
-| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | 🟡 | | T3; no-PR tab rule decided on the issue; PR next |
+| P25 | [#411](https://github.com/VilfredSikker/easy-review/issues/411) Upgrade dependencies, raise rust-version | C | sonnet | ✅ | [#418](https://github.com/VilfredSikker/easy-review/pull/418) | TypeScript 7 and Tailwind 4.3.5 deferred |
+| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | 🔵 | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | T3; two stacked PRs (TUI in #417) |
 | P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | ⬜ | | after P05 |
-| P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | ⬜ | | after P25 |
+| P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | 🟡 | | T4 (the T1 session) |
 | P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ⬜ | | after P07, P06 |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ⬜ | | after P08 |
 | P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | ⬜ | | after P07; needs real `gh` samples (owner) |
@@ -60,7 +60,7 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | [#410](https://github.com/VilfredSikker/easy-review/issues/410) P11: cache merge | P11 | ✅ | applied to #382 |
 | [#401](https://github.com/VilfredSikker/easy-review/issues/401) P14: store envelope and keys | P14 | ✅ | amendment B; applied to #385–#387, #393, #395 |
 | [#402](https://github.com/VilfredSikker/easy-review/issues/402) P20: findings projection | P20 | ✅ | applied to #391 |
-| [#404](https://github.com/VilfredSikker/easy-review/issues/404) P21: validation and scoped overlays | P21 | 🔧 | D5; review found 6 must-fix (overlay writes, repeat runs, freshness) |
+| [#404](https://github.com/VilfredSikker/easy-review/issues/404) P21: validation and scoped overlays | P21 | 🔵 | D5; revised, in round-2 review |
 | [#405](https://github.com/VilfredSikker/easy-review/issues/405) P16: annotation types, promote boundary | P16 | ⬜ | after #381 |
 | [#406](https://github.com/VilfredSikker/easy-review/issues/406) P23: lock, lease, change channel | P23 | ✅ | amendments A1–A2; applied to #394 and #387–#389; P16 now follows P23 |
 
@@ -80,4 +80,5 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 
 **Actions.**
 
-1. Before P10 (#381) merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot capture them from a test repo. 409 and 422 may stay `*.synthetic` until then.
+1. After PR #418 (P25, merged): run the desktop app (`just dev`) and open a review of a local branch, and run `er` in a terminal once. Several UI libraries moved a major version (Vite 8, mermaid 12, shiki 4, xterm 6, marked 18), and no agent can check the screen. Tell the coordinator if anything looks wrong.
+2. Before P10 (#381) merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot capture them from a test repo. 409 and 422 may stay `*.synthetic` until then.
