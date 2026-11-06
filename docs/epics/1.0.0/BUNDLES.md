@@ -88,7 +88,7 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 
 GitHub is the record. The coordinator posts each review on the issue, then a comment starting `**Next step (coordinator):**` that says exactly what the session does next.
 
-The coordinator then messages the session directly (Claude Code `SendMessage` to the session name that `ListAgents` shows), only when there is something to do; it sends no acknowledgements. A session's standing rule is the reverse: after it posts a report, a PR, a question or "ready for re-review" on GitHub, it messages the coordinator session with the issue number. Neither side polls. When the sessions run in different permission modes, the receiver holds each message until the owner approves it, so keep the modes matched.
+The coordinator then messages the session directly (Claude Code `SendMessage` to the session name that `ListAgents` shows), only when there is something to do; it sends no acknowledgements. A session's standing rule is the reverse: after it posts a report, a PR, a question or "ready for re-review" on GitHub, it messages the coordinator session with the issue number. Neither side polls. When the sessions run in different permission modes, the receiver holds each message until the owner approves it. `"crossSessionInbound": "accept"` at the top level of `~/.claude/settings.json` (not inside `env`) delivers them without a prompt; it is set on this machine since 2026-11-06.
 
 If direct messages are unavailable (a session on another machine, or a new coordinator session), the owner sends the session one line instead:
 
