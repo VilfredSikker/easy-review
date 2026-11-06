@@ -1406,8 +1406,8 @@ impl ServerHandler for ErMcp {
         Ok(self.tool_list())
     }
 
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("er-mcp", env!("CARGO_PKG_VERSION")))
             .with_instructions(
