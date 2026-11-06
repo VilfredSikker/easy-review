@@ -6,7 +6,7 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 
 1. **Get the latest state.** GitHub is the source of truth: read epic issue #371 and its sub-issues (assignees, open or closed, blocked-by), then the last entries below. List the open PRs whose base is `release/v1.0.0`.
 2. **Worktrees.** The epic docs are edited in `~/.claude-worktrees/er-v1/epic-docs` (branch `release/v1.0.0`). Each PR is built in `~/.claude-worktrees/er-v1/<id>`, outside the main checkout. Run `cd desktop-ui && bun install` in a worktree before touching the UI.
-3. **Delegation** follows the `epic-orchestration` skill: model per STATUS.md, a reviewer per PR, and merge only on a `merge` verdict.
+3. **Delegation** follows the `epic-orchestration` skill: model per the issue's `model:` label, a reviewer per PR, and merge only on a `merge` verdict.
 4. **Phase gates.** Only phases 0–2 are planned as PRs. Before starting phase 3, re-plan it against the merged tree and record the new entries in an addendum.
 
 ## Log
