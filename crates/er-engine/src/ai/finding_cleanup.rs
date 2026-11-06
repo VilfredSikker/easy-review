@@ -371,7 +371,6 @@ mod tests {
                 source: "local".into(),
                 github_id: None,
                 author: "You".into(),
-                synced: false,
                 outdated: false,
                 stale: false,
                 context_before: vec![],

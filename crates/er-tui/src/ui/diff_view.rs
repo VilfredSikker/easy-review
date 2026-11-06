@@ -2463,18 +2463,11 @@ fn render_comment_lines(
                 ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
             ));
         }
-        if comment.comment_type() == CommentType::GitHubComment {
-            if comment.is_synced() {
-                author_spans.push(Span::styled(
-                    "  \u{2191} synced",
-                    ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
-                ));
-            } else {
-                author_spans.push(Span::styled(
-                    "  \u{2191} local",
-                    ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
-                ));
-            }
+        if comment.is_on_github() {
+            author_spans.push(Span::styled(
+                "  \u{2191} synced",
+                ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
+            ));
         }
         if focused {
             author_spans.push(Span::styled(
@@ -2592,16 +2585,11 @@ fn render_comment_lines(
         ));
     }
 
-    // Synced indicator (GitHub comments only)
-    if comment.is_synced() {
+    // Synced indicator (comments from the PR only)
+    if comment.is_on_github() {
         header_spans.push(Span::styled(
             "  \u{2191} synced",
             ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
-        ));
-    } else if comment.comment_type() == CommentType::GitHubComment {
-        header_spans.push(Span::styled(
-            "  \u{2191} local",
-            ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
         ));
     }
 
@@ -2690,15 +2678,10 @@ fn render_reply_lines(
         ));
     }
 
-    if reply.is_synced() {
+    if reply.is_on_github() {
         header_spans.push(Span::styled(
             "  ↑ synced",
             ratatui::style::Style::default().fg(styles::GREEN()).bg(bg),
-        ));
-    } else if reply.comment_type() == CommentType::GitHubComment {
-        header_spans.push(Span::styled(
-            "  ↑ local",
-            ratatui::style::Style::default().fg(styles::DIM()).bg(bg),
         ));
     }
 
@@ -3289,7 +3272,6 @@ mod github_comment_fold_tests {
             source: "github".to_string(),
             github_id: Some(1),
             author: "martin-kr".to_string(),
-            synced: true,
             outdated: false,
             stale: false,
             context_before: vec![],

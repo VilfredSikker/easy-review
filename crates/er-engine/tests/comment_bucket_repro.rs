@@ -339,21 +339,24 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
         .as_ref()
         .map(|gc| gc.comments.len())
         .unwrap_or(0);
-    let synced = app
+    let source = app
         .tab()
         .ai
         .github_comments
         .as_ref()
         .and_then(|gc| gc.comments.last())
-        .map(|c| c.synced)
-        .unwrap_or(true);
+        .map(|c| c.source.clone())
+        .unwrap_or_default();
 
     assert_eq!(
         review_hash, "memory-only",
-        "adding a local GH comment must not reload_ai_state (would drop in-memory review)"
+        "adding a local GitHub comment must not reload_ai_state (would drop in-memory review)"
     );
     assert_eq!(comment_count, 1, "the new local comment must be visible");
-    assert!(!synced, "new comments stay local until the user pushes");
+    assert_eq!(
+        source, "local",
+        "a submit_comment_text comment is recorded locally"
+    );
 
     let reloaded = app.tab_mut().check_ai_files_changed();
     assert!(

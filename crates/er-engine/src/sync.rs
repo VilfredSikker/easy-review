@@ -182,7 +182,17 @@ fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {
     era * 146_097 + day_of_era - 719_468
 }
 
-/// Merge one pull's listed comments into the store, keeping local unpushed
+/// Whether a stored entry survives a pull as it is.
+///
+/// Private AI follow-ups (`source: "local"`, no `github_id`) are kept. A
+/// comment pushed by the old push paths also says `source: "local"` but has a
+/// `github_id`; the pull rebuilds it from the listed comment as `gh-<id>`, so
+/// keeping it here would duplicate it. A P05 post is already `source: "github"`.
+pub(crate) fn keep_on_pull(c: &ai::GitHubReviewComment) -> bool {
+    c.source == "local" && c.github_id.is_none()
+}
+
+/// Merge one pull's listed comments into the store, keeping private local
 /// entries and rebuilding every GitHub entry. The caller writes the result.
 pub fn rebuild_comment_store(
     ctx: &CommentSyncContext,
@@ -197,11 +207,7 @@ pub fn rebuild_comment_store(
         last_synced: chrono_now(),
     });
 
-    let local_unpushed: Vec<_> = gc
-        .comments
-        .into_iter()
-        .filter(|c| c.source == "local" && !c.synced)
-        .collect();
+    let local_unpushed: Vec<_> = gc.comments.into_iter().filter(keep_on_pull).collect();
 
     let mut github_entries = Vec::new();
     for gh in gh_comments {
@@ -253,7 +259,6 @@ pub fn rebuild_comment_store(
             source: "github".to_string(),
             github_id: Some(gh.id),
             author: gh.user.login.clone(),
-            synced: true,
             outdated,
             stale: outdated,
             context_before: anchor_ctx_before,
@@ -363,11 +368,7 @@ fn fetch_comment_sync_data_with(
 
     let gc = rebuild_comment_store(ctx, gc, &gh_comments, &thread_state);
     let github_count = gc.comments.iter().filter(|c| c.source == "github").count();
-    let local_count = gc
-        .comments
-        .iter()
-        .filter(|c| c.source == "local" && !c.synced)
-        .count();
+    let local_count = gc.comments.iter().filter(|c| keep_on_pull(c)).count();
 
     // Write to disk (atomic rename, outside app lock)
     if let Some(dir) = std::path::Path::new(&ctx.comments_path).parent() {
@@ -942,5 +943,74 @@ mod tests {
         assert_eq!(old_ln, None);
         // Header is still the local hunk's header.
         assert_eq!(header, "@@ -1,25 +1,26 @@");
+    }
+
+    fn stored_comment(id: &str, source: &str, github_id: Option<u64>) -> ai::GitHubReviewComment {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "file": "src/a.rs",
+            "hunk_index": 0,
+            "line_start": 2,
+            "comment": "text",
+            "source": source,
+            "github_id": github_id,
+            "author": "You"
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn pull_keeps_private_local_threads_and_drops_github_ones() {
+        assert!(keep_on_pull(&stored_comment("c-private", "local", None)));
+        assert!(!keep_on_pull(&stored_comment("gh-1", "github", Some(1))));
+    }
+
+    #[test]
+    fn pull_drops_a_pushed_local_comment_that_has_a_github_id() {
+        assert!(!keep_on_pull(&stored_comment(
+            "c-old-push",
+            "local",
+            Some(42)
+        )));
+
+        let ctx = CommentSyncContext {
+            owner: "owner".to_string(),
+            repo_name: "repo".to_string(),
+            pr_number: 7,
+            is_remote: true,
+            repo_root: String::new(),
+            comments_path: "/tmp/unused/github-comments.json".to_string(),
+            diff_hash: "hash".to_string(),
+            anchor_hash: "hash".to_string(),
+            files: Vec::new(),
+            pr_number_for_overview: Some(7),
+        };
+        let mut gc = ai::ErGitHubComments {
+            version: 1,
+            diff_hash: "hash".to_string(),
+            github: None,
+            comments: vec![stored_comment("c-old-push", "local", Some(42))],
+        };
+        let listed: crate::github::GitHubComment = serde_json::from_value(serde_json::json!({
+            "id": 42,
+            "body": "text",
+            "path": "src/a.rs",
+            "line": 2,
+            "user": { "login": "viewer" },
+            "created_at": "2026-01-01T00:00:00Z",
+            "updated_at": "2026-01-01T00:00:00Z",
+            "diff_hunk": null
+        }))
+        .unwrap();
+        let threads = std::collections::HashMap::new();
+        gc = rebuild_comment_store(&ctx, gc, &[listed], &threads);
+        let matching: Vec<_> = gc
+            .comments
+            .iter()
+            .filter(|c| c.github_id == Some(42))
+            .collect();
+        assert_eq!(matching.len(), 1, "exactly one gh-42 entry");
+        assert_eq!(matching[0].id, "gh-42");
+        assert_eq!(gc.comments.len(), 1, "the pushed local copy is not kept");
     }
 }

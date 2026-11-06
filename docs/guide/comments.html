@@ -145,13 +145,12 @@
       <thead><tr><th>Key</th><th>Action</th></tr></thead>
       <tbody>
         <tr><td><kbd>G</kbd></td><td>Pull review comments <em>from</em> GitHub into your diff</td></tr>
-        <tr><td><kbd>g</kbd> → <em>Push comments to GitHub</em></td><td>Push your local comments <em>to</em> GitHub — as one review (<kbd>r</kbd>) or as individual comments (<kbd>i</kbd>)</td></tr>
       </tbody>
     </table>
     <p>
-      Each GitHub comment records its <code>source</code> (local or github), the upstream <code>github_id</code>, the
-      <code>author</code>, and whether it has been <code>synced</code>. Pulling deduplicates on the GitHub id, so you can
-      pull repeatedly without creating copies. The full sync flow lives in
+      Each GitHub comment records its <code>source</code> (local or github), the upstream <code>github_id</code>, and
+      the <code>author</code>. A comment you write posts to GitHub when you create it; pulling deduplicates on the
+      GitHub id, so you can pull repeatedly without creating copies. The full sync flow lives in
       <a href="github.html">GitHub &amp; Pull Requests</a>.
     </p>
 
@@ -159,8 +158,7 @@
       <span class="ico">✦</span>
       <div><p>Rule of thumb: use <kbd>q</kbd> while you are still figuring out whether something is a problem, a
       <em>note</em> once you know what should change, and <kbd>c</kbd> once you are ready to say it out loud on the PR.
-      Publishing — the Git hub's <strong>Push comments to GitHub</strong> in the TUI, or the desktop Comments card
-      <strong>Push to GitHub</strong> — includes your GitHub comments when it posts the review.</p></div>
+      A GitHub comment posts as you create it, so there is no separate publish step.</p></div>
     </div>
   </main>
   <script src="assets/docs.js"></script>

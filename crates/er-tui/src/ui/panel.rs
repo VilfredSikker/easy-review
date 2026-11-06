@@ -347,15 +347,10 @@ fn render_file_detail<'a>(
             ));
         }
 
-        if comment.is_synced() {
+        if comment.is_on_github() {
             header_spans.push(Span::styled(
                 "  ↑ synced",
                 Style::default().fg(styles::GREEN()),
-            ));
-        } else if comment.comment_type() == CommentType::GitHubComment {
-            header_spans.push(Span::styled(
-                "  ↑ local",
-                Style::default().fg(styles::DIM()),
             ));
         }
 
@@ -1231,7 +1226,7 @@ fn render_pr_overview<'a>(
         )]));
         lines.push(Line::from(""));
         for c in &general_comments {
-            let author_style = if c.source == "local" && !c.synced {
+            let author_style = if c.source == "local" {
                 Style::default().fg(styles::CYAN())
             } else {
                 Style::default().fg(styles::DIM())

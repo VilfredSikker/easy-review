@@ -12,4 +12,4 @@ GitHub allows one pending review per reviewer per PR, and github.com shows it as
 
 - Every change to the draft is a network round trip that can be refused, so the composer keeps its text until GitHub accepts the comment, rather than painting it optimistically.
 - No sidecar holds a pending comment, so the diff draws one only when a comment pull returns it from GitHub, and tags it "pending review" by matching its `gh-<id>` thread id against the draft. The popover lists the draft either way.
-- The older unpushed-local-comment path (Comments panel push, `submit_github_review`) is unchanged and still bundles its own comments.
+- There is no local draft: comments post when created (ADR 0053) and the pending review lives on GitHub.

@@ -371,8 +371,6 @@ pub enum ConfirmAction {
     },
     /// Confirm approving the PR on GitHub
     ApprovePR,
-    /// Choose how to push comments: as review or individually
-    PushComments,
 }
 
 /// Which pane has focus in split diff view
@@ -526,7 +524,6 @@ pub enum HubAction {
     // Git hub actions
     PushToRemote,
     PullGitHubComments,
-    PushCommentsToGitHub,
     RefreshDiff,
     StageFile,
     StageAll,
@@ -6888,14 +6885,6 @@ impl App {
                 enabled: true,
             },
             HubItem {
-                label: "Push comments to GitHub".into(),
-                hint: "".into(),
-                description: "Publish local comments to the PR".into(),
-                action: HubAction::PushCommentsToGitHub,
-                is_header: false,
-                enabled: true,
-            },
-            HubItem {
                 label: "Comment on PR".into(),
                 hint: "".into(),
                 description: "Post a general comment on the PR (not attached to a line)".into(),
@@ -10652,7 +10641,6 @@ mod tests {
             source: "github".to_string(),
             github_id: Some(1),
             author: "octocat".to_string(),
-            synced: true,
             outdated: false,
             stale: false,
             context_before: vec![],
@@ -14376,8 +14364,7 @@ mod tests {
                     "comment": "Looks good",
                     "source": "local",
                     "author": "You",
-                    "resolved": false,
-                    "synced": false
+                    "resolved": false
                 }
             ]
         });
@@ -16163,7 +16150,7 @@ mod tests {
             "version": 1, "diff_hash": "h",
             "comments": [{
                 "id": "gc-1", "file": "a.rs", "comment": "x",
-                "source": "github", "author": "o", "resolved": false, "synced": true
+                "source": "github", "author": "o", "resolved": false
             }]
         });
         std::fs::write(
@@ -16338,7 +16325,7 @@ mod tests {
             "version": 1, "diff_hash": "h",
             "comments": [{
                 "id": "gc-1", "file": "src/lib.rs", "comment": "PR note",
-                "source": "github", "author": "octocat", "resolved": false, "synced": true
+                "source": "github", "author": "octocat", "resolved": false
             }]
         });
         std::fs::write(
