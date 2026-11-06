@@ -10,7 +10,6 @@
     commentThreadsFromDiff,
     hiddenCommentsHint,
     toggleCommentFilter,
-    unpushedLocalCommentThreads,
     visibleCommentThreads as filterVisibleComments,
   } from "$lib/commentVisibility";
   import Card from "$lib/components/ui/Card.svelte";
@@ -26,16 +25,11 @@
 
   const { ai, active = true }: Props = $props();
 
-  let pushMode = $state<null | "review" | "individual">(null);
   let manualRefreshing = $state(false);
   let autoPulledFor = $state<string | null>(null);
-  let decision = $state<"comment" | "approve" | "changes">("comment");
-  let summary = $state("");
-  let submitting = $state(false);
 
   const files = $derived(app.snapshot?.files);
   const commentThreads = $derived(commentThreadsFromDiff(ai.threads, files));
-  const pushCommentThreads = $derived(unpushedLocalCommentThreads(ai.threads, files));
   const vis = $derived(app.commentVisibility);
   const visibleCommentThreads = $derived(filterVisibleComments(ai.threads, vis, files));
   const annotationCount = $derived(app.snapshot?.ui_annotations?.length ?? 0);
@@ -86,33 +80,6 @@
     el?.scrollIntoView({ behavior: "smooth", block: "nearest" });
   }
 
-  const DECISIONS = {
-    comment: { ghEvent: "COMMENT", submitClass: "bg-accent hover:opacity-90", submitLabel: "Submit review" },
-    approve: { ghEvent: "APPROVE", submitClass: "bg-add-fg hover:opacity-90", submitLabel: "Submit approval" },
-    changes: { ghEvent: "REQUEST_CHANGES", submitClass: "bg-del-fg hover:opacity-90", submitLabel: "Submit changes request" },
-  } as const;
-  const decisionInfo = $derived(DECISIONS[decision]);
-  const ghEvent = $derived(decisionInfo.ghEvent);
-
-  async function submitReview() {
-    submitting = true;
-    try {
-      // Sync local diff with remote before bundling inline comments into the review.
-      await app.cmd("force_refresh_diff", {});
-      await app.cmd("submit_github_review", { mode: ghEvent, summary });
-      pushMode = null;
-      summary = "";
-    } finally {
-      submitting = false;
-    }
-  }
-
-  async function submitIndividual() {
-    submitting = true;
-    await app.cmd("push_github_comments");
-    submitting = false;
-    pushMode = null;
-  }
 </script>
 
 <Card>
@@ -188,112 +155,6 @@
         {/if}
       </p>
     {/each}
-  </div>
-
-  <!-- Push group -->
-  <div class="mt-4 border-t border-hairline pt-3">
-    <div class="flex items-center justify-between mb-2">
-      <SectionLabel size="sm">Push to GitHub</SectionLabel>
-      <span class="text-[10px] mono text-muted">{ai.unpushed} unpushed</span>
-    </div>
-
-    {#if pushMode === null}
-      <div class="grid grid-cols-2 gap-2">
-        <button type="button"
-          onclick={() => pushMode = "review"}
-          title="Backend doesn't yet accept summary/decision — currently pushes the same as Individually"
-          class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
-        >
-          <div class="flex items-center gap-1.5 text-sm text-fg mb-0.5">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
-            As review
-            <span class="ml-auto text-[9px] mono text-muted uppercase tracking-wider">soon</span>
-          </div>
-          <div class="text-[10px] text-muted">Summary + decision · single approval gate</div>
-        </button>
-        <button type="button"
-          onclick={() => pushMode = "individual"}
-          class="px-3 py-2 rounded-md border border-border hover:border-accent hover:bg-hover text-left transition"
-        >
-          <div class="flex items-center gap-1.5 text-sm text-fg mb-0.5">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-            Individually
-          </div>
-          <div class="text-[10px] text-muted">Each comment posts standalone · no review</div>
-        </button>
-      </div>
-    {/if}
-
-    {#if pushMode === "review"}
-      <div class="rounded-lg border border-border bg-surface">
-        <div class="px-3 py-2 border-b border-hairline flex items-center gap-2 text-xs">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" class="text-add-fg"><path d="M9 11l3 3L22 4"/></svg>
-          <span class="text-fg-2 font-medium">Push as review</span>
-          <span class="text-muted">· {pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span>
-          <button type="button" onclick={() => pushMode = null} aria-label="Cancel push" title="Cancel" class="ml-auto text-muted hover:text-fg-2">
-            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-          </button>
-        </div>
-
-        <textarea
-          bind:value={summary}
-          rows="3"
-          class="w-full bg-transparent text-sm px-3 py-2 outline-none resize-none font-sans placeholder:text-muted"
-          placeholder='Overall review comment (optional)… e.g. "Looks great overall. One typing question on the new options API."'
-        ></textarea>
-
-        <div class="px-3 py-2 border-t border-hairline">
-          <SectionLabel size="sm">Decision</SectionLabel>
-          <div class="grid grid-cols-3 gap-1 mt-1.5">
-            <button type="button"
-              onclick={() => decision = "comment"}
-              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'comment' ? 'bg-hover text-fg ring-1 ring-border' : 'text-fg-3 hover:bg-card'}"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
-              Comment
-            </button>
-            <button type="button"
-              onclick={() => decision = "approve"}
-              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'approve' ? 'bg-add-bg text-add-fg ring-1 ring-add-fg/40' : 'text-fg-3 hover:bg-card'}"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
-              Approve
-            </button>
-            <button type="button"
-              onclick={() => decision = "changes"}
-              class="px-2 py-1.5 rounded text-[11px] flex flex-col items-center gap-0.5 transition {decision === 'changes' ? 'bg-del-bg text-del-fg ring-1 ring-del-fg/40' : 'text-fg-3 hover:bg-card'}"
-            >
-              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12c0-5 4-9 9-9s9 4 9 9-4 9-9 9-9-4-9-9z"/><path d="M9 9h6v6"/></svg>
-              Request changes
-            </button>
-          </div>
-        </div>
-
-        <div class="px-3 py-2 border-t border-hairline flex items-center gap-2">
-          <span class="text-[10px] mono text-muted">questions stay local</span>
-          <button type="button"
-            onclick={submitReview}
-            disabled={submitting}
-            class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium text-on-accent disabled:opacity-50 disabled:cursor-not-allowed {decisionInfo.submitClass}"
-          >
-            {#if submitting}Submitting…{:else}{decisionInfo.submitLabel}{/if}
-          </button>
-        </div>
-      </div>
-    {/if}
-
-    {#if pushMode === "individual"}
-      <div class="rounded-lg border border-border bg-surface p-3">
-        <div class="flex items-start gap-2 mb-3">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="mt-0.5 shrink-0 text-ai"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
-          <div class="text-sm text-fg-2 leading-snug">Push <span class="text-fg font-medium">{pushCommentThreads.length} comment{pushCommentThreads.length === 1 ? "" : "s"}</span> as a standalone GitHub comment? It won't be tied to a review submission.</div>
-        </div>
-        <div class="flex items-center gap-2">
-          <button type="button" onclick={() => pushMode = null} disabled={submitting} class="px-3 py-1.5 rounded-md text-xs text-fg-2 hover:bg-hover disabled:opacity-50 disabled:cursor-not-allowed">Cancel</button>
-          <button type="button" onclick={submitIndividual} disabled={submitting} class="ml-auto px-3 py-1.5 rounded-md text-xs font-medium bg-accent hover:opacity-90 text-on-accent disabled:opacity-50 disabled:cursor-not-allowed">{submitting ? "Pushing…" : "Push"}</button>
-        </div>
-      </div>
-    {/if}
   </div>
 
   <button type="button"

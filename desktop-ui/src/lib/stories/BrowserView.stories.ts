@@ -61,7 +61,6 @@ function setupAnnotations(items: UiAnnotation[], annotateMode = false) {
       comments: 0,
       questions: 0,
       notes: 0,
-      unpushed: 0,
       threads: [],
       findings: [],
       arbiter_dropped: 0,

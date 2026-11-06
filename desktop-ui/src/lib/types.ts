@@ -25,7 +25,6 @@ export interface ThreadMessage {
   body_markdown: string;
   origin?: "thread_reply" | "finding_response";
   source?: string;
-  synced?: boolean;
   editable?: boolean;
   deletable?: boolean;
   /** The action that wrote this AI reply, and on the pending "…thinking"
@@ -57,7 +56,6 @@ export interface ThreadSnapshot {
   /** Review side for range matching: LEFT | RIGHT. */
   side?: string;
   source: string;
-  synced: boolean;
   stale: boolean;
   resolved: boolean;
   root: ThreadMessage;
@@ -431,7 +429,6 @@ export interface AiSnapshot {
   comments: number;
   questions: number;
   notes: number;
-  unpushed: number;
   threads: ThreadSnapshot[];
   findings: FlatFinding[];
   /** Findings the arbiter ruled out, or folded into another. Reported so the

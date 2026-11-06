@@ -48,7 +48,6 @@ export const commentThread: ThreadSnapshot = {
   file: "packages/discovery-platform/src/lib/components/combobox/media/MediaCombobox.svelte",
   line: 38,
   source: "local",
-  synced: false,
   stale: false,
   resolved: false,
   root: {
@@ -85,7 +84,6 @@ export const questionThread: ThreadSnapshot = {
   file: "packages/discovery-platform/src/lib/components/combobox/media/MediaCombobox.svelte",
   line: 144,
   source: "local",
-  synced: false,
   stale: false,
   resolved: false,
   root: {
@@ -472,7 +470,6 @@ export const aiWithFindings: AiSnapshot = {
   comments: 1,
   questions: 1,
   notes: 0,
-  unpushed: 1,
   threads: [commentThread, questionThread],
   findings: [
     {
@@ -603,7 +600,6 @@ export const aiEmpty: AiSnapshot = {
   comments: 0,
   questions: 0,
   notes: 0,
-  unpushed: 0,
   threads: [],
   findings: [],
   file_risks: [],
@@ -706,7 +702,6 @@ export const aiProfessorOnly: AiSnapshot = {
   comments: 0,
   questions: 0,
   notes: 0,
-  unpushed: 0,
   threads: [],
   findings: [
     professorFinding("prof-1", "test_replicates.py", 1, "Pure-function unit tests isolated from DB and HTTP"),

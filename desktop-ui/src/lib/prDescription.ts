@@ -169,10 +169,14 @@ const parser = new Marked({
     },
     listitem(item) {
       if (!item.task) return false;
-      const box = this.checkbox({ type: "checkbox", raw: "", checked: !!item.checked });
+      const box = this.checkbox({ checked: !!item.checked });
       // marked 18 includes the checkbox token in the item; this renderer draws
-      // it in the same row as the body, so parse the body without it.
-      const body = this.parser.parse(item.tokens.filter((token) => token.type !== "checkbox"));
+      // it in the same row as the body, so parse the body without it. It also
+      // wraps the text in a paragraph, which would add block margins beside
+      // the box; unwrap a single paragraph so the row stays flat.
+      const body = this.parser
+        .parse(item.tokens.filter((token) => token.type !== "checkbox"))
+        .replace(/^<p>([\s\S]*)<\/p>\n?$/, "$1");
       return `<li class="md-task${item.checked ? " md-done" : ""}">${box}<span>${body}</span></li>\n`;
     },
     table(token) {

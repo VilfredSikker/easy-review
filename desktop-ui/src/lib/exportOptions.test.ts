@@ -21,7 +21,6 @@ function thread(id: string, kind: ThreadSnapshot["kind"], resolved = false): Thr
     file: "src/a.ts",
     line: 3,
     source: "local",
-    synced: false,
     stale: false,
     resolved,
     root: { body_markdown: `body ${id}\nsecond line` },

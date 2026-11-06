@@ -56,7 +56,6 @@ function thread(over: Partial<ThreadSnapshot>): ThreadSnapshot {
     file: "src/a.ts",
     line: 1,
     source: "local",
-    synced: false,
     stale: false,
     resolved: false,
     root: { id: "r", author: "ann", kind: "human", timestamp: "", body_markdown: "hi" },

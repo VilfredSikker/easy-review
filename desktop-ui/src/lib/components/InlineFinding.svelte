@@ -325,7 +325,6 @@
                 rootThreadId={thread?.id ?? null}
                 findingId={finding.id}
                 isQuestion={thread?.kind === "question"}
-                parentSynced={thread?.synced ?? false}
                 threadResolved={thread?.resolved ?? false}
                 onEdit={entry.editable ? () => openEdit(entry) : undefined}
                 onDelete={() => deleteReply(entry.id, entry.origin)}
