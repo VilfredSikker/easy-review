@@ -2,7 +2,7 @@
 
 > **GitHub is the source of truth.** Track the work in the epic issue [#371](https://github.com/VilfredSikker/easy-review/issues/371), its sub-issues and the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1). Who has a task is its assignee. Its state is open or closed plus the linked PR, and what blocks it is GitHub's "blocked by" list. This file does not repeat that.
 >
-> Release branch `release/v1.0.0`. Plan: [PLAN.md](./PLAN.md). Design: [PROPOSAL.md](./PROPOSAL.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
+> Release branch `release/v1.0.0`. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
 
 ## Start here
 
@@ -79,6 +79,4 @@ The plan and the addenda refer to work by id. This table maps each id to its iss
 
 **Actions.**
 
-1. Go-ahead to merge PR #365 into `main` (D10).
-2. Merge PR #368 into `main`, so other sessions resolve to `release/v0.6.5` (D2).
-3. Before P10 merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot produce them from a test repo.
+1. Before P10 merges: provide real `gh` error samples (404, 401, 403 rate limit, 409, 422) if the implementer cannot produce them from a test repo.

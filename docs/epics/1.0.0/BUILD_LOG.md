@@ -57,3 +57,7 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - [ADDENDUM-03-issues-are-the-spec.md](./ADDENDUM-03-issues-are-the-spec.md) makes each issue body the specification and defines how design issues are settled. **Planning for phases 0–2 is closed.** STATUS.md "Start here" lists what is assignable at handoff.
 - Owner decision: every task and design issue goes to smaller models. Opus reviews each PR and each design decision in the orchestrating session. `model:` labels now set review depth (ADDENDUM-03, "Who does the work, and who reviews it").
 - Coordinator role handed to a new session; its prompt is [COORDINATOR.md](./COORDINATOR.md).
+
+### 2026-11-06 (coordinator)
+
+- Owner merged PR #365 and PR #368 into `main`. Merged `main` into `release/v1.0.0` (v0.6.5, #365, #368, #370; clean). Per D10, PROPOSAL.md is now a pointer to `docs/plans/plan-clean-slate-architecture.md`. `main` brought ADR 0052, so the next free ADR number is 0053.
