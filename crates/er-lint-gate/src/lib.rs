@@ -9,9 +9,11 @@
 //! baseline: it lands at zero, and a real problem with many existing sites is
 //! budgeted here instead.
 
+mod attrs;
 pub mod cohesion;
 pub mod diagnostics;
 pub mod ratchet;
+pub mod spawn;
 
 use std::collections::HashSet;
 
