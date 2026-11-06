@@ -2886,7 +2886,7 @@ pub(crate) fn other_bucket_dir(tab: &TabState) -> Option<(&'static str, String)>
         // bucket's directory; the engine keeps the bare PR-bucket path private.
         ("pr", tab.github_comments_dir())
     };
-    // Repo-local storage (`ER_REPO_LOCAL`) has one bucket for every view.
+    // The two directories are equal only when both resolve to the same bucket.
     (dir != tab.er_dir()).then_some((view, dir))
 }
 

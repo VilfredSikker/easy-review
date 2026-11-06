@@ -1162,8 +1162,7 @@ pub fn gitignored_paths(repo_root: &str, paths: &[String]) -> std::collections::
 /// Save a snapshot of a watched file for later diffing.
 ///
 /// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
-/// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
-/// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
+/// `tab.er_root.snapshots_dir()`).
 pub fn save_snapshot(repo_root: &str, rel_path: &str, snapshots_dir: &str) -> Result<()> {
     let src = join_within(repo_root, rel_path)?;
     let dst = join_within(snapshots_dir, rel_path)?;
@@ -1199,8 +1198,7 @@ pub fn read_watched_file_content(repo_root: &str, rel_path: &str) -> Result<Opti
 /// Diff a watched file against its snapshot using git diff --no-index.
 ///
 /// `snapshots_dir` is the absolute path to the snapshots directory (e.g. from
-/// `tab.er_root.snapshots_dir()`). This allows the caller to redirect storage
-/// away from `<repo_root>/.er/snapshots` in managed (desktop) mode.
+/// `tab.er_root.snapshots_dir()`).
 pub fn diff_watched_file_snapshot(
     repo_root: &str,
     rel_path: &str,

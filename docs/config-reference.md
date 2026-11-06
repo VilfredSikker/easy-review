@@ -16,7 +16,6 @@
 |---|---|
 | `ER_STORAGE_ROOT` | Replaces the storage root. Config and review sidecars both move with it; tests use it to write under a temp dir. |
 | `ER_CONFIG_PATH` | Replaces the config path outright — a full file path, not a directory. |
-| `ER_REPO_LOCAL=1` | Review sidecars go to `<repo>/.er/` instead of managed storage. Debug only; the config path is unaffected. |
 
 **Legacy migration.** On load, when the managed file is missing, the legacy file is copied into it once. Copy-only — the legacy file is never moved or deleted, so leave it on disk: it is read directly for that session if the copy fails.
 

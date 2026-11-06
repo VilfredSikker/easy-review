@@ -76,7 +76,7 @@ Options, cheapest first:
 
 ### 4. Storage and sync (medium)
 
-Managed storage root is `$ER_STORAGE_ROOT`, or the platform app-data directory plus `easy-review`. A PR's artifacts live in `<storage_root>/repos/<owner-repo>/prs/pr-<N>/`; the repo `.er/` is debug-only (`ER_REPO_LOCAL=1`), and the one-time migration out of it never ran (ADR 0003).
+Managed storage root is `$ER_STORAGE_ROOT`, or the platform app-data directory plus `easy-review`. A PR's artifacts live in `<storage_root>/repos/<owner-repo>/prs/pr-<N>/`; nothing is read from a repo `.er/` (ADR 0003).
 
 Mobile needs:
 

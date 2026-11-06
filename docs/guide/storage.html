@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Review Storage — easy-review docs</title>
-  <meta name="description" content="Where easy-review keeps review data: managed app-data storage shared by the TUI and desktop, view buckets, PR keys, the sidecar file list, and repo-local mode.">
+  <meta name="description" content="Where easy-review keeps review data: managed app-data storage shared by the TUI and desktop, view buckets, PR keys, and the sidecar file list.">
   <link rel="stylesheet" href="assets/docs.css">
 </head>
 <body>
@@ -54,7 +54,7 @@
     </p>
 
     <h2>The sidecar files</h2>
-    <p>The filenames are identical in managed storage and in repo-local mode:</p>
+    <p>The sidecar filenames:</p>
     <table>
       <thead><tr><th>File</th><th>Written by</th><th>Purpose</th></tr></thead>
       <tbody>
@@ -80,31 +80,18 @@
       so a crash mid-write never corrupts your data.
     </p>
 
-    <h2>Repo-local mode</h2>
+    <h2>External tools</h2>
     <p>
-      Set <code>ER_REPO_LOCAL=1</code> to read and write a <code>.er/</code> directory inside the repository instead of
-      managed storage. This is useful for debugging, or for external tools that
-      write sidecar files into <code>.er/</code> relative to the repo.
+      Review files live only under managed storage. Point an external tool or agent that writes sidecars at this
+      branch's view bucket; the layout is above.
     </p>
-    <pre><code>ER_REPO_LOCAL=1 er</code></pre>
-    <div class="callout warn">
-      <span class="ico">▲</span>
-      <div><p>In repo-local mode, add <code>.er/</code> to your <code>.gitignore</code> so review artifacts are not committed.</p></div>
-    </div>
-    <div class="callout note">
-      <span class="ico">◆</span>
-      <div><p>With default managed storage, run reviews through <code>er</code>'s built-in AI Hub (TUI: <kbd>a</kbd> /
-      Desktop: <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong>). Use <code>ER_REPO_LOCAL=1</code> only when an external
-      tool writes directly into
-      <code>.er/</code> and you want <code>er</code> to read from the same location.</p></div>
-    </div>
 
     <h2>Migration from older versions</h2>
     <p>
       Earlier versions scattered sidecar dotfiles in the repo root, then consolidated them into a repo <code>.er/</code>
       directory. Nothing copies either of those into managed storage: a legacy repo <code>.er/</code> or
-      <code>~/.cache/er/</code> directory is left where it is, and a current build starts from empty for that branch. To
-      keep reading an existing <code>.er/</code>, run with <code>ER_REPO_LOCAL=1</code>.
+      <code>~/.cache/er/</code> directory is left where it is, and a current build starts from empty for that branch. An
+      existing <code>.er/</code> is ignored.
     </p>
 
     <h2>Tests &amp; overrides</h2>
@@ -113,10 +100,7 @@
     <h2>Cleaning up</h2>
     <p>From the terminal, <kbd>z</kbd> clears the questions and notes you wrote, and <kbd>Z</kbd> clears the AI review
     sidecars (<code>review.json</code>, <code>order.json</code>, <code>checklist.json</code>,
-    <code>summary.md</code>). Both ask for confirmation first. The repository also ships helper scripts, which delete
-    from a <code>.er/</code> directory in the working tree — repo-local mode:</p>
-    <pre><code>scripts/er-cleanup-reviews.sh     <span class="cmt"># remove review.json, checklist, summary, …</span>
-scripts/er-cleanup-questions.sh   <span class="cmt"># remove questions.json</span></code></pre>
+    <code>summary.md</code>). Both ask for confirmation first.</p>
     <p>
       To remove <em>all</em> Easy Review data and apps from the machine, use
       <code>er uninstall</code> or Desktop <strong>Settings → Uninstall</strong> — see

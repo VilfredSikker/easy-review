@@ -214,10 +214,10 @@
     <p>To explore how the overlays render without running a real review, generate sample artifacts:</p>
     <pre><code>cd your-repo
 bash /path/to/easy-review/scripts/generate-test-fixtures.sh
-ER_REPO_LOCAL=1 er   <span class="cmt"># read sidecars from the repo's .er/ directory</span></code></pre>
-    <p>The script writes repo-local <code>.er/</code> files with a matching diff hash, so run <code>er</code> with
-    <code>ER_REPO_LOCAL=1</code> (see <a href="storage.html">Review Storage</a>) and the AI views light up against
-    your current diff.</p>
+<span class="cmt"># copy .er/* into this branch's view bucket (see Review Storage)</span></code></pre>
+    <p>The script writes sidecars with a matching diff hash into a repo <code>.er/</code> directory; copy them into
+    this branch's view bucket under managed storage (see <a href="storage.html">Review Storage</a>) and the AI views
+    light up against your current diff.</p>
 
     <div class="callout tip">
       <span class="ico">✦</span>

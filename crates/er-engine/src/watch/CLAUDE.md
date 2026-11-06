@@ -14,12 +14,12 @@ burst of edits produces one refresh.
 
 `root`, recursively, plus the two paths under `.git/` that matter: `index`
 (staging) and `refs/` (commits). The rest of `.git/` is filtered out, as is any
-path containing `/.er/` — er's own writes (session saves, reviewed markers,
-comments) would otherwise refresh it against its own output.
+path containing `/.er/` — an `.er/` directory left in a repo by an older
+version or another tool must not refresh the diff.
 
-AI sidecars never arrive this way. Under managed storage they sit outside the
-repo root; under `ER_REPO_LOCAL` the `/.er/` filter drops them. They are polled
-instead, by `check_ai_files_changed()` comparing `er_dir()` mtimes.
+AI sidecars never arrive this way: they sit outside the repo root, under
+managed storage. They are polled instead, by `check_ai_files_changed()`
+comparing `er_dir()` mtimes.
 
 ## Kept alive by RAII, started automatically
 

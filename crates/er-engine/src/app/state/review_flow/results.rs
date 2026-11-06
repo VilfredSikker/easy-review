@@ -594,7 +594,7 @@ mod tests {
         let mut tab = crate::app::TabState::new_for_test(Vec::new());
         tab.mode = DiffMode::Branch;
         tab.repo_root.clone_from(&root);
-        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.er_root = ErRoot::managed(format!("{root}/.er"));
         tab.base_branch = "main".into();
         tab.current_branch = "feature".into();
         tab.local_branch_view = Some("feature".into());
@@ -705,14 +705,10 @@ mod tests {
         let paths = historical_run(&fixture, "interrupted", RunStatus::Queued);
         let captured_root = fixture.app.tab().er_root.clone();
         fixture.app.tab_mut().mode = DiffMode::Staged;
-        fixture.app.tab_mut().er_root = ErRoot::RepoLocal(
-            fixture
-                .repo
-                .path()
-                .join("other-view")
-                .to_string_lossy()
-                .into_owned(),
-        );
+        fixture.app.tab_mut().er_root = ErRoot::managed(format!(
+            "{}/.er",
+            fixture.repo.path().join("other-view").to_string_lossy()
+        ));
         fixture.app.reconcile_arena_runs();
         fixture.app.tab_mut().mode = DiffMode::Branch;
         fixture.app.tab_mut().er_root = captured_root;

@@ -3,7 +3,7 @@
 //! Flat branch-level layout under
 //! `<app_data>/easy-review/repos/<repo_slug>/branches/<branch_slug>/`.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::ErRoot;
 
@@ -117,11 +117,12 @@ pub fn branch_dir(repo_slug: &str, branch_slug: &str) -> PathBuf {
 }
 
 /// Resolve managed storage from already-slugged components.
+///
+/// A failed `create_dir_all` still returns the computed managed path; later
+/// writes fail visibly where they handle errors.
 pub fn resolve_managed_root_from_slugs(repo_slug: &str, branch_slug: &str) -> ErRoot {
     let branch_path = branch_dir(repo_slug, branch_slug);
-    if std::fs::create_dir_all(&branch_path).is_err() {
-        return ErRoot::RepoLocal(String::new());
-    }
+    let _ = std::fs::create_dir_all(&branch_path);
     let path_str = branch_path.to_string_lossy().into_owned();
     ErRoot::Managed {
         agent_dir: path_str.clone(),
@@ -145,13 +146,9 @@ pub fn view_bucket_dir(repo_slug: &str, branch_slug: &str, bucket: &str) -> Path
 
 /// Directory for the checked-out branch's local review bucket.
 ///
-/// This follows the same storage rules as a local `er` tab: repo-local mode
-/// uses `<repo_root>/.er`, while managed storage uses the `branch` view bucket.
+/// This follows the same storage rules as a local `er` tab: the `branch` view
+/// bucket under managed storage.
 pub fn local_branch_bucket_dir(repo_root: &str, branch: &str) -> PathBuf {
-    if use_repo_local_storage() {
-        return Path::new(repo_root).join(".er");
-    }
-
     view_bucket_dir(&slug_repo(repo_root), &slug_branch(branch), "branch")
 }
 
@@ -169,17 +166,16 @@ pub fn pr_bucket_dir(owner_repo_slug: &str, pr_number: u64) -> PathBuf {
 
 /// Resolve managed storage for a local view bucket (branch/unstaged/staged/history).
 ///
-/// Creates the directory if it does not exist. Falls back to `ErRoot::RepoLocal("")`
-/// on failure (mirrors `resolve_managed_root_from_slugs`).
+/// Creates the directory if it does not exist. A failed `create_dir_all` still
+/// returns the computed managed path; later writes fail visibly where they
+/// handle errors.
 pub fn resolve_managed_root_for_view_bucket(
     repo_slug: &str,
     branch_slug: &str,
     bucket: &str,
 ) -> ErRoot {
     let dir = view_bucket_dir(repo_slug, branch_slug, bucket);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return ErRoot::RepoLocal(String::new());
-    }
+    let _ = std::fs::create_dir_all(&dir);
     let path_str = dir.to_string_lossy().into_owned();
     ErRoot::Managed {
         agent_dir: path_str.clone(),
@@ -189,23 +185,17 @@ pub fn resolve_managed_root_for_view_bucket(
 
 /// Resolve managed storage for a PR bucket.
 ///
-/// Creates the directory if it does not exist. Falls back to `ErRoot::RepoLocal("")`
-/// on failure.
+/// Creates the directory if it does not exist. A failed `create_dir_all` still
+/// returns the computed managed path; later writes fail visibly where they
+/// handle errors.
 pub fn resolve_managed_root_for_pr_bucket(owner_repo_slug: &str, pr_number: u64) -> ErRoot {
     let dir = pr_bucket_dir(owner_repo_slug, pr_number);
-    if std::fs::create_dir_all(&dir).is_err() {
-        return ErRoot::RepoLocal(String::new());
-    }
+    let _ = std::fs::create_dir_all(&dir);
     let path_str = dir.to_string_lossy().into_owned();
     ErRoot::Managed {
         agent_dir: path_str.clone(),
         session_dir: path_str,
     }
-}
-
-/// True when `ER_REPO_LOCAL=1` — use repo `.er/` instead of managed storage.
-pub fn use_repo_local_storage() -> bool {
-    std::env::var("ER_REPO_LOCAL").as_deref() == Ok("1")
 }
 
 /// Shared mutex for tests that mutate `ER_STORAGE_ROOT`.
@@ -249,10 +239,7 @@ mod tests {
         let crate::ErRoot::Managed {
             agent_dir,
             session_dir,
-        } = root
-        else {
-            panic!("expected Managed root");
-        };
+        } = root;
         assert_eq!(agent_dir, session_dir);
         assert!(agent_dir.contains("test-repo"));
         assert!(agent_dir.contains("feature-branch"));
@@ -297,10 +284,7 @@ mod tests {
         let crate::ErRoot::Managed {
             agent_dir,
             session_dir,
-        } = root
-        else {
-            panic!("expected Managed root");
-        };
+        } = root;
         assert_eq!(agent_dir, session_dir);
         assert!(
             agent_dir.contains("view-buckets/branch"),
@@ -324,10 +308,7 @@ mod tests {
         let crate::ErRoot::Managed {
             agent_dir,
             session_dir,
-        } = root
-        else {
-            panic!("expected Managed root");
-        };
+        } = root;
         assert_eq!(agent_dir, session_dir);
         assert!(
             agent_dir.contains("prs/pr-7"),
@@ -337,5 +318,41 @@ mod tests {
             agent_dir.contains("myorg-myrepo"),
             "missing slug: {agent_dir}"
         );
+    }
+
+    #[test]
+    fn repo_local_env_var_is_ignored() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", tmp.path());
+        std::env::set_var("ER_REPO_LOCAL", "1");
+        let dir = local_branch_bucket_dir("/some/repo", "feature");
+        std::env::remove_var("ER_REPO_LOCAL");
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        let s = dir.to_string_lossy();
+        assert!(
+            s.starts_with(&*tmp.path().to_string_lossy()),
+            "not under the storage root: {s}"
+        );
+        assert!(s.ends_with("view-buckets/branch"), "unexpected path: {s}");
+    }
+
+    #[test]
+    fn a_failed_mkdir_still_names_the_managed_path() {
+        let _guard = STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let tmp = TempDir::new().unwrap();
+        let blocker = tmp.path().join("blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", blocker.join("root"));
+        let root = resolve_managed_root_for_view_bucket("r", "b", "branch");
+        let expected = view_bucket_dir("r", "b", "branch");
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        assert_eq!(root.er_dir(), expected.to_string_lossy());
     }
 }

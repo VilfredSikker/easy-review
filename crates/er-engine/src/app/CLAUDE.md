@@ -41,8 +41,7 @@ is a copy-once migration source and nothing else — leave it on disk. There is 
 per-repo config file; do not add one back.
 `docs/adr/0005-global-only-config.md`.
 
-`ER_REPO_LOCAL=1` opts into repo `.er/` for debugging. Nothing imports a repo
-`.er/` automatically.
+Nothing imports a repo `.er/`; review files always live under managed storage.
 
 ## Traps
 
