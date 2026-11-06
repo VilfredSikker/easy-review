@@ -1,7 +1,7 @@
 # Epic 1.0.0 status
 
 > Release branch `release/v1.0.0`; every PR below targets it. Plan: [PLAN.md](./PLAN.md). Design: [the proposal](../../plans/plan-clean-slate-architecture.md). Decisions: [ADDENDUM-01](./ADDENDUM-01-decisions.md), [ADDENDUM-02](./ADDENDUM-02-issue-decisions.md), [ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md). Pick-up notes: [BUILD_LOG.md](./BUILD_LOG.md).
-> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 19:10 UTC.
+> Updated by the coordinator only, after every merge, verdict or hand-off. GitHub ([#371](https://github.com/VilfredSikker/easy-review/issues/371), the [v1.0.0 milestone](https://github.com/VilfredSikker/easy-review/milestone/1)) wins if the two disagree. Last update: 2026-11-06 20:05 UTC.
 
 **Legend:** ⬜ planned · 🟡 in progress · 🔵 in review · 🔧 fixing review findings · ✅ merged · ⛔ blocked on a design
 
@@ -9,13 +9,13 @@
 
 | Session | Bundle | Working on | Lanes |
 | --- | --- | --- | --- |
-| T1 → T4 | T4 git port | [#378](https://github.com/VilfredSikker/easy-review/issues/378) P07, then #379 P08, #380 P09 | C |
-| T2 → T3 | T3 comment posting | [#376](https://github.com/VilfredSikker/easy-review/issues/376) P05, then #377 P06 | E, F |
+| T1 → T4 | T4 git port, then T5 | reading [#381](https://github.com/VilfredSikker/easy-review/issues/381) P10; starts when #377 merges; #379 and #380 after #377 | – |
+| T2 → T3 | T3 comment posting | [#376](https://github.com/VilfredSikker/easy-review/issues/376) P05 (TUI PR #417 left), then #377 P06 | E, F |
 | D4 | – | idle; designs #401 and #406 done | – |
 | D5 | – | idle; designs #402 and #404 done | – |
 | D1, D2, D3 | – | idle; next free design is #405 when #381 closes | – |
 
-**Next to unblock:** #378 (P07) merging unblocks #381 (P10, er-github), and with P06 also #379. P05 is in review as two stacked PRs.
+**Next to unblock:** #417 merging closes P05; then #377 (P06) runs, and its merge starts #381 (P10) and #379 (P08). #377 and #381 touch the same files (#381 moves `github.rs` and `pending_review.rs`), so they run in that order.
 
 ## Progress
 
@@ -28,12 +28,12 @@ The `Model` column sets how deep the coordinator's review goes, not who implemen
 | P03 | [#374](https://github.com/VilfredSikker/easy-review/issues/374) Delete the importance table | C | opus | ✅ | [#415](https://github.com/VilfredSikker/easy-review/pull/415) | follow-up: ADR 0037 names removed types |
 | P04 | [#375](https://github.com/VilfredSikker/easy-review/issues/375) Delete the repo-local storage root | E/F | opus | ✅ | [#414](https://github.com/VilfredSikker/easy-review/pull/414) | |
 | P25 | [#411](https://github.com/VilfredSikker/easy-review/issues/411) Upgrade dependencies, raise rust-version | C | sonnet | ✅ | [#418](https://github.com/VilfredSikker/easy-review/pull/418) | TypeScript 7 and Tailwind 4.3.5 deferred |
-| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | 🔧 | [#416](https://github.com/VilfredSikker/easy-review/pull/416), [#417](https://github.com/VilfredSikker/easy-review/pull/417) | T3; fix round reviewed: one small double-post path left in #416 |
+| P05 | [#376](https://github.com/VilfredSikker/easy-review/issues/376) Post GitHub comments when created | E/F | opus | 🔵 | [#416](https://github.com/VilfredSikker/easy-review/pull/416) ✅, [#417](https://github.com/VilfredSikker/easy-review/pull/417) | #416 merged; #417 (TUI) has a merge verdict and waits for CI |
 | P06 | [#377](https://github.com/VilfredSikker/easy-review/issues/377) Delete the local review draft | E/F | opus | ⬜ | | after P05 |
-| P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | 🟡 | | T4 (the T1 session); one PR at ~1,850 lines allowed (design boilerplate) |
-| P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ⬜ | | after P07, P06 |
+| P07 | [#378](https://github.com/VilfredSikker/easy-review/issues/378) Create er-git | C | sonnet | ✅ | [#419](https://github.com/VilfredSikker/easy-review/pull/419) | follow-ups in the PR review (cfg-test match, gh rule message) |
+| P08 | [#379](https://github.com/VilfredSikker/easy-review/issues/379) Engine git calls behind the port | E/F | sonnet | ⬜ | | after P06 |
 | P09 | [#380](https://github.com/VilfredSikker/easy-review/issues/380) Front-end git calls, git guardrail | C/F | sonnet | ⬜ | | after P08 |
-| P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | ⬜ | | after P07; needs real `gh` samples (owner) |
+| P10 | [#381](https://github.com/VilfredSikker/easy-review/issues/381) Create er-github | C/E | opus | ⬜ | | after P06 (shared files; coordinator order); T4 next; needs real `gh` samples (owner) |
 | P11 | [#382](https://github.com/VilfredSikker/easy-review/issues/382) Move github.rs into er-github | E | opus | ⬜ | | after P10, P08 |
 | P12 | [#383](https://github.com/VilfredSikker/easy-review/issues/383) Front-end gh calls, gh guardrail | C/F | opus | ⬜ | | after P11, P09 |
 | P13 | [#384](https://github.com/VilfredSikker/easy-review/issues/384) One remote-slug parser | F | sonnet | ⬜ | | after P11 |
