@@ -72,3 +72,7 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - Designs approved by the coordinator under the owner's delegation, with their task issue changes applied: #402 (round 3) to #391; #407 (round 3) to #378, #379 and #380; #401 (round 3, with amendment B: `slug_repo` and `rules_key` stay unhashed, and only folder-path callers use the hashed slug) to #385, #386, #387, #393 and #395, with constraints recorded on #404 and #406. #401, #402 and #407 are closed.
 - ADR numbers: 0053 goes to P05 (#376). Every other new ADR takes the next free number at branch time, because several PRs add ADRs in parallel.
 - Design bundle D6 started: #404 to the D5 session and #406 to the D4 session. #405 waits for #381.
+- Merged PR #415 (P03) as 2e042c52a; #374 closed. T1 continues with #411 (P25).
+- #408 approved in round 3 with two binding amendments: the page splitter tracks JSON string state, and `Unprocessable.message` keeps every `errors[]` entry, because review 422s carry plain strings that the desktop matchers read. #409 approved, with one generation counter per cache confirmed over a shared one. #410's fold-ins follow #409. All three are applied to #381, #382 and #383, and closed. **Every wave-1 design is now settled.**
+- `"crossSessionInbound": "accept"` is set at the top level of `~/.claude/settings.json`. Cross-session messages no longer wait for the owner.
+- Follow-ups to carry to the phase-0 gate: ADR 0037 still names `TabState.importance` and `ImportanceRepoConfig`; the `preload.rs:170-173` comment fix rides on #376.
