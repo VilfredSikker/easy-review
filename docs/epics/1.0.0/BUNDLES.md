@@ -83,3 +83,13 @@ Never run tests, builds, clippy or lint. Read code with git grep, rg and file re
 - **PR approved:** merge it, close its issue by hand (a PR into a release branch does not close it), then tell that bundle's session "continue".
 - **Decision approved:** apply its "Task issue changes" to the task issue, and close the design issue. The task bundle that was waiting on it can start.
 - **Changes requested:** send the review findings to the same session, so it keeps its context.
+
+## Talking to sessions
+
+Instructions go on GitHub, not through the owner. The coordinator posts each review on the issue, then a comment starting `**Next step (coordinator):**` that says exactly what the session does next. The owner sends the session one line:
+
+```text
+Read the latest **Next step (coordinator):** comment on your issue(s) on GitHub (gh issue view <n> -R VilfredSikker/easy-review --comments) and do what it says.
+```
+
+A session reports back on the same issue (`Revised; ready for re-review.`, or the brief's PR report), and the owner tells the coordinator which issues to look at.
