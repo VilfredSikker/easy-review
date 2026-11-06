@@ -1,6 +1,6 @@
 # Agent brief: epic 1.0.0
 
-Every implementer and reviewer agent reads this first. Your GitHub issue is your specification ([ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md)): where it disagrees with [PLAN.md](./PLAN.md) or an earlier addendum, the issue wins, and a settled `**Decision:**` comment on its design issue wins over the issue. The target design is [PROPOSAL.md](./PROPOSAL.md).
+Every implementer and reviewer agent reads this first. Your GitHub issue is your specification ([ADDENDUM-03](./ADDENDUM-03-issues-are-the-spec.md)): where it disagrees with [PLAN.md](./PLAN.md) or an earlier addendum, the issue wins, and a settled `**Decision:**` comment on its design issue wins over the issue. The target design is [the proposal](../../plans/plan-clean-slate-architecture.md).
 
 ## Ground rules
 

@@ -22,4 +22,5 @@ pub mod remote_pr_open_cache;
 pub mod snapshot;
 pub mod tabs;
 pub mod terminal;
+pub mod triage_update;
 pub mod window_placement;

@@ -7,13 +7,16 @@ import {
   hasReachDetail,
   previewLine,
   priorityDotClass,
+  priorityFiles,
   reachPreview,
+  reviewedBy,
+  reviewedNext,
   summaryPills,
   takeaways,
   triageFreshness,
   verdictLabel,
 } from "./triageCard";
-import type { TriageSnapshot } from "./types";
+import type { TriageReviewUpdate, TriageSnapshot } from "./types";
 
 function makeTriage(overrides: Partial<TriageSnapshot> = {}): TriageSnapshot {
   return {
@@ -335,5 +338,47 @@ describe("triageFreshness", () => {
     expect(
       triageFreshness(makeTriage({ fresh: false }), { built_from_oid: "7be0d14aabbccdd" }, now).text,
     ).toBe("stale");
+  });
+});
+
+describe("review update", () => {
+  const update = (o: Partial<TriageReviewUpdate> = {}): TriageReviewUpdate => ({
+    approx_risk: "high",
+    next: "fix",
+    high: 2,
+    med: 1,
+    low: 0,
+    reviewed_by: ["General", "Security"],
+    priority_files: [{ path: "b.rs", reason: "found", risk: "high" }],
+    created_at: "",
+    ...o,
+  });
+
+  it("leaves triage's own call alone until a review exists", () => {
+    const t = makeTriage({ approx_risk: "low", priority_files: [{ path: "a.rs", reason: "", risk: "low" }] });
+    expect(reviewedNext(t)).toBeNull();
+    expect(priorityFiles(t)).toEqual(t.priority_files);
+    expect(summaryPills(t)[0]?.label).toBe("low risk");
+  });
+
+  it("says what to do next from the review's findings", () => {
+    expect(reviewedNext(makeTriage({ review_update: update() }))).toBe("Fix 2 high findings");
+    expect(reviewedNext(makeTriage({ review_update: update({ next: "check", high: 0, med: 1 }) }))).toBe(
+      "Check 1 medium finding",
+    );
+    expect(reviewedNext(makeTriage({ review_update: update({ next: "done" }) }))).toBe(
+      "Nothing flagged — read the diff",
+    );
+    expect(reviewedBy(makeTriage({ review_update: update() }))).toBe("Updated by review · General, Security");
+  });
+
+  it("swaps in the review's risk and priority files", () => {
+    const t = makeTriage({ approx_risk: "low", review_update: update({ approx_risk: "med" }) });
+    const risk = summaryPills(t)[0];
+    expect(risk?.label).toBe("medium risk");
+    expect(risk?.tone).toBe("risk-med");
+    expect(risk?.title).toContain("triage estimated low");
+    expect(priorityFiles(t)[0]?.path).toBe("b.rs");
+    expect(priorityDotClass("med")).toBe("bg-risk-med");
   });
 });

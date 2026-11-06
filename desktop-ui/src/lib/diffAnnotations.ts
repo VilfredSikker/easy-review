@@ -121,13 +121,13 @@ export function confidenceGlyph(confidence: Confidence): string {
 }
 
 /**
- * Mirrors the engine's `Finding::passes`.
+ * Escalations need human review even when their confidence is below the gate.
  *
  * Activity is not this function's business: the backend never sends a dropped
  * finding, and resolved ones arrive in their own array.
  */
 export function findingPassesTrust(f: FlatFinding, minTrust: Confidence): boolean {
-  return TRUST_RANK[f.confidence] <= TRUST_RANK[minTrust];
+  return f.arbiter_verdict === "escalated" || TRUST_RANK[f.confidence] <= TRUST_RANK[minTrust];
 }
 
 /**
@@ -176,6 +176,12 @@ function hashStr(s: string): number {
   return h;
 }
 
+function findingVersion(f: FlatFinding): number {
+  return hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0) +
+    (f.arbiter_verdict ? hashStr(f.arbiter_verdict) : 0) +
+    hashStr(`${f.file}:${f.line}:${f.hunk_index}`);
+}
+
 export function annotationVersion(
   ai: AiInput,
   files: FileSnapshot[],
@@ -185,7 +191,7 @@ export function annotationVersion(
 ): number {
   let h = 17;
   for (const t of ai.threads) h = (h * 31 + hashStr(t.id) + (t.resolved ? 1 : 0) + (t.stale ? 2 : 0)) | 0;
-  for (const f of ai.findings) h = (h * 31 + hashStr(f.id) + (f.thread_id ? hashStr(f.thread_id) : 0)) | 0;
+  for (const f of ai.findings) h = (h * 31 + findingVersion(f)) | 0;
   h = (h * 31 + files.length) | 0;
   for (const file of files) {
     for (const hunk of file.hunks) {

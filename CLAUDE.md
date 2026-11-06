@@ -65,9 +65,13 @@ debugging.
   ```bash
   git fetch origin --quiet   # remote refs go stale, and a failed fetch is silent
   git for-each-ref --format='%(refname:short)' 'refs/remotes/origin/release/v*' \
-    | sort -V | tail -1
+    | grep -v '^origin/release/v1\.0\.0$' | sort -V | tail -1
   ```
 
+- **`release/v1.0.0` is the breaking-release epic**, run from
+  `docs/epics/1.0.0/` on that branch, which is why the resolver skips it.
+  Target it only when that epic's STATUS names your PR. Remove the `grep`
+  when 1.0.0 ships.
 - Release branches ship with release notes.
 
 This is intent, not an enforced gate — CI does not check the change type, and

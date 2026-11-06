@@ -56,3 +56,10 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
   Lanes: #379 holds E and F; #381 holds C and E; #384 holds F; #387, #388, #390, #394 and #395 hold C.
 - [ADDENDUM-03-issues-are-the-spec.md](./ADDENDUM-03-issues-are-the-spec.md) makes each issue body the specification and defines how design issues are settled. **Planning for phases 0–2 is closed.** STATUS.md "Start here" lists what is assignable at handoff.
 - Owner decision: every task and design issue goes to smaller models. Opus reviews each PR and each design decision in the orchestrating session. `model:` labels now set review depth (ADDENDUM-03, "Who does the work, and who reviews it").
+- Coordinator role handed to a new session; its prompt is [COORDINATOR.md](./COORDINATOR.md).
+
+### 2026-11-06 (coordinator)
+
+- Owner merged PR #365 and PR #368 into `main`. Merged `main` into `release/v1.0.0` (v0.6.5, #365, #368, #370; clean). Per D10, PROPOSAL.md is now a pointer to `docs/plans/plan-clean-slate-architecture.md`. `main` brought ADR 0052, so the next free ADR number is 0053.
+- Design reviews posted on all seven wave-1 decisions (#401, #402, #403, #407, #408, #409, #410): each is `**Design review:** revise`. In every one the chosen option holds; the gaps are in signatures, the task issue changes, and the code that PR #370 brought in. Cross-design points: #409 and #410 both put a `PrCommentBundle` cache in #381, which cannot build it until #382; #403, #409 and #410 each need a cache generation counter against a fetch that is still running when the cache is cleared.
+- Owner decision on #401 must-fix 4: the v1 store names branch and repo folders `<readable slug>-<8 hex of SHA-256 of the raw name>`; repos hash the normalized `host/owner/repo`. Applies from #386 (P15).
