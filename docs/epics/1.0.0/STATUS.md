@@ -8,7 +8,7 @@
 
 Planning for phases 0–2 is closed (2026-11-06). Every task and design issue has a review verdict. Assign an issue when it has no open blocker and no assigned issue holds any of its lanes.
 
-Assignable at handoff:
+Hand the work out in bundles, with the prompts in [BUNDLES.md](./BUNDLES.md). Assignable at handoff:
 
 | Issue | What | Model | Lanes |
 | --- | --- | --- | --- |
