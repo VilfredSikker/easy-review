@@ -455,7 +455,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -476,7 +476,7 @@ mod tests {
             uses_stream_json: false,
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };
@@ -503,7 +503,7 @@ mod tests {
             uses_stream_json: true,
             env: vec![],
             // Irrelevant to argv construction; these tests never spawn.
-            timeout: std::time::Duration::from_secs(900),
+            timeout: std::time::Duration::from_mins(15),
             slot_cap: 3,
             slot_ceiling: 6,
         };

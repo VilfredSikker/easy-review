@@ -372,7 +372,7 @@ fn gh_remote_branch_tip(owner: &str, repo: &str, branch: &str) -> Result<Option<
 /// A merged PR's branch rarely changes, but the status loop asks every 30s.
 /// Delete and restore through this module update the entry, so the box
 /// reflects its own actions at once (ADR 0026).
-const BRANCH_EXISTS_TTL: Duration = Duration::from_secs(5 * 60);
+const BRANCH_EXISTS_TTL: Duration = Duration::from_mins(5);
 static BRANCH_EXISTS_CACHE: TtlCache<bool> = TtlCache::new(BRANCH_EXISTS_TTL);
 
 /// Owner and repo are case-insensitive on GitHub.
@@ -491,7 +491,7 @@ pub fn gh_repo_merge_settings(owner: &str, repo: &str) -> Result<RepoMergeSettin
 
 /// Repo settings rarely change, and the status loop runs every 30s; one
 /// query per repo per TTL keeps it off the rate limit (ADR 0026).
-const REPO_SETTINGS_TTL: Duration = Duration::from_secs(15 * 60);
+const REPO_SETTINGS_TTL: Duration = Duration::from_mins(15);
 static REPO_SETTINGS_CACHE: TtlCache<RepoMergeSettings> = TtlCache::new(REPO_SETTINGS_TTL);
 
 /// Cached [`gh_repo_merge_settings`].
