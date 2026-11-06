@@ -1,7 +1,7 @@
 //! Uninstall Easy Review user data and (optionally) installed apps.
 //!
 //! Shared by the TUI (`er uninstall`) and Desktop settings. Removes config,
-//! managed review storage, legacy cache, and discovered binaries / app bundles.
+//! managed review storage, caches, and discovered binaries / app bundles.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -23,7 +23,7 @@ impl UninstallKind {
         match self {
             Self::Config => "Config",
             Self::Data => "Review data",
-            Self::Cache => "Legacy cache",
+            Self::Cache => "Cache",
             Self::Binary => "Terminal binary",
             Self::DesktopApp => "Desktop app",
         }
@@ -163,21 +163,6 @@ fn launcher_cache_dirs_from(xdg: Option<&Path>) -> Vec<PathBuf> {
     out
 }
 
-/// Legacy cache directory (`~/.cache/er`).
-pub fn cache_dir() -> Option<PathBuf> {
-    let xdg = std::env::var("XDG_CACHE_HOME").ok();
-    legacy_cache_dir_from(xdg.as_deref().map(Path::new), dirs::home_dir().as_deref())
-}
-
-/// A relative `XDG_CACHE_HOME` falls back to `~/.cache`, as `dirs` does: joined
-/// as-is it would put an uninstall target inside the working directory.
-fn legacy_cache_dir_from(xdg: Option<&Path>, home: Option<&Path>) -> Option<PathBuf> {
-    match xdg.filter(|dir| dir.is_absolute()) {
-        Some(xdg) => Some(xdg.join("er")),
-        None => home.map(|h| h.join(".cache").join("er")),
-    }
-}
-
 /// Build the uninstall plan for the given options (lists expected roots even when
 /// missing so dry-run / UI can show the full picture).
 pub fn plan(opts: &UninstallOptions) -> Vec<UninstallTarget> {
@@ -195,9 +180,6 @@ pub fn plan(opts: &UninstallOptions) -> Vec<UninstallTarget> {
         }
     }
     if opts.remove_cache {
-        if let Some(dir) = cache_dir() {
-            push_unique(&mut targets, UninstallKind::Cache, dir);
-        }
         for dir in launcher_cache_dirs() {
             push_unique(&mut targets, UninstallKind::Cache, dir);
         }
@@ -623,24 +605,6 @@ mod tests {
         assert!(opts.remove_cache);
         assert!(opts.remove_binaries);
         assert!(opts.remove_desktop_app);
-    }
-
-    #[test]
-    fn legacy_cache_dir_ignores_a_relative_xdg_root() {
-        let home = Path::new("/home/u");
-
-        assert_eq!(
-            legacy_cache_dir_from(Some(Path::new("/xdg-cache")), Some(home)),
-            Some(PathBuf::from("/xdg-cache/er"))
-        );
-        assert_eq!(
-            legacy_cache_dir_from(Some(Path::new(".")), Some(home)),
-            Some(PathBuf::from("/home/u/.cache/er"))
-        );
-        assert_eq!(
-            legacy_cache_dir_from(None, Some(home)),
-            Some(PathBuf::from("/home/u/.cache/er"))
-        );
     }
 
     #[test]
