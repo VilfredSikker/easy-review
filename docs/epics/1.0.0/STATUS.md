@@ -39,6 +39,16 @@ The plan and the addenda refer to work by id. This table maps each id to its iss
 | G5 | [#398](https://github.com/VilfredSikker/easy-review/issues/398) |
 | G5b | [#399](https://github.com/VilfredSikker/easy-review/issues/399) |
 | G6 | [#400](https://github.com/VilfredSikker/easy-review/issues/400) |
+| P05-design | [#403](https://github.com/VilfredSikker/easy-review/issues/403) |
+| P07-design | [#407](https://github.com/VilfredSikker/easy-review/issues/407) |
+| P10-design (errors) | [#408](https://github.com/VilfredSikker/easy-review/issues/408) |
+| P10-design (cache, runner) | [#409](https://github.com/VilfredSikker/easy-review/issues/409) |
+| P11-design | [#410](https://github.com/VilfredSikker/easy-review/issues/410) |
+| P14-design | [#401](https://github.com/VilfredSikker/easy-review/issues/401) |
+| P16-design | [#405](https://github.com/VilfredSikker/easy-review/issues/405) |
+| P20-design | [#402](https://github.com/VilfredSikker/easy-review/issues/402) |
+| P21-design | [#404](https://github.com/VilfredSikker/easy-review/issues/404) |
+| P23-design | [#406](https://github.com/VilfredSikker/easy-review/issues/406) |
 
 ## Waiting on the owner
 

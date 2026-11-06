@@ -35,3 +35,9 @@ Append-only, newest at the bottom. Only the orchestrator writes here. For where 
 - Before the issues were created, PLAN.md P07, P08, P09, P10, P12 and P15 were edited to match Addendum 01 (D7 allow-list, D6 notice).
 - Agents claim an issue by assignment, report on the issue, and open PRs with `Part of #<issue>`. Whoever merges closes the issue, because PRs into a release branch do not close issues.
 - The 24 task issues are too terse for a smaller model. An enrichment pass by another model is briefed in [HANDOFF-issue-enrichment.md](./HANDOFF-issue-enrichment.md), and its output is reviewed against [REVIEW-issue-enrichment.md](./REVIEW-issue-enrichment.md). Nine issues (P05, P07, P10, P11, P14, P16, P20, P21, P23) get a design issue that blocks them. Assign an issue only after a `ready` verdict.
+- The enrichment pass is done. All 24 task issues follow the template in HANDOFF-issue-enrichment.md, and each has a `Plan correction` section where the code disagreed with the plan. Ten design issues block their implementation issues: #401 P14, #402 P20, #403 P05, #404 P21, #405 P16, #406 P23, #407 P07, #408 and #409 P10, #410 P11. Model labels moved to sonnet for #372, #378, #386 and #391. Nothing is reviewed yet.
+- Decisions the review must settle before work starts:
+  - `github.rs` has 19 production `git` spawns that no plan entry owns (verified). Either P08 (#379) migrates them, or they stay on the allow-list until P11 (#382).
+  - #393 (P22) is stopped until its file-list correction is ruled on.
+  - #384's `RepoSlug::parse` rule table is the agent's choice and needs confirming.
+  - The P23 design (#406) must raise `rust-version` from 1.88 to 1.89 to use `File::lock`, or use `fs4` (noted on the issue).
