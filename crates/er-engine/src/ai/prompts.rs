@@ -1415,8 +1415,7 @@ Target: complete in under 60 seconds. Read the diff once, answer all questions i
 ///
 /// Build the validate prompt with paths anchored at an absolute managed
 /// directory (`output_dir`). Use this for non-remote local-managed tabs so
-/// the agent updates the same `review.json` the UI loads from, rather than
-/// writing to the repo-local `<repo>/.er/`.
+/// the agent updates the same `review.json` the UI loads from.
 pub fn build_validate_prompt_local_managed(
     base_branch: &str,
     scope: &str,

@@ -13358,7 +13358,7 @@ mod tests {
         std::fs::write(er_dir.join("arbiter.json"), overlay("first")).unwrap();
         let mut app = make_app_with_n_tabs(1);
         app.tab_mut().er_root =
-            er_engine::paths::ErRoot::RepoLocal(dir.path().to_string_lossy().into());
+            er_engine::paths::ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
         app.tab_mut().branch_diff_hash = "hash".into();
         app.tab_mut().reload_ai_state();
         let before = compute_content_revision(&app);

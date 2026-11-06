@@ -6017,7 +6017,7 @@ mod checklist_toggle_tests {
     fn app_with_checklist(tmp: &tempfile::TempDir) -> App {
         let mut app = App::new_for_test(vec![]);
         let tab = app.tab_mut();
-        tab.er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tmp.path().to_string_lossy()));
         let er_dir = std::path::PathBuf::from(tab.er_dir());
         std::fs::create_dir_all(&er_dir).unwrap();
         std::fs::write(
@@ -6082,7 +6082,7 @@ mod checklist_toggle_tests {
     fn toggling_with_no_checklist_reports_none_and_creates_no_file() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = App::new_for_test(vec![]);
-        app.tab_mut().er_root = ErRoot::RepoLocal(tmp.path().to_string_lossy().to_string());
+        app.tab_mut().er_root = ErRoot::managed(format!("{}/.er", tmp.path().to_string_lossy()));
         std::fs::create_dir_all(tmp.path().join(".er")).unwrap();
 
         assert_eq!(app.toggle_checklist_item_at(0).unwrap(), None);

@@ -1014,10 +1014,10 @@ mod tests {
     fn app_with_two_tabs(root_a: &str, root_b: &str) -> App {
         use crate::paths::ErRoot;
         let mut a = TabState::new_for_test(vec![]);
-        a.er_root = ErRoot::RepoLocal(root_a.to_string());
+        a.er_root = ErRoot::managed(format!("{root_a}/.er"));
         a.repo_root = root_a.to_string();
         let mut b = TabState::new_for_test(vec![]);
-        b.er_root = ErRoot::RepoLocal(root_b.to_string());
+        b.er_root = ErRoot::managed(format!("{root_b}/.er"));
         b.repo_root = root_b.to_string();
         let mut app = App::new_for_test(vec![]);
         app.tabs = vec![a, b];

@@ -40,8 +40,7 @@ Config is global-only at `<storage_root>/config.toml`. `~/.config/er/config.toml
 is not read. There is no per-repo config file; do not add one back.
 `docs/adr/0005-global-only-config.md`.
 
-`ER_REPO_LOCAL=1` opts into repo `.er/` for debugging. Nothing imports a repo
-`.er/` automatically.
+Nothing imports a repo `.er/`; review files always live under managed storage.
 
 ## Traps
 

@@ -49,7 +49,6 @@ fn local_comments_survive_late_pr_number_assignment() {
     std::fs::create_dir_all(&storage).unwrap();
 
     std::env::set_var("ER_STORAGE_ROOT", &storage);
-    std::env::remove_var("ER_REPO_LOCAL");
 
     // Build a repo with a `main` base and a `feature` branch carrying one change.
     git(&repo, &["init", "-q", "-b", "main"]);
@@ -187,7 +186,6 @@ fn fresh_comment_is_anchored_to_diff_hash_and_survives_relocate() {
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&storage).unwrap();
     std::env::set_var("ER_STORAGE_ROOT", &storage);
-    std::env::remove_var("ER_REPO_LOCAL");
 
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.email", "t@example.com"]);
@@ -286,7 +284,6 @@ fn adding_local_github_comment_does_not_reload_all_ai_sidecars() {
     std::fs::create_dir_all(&storage).unwrap();
 
     std::env::set_var("ER_STORAGE_ROOT", &storage);
-    std::env::remove_var("ER_REPO_LOCAL");
 
     git(&repo, &["init", "-q", "-b", "main"]);
     git(&repo, &["config", "user.email", "t@example.com"]);

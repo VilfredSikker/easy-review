@@ -15,7 +15,6 @@
 |---|---|
 | `ER_STORAGE_ROOT` | Replaces the storage root. Config and review sidecars both move with it; tests use it to write under a temp dir. |
 | `ER_CONFIG_PATH` | Replaces the config path outright — a full file path, not a directory. |
-| `ER_REPO_LOCAL=1` | Review sidecars go to `<repo>/.er/` instead of managed storage. Debug only; the config path is unaffected. |
 
 An old `~/.config/er/config.toml` (`$XDG_CONFIG_HOME/er/config.toml`) is not read.
 

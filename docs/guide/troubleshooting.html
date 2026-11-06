@@ -27,19 +27,17 @@
 
     <h3>AI findings do not appear</h3>
     <ul>
-      <li><strong>Check where the artifacts went.</strong> By default <code>er</code> reads from managed storage, not the
-      repo's <code>.er/</code>. External tools may write to <code>.er/</code> in the repo
-      instead. To bridge the gap: run reviews via the AI Hub (<kbd>a</kbd> in the TUI,
-      <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> in the desktop), or launch <code>er</code> with
-      <code>ER_REPO_LOCAL=1</code> to read the repo directory directly.
-      See <a href="storage.html">Review Storage</a>.</li>
+      <li><strong>Check where the artifacts went.</strong> <code>er</code> reads from managed storage, not the
+      repo's <code>.er/</code>. Run reviews via the AI Hub (<kbd>a</kbd> in the TUI,
+      <kbd>Cmd</kbd>+<kbd>K</kbd> → <strong>AI</strong> in the desktop); an external tool must write to the same
+      managed directory. See <a href="storage.html">Review Storage</a>.</li>
       <li><strong>Check freshness.</strong> If the diff changed after the review ran, the data is dimmed as
       <em>stale</em>. Re-run the relevant action from the AI Hub.</li>
       <li><strong>Check the layer.</strong> In the terminal, press <kbd>A</kbd> to make sure the AI-findings layer is
       visible.</li>
-      <li><strong>Try fixtures.</strong> Run <code>scripts/generate-test-fixtures.sh</code> in your repo, then open
-      <code>er</code> with <code>ER_REPO_LOCAL=1</code> — the script writes a repo <code>.er/</code>, which is only read
-      in that mode. That confirms the overlay renders at all.</li>
+      <li><strong>Try fixtures.</strong> <code>scripts/generate-test-fixtures.sh</code> writes sample sidecars to a repo
+      <code>.er/</code>; copy them into this branch's view bucket (see <a href="storage.html">Review Storage</a>) to
+      confirm the overlay renders at all.</li>
     </ul>
 
     <h3>GitHub features are missing or failing</h3>
@@ -112,9 +110,8 @@
 
     <h3>Where is my review data stored, and is it in git?</h3>
     <p>
-      By default it is in managed application data outside your repository, so it never touches <code>git status</code>.
-      Set <code>ER_REPO_LOCAL=1</code> to use a repo <code>.er/</code> directory instead (add it to <code>.gitignore</code>
-      if you do). Full paths are in <a href="storage.html">Review Storage</a>.
+      It is in managed application data outside your repository, so it never touches <code>git status</code>.
+      Full paths are in <a href="storage.html">Review Storage</a>.
     </p>
 
     <h3>What does the desktop app add over the terminal?</h3>

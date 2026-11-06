@@ -829,7 +829,7 @@ mod tests {
         });
         let mut tab = tab_with_ai(ai);
         tab.repo_root = empty_dir.to_string_lossy().to_string();
-        tab.er_root = crate::ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = crate::ErRoot::managed(format!("{}/.er", tab.repo_root));
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             !out.contains("## UI annotations"),
@@ -915,7 +915,7 @@ mod tests {
         save_ui_annotations(&er_dir, &anns).unwrap();
         let mut tab = tab_with_ai(AiState::default());
         tab.repo_root = pop_dir.to_string_lossy().to_string();
-        tab.er_root = crate::ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = crate::ErRoot::managed(format!("{}/.er", tab.repo_root));
         let out = render_markdown(&tab, &ExportOpts::default());
         assert!(
             out.contains("## UI annotations"),

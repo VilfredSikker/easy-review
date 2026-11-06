@@ -1615,7 +1615,7 @@ impl TabState {
             mode: DiffMode::PrDiff,
             base_branch,
             current_branch: head_branch,
-            er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
+            er_root: ErRoot::unresolved(&repo_root_remote),
             repo_root: repo_root_remote,
             files,
             selected_file: 0,
@@ -1754,7 +1754,7 @@ impl TabState {
             mode: DiffMode::PrDiff,
             base_branch: String::new(),
             current_branch: String::new(),
-            er_root: ErRoot::RepoLocal(repo_root_remote.clone()),
+            er_root: ErRoot::unresolved(&repo_root_remote),
             repo_root: repo_root_remote,
             files: Vec::new(),
             selected_file: 0,
@@ -1881,7 +1881,7 @@ impl TabState {
         let watched_config = er_config.watched;
         let has_watched = !watched_config.paths.is_empty();
         let merge_active = git::is_merge_in_progress(&repo_root);
-        let er_root = ErRoot::RepoLocal(repo_root.clone());
+        let er_root = ErRoot::unresolved(&repo_root);
 
         let mut tab = Self {
             mode: DiffMode::Branch,
@@ -2014,7 +2014,7 @@ impl TabState {
     pub fn new_placeholder() -> Self {
         let mut tab = Self::new_for_test(Vec::new());
         tab.repo_root = String::new();
-        tab.er_root = ErRoot::RepoLocal(String::new());
+        tab.er_root = ErRoot::unresolved("");
         tab.base_branch = String::new();
         tab.current_branch = String::new();
         tab.placeholder = true;
@@ -2033,7 +2033,7 @@ impl TabState {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
             current_branch: "feature".to_string(),
-            er_root: ErRoot::RepoLocal("/tmp/test".to_string()),
+            er_root: ErRoot::managed("/tmp/test/.er"),
             repo_root: "/tmp/test".to_string(),
             files,
             selected_file: 0,
@@ -2382,7 +2382,6 @@ impl TabState {
     /// github-comments.json, etc.).
     ///
     /// Defaults to managed app-data storage (`~/.local/share/easy-review/...`).
-    /// With `ER_REPO_LOCAL=1`, uses `repo/.er/`.
     pub fn er_dir(&self) -> String {
         self.er_root.er_dir()
     }
@@ -2399,9 +2398,6 @@ impl TabState {
     /// `apply_managed_root()`; needs a resolvable owner/repo for local clones.
     fn pr_bucket_er_dir(&self) -> Option<String> {
         let pr_num = self.pr_number?;
-        if crate::storage::use_repo_local_storage() {
-            return Some(format!("{}/.er", self.repo_root));
-        }
         let owner_repo_slug = if let Some(ref remote_repo) = self.remote_repo {
             crate::storage::slug_branch(&remote_repo.to_lowercase())
         } else {
@@ -2432,9 +2428,6 @@ impl TabState {
     /// `None` when storage can't be resolved (empty repo/branch). Uses pure path
     /// helpers (no dir creation).
     pub fn branch_bucket_er_dir(&self) -> Option<String> {
-        if crate::storage::use_repo_local_storage() {
-            return Some(format!("{}/.er", self.repo_root));
-        }
         // Remote tabs have no local working tree — the PR bucket is their only bucket.
         if let Some(ref remote_repo) = self.remote_repo {
             let pr_num = self.pr_number?;
@@ -2465,11 +2458,6 @@ impl TabState {
     /// Point this tab at managed storage (shared by TUI and Desktop).
     /// Routes to a per-bucket directory so review notes are isolated per view.
     pub fn apply_managed_root(&mut self) {
-        if crate::storage::use_repo_local_storage() {
-            self.er_root = ErRoot::RepoLocal(self.repo_root.clone());
-            return;
-        }
-
         // Only the PR Diff view (head-vs-base) uses the shared PR bucket
         // (prs/pr-<N>/). Its review artifacts — triage, review.json, questions,
         // reviewed — stay separate from the local working-tree views. Remote tabs
@@ -9569,6 +9557,39 @@ mod tests {
     use std::collections::{HashMap, HashSet};
 
     #[test]
+    fn placeholder_tab_stores_under_the_storage_root_not_the_filesystem_root() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let er_dir = TabState::new_placeholder().er_dir();
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        assert_eq!(er_dir, storage.path().join("unresolved").to_string_lossy());
+    }
+
+    #[test]
+    fn unresolved_tabs_do_not_share_a_directory() {
+        let _guard = crate::storage::STORAGE_TEST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let storage = tempfile::tempdir().unwrap();
+        std::env::set_var("ER_STORAGE_ROOT", storage.path());
+        let a = ErRoot::unresolved("/repo/a").er_dir();
+        let b = ErRoot::unresolved("/repo/b").er_dir();
+        std::env::remove_var("ER_STORAGE_ROOT");
+
+        assert_ne!(a, b);
+        let prefix = storage.path().join("unresolved");
+        let prefix = prefix.to_string_lossy();
+        assert!(a.starts_with(&*prefix), "not under unresolved: {a}");
+        assert!(b.starts_with(&*prefix), "not under unresolved: {b}");
+        assert!(!a.starts_with("/repo"), "writes inside a repo: {a}");
+        assert!(!b.starts_with("/repo"), "writes inside a repo: {b}");
+    }
+
+    #[test]
     fn review_progress_routes_read_only_and_keeps_captured_bucket() {
         use crate::ai::review_flow::{FlowState, ReviewFlow};
         let mut app = App::new_for_test(Vec::new());
@@ -9598,7 +9619,7 @@ mod tests {
         );
         app.open_review_flow_progress(&bucket);
         let mut other = make_test_tab(Vec::new());
-        other.er_root = ErRoot::RepoLocal("/tmp/other-progress-tab".into());
+        other.er_root = ErRoot::managed("/tmp/other-progress-tab/.er");
         app.tabs.push(other);
         app.active_tab = 1;
         app.review_flows.get_mut(&bucket).unwrap().state = FlowState::Failed {
@@ -9681,7 +9702,7 @@ mod tests {
             mode: DiffMode::Branch,
             base_branch: "main".to_string(),
             current_branch: "feature".to_string(),
-            er_root: ErRoot::RepoLocal("/tmp/test".to_string()),
+            er_root: ErRoot::managed("/tmp/test/.er"),
             repo_root: "/tmp/test".to_string(),
             files,
             selected_file: 0,
@@ -9855,7 +9876,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut tab = make_test_tab(vec![]);
         // Point at an empty dir so only the diff-hash stamp can decide.
-        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
         tab.last_ai_check = None;
         tab.branch_diff_hash = "hash-a".to_string();
         tab.last_ai_diff_hash = Some("hash-a".to_string());
@@ -9873,7 +9894,7 @@ mod tests {
     fn a_tab_that_never_loaded_ai_state_is_not_current() {
         let dir = tempfile::tempdir().unwrap();
         let mut tab = make_test_tab(vec![]);
-        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
         tab.last_ai_check = None;
         tab.last_ai_diff_hash = None;
         tab.branch_diff_hash = "hash-a".to_string();
@@ -13053,7 +13074,7 @@ mod tests {
             1,
         )];
         let mut tab = make_test_tab(files);
-        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.er_root = ErRoot::managed(format!("{root}/.er"));
         tab.repo_root = root;
         tab.current_line = Some(0);
         let mut app = make_test_app(tab);
@@ -13161,7 +13182,7 @@ mod tests {
         )];
         let mut tab = make_test_tab(files);
         // Route the note sidecar into the TempDir's .er/ dir.
-        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.er_root = ErRoot::managed(format!("{root}/.er"));
         tab.repo_root = root.clone();
         let mut app = make_test_app(tab);
 
@@ -13202,7 +13223,7 @@ mod tests {
             0,
         )];
         let mut tab = make_test_tab(files);
-        tab.er_root = ErRoot::RepoLocal(root.clone());
+        tab.er_root = ErRoot::managed(format!("{root}/.er"));
         tab.repo_root = root;
         make_test_app(tab)
     }
@@ -14081,7 +14102,7 @@ mod tests {
     fn comments_dir_returns_er_subdir_in_normal_mode() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
         assert_eq!(tab.comments_dir(), "/home/user/my-project/.er");
     }
 
@@ -14210,7 +14231,7 @@ mod tests {
         // remote_repo without pr_number falls back to normal mode path
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
         tab.remote_repo = Some("owner/repo".to_string());
         // pr_number is None — should fall through to normal path
         assert_eq!(tab.comments_dir(), "/home/user/my-project/.er");
@@ -14220,7 +14241,7 @@ mod tests {
     fn github_comments_path_appends_filename_to_comments_dir() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
         assert_eq!(
             tab.github_comments_path(),
             "/home/user/my-project/.er/github-comments.json"
@@ -14287,7 +14308,7 @@ mod tests {
 
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = repo_root.clone();
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
 
         tab.reload_remote_comments();
 
@@ -14309,7 +14330,7 @@ mod tests {
         tab.repo_root = "/nonexistent/path/that/does/not/exist".to_string();
         // new_for_test pins er_root at /tmp/test; leftover github-comments.json
         // there must not satisfy this assertion.
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
         // Should not panic
         tab.reload_remote_comments();
         assert!(tab.ai.github_comments.is_none());
@@ -15675,7 +15696,7 @@ mod tests {
     fn arbiter_overlay_changes_reload_even_with_older_mtime_and_deletion() {
         let dir = tempfile::tempdir().unwrap();
         let mut tab = make_test_tab(vec![]);
-        tab.er_root = ErRoot::RepoLocal(dir.path().to_string_lossy().to_string());
+        tab.er_root = ErRoot::managed(format!("{}/.er", dir.path().to_string_lossy()));
         let er_dir = std::path::PathBuf::from(tab.er_dir());
         std::fs::create_dir_all(&er_dir).unwrap();
         std::fs::write(
@@ -16112,7 +16133,7 @@ mod tests {
         tab.remote_repo = None;
         tab.mode = DiffMode::PrDiff;
         // Sentinel: a clearly-wrong previous er_root that must be replaced.
-        tab.er_root = ErRoot::RepoLocal("/sentinel".to_string());
+        tab.er_root = ErRoot::managed("/sentinel/.er");
         tab.apply_managed_root();
 
         let dir = tab.er_dir();
@@ -16174,7 +16195,7 @@ mod tests {
     fn github_comments_dir_without_pr_uses_active_bucket() {
         let mut tab = TabState::new_for_test(vec![]);
         tab.repo_root = "/home/user/my-project".to_string();
-        tab.er_root = ErRoot::RepoLocal(tab.repo_root.clone());
+        tab.er_root = ErRoot::managed(format!("{}/.er", tab.repo_root));
         assert_eq!(tab.github_comments_dir(), tab.er_dir());
     }
 
