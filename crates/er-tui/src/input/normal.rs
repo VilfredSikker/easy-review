@@ -403,10 +403,13 @@ pub fn handle_normal_input(
             return Ok(());
         }
 
-        // In Staged mode, c = commit; otherwise c = GitHub comment
+        // In Staged mode, c = commit; otherwise c = GitHub comment. A tab
+        // already probed with no PR gates the composer on that held state.
         KeyCode::Char('c') => {
             if app.tab().mode == DiffMode::Staged {
                 app.start_commit();
+            } else if app.tab().pr_absent {
+                app.notify(er_engine::github_post::NO_PR_FOR_COMMENT);
             } else {
                 app.start_comment(er_engine::ai::CommentType::GitHubComment);
             }
