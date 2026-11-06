@@ -2611,7 +2611,7 @@ fn add_comment_impl(
             return early;
         }
     }
-    post_github_comment_flow(
+    let posted = post_github_comment_flow(
         state,
         er_engine::app::NewGitHubComment::Line {
             file,
@@ -2622,8 +2622,12 @@ fn add_comment_impl(
             body: text,
         },
         id,
-    )?
-    .finish(state);
+    )?;
+    let kept_earlier_body = posted.posted.kept_earlier_body;
+    posted.finish(state);
+    if kept_earlier_body {
+        return Err("Your earlier version was posted; this edit was not".to_string());
+    }
     let app = state.app.lock().map_err(|e| e.to_string())?;
     Ok(snap_from_confirmed(&app, state))
 }
@@ -2880,15 +2884,19 @@ pub async fn reply_to_github_thread(
 ) -> Result<AppSnapshot, String> {
     let state = state.inner().clone();
     run_blocking(move || {
-        post_github_comment_flow(
+        let posted = post_github_comment_flow(
             &state,
             er_engine::app::NewGitHubComment::Reply {
                 parent_id,
                 body: text,
             },
             Some(id),
-        )?
-        .finish(&state);
+        )?;
+        let kept_earlier_body = posted.posted.kept_earlier_body;
+        posted.finish(&state);
+        if kept_earlier_body {
+            return Err("Your earlier version was posted; this edit was not".to_string());
+        }
         let app = state.app.lock().map_err(|e| e.to_string())?;
         Ok(snap_from_confirmed(&app, &state))
     })

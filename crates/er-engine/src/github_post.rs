@@ -127,6 +127,10 @@ pub struct PostedGitHubComment {
     /// `Some("gh-<id>")` for a recorded line comment or reply; `None` for a
     /// general comment, which is not written to the sidecar.
     pub store_id: Option<String>,
+    /// The retry adopted an earlier attempt whose body differs from the text
+    /// being sent. The composer keeps the edited text; sending again is a new
+    /// comment under a new client id.
+    pub kept_earlier_body: bool,
 }
 
 /// A create's failure, already worded for a front end.
@@ -385,7 +389,20 @@ pub fn resolve_post_target(ctx: &CommentPostContext) -> Result<PrPostTarget, Git
             repo_root: Some(ctx.repo_root.clone()),
         });
     }
-    match crate::github::lookup_pr_for_current_branch(&ctx.repo_root) {
+    post_target_from_lookup(
+        crate::github::lookup_pr_for_current_branch(&ctx.repo_root),
+        ctx,
+    )
+}
+
+/// Turn a PR lookup into a post target. Absent is the only case that gets the
+/// no-PR sentence; an unknown lookup names the failure so an offline `gh` does
+/// not read as a missing PR.
+pub(crate) fn post_target_from_lookup(
+    lookup: crate::github::PrLookup,
+    ctx: &CommentPostContext,
+) -> Result<PrPostTarget, GitHubPostError> {
+    match lookup {
         crate::github::PrLookup::Present {
             owner,
             repo,
